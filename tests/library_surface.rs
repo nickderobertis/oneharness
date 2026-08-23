@@ -107,6 +107,7 @@ fn finished_result() -> report::RunResult {
         schema_attempts: None,
         schema_error: None,
         failure_kind: None,
+        work: None,
         failure_kind_source: None,
         stdout: "done".to_string(),
         stderr: String::new(),

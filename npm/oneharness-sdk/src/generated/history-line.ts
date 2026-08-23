@@ -10,7 +10,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -36,7 +36,7 @@ export type HistoryLine =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | undefined;
+          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | undefined;
           [k: string]: unknown;
         } & (
           | {
@@ -51,11 +51,23 @@ export type HistoryLine =
     ) &
       (
         | {
+            work?: null | undefined;
+            [k: string]: unknown;
+          }
+        | {
+            schema_version?: "1.7" | undefined;
+            status?: "nonzero" | "timeout" | "cancelled" | undefined;
+            work: "done" | "none";
+            [k: string]: unknown;
+          }
+      ) &
+      (
+        | {
             status?: "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned" | undefined;
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.4" | "1.5" | "1.6" | undefined;
+            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -73,7 +85,7 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.5" | "1.6" | undefined;
+            schema_version?: "1.5" | "1.6" | "1.7" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -84,7 +96,7 @@ export type HistoryLine =
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.6" | undefined;
+              schema_version?: "1.6" | "1.7" | undefined;
               [k: string]: unknown;
             }
         )) &
@@ -110,7 +122,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -123,6 +135,11 @@ export type HistoryLine =
             type: "run";
             usage: Usage;
             variant?: string | null | undefined;
+            /**
+             * Work evidence for a failure nothing classified (see
+             * [`HistoryRecord::work`]). Omitted on the wire when absent.
+             */
+            work?: RunWork | null | undefined;
             [k: string]: unknown;
           }
         | {
@@ -146,7 +163,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -159,6 +176,11 @@ export type HistoryLine =
             type: "run";
             usage: Usage;
             variant?: string | null | undefined;
+            /**
+             * Work evidence for a failure nothing classified (see
+             * [`HistoryRecord::work`]). Omitted on the wire when absent.
+             */
+            work?: RunWork | null | undefined;
             [k: string]: unknown;
           }
         | {
@@ -182,7 +204,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -195,6 +217,11 @@ export type HistoryLine =
             type: "run";
             usage: Usage;
             variant?: string | null | undefined;
+            /**
+             * Work evidence for a failure nothing classified (see
+             * [`HistoryRecord::work`]). Omitted on the wire when absent.
+             */
+            work?: RunWork | null | undefined;
             [k: string]: unknown;
           }
         | {
@@ -218,7 +245,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -231,6 +258,11 @@ export type HistoryLine =
             type: "run";
             usage: Usage;
             variant?: string | null | undefined;
+            /**
+             * Work evidence for a failure nothing classified (see
+             * [`HistoryRecord::work`]). Omitted on the wire when absent.
+             */
+            work?: RunWork | null | undefined;
             [k: string]: unknown;
           }
         | {
@@ -254,7 +286,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.3" | "1.4" | "1.5" | "1.6";
+            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -267,6 +299,11 @@ export type HistoryLine =
             type: "run";
             usage: Usage;
             variant?: string | null | undefined;
+            /**
+             * Work evidence for a failure nothing classified (see
+             * [`HistoryRecord::work`]). Omitted on the wire when absent.
+             */
+            work?: RunWork | null | undefined;
             [k: string]: unknown;
           }
         | {
@@ -290,7 +327,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -303,6 +340,11 @@ export type HistoryLine =
             type: "run";
             usage: Usage;
             variant?: string | null | undefined;
+            /**
+             * Work evidence for a failure nothing classified (see
+             * [`HistoryRecord::work`]). Omitted on the wire when absent.
+             */
+            work?: RunWork | null | undefined;
             [k: string]: unknown;
           }
       ));
@@ -338,6 +380,26 @@ export type FailureKind =
  * downgrading it.
  */
 export type PermissionMode = "read-only" | "plan" | "default" | "edit" | "auto" | "bypass";
+/**
+ * Whether a candidate's normalized result carries **evidence it did the task's
+ * work** — the first thing [`startup_failure_reason`] consults.
+ *
+ * Two independent witnesses, either of which is decisive:
+ *
+ * - **Tool events.** A recorded tool call is the harness acting on the task.
+ * - **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition
+ *   `signals::record_reports_work` classifies a raw harness record with, so the
+ *   two readings of "billed" are one contract with one implementation.
+ *
+ * It is also a **published reading**, not only an internal one: a run that
+ * failed with nothing to classify carries it as [`RunResult::work`] and in its
+ * history record, because there the question "did this candidate do anything?"
+ * is the only one left. One type for both, so the value a reader sees is the
+ * same value the fall-through verdict consulted.
+ *
+ * [billed]: crate::domain::signals::Usage::reports_billed_work
+ */
+export type RunWork = "done" | "none";
 /**
  * The outcome of attempting to run one harness.
  */

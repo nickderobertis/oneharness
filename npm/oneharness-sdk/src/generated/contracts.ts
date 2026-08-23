@@ -143,6 +143,26 @@ export type ExecutionTelemetry =
       tool_ms: number;
       [k: string]: unknown;
     };
+/**
+ * Whether a candidate's normalized result carries **evidence it did the task's
+ * work** — the first thing [`startup_failure_reason`] consults.
+ *
+ * Two independent witnesses, either of which is decisive:
+ *
+ * - **Tool events.** A recorded tool call is the harness acting on the task.
+ * - **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition
+ *   `signals::record_reports_work` classifies a raw harness record with, so the
+ *   two readings of "billed" are one contract with one implementation.
+ *
+ * It is also a **published reading**, not only an internal one: a run that
+ * failed with nothing to classify carries it as [`RunResult::work`] and in its
+ * history record, because there the question "did this candidate do anything?"
+ * is the only one left. One type for both, so the value a reader sees is the
+ * same value the fall-through verdict consulted.
+ *
+ * [billed]: crate::domain::signals::Usage::reports_billed_work
+ */
+export type RunWork = "done" | "none";
 
 /**
  * The top-level `run` report written to stdout.
@@ -322,6 +342,24 @@ export interface FallbackReport {
    * when no candidate could run at all — every one was a startup failure.
    */
   ran: string | null;
+  /**
+   * Whether the candidate named by `ran` stopped the chain **having shown no
+   * evidence it did the task's work, and with nothing to say why** — its
+   * [`RunResult::work`] read [`RunWork::None`] on a failure no classifier
+   * recognized.
+   *
+   * The chain still stops there, deliberately: re-running a task that may
+   * genuinely have failed for free would burn the next identity's quota on
+   * the same failure, which is worse than stopping (see
+   * [`crate::domain::fallback::startup_failure_reason`]). What this flag adds
+   * is the *attribution* — without it a candidate that never got started reads
+   * in the report exactly like one that tried the task and failed it, and the
+   * remaining candidates look untried for a reason nobody can name.
+   *
+   * `false` whenever `ran` is `null` (no candidate ran at all — every one is
+   * in `fell_through`, each with its reason).
+   */
+  stopped_without_work: boolean;
   [k: string]: unknown;
 }
 /**
@@ -506,6 +544,22 @@ export interface RunResult {
    * Named preset, when this result came from a composed harness id.
    */
   variant: string | null;
+  /**
+   * What this run has to show for itself when `failure_kind` has nothing to
+   * say: [`RunWork::Done`] if the harness recorded a tool call or billed
+   * usage, [`RunWork::None`] if nothing says it got that far. `null` on every
+   * other run — a success needs no such reading, and a *classified* failure
+   * already names its cause.
+   *
+   * This is the reading the fallback verdict itself consults
+   * ([`crate::domain::fallback::startup_failure_reason`]), published rather
+   * than left to be re-derived: an unclassified failure that did nothing is
+   * otherwise indistinguishable from one that ran the task and failed it, and
+   * the two mean opposite things to whoever reads the run. Publishing it
+   * changes no verdict — a candidate reading `none` still stops a chain, and
+   * one reading `done` still never falls through it.
+   */
+  work: RunWork | null;
   [k: string]: unknown;
 }
 /**

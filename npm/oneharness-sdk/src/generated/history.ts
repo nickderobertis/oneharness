@@ -12,7 +12,7 @@ export type HistoryRecord = (
     }
   | ({
       error: string;
-      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | undefined;
+      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | undefined;
       [k: string]: unknown;
     } & (
       | {
@@ -27,11 +27,23 @@ export type HistoryRecord = (
 ) &
   (
     | {
+        work?: null | undefined;
+        [k: string]: unknown;
+      }
+    | {
+        schema_version?: "1.7" | undefined;
+        status?: "nonzero" | "timeout" | "cancelled" | undefined;
+        work: "done" | "none";
+        [k: string]: unknown;
+      }
+  ) &
+  (
+    | {
         status?: "ok" | "nonzero" | "timeout" | "spawn-error" | "skipped" | "planned" | undefined;
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.4" | "1.5" | "1.6" | undefined;
+        schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -49,7 +61,7 @@ export type HistoryRecord = (
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.5" | "1.6" | undefined;
+        schema_version?: "1.5" | "1.6" | "1.7" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -60,7 +72,7 @@ export type HistoryRecord = (
           [k: string]: unknown;
         }
       | {
-          schema_version?: "1.6" | undefined;
+          schema_version?: "1.6" | "1.7" | undefined;
           [k: string]: unknown;
         }
     )) &
@@ -168,7 +180,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -195,6 +207,22 @@ export type HistoryRecord = (
         tool_ms: number;
         usage: Usage;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -330,6 +358,22 @@ export type HistoryRecord = (
         tool_ms: number;
         usage: Usage1;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -410,7 +454,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -437,6 +481,22 @@ export type HistoryRecord = (
         tool_ms?: never | undefined;
         usage: Usage2;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -503,7 +563,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -530,6 +590,22 @@ export type HistoryRecord = (
         tool_ms?: never | undefined;
         usage: Usage3;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -596,7 +672,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -623,6 +699,22 @@ export type HistoryRecord = (
         tool_ms?: never | undefined;
         usage: Usage4;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -689,7 +781,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.3" | "1.4" | "1.5" | "1.6";
+        schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -716,6 +808,22 @@ export type HistoryRecord = (
         tool_ms?: never | undefined;
         usage: Usage5;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -814,6 +922,22 @@ export type HistoryRecord = (
         tool_ms?: never | undefined;
         usage: Usage6;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -924,6 +1048,22 @@ export type HistoryRecord = (
         tool_ms?: never | undefined;
         usage: Usage7;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
     | {
@@ -1032,6 +1172,22 @@ export type HistoryRecord = (
         tool_ms?: number | null | undefined;
         usage: Usage8;
         variant?: string | null | undefined;
+        /**
+         * What a run that failed with **nothing to classify** has to show for
+         * itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+         * usage, [`RunWork::None`] where nothing says it got that far. Copied from
+         * [`RunResult::work`] — one value with one source, like every signal here —
+         * and omitted on the wire on every other run, since a success raises the
+         * question and a classified failure has already answered it.
+         *
+         * This is the field that tells apart, for a reader of the record, the two
+         * things an unexplained failure can be: a candidate that never got started,
+         * and one that ran the task and lost. Without it both are a `nonzero` line with a
+         * null `failure_kind` and empty accounting, and a chain that stopped at the
+         * first reads exactly like a chain that stopped at the second. Gated to
+         * [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+         */
+        work?: RunWork | null | undefined;
         [k: string]: unknown;
       }
   );
@@ -1064,6 +1220,26 @@ export type FailureKind =
  * The outcome of attempting to run one harness.
  */
 export type Status = "ok" | "nonzero" | "timeout" | "cancelled" | "spawn-error" | "skipped" | "planned";
+/**
+ * Whether a candidate's normalized result carries **evidence it did the task's
+ * work** — the first thing [`startup_failure_reason`] consults.
+ *
+ * Two independent witnesses, either of which is decisive:
+ *
+ * - **Tool events.** A recorded tool call is the harness acting on the task.
+ * - **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition
+ *   `signals::record_reports_work` classifies a raw harness record with, so the
+ *   two readings of "billed" are one contract with one implementation.
+ *
+ * It is also a **published reading**, not only an internal one: a run that
+ * failed with nothing to classify carries it as [`RunResult::work`] and in its
+ * history record, because there the question "did this candidate do anything?"
+ * is the only one left. One type for both, so the value a reader sees is the
+ * same value the fall-through verdict consulted.
+ *
+ * [billed]: crate::domain::signals::Usage::reports_billed_work
+ */
+export type RunWork = "done" | "none";
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer

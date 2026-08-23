@@ -982,7 +982,14 @@ shape. When you add one:
   (`history::gated_failure_kind_version`, which `sdk_schema` builds the SDK
   gates from so the two validators cannot disagree), and a
   `tests/fixtures/sdk-contract-matrix.json` case at the introducing version and
-  the one before it.
+  the one before it. A failure that answers *nothing* still says what it did:
+  `RunResult::work` publishes the same `RunWork` the verdict consulted (in the
+  record too, gated at history v1.7), and `fallback.stopped_without_work` names
+  it where a chain stopped there. It moves no verdict — an unclassified
+  candidate still stops the chain, because re-running a task that may genuinely
+  have failed for free burns the next identity's quota — but without it a
+  candidate that never started reads exactly like one that ran the task and
+  lost, and a chain that stopped at the first says nothing about which it was.
 
 ## Scripts and output are context
 

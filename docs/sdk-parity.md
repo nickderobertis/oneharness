@@ -426,17 +426,17 @@ caller rather than being dropped.
 
 | Output | Fields on the document | All | Rust core | Python | TypeScript |
 | --- | --- | --- | --- | --- | --- |
-| `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 83 | yes | yes | yes |
-| `run_stream_envelope` | `event`, `report`, `type` | 86 | yes | yes | yes |
+| `run_report` | `batch`, `bypass_permissions`, `config_files`, `control`, `dry_run`, `fallback`, `fork`, `history_file`, `mock_rules`, `model`, `models`, `oneharness_version`, `permission_mode`, `prompt`, `results`, `resume`, `schema`, `schema_max_retries`, `schema_version`, `session`, `spy_file` | 85 | yes | yes | yes |
+| `run_stream_envelope` | `event`, `report`, `type` | 88 | yes | yes | yes |
 | `list_report` | `harnesses`, `schema_version` | 36 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
 | `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `stream`, `system`, `timeout` | 39 | yes | yes | yes |
 | `sync_report` | `check`, `config_files`, `results`, `schema_version` | 9 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 33 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |
-| `history_records` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `usage`, `variant` | 40 | yes | yes | yes |
+| `history_records` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `usage`, `variant`, `work` | 41 | yes | yes | yes |
 | `history_list` | `harnesses`, `id`, `labels`, `name`, `path`, `project`, `record_count`, `started` | 8 | yes | yes | yes |
-| `history_stream_envelope` | `line`, `record`, `type` | 45 | yes | yes | yes |
+| `history_stream_envelope` | `line`, `record`, `type` | 46 | yes | yes | yes |
 | `history_clear_report` | `dry_run`, `files`, `hint`, `removed`, `would_remove` | 5 | yes | yes | yes |
 | `history_migrate_report` | `files`, `files_processed` | 6 | yes | yes | yes |
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.10.2...oneharness-core-v0.11.0) - 2026-08-23
+
+### Fixed
+
+- stop an unrecognised startup refusal reading as a completed run ([#1266](https://github.com/nickderobertis/oneharness/pull/1266))
+
 ## [0.10.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.10.1...oneharness-core-v0.10.2) - 2026-08-19
 
 ### Added

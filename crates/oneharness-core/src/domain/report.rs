@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::domain::batch::BatchStrategy;
 use crate::domain::control::ControlReport;
 use crate::domain::events::ActionEvent;
-use crate::domain::fallback::FallThroughReason;
+use crate::domain::fallback::{FallThroughReason, RunWork};
 use crate::domain::mode::PermissionMode;
 use crate::domain::session::SessionPhase;
 use crate::domain::signals::{FailureKind, Usage};
@@ -23,6 +23,14 @@ use crate::domain::usage::UtcInstant;
 /// Shared by every non-history report on stdout — `run`, `list`, `detect`,
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
+///
+/// `0.9` added the work reading a failed run has to show for itself:
+/// [`RunResult::work`] on a failure no classifier recognized, and
+/// [`FallbackReport::stopped_without_work`] where such a candidate is the one a
+/// chain stopped at. Purely additive — every 0.8 field keeps its name, type, and
+/// meaning, and no verdict changed with them — but the bump is how a consumer
+/// learns that "the run failed and nothing says why" is now a question the report
+/// answers rather than one every reader re-derives from `usage` and `events`.
 ///
 /// `0.8` added the two precondition [`FailureKind`]s — `untrusted_directory` and
 /// `input_too_large` — with their `"untrusted-directory"` / `"input-too-large"`
@@ -56,7 +64,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.8";
+pub const SCHEMA_VERSION: &str = "0.9";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -491,6 +499,22 @@ pub struct RunResult {
     /// run, and it also marks the run as failed for exit-code purposes.
     /// Serialized as its snake_case token (see [`FailureKind`]).
     pub failure_kind: Option<FailureKind>,
+    /// What this run has to show for itself when `failure_kind` has nothing to
+    /// say: [`RunWork::Done`] if the harness recorded a tool call or billed
+    /// usage, [`RunWork::None`] if nothing says it got that far. `null` on every
+    /// other run — a success needs no such reading, and a *classified* failure
+    /// already names its cause.
+    ///
+    /// This is the reading the fallback verdict itself consults
+    /// ([`crate::domain::fallback::startup_failure_reason`]), published rather
+    /// than left to be re-derived: an unclassified failure that did nothing is
+    /// otherwise indistinguishable from one that ran the task and failed it, and
+    /// the two mean opposite things to whoever reads the run. Publishing it
+    /// changes no verdict — a candidate reading `none` still stops a chain, and
+    /// one reading `done` still never falls through it.
+    // llmlint: ignore[invalid_states_unrepresentable] This additive wire field must stay flat beside `status`/`failure_kind` for the stable JSON/SDK contract that generates every client; the one production path derives all three together in `with_work_evidence`, and the history reader plus the shared contract matrix reject a record whose combination disagrees.
+    #[serde(default)]
+    pub work: Option<RunWork>,
     /// Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`
     /// for a candidate refused before spawning); `null` when absent.
     // llmlint: ignore[invalid_states_unrepresentable] This is a stable serialized string in the JSON/SDK contract, deliberately open so a new reading site is an additive value rather than a generated-type change for every consumer; the values are produced only by `domain::signals` and the pre-spawn refusal, and the report round-trip tests pin them.
@@ -501,6 +525,53 @@ pub struct RunResult {
     pub stderr: String,
     /// Human-readable problem + suggested action; `null` on success.
     pub error: Option<String>,
+}
+
+impl RunResult {
+    /// Fill in the derived [`work`][RunResult::work] reading from this result's
+    /// own signals, and hand the result back.
+    ///
+    /// Every constructor ends here so the reading is derived in exactly one
+    /// place, from the finished envelope rather than from whatever each call
+    /// site happened to know: a second derivation is how a published signal and
+    /// the verdict that consulted it start disagreeing.
+    #[must_use]
+    pub fn with_work_evidence(mut self) -> Self {
+        self.work = unclassified_failure(self.status, self.failure_kind)
+            .then(|| RunWork::from_result(&self));
+        self
+    }
+}
+
+/// Whether a finished run failed with **nothing to classify** — the one case
+/// [`RunResult::work`] answers, and the only one where it is published.
+///
+/// `failure_kind` is the first answer to "why did this fail?", so where it has
+/// one there is nothing for a work reading to add. Where it is `null` the record
+/// says only that the run failed, and whether the harness did any of the task is
+/// the whole difference between a candidate that could not start and one that
+/// tried and lost.
+#[must_use]
+pub fn unclassified_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
+    failure_kind.is_none() && attempted_failure(status)
+}
+
+/// Whether `status` is a failure the **harness itself** reached: it was spawned,
+/// and what came back was bad. Deliberately narrower than
+/// [`history::run_failed`][rf], which also covers the two failures oneharness
+/// reaches on the harness's behalf — `skipped` (never spawned) and `spawn_error`
+/// (spawned and immediately unspawnable). Those two already say in the status
+/// that the candidate never ran, and a `spawn_error` nulls every signal by
+/// contract, so a work reading there could only restate the status as a finding.
+/// Absence is the honest answer where nothing was observed.
+///
+/// [rf]: crate::domain::history::run_failed
+#[must_use]
+pub fn attempted_failure(status: Status) -> bool {
+    matches!(
+        status,
+        Status::Nonzero | Status::Timeout | Status::Cancelled
+    )
 }
 
 /// The top-level `run` report written to stdout.
@@ -617,6 +688,24 @@ pub struct FallbackReport {
     /// and — on a model fan-out — `model-not-found` / `rate-limit`; see
     /// [`crate::domain::fallback::startup_failure_reason`]).
     pub fell_through: Vec<FallThrough>,
+    /// Whether the candidate named by `ran` stopped the chain **having shown no
+    /// evidence it did the task's work, and with nothing to say why** — its
+    /// [`RunResult::work`] read [`RunWork::None`] on a failure no classifier
+    /// recognized.
+    ///
+    /// The chain still stops there, deliberately: re-running a task that may
+    /// genuinely have failed for free would burn the next identity's quota on
+    /// the same failure, which is worse than stopping (see
+    /// [`crate::domain::fallback::startup_failure_reason`]). What this flag adds
+    /// is the *attribution* — without it a candidate that never got started reads
+    /// in the report exactly like one that tried the task and failed it, and the
+    /// remaining candidates look untried for a reason nobody can name.
+    ///
+    /// `false` whenever `ran` is `null` (no candidate ran at all — every one is
+    /// in `fell_through`, each with its reason).
+    // llmlint: ignore[invalid_states_unrepresentable] This additive wire field must stay flat beside `ran` for the stable JSON/SDK contract; both are written together by `fallback_step`, which sets this only where it names the candidate that stopped the chain, and the fallback integration tests pin the pair.
+    #[serde(default)]
+    pub stopped_without_work: bool,
 }
 
 /// One candidate a fallback run fell through, with the reason it could not run.
@@ -910,6 +999,7 @@ mod tests {
             schema_attempts: None,
             schema_error: None,
             failure_kind: None,
+            work: None,
             failure_kind_source: None,
             stdout: String::new(),
             stderr: String::new(),

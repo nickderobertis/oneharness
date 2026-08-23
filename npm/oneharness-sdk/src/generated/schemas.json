@@ -1933,11 +1933,17 @@
               "string",
               "null"
             ]
+          },
+          "stopped_without_work": {
+            "description": "Whether the candidate named by `ran` stopped the chain **having shown no\nevidence it did the task's work, and with nothing to say why** — its\n[`RunResult::work`] read [`RunWork::None`] on a failure no classifier\nrecognized.\n\nThe chain still stops there, deliberately: re-running a task that may\ngenuinely have failed for free would burn the next identity's quota on\nthe same failure, which is worse than stopping (see\n[`crate::domain::fallback::startup_failure_reason`]). What this flag adds\nis the *attribution* — without it a candidate that never got started reads\nin the report exactly like one that tried the task and failed it, and the\nremaining candidates look untried for a reason nobody can name.\n\n`false` whenever `ran` is `null` (no candidate ran at all — every one is\nin `fell_through`, each with its reason).",
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
           "ran",
-          "fell_through"
+          "fell_through",
+          "stopped_without_work"
         ]
       },
       "OutputFormat": {
@@ -2185,6 +2191,18 @@
               "string",
               "null"
             ]
+          },
+          "work": {
+            "description": "What this run has to show for itself when `failure_kind` has nothing to\nsay: [`RunWork::Done`] if the harness recorded a tool call or billed\nusage, [`RunWork::None`] if nothing says it got that far. `null` on every\nother run — a success needs no such reading, and a *classified* failure\nalready names its cause.\n\nThis is the reading the fallback verdict itself consults\n([`crate::domain::fallback::startup_failure_reason`]), published rather\nthan left to be re-derived: an unclassified failure that did nothing is\notherwise indistinguishable from one that ran the task and failed it, and\nthe two mean opposite things to whoever reads the run. Publishing it\nchanges no verdict — a candidate reading `none` still stops a chain, and\none reading `done` still never falls through it.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -2213,10 +2231,26 @@
           "schema_attempts",
           "schema_error",
           "failure_kind",
+          "work",
           "failure_kind_source",
           "stdout",
           "stderr",
           "error"
+        ]
+      },
+      "RunWork": {
+        "description": "Whether a candidate's normalized result carries **evidence it did the task's\nwork** — the first thing [`startup_failure_reason`] consults.\n\nTwo independent witnesses, either of which is decisive:\n\n- **Tool events.** A recorded tool call is the harness acting on the task.\n- **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition\n  `signals::record_reports_work` classifies a raw harness record with, so the\n  two readings of \"billed\" are one contract with one implementation.\n\nIt is also a **published reading**, not only an internal one: a run that\nfailed with nothing to classify carries it as [`RunResult::work`] and in its\nhistory record, because there the question \"did this candidate do anything?\"\nis the only one left. One type for both, so the value a reader sees is the\nsame value the fall-through verdict consulted.\n\n[billed]: crate::domain::signals::Usage::reports_billed_work",
+        "oneOf": [
+          {
+            "description": "The candidate ran the task, whatever its terminal record then said.",
+            "type": "string",
+            "const": "done"
+          },
+          {
+            "description": "Nothing says the candidate got as far as doing work.",
+            "type": "string",
+            "const": "none"
+          }
         ]
       },
       "SessionPhase": {
@@ -2952,11 +2986,17 @@
               "string",
               "null"
             ]
+          },
+          "stopped_without_work": {
+            "description": "Whether the candidate named by `ran` stopped the chain **having shown no\nevidence it did the task's work, and with nothing to say why** — its\n[`RunResult::work`] read [`RunWork::None`] on a failure no classifier\nrecognized.\n\nThe chain still stops there, deliberately: re-running a task that may\ngenuinely have failed for free would burn the next identity's quota on\nthe same failure, which is worse than stopping (see\n[`crate::domain::fallback::startup_failure_reason`]). What this flag adds\nis the *attribution* — without it a candidate that never got started reads\nin the report exactly like one that tried the task and failed it, and the\nremaining candidates look untried for a reason nobody can name.\n\n`false` whenever `ran` is `null` (no candidate ran at all — every one is\nin `fell_through`, each with its reason).",
+            "type": "boolean",
+            "default": false
           }
         },
         "required": [
           "ran",
-          "fell_through"
+          "fell_through",
+          "stopped_without_work"
         ]
       },
       "OutputFormat": {
@@ -3368,6 +3408,18 @@
               "string",
               "null"
             ]
+          },
+          "work": {
+            "description": "What this run has to show for itself when `failure_kind` has nothing to\nsay: [`RunWork::Done`] if the harness recorded a tool call or billed\nusage, [`RunWork::None`] if nothing says it got that far. `null` on every\nother run — a success needs no such reading, and a *classified* failure\nalready names its cause.\n\nThis is the reading the fallback verdict itself consults\n([`crate::domain::fallback::startup_failure_reason`]), published rather\nthan left to be re-derived: an unclassified failure that did nothing is\notherwise indistinguishable from one that ran the task and failed it, and\nthe two mean opposite things to whoever reads the run. Publishing it\nchanges no verdict — a candidate reading `none` still stops a chain, and\none reading `done` still never falls through it.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -3396,10 +3448,26 @@
           "schema_attempts",
           "schema_error",
           "failure_kind",
+          "work",
           "failure_kind_source",
           "stdout",
           "stderr",
           "error"
+        ]
+      },
+      "RunWork": {
+        "description": "Whether a candidate's normalized result carries **evidence it did the task's\nwork** — the first thing [`startup_failure_reason`] consults.\n\nTwo independent witnesses, either of which is decisive:\n\n- **Tool events.** A recorded tool call is the harness acting on the task.\n- **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition\n  `signals::record_reports_work` classifies a raw harness record with, so the\n  two readings of \"billed\" are one contract with one implementation.\n\nIt is also a **published reading**, not only an internal one: a run that\nfailed with nothing to classify carries it as [`RunResult::work`] and in its\nhistory record, because there the question \"did this candidate do anything?\"\nis the only one left. One type for both, so the value a reader sees is the\nsame value the fall-through verdict consulted.\n\n[billed]: crate::domain::signals::Usage::reports_billed_work",
+        "oneOf": [
+          {
+            "description": "The candidate ran the task, whatever its terminal record then said.",
+            "type": "string",
+            "const": "done"
+          },
+          {
+            "description": "Nothing says the candidate got as far as doing work.",
+            "type": "string",
+            "const": "none"
+          }
         ]
       },
       "SessionPhase": {
@@ -4106,7 +4174,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "type": {
@@ -4224,7 +4293,8 @@
                               "1.3",
                               "1.4",
                               "1.5",
-                              "1.6"
+                              "1.6",
+                              "1.7"
                             ]
                           }
                         },
@@ -4267,6 +4337,51 @@
                 ]
               },
               {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "work": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  {
+                    "allOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schema_version": {
+                            "type": "string",
+                            "enum": [
+                              "1.7"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "nonzero",
+                              "timeout",
+                              "cancelled"
+                            ]
+                          },
+                          "work": {
+                            "type": "string",
+                            "enum": [
+                              "done",
+                              "none"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "work"
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
                 "anyOf": [
                   {
                     "type": "object",
@@ -4292,7 +4407,8 @@
                         "enum": [
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     }
@@ -4327,7 +4443,8 @@
                             "type": "string",
                             "enum": [
                               "1.5",
-                              "1.6"
+                              "1.6",
+                              "1.7"
                             ]
                           }
                         }
@@ -4358,7 +4475,8 @@
                           "schema_version": {
                             "type": "string",
                             "enum": [
-                              "1.6"
+                              "1.6",
+                              "1.7"
                             ]
                           }
                         }
@@ -4458,7 +4576,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "session": {
@@ -4519,6 +4638,17 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "work": {
+                        "description": "Work evidence for a failure nothing classified (see\n[`HistoryRecord::work`]). Omitted on the wire when absent.",
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/RunWork"
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     },
@@ -4642,7 +4772,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "session": {
@@ -4706,6 +4837,17 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "work": {
+                        "description": "Work evidence for a failure nothing classified (see\n[`HistoryRecord::work`]). Omitted on the wire when absent.",
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/RunWork"
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     },
@@ -4824,7 +4966,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "session": {
@@ -4868,6 +5011,17 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "work": {
+                        "description": "Work evidence for a failure nothing classified (see\n[`HistoryRecord::work`]). Omitted on the wire when absent.",
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/RunWork"
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     },
@@ -4987,7 +5141,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "session": {
@@ -5038,6 +5193,17 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "work": {
+                        "description": "Work evidence for a failure nothing classified (see\n[`HistoryRecord::work`]). Omitted on the wire when absent.",
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/RunWork"
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     },
@@ -5149,7 +5315,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "session": {
@@ -5209,6 +5376,17 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "work": {
+                        "description": "Work evidence for a failure nothing classified (see\n[`HistoryRecord::work`]). Omitted on the wire when absent.",
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/RunWork"
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     },
@@ -5328,7 +5506,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       },
                       "session": {
@@ -5376,6 +5555,17 @@
                         "type": [
                           "string",
                           "null"
+                        ]
+                      },
+                      "work": {
+                        "description": "Work evidence for a failure nothing classified (see\n[`HistoryRecord::work`]). Omitted on the wire when absent.",
+                        "anyOf": [
+                          {
+                            "$ref": "#/$defs/RunWork"
+                          },
+                          {
+                            "type": "null"
+                          }
                         ]
                       }
                     },
@@ -5605,6 +5795,21 @@
           }
         ]
       },
+      "RunWork": {
+        "description": "Whether a candidate's normalized result carries **evidence it did the task's\nwork** — the first thing [`startup_failure_reason`] consults.\n\nTwo independent witnesses, either of which is decisive:\n\n- **Tool events.** A recorded tool call is the harness acting on the task.\n- **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition\n  `signals::record_reports_work` classifies a raw harness record with, so the\n  two readings of \"billed\" are one contract with one implementation.\n\nIt is also a **published reading**, not only an internal one: a run that\nfailed with nothing to classify carries it as [`RunResult::work`] and in its\nhistory record, because there the question \"did this candidate do anything?\"\nis the only one left. One type for both, so the value a reader sees is the\nsame value the fall-through verdict consulted.\n\n[billed]: crate::domain::signals::Usage::reports_billed_work",
+        "oneOf": [
+          {
+            "description": "The candidate ran the task, whatever its terminal record then said.",
+            "type": "string",
+            "const": "done"
+          },
+          {
+            "description": "Nothing says the candidate got as far as doing work.",
+            "type": "string",
+            "const": "none"
+          }
+        ]
+      },
       "Status": {
         "description": "The outcome of attempting to run one harness.",
         "oneOf": [
@@ -5757,7 +5962,8 @@
                       "1.3",
                       "1.4",
                       "1.5",
-                      "1.6"
+                      "1.6",
+                      "1.7"
                     ]
                   }
                 },
@@ -5800,6 +6006,51 @@
         ]
       },
       {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "work": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "allOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.7"
+                    ]
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "nonzero",
+                      "timeout",
+                      "cancelled"
+                    ]
+                  },
+                  "work": {
+                    "type": "string",
+                    "enum": [
+                      "done",
+                      "none"
+                    ]
+                  }
+                },
+                "required": [
+                  "work"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
         "anyOf": [
           {
             "type": "object",
@@ -5825,7 +6076,8 @@
                 "enum": [
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               }
             }
@@ -5860,7 +6112,8 @@
                     "type": "string",
                     "enum": [
                       "1.5",
-                      "1.6"
+                      "1.6",
+                      "1.7"
                     ]
                   }
                 }
@@ -5891,7 +6144,8 @@
                   "schema_version": {
                     "type": "string",
                     "enum": [
-                      "1.6"
+                      "1.6",
+                      "1.7"
                     ]
                   }
                 }
@@ -6172,7 +6426,8 @@
               "1.3",
               "1.4",
               "1.5",
-              "1.6"
+              "1.6",
+              "1.7"
             ]
           },
           "session": {
@@ -6231,6 +6486,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -6598,6 +6864,17 @@
               "string",
               "null"
             ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -6774,7 +7051,8 @@
               "1.3",
               "1.4",
               "1.5",
-              "1.6"
+              "1.6",
+              "1.7"
             ]
           },
           "session": {
@@ -6824,6 +7102,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -6951,7 +7240,8 @@
               "1.3",
               "1.4",
               "1.5",
-              "1.6"
+              "1.6",
+              "1.7"
             ]
           },
           "session": {
@@ -6997,6 +7287,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -7126,7 +7427,8 @@
               "1.3",
               "1.4",
               "1.5",
-              "1.6"
+              "1.6",
+              "1.7"
             ]
           },
           "session": {
@@ -7179,6 +7481,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -7302,7 +7615,8 @@
               "1.3",
               "1.4",
               "1.5",
-              "1.6"
+              "1.6",
+              "1.7"
             ]
           },
           "session": {
@@ -7364,6 +7678,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -7553,6 +7878,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -7784,6 +8120,17 @@
             "type": [
               "string",
               "null"
+            ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -8021,6 +8368,17 @@
               "string",
               "null"
             ]
+          },
+          "work": {
+            "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RunWork"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -8240,6 +8598,21 @@
             "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
             "type": "string",
             "const": "bypass"
+          }
+        ]
+      },
+      "RunWork": {
+        "description": "Whether a candidate's normalized result carries **evidence it did the task's\nwork** — the first thing [`startup_failure_reason`] consults.\n\nTwo independent witnesses, either of which is decisive:\n\n- **Tool events.** A recorded tool call is the harness acting on the task.\n- **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition\n  `signals::record_reports_work` classifies a raw harness record with, so the\n  two readings of \"billed\" are one contract with one implementation.\n\nIt is also a **published reading**, not only an internal one: a run that\nfailed with nothing to classify carries it as [`RunResult::work`] and in its\nhistory record, because there the question \"did this candidate do anything?\"\nis the only one left. One type for both, so the value a reader sees is the\nsame value the fall-through verdict consulted.\n\n[billed]: crate::domain::signals::Usage::reports_billed_work",
+        "oneOf": [
+          {
+            "description": "The candidate ran the task, whatever its terminal record then said.",
+            "type": "string",
+            "const": "done"
+          },
+          {
+            "description": "Nothing says the candidate got as far as doing work.",
+            "type": "string",
+            "const": "none"
           }
         ]
       },
@@ -8581,7 +8954,8 @@
                       "1.3",
                       "1.4",
                       "1.5",
-                      "1.6"
+                      "1.6",
+                      "1.7"
                     ]
                   },
                   "variant": {
@@ -8705,7 +9079,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     },
@@ -8748,6 +9123,51 @@
             ]
           },
           {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "work": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.7"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "nonzero",
+                          "timeout",
+                          "cancelled"
+                        ]
+                      },
+                      "work": {
+                        "type": "string",
+                        "enum": [
+                          "done",
+                          "none"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "work"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
             "anyOf": [
               {
                 "type": "object",
@@ -8773,7 +9193,8 @@
                     "enum": [
                       "1.4",
                       "1.5",
-                      "1.6"
+                      "1.6",
+                      "1.7"
                     ]
                   }
                 }
@@ -8808,7 +9229,8 @@
                         "type": "string",
                         "enum": [
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     }
@@ -8839,7 +9261,8 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     }
@@ -9120,7 +9543,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -9179,6 +9603,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -9546,6 +9981,17 @@
                   "string",
                   "null"
                 ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -9722,7 +10168,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -9772,6 +10219,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -9899,7 +10357,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -9945,6 +10404,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -10074,7 +10544,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -10127,6 +10598,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -10250,7 +10732,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -10312,6 +10795,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -10501,6 +10995,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -10732,6 +11237,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -10969,6 +11485,17 @@
                   "string",
                   "null"
                 ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -11028,6 +11555,21 @@
             "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
             "type": "string",
             "const": "bypass"
+          }
+        ]
+      },
+      "RunWork": {
+        "description": "Whether a candidate's normalized result carries **evidence it did the task's\nwork** — the first thing [`startup_failure_reason`] consults.\n\nTwo independent witnesses, either of which is decisive:\n\n- **Tool events.** A recorded tool call is the harness acting on the task.\n- **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition\n  `signals::record_reports_work` classifies a raw harness record with, so the\n  two readings of \"billed\" are one contract with one implementation.\n\nIt is also a **published reading**, not only an internal one: a run that\nfailed with nothing to classify carries it as [`RunResult::work`] and in its\nhistory record, because there the question \"did this candidate do anything?\"\nis the only one left. One type for both, so the value a reader sees is the\nsame value the fall-through verdict consulted.\n\n[billed]: crate::domain::signals::Usage::reports_billed_work",
+        "oneOf": [
+          {
+            "description": "The candidate ran the task, whatever its terminal record then said.",
+            "type": "string",
+            "const": "done"
+          },
+          {
+            "description": "Nothing says the candidate got as far as doing work.",
+            "type": "string",
+            "const": "none"
           }
         ]
       },
@@ -11349,7 +11891,8 @@
                           "1.3",
                           "1.4",
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     },
@@ -11392,6 +11935,51 @@
             ]
           },
           {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "work": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "allOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.7"
+                        ]
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "nonzero",
+                          "timeout",
+                          "cancelled"
+                        ]
+                      },
+                      "work": {
+                        "type": "string",
+                        "enum": [
+                          "done",
+                          "none"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "work"
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
             "anyOf": [
               {
                 "type": "object",
@@ -11417,7 +12005,8 @@
                     "enum": [
                       "1.4",
                       "1.5",
-                      "1.6"
+                      "1.6",
+                      "1.7"
                     ]
                   }
                 }
@@ -11452,7 +12041,8 @@
                         "type": "string",
                         "enum": [
                           "1.5",
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     }
@@ -11483,7 +12073,8 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.6"
+                          "1.6",
+                          "1.7"
                         ]
                       }
                     }
@@ -11764,7 +12355,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -11823,6 +12415,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -12190,6 +12793,17 @@
                   "string",
                   "null"
                 ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -12366,7 +12980,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -12416,6 +13031,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -12543,7 +13169,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -12589,6 +13216,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -12718,7 +13356,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -12771,6 +13410,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -12894,7 +13544,8 @@
                   "1.3",
                   "1.4",
                   "1.5",
-                  "1.6"
+                  "1.6",
+                  "1.7"
                 ]
               },
               "session": {
@@ -12956,6 +13607,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -13145,6 +13807,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -13376,6 +14049,17 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               }
             },
@@ -13613,6 +14297,17 @@
                   "string",
                   "null"
                 ]
+              },
+              "work": {
+                "description": "What a run that failed with **nothing to classify** has to show for\nitself: [`RunWork::Done`] where the harness recorded a tool call or billed\nusage, [`RunWork::None`] where nothing says it got that far. Copied from\n[`RunResult::work`] — one value with one source, like every signal here —\nand omitted on the wire on every other run, since a success raises the\nquestion and a classified failure has already answered it.\n\nThis is the field that tells apart, for a reader of the record, the two\nthings an unexplained failure can be: a candidate that never got started,\nand one that ran the task and lost. Without it both are a `nonzero` line with a\nnull `failure_kind` and empty accounting, and a chain that stopped at the\nfirst reads exactly like a chain that stopped at the second. Gated to\n[`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].",
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/RunWork"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
               }
             },
             "required": [
@@ -13672,6 +14367,21 @@
             "description": "Approve everything — no prompts, no gating. The headless default, because\nan unattended agent otherwise hangs on the first approval. Every harness\nsupports it. (Claude's `bypassPermissions`, Codex's\n`--dangerously-bypass-approvals-and-sandbox`, Qwen/Crush `--yolo`, …)",
             "type": "string",
             "const": "bypass"
+          }
+        ]
+      },
+      "RunWork": {
+        "description": "Whether a candidate's normalized result carries **evidence it did the task's\nwork** — the first thing [`startup_failure_reason`] consults.\n\nTwo independent witnesses, either of which is decisive:\n\n- **Tool events.** A recorded tool call is the harness acting on the task.\n- **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition\n  `signals::record_reports_work` classifies a raw harness record with, so the\n  two readings of \"billed\" are one contract with one implementation.\n\nIt is also a **published reading**, not only an internal one: a run that\nfailed with nothing to classify carries it as [`RunResult::work`] and in its\nhistory record, because there the question \"did this candidate do anything?\"\nis the only one left. One type for both, so the value a reader sees is the\nsame value the fall-through verdict consulted.\n\n[billed]: crate::domain::signals::Usage::reports_billed_work",
+        "oneOf": [
+          {
+            "description": "The candidate ran the task, whatever its terminal record then said.",
+            "type": "string",
+            "const": "done"
+          },
+          {
+            "description": "Nothing says the candidate got as far as doing work.",
+            "type": "string",
+            "const": "none"
           }
         ]
       },

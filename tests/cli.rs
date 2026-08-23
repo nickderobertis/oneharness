@@ -292,7 +292,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.8";
+    let version = "0.9";
     let printed = run(
         &[
             "run",
@@ -335,7 +335,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.8");
+    assert_eq!(value["schema_version"], "0.9");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -2304,6 +2304,214 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
         assert_eq!(served_record["harness_id"], "codex", "{tag}");
         assert!(served_record["failure_kind"].is_null(), "{tag}");
         assert_eq!(served_record["schema_version"], "1.1", "{tag}");
+    }
+}
+
+#[test]
+fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
+    // The defect this closes, measured on a real host: `claude-code:alternate`
+    // exited 2 in 64ms because its launcher shim could not resolve the binary,
+    // having called no model and spent no tokens. Nothing classified that, so the
+    // chain read it as a candidate that RAN and stopped there with four healthy
+    // identities untried — and the record it left ("nonzero, failure_kind null,
+    // empty accounting") is the same record a candidate that tried the task and
+    // lost would leave. The stderr below is that run's, verbatim.
+    //
+    // Three candidates, one contrast: a refusal a classifier recognizes, a
+    // failure it does not with nothing to show for itself, and a failure it does
+    // not from a candidate that demonstrably worked. The verdict is unchanged in
+    // all three — only what the run SAYS about the middle one is new.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",",
+        "\"text\":\"served-by-codex\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ))
+    .expect("a string always serializes");
+    // A claude-code turn that billed real tokens before its non-zero exit: the
+    // work evidence a chain must never route around, whatever the exit said.
+    let worked = serde_json::to_string(concat!(
+        "{\"type\":\"result\",\"result\":\"half an answer\",\"usage\":",
+        "{\"input_tokens\":1200,\"output_tokens\":8}}",
+    ))
+    .expect("a string always serializes");
+
+    struct Case {
+        tag: &'static str,
+        env: String,
+        /// Whether the chain should reach codex.
+        falls_through: bool,
+        /// The stopping candidate's published work reading, if it has one.
+        work: Option<&'static str>,
+        record_version: &'static str,
+    }
+    let cases = [
+        Case {
+            tag: "recognized-refusal",
+            env: concat!(
+                r#"{ MOCK_EXIT = "1", MOCK_STDERR = 'Not inside a trusted directory "#,
+                r#"and --skip-git-repo-check was not specified' }"#,
+            )
+            .to_string(),
+            falls_through: true,
+            work: None,
+            record_version: "1.6",
+        },
+        Case {
+            tag: "unclassified-no-work",
+            env: r#"{ MOCK_EXIT = "2", MOCK_STDOUT = "", MOCK_STDERR = 'No claude executable found for nodejs 26.5.0' }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+        },
+        Case {
+            tag: "unclassified-worked",
+            env: format!(r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked} }}"#),
+            falls_through: false,
+            work: Some("done"),
+            record_version: "1.7",
+        },
+    ];
+
+    for case in cases {
+        let Case {
+            tag,
+            env,
+            falls_through,
+            work,
+            record_version,
+        } = case;
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "codex"]
+            run_mode = "fallback"
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {env}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("work-evidence-{tag}"), &project, "");
+        let history = hist_dir(&format!("work-evidence-{tag}"));
+        let output = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                "--history",
+                "--history-dir",
+                &history.display().to_string(),
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        let value = json_stdout(&output);
+        let stopped = value["fallback"]["stopped_without_work"]
+            .as_bool()
+            .unwrap_or_else(|| panic!("{tag}: the fallback block must state this"));
+
+        if falls_through {
+            // Unchanged: a candidate the classifier recognizes still hands the
+            // task on, and the candidate that served it worked, so the chain
+            // stopped at nothing unexplained.
+            assert!(output.status.success(), "{tag}");
+            assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+            assert!(!stopped, "{tag}: the harness that ran did the task");
+            assert!(
+                value["results"][0]["work"].is_null(),
+                "{tag}: a classified refusal has already said why"
+            );
+        } else {
+            // Unchanged too, and deliberately: an unclassified failure still
+            // stops the chain rather than re-running a task that may genuinely
+            // have failed on the next identity's quota.
+            assert_eq!(output.status.code(), Some(1), "{tag}");
+            assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
+            assert!(
+                value["fallback"]["fell_through"]
+                    .as_array()
+                    .unwrap()
+                    .is_empty()
+                    && value["results"].as_array().unwrap().len() == 1,
+                "{tag}: the chain must stop here, leaving codex untried"
+            );
+            assert_eq!(value["results"][0]["work"], work.unwrap(), "{tag}");
+            // ...and the attribution names the difference between the two: the
+            // candidate that did nothing is called out where a reader of a failed
+            // run looks, not left to be re-derived from empty accounting.
+            assert_eq!(stopped, work == Some("none"), "{tag}");
+            // Including in the one line a supervisor quotes when it reports the
+            // run. "ran but did not succeed" is what the chain said the day it
+            // truncated to one identity, and it is only true of the candidate
+            // that actually ran the task.
+            let summary = String::from_utf8_lossy(&output.stderr).to_string();
+            if work == Some("none") {
+                assert!(
+                    summary.contains("failed with nothing to show for it")
+                        && summary.contains("tried no candidate after it"),
+                    "{tag}: the summary must name the stop: {summary}"
+                );
+            } else {
+                assert!(
+                    summary.contains("ran but did not succeed"),
+                    "{tag}: a candidate that worked is reported as one: {summary}"
+                );
+            }
+        }
+
+        let records = materialized_history(Path::new(
+            value["history_file"].as_str().expect("history file"),
+        ));
+        let stopping = &records[0];
+        assert_eq!(stopping["harness_id"], "claude-code", "{tag}");
+        match work {
+            Some(reading) => assert_eq!(stopping["work"], reading, "{tag}"),
+            None => assert!(
+                stopping.get("work").is_none(),
+                "{tag}: a classified failure carries no work reading"
+            ),
+        }
+        // The record declares the oldest reader that can understand it: a reading
+        // no v1.6 reader has moves it forward, and a record without one does not.
+        assert_eq!(stopping["schema_version"], record_version, "{tag}");
+
+        // ...and a streamed chain says the same thing. The two drivers reach the
+        // verdict through one `fallback_step`, but they assemble the block
+        // separately, so the reading a consumer acts on live is pinned here
+        // rather than inferred from the buffered one.
+        let streamed = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                "--stream",
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        let report = stream_envelopes(&streamed)
+            .last()
+            .map(|envelope| envelope["report"].clone())
+            .unwrap_or_else(|| panic!("{tag}: a streamed run ends with its report"));
+        assert_eq!(
+            report["fallback"]["stopped_without_work"], stopped,
+            "{tag}: a streamed chain must attribute the stop exactly as a buffered one does"
+        );
+        assert_eq!(
+            report["results"][0]["work"], value["results"][0]["work"],
+            "{tag}: and publish the same reading on the candidate"
+        );
     }
 }
 
@@ -5189,6 +5397,9 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     let value = json_stdout(&output);
     let result = &value["results"][0];
     assert_eq!(result["status"], "timeout");
+    // Nothing classified the timeout, so the result says what it did instead —
+    // and this one billed tokens and ran a tool before the deadline killed it.
+    assert_eq!(result["work"], "done");
     assert_eq!(result["text"], "partial answer");
     assert_eq!(result["text_source"], "json:opencode-parts");
     assert_eq!(result["usage"]["input_tokens"], 12);
@@ -5310,9 +5521,12 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.8");
+    assert_eq!(value["schema_version"], "0.9");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
+    // A cancellation classifies as nothing either, so the report carries the
+    // same reading the record does: this harness never got as far as working.
+    assert_eq!(result["work"], "none");
     assert_eq!(result["exit_code"], Value::Null);
     assert!(
         result["error"].as_str().unwrap().contains("cancelled"),
@@ -5322,7 +5536,11 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
 
     let record = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
     assert_eq!(record["status"], "cancelled");
-    assert_eq!(record["schema_version"], "1.4");
+    // A cancellation classifies as nothing, so the record also carries what the
+    // run had to show for itself — which moves it past the version that first
+    // read `cancelled` to the one that first reads `work`.
+    assert_eq!(record["work"], "none");
+    assert_eq!(record["schema_version"], "1.7");
 
     assert_native_descendant_stopped(&ticks);
     let _ = std::fs::remove_file(ticks);
@@ -8086,7 +8304,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.8");
+    assert_eq!(value["schema_version"], "0.9");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -11677,7 +11895,11 @@ fn a_silent_failure_records_partial_timing_without_inventing_failure_text() {
     // The partial measurement alone forces the version forward.
     assert!(record["started_at"].is_string());
     assert!(record.get("model_ms").is_none());
-    assert_eq!(record["schema_version"], "1.3");
+    // A failure nothing classified says what it did: nothing. That reading is
+    // newer than the partial timing beside it, so it is the version the record
+    // must declare.
+    assert_eq!(record["work"], "none");
+    assert_eq!(record["schema_version"], "1.7");
     let shown = json_stdout(&run(
         &[
             "history",
@@ -13787,7 +14009,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.6");
+    assert_eq!(envelope["line"]["schema_version"], "1.7");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"
@@ -20376,7 +20598,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.8");
+    assert_eq!(report["schema_version"], "0.9");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();

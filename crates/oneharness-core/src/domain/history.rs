@@ -23,8 +23,9 @@ use thiserror::Error;
 use uuid::{Uuid, Variant};
 
 use crate::domain::events::{ActionEvent, ToolCallStatus};
+use crate::domain::fallback::RunWork;
 use crate::domain::mode::PermissionMode;
-use crate::domain::report::{RunResult, Status};
+use crate::domain::report::{attempted_failure, unclassified_failure, RunResult, Status};
 use crate::domain::signals::{FailureKind, Usage};
 
 /// Bumped when the history record shape changes in a way a consumer must notice.
@@ -37,7 +38,12 @@ use crate::domain::signals::{FailureKind, Usage};
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.6";
+pub const SCHEMA_VERSION: &str = "1.7";
+/// v1.7 introduced `work` — what a run that failed with **nothing to classify**
+/// has to show for itself (see [`HistoryRecord::work`]). A v1.6 reader has no
+/// such field, so a record carrying it declares this version rather than letting
+/// an older reader see the same unexplained failure it always saw.
+pub const FIRST_WORK_EVIDENCE_SCHEMA_VERSION: &str = "1.7";
 /// v1.6 introduced the two precondition failure kinds — `untrusted_directory`
 /// and `input_too_large`, the refusals a harness reaches before it makes the
 /// request at all. A v1.5 reader's `failure_kind` enum has neither value, so it
@@ -68,7 +74,7 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 7] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 8] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
@@ -76,6 +82,7 @@ pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 7] = [
     FIRST_CANCELLED_SCHEMA_VERSION,
     FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION,
     FIRST_PRECONDITION_SCHEMA_VERSION,
+    FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
 ];
 
 fn version_rank(version: &str) -> Option<usize> {
@@ -242,6 +249,11 @@ pub struct HistoryRunRecord {
     pub usage: Usage,
     pub session_id: Option<String>,
     pub failure_kind: Option<FailureKind>,
+    /// Work evidence for a failure nothing classified (see
+    /// [`HistoryRecord::work`]). Omitted on the wire when absent.
+    // llmlint: ignore[invalid_states_unrepresentable] This wire field must stay flat beside `status`/`failure_kind` to read and write the published JSONL contract; `valid()` refuses a line whose combination is not one this crate writes, and the shared contract matrix holds the same rule across the Rust, Node and Python validators.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<RunWork>,
     /// Normalized failure text for a run that did not succeed (see
     /// [`HistoryRecord::error`]). Omitted on the wire when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -268,6 +280,7 @@ impl HistoryRunRecord {
                 self.status,
                 self.failure_kind,
             )
+            || !work_evidence_valid(&self.schema_version, self.work, self.status)
         {
             return false;
         }
@@ -337,6 +350,7 @@ impl HistoryRunRecord {
             usage: record.usage.clone(),
             session_id: record.session_id.clone(),
             failure_kind: record.failure_kind,
+            work: record.work,
             error: record.error.clone(),
         }
     }
@@ -376,6 +390,7 @@ impl HistoryRunRecord {
             session_id: self.session_id,
             events: (!events.is_empty()).then_some(events),
             failure_kind: self.failure_kind,
+            work: self.work,
             error: self.error,
         }
     }
@@ -711,6 +726,22 @@ pub struct HistoryRecord {
     /// Best-effort classified failure reason (see [`FailureKind`]); `null` when
     /// unclassified.
     pub failure_kind: Option<FailureKind>,
+    /// What a run that failed with **nothing to classify** has to show for
+    /// itself: [`RunWork::Done`] where the harness recorded a tool call or billed
+    /// usage, [`RunWork::None`] where nothing says it got that far. Copied from
+    /// [`RunResult::work`] — one value with one source, like every signal here —
+    /// and omitted on the wire on every other run, since a success raises the
+    /// question and a classified failure has already answered it.
+    ///
+    /// This is the field that tells apart, for a reader of the record, the two
+    /// things an unexplained failure can be: a candidate that never got started,
+    /// and one that ran the task and lost. Without it both are a `nonzero` line with a
+    /// null `failure_kind` and empty accounting, and a chain that stopped at the
+    /// first reads exactly like a chain that stopped at the second. Gated to
+    /// [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`].
+    // llmlint: ignore[invalid_states_unrepresentable] The materialized record is the flat published contract every SDK is generated from, so this cannot be folded into `status`; `from_result` derives it with the fields it qualifies, `complete()` refuses an incoherent combination on the way back in, and the contract matrix pins both directions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work: Option<RunWork>,
     /// Best-effort normalized failure text for a run that did not succeed: the
     /// harness's own diagnostic as oneharness captured it on stderr, or
     /// oneharness's own message when it generated one (a spawn failure, a
@@ -806,10 +837,17 @@ impl HistoryRecord {
             _ => None,
         });
         let error = failure_text(r.status, r.error.as_deref(), &r.stderr);
+        // Carried from the result rather than re-derived: the reading the
+        // fallback verdict consulted is the reading the record has to show.
+        let work = unclassified_failure(r.status, r.failure_kind)
+            .then_some(r.work)
+            .flatten();
         HistoryRecord {
             // The oldest reader that can understand this record: only the shape a
             // record actually carries forces its version forward.
-            schema_version: if let Some(introduced) = gated_failure_kind_version(r.failure_kind) {
+            schema_version: if work.is_some() {
+                FIRST_WORK_EVIDENCE_SCHEMA_VERSION
+            } else if let Some(introduced) = gated_failure_kind_version(r.failure_kind) {
                 introduced
             } else if r.status == Status::Cancelled {
                 FIRST_CANCELLED_SCHEMA_VERSION
@@ -863,6 +901,7 @@ impl HistoryRecord {
             session_id: r.session_id.clone(),
             events: r.events.clone(),
             failure_kind: r.failure_kind,
+            work,
             error,
         }
     }
@@ -877,6 +916,7 @@ impl HistoryRecord {
                 self.status,
                 self.failure_kind,
             )
+            || !work_evidence_valid(&self.schema_version, self.work, self.status)
         {
             return false;
         }
@@ -1100,6 +1140,7 @@ impl HistoryRecord {
                     .collect()
             }),
             failure_kind: wire.failure_kind,
+            work: wire.work,
             error: wire.error,
         }
     }
@@ -1402,6 +1443,25 @@ fn error_text_valid(
             && reported_failure(status, failure_kind))
 }
 
+/// Whether a record's work reading agrees with the rest of the record: the field
+/// arrived in [`FIRST_WORK_EVIDENCE_SCHEMA_VERSION`], so an older record carrying
+/// it was not written by any oneharness, and it answers a question only a run the
+/// **harness itself** failed can raise ([`attempted_failure`]) — a run that
+/// succeeded, and one whose status already says it never ran, each have nothing
+/// to put in it.
+///
+/// The writer is narrower: [`HistoryRecord::from_result`] records a reading only
+/// where nothing classified the failure. That stays a writer rule rather than a
+/// third condition here, because a record carrying both a kind and a reading is
+/// consistent rather than corrupt — and because a validator this bundle's
+/// generated SDKs cannot express is a rule only one of the three would enforce
+/// (see [`crate::sdk_schema`]'s `work_placement_gate`).
+fn work_evidence_valid(schema_version: &str, work: Option<RunWork>, status: Status) -> bool {
+    work.is_none()
+        || (version_at_least(schema_version, FIRST_WORK_EVIDENCE_SCHEMA_VERSION)
+            && attempted_failure(status))
+}
+
 impl<'de> Deserialize<'de> for HistoryRecord {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1453,6 +1513,8 @@ struct HistoryRecordWire {
     session_id: Option<String>,
     events: Option<Vec<LegacyActionEvent>>,
     failure_kind: Option<FailureKind>,
+    #[serde(default)]
+    work: Option<RunWork>,
     #[serde(default)]
     error: Option<FailureText>,
 }
@@ -1747,6 +1809,7 @@ mod tests {
             schema_attempts: None,
             schema_error: None,
             failure_kind: None,
+            work: None,
             failure_kind_source: None,
             stdout: "hello".to_string(),
             stderr: String::new(),
@@ -2087,6 +2150,118 @@ mod tests {
         )
     }
 
+    /// The reading a record owes an unexplained failure, and the two ways it can
+    /// be wrong: carried where something already explained the failure, or
+    /// offered to a reader whose version never had the field.
+    #[test]
+    fn an_unclassified_failure_records_what_it_had_to_show_for_itself() {
+        let with_work = |r: &RunResult| record_of(r).work;
+        // Failed, and nothing said why: the record says what it did instead.
+        let nothing_done = RunResult {
+            status: Status::Nonzero,
+            exit_code: Some(2),
+            stderr: "No claude executable found for nodejs 26.5.0".to_string(),
+            failure_kind: None,
+            ..result()
+        }
+        .with_work_evidence();
+        assert_eq!(with_work(&nothing_done), Some(RunWork::None));
+        assert_eq!(
+            record_of(&nothing_done).schema_version,
+            FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
+            "a reading no older reader has moves the record forward"
+        );
+        // The same failure from a candidate that had already done the work reads
+        // the other way — which is the whole distinction the field exists for.
+        let worked = RunResult {
+            usage: Usage {
+                input_tokens: Some(1200),
+                ..Usage::default()
+            },
+            ..nothing_done.clone()
+        }
+        .with_work_evidence();
+        assert_eq!(with_work(&worked), Some(RunWork::Done));
+        // A classified failure has already answered the question, so it carries
+        // no reading and keeps the version its own kind asks for.
+        let classified = record_of(&failed_traced_result());
+        assert_eq!(classified.work, None);
+        assert_eq!(classified.schema_version, FIRST_ERROR_SCHEMA_VERSION);
+        // And a run that worked raises no such question at all.
+        assert_eq!(with_work(&result()), None);
+    }
+
+    #[test]
+    fn a_work_reading_is_refused_where_no_reader_or_no_run_could_carry_it() {
+        let unexplained = record_of(
+            &RunResult {
+                status: Status::Nonzero,
+                exit_code: Some(2),
+                stderr: "shim failure".to_string(),
+                failure_kind: None,
+                ..result()
+            }
+            .with_work_evidence(),
+        );
+        assert_eq!(unexplained.work, Some(RunWork::None));
+        let wire = serde_json::to_value(&unexplained).unwrap();
+        assert!(serde_json::from_value::<HistoryRecord>(wire.clone()).is_ok());
+        // Offered to a reader whose enum never had the field.
+        for version in [
+            FIRST_ERROR_SCHEMA_VERSION,
+            FIRST_CANCELLED_SCHEMA_VERSION,
+            FIRST_PRECONDITION_SCHEMA_VERSION,
+        ] {
+            let mut older = wire.clone();
+            older["schema_version"] = Value::String(version.to_string());
+            assert!(
+                serde_json::from_value::<HistoryRecord>(older).is_err(),
+                "{version} predates the work reading"
+            );
+        }
+        // A record carrying both a kind and a reading is *readable* — the two say
+        // two true things — and simply never written; the writer rule is pinned
+        // above, and `sdk_schema` says why the reader stops short of it.
+        let mut classified = wire.clone();
+        classified["failure_kind"] = Value::String("auth".to_string());
+        assert!(serde_json::from_value::<HistoryRecord>(classified).is_ok());
+        // Carried on a run that did not fail at all, though, is not a question
+        // this field answers.
+        let mut clean = wire.clone();
+        clean["status"] = Value::String("ok".to_string());
+        clean["exit_code"] = Value::from(0);
+        assert!(serde_json::from_value::<HistoryRecord>(clean).is_err());
+        // Nor on the two failures the harness never reached: their status
+        // already says the candidate did not run, so a reading there would
+        // restate it as a finding.
+        for never_ran in ["skipped", "spawn-error"] {
+            let mut unreached = wire.clone();
+            unreached["status"] = Value::String(never_ran.to_string());
+            unreached["exit_code"] = Value::Null;
+            assert!(
+                serde_json::from_value::<HistoryRecord>(unreached).is_err(),
+                "{never_ran} says on its own that nothing ran"
+            );
+        }
+        // ...and such a record is written without one, so it keeps a version an
+        // older reader can still read.
+        let skipped = record_of(
+            &RunResult {
+                status: Status::Skipped,
+                available: false,
+                exit_code: None,
+                duration_ms: None,
+                stderr: String::new(),
+                error: Some("`claude` not found on PATH".to_string()),
+                failure_kind: None,
+                ..result()
+            }
+            .with_work_evidence(),
+        );
+        assert_eq!(skipped.work, None);
+        assert_eq!(skipped.schema_version, FIRST_ERROR_SCHEMA_VERSION);
+    }
+
     #[test]
     fn a_cancelled_run_records_at_the_version_that_first_understood_it() {
         // `cancelled` is a status value no v1.3 reader has, so a record carrying
@@ -2118,6 +2293,7 @@ mod tests {
         // status makes, on the other gated enum.
         let refused = record_of(&RunResult {
             failure_kind: Some(FailureKind::SessionNotFound),
+            work: None,
             failure_kind_source: Some("stderr".to_string()),
             error: Some("No conversation found with session ID: s-1".to_string()),
             ..failed_traced_result()

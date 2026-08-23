@@ -7,14 +7,15 @@
 use schemars::{schema_for, Schema};
 use serde::Serialize;
 
+use crate::domain::fallback::RunWork;
 use crate::domain::history::{
     gated_failure_kind_version, HistoryLine, HistoryRecord, HistoryStreamEnvelope,
     FIRST_CANCELLED_SCHEMA_VERSION, FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION,
-    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
-    PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
+    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
+    OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
 };
 use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
-use crate::domain::report::{RunReport, RunStreamEnvelope, Status};
+use crate::domain::report::{attempted_failure, RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
     schema_for_serialize, ConfigOptions, DetectOptions, GateOptions, HistoryClearOptions,
     HistoryListOptions, HistoryLookup, HistoryMigrateOptions, HistoryWatchOptions, InitOptions,
@@ -323,6 +324,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     "allOf".to_string(),
                     serde_json::json!([
                         error_placement_gate(),
+                        work_placement_gate(),
                         cancelled_version_gate(),
                         failure_kind_version_gate()
                     ]),
@@ -481,6 +483,69 @@ fn error_placement_gate() -> serde_json::Value {
             ]}
         ]
     })
+}
+
+/// The `work` reading is legible only to a reader at or after the version that
+/// introduced it, and belongs only to a record whose run the **harness itself**
+/// failed ([`attempted_failure`]). Both are the cross-field rules the runtime
+/// check applies ([`crate::domain::history`]'s `work_evidence_valid`), stated
+/// here so a generated SDK validator accepts exactly what the CLI's own reader
+/// does.
+///
+/// Narrower than [`error_placement_gate`] on purpose: that one admits the
+/// deferred-tool clean exit and a harness that was never spawned, and this one
+/// admits neither — the first has a classified kind and the second says in its
+/// status that nothing ran.
+///
+/// The *writer* is narrower still: it records a reading only where nothing
+/// classified the failure, since a kind that names the cause has already
+/// answered the question. That stays a writer rule rather than a fourth
+/// condition here, for one reason and not for taste: a record carrying both is
+/// consistent rather than corrupt (the kind and the reading say two true
+/// things), and a third narrowing of `failure_kind` in this bundle makes the
+/// generated TypeScript union unresolvable — so enforcing it would buy a
+/// stricter reader at the price of an SDK that cannot describe the contract at
+/// all. `domain::history`'s own tests hold the writer to it.
+fn work_placement_gate() -> serde_json::Value {
+    // Split by the runtime's own predicate, not by `run_failed`: `skipped` and
+    // `spawn_error` never carry a reading, so a validator that accepted one
+    // would be looser than the reader it describes.
+    let (attempted, _) = status_split(attempted_failure);
+    serde_json::json!({
+        "oneOf": [
+            // Nothing to read: the field is absent, or present but empty of a value.
+            {"type": "object", "properties": {"work": {"type": "null"}}},
+            // Read: only at the version that has it, and only on a failure the
+            // harness itself reached.
+            {"allOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "schema_version": versions_schema(
+                            &versions_from(FIRST_WORK_EVIDENCE_SCHEMA_VERSION)
+                        ),
+                        "work": {"enum": work_values(), "type": "string"},
+                        "status": attempted
+                    },
+                    "required": ["work"]
+                }
+            ]}
+        ]
+    })
+}
+
+/// Every [`RunWork`] reading as its serialized wire token, read out of the
+/// enum's own generated schema so no list here can drift from the values a
+/// record can carry — the [`status_values`] rule, applied once more.
+fn work_values() -> Vec<serde_json::Value> {
+    // llmlint: ignore[no_panics_on_recoverable_errors] Schema generation is a build-time codegen boundary like every sibling transformation in this module; a `RunWork` that no longer renders as a union of serialized consts is a generator invariant a caller cannot recover from, and emitting an empty list would ship an SDK that silently accepts anything.
+    let rendered = serde_json::to_value(schema_for!(RunWork)).expect("RunWork schema serializes");
+    rendered["oneOf"]
+        .as_array()
+        .expect("RunWork renders as a union of serialized consts")
+        .iter()
+        .map(|variant| variant["const"].clone())
+        .collect()
 }
 
 /// The `cancelled` status is legible only to a reader at or after the version
@@ -853,6 +918,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     "allOf".to_string(),
                     serde_json::json!([
                         error_placement_gate(),
+                        work_placement_gate(),
                         cancelled_version_gate(),
                         failure_kind_version_gate()
                     ]),

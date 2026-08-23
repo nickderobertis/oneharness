@@ -1530,6 +1530,18 @@ fn failure_summary(report: &RunReport, require_available: bool) -> String {
                 fb.fell_through.len()
             )
         }
+        // Fallback where a candidate stopped the chain having shown nothing for
+        // itself. Said in the summary and not only in the report, because this
+        // sentence is what a supervisor quotes when it reports the run: "ran but
+        // did not succeed" is the reading that made a five-identity chain look
+        // like a candidate's own task failure and hid the untried rest.
+        Some(fb) if fb.stopped_without_work => format!(
+            "oneharness: fallback harness `{}` failed with nothing to show for it — no tool \
+             call, no billed usage, and no cause it could classify — so the chain stopped \
+             there and tried no candidate after it (see results[].work and \
+             results[].error)",
+            fb.ran.as_deref().unwrap_or_default()
+        ),
         // Fallback where a harness ran but its task failed.
         Some(fb) => format!(
             "oneharness: fallback harness `{}` ran but did not succeed (see results[].status \
@@ -2319,8 +2331,11 @@ fn drive_plan_sequentially(
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<StreamedHistory> = Vec::new();
-    let mut fell_through: Vec<FallThrough> = Vec::new();
-    let mut ran: Option<String> = None;
+    let mut fallback_report = FallbackReport {
+        ran: None,
+        fell_through: Vec::new(),
+        stopped_without_work: false,
+    };
     for (index, entry) in plan.into_iter().enumerate() {
         let run_id = history_writer.map(HistoryWriter::begin_run);
         let streamed = match entry {
@@ -2366,7 +2381,7 @@ fn drive_plan_sequentially(
             result,
             persisted_event_indexes,
         } = streamed;
-        let keep_going = fallback_step(&result, multi_model, &mut fell_through, &mut ran);
+        let keep_going = fallback_step(&result, multi_model, &mut fallback_report);
         results.push(result);
         history.push(StreamedHistory {
             run_id,
@@ -2378,7 +2393,7 @@ fn drive_plan_sequentially(
     }
     StreamedPlan {
         results,
-        fallback: fallback_mode.then_some(FallbackReport { ran, fell_through }),
+        fallback: fallback_mode.then_some(fallback_report),
         history,
     }
 }
@@ -3389,8 +3404,11 @@ fn run_fallback(
     spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport) {
     let mut results: Vec<RunResult> = Vec::new();
-    let mut fell_through: Vec<FallThrough> = Vec::new();
-    let mut ran: Option<String> = None;
+    let mut fallback_report = FallbackReport {
+        ran: None,
+        fell_through: Vec::new(),
+        stopped_without_work: false,
+    };
     for entry in plan {
         let result = match entry {
             Plan::Ready(result) => *result,
@@ -3423,13 +3441,13 @@ fn run_fallback(
                 )
             }
         };
-        let keep_going = fallback_step(&result, multi_model, &mut fell_through, &mut ran);
+        let keep_going = fallback_step(&result, multi_model, &mut fallback_report);
         results.push(result);
         if !keep_going {
             break;
         }
     }
-    (results, FallbackReport { ran, fell_through })
+    (results, fallback_report)
 }
 
 /// Apply the fallback verdict to one finished candidate: record why it fell
@@ -3447,12 +3465,7 @@ fn run_fallback(
 /// Both drivers call this — the buffered [`run_fallback`] and the streaming
 /// [`drive_plan_sequentially`] — on the same normalized [`RunResult`], so a streamed chain
 /// and a buffered chain cannot select different candidates.
-fn fallback_step(
-    result: &RunResult,
-    multi_model: bool,
-    fell_through: &mut Vec<FallThrough>,
-    ran: &mut Option<String>,
-) -> bool {
+fn fallback_step(result: &RunResult, multi_model: bool, report: &mut FallbackReport) -> bool {
     match fallback::startup_failure_reason(
         result.status,
         result.failure_kind,
@@ -3460,7 +3473,7 @@ fn fallback_step(
         fallback::RunWork::from_result(result),
     ) {
         Some(reason) => {
-            fell_through.push(FallThrough {
+            report.fell_through.push(FallThrough {
                 harness: result.harness.clone(),
                 reason,
                 detail: result.error.clone(),
@@ -3468,7 +3481,13 @@ fn fallback_step(
             true
         }
         None => {
-            *ran = Some(result.harness.clone());
+            report.ran = Some(result.harness.clone());
+            // The candidate that stops the chain is the one a reader is left
+            // looking at, so it is here that "it failed and nothing says why,
+            // and nothing says it did anything either" has to be said. Read off
+            // the result's own published reading rather than re-derived, so the
+            // attribution and the verdict above cannot disagree.
+            report.stopped_without_work = result.work == Some(fallback::RunWork::None);
             false
         }
     }
@@ -3550,11 +3569,13 @@ fn planned_result(
         schema_attempts: None,
         schema_error: None,
         failure_kind: None,
+        work: None,
         failure_kind_source: None,
         stdout: String::new(),
         stderr: String::new(),
         error: None,
     }
+    .with_work_evidence()
 }
 
 fn skipped_result(
@@ -3591,6 +3612,7 @@ fn skipped_result(
         schema_attempts: None,
         schema_error: None,
         failure_kind: None,
+        work: None,
         failure_kind_source: None,
         stdout: String::new(),
         stderr: String::new(),
@@ -3599,6 +3621,7 @@ fn skipped_result(
             spec.install_hint
         )),
     }
+    .with_work_evidence()
 }
 
 /// A candidate whose variant selects an identity with no home directory on disk.
@@ -3636,6 +3659,7 @@ fn unprovisioned_result(
         )),
         ..skipped_result(spec, bin, command, output_format, prompt, model)
     }
+    .with_work_evidence()
 }
 
 fn failure_dialect(spec: &HarnessSpec) -> signals::FailureDialect {
@@ -3882,11 +3906,13 @@ fn executed_result(
         schema_attempts,
         schema_error,
         failure_kind,
+        work: None,
         failure_kind_source,
         stdout: capture.stdout.clone(),
         stderr: capture.stderr.clone(),
         error,
     }
+    .with_work_evidence()
 }
 
 /// The `error` for a refusal the provider stated in machine-readable terms:
@@ -4507,6 +4533,7 @@ mod tests {
             schema_attempts: None,
             schema_error: None,
             failure_kind: None,
+            work: None,
             failure_kind_source: None,
             stdout: String::new(),
             stderr: String::new(),

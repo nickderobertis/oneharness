@@ -45,6 +45,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
       "events": null,
       "events_source": null,
       "failure_kind": null,
+      "work": null,
       "failure_kind_source": null,
       "stdout": "{\"type\":\"result\",\"result\":\"pong\"…}",
       "stderr": "",
@@ -990,6 +991,18 @@ invalidating earlier ones):
   `claude-code` require a deployment that executes tools inline** (a standalone
   environment or CI); a deferring deployment is unsupported for them, and there is
   no consumer-side flag to force inline execution.
+- `work` — what a run that failed with **nothing classified** has to show for
+  itself: `"done"` where the harness recorded a tool call or billed usage,
+  `"none"` where nothing says it got that far. `null` on every other run (a
+  success raises no such question, and a classified failure has already answered
+  it). It is the reading the fallback verdict itself consults, published rather
+  than left to be re-derived: without it a candidate that never got started — a
+  launcher shim that could not resolve the binary, say, exiting in 60ms — looks
+  exactly like one that tried the task and failed it, and a chain that stopped at
+  the first reads like a chain that stopped at the second. Publishing it changes
+  no verdict: a candidate reading `"none"` still stops a chain (see
+  [fallback mode](#fallback-mode-first-that-runs-wins)), and one reading `"done"`
+  still never falls through it.
 
 Coverage is keyed off each harness's documented output shape — Claude Code's
 `result` JSON, OpenCode's JSONL (`text` parts for the answer, `step_finish` for
@@ -1582,14 +1595,22 @@ through: absent accounting is not evidence of work.
 > exists for — are unaffected.
 
 The report gains a `fallback` block, `{ "ran", "fell_through": [{ "harness",
-"reason", "detail" }] }`: `ran` is the harness that executed (or `null` when every
+"reason", "detail" }], "stopped_without_work" }`: `ran` is the harness that
+executed (or `null` when every
 candidate failed to start), and `results` holds only the harnesses **attempted**
 — the fallen-through ones in priority order, then the one that ran. Priority
 order is the `--harness` / config `harnesses` order (registry order under
 `--all`). Each fallen-through entry's `detail` is that candidate's own account of
 why it could not run — the provider's machine-readable refusal verbatim when it
 named one, else the result's `error` text, and `null` when it said nothing — so a
-supervisor reading only this block never has to re-derive the cause from stdout. Under `--print-command` nothing executes, so the block is `null` and
+supervisor reading only this block never has to re-derive the cause from stdout.
+`stopped_without_work` is the other half of that: `true` when the candidate the
+chain stopped at failed with nothing classified *and* nothing to show it did any
+of the task (its result's [`work`](#the-result-envelope-vs-the-normalized-signals) read `"none"`). The chain still
+stops there — re-running a task that may genuinely have failed for free would
+burn the next identity's quota on the same failure — but a reader is told which
+kind of stop it was, instead of seeing untried candidates and no reason. Under
+`--print-command` nothing executes, so the block is `null` and
 every candidate's command is printed in priority order.
 
 **The command must be valid for the whole set.** Every listed harness is
@@ -1846,7 +1867,11 @@ a record's `schema_version` names the oldest reader that can understand it, so a
 record carrying either declares `1.3` while a provider-measured success still declares `1.1`.
 The same rule versions the enums a reader has to know: a `cancelled` run declares
 **v1.4**, one classified `session_not_found` declares **v1.5**, and one classified
-`untrusted_directory` or `input_too_large` declares **v1.6**.
+`untrusted_directory` or `input_too_large` declares **v1.6**. A record whose run
+failed with **nothing classified** also carries `work` — the same `"done"` /
+`"none"` reading the report publishes, and the only thing that tells a candidate
+which never got started apart from one that ran the task and lost — and declares
+**v1.7** for it.
 
 It is **off by default** and opt-in three ways, layered like every other setting
 (CLI > env > project file > user file):

@@ -71,8 +71,15 @@ impl RunMode {
 ///   `signals::record_reports_work` classifies a raw harness record with, so the
 ///   two readings of "billed" are one contract with one implementation.
 ///
+/// It is also a **published reading**, not only an internal one: a run that
+/// failed with nothing to classify carries it as [`RunResult::work`] and in its
+/// history record, because there the question "did this candidate do anything?"
+/// is the only one left. One type for both, so the value a reader sees is the
+/// same value the fall-through verdict consulted.
+///
 /// [billed]: crate::domain::signals::Usage::reports_billed_work
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
 pub enum RunWork {
     /// The candidate ran the task, whatever its terminal record then said.
     Done,
@@ -81,6 +88,18 @@ pub enum RunWork {
 }
 
 impl RunWork {
+    /// Every reading, for the schema/test surfaces that enumerate them.
+    pub const ALL: [RunWork; 2] = [RunWork::Done, RunWork::None];
+
+    /// The JSON token this reading serializes to.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RunWork::Done => "done",
+            RunWork::None => "none",
+        }
+    }
+
     /// Read the evidence off a finished result. A `spawn_error` nulls every
     /// signal by contract, so its evidence is always [`RunWork::None`].
     pub fn from_result(result: &RunResult) -> Self {
@@ -285,6 +304,23 @@ mod tests {
             serde_json::to_string(&RunMode::Parallel).unwrap(),
             "\"parallel\""
         );
+    }
+
+    #[test]
+    fn work_reading_token_round_trips_for_every_variant() {
+        // The reading is on the wire now — in a result, in a history record, and
+        // in the SDK schemas generated from both — so its tokens are a contract,
+        // pinned the way [`RunMode`]'s are.
+        for reading in RunWork::ALL {
+            let token = format!("\"{}\"", reading.as_str());
+            assert_eq!(serde_json::to_string(&reading).unwrap(), token);
+            assert_eq!(
+                serde_json::from_str::<RunWork>(&token).unwrap(),
+                reading,
+                "{token} must read back as the value that wrote it"
+            );
+        }
+        assert!(serde_json::from_str::<RunWork>("\"partial\"").is_err());
     }
 
     #[test]
@@ -662,6 +698,7 @@ mod tests {
             schema_attempts: None,
             schema_error: None,
             failure_kind: Some(FailureKind::Quota),
+            work: None,
             failure_kind_source: Some("stdout".to_string()),
             stdout: String::new(),
             stderr: String::new(),

@@ -350,6 +350,7 @@ describe("OneHarness", () => {
 					},
 				],
 				ran: null,
+				stopped_without_work: false,
 			}),
 		).toEqual({
 			fell_through: [
@@ -361,6 +362,7 @@ describe("OneHarness", () => {
 				},
 			],
 			ran: null,
+			stopped_without_work: false,
 		});
 		expect(
 			SessionReportSchema.parse({

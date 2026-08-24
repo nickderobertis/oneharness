@@ -1344,10 +1344,14 @@ _oh_control_evidence() {
 # be refused before it spawns. Reporting `continue` alone proves nothing — that
 # is exactly what a fresh conversation looked like. Only the real CLI can alarm
 # this: the resume request is its own protocol, which a fixture cannot rename.
+#
+# All it asks of turn one is the HANDLE it creates, not a clean turn: see the
+# note at the create below for why a phase about continuing must not import
+# whether a controlled turn ends.
 #   $1 harness id, $2 mechanism (for the refusal's own wording)
 oh_control_session_enforce() {
     local id="$1" mechanism="$2"
-    local bin sandbox store name marker status text phase
+    local bin sandbox store name marker status text phase first_status
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -1363,18 +1367,28 @@ oh_control_session_enforce() {
     _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
         "Remember this exact word for the rest of our conversation: $marker. Reply with only the word OK." \
         "$sandbox/first.json" "$sandbox/first.err" || status=$?
-    if [ "$status" -ne 0 ]; then
-        if _oh_note_provider_refusal "$id" "$sandbox/first.json"; then
-            rm -rf "$sandbox"
-            return "$_OH_NOT_RUN"
-        fi
-        note "  first turn stderr: $(head -c 500 "$sandbox/first.err" 2>/dev/null || true)"
+    if [ "$status" -ne 0 ] && _oh_note_provider_refusal "$id" "$sandbox/first.json"; then
         rm -rf "$sandbox"
-        fail "$id: the first controlled turn on a fresh handle did not run cleanly, so nothing follows about continuing it"
+        return "$_OH_NOT_RUN"
     fi
-    if ! jq -e '.session.phase == "create"' "$sandbox/first.json" >/dev/null 2>&1; then
+    first_status="$status"
+    # What turn two is judged against is the stored CONVERSATION, so that — not a
+    # clean exit — is what turn one has to leave behind. Whether a controlled
+    # turn ever ENDS is a different property, owned by `oh_control_mode_enforce`
+    # and already a declared gap on opencode (its uninterrupted controlled turn
+    # runs out its timeout and exits non-zero), so demanding exit 0 here would
+    # retire the continuation check on a harness for a reason that has nothing to
+    # do with continuing. A turn one that established nothing still fails, below,
+    # whatever its exit code was — and on a mechanism that CAN continue, a turn
+    # one the model never saw fails again at the marker.
+    if [ "$status" -ne 0 ]; then
+        note "  first turn exited $status (status=$(jq -r '[.results[].status] | join(",")' "$sandbox/first.json" 2>/dev/null || echo '<no report>')); the handle is what turn two needs, so read on"
+        note "  first turn stderr: $(head -c 500 "$sandbox/first.err" 2>/dev/null || true)"
+    fi
+    if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
+        "$sandbox/first.json" >/dev/null 2>&1; then
         rm -rf "$sandbox"
-        fail "$id: a fresh handle did not report phase=create ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
+        fail "$id: the first controlled turn left no conversation on a fresh handle — a create that stores no token is a handle turn two cannot be judged against, in either direction ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
     fi
 
     note "  control-session: turn two on the SAME handle — continue it, or refuse loudly"
@@ -1416,6 +1430,7 @@ oh_control_session_enforce() {
         ;;
     *)
         note "  second turn text: $(printf '%s' "$text" | head -c 500)"
+        [ "$first_status" -eq 0 ] || note "  (turn one exited $first_status, so read its evidence above before this one: a conversation the model never saw carries nothing either)"
         rm -rf "$sandbox"
         fail "$id: the second turn reported phase=continue but the conversation did not carry the word turn one established — the handle resumed nothing, which is exactly what a fresh thread reported as a continue looks like"
         ;;

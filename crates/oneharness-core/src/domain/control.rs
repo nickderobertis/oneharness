@@ -1931,15 +1931,8 @@ mod tests {
         }
     }
 
-    /// Which mechanisms can continue a named conversation, over the whole set.
-    ///
-    /// The grid, not a spot check: `--session` is accepted under `--control` for
-    /// every control-capable harness, so a mechanism that silently could not
-    /// continue one opened a new conversation every turn while the store, the
-    /// report and the flag all read as healthy. Adding a `ControlShape` means
-    /// adding its cell here and sourcing its resume request (or declaring it has
-    /// none) from the CLI's own protocol.
-    /// `ControlShape::ALL` against a list it does not write.
+    /// The drift gate on [`ControlShape::ALL`]: a hand-written list, checked
+    /// against one nothing in this module writes.
     ///
     /// Every grid below iterates `ALL`, so a variant missing from it would be
     /// missing from all of them at once — tautologically green. schemars derives
@@ -1966,12 +1959,21 @@ mod tests {
         );
     }
 
+    /// Which mechanisms can continue a named conversation, over the whole set.
+    ///
+    /// The grid, not a spot check: `--session` is accepted under `--control` for
+    /// every control-capable harness, so a mechanism that silently could not
+    /// continue one opened a new conversation every turn while the store, the
+    /// report and the flag all read as healthy. Adding a `ControlShape` means
+    /// adding its cell here and sourcing its resume request (or declaring it has
+    /// none) from the CLI's own protocol.
     #[test]
     fn every_mechanism_says_whether_it_can_continue_a_session() {
         assert_eq!(
             ControlShape::CodexAppServer.resume_request(),
             Some("thread/resume"),
-            "codex's ClientRequest declares thread/resume, and its response              carries the same `thread` field thread/start does"
+            "codex's ClientRequest declares thread/resume, and its response carries \
+             the same `thread` field thread/start does"
         );
         for shape in [
             ControlShape::ClaudeControlRequest,
@@ -1993,7 +1995,8 @@ mod tests {
         ] {
             assert!(
                 !shape.carries_session(),
-                "{shape:?} drives its own turn with no resume request, so a continue over it                  must be refused rather than silently started over"
+                "{shape:?} drives its own turn with no resume request, so a continue \
+                 over it must be refused rather than silently started over"
             );
         }
         // Nothing outside the two answers is possible: a mechanism carries a

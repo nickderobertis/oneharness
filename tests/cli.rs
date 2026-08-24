@@ -22013,9 +22013,10 @@ fn control_with_a_schema_is_a_usage_error() {
     );
 }
 
-/// Every row of the README's control support matrix: the harness id and the
-/// `control` cell (a mechanism id, or the em dash meaning "none").
-fn readme_control_matrix() -> Vec<(String, String)> {
+/// Every row of the README's control support matrix: the harness id, the
+/// `control` cell (a mechanism id, or the em dash meaning "none"), and the
+/// `Continues a --session?` cell.
+fn readme_control_matrix() -> Vec<(String, String, String)> {
     let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
         .expect("README.md is readable");
     let table = readme
@@ -22032,9 +22033,19 @@ fn readme_control_matrix() -> Vec<(String, String)> {
             (
                 cells[0].to_lowercase().replace(' ', "-"),
                 cells[1].trim_matches('`').to_string(),
+                cells[3].to_string(),
             )
         })
         .collect()
+}
+
+/// The harness ids the README names, mapped to registry ids.
+fn readme_harness_id(name: &str) -> String {
+    match name {
+        "claude-code" | "opencode" | "codex" | "crush" | "goose" | "copilot" | "cursor"
+        | "qwen" => name.to_string(),
+        other => panic!("unknown harness `{other}` in the README control matrix"),
+    }
 }
 
 #[test]
@@ -22056,27 +22067,99 @@ fn the_readme_control_matrix_matches_the_registry() {
         .collect();
     declared.sort();
 
-    let mut documented = readme_control_matrix();
     // The matrix names harnesses by display-ish name; map them to registry ids.
-    for row in &mut documented {
-        row.0 = match row.0.as_str() {
-            "claude-code" => "claude-code",
-            "opencode" => "opencode",
-            "codex" => "codex",
-            "crush" => "crush",
-            "goose" => "goose",
-            "copilot" => "copilot",
-            "cursor" => "cursor",
-            "qwen" => "qwen",
-            other => panic!("unknown harness `{other}` in the README control matrix"),
-        }
-        .to_string();
-    }
+    let mut documented: Vec<(String, String)> = readme_control_matrix()
+        .into_iter()
+        .map(|(harness, mechanism, _)| (readme_harness_id(&harness), mechanism))
+        .collect();
     documented.sort();
 
     assert_eq!(
         documented, declared,
         "the README control matrix has drifted from the registry (`oneharness list`)"
+    );
+}
+
+/// The matrix's `Continues a --session?` column, and the prose that repeats it,
+/// reconciled against [`ControlShape::carries_session`].
+///
+/// A reader decides from this column whether a long watch can thread one handle
+/// through `--control`, and the answer is not the harness's to give — it is the
+/// mechanism's. Without this gate the column is a second hand-maintained copy of
+/// `carries_session`, and a mechanism that gained (or lost) a resume request
+/// would leave the README promising continuity the run now refuses, which is the
+/// same silence this whole feature exists to end.
+#[test]
+fn the_readme_session_continuation_column_matches_the_mechanisms() {
+    use oneharness_core::domain::control::ControlShape;
+
+    for (harness, mechanism, continues) in readme_control_matrix() {
+        let harness = readme_harness_id(&harness);
+        let Some(shape) = ControlShape::from_wire(&mechanism) else {
+            assert_eq!(
+                mechanism, "—",
+                "README row `{harness}` names a mechanism the registry does not declare"
+            );
+            assert_eq!(
+                continues, "n/a",
+                "`{harness}` declares no control mechanism, so its continuation cell answers nothing"
+            );
+            continue;
+        };
+        // `✓` and `—` are the column's two answers; the rest of the cell says
+        // HOW, which is prose the reader needs and no type can render.
+        let documented = continues.starts_with('✓');
+        assert!(
+            documented || continues.starts_with('—'),
+            "`{harness}`'s continuation cell must begin with `✓` or `—`, not `{continues}`"
+        );
+        assert_eq!(
+            documented,
+            shape.carries_session(),
+            "the README says `{harness}` ({mechanism}) continues a --session = {documented}, \
+             but ControlShape::carries_session says {}",
+            shape.carries_session()
+        );
+    }
+
+    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
+        .expect("README.md is readable");
+
+    // The prose spells the refusing set out twice (the `--session` flag entry
+    // and the session-handle section), so both are rendered from the same list.
+    let refusing: Vec<String> = ControlShape::ALL
+        .iter()
+        .filter(|shape| !shape.carries_session())
+        .map(|shape| format!("`{}`", shape.as_str()))
+        .collect();
+    let refusing = refusing.join(", ");
+    assert_eq!(
+        readme.matches(&format!("({refusing})")).count(),
+        2,
+        "both places the README names the mechanisms that refuse a continue must list exactly \
+         ({refusing})"
+    );
+
+    // ...and the one driven mechanism that DOES continue is named with the
+    // request it continues by, so a second one cannot be added in silence.
+    let resuming: Vec<(&str, &str)> = ControlShape::ALL
+        .iter()
+        .filter(|shape| shape.drives_turn())
+        .filter_map(|shape| {
+            shape
+                .resume_request()
+                .map(|request| (shape.as_str(), request))
+        })
+        .collect();
+    assert_eq!(
+        resuming.len(),
+        1,
+        "the README says ONE driven mechanism resumes; the registry now declares {resuming:?}"
+    );
+    let (mechanism, request) = resuming[0];
+    assert!(
+        readme.contains(&format!("`{mechanism}`'s `{request}`")),
+        "the README must name the resuming mechanism's own request (`{mechanism}`'s `{request}`)"
     );
 }
 

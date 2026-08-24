@@ -393,7 +393,7 @@ Useful `run` flags:
   with `--resume`/`--fork`/`--all` and with a batch. Under `--control` the flag
   also **names the control channel**, and whether it still continues a
   conversation is the mechanism's question: a driven turn builds no argv, so one
-  without a resume request (`acp-cancel`, `opencode-http`, `crush-http`) refuses
+  without a resume request (`opencode-http`, `acp-cancel`, `crush-http`) refuses
   a continue rather than starting over in silence. See
   [Session handle](#session-handle).
 - `--session-dir <dir>` — directory the `--session` store lives in (default:
@@ -1142,11 +1142,11 @@ mechanism that *drives the turn* over its own protocol
 ([Turn control](#turn-control-interrupt-a-running-turn)) negotiates the prompt,
 model, working directory and approvals on the wire and builds no argv at all, so
 the harness's `--resume` mapping is never reached and the only way to continue
-one conversation is the protocol's own resume request. Exactly one mechanism has
+one conversation is the protocol's own resume request. One driven mechanism has
 one — `codex-app-server`'s `thread/resume` — and `claude-control-request` needs
 none, because it rides the harness's ordinary `-p` run whose `--resume` argv
-carries the handle exactly as it does without `--control`. On the other three
-(`acp-cancel`, `opencode-http`, `crush-http`) a **create** still runs — a new
+carries the handle exactly as it does without `--control`. On the mechanisms
+without one (`opencode-http`, `acp-cancel`, `crush-http`) a **create** still runs — a new
 conversation is what was asked for — and says on stderr that this handle will not
 continue; the next `--control --session <name>` turn on it is then a **loud usage
 error** naming the mechanism, never a silent fresh start. Note the sharp edge

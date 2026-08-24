@@ -379,7 +379,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   the protocol's own `resume_request` is the only route in. Codex has one
   (`thread/resume`, whose response carries the same `thread` field
   `thread/start` does); claude needs none (its frame rides the ordinary `-p`
-  run). Over the other three a *continue* is a loud usage error and a *create*
+  run). Over a mechanism with neither a *continue* is a loud usage error and a *create*
   warns that this handle will not continue — never a fresh conversation reported
   as a continuation, which the store cannot tell apart. The token is scoped to
   the session ANCHOR on this route exactly as on the argv one; a chain candidate

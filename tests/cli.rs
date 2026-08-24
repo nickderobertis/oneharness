@@ -22730,6 +22730,10 @@ fn a_controlled_codex_session_continues_one_conversation_across_turns() {
         !reopened.contains("thread/start"),
         "the second turn must not open a new conversation:\n{reopened}"
     );
+    assert!(
+        !reopened.contains("RESUME_UNADDRESSED"),
+        "the app-server refused the resume's coordinates:\n{reopened}"
+    );
 
     // ...and the store still identifies that same conversation afterwards.
     assert_eq!(second["session"]["phase"], "continue");

@@ -1013,12 +1013,24 @@ fn run_codex_app_server(log_path: &str) -> ! {
             // the report — a fixture that minted a new id would hide exactly the
             // bug this exists to catch.
             Some("thread/resume") => {
+                // `threadId` is the one REQUIRED field of `ThreadResumeParams`,
+                // so a request without a readable one is refused rather than
+                // answered with an empty conversation — which would let a client
+                // that named no thread pass for one that resumed the right one.
                 let requested = message
                     .get("params")
                     .and_then(|params| params.get("threadId"))
                     .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
+                    .filter(|thread| !thread.is_empty());
+                let Some(requested) = requested else {
+                    append("RESUME_UNADDRESSED");
+                    send(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "error": {"code": -32602, "message": "thread/resume requires a threadId"},
+                    }));
+                    continue;
+                };
                 send(&json!({
                     "jsonrpc": "2.0",
                     "id": id,

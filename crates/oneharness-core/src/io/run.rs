@@ -37,7 +37,7 @@ pub const APPROVAL_WAIT_TIMEOUT_SECS: u64 = 120;
 
 use crate::domain::batch::{self, BatchStrategy};
 use crate::domain::control::{self, ControlReport, ControlShape, DialAddress};
-use crate::domain::dialogue::{Dialogue, DialogueConfig};
+use crate::domain::dialogue::{Dialogue, DialogueConfig, DialogueResume};
 use crate::domain::events::ActionEvent;
 use crate::domain::fallback::{self, RunMode};
 use crate::domain::harness::{self, BuildCtx, HarnessIdentity, HarnessSpec, PromptDelivery};
@@ -2347,15 +2347,14 @@ impl ControlledRun<'_> {
                 // Only the anchor's own turn continues the stored conversation:
                 // every other candidate opens a fresh one, exactly as the argv
                 // path's `session_anchor` filter leaves it holding no `--resume`.
-                // The mechanism is checked too, so a token can never be dropped
-                // in silence by a protocol with no resume request (the command
-                // layer refuses that pairing, and this keeps it true here).
+                // `DialogueResume` then answers for the mechanism — a shape with
+                // no resume request has no continuation to build, which is the
+                // pairing the command layer already refused before spawning.
                 resume: self
                     .resume
                     .as_ref()
                     .filter(|resume| resume.anchor.as_str() == harness_id)
-                    .filter(|_| shape.resume_request().is_some())
-                    .map(|resume| resume.token.clone()),
+                    .and_then(|resume| DialogueResume::new(shape, resume.token.clone())),
                 // The harness's own posture for this mode, not the spectrum's:
                 // goose and copilot share one ACP shape and do not share a
                 // mapping, and a driven turn must answer with what the same mode

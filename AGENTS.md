@@ -379,12 +379,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   the protocol's own `resume_request` is the only route in. Codex has one
   (`thread/resume`, whose response carries the same `thread` field
   `thread/start` does); claude needs none (its frame rides the ordinary `-p`
-  run). The other three drove every turn onto a NEW conversation and then
-  overwrote the stored token with its id — accepted flag, healthy store, normal
-  report — so a *continue* over them is now a loud usage error and a *create*
-  warns that it will not continue. The token is scoped to the session ANCHOR on
-  this route exactly as on the argv one; a chain candidate that is not the
-  anchor opens fresh. HTTP control submits turns
+  run). Over the other three a *continue* is a loud usage error and a *create*
+  warns that this handle will not continue — never a fresh conversation reported
+  as a continuation, which the store cannot tell apart. The token is scoped to
+  the session ANCHOR on this route exactly as on the argv one; a chain candidate
+  that is not the anchor opens fresh. HTTP control submits turns
   through the pooled server, not the harness CLI: permission requests must be
   answered; opencode is terminal only on idle after admission; and cwd — plus
   opencode's MODEL, which its session-create route takes as a required

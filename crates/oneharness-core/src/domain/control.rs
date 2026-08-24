@@ -164,6 +164,12 @@ pub enum ControlShape {
 impl ControlShape {
     /// Every declared mechanism, so a grid over the set cannot quietly omit one
     /// a later release adds.
+    ///
+    /// Hand-written, and therefore drift-gated against the enum's OWN generated
+    /// schema (`every_declared_mechanism_appears_in_all`) — schemars derives
+    /// that variant list from the enum rather than from this array, so a variant
+    /// added without being listed here fails a test instead of dropping out of
+    /// every grid that iterates it.
     pub const ALL: [ControlShape; 5] = [
         ControlShape::ClaudeControlRequest,
         ControlShape::CodexAppServer,
@@ -1933,6 +1939,33 @@ mod tests {
     /// report and the flag all read as healthy. Adding a `ControlShape` means
     /// adding its cell here and sourcing its resume request (or declaring it has
     /// none) from the CLI's own protocol.
+    /// `ControlShape::ALL` against a list it does not write.
+    ///
+    /// Every grid below iterates `ALL`, so a variant missing from it would be
+    /// missing from all of them at once — tautologically green. schemars derives
+    /// the enum's variant list from the enum itself, which is the independent
+    /// source that check needs.
+    #[test]
+    fn every_declared_mechanism_appears_in_all() {
+        let schema = crate::domain::sdk::schema_for_serialize::<ControlShape>();
+        let declared: Vec<&str> = schema
+            .get("oneOf")
+            .and_then(serde_json::Value::as_array)
+            .expect("the documented enum generates one schema per variant")
+            .iter()
+            .map(|variant| {
+                variant["const"]
+                    .as_str()
+                    .expect("each variant is a string constant")
+            })
+            .collect();
+        let listed: Vec<&str> = ControlShape::ALL.iter().map(|s| s.as_str()).collect();
+        assert_eq!(
+            listed, declared,
+            "ControlShape::ALL must list every declared mechanism, in the enum's own order"
+        );
+    }
+
     #[test]
     fn every_mechanism_says_whether_it_can_continue_a_session() {
         assert_eq!(

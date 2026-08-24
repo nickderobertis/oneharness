@@ -1338,20 +1338,12 @@ _oh_control_evidence() {
 # A named handle under `--control` must either CONTINUE one conversation or
 # refuse to — never quietly open a new one.
 #
-# The drift alarm for the SESSION half of turn control, and it is capability-free
-# on purpose: it asserts the invariant rather than a per-harness expectation, so
-# a harness whose mechanism gains (or loses) a resume request is exercised here
-# without editing this script. Two turns on one handle, and exactly two outcomes
-# are correct — the second turn continues the first (`phase == "continue"`, and
-# the conversation still carries what turn one was told), or it is refused as a
-# loud usage error naming the mechanism. A second turn that "succeeds" having
-# started over is the failure this exists to catch: it is what codex's
-# app-server did for every release before this one, with an accepted flag, a
-# healthy store, a normal report and nothing above able to see it.
-#
-# A mock cannot stand in for this. The resume request is the real CLI's own
-# protocol, and a fixture that answers whatever it is sent would keep passing
-# through a rename on the other side.
+# Capability-free on purpose, so a harness whose mechanism gains or loses a
+# resume request is exercised without editing this script: the second turn must
+# either report `phase == "continue"` AND recall what turn one established, or
+# be refused before it spawns. Reporting `continue` alone proves nothing — that
+# is exactly what a fresh conversation looked like. Only the real CLI can alarm
+# this: the resume request is its own protocol, which a fixture cannot rename.
 #   $1 harness id, $2 mechanism (for the refusal's own wording)
 oh_control_session_enforce() {
     local id="$1" mechanism="$2"

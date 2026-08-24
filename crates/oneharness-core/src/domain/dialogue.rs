@@ -45,16 +45,12 @@ pub struct DialogueConfig {
     /// client ANSWERS a permission request with is `posture` below, which is the
     /// harness's own reading of this mode rather than the spectrum's.
     pub mode: PermissionMode,
-    /// The harness's native token for the conversation this turn continues, or
-    /// `None` to open a fresh one.
+    /// The conversation this turn continues, or `None` to open a fresh one.
     ///
     /// A driven turn negotiates everything on the wire, so this is the *only*
     /// route a `--session` handle has into it: without it the conversation is
-    /// re-created every turn while the session store still looks healthy. Set
-    /// only for a shape whose [`ControlShape::resume_request`] exists — the
-    /// command layer refuses the pairing otherwise, so a mechanism that cannot
-    /// be asked to continue never silently drops one here.
-    pub resume: Option<String>,
+    /// re-created every turn while the session store still looks healthy.
+    pub resume: Option<DialogueResume>,
     /// What the harness's own run does about approvals in `mode`
     /// ([`ModeSpec::posture`](crate::domain::harness::ModeSpec)).
     ///
@@ -63,6 +59,43 @@ pub struct DialogueConfig {
     /// and only the harness's own registry entry knows it — the two ACP
     /// harnesses share one [`ControlShape`] and do not share a mapping.
     pub posture: ApprovalPosture,
+}
+
+/// The conversation a driven turn reopens, carrying the request that reopens it.
+///
+/// The request travels WITH the token rather than beside it, so a token paired
+/// with a mechanism that cannot be asked to continue is not a state this type
+/// can hold: [`Self::new`] yields `None` for a shape whose protocol has no
+/// [`ControlShape::resume_request`], which is the same set the command layer
+/// refuses `--session` continues for before anything spawns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DialogueResume {
+    request: &'static str,
+    thread: String,
+}
+
+impl DialogueResume {
+    /// `thread` reopened over `shape`, or `None` when that protocol has no
+    /// resume request — there is no such thing as continuing a conversation
+    /// over it, so there is no value to build.
+    #[must_use]
+    pub fn new(shape: ControlShape, thread: String) -> Option<Self> {
+        shape
+            .resume_request()
+            .map(|request| DialogueResume { request, thread })
+    }
+
+    /// The client request that reopens this conversation.
+    #[must_use]
+    pub fn request(&self) -> &'static str {
+        self.request
+    }
+
+    /// The harness's native identifier for the conversation.
+    #[must_use]
+    pub fn thread(&self) -> &str {
+        &self.thread
+    }
 }
 
 /// What the driver should do after one line.
@@ -143,15 +176,6 @@ impl Dialogue {
     /// Code's control rides its ordinary run, which is not a conversation).
     #[must_use]
     pub fn new(shape: ControlShape, config: DialogueConfig) -> Option<Self> {
-        // A token for a protocol with no resume request would be dropped in
-        // silence, which is the exact failure this field exists to end. The
-        // command layer refuses that pairing before anything spawns, so this
-        // only ever catches a caller assembling the config by hand.
-        debug_assert!(
-            config.resume.is_none() || shape.resume_request().is_some(),
-            "a session token reached `{}`, whose protocol has no resume request",
-            shape.as_str()
-        );
         matches!(
             shape,
             ControlShape::CodexAppServer | ControlShape::AcpCancel
@@ -452,7 +476,9 @@ impl Dialogue {
                     // conversation the store would then record as the old one.
                     ControlShape::CodexAppServer => {
                         let (method, params) = match self.config.resume.clone() {
-                            Some(thread) => ("thread/resume", self.thread_resume_params(&thread)),
+                            Some(resume) => {
+                                (resume.request(), self.thread_resume_params(resume.thread()))
+                            }
                             None => ("thread/start", self.thread_start_params()),
                         };
                         DialogueStep::Send(vec![
@@ -787,7 +813,7 @@ mod tests {
         let mut d = Dialogue::new(
             ControlShape::CodexAppServer,
             DialogueConfig {
-                resume: Some("th-stored".to_string()),
+                resume: DialogueResume::new(ControlShape::CodexAppServer, "th-stored".to_string()),
                 ..config()
             },
         )

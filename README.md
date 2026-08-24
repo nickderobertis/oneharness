@@ -390,7 +390,11 @@ Useful `run` flags:
   session-id-bearing format automatically; an explicitly pinned incompatible
   `--output-format`/config `output_format` is a usage error instead of a silent
   empty store. The higher-level counterpart to `--resume`; mutually exclusive
-  with `--resume`/`--fork`/`--all` and with a batch. See
+  with `--resume`/`--fork`/`--all` and with a batch. Under `--control` the flag
+  also **names the control channel**, and whether it still continues a
+  conversation is the mechanism's question: a driven turn builds no argv, so one
+  without a resume request (`acp-cancel`, `opencode-http`, `crush-http`) refuses
+  a continue rather than starting over in silence. See
   [Session handle](#session-handle).
 - `--session-dir <dir>` — directory the `--session` store lives in (default:
   `<platform state dir>/oneharness/sessions`). Like `--resume`/`--fork`, a
@@ -1133,6 +1137,22 @@ candidate does the turn *fresh* and the handle follows it: the store rebinds to
 whoever ran, with a warning on stderr, because a native token cannot move between
 identities. Continuity costs one conversation; the dispatch keeps going.
 
+**Under `--control` the mechanism decides, not the output format.** A control
+mechanism that *drives the turn* over its own protocol
+([Turn control](#turn-control-interrupt-a-running-turn)) negotiates the prompt,
+model, working directory and approvals on the wire and builds no argv at all, so
+the harness's `--resume` mapping is never reached and the only way to continue
+one conversation is the protocol's own resume request. Exactly one mechanism has
+one — `codex-app-server`'s `thread/resume` — and `claude-control-request` needs
+none, because it rides the harness's ordinary `-p` run whose `--resume` argv
+carries the handle exactly as it does without `--control`. On the other three
+(`acp-cancel`, `opencode-http`, `crush-http`) a **create** still runs — a new
+conversation is what was asked for — and says on stderr that this handle will not
+continue; the next `--control --session <name>` turn on it is then a **loud usage
+error** naming the mechanism, never a silent fresh start. Note the sharp edge
+this closes for `opencode`, whose ordinary run *does* carry a session id: the
+same name that continues fine without `--control` cannot be continued with it.
+
 Records written before oneharness bound sessions to the variant-qualified id
 (store `schema_version` `0.1`) name only the base harness, so which identity minted
 their token is unrecoverable. Such a record starts a **fresh** session rather than
@@ -1219,7 +1239,12 @@ silently is not there is worse than none:
 
 - **`--session <NAME>` is required.** The socket is addressed by the caller-owned
   handle; oneharness never infers one, because a run nobody can name is a run
-  nobody can interrupt.
+  nobody can interrupt. That handle is also a *conversation*, and a mechanism
+  that drives the turn over its own protocol can only continue one by asking the
+  protocol to — so **continuing a stored handle over a mechanism with no resume
+  request is refused**, naming the mechanism. Creating one on such a mechanism
+  still runs, and says on stderr that it will not continue. See
+  [Session handle](#session-handle).
 - **Exactly one live turn.** In the default `parallel` run mode that means
   exactly one harness, which must declare a control mechanism (`control` in
   `oneharness list`). A `--run-mode fallback` chain starts its candidates one at
@@ -1332,16 +1357,21 @@ multi-step turn, interrupts it, and reports whether work actually *stopped*
 that is only probe-verified is **not** declared in the registry, so
 `oneharness interrupt` can never report success on a path nobody exercised.
 
-| Harness | `control` | Mechanism | Status |
-| --- | --- | --- | --- |
-| Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | **LIVE** through oneharness |
-| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | **LIVE** through oneharness |
-| Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | **LIVE** through oneharness |
-| Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | **LIVE** through oneharness |
-| OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | **LIVE** through oneharness |
-| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | **LIVE** through oneharness |
-| Cursor | — | none | cursor-agent exposes no headless control surface |
-| Qwen | — | none | qwen exposes no headless control surface |
+`--session` continues under `--control`? is the mechanism's own question, not the
+harness's: a driven turn builds no argv, so a mechanism with no resume request
+cannot reopen a conversation and a continue over it is refused
+([Session handle](#session-handle)).
+
+| Harness | `control` | Mechanism | Continues a `--session`? | Status |
+| --- | --- | --- | --- | --- |
+| Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | ✓ (the ordinary `-p` run's `--resume` argv) | **LIVE** through oneharness |
+| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | ✓ `thread/resume` | **LIVE** through oneharness |
+| Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | — (loud usage error) | **LIVE** through oneharness |
+| Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | — (loud usage error) | **LIVE** through oneharness |
+| OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | — (loud usage error) | **LIVE** through oneharness |
+| Crush | `crush-http` | `POST /v1/workspaces/{id}/agent/sessions/{sid}/cancel` against a pooled `crush server` | — (loud usage error) | **LIVE** through oneharness |
+| Cursor | — | none | n/a | cursor-agent exposes no headless control surface |
+| Qwen | — | none | n/a | qwen exposes no headless control surface |
 
 Every declared mechanism carries a redirection, so `--input` is never refused for
 being unsupported: each one delivers it through **the same frame or route that
@@ -1390,7 +1420,10 @@ negotiates the thread or session, sends the prompt, and holds that same stdin
 open so the interrupt reaches the live turn. Model, working directory, sandbox
 and approvals are negotiated on the wire, so they leave the argv entirely —
 which is also why Copilot and Goose can take `--session` under `--control` even
-though none of their ordinary output formats carries a session id.
+though none of their ordinary output formats carries a session id. That handle
+**names the channel**; whether it also *continues a conversation* is the
+mechanism's own question, answered in the table above and enforced before
+anything spawns.
 
 **OpenCode and Crush turns are submitted to their servers, not to their CLIs.**
 This is the third execution model, and the only one their interrupt reaches.

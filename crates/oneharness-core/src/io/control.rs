@@ -1385,6 +1385,7 @@ mod tests {
                 cwd: AbsolutePath::new(dir.path()).unwrap(),
                 model: None,
                 mode: PermissionMode::Bypass,
+                resume: None,
                 posture: ApprovalPosture::Unattended,
             },
         );

@@ -162,6 +162,16 @@ pub enum ControlShape {
 }
 
 impl ControlShape {
+    /// Every declared mechanism, so a grid over the set cannot quietly omit one
+    /// a later release adds.
+    pub const ALL: [ControlShape; 5] = [
+        ControlShape::ClaudeControlRequest,
+        ControlShape::CodexAppServer,
+        ControlShape::OpencodeHttp,
+        ControlShape::AcpCancel,
+        ControlShape::CrushHttp,
+    ];
+
     /// The stable wire spelling reported as a served interrupt's `mechanism`.
     #[must_use]
     pub fn as_str(self) -> &'static str {
@@ -179,15 +189,9 @@ impl ControlShape {
     /// failure rather than a silently-degraded frame.
     #[must_use]
     pub fn from_wire(mechanism: &str) -> Option<ControlShape> {
-        [
-            ControlShape::ClaudeControlRequest,
-            ControlShape::CodexAppServer,
-            ControlShape::OpencodeHttp,
-            ControlShape::AcpCancel,
-            ControlShape::CrushHttp,
-        ]
-        .into_iter()
-        .find(|shape| shape.as_str() == mechanism)
+        ControlShape::ALL
+            .into_iter()
+            .find(|shape| shape.as_str() == mechanism)
     }
 
     /// Whether oneharness *drives the turn itself* over this mechanism's own
@@ -200,6 +204,47 @@ impl ControlShape {
     #[must_use]
     pub fn drives_turn(self) -> bool {
         !matches!(self, ControlShape::ClaudeControlRequest)
+    }
+
+    /// The client request this mechanism opens a turn on an **existing**
+    /// conversation with, or `None` when its protocol has none oneharness
+    /// implements.
+    ///
+    /// Registry-grade protocol data, read out of the CLI's own generated schema
+    /// rather than guessed: codex's `ClientRequest` declares `thread/resume`,
+    /// whose `ThreadResumeParams` requires `threadId` and accepts the same
+    /// `cwd`/`model`/`approvalPolicy` `thread/start` does, and whose response
+    /// carries the same required `thread` field — so one arm reads the opened
+    /// conversation's id either way.
+    ///
+    /// `None` is what makes a caller-owned `--session` handle **inexpressible**
+    /// on a mechanism that drives its own turn ([`Self::carries_session`]): the
+    /// turn is negotiated on the wire, so the only way to continue one
+    /// conversation is to ask the protocol for it, and a mechanism that cannot
+    /// be asked would open a new conversation every turn while the store looked
+    /// healthy.
+    #[must_use]
+    pub fn resume_request(self) -> Option<&'static str> {
+        match self {
+            ControlShape::CodexAppServer => Some("thread/resume"),
+            ControlShape::ClaudeControlRequest
+            | ControlShape::OpencodeHttp
+            | ControlShape::AcpCancel
+            | ControlShape::CrushHttp => None,
+        }
+    }
+
+    /// Whether a named `--session` handle can be **continued** over this
+    /// mechanism.
+    ///
+    /// True for a mechanism that does not drive the turn at all (Claude Code's
+    /// control frame rides the ordinary `-p` run, whose `--resume` argv carries
+    /// the handle exactly as it does without `--control`), and for a driven turn
+    /// whose protocol has a [`Self::resume_request`]. False otherwise — and
+    /// there a continue is a loud usage error rather than a silent fresh start.
+    #[must_use]
+    pub fn carries_session(self) -> bool {
+        !self.drives_turn() || self.resume_request().is_some()
     }
 
     /// Whether this mechanism needs a **shared, long-lived** server process,
@@ -1476,6 +1521,7 @@ mod control_mode_parity {
                 cwd: absolute_for_test(WORK),
                 model: None,
                 mode,
+                resume: None,
                 posture: posture_of(harness::by_id("codex").unwrap(), mode),
             },
         )
@@ -1511,6 +1557,7 @@ mod control_mode_parity {
                         cwd: absolute_for_test(WORK),
                         model: None,
                         mode,
+                        resume: None,
                         posture: posture_of(spec, mode),
                     },
                 )
@@ -1875,6 +1922,55 @@ mod tests {
             ControlShape::CrushHttp,
         ] {
             assert!(shape.drives_turn(), "{shape:?} should drive its own turn");
+        }
+    }
+
+    /// Which mechanisms can continue a named conversation, over the whole set.
+    ///
+    /// The grid, not a spot check: `--session` is accepted under `--control` for
+    /// every control-capable harness, so a mechanism that silently could not
+    /// continue one opened a new conversation every turn while the store, the
+    /// report and the flag all read as healthy. Adding a `ControlShape` means
+    /// adding its cell here and sourcing its resume request (or declaring it has
+    /// none) from the CLI's own protocol.
+    #[test]
+    fn every_mechanism_says_whether_it_can_continue_a_session() {
+        assert_eq!(
+            ControlShape::CodexAppServer.resume_request(),
+            Some("thread/resume"),
+            "codex's ClientRequest declares thread/resume, and its response              carries the same `thread` field thread/start does"
+        );
+        for shape in [
+            ControlShape::ClaudeControlRequest,
+            ControlShape::OpencodeHttp,
+            ControlShape::AcpCancel,
+            ControlShape::CrushHttp,
+        ] {
+            assert_eq!(shape.resume_request(), None, "{shape:?}");
+        }
+        // Claude Code needs no resume request at all: it rides the harness's
+        // ordinary `-p` run, whose verified `--resume` argv carries the handle
+        // under `--control` exactly as it does without it.
+        assert!(ControlShape::ClaudeControlRequest.carries_session());
+        assert!(ControlShape::CodexAppServer.carries_session());
+        for shape in [
+            ControlShape::OpencodeHttp,
+            ControlShape::AcpCancel,
+            ControlShape::CrushHttp,
+        ] {
+            assert!(
+                !shape.carries_session(),
+                "{shape:?} drives its own turn with no resume request, so a continue over it                  must be refused rather than silently started over"
+            );
+        }
+        // Nothing outside the two answers is possible: a mechanism carries a
+        // session exactly when it does not drive the turn, or asks to resume.
+        for shape in ControlShape::ALL {
+            assert_eq!(
+                shape.carries_session(),
+                !shape.drives_turn() || shape.resume_request().is_some(),
+                "{shape:?}"
+            );
         }
     }
 

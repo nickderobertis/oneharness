@@ -116,6 +116,25 @@ pub enum OneharnessError {
     #[error("harness `{id}` does not support --session: it exposes no session id headlessly, so a named handle cannot be mapped to it. supported: {supported}")]
     SessionUnsupported { id: String, supported: String },
 
+    /// A named handle whose stored conversation cannot be reopened over the
+    /// mechanism that would serve this turn.
+    ///
+    /// A driven turn negotiates its prompt, model, cwd and approvals on the
+    /// wire and builds no argv, so the harness's verified `--resume` mapping is
+    /// never reached: the only way to continue one conversation is the
+    /// protocol's own resume request, and a mechanism without one would open a
+    /// new conversation while the store, the report and the flag all looked
+    /// healthy. Loud here, before anything spawns, because that is the one
+    /// outcome nothing downstream can report.
+    #[error("session `{name}` cannot be continued on harness `{id}` under --control: its control mechanism `{mechanism}` drives the turn over its own protocol and implements no resume request, so the turn would open a NEW conversation rather than continue this one. Drop --control to continue this handle on the harness's ordinary headless run, or keep --control and pass a fresh --session name to open a new conversation deliberately (the flag itself cannot be dropped: --control is addressed by the handle). Mechanisms that continue a session under --control: {supported}")]
+    SessionControlNoResume {
+        name: String,
+        // llmlint: ignore[invalid_states_unrepresentable] The id is echoed from the already-validated registry selection purely for the diagnostic.
+        id: String,
+        mechanism: &'static str,
+        supported: String,
+    },
+
     #[error("harness `{id}` cannot capture --session under explicitly selected output format `{format}`: its session id is emitted only in {supported}. Remove --output-format/config `output_format` to let oneharness select a session-bearing format")]
     SessionOutputFormat {
         id: String,

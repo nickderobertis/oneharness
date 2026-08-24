@@ -22640,6 +22640,441 @@ fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
     );
 }
 
+/// A named handle over codex's app-server continues ONE conversation.
+///
+/// The whole plumbing was already in place and stopped one layer short: the
+/// store resolved a `Continue` plan and handed its token to `HarnessPlan::resume`
+/// — which is *argv*, and a driven turn builds none. So every controlled turn
+/// opened a fresh `thread/start` and then overwrote the stored token with the
+/// new thread's id: the flag accepted, the store healthy, the report normal, and
+/// the conversation gone. Nothing above could see it, which is why this reads
+/// the request the SECOND turn actually sent rather than the report alone.
+#[cfg(unix)]
+#[test]
+fn a_controlled_codex_session_continues_one_conversation_across_turns() {
+    let store = control_store_dir("codex-resume");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("codex-resume-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let first_log = store.join("first.log");
+    let second_log = store.join("second.log");
+    let bin = bin_override("codex");
+
+    let dispatch = |log: &std::path::Path| {
+        run(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--control",
+                "--session",
+                "resumed",
+                "--session-dir",
+                &store_arg,
+                "--cwd",
+                &cwd_arg,
+                "--mode",
+                "bypass",
+                "--prompt",
+                "keep working",
+                "--bin",
+                &bin,
+                "--compact",
+            ],
+            &[
+                ("MOCK_CODEX_APP_SERVER_LOG", &log.display().to_string()),
+                // Nobody interrupts these turns; they are about what the client
+                // sent to open them.
+                ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ],
+        )
+    };
+
+    let first = dispatch(&first_log);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first = json_stdout(&first);
+    assert_eq!(first["session"]["phase"], "create");
+    assert_eq!(first["session"]["token"], "mock-codex-thread");
+    let opened = std::fs::read_to_string(&first_log).unwrap();
+    assert!(
+        opened.contains("thread/start"),
+        "a fresh handle starts a thread:\n{opened}"
+    );
+
+    let second = dispatch(&second_log);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second = json_stdout(&second);
+
+    // The request the second turn actually sent: it reopens the conversation
+    // the handle names, and never mints another one.
+    let reopened = std::fs::read_to_string(&second_log).unwrap();
+    let resume = reopened
+        .lines()
+        .find(|line| line.contains("\"thread/resume\""))
+        .unwrap_or_else(|| panic!("the second turn opened no thread/resume:\n{reopened}"));
+    let resume: Value = serde_json::from_str(resume).expect("a JSON-RPC frame");
+    assert_eq!(resume["params"]["threadId"], "mock-codex-thread");
+    assert!(
+        resume["params"]["cwd"].as_str().is_some(),
+        "the resumed thread runs in THIS run's directory: {resume}"
+    );
+    assert!(
+        !reopened.contains("thread/start"),
+        "the second turn must not open a new conversation:\n{reopened}"
+    );
+
+    // ...and the store still identifies that same conversation afterwards.
+    assert_eq!(second["session"]["phase"], "continue");
+    assert_eq!(second["session"]["token"], "mock-codex-thread");
+    assert_eq!(second["results"][0]["session_id"], "mock-codex-thread");
+    let record: Value = serde_json::from_str(
+        &std::fs::read_to_string(second["session"]["store_file"].as_str().unwrap()).unwrap(),
+    )
+    .expect("the session store is JSON");
+    assert_eq!(record["token"], "mock-codex-thread");
+    assert_eq!(record["harness"], "codex");
+}
+
+/// The stored token is the *anchor identity's*, and no other candidate gets it.
+///
+/// A native token exists only in the session namespace of the identity that
+/// minted it, so a chain candidate that is not the anchor must open a fresh
+/// conversation rather than ask its own provider to reopen a stranger's — the
+/// same filter the argv path applies to `HarnessPlan::resume`, now on the one
+/// route a driven turn has.
+#[cfg(unix)]
+#[test]
+fn a_controlled_candidate_is_never_handed_another_identitys_session_token() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("cross-identity");
+    let store_arg = store.display().to_string();
+    let codex_log = store.join("codex.log");
+    let codex_log_arg = codex_log.display().to_string();
+    // Claude Code's control frame rides its ordinary `-p` run, so its turn ends
+    // on its own `result` document; `--model doomed` is what makes the SECOND
+    // dispatch fall through it to codex, on the one reading that falls through
+    // rather than stopping the chain (a quota rejection, having done no work).
+    let served = serde_json::to_string(
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"claude-thread"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = {served}, MOCK_FAIL_IF_MODEL = "doomed", MOCK_FAIL_STDERR = "error: insufficient_quota for this identity" }}
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{codex_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-cross-identity", &project, "");
+    let cwd_arg = fx.cwd();
+    let dispatch = |args: &[&str]| {
+        let mut all = vec![
+            "run",
+            "--harness",
+            "claude-code,codex",
+            "--run-mode",
+            "fallback",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--compact",
+        ];
+        all.extend_from_slice(args);
+        run_with_config(&all, &[], &fx.user_config())
+    };
+
+    // Turn one: the head of the chain serves, so the handle binds to it.
+    let first = dispatch(&[]);
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first = json_stdout(&first);
+    assert_eq!(first["fallback"]["ran"], "claude-code");
+    assert_eq!(first["session"]["token"], "claude-thread");
+
+    // Turn two: the anchor falls through, and codex serves the turn instead. It
+    // is not the identity the handle belongs to, so it opens a NEW conversation
+    // rather than asking its app-server to resume `claude-thread`.
+    let second = dispatch(&["--model", "doomed"]);
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second = json_stdout(&second);
+    assert_eq!(second["fallback"]["ran"], "codex");
+    let served = std::fs::read_to_string(&codex_log).unwrap();
+    assert!(
+        served.contains("thread/start"),
+        "a candidate that is not the anchor starts fresh:\n{served}"
+    );
+    assert!(
+        !served.contains("thread/resume"),
+        "a foreign identity's token must never reach another candidate's protocol:\n{served}"
+    );
+    // The report says what happened rather than what was planned: the handle
+    // now continues on the identity that actually ran.
+    assert_eq!(second["session"]["phase"], "create");
+    assert_eq!(second["session"]["token"], "mock-codex-thread");
+}
+
+/// A handle whose mechanism cannot reopen a conversation is refused, loudly.
+///
+/// `opencode` is the sharp edge: its ordinary run DOES carry a session id, so a
+/// handle can be created and continued without `--control` all day — and then
+/// the same name under `--control` is submitted to a pooled server that has no
+/// resume route at all. Before this, that dispatch started a new conversation
+/// and overwrote the stored token with its id, silently.
+#[cfg(unix)]
+#[test]
+fn a_control_run_refuses_a_session_its_mechanism_cannot_continue() {
+    let store = control_store_dir("no-resume");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("no-resume-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let bin = bin_override("opencode");
+    let plain = |name: &str| {
+        run(
+            &[
+                "run",
+                "--harness",
+                "opencode",
+                "--session",
+                name,
+                "--session-dir",
+                &store_arg,
+                "--cwd",
+                &cwd_arg,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin,
+                "--compact",
+            ],
+            &[("MOCK_STDOUT", r#"{"sessionID":"ses_plain","text":"hi"}"#)],
+        )
+    };
+
+    // Nothing else is refused: without `--control` the handle is created and
+    // then continued on the harness's own `--session` mapping, as it always was.
+    let created = plain("held");
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    assert_eq!(json_stdout(&created)["session"]["phase"], "create");
+    let continued = plain("held");
+    assert!(continued.status.success());
+    assert_eq!(json_stdout(&continued)["session"]["phase"], "continue");
+
+    // The same handle under `--control` is a conversation the mechanism cannot
+    // reopen, so it is refused before anything spawns.
+    let refused = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "held",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("opencode-http"), "{stderr}");
+    assert!(
+        stderr.contains("no resume request"),
+        "the refusal must say why: {stderr}"
+    );
+    assert!(
+        stderr.contains("Drop --control") && stderr.contains("fresh --session name"),
+        "the refusal must say which flag to drop: {stderr}"
+    );
+    assert!(
+        stderr.contains("codex"),
+        "the refusal must name the mechanisms that do continue a session: {stderr}"
+    );
+    // Refused *before anything spawns*: the store is untouched, so the
+    // conversation the handle names is still there to continue without control.
+    assert!(
+        std::str::from_utf8(&refused.stdout).unwrap().is_empty(),
+        "a usage error prints no report"
+    );
+    assert_eq!(json_stdout(&plain("held"))["session"]["token"], "ses_plain");
+}
+
+/// The same refusal over the ACP mechanism, and the warning that precedes it.
+///
+/// A *create* is honest on any mechanism — a new conversation is what was asked
+/// for — so it runs, and says once that this handle will not continue rather
+/// than leaving the next turn to discover it. The next turn is then refused.
+#[cfg(unix)]
+#[test]
+fn a_controlled_acp_session_says_it_will_not_continue_and_then_refuses_to() {
+    let store = control_store_dir("acp-no-resume");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("acp-no-resume-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let acp_log = store.join("acp.log");
+    let bin = bin_override("goose");
+    let dispatch = || {
+        run(
+            &[
+                "run",
+                "--harness",
+                "goose",
+                "--control",
+                "--session",
+                "acpheld",
+                "--session-dir",
+                &store_arg,
+                "--cwd",
+                &cwd_arg,
+                "--mode",
+                "bypass",
+                "--prompt",
+                "keep working",
+                "--bin",
+                &bin,
+                "--compact",
+            ],
+            &[
+                ("MOCK_ACP_LOG", &acp_log.display().to_string()),
+                ("MOCK_ACP_COMPLETE_TURN", "1"),
+            ],
+        )
+    };
+
+    let created = dispatch();
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&created.stderr);
+    assert!(
+        stderr.contains("acp-cancel") && stderr.contains("will be refused"),
+        "a create over a mechanism that cannot continue must say so: {stderr}"
+    );
+    assert_eq!(
+        json_stdout(&created)["session"]["token"],
+        "mock-acp-session"
+    );
+
+    let refused = dispatch();
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(stderr.contains("acp-cancel"), "{stderr}");
+    assert!(stderr.contains("cannot be continued"), "{stderr}");
+}
+
+/// Claude Code's control frame is not a driven turn, so its handle still works.
+///
+/// The frame rides the harness's ordinary `-p` run, whose verified `--resume`
+/// argv carries the token under `--control` exactly as it does without it — so
+/// this pairing must keep resuming rather than be swept up by the refusal.
+#[cfg(unix)]
+#[test]
+fn a_claude_control_session_still_continues_under_control() {
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(
+        r#"{"type":"result","subtype":"success","result":"served","session_id":"claude-held"}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = {served} }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-claude-session", &project, "");
+    let store = control_store_dir("claude-held");
+    let store_arg = store.display().to_string();
+    let dispatch = || {
+        run_with_config(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--control",
+                "--session",
+                "claudeheld",
+                "--session-dir",
+                &store_arg,
+                "--cwd",
+                &fx.cwd(),
+                "--prompt",
+                "keep working",
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    let first = dispatch();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert_eq!(json_stdout(&first)["session"]["token"], "claude-held");
+
+    let second = dispatch();
+    assert!(
+        second.status.success(),
+        "{}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    let second = json_stdout(&second);
+    assert_eq!(second["session"]["phase"], "continue");
+    let command: Vec<String> = second["results"][0]["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        command
+            .windows(2)
+            .any(|pair| pair == ["--resume".to_string(), "claude-held".to_string()]),
+        "the ordinary run's --resume argv still carries the handle: {command:?}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_restrictive_controlled_run_declines_the_permission_it_is_asked_for() {
@@ -25647,44 +26082,41 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
 #[test]
 fn a_resumed_sessions_output_format_is_judged_by_its_anchors_own_mechanism() {
     // Whether a named session can use an explicit output format is a question
-    // about the identity the session is BOUND to, and in a chain whose
-    // candidates control differently that is not the head. goose captures its
-    // session id on the ACP wire, so it needs no session-bearing stdout format
-    // at all — while claude-code, the head here, drives no turn of its own and
-    // would have the check applied on its behalf.
+    // about the identity the session is BOUND to, and about THAT identity's
+    // control mechanism. codex captures its session id on the app-server wire,
+    // so under `--control` its handle needs no session-bearing stdout format at
+    // all — `text` is not one of its `session_formats`, and pinning it must not
+    // strand a session that works.
     //
-    // Read off the head instead and the resumed run is refused for a format the
-    // anchor never needed, stranding a session that works.
+    // The anchor is read off the identity the record belongs to rather than off
+    // the head of the chain. That divergence is no longer reachable from the
+    // CLI — the only mechanisms that can carry a handle at all are claude-code's
+    // (which pins `stream-json` for any chain it appears in) and codex's, and
+    // both carry `json`/`stream-json` — so what stays observable, and is what
+    // this pins, is that the anchor's own mechanism is consulted before the
+    // format check runs.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
-    let rejection = serde_json::to_string(rejection).unwrap();
     let store = control_store_dir("anchor-fmt");
     let store_arg = store.display().to_string();
-    let head_log = store.join("head-turn.log");
-    let head_log_arg = head_log.display().to_string();
-    let acp_log = store.join("acp.log");
-    let acp_log_arg = acp_log.display().to_string();
+    let codex_log = store.join("app-server.log");
+    let codex_log_arg = codex_log.display().to_string();
     let project = format!(
         r#"
-        harnesses = ["claude-code", "goose"]
-        run_mode = "fallback"
-        [harness.claude-code]
+        [harness.codex]
         bin = '{mock}'
-        env = {{ MOCK_TURN_LOG = '{head_log_arg}', MOCK_TURN_RESULT = {rejection} }}
-        [harness.goose]
-        bin = '{mock}'
-        env = {{ MOCK_ACP_LOG = '{acp_log_arg}' }}
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{codex_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
     "#
     );
     let fx = ConfigFixture::new("control-anchor-format", &project, "");
     let cwd_arg = fx.cwd();
 
-    // First, move the session onto goose: the head is out of quota, so the
-    // reserve serves and the id its conversation minted is what gets stored.
-    let child = Command::new(oneharness_bin())
-        .env("ONEHARNESS_CONFIG", fx.user_config())
-        .args([
+    // First, bind the handle: the turn's id comes off the wire, not out of a
+    // stdout document.
+    let first = run_with_config(
+        &[
             "run",
+            "--harness",
+            "codex",
             "--control",
             "--session",
             "anchorfmt",
@@ -25699,50 +26131,26 @@ fn a_resumed_sessions_output_format_is_judged_by_its_anchors_own_mechanism() {
             "--timeout",
             "60",
             "--compact",
-            "--env",
-            &mock_profile_redirect(),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to spawn the anchoring run");
-    wait_until("the permission exchange", || {
-        std::fs::read_to_string(&acp_log)
-            .map(|log| log.contains("PERMISSION_ANSWERED"))
-            .unwrap_or(false)
-    });
-    // An ACP turn ends on a cancel, so this is how the anchoring run finishes.
-    let interrupt = run(
-        &[
-            "interrupt",
-            "--session",
-            "anchorfmt",
-            "--session-dir",
-            &store_arg,
-            "--cwd",
-            &cwd_arg,
-            "--compact",
         ],
         &[],
+        &fx.user_config(),
     );
-    assert!(interrupt.status.success(), "{interrupt:?}");
-    let first = child
-        .wait_with_output()
-        .expect("the anchoring run finished");
-    let first: Value = serde_json::from_slice(&first.stdout).expect("a JSON report");
-    assert_eq!(first["fallback"]["ran"], "goose");
     assert!(
-        first["session"]["token"].is_string(),
-        "the conversation's id must be stored for the resume below: {first}"
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
     );
+    assert_eq!(json_stdout(&first)["session"]["token"], "mock-codex-thread");
 
-    // Now resume it, pinning a format goose can carry no session in. Accepted,
-    // because the anchor does not need one: it reads its id off the wire.
+    // Now resume it, pinning a format codex can carry no session in. Accepted,
+    // because the anchor does not need one.
     // `--print-command` keeps this to the validation it is about — the refusal,
     // if it came, would land before anything spawned.
     let resumed = run_with_config(
         &[
             "run",
+            "--harness",
+            "codex",
             "--control",
             "--session",
             "anchorfmt",
@@ -25753,7 +26161,7 @@ fn a_resumed_sessions_output_format_is_judged_by_its_anchors_own_mechanism() {
             "--mode",
             "bypass",
             "--output-format",
-            "stream-json",
+            "text",
             "--prompt",
             "keep working",
             "--print-command",

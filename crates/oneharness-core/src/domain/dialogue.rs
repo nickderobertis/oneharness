@@ -45,6 +45,16 @@ pub struct DialogueConfig {
     /// client ANSWERS a permission request with is `posture` below, which is the
     /// harness's own reading of this mode rather than the spectrum's.
     pub mode: PermissionMode,
+    /// The harness's native token for the conversation this turn continues, or
+    /// `None` to open a fresh one.
+    ///
+    /// A driven turn negotiates everything on the wire, so this is the *only*
+    /// route a `--session` handle has into it: without it the conversation is
+    /// re-created every turn while the session store still looks healthy. Set
+    /// only for a shape whose [`ControlShape::resume_request`] exists — the
+    /// command layer refuses the pairing otherwise, so a mechanism that cannot
+    /// be asked to continue never silently drops one here.
+    pub resume: Option<String>,
     /// What the harness's own run does about approvals in `mode`
     /// ([`ModeSpec::posture`](crate::domain::harness::ModeSpec)).
     ///
@@ -133,6 +143,15 @@ impl Dialogue {
     /// Code's control rides its ordinary run, which is not a conversation).
     #[must_use]
     pub fn new(shape: ControlShape, config: DialogueConfig) -> Option<Self> {
+        // A token for a protocol with no resume request would be dropped in
+        // silence, which is the exact failure this field exists to end. The
+        // command layer refuses that pairing before anything spawns, so this
+        // only ever catches a caller assembling the config by hand.
+        debug_assert!(
+            config.resume.is_none() || shape.resume_request().is_some(),
+            "a session token reached `{}`, whose protocol has no resume request",
+            shape.as_str()
+        );
         matches!(
             shape,
             ControlShape::CodexAppServer | ControlShape::AcpCancel
@@ -426,10 +445,21 @@ impl Dialogue {
                 let open_id = self.take_id();
                 self.open_id = open_id;
                 match self.shape {
-                    ControlShape::CodexAppServer => DialogueStep::Send(vec![
-                        notification("initialized", json!({})),
-                        request(open_id, "thread/start", self.thread_start_params()),
-                    ]),
+                    // Continue the conversation the caller's handle names when
+                    // there is one: a driven turn builds no argv, so `thread/
+                    // resume` is the only place a `--session` token can reach
+                    // codex at all, and opening `thread/start` instead is a new
+                    // conversation the store would then record as the old one.
+                    ControlShape::CodexAppServer => {
+                        let (method, params) = match self.config.resume.clone() {
+                            Some(thread) => ("thread/resume", self.thread_resume_params(&thread)),
+                            None => ("thread/start", self.thread_start_params()),
+                        };
+                        DialogueStep::Send(vec![
+                            notification("initialized", json!({})),
+                            request(open_id, method, params),
+                        ])
+                    }
                     _ => DialogueStep::Send(vec![request(
                         open_id,
                         "session/new",
@@ -542,6 +572,19 @@ impl Dialogue {
         if let Some(model) = &self.config.model {
             params["model"] = json!(model);
         }
+        params
+    }
+
+    /// The params that reopen the thread `id` names, in codex's own spelling.
+    ///
+    /// `threadId` is the only required field, and its schema says to prefer it
+    /// over the history/path forms. The rest are the per-run settings a fresh
+    /// thread would have been started with, restated so a resumed thread runs
+    /// under this run's working directory and model rather than the ones the
+    /// conversation was created with.
+    fn thread_resume_params(&self, id: &str) -> Value {
+        let mut params = self.thread_start_params();
+        params["threadId"] = json!(id);
         params
     }
 
@@ -709,6 +752,7 @@ mod tests {
             cwd: absolute_for_test(WORK),
             model: Some("gpt-5-codex".to_string()),
             mode: PermissionMode::Bypass,
+            resume: None,
             posture: ApprovalPosture::Unattended,
         }
     }
@@ -731,6 +775,47 @@ mod tests {
     }
 
     /// Drive a whole codex turn the way the app-server really answers, and
+    /// A named handle reopens the conversation it names instead of minting one.
+    ///
+    /// A driven turn builds no argv, so the harness's verified `--resume`
+    /// mapping is never reached and this request is the ONLY route a `--session`
+    /// token has into codex. Opening `thread/start` here is a fresh
+    /// conversation the session store would then record as the old one — the
+    /// flag accepted, the token rotated, and every earlier turn gone.
+    #[test]
+    fn a_resumed_codex_turn_reopens_the_thread_the_handle_names() {
+        let mut d = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                resume: Some("th-stored".to_string()),
+                ..config()
+            },
+        )
+        .unwrap();
+        d.open();
+        let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        assert_eq!(parse(&step.frames()[0])["method"], "initialized");
+        let resume = parse(&step.frames()[1]);
+        assert_eq!(resume["method"], "thread/resume");
+        assert_eq!(resume["params"]["threadId"], "th-stored");
+        // The per-run settings a fresh thread would carry are restated, so a
+        // resumed conversation runs in THIS run's directory under THIS run's
+        // model rather than the ones it was created with.
+        assert_eq!(resume["params"]["cwd"], absolute_text_for_test(WORK));
+        assert_eq!(resume["params"]["approvalPolicy"], "never");
+        assert_eq!(resume["params"]["model"], "gpt-5-codex");
+
+        // `ThreadResumeResponse` carries the same required `thread` field
+        // `ThreadStartResponse` does, so one arm reads the opened conversation
+        // either way — and the turn goes out on the thread that was resumed.
+        let step = d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-stored"}}}"#);
+        assert_eq!(d.session_id(), Some("th-stored"));
+        let turn = parse(&step.frames()[0]);
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["threadId"], "th-stored");
+        assert_eq!(turn["params"]["input"][0]["text"], "do the thing");
+    }
+
     /// assert every frame oneharness sends back.
     #[test]
     fn codex_handshakes_opens_a_thread_and_sends_the_prompt() {

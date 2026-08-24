@@ -1180,6 +1180,14 @@ pub fn run_supervised(
             cwd: control_cwd(args)?,
             mode,
             model: model.map(str::to_string),
+            // The same token the argv path puts on the anchor's `--resume`, on
+            // the one route a driven turn has for it. `setup_session` already
+            // refused a continue whose mechanism cannot ask for one, so a
+            // token here always has a protocol request waiting to carry it.
+            resume: session_anchor
+                .clone()
+                .zip(session_resume.clone())
+                .map(|(anchor, token)| ControlResume { anchor, token }),
         }),
         None => None,
     };
@@ -1254,7 +1262,7 @@ pub fn run_supervised(
             .control
             .expect("validate_control refuses a controlled harness with no mechanism");
         let prompt = chain.prompt(0);
-        chain.bind(shape, specs[0], &prompt);
+        chain.bind(shape, specs[0], &selected_ids[0], &prompt);
         let input = runner::ControlledInput {
             handle: chain.handle,
             prompt,
@@ -1885,6 +1893,22 @@ fn session_capable_ids() -> String {
         .join(", ")
 }
 
+/// The comma-joined ids of every harness whose control mechanism can continue a
+/// named session, for the "Mechanisms that continue a session under --control:"
+/// hint on a [`OneharnessError::SessionControlNoResume`].
+fn control_session_capable_ids() -> String {
+    let ids: Vec<&str> = harness::all()
+        .iter()
+        .filter(|spec| spec.control.is_some_and(ControlShape::carries_session))
+        .map(|spec| spec.id)
+        .collect();
+    if ids.is_empty() {
+        "none".to_string()
+    } else {
+        ids.join(", ")
+    }
+}
+
 /// Validate and resolve a `--session <name>` request against the store, or
 /// `Ok(None)` when the flag was not passed. Loud usage errors up front (nothing
 /// spawns): a batch run, a harness that exposes no session id (`session_capable`),
@@ -2000,6 +2024,37 @@ fn setup_session(
         });
     }
     let plan = SessionPlan::decide(existing.as_ref());
+    // The handle and the mechanism have to agree about what a turn is. A driven
+    // turn negotiates prompt, model, cwd and approvals on the wire and builds no
+    // argv at all, so the harness's verified `--resume` mapping is never reached
+    // and the protocol's own resume request is the ONLY way one conversation
+    // continues. Without one, a continue would open a new conversation and then
+    // overwrite the stored token with its id — the flag accepted, the store
+    // healthy, the report normal, and every earlier turn gone.
+    //
+    // A *create* is honest on any mechanism (a new conversation is what was
+    // asked for), so it runs — and says, once, that this handle will not
+    // continue, rather than leaving the next turn to discover it.
+    if control {
+        if let Some(shape) = id.spec().control.filter(|s| !s.carries_session()) {
+            if plan.phase == session::SessionPhase::Continue {
+                return Err(OneharnessError::SessionControlNoResume {
+                    name: name.to_string(),
+                    id: id.to_string(),
+                    mechanism: shape.as_str(),
+                    supported: control_session_capable_ids(),
+                });
+            }
+            eprintln!(
+                "oneharness: warning: session `{name}` starts a NEW conversation on `{id}`, and \
+                 its control mechanism `{}` implements no resume request — so the next \
+                 `--control --session {name}` turn will be refused rather than silently starting \
+                 over. Mechanisms that continue a session under --control: {}",
+                shape.as_str(),
+                control_session_capable_ids()
+            );
+        }
+    }
     Ok(Some(SessionWiring {
         name: name.to_string(),
         harness: id,
@@ -2250,12 +2305,38 @@ struct ControlledRun<'a> {
     cwd: control::AbsolutePath,
     mode: PermissionMode,
     model: Option<String>,
+    /// The stored conversation this run continues, and the identity that minted
+    /// it. `None` on a fresh session (or with no `--session` at all).
+    resume: Option<ControlResume>,
+}
+
+/// A `--session` continue as the control channel needs it: the native token,
+/// and the one identity it means anything to.
+///
+/// The two travel together for the same reason [`HarnessPlan::resume`] is
+/// filtered by the session anchor on the argv path: a native token exists only
+/// in the session namespace of the identity that minted it, so handing it to a
+/// different fallback candidate would ask one harness — or one variant's home
+/// directory — to reopen a conversation it has never heard of.
+struct ControlResume {
+    anchor: HarnessIdentity,
+    token: String,
 }
 
 impl ControlledRun<'_> {
     /// Bind the channel to `spec`'s mechanism for the turn it is about to
     /// serve, building the protocol conversation the shape needs.
-    fn bind(&self, shape: ControlShape, spec: &'static HarnessSpec, prompt: &str) {
+    ///
+    /// `harness_id` is the variant-qualified selector of the candidate taking
+    /// the turn — the axis the session token is scoped to, since a chain holds
+    /// several candidates and the token belongs to exactly one of them.
+    fn bind(
+        &self,
+        shape: ControlShape,
+        spec: &'static HarnessSpec,
+        harness_id: &str,
+        prompt: &str,
+    ) {
         let dialogue = Dialogue::new(
             shape,
             DialogueConfig {
@@ -2263,6 +2344,18 @@ impl ControlledRun<'_> {
                 cwd: self.cwd.clone(),
                 model: self.model.clone(),
                 mode: self.mode,
+                // Only the anchor's own turn continues the stored conversation:
+                // every other candidate opens a fresh one, exactly as the argv
+                // path's `session_anchor` filter leaves it holding no `--resume`.
+                // The mechanism is checked too, so a token can never be dropped
+                // in silence by a protocol with no resume request (the command
+                // layer refuses that pairing, and this keeps it true here).
+                resume: self
+                    .resume
+                    .as_ref()
+                    .filter(|resume| resume.anchor.as_str() == harness_id)
+                    .filter(|_| shape.resume_request().is_some())
+                    .map(|resume| resume.token.clone()),
                 // The harness's own posture for this mode, not the spectrum's:
                 // goose and copilot share one ACP shape and do not share a
                 // mapping, and a driven turn must answer with what the same mode
@@ -2445,7 +2538,7 @@ fn drive_controlled_candidate(
             persisted_event_indexes: BTreeSet::new(),
         };
     }
-    chain.bind(shape, spec, &prompt);
+    chain.bind(shape, spec, unit.harness_id, &prompt);
     let mut streamed = stream_one_harness(
         unit,
         history,

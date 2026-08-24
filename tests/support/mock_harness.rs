@@ -104,12 +104,20 @@
 //!                   to the log, so a test can assert the client answered the
 //!                   permission request (without which a real turn never starts)
 //!                   and that cancel carried no `id`.
+//!   MOCK_ACP_COMPLETE_TURN  with MOCK_ACP_LOG, end the turn on its own once the
+//!                   client has answered the permission request, instead of
+//!                   waiting for a `session/cancel`.
 //!   MOCK_CODEX_APP_SERVER_LOG  if set to a path, act like **`codex app-server`**
-//!                   on stdio: answer `initialize` and `thread/start`, answer
+//!                   on stdio: answer `initialize`, `thread/start` and
+//!                   `thread/resume` (which rejoins the thread the client named,
+//!                   echoing its id back exactly as the real server does), answer
 //!                   `turn/start` with an in-progress turn (which is NOT the end
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
+//!                              its own (`turn/completed`) instead of holding it
+//!                              open until an interrupt arrives.
 //!   MOCK_CODEX_DIE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, acknowledge the
 //!                   interrupt and then EXIT without the `turn/completed` that
 //!                   ends the turn, appending `DIED_AFTER_INTERRUPT`. The
@@ -997,6 +1005,26 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 "id": id,
                 "result": {"thread": {"id": "mock-codex-thread"}},
             })),
+            // Rejoining the thread the client named, exactly as the real
+            // app-server does: `ThreadResumeResponse` carries the same required
+            // `thread` field `ThreadStartResponse` does, so the client reads the
+            // conversation's id off one arm either way. Echoing the REQUESTED id
+            // is what makes a resumed turn distinguishable from a fresh one in
+            // the report — a fixture that minted a new id would hide exactly the
+            // bug this exists to catch.
+            Some("thread/resume") => {
+                let requested = message
+                    .get("params")
+                    .and_then(|params| params.get("threadId"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {"thread": {"id": requested}},
+                }));
+            }
             Some("turn/start") => {
                 send(&json!({
                     "jsonrpc": "2.0",
@@ -1008,6 +1036,17 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "method": "item/agentMessage/delta",
                     "params": {"itemId": "item_1", "delta": "still working"},
                 }));
+                // A turn that ends on its own, for the exchanges that are about
+                // what the client SENT rather than about interrupting it. The
+                // default fixture holds the turn open until an interrupt
+                // arrives, which a run nobody interrupts would wait out.
+                if std::env::var_os("MOCK_CODEX_COMPLETE_TURN").is_some() {
+                    send(&json!({
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {"turnId": "mock-codex-turn"},
+                    }));
+                }
             }
             // Only an interrupt that names BOTH coordinates stops the turn:
             // the real app-server takes `{threadId, turnId}`, and a fixture
@@ -1120,6 +1159,18 @@ fn run_acp_server(log_path: &str) -> ! {
                 // a test can assert the client actually sent one.
                 if method.is_none() && id.is_some() && asked_permission {
                     append("PERMISSION_ANSWERED");
+                    // A turn that ends on its own, for the exchanges that are
+                    // about what the client SENT rather than about interrupting
+                    // it. The default fixture ends only on a cancel, which a run
+                    // nobody interrupts would wait out.
+                    if std::env::var_os("MOCK_ACP_COMPLETE_TURN").is_some() {
+                        if let Some(prompt_id) = prompt_id.take() {
+                            send(&format!(
+                                "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+                            ));
+                            break;
+                        }
+                    }
                 }
             }
         }

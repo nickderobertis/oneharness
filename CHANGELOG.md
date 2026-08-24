@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/nickderobertis/oneharness/compare/v0.10.3...v0.11.0) - 2026-08-24
+
+### Fixed
+
+- [**breaking**] resume a named session on a turn-driving control mechanism, or refuse it ([#1268](https://github.com/nickderobertis/oneharness/pull/1268))
+
 ## [0.10.3](https://github.com/nickderobertis/oneharness/compare/v0.10.2...v0.10.3) - 2026-08-23
 
 ### Fixed

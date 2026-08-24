@@ -372,7 +372,18 @@ Use the `just` recipes; do not hand-roll equivalents.
   on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
   codex ends on `turn/completed`, not the `turn/start` response, and ACP must
   answer `session/request_permission`. Dialogue-derived session ids are usable
-  only under `--control` (`session_capable_under`). HTTP control submits turns
+  only under `--control` (`session_capable_under`) — but a `--session` handle
+  under `--control` names the CHANNEL, and whether it also continues a
+  CONVERSATION is the mechanism's own question (`ControlShape::carries_session`):
+  a driven turn builds no argv, so `HarnessPlan::resume` is never reached and
+  the protocol's own `resume_request` is the only route in. Codex has one
+  (`thread/resume`, whose response carries the same `thread` field
+  `thread/start` does); claude needs none (its frame rides the ordinary `-p`
+  run). Over a mechanism with neither a *continue* is a loud usage error and a *create*
+  warns that this handle will not continue — never a fresh conversation reported
+  as a continuation, which the store cannot tell apart. The token is scoped to
+  the session ANCHOR on this route exactly as on the argv one; a chain candidate
+  that is not the anchor opens fresh. HTTP control submits turns
   through the pooled server, not the harness CLI: permission requests must be
   answered; opencode is terminal only on idle after admission; and cwd — plus
   opencode's MODEL, which its session-create route takes as a required
@@ -877,7 +888,10 @@ shape. When you add one:
   oneharness; `None` is the default. A new shape must also source how a
   redirection reaches it (the frame/route that opens a turn on the session it
   just aborted) and add `oh_control_redirect_enforce <id>` — the live proof the
-  redirected turn actually runs. Keep the probe tables, registry, live suite,
+  redirected turn actually runs. Declare its `resume_request` from the CLI's own
+  protocol schema, or `None` — a shape that drives its turn and cannot be asked
+  to resume refuses a `--session` continue rather than starting over quietly.
+  Keep the probe tables, registry, live suite,
   and README matrix aligned. A sidecar also declares `server` ([`ServerSpec`]).
   Its pool key excludes per-turn and per-thread settings; membership is a lease
   naming a live process identity, never a counter or a bare pid.

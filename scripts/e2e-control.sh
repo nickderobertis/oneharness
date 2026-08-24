@@ -8,6 +8,10 @@
 # check that trusted the harness's own stop reason would pass for the wrong
 # reason.
 #
+# Then a named handle across two turns, which must either continue ONE
+# conversation or refuse to — the half no mock can alarm, since the resume
+# request is the real CLI's own protocol.
+#
 # Then the same turn again with `interrupt --input`, which must do BOTH halves:
 # freeze the original work AND carry out the redirected work, on the same
 # dispatch. An interrupt that stopped the turn and quietly dropped the message
@@ -259,6 +263,8 @@ for declaration in "${CONTROLLABLE[@]}"; do
         oh_control_enforce "$id" "$mechanism" || exit $?
         note "» $id: an interrupt carrying --input must STOP the turn and DO the new work"
         oh_control_redirect_enforce "$id" || exit $?
+        note "» $id: a named handle must CONTINUE one conversation, or refuse to — never start over quietly"
+        oh_control_session_enforce "$id" "$mechanism" || exit $?
         if [ -n "$mode_gap" ]; then
             note "» $id: KNOWN GAP, not run — a controlled turn under the mode's OWN policy"
             note "    $mode_gap"

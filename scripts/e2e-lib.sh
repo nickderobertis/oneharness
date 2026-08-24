@@ -1335,6 +1335,126 @@ _oh_control_evidence() {
     fi
 }
 
+# A named handle under `--control` must either CONTINUE one conversation or
+# refuse to — never quietly open a new one.
+#
+# Capability-free on purpose, so a harness whose mechanism gains or loses a
+# resume request is exercised without editing this script: the second turn must
+# either report `phase == "continue"` AND recall what turn one established, or
+# be refused before it spawns. Reporting `continue` alone proves nothing — that
+# is exactly what a fresh conversation looked like. Only the real CLI can alarm
+# this: the resume request is its own protocol, which a fixture cannot rename.
+#
+# All it asks of turn one is the HANDLE it creates, not a clean turn: see the
+# note at the create below for why a phase about continuing must not import
+# whether a controlled turn ends.
+#   $1 harness id, $2 mechanism (for the refusal's own wording)
+oh_control_session_enforce() {
+    local id="$1" mechanism="$2"
+    local bin sandbox store name marker status text phase first_status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    store="$sandbox/sessions"
+    name="ohses${RANDOM}"
+    marker="$(oh_marker_fixed)"
+
+    note "  control-session: turn one on session $name ($id)"
+    status=0
+    _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
+        "Remember this exact word for the rest of our conversation: $marker. Reply with only the word OK." \
+        "$sandbox/first.json" "$sandbox/first.err" || status=$?
+    if [ "$status" -ne 0 ] && _oh_note_provider_refusal "$id" "$sandbox/first.json"; then
+        rm -rf "$sandbox"
+        return "$_OH_NOT_RUN"
+    fi
+    first_status="$status"
+    # What turn two is judged against is the stored CONVERSATION, so that — not a
+    # clean exit — is what turn one has to leave behind. Whether a controlled
+    # turn ever ENDS is a different property, owned by `oh_control_mode_enforce`
+    # and already a declared gap on opencode (its uninterrupted controlled turn
+    # runs out its timeout and exits non-zero), so demanding exit 0 here would
+    # retire the continuation check on a harness for a reason that has nothing to
+    # do with continuing. A turn one that established nothing still fails, below,
+    # whatever its exit code was — and on a mechanism that CAN continue, a turn
+    # one the model never saw fails again at the marker.
+    if [ "$status" -ne 0 ]; then
+        note "  first turn exited $status (status=$(jq -r '[.results[].status] | join(",")' "$sandbox/first.json" 2>/dev/null || echo '<no report>')); the handle is what turn two needs, so read on"
+        note "  first turn stderr: $(head -c 500 "$sandbox/first.err" 2>/dev/null || true)"
+    fi
+    if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
+        "$sandbox/first.json" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: the first controlled turn left no conversation on a fresh handle — a create that stores no token is a handle turn two cannot be judged against, in either direction ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
+    fi
+
+    note "  control-session: turn two on the SAME handle — continue it, or refuse loudly"
+    status=0
+    _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
+        "What was the exact word I asked you to remember? Reply with only that word." \
+        "$sandbox/second.json" "$sandbox/second.err" || status=$?
+
+    # The refusal: this mechanism drives its own turn and cannot reopen a
+    # conversation, so oneharness says so before anything spawns.
+    if [ "$status" -eq 2 ] && grep -qF "$mechanism" "$sandbox/second.err" \
+        && grep -qF "cannot be continued" "$sandbox/second.err"; then
+        note "PASS: $id refused to continue a handle its mechanism cannot reopen ($mechanism)"
+        rm -rf "$sandbox"
+        return 0
+    fi
+    if [ "$status" -ne 0 ]; then
+        if _oh_note_provider_refusal "$id" "$sandbox/second.json"; then
+            rm -rf "$sandbox"
+            return "$_OH_NOT_RUN"
+        fi
+        note "  second turn stderr: $(head -c 500 "$sandbox/second.err" 2>/dev/null || true)"
+        rm -rf "$sandbox"
+        fail "$id: the second controlled turn on the handle neither continued it nor refused it — it failed for some third reason (exit $status)"
+    fi
+
+    # The continue: the report must say so, and the conversation must actually
+    # carry what turn one established. `phase` alone proved nothing before this
+    # change — it read `continue` while a brand-new thread ran the turn.
+    phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
+    if [ "$phase" != "continue" ]; then
+        rm -rf "$sandbox"
+        fail "$id: the second turn ran but reported phase=$phase — a handle that neither continued nor refused is the silent fresh start this phase exists to catch"
+    fi
+    text="$(jq -r '[.results[] | ((.text // "") + "\n" + (.stdout // ""))] | join("\n")' "$sandbox/second.json")"
+    case "$text" in
+    *"$marker"*)
+        note "PASS: $id continued ONE conversation across two controlled turns (the second turn recalled $marker)"
+        ;;
+    *)
+        note "  second turn text: $(printf '%s' "$text" | head -c 500)"
+        [ "$first_status" -eq 0 ] || note "  (turn one exited $first_status, so read its evidence above before this one: a conversation the model never saw carries nothing either)"
+        rm -rf "$sandbox"
+        fail "$id: the second turn reported phase=continue but the conversation did not carry the word turn one established — the handle resumed nothing, which is exactly what a fresh thread reported as a continue looks like"
+        ;;
+    esac
+    rm -rf "$sandbox"
+}
+
+# One controlled turn on a named handle.
+#   $1 id, $2 session name, $3 store dir, $4 cwd, $5 prompt, $6 report, $7 stderr
+_oh_control_session_turn() {
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+    # These turns ask for no tools at all, so the grant buys nothing here — but
+    # the mode has to be one EVERY control mechanism ends a turn under, and
+    # `default` is not (a controlled opencode turn under it does not end; see
+    # `known_gap` in e2e-control.sh). Confined to a fresh mktemp sandbox, like
+    # every other oh_*_enforce phase.
+    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+    ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$1" --prompt "$5" \
+        --control --session "$2" --session-dir "$3" --cwd "$4" \
+        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" >"$6" 2>"$7"
+}
+
 oh_control_enforce() {
     local id="$1" expected_mechanism="$2"
     # Three attempts, not two: an inconclusive attempt is a model that refused or

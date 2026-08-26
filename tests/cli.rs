@@ -4880,7 +4880,7 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
 
 #[cfg(not(windows))]
 fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
-    let session_dir = ScratchDir::new("ce").unwrap();
+    let session_dir = control_store_dir("ce");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(
@@ -4929,6 +4929,90 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
 }
 
 #[test]
+fn controlled_codex_reports_a_started_tool_when_completion_never_arrives() {
+    assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives();
+}
+
+#[cfg(windows)]
+fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives() {
+    let raw = include_str!("fixtures/codex-app-server-command-execution.jsonl")
+        .lines()
+        .next()
+        .unwrap();
+    let reading = oneharness_core::domain::events::extract_events(
+        raw,
+        oneharness_core::domain::report::OutputFormat::Json,
+    )
+    .unwrap();
+    assert_eq!(reading.source, "json:codex-app-server-items");
+    assert_eq!(reading.events.len(), 1);
+    let event = &reading.events[0];
+    assert_eq!(event.name.as_deref(), Some("command_execution"));
+    assert_eq!(
+        event.input,
+        Some(serde_json::json!({
+            "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"
+        }))
+    );
+    assert!(event.output.is_none());
+    assert_eq!(
+        event.tool_call_id.as_deref(),
+        Some("exec-8bdfb037-a11e-415d-9b77-728f3ae0789c")
+    );
+}
+
+#[cfg(not(windows))]
+fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives() {
+    let session_dir = control_store_dir("cs");
+    let app_server_log = session_dir.join("app-server.log");
+    let app_server_log = app_server_log.to_str().unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "start a tool",
+            "--control",
+            "--session",
+            "started-event",
+            "--session-dir",
+            session_dir.to_str().unwrap(),
+            "--events",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", app_server_log),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ("MOCK_CODEX_TOOL_EVENTS", "1"),
+            ("MOCK_CODEX_TOOL_STARTED_ONLY", "1"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "json:codex-app-server-items");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["name"], "command_execution");
+    assert_eq!(
+        events[0]["input"],
+        serde_json::json!({"command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"})
+    );
+    assert!(events[0]["output"].is_null());
+    assert_eq!(
+        events[0]["tool_call_id"],
+        "exec-8bdfb037-a11e-415d-9b77-728f3ae0789c"
+    );
+}
+
+#[test]
 fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
     assert_controlled_codex_without_tools_reports_an_empty_app_server_reading();
 }
@@ -4949,7 +5033,7 @@ fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
 
 #[cfg(not(windows))]
 fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
-    let session_dir = ScratchDir::new("cn").unwrap();
+    let session_dir = control_store_dir("cn");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(
@@ -5008,7 +5092,7 @@ fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
 
 #[cfg(not(windows))]
 fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
-    let session_dir = ScratchDir::new("cb").unwrap();
+    let session_dir = control_store_dir("cb");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(

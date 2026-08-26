@@ -4848,6 +4848,38 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
 
 #[test]
 fn controlled_codex_normalizes_captured_app_server_tool_events() {
+    assert_controlled_codex_normalizes_captured_app_server_tool_events();
+}
+
+#[cfg(windows)]
+fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
+    // Windows cannot host the Unix control socket, but controlled turns feed
+    // these captured app-server frames to this same production extractor.
+    let raw = include_str!("fixtures/codex-app-server-command-execution.jsonl");
+    let reading = oneharness_core::domain::events::extract_events(
+        raw,
+        oneharness_core::domain::report::OutputFormat::Json,
+    )
+    .unwrap();
+    assert_eq!(reading.source, "json:codex-app-server-items");
+    assert_eq!(reading.events.len(), 1);
+    let event = &reading.events[0];
+    assert_eq!(event.name.as_deref(), Some("command_execution"));
+    assert_eq!(
+        event.input,
+        Some(serde_json::json!({
+            "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"
+        }))
+    );
+    assert_eq!(event.output.as_deref(), Some("OHCAPTURE12345"));
+    assert_eq!(
+        event.tool_call_id.as_deref(),
+        Some("exec-8bdfb037-a11e-415d-9b77-728f3ae0789c")
+    );
+}
+
+#[cfg(not(windows))]
+fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
     let session_dir = ScratchDir::new("cc-events").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
@@ -4898,6 +4930,25 @@ fn controlled_codex_normalizes_captured_app_server_tool_events() {
 
 #[test]
 fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+    assert_controlled_codex_without_tools_reports_an_empty_app_server_reading();
+}
+
+#[cfg(windows)]
+fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+    // The mock's tool-free controlled turn emits this app-server agent item;
+    // exercise the production extractor directly where no control socket exists.
+    let raw = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"item_1","text":"still working"}}}"#;
+    let reading = oneharness_core::domain::events::extract_events(
+        raw,
+        oneharness_core::domain::report::OutputFormat::Json,
+    )
+    .unwrap();
+    assert_eq!(reading.source, "json:codex-app-server-items");
+    assert!(reading.events.is_empty());
+}
+
+#[cfg(not(windows))]
+fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
     let session_dir = ScratchDir::new("cc-no-tools").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.12.0...oneharness-core-v0.12.1) - 2026-08-26
+
+### Fixed
+
+- *(events)* normalize tool events from a controlled codex app-server turn ([#1270](https://github.com/nickderobertis/oneharness/pull/1270))
+
 ## [0.12.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.11.0...oneharness-core-v0.12.0) - 2026-08-24
 
 ### Fixed

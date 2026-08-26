@@ -4847,6 +4847,94 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
 }
 
 #[test]
+fn controlled_codex_normalizes_captured_app_server_tool_events() {
+    let session_dir = ScratchDir::new("controlled-codex-events").unwrap();
+    let app_server_log = session_dir.join("app-server.log");
+    let app_server_log = app_server_log.to_str().unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "use a tool",
+            "--control",
+            "--session",
+            "captured-events",
+            "--session-dir",
+            session_dir.to_str().unwrap(),
+            "--events",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", app_server_log),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ("MOCK_CODEX_TOOL_EVENTS", "1"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "json:codex-app-server-items");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["name"], "command_execution");
+    assert_eq!(
+        events[0]["input"],
+        serde_json::json!({"command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"})
+    );
+    assert_eq!(events[0]["output"], "OHCAPTURE12345");
+    assert_eq!(
+        events[0]["tool_call_id"],
+        "exec-8bdfb037-a11e-415d-9b77-728f3ae0789c"
+    );
+}
+
+#[test]
+fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+    let session_dir = ScratchDir::new("controlled-codex-no-events").unwrap();
+    let app_server_log = session_dir.join("app-server.log");
+    let app_server_log = app_server_log.to_str().unwrap();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "answer without tools",
+            "--control",
+            "--session",
+            "no-events",
+            "--session-dir",
+            session_dir.to_str().unwrap(),
+            "--events",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", app_server_log),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "json:codex-app-server-items");
+    assert_eq!(result["events"], serde_json::json!([]));
+}
+
+#[test]
 fn events_are_extracted_from_a_nonzero_run() {
     // Events are best-effort over whatever output a run produced — including a
     // non-zero exit (a harness that used tools then failed). The tool trace is

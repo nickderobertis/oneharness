@@ -1048,6 +1048,20 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "method": "item/agentMessage/delta",
                     "params": {"itemId": "item_1", "delta": "still working"},
                 }));
+                send(&json!({
+                    "method": "item/completed",
+                    "params": {"item": {"type": "agentMessage", "id": "item_1", "text": "still working"}},
+                }));
+                if std::env::var_os("MOCK_CODEX_TOOL_EVENTS").is_some() {
+                    for frame in
+                        include_str!("../fixtures/codex-app-server-command-execution.jsonl").lines()
+                    {
+                        send(
+                            &serde_json::from_str(frame)
+                                .expect("captured app-server frame is JSON"),
+                        );
+                    }
+                }
                 // A turn that ends on its own, for the exchanges that are about
                 // what the client SENT rather than about interrupting it. The
                 // default fixture holds the turn open until an interrupt

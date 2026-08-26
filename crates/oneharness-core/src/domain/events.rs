@@ -455,7 +455,8 @@ fn codex_app_server_item(value: &Value) -> Option<Option<PartialEvent>> {
         name: Some("command_execution".to_string()),
         input: item
             .get("command")
-            .map(|command| serde_json::json!({"command": command.clone()})),
+            .and_then(Value::as_str)
+            .map(|command| serde_json::json!({"command": command})),
         output: item
             .get("aggregatedOutput")
             .and_then(Value::as_str)
@@ -1227,6 +1228,16 @@ mod tests {
         let got = extract_events(raw, OutputFormat::Json).unwrap();
         assert_eq!(got.source, "json:codex-app-server-items");
         assert!(got.events.is_empty());
+    }
+
+    #[test]
+    fn codex_app_server_rejects_a_non_string_command_argument() {
+        let raw = r#"{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"command-1","command":{"unexpected":"shape"},"aggregatedOutput":"done"}}}"#;
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:codex-app-server-items");
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].input, None);
+        assert_eq!(got.events[0].output.as_deref(), Some("done"));
     }
 
     #[test]

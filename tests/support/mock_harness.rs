@@ -1056,10 +1056,12 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     for frame in
                         include_str!("../fixtures/codex-app-server-command-execution.jsonl").lines()
                     {
-                        send(
-                            &serde_json::from_str(frame)
-                                .expect("captured app-server frame is JSON"),
-                        );
+                        let mut frame: Value =
+                            serde_json::from_str(frame).expect("captured app-server frame is JSON");
+                        if std::env::var_os("MOCK_CODEX_NON_STRING_COMMAND").is_some() {
+                            frame["params"]["item"]["command"] = json!({"unexpected": "shape"});
+                        }
+                        send(&frame);
                     }
                 }
                 // A turn that ends on its own, for the exchanges that are about

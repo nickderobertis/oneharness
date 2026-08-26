@@ -14,7 +14,7 @@
 //! envelope could express. Normalizing here, where the per-harness output shapes
 //! are already known, spares every consumer from per-harness stdout parsing.
 //!
-//! Four output shapes are recognized, all sourced from real transcripts captured
+//! Five output shapes are recognized, all sourced from real transcripts captured
 //! from the live CLIs (the `explore-events` CI probe), not guessed:
 //! - **OpenCode** (`run --format json`): JSONL events whose `part.type == "tool"`
 //!   carry the tool `name` (`part.tool`) and a `state` object holding the call
@@ -30,6 +30,8 @@
 //!   name is the payload key minus its `ToolCall` suffix.
 //! - **Codex** (`exec --json`): flat `item.started` / `item.completed` lifecycle
 //!   events for command, MCP, collaboration, and web-search tool items.
+//! - **Codex app-server** (controlled turns): JSON-RPC `item/started` /
+//!   `item/completed` notifications whose `params.item` carries the tool item.
 //!
 //! Goose, Crush, and Copilot expose no machine-readable transcript headlessly
 //! (decorative TUI text, or no JSON output mode at all — confirmed by the probe),
@@ -150,7 +152,10 @@ pub fn extract_events(stdout: &str, fmt: OutputFormat) -> Option<EventsReading> 
     for value in json_candidates(stdout) {
         if let Some((label, mut partials)) = recognize(&value) {
             recognizer.get_or_insert(label);
-            if label == "opencode-parts" || label == "codex-items" {
+            if matches!(
+                label,
+                "opencode-parts" | "codex-items" | "codex-app-server-items"
+            ) {
                 for partial in partials {
                     merge_tool_update(&mut events, partial);
                 }
@@ -201,6 +206,12 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     // Codex executable item lifecycle; repeated updates collapse by item id.
     if let Some(pe) = codex_tool_item(value) {
         return Some(("codex-items", vec![pe]));
+    }
+    // A controlled Codex turn uses app-server JSON-RPC notifications instead
+    // of `exec --json`. Recognize even non-tool item notifications so a
+    // tool-free controlled transcript is an empty reading, not an absent one.
+    if let Some(pe) = codex_app_server_item(value) {
+        return Some(("codex-app-server-items", pe.into_iter().collect()));
     }
     // Anthropic content blocks (Claude Code / Qwen): tool_use + tool_result.
     let blocks = content_block_events(value);
@@ -418,6 +429,40 @@ fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
         output,
         tool_call_id: item.get("id").and_then(Value::as_str).map(str::to_string),
     })
+}
+
+/// Codex app-server item notifications captured from a real controlled turn
+/// (`tests/fixtures/codex-app-server-command-execution.jsonl`). The protocol
+/// spells both the lifecycle method and item type differently from `exec
+/// --json`; the normalized event intentionally matches that sibling reading.
+fn codex_app_server_item(value: &Value) -> Option<Option<PartialEvent>> {
+    let obj = value.as_object()?;
+    if !matches!(
+        obj.get("method").and_then(Value::as_str),
+        Some("item/started" | "item/completed")
+    ) {
+        return None;
+    }
+    let item = obj
+        .get("params")
+        .and_then(|params| params.get("item"))
+        .and_then(Value::as_object)?;
+    if item.get("type").and_then(Value::as_str) != Some("commandExecution") {
+        return Some(None);
+    }
+    Some(Some(PartialEvent {
+        kind: "tool_call",
+        name: Some("command_execution".to_string()),
+        input: item
+            .get("command")
+            .and_then(Value::as_str)
+            .map(|command| serde_json::json!({"command": command})),
+        output: item
+            .get("aggregatedOutput")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        tool_call_id: item.get("id").and_then(Value::as_str).map(str::to_string),
+    }))
 }
 
 fn is_codex_tool_type(item_type: &str) -> bool {
@@ -1160,6 +1205,39 @@ mod tests {
             Some(json!({"command": "/bin/bash -lc 'echo hi'"}))
         );
         assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+    }
+
+    #[test]
+    fn codex_app_server_capture_yields_the_exec_compatible_event_shape() {
+        let raw =
+            include_str!("../../../../tests/fixtures/codex-app-server-command-execution.jsonl");
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:codex-app-server-items");
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].name.as_deref(), Some("command_execution"));
+        assert_eq!(
+            got.events[0].input,
+            Some(json!({"command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"}))
+        );
+        assert_eq!(got.events[0].output.as_deref(), Some("OHCAPTURE12345"));
+    }
+
+    #[test]
+    fn codex_app_server_tool_free_item_is_an_empty_reading() {
+        let raw = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"message-1","text":"done"}}}"#;
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:codex-app-server-items");
+        assert!(got.events.is_empty());
+    }
+
+    #[test]
+    fn codex_app_server_rejects_a_non_string_command_argument() {
+        let raw = r#"{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"command-1","command":{"unexpected":"shape"},"aggregatedOutput":"done"}}}"#;
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:codex-app-server-items");
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].input, None);
+        assert_eq!(got.events[0].output.as_deref(), Some("done"));
     }
 
     #[test]

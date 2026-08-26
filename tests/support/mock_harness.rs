@@ -118,6 +118,8 @@
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
+//!   MOCK_CODEX_TOOL_STARTED_ONLY  with MOCK_CODEX_TOOL_EVENTS, emit only the
+//!                              captured `item/started` tool notification.
 //!   MOCK_CODEX_DIE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, acknowledge the
 //!                   interrupt and then EXIT without the `turn/completed` that
 //!                   ends the turn, appending `DIED_AFTER_INTERRUPT`. The
@@ -1048,6 +1050,28 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "method": "item/agentMessage/delta",
                     "params": {"itemId": "item_1", "delta": "still working"},
                 }));
+                send(&json!({
+                    "method": "item/completed",
+                    "params": {"item": {"type": "agentMessage", "id": "item_1", "text": "still working"}},
+                }));
+                if std::env::var_os("MOCK_CODEX_TOOL_EVENTS").is_some() {
+                    let started_only = std::env::var_os("MOCK_CODEX_TOOL_STARTED_ONLY").is_some();
+                    for (index, frame) in
+                        include_str!("../fixtures/codex-app-server-command-execution.jsonl")
+                            .lines()
+                            .enumerate()
+                    {
+                        if started_only && index > 0 {
+                            break;
+                        }
+                        let mut frame: Value =
+                            serde_json::from_str(frame).expect("captured app-server frame is JSON");
+                        if std::env::var_os("MOCK_CODEX_NON_STRING_COMMAND").is_some() {
+                            frame["params"]["item"]["command"] = json!({"unexpected": "shape"});
+                        }
+                        send(&frame);
+                    }
+                }
                 // A turn that ends on its own, for the exchanges that are about
                 // what the client SENT rather than about interrupting it. The
                 // default fixture holds the turn open until an interrupt

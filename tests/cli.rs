@@ -4936,7 +4936,28 @@ fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
 
 #[test]
 fn controlled_codex_does_not_expose_a_non_string_command_argument() {
-    let session_dir = ScratchDir::new("cc-bad-command").unwrap();
+    assert_controlled_codex_does_not_expose_a_non_string_command_argument();
+}
+
+#[cfg(windows)]
+fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
+    // Windows cannot host the Unix control socket, but the captured app-server
+    // frames take this same production extractor after a controlled turn.
+    let raw = r#"{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"command-1","command":{"unexpected":"shape"},"aggregatedOutput":"OHCAPTURE12345"}}}"#;
+    let reading = oneharness_core::domain::events::extract_events(
+        raw,
+        oneharness_core::domain::report::OutputFormat::Json,
+    )
+    .unwrap();
+    assert_eq!(reading.source, "json:codex-app-server-items");
+    assert_eq!(reading.events.len(), 1);
+    assert!(reading.events[0].input.is_none());
+    assert_eq!(reading.events[0].output.as_deref(), Some("OHCAPTURE12345"));
+}
+
+#[cfg(not(windows))]
+fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
+    let session_dir = ScratchDir::new("cc-bad").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(

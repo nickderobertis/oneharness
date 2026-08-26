@@ -4957,7 +4957,7 @@ fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
 
 #[cfg(not(windows))]
 fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
-    let session_dir = ScratchDir::new("cc-bad").unwrap();
+    let session_dir = ScratchDir::new("cb").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(

@@ -4880,7 +4880,7 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
 
 #[cfg(not(windows))]
 fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
-    let session_dir = ScratchDir::new("cc-events").unwrap();
+    let session_dir = ScratchDir::new("ce").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(
@@ -4949,7 +4949,7 @@ fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
 
 #[cfg(not(windows))]
 fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
-    let session_dir = ScratchDir::new("cc-no-tools").unwrap();
+    let session_dir = ScratchDir::new("cn").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(

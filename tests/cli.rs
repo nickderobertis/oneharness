@@ -4848,7 +4848,7 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
 
 #[test]
 fn controlled_codex_normalizes_captured_app_server_tool_events() {
-    let session_dir = ScratchDir::new("controlled-codex-events").unwrap();
+    let session_dir = ScratchDir::new("cc-events").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(
@@ -4898,7 +4898,7 @@ fn controlled_codex_normalizes_captured_app_server_tool_events() {
 
 #[test]
 fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
-    let session_dir = ScratchDir::new("controlled-codex-no-events").unwrap();
+    let session_dir = ScratchDir::new("cc-no-tools").unwrap();
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
     let output = run(

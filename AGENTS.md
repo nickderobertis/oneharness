@@ -115,6 +115,18 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just smoke` — hermetic end-to-end smoke of the built binary (part of `just
   check` and CI). `just smoke-live` is the opt-in variant that hits installed,
   authenticated harnesses with real model calls — never in the gate or CI.
+- `just release-probe-live` — opt-in network proof of `scripts/release-probe.sh`,
+  which answers `release-targets.toml`'s registry-qualified ids. One target per
+  ARTIFACT, never per repository: `oneharness-cli` is both a PyPI project and an
+  npm package, and the two crates have shipped a whole minor apart. The probe's
+  three answers must stay distinguishable — a version, **empty stdout** for *no
+  release yet*, a **non-zero exit** for *not answered* — and everything
+  uncertain resolves to the last, an unrecognised identifier included, since a
+  consumer stops waiting on the middle. `check-release-targets.sh` derives the
+  published set from the release configuration rather than a transcribed list,
+  and owns the mirror of the probe's registry dispatch; a per-platform
+  `@oneharness/cli-*` package is covered by the launcher's
+  `optionalDependencies`, so a new one goes there rather than into a target.
 - `just live-control` — the per-feature live turn-control suite: interrupt a real
   multi-step turn on every control-capable harness, prove the work stopped, then
   interrupt again with `--input` and prove the redirected work ran. Slow by

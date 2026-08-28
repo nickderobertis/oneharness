@@ -183,6 +183,15 @@
 //!                   this native binary, whose lifetime is independent of its
 //!                   direct parent unless the Job Object contains it. This
 //!                   reproduces the process-tree timeout boundary of npm shims.
+//!   MOCK_HOLD_FILE  if set to a path, block at startup until that file names
+//!                   this process's pid on a line of its own. A supervising
+//!                   caller asks the OS about the child while the run still
+//!                   holds it, and macOS answers nothing about a process that
+//!                   has already exited (`getpgid` refuses a zombie), so a test
+//!                   that needs the child demonstrably alive across the
+//!                   hand-over releases it from that hook instead of sleeping
+//!                   long enough to hope. Bounded, so a caller that never
+//!                   releases fails its own assertion rather than hanging.
 
 use std::io::Write;
 
@@ -1316,10 +1325,39 @@ fn run_controlled_turn(log_path: &str) -> ! {
     std::process::exit(0);
 }
 
+/// Block until `path` names this process's pid on a line of its own — the
+/// release a [`MOCK_HOLD_FILE`](self) caller writes once it has finished asking
+/// the OS about this child. Bounded by `HOLD_MAX`: a caller that never releases
+/// gets its own assertion back, loudly, instead of a hung suite.
+fn wait_until_released(path: &str) {
+    const HOLD_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+    let me = std::process::id().to_string();
+    let deadline = std::time::Instant::now() + HOLD_MAX;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.lines().any(|line| line.trim() == me) {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = writeln!(
+                std::io::stderr(),
+                "mock harness: MOCK_HOLD_FILE {path} never named pid {me}"
+            );
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 pub fn run() -> ! {
     #[cfg(windows)]
     if std::env::var_os("ONEHARNESS_MOCK_NATIVE_DESCENDANT").is_some() {
         run_native_descendant();
+    }
+
+    if let Ok(path) = std::env::var("MOCK_HOLD_FILE") {
+        wait_until_released(&path);
     }
 
     let argv: Vec<String> = std::env::args().skip(1).collect();

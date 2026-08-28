@@ -117,6 +117,22 @@ assert_declined_offline() {
   fi
 }
 
+# $1 = description, $2 = the one line stdout must carry, or "" for the empty
+# answer, $3 = PATH to run under, then the probe's arguments. The counterpart
+# of assert_not_answered: a probe that refused everything would satisfy every
+# case above, so the two answers a caller acts on are asserted here too.
+assert_answered() {
+  local description=$1 expected=$2 path=$3 status=0
+  shift 3
+  : >"$reached"
+  NETWORK_REACHED="$reached" PATH="$path" \
+    scripts/release-probe.sh "$@" >"$work/out" 2>"$work/err" || status=$?
+  [ "$status" -eq 0 ] ||
+    fail "$description was refused (exit $status) instead of answered; a caller holds forever on a refusal, so fix whichever branch of scripts/release-probe.sh now swallows it — its stderr is below"
+  [ "$(cat "$work/out")" = "$expected" ] ||
+    fail "$description answered '$(cat "$work/out")' where a caller is promised '$expected'; scripts/release-probe.sh must print the version and nothing else, or nothing at all for an artifact the registry has never served"
+}
+
 assert_declined_offline "no identifier at all" "takes exactly one registry-qualified identifier"
 assert_declined_offline "two identifiers" "takes exactly one registry-qualified identifier" \
   crate:oneharness crate:oneharness-core
@@ -218,4 +234,60 @@ STUB_BODY='{"crate":{"max_stable_version":"1.2.3"}}' \
   "neither jq nor python3" "$work/minbin:$work/bin" \
   scripts/release-probe.sh crate:oneharness
 
-echo "check-release-probe: every path that cannot produce a version is refused, never reported as 'no release yet'"
+# The two answers a caller acts on. Everything above proves the probe declines
+# where it must, which a probe that declined ALWAYS would also satisfy — so the
+# distinction those cases exist to protect is only really pinned once both
+# answers are driven here too. They need a registry to answer, not a network:
+# the stub supplies each registry's own reply and the real script reads it.
+#
+# release-probe-live.sh drives the same two against the real registries; this is
+# what keeps them inside the offline gate, where a regression is caught on every
+# run rather than on an opt-in one.
+STUB_BODY='{"crate":{"max_stable_version":"1.2.3"}}' \
+  assert_answered "a registry serving a version" "1.2.3" "$stub_path" crate:oneharness
+# The empty answer, and the only thing that produces it: the registry itself
+# saying it has never served this artifact.
+STUB_STATUS=404 STUB_BODY='{"detail":"Not Found"}' \
+  assert_answered "a registry that has never served the artifact" "" "$stub_path" \
+  crate:oneharness
+
+# Each registry's own reply shape and version path, so a registry whose payload
+# this probe reads from the wrong key is caught here rather than live.
+STUB_BODY='{"info":{"version":"0.11.0"}}' \
+  assert_answered "PyPI's own payload" "0.11.0" "$stub_path" pypi:oneharness-cli
+STUB_BODY='{"dist-tags":{"latest":"0.11.0"}}' \
+  assert_answered "npm's own payload" "0.11.0" "$stub_path" npm:oneharness-cli
+# A scoped name is one path segment on npm, so its separator is percent-encoded.
+# Unencoded, the registry reads it as a package inside an org and answers 404 —
+# which this probe would then report as "never released" for an artifact that is
+# published, the one confusion it exists to prevent.
+STUB_BODY='{"dist-tags":{"latest":"0.11.0"}}' \
+  assert_answered "a scoped npm name" "0.11.0" "$stub_path" npm:@oneharness/sdk
+grep -Fq '@oneharness%2fsdk' "$reached" ||
+  fail "the scoped npm name was requested as '$(sed -n 's|.*registry.npmjs.org/||p' "$reached" | head -n 1)'; npm serves a scoped package under one percent-encoded path segment, so restore the '/'-to-%2f substitution in the npm arm of scripts/release-probe.sh"
+
+# crates.io serves a prerelease as max_version while max_stable_version holds
+# what a consumer may depend on, so the order of the paths is load-bearing.
+STUB_BODY='{"crate":{"max_stable_version":"1.2.3","max_version":"2.0.0-rc.1"}}' \
+  assert_answered "a crate with a newer prerelease" "1.2.3" "$stub_path" crate:oneharness
+# With no stable release at all, the prerelease is what the registry serves.
+STUB_BODY='{"crate":{"max_stable_version":"","max_version":"0.1.0-alpha.1"}}' \
+  assert_answered "a crate with only a prerelease" "0.1.0-alpha.1" "$stub_path" crate:oneharness
+
+# Both readers, since either can be the one a host has. The refusals above
+# exercise them failing; neither was ever proven to produce a right answer.
+readers=0
+for reader in jq python3; do
+  path="$(type -P "$reader")" || continue
+  mkdir -p "$work/reader-$reader"
+  ln -sf "$path" "$work/reader-$reader/$reader"
+  # minbin carries no reader, so each case runs with exactly the one it names.
+  STUB_BODY='{"crate":{"max_stable_version":"1.2.3"}}' \
+    assert_answered "the $reader reader" "1.2.3" \
+    "$work/reader-$reader:$work/minbin:$work/bin" crate:oneharness
+  readers=$((readers + 1))
+done
+[ "$readers" -gt 0 ] ||
+  fail "this host has neither jq nor python3, so no reader could be exercised; install one (the probe needs it too) and rerun"
+
+echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', and both answers a caller acts on are distinguishable ($readers reader(s))"

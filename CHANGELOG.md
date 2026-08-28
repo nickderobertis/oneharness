@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.2](https://github.com/nickderobertis/oneharness/compare/v0.11.1...v0.11.2) - 2026-08-28
+
+### Added
+
+- *(release)* declare this repository's release targets and prove them complete ([#1272](https://github.com/nickderobertis/oneharness/pull/1272))
+
 ## [0.11.1](https://github.com/nickderobertis/oneharness/compare/v0.11.0...v0.11.1) - 2026-08-26
 
 ### Fixed

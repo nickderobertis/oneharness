@@ -102,7 +102,11 @@ test("schema generation is isolated from shared Cargo artifacts", () => {
 	} finally {
 		rmSync(sharedTarget, { recursive: true, force: true });
 	}
-});
+	// A real generator invocation, so it compiles the workspace crates like the
+	// stale-contract test below and needs the same budget: what it asserts is
+	// where Cargo wrote, never how fast. bun's 5s default is under a cold
+	// compile on a busy host.
+}, 120_000);
 
 test("generated optional properties remain exact-optional compatible", () => {
 	expect(

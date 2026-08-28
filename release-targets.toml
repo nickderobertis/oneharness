@@ -1,0 +1,58 @@
+# What this repository releases, and the name each registry serves it under.
+#
+# A consumer that has to wait for a change to land here needs one thing only
+# this repository can say: the registry-qualified identifier of every artifact
+# it publishes. `oneharness-cli` alone names two different artifacts — a PyPI
+# project and an npm package, published on two cadences from this one
+# repository — so an unqualified name says which artifact only by luck. Every
+# id below is `<registry>:<name>`, and `<name>` is exactly what that registry
+# serves.
+#
+# The two crates move independently and are separate targets for that reason:
+# the binary and the engine it is compiled against have shipped a whole minor
+# apart, so comparing their version strings is evidence about neither.
+#
+# A target is a CONSUMABLE artifact — one a dependent names in order to depend
+# on it. The per-platform `@oneharness/cli-<platform>-<arch>` packages are
+# therefore NOT targets: they exist only so `npm:oneharness-cli` can resolve one
+# of them at its own exact version, and that launcher's own manifest is where
+# they are enumerated. scripts/check-release-targets.sh derives the published
+# set from the release configuration itself — publish-crates.sh, the manifests,
+# npm-build.mjs's target table, release.yml's publish jobs — and fails on a name
+# that is neither declared here nor covered that way, in either direction.
+#
+# `scripts/release-probe.sh <id>` answers what a registry currently serves for
+# one of these ids.
+
+schema_version = 1
+
+# The reusable engine. Published first; the binary below pins it by version.
+[[target]]
+id = "crate:oneharness-core"
+manifest = "crates/oneharness-core/Cargo.toml"
+
+[[target]]
+id = "crate:oneharness"
+manifest = "Cargo.toml"
+
+# The maturin `bin`-bindings wheels wrapping the prebuilt binary. The bare
+# `oneharness` name was unavailable on PyPI; the command it installs is still
+# `oneharness`.
+[[target]]
+id = "pypi:oneharness-cli"
+manifest = "pyproject.toml"
+
+# The pure-Python client, pinned to the exact `pypi:oneharness-cli` above.
+[[target]]
+id = "pypi:oneharness-sdk"
+manifest = "python/oneharness-sdk/pyproject.toml"
+
+# The npm launcher. Its optionalDependencies enumerate the per-platform
+# packages this target covers.
+[[target]]
+id = "npm:oneharness-cli"
+manifest = "npm/oneharness/package.json"
+
+[[target]]
+id = "npm:@oneharness/sdk"
+manifest = "npm/oneharness-sdk/package.json"

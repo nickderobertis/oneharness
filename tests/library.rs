@@ -352,6 +352,12 @@ struct Recorder {
     inject: Option<(String, String)>,
     /// The harness's run log, read at hand-over.
     log: Option<PathBuf>,
+    /// Holds each child at startup until this supervisor has asked the OS about
+    /// it — see [`HoldPen`].
+    hold: Option<HoldPen>,
+    /// Stay inside the hand-over this long before reading the fixture's log and
+    /// releasing the child, so what a held child did meanwhile is observable.
+    linger: Option<Duration>,
     commands: Mutex<Vec<(String, Vec<String>)>>,
     children: Mutex<Vec<SeenChild>>,
 }
@@ -360,6 +366,9 @@ impl ProcessSupervisor for Recorder {
     fn spawning(&self, command: &mut Command) {
         if let Some((key, value)) = &self.inject {
             command.env(key, value);
+        }
+        if let Some(hold) = &self.hold {
+            hold.hold(command);
         }
         let program = command.get_program().to_string_lossy().into_owned();
         let args = command
@@ -373,20 +382,74 @@ impl ProcessSupervisor for Recorder {
     }
 
     fn spawned(&self, child: &Child) {
+        // Everything the OS can only answer about a live child is read first,
+        // before the mutex — a hand-over that blocked on another thread's lock
+        // would otherwise be asking about a process that had since exited.
+        let pid = child.id();
+        #[cfg(unix)]
+        let group = child_group(child);
+        if let Some(linger) = self.linger {
+            std::thread::sleep(linger);
+        }
         let log_at_handover = self
             .log
             .as_ref()
             .map(|path| std::fs::read_to_string(path).unwrap_or_default())
             .unwrap_or_default();
+        if let Some(hold) = &self.hold {
+            hold.release(pid);
+        }
         self.children
             .lock()
             .expect("recorder mutex poisoned")
             .push(SeenChild {
-                pid: child.id(),
+                pid,
                 #[cfg(unix)]
-                group: child_group(child),
+                group,
                 log_at_handover,
             });
+    }
+}
+
+/// Holds every mock child this supervisor spawns at its own startup, and
+/// releases each one only once the hand-over has finished asking the OS about
+/// it.
+///
+/// `getpgid` answers about a *running* process. A child that has already exited
+/// is a zombie the run still holds — its pid stays reserved, but macOS refuses
+/// the question and answers `-1`, so a mock fast enough to exit inside the
+/// hand-over turned a correct grouping into a failure (observed on macOS CI,
+/// never on Linux, where `getpgid` does answer for a zombie). Holding the child
+/// makes that an event rather than a sleep long enough to hope.
+struct HoldPen(PathBuf);
+
+impl HoldPen {
+    fn new(tag: &str) -> Self {
+        Self(scratch(tag))
+    }
+
+    /// Make a child spawned from `command` wait for its release.
+    fn hold(&self, command: &mut Command) {
+        command.env("MOCK_HOLD_FILE", &self.0);
+    }
+
+    /// Let `pid` past its startup wait.
+    fn release(&self, pid: u32) {
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.0)
+        {
+            use std::io::Write;
+            let _ = writeln!(file, "{pid}");
+            let _ = file.flush();
+        }
+    }
+}
+
+impl Drop for HoldPen {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 
@@ -502,6 +565,52 @@ fn the_post_spawn_hook_reaches_the_child_before_its_exit_is_observable() {
     let _ = std::fs::remove_file(&log);
 }
 
+#[test]
+fn a_held_child_has_not_run_at_all_while_its_hand_over_asks_about_it() {
+    // The proof that [`HoldPen`] is in force, which every hand-over that asks
+    // the OS about a child's process group rests on. The fixture's first act
+    // after its release is the `S` marker, so this hand-over stays inside the
+    // child's startup for 300ms — three hundred times what the fixture needs to
+    // reach that marker — and finds the log still empty. Without the hold the
+    // child would have run to completion in that window, which is precisely the
+    // race that made macOS answer `-1` for a group.
+    let log = scratch("held-handover.log");
+    let recorder = Recorder {
+        log: Some(log.clone()),
+        hold: Some(HoldPen::new("held-handover-hold")),
+        linger: Some(Duration::from_millis(300)),
+        ..Recorder::default()
+    };
+    let request = request(
+        "claude-code",
+        &[
+            ("MOCK_LOG_FILE", &log.display().to_string()),
+            ("MOCK_STDOUT", r#"{"result":"held until handed over"}"#),
+        ],
+    );
+
+    let outcome = run_supervised(&request, RunControls::default(), Some(&recorder))
+        .expect("the mock run is valid");
+
+    assert_eq!(outcome.report.results[0].status, Status::Ok);
+    let children = recorder.children.lock().expect("recorder mutex poisoned");
+    assert_eq!(children.len(), 1, "one harness, one hand-over");
+    assert_eq!(
+        children[0].log_at_handover, "",
+        "the child had already started while the hand-over was still asking about it, \
+         so it was not held and the group it reports is a race"
+    );
+    // Without this the emptiness above would be evidence of a fixture that never
+    // logged rather than of a child still waiting to be released.
+    assert!(
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .contains('S'),
+        "the fixture never recorded its own start, so its absence at hand-over is not evidence"
+    );
+    let _ = std::fs::remove_file(&log);
+}
+
 #[cfg(any(unix, windows))]
 #[test]
 fn an_observing_supervisor_leaves_the_descendant_teardown_to_oneharness() {
@@ -582,6 +691,8 @@ fn an_observing_supervisor_leaves_the_descendant_teardown_to_oneharness() {
 #[cfg(unix)]
 struct AdoptIntoCallerGroup {
     group: libc::pid_t,
+    /// Holds the child until its group has been read — see [`HoldPen`].
+    hold: HoldPen,
     /// `(pid, the group the child ended up in)`, read at hand-over.
     seen: Mutex<Vec<(u32, libc::pid_t)>>,
 }
@@ -590,6 +701,7 @@ struct AdoptIntoCallerGroup {
 impl ProcessSupervisor for AdoptIntoCallerGroup {
     fn spawning(&self, command: &mut Command) {
         use std::os::unix::process::CommandExt;
+        self.hold.hold(command);
         let group = self.group;
         // Registered after oneharness's own `setpgid(0, 0)`, so this runs second
         // and is the assignment the child keeps: an error here would fail the
@@ -610,10 +722,12 @@ impl ProcessSupervisor for AdoptIntoCallerGroup {
     }
 
     fn spawned(&self, child: &Child) {
+        let seen = (child.id(), child_group(child));
+        self.hold.release(seen.0);
         self.seen
             .lock()
             .expect("supervisor mutex poisoned")
-            .push((child.id(), child_group(child)));
+            .push(seen);
     }
 }
 
@@ -628,6 +742,7 @@ fn a_caller_can_take_the_harness_child_into_its_own_process_group() {
     let caller_group = unsafe { libc::getpgrp() };
     let supervisor = AdoptIntoCallerGroup {
         group: caller_group,
+        hold: HoldPen::new("adopt-group-hold"),
         seen: Mutex::new(Vec::new()),
     };
     let request = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"adopted"}"#)]);
@@ -707,6 +822,7 @@ fn an_adopted_tree_is_the_callers_to_reap_and_oneharness_leaves_it_alone() {
     let ticks = scratch("adopted-cancel.ticks");
     let supervisor = AdoptIntoCallerGroup {
         group,
+        hold: HoldPen::new("adopted-cancel-hold"),
         seen: Mutex::new(Vec::new()),
     };
     let request = request(
@@ -894,7 +1010,10 @@ fn a_caller_can_take_the_harness_child_into_its_own_job_object() {
 /// Drive `request` with an observing supervisor and hand back both the outcome
 /// and every child the run offered it.
 fn supervised_spawns(request: &RunRequest) -> (RunOutcome, Vec<SeenChild>) {
-    let recorder = Recorder::default();
+    let recorder = Recorder {
+        hold: Some(HoldPen::new("supervised-hold")),
+        ..Recorder::default()
+    };
     let outcome = run_supervised(request, RunControls::default(), Some(&recorder))
         .expect("the mock run is valid");
     let children = recorder
@@ -914,7 +1033,9 @@ fn assert_distinct_live_children(seen: &[SeenChild], what: &str) {
         assert_eq!(
             child.group,
             libc::pid_t::try_from(child.pid).expect("a child PID fits pid_t"),
-            "{what}: hand-over {i} was not the leader of the group oneharness created"
+            "{what}: hand-over {i} was not the leader of the group oneharness created \
+             (a group of -1 is the OS declining to answer about a child that had \
+             already exited, which the hand-over's HoldPen exists to prevent)"
         );
         assert!(
             seen[..i].iter().all(|earlier| earlier.pid != child.pid),

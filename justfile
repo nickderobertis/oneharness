@@ -109,6 +109,9 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-codex-usage-schema.sh >/dev/null
     @bash scripts/check-codex-usage-schema-test.sh >/dev/null
     @bash scripts/check-usage-enforce.sh >/dev/null
+    @bash scripts/check-release-targets.sh >/dev/null
+    @bash scripts/check-release-targets-test.sh >/dev/null
+    @bash scripts/check-release-probe.sh >/dev/null
     @bash scripts/check-control-probes.sh >/dev/null
     @bash scripts/check-control-probe-http.sh >/dev/null
     @bash scripts/check-control-enforce.sh >/dev/null
@@ -173,6 +176,15 @@ smoke:
 # model calls and needs network, so it is deliberately out of `check` and CI.
 smoke-live:
     bash scripts/smoke.sh --live
+
+# Opt-in live check of `scripts/release-probe.sh` against the real public
+# registries: every declared release target answers the version it currently
+# serves, a name no registry has served answers with nothing, and a registry the
+# probe cannot read is refused. Needs network, so it is out of `check` and CI
+# like `smoke-live`; the refusals are held inside the gate by
+# scripts/check-release-probe.sh.
+release-probe-live:
+    @bash scripts/release-probe-live.sh
 
 # Debug build.
 build:

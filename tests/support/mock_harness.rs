@@ -183,6 +183,15 @@
 //!                   this native binary, whose lifetime is independent of its
 //!                   direct parent unless the Job Object contains it. This
 //!                   reproduces the process-tree timeout boundary of npm shims.
+//!   MOCK_HOLD_FILE  if set to a path, block at startup until that file names
+//!                   this process's pid on a line of its own. A supervising
+//!                   caller asks the OS about the child while the run still
+//!                   holds it, and macOS answers nothing about a process that
+//!                   has already exited (`getpgid` refuses a zombie), so a test
+//!                   that needs the child demonstrably alive across the
+//!                   hand-over releases it from that hook instead of sleeping
+//!                   long enough to hope. Bounded, so a caller that never
+//!                   releases fails its own assertion rather than hanging.
 
 use std::io::Write;
 
@@ -1316,10 +1325,61 @@ fn run_controlled_turn(log_path: &str) -> ! {
     std::process::exit(0);
 }
 
+/// Block until `path` names this process's pid on a line of its own — the
+/// release a [`MOCK_HOLD_FILE`](self) caller writes once it has finished asking
+/// the OS about this child. It returns only once that release has arrived;
+/// waiting past `HOLD_MAX` ends the process instead, so a caller that never
+/// releases gets its own assertion back, loudly, rather than a hung suite.
+fn wait_until_released(path: &str) {
+    const HOLD_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+    // The release arrives in this file, so being able to open it is the whole
+    // precondition — established by opening it, not inferred from the shape of
+    // the path, which cannot tell a writable directory from an unwritable one.
+    // A hold nothing can ever release would otherwise spend the entire bound
+    // waiting and then hand its caller a child it never held.
+    if let Err(error) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(
+            std::io::stderr(),
+            "mock harness: MOCK_HOLD_FILE '{path}' cannot be opened for a release to arrive in: {error}"
+        );
+        std::process::exit(2);
+    }
+    let me = std::process::id().to_string();
+    let deadline = std::time::Instant::now() + HOLD_MAX;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if text.lines().any(|line| line.trim() == me) {
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            // Running on regardless would be the very thing the hold exists to
+            // stop: a caller that never released this child would get one it
+            // had not held, and an assertion about it that means nothing. So
+            // the bound ends the process loudly instead — it is there to stop a
+            // misuse hanging the suite, not to let one through.
+            let _ = writeln!(
+                std::io::stderr(),
+                "mock harness: MOCK_HOLD_FILE {path} never named pid {me} within {HOLD_MAX:?}"
+            );
+            std::process::exit(2);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 pub fn run() -> ! {
     #[cfg(windows)]
     if std::env::var_os("ONEHARNESS_MOCK_NATIVE_DESCENDANT").is_some() {
         run_native_descendant();
+    }
+
+    if let Ok(path) = std::env::var("MOCK_HOLD_FILE") {
+        wait_until_released(&path);
     }
 
     let argv: Vec<String> = std::env::args().skip(1).collect();

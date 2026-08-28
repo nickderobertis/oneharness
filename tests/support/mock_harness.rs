@@ -1327,8 +1327,9 @@ fn run_controlled_turn(log_path: &str) -> ! {
 
 /// Block until `path` names this process's pid on a line of its own — the
 /// release a [`MOCK_HOLD_FILE`](self) caller writes once it has finished asking
-/// the OS about this child. Bounded by `HOLD_MAX`: a caller that never releases
-/// gets its own assertion back, loudly, instead of a hung suite.
+/// the OS about this child. It returns only once that release has arrived;
+/// waiting past `HOLD_MAX` ends the process instead, so a caller that never
+/// releases gets its own assertion back, loudly, rather than a hung suite.
 fn wait_until_released(path: &str) {
     const HOLD_MAX: std::time::Duration = std::time::Duration::from_secs(30);
     // The release arrives in this file, so being able to open it is the whole
@@ -1356,11 +1357,16 @@ fn wait_until_released(path: &str) {
             }
         }
         if std::time::Instant::now() >= deadline {
+            // Running on regardless would be the very thing the hold exists to
+            // stop: a caller that never released this child would get one it
+            // had not held, and an assertion about it that means nothing. So
+            // the bound ends the process loudly instead — it is there to stop a
+            // misuse hanging the suite, not to let one through.
             let _ = writeln!(
                 std::io::stderr(),
-                "mock harness: MOCK_HOLD_FILE {path} never named pid {me}"
+                "mock harness: MOCK_HOLD_FILE {path} never named pid {me} within {HOLD_MAX:?}"
             );
-            return;
+            std::process::exit(2);
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }

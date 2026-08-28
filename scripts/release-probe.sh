@@ -74,15 +74,22 @@ name="${identifier#*:}"
 # holding a hyphen needs no per-reader quoting.
 case "$registry" in
   crate)
+    # crates.io: ASCII alphanumerics, hyphen and underscore.
+    name_syntax='^[A-Za-z0-9][A-Za-z0-9_-]*$'
     url="https://crates.io/api/v1/crates/${name}"
     paths='[["crate","max_stable_version"],["crate","max_version"]]'
     ;;
   pypi)
+    # PEP 503: alphanumerics separated by runs of `.`, `_` or `-`.
+    name_syntax='^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$'
     url="https://pypi.org/pypi/${name}/json"
     paths='[["info","version"]]'
     ;;
   npm)
-    # A scoped name is one path segment, so its separator is percent-encoded.
+    # An optional `@scope/`, then the package name — the one `/` a name may
+    # carry. A scoped name is still one path segment, so that separator is
+    # percent-encoded rather than left to open a path of its own.
+    name_syntax='^(@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*$'
     url="https://registry.npmjs.org/${name//\//%2f}"
     paths='[["dist-tags","latest"]]'
     ;;
@@ -90,6 +97,15 @@ case "$registry" in
     usage_error "unknown registry '$registry' in '$identifier'; this probe answers for crate, pypi and npm"
     ;;
 esac
+
+# The declaration is a file this probe reads, so the name it carries is an input
+# like any other — and this one becomes a path segment of a registry URL.
+# Membership in the declaration says the id was written down, not that its name
+# is a package name: a name carrying a separator, a query or nothing at all
+# would ask the registry a different question than the one declared, and its
+# answer would be published as that target's version.
+[[ $name =~ $name_syntax ]] ||
+  usage_error "'$name' in '$identifier' is not a $registry package name (expected $name_syntax), so no artifact that registry serves is being named; fix that id in $declarations"
 
 command -v curl >/dev/null 2>&1 || unanswered "curl is required to read $registry; install curl and retry"
 

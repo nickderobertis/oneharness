@@ -1331,6 +1331,19 @@ fn run_controlled_turn(log_path: &str) -> ! {
 /// gets its own assertion back, loudly, instead of a hung suite.
 fn wait_until_released(path: &str) {
     const HOLD_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+    // A path nothing can ever be written to would spend the whole bound waiting
+    // for a release that cannot arrive, and hand the caller a child it had not
+    // held. Refused here, where the value comes in, rather than survived.
+    let unwritable = std::path::Path::new(path)
+        .parent()
+        .is_some_and(|dir| !dir.as_os_str().is_empty() && !dir.is_dir());
+    if path.trim().is_empty() || unwritable {
+        let _ = writeln!(
+            std::io::stderr(),
+            "mock harness: MOCK_HOLD_FILE must name a path in an existing directory, got '{path}'"
+        );
+        std::process::exit(2);
+    }
     let me = std::process::id().to_string();
     let deadline = std::time::Instant::now() + HOLD_MAX;
     loop {

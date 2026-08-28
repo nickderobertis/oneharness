@@ -173,6 +173,17 @@ printf 'schema_version = 1\nid = "crate:oneharness"\n' >"$fixture/release-target
 assert_not_answered "an id outside any [[target]] block" \
   "declares no release targets" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
+# Declaring an id says it was written down, not that its name is a package name.
+# The name becomes a path segment of a registry URL, so one carrying a separator
+# would ask a different question and publish that answer as this target's
+# version — refused, and before the network, like every other unanswerable id.
+printf 'schema_version = 1\n\n[[target]]\nid = "crate:oneharness/../serde"\nmanifest = "Cargo.toml"\n' \
+  >"$fixture/release-targets.toml"
+assert_not_answered "a declared name that is not a package name" \
+  "is not a crate package name" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" "crate:oneharness/../serde"
+[ ! -s "$reached" ] ||
+  fail "a declared name that is not a package name read the network before refusing; validate the name's shape in scripts/release-probe.sh before the request is made"
 
 if [ "$stubbed" -eq 0 ]; then
   echo "check-release-probe: an unanswerable identifier is refused offline (registry-answer cases skipped on Windows)"

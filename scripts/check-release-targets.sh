@@ -64,6 +64,13 @@ DECLARATION_SCHEMA_VERSION=1
 TOP_KEYS="schema_version probe"
 TARGET_KEYS="id name what published_by manifest covers"
 RETIRED_KEYS="id why"
+# And what kind of value each holds. Every key not named here holds a quoted
+# string. The kind is enforced where the value is read, because a key read at
+# the wrong kind is a value nobody wrote reaching the checks below: `name =
+# ["core"]` would arrive as the string `core` and `manifest = 1` as the path
+# `1`, and each would then pass every check that follows.
+NUMBER_KEYS="schema_version"
+LIST_KEYS="covers"
 
 # What the canonical schema's own validated types accept.
 #
@@ -147,9 +154,36 @@ json_optional_dependencies() {
 # refusal, carrying the line it is about.
 US=$'\037'
 fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
-	-v topkeys="$TOP_KEYS" -v targetkeys="$TARGET_KEYS" -v retiredkeys="$RETIRED_KEYS" '
+	-v topkeys="$TOP_KEYS" -v targetkeys="$TARGET_KEYS" -v retiredkeys="$RETIRED_KEYS" \
+	-v numberkeys="$NUMBER_KEYS" -v listkeys="$LIST_KEYS" '
 	function refuse(message) { printf "!%s%d%s%s%s%s\n", us, NR, us, "", us, message }
 	function declares(key) { return index(" " keys " ", " " key " ") > 0 }
+	# What kind of value a key holds: one of "number", "list" or "string".
+	function kind_of(key) {
+		if (index(" " numberkeys " ", " " key " ") > 0) return "number"
+		if (index(" " listkeys " ", " " key " ") > 0) return "list"
+		return "string"
+	}
+	# A value written as something other than what its key holds. Refused rather
+	# than coerced: a one-element list and a bare number both read as a perfectly
+	# ordinary string once the brackets or the quotes are gone, so nothing after
+	# this point could tell them from a value somebody wrote.
+	function wrong_kind(key, written,   want) {
+		want = kind_of(key)
+		if (want == written) return 0
+		if (want == "number")
+			refuse("writes " key " in " where " as " article(written) "; it holds a whole number, so write it as one")
+		else if (want == "list")
+			refuse("writes " key " in " where " as " article(written) "; it holds a list, so spell it as [\"<registry>:<name>\", ...]")
+		else
+			refuse("writes " key " in " where " as " article(written) "; it holds one quoted string, so write it as \"...\"")
+		return 1
+	}
+	function article(written) {
+		if (written == "list") return "a list"
+		if (written == "number") return "a whole number"
+		return "a quoted string"
+	}
 	# A key written twice is refused rather than resolved: which of the two a
 	# reader takes is exactly the thing nobody wrote down.
 	function repeated(key) {
@@ -231,10 +265,12 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 				refuse("writes " key " in " where " with something after its value; a key holds one value, then nothing but a # comment")
 				next
 			}
+			if (wrong_kind(key, "string")) next
 			emit(key, value)
 			next
 		}
 		if (rest ~ /^\[/) {
+			if (wrong_kind(key, "list")) next
 			if (repeated(key)) next
 			array_kind = kind; array_idx = idx; array_key = key; array_where = where
 			rest = substr(rest, 2)
@@ -252,6 +288,7 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 				refuse("writes " key " in " where " with something after its value; a key holds one value, then nothing but a # comment")
 				next
 			}
+			if (wrong_kind(key, "number")) next
 			emit(key, value)
 			next
 		}
@@ -333,15 +370,11 @@ check_path() {
 	esac
 }
 
-# $1 = kind, $2 = index, $3 = key, $4 = where. The single value, or "" — and a
-# finding if the document wrote more than one.
+# $1 = kind, $2 = index, $3 = key, $4 = where. The one value that key holds, or
+# "". It cannot hold two: the reader refuses a list written for a scalar key by
+# kind, and refuses a key written twice rather than emitting both.
 single() {
-	local found
-	found="$(values_of "$1" "$2" "$3")"
-	case $found in
-	*$'\n'*) fail "$declarations writes $3 in $4 as a list; it holds exactly one value" ;;
-	esac
-	printf '%s' "${found%%$'\n'*}"
+	values_of "$1" "$2" "$3" | head -n 1 | tr -d '\n'
 }
 
 top_probe="$(single top 0 probe "the document")"

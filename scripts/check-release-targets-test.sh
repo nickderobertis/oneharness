@@ -224,6 +224,35 @@ rewrite "$root" release-targets.toml '/^\]$/ { exit } { print }'
 assert_red unclosed-list "a list that is never closed" \
   "leaves covers open in [[target]] 5"
 
+# A value written as something other than what its key holds. The brackets and
+# the quotes are the only thing that tells them apart: once they are gone,
+# `name = ["core"]` and `manifest = 1` read as an ordinary string and would pass
+# every check below, so each is refused where the value is read.
+root="$(stage list-for-a-scalar)"
+rewrite "$root" release-targets.toml '{ sub(/^name = "core"$/, "name = [\"core\"]"); print }'
+assert_red list-for-a-scalar "a one-element list where a key holds a string" \
+  'writes name in [[target]] 1 as a list; it holds one quoted string'
+
+root="$(stage number-for-a-scalar)"
+rewrite "$root" release-targets.toml '{ sub(/^manifest = "Cargo.toml"$/, "manifest = 1"); print }'
+assert_red number-for-a-scalar "a number where a key holds a string" \
+  'writes manifest in [[target]] 2 as a whole number; it holds one quoted string'
+
+root="$(stage string-for-a-number)"
+rewrite "$root" release-targets.toml '{ sub(/^schema_version = 1$/, "schema_version = \"1\""); print }'
+assert_red string-for-a-number "a quoted string where a key holds a number" \
+  'writes schema_version in the document as a quoted string; it holds a whole number'
+
+root="$(stage string-for-a-list)"
+rewrite "$root" release-targets.toml '
+  /^covers = \[$/ { print "covers = \"npm:@oneharness/cli-linux-x64\""; skipping = 1; next }
+  skipping && /^\]$/ { skipping = 0; next }
+  skipping { next }
+  { print }
+'
+assert_red string-for-a-list "a quoted string where a key holds a list" \
+  'writes covers in [[target]] 5 as a quoted string; it holds a list'
+
 # The bounds each validated type carries, so a refusal quoting a value is still
 # a sentence a reader can act on.
 root="$(stage overlong-id)"

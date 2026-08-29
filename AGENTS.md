@@ -140,8 +140,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   the pull request**: this feature has broken there three times in ways Linux
   cannot show (`/tmp`→`/private/tmp`, the shorter `sun_path` budget, a
   refusal-reason mismatch), and a second 26-minute leg per control PR is not
-  what that is worth. A scheduled failure opens (or comments on) an issue,
-  because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
+  what that is worth. A scheduled failure opens (or comments on) an issue
+  through `scripts/report-workflow-failure.sh`, because a schedule has no PR to
+  turn red — as do the release workflows, for the same reason (see *Releasing*). In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went
   unauthenticated. Two absences are NOT red, since no credential fixes
@@ -1016,6 +1017,28 @@ shape. When you add one:
   have failed for free burns the next identity's quota — but without it a
   candidate that never started reads exactly like one that ran the task and
   lost, and a chain that stopped at the first says nothing about which it was.
+  `rate_limit` falls through on ANY chain, not only a model fan-out: the limit
+  belongs to whoever is being billed, not to the model, so one rate-limited
+  identity ended a dispatch four further identities could have served.
+  `model_not_found` stays model-list-only — a config mistake the user should see.
+- **A completed, billed run carries no refusal classification.** A
+  `failure_kind` that names a refusal asserts the provider would not run the
+  task, and an envelope of `status: ok` + exit `0` + [`RunWork::Done`] refutes
+  that: the classification is scanned one record at a time out of a transcript,
+  while the envelope is the harness's word on the whole run. So
+  `RunResult::with_work_evidence` — the one funnel every constructor already
+  ends at — drops it there (`report::completed_billed_run`). A 94-minute claude
+  turn that exited 0 having billed $12.11 published `rate_limit`, read off an
+  intermediate `is_error` record it had retried past, and the supervisor
+  consuming that field killed the finished dispatch and discarded the work;
+  twice, about $24.72. It lives in the classifier rather than
+  `history`'s validity rule because history is opt-in and best-effort — a record
+  refused there warns and disables the store while the *report* a supervisor
+  actually reads keeps the refusal — and every record is derived from a result
+  that already passed through the funnel. `FailureKind::is_refusal` is matched
+  exhaustively, so a new kind is a deliberate answer to "does a completed,
+  billed run refute this?"; `tool_deferred` answers no, being a statement about
+  what a completed turn produced rather than a refusal to run it.
 
 ## Scripts and output are context
 
@@ -1125,6 +1148,18 @@ shape. When you add one:
   GitHub PAT set by hand (a PAT can't live in the harness-auth manifest's
   Bitwarden flow). The crate version and `CHANGELOG.md` are managed by
   release-plz — do not hand-bump them.
+- **Every unattended workflow reports its own failure.** `release.yml` and
+  `release-plz.yml` each carry an `if: failure()` job running
+  `scripts/report-workflow-failure.sh` (one open issue per title, commented on
+  at each further failure); `scripts/check-workflows.sh` is the drift gate for
+  both halves and `report-workflow-failure-test.sh` drives create-vs-comment
+  against a stubbed `gh`. A push to main and a published Release have no PR to
+  turn red and no checks list anyone opens, so a failure that announces itself
+  nowhere is the same as not running — this account already spent months with a
+  published smoke detecting a live publication defect and telling no one. The
+  reporter's own `actions/checkout` is the repository-wide contract
+  `check-e2e-matrix.sh` holds: without it the job exits 127 on a missing file,
+  which is how ten consecutive nightly failures went unannounced.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
   every distribution, including the validated idempotent crates.io job — use it

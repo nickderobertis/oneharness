@@ -184,3 +184,41 @@ jobs:
           else
             echo "No open release PR to auto-merge."
           fi
+
+  # Push-to-main automation nobody watches: it opens the release PR, tags the
+  # version and cuts the Release. A failure here means releases have silently
+  # stopped happening — there is no PR to turn red and no checks list anyone
+  # opens — so it announces itself as an issue. `guard` is included so a break in
+  # the secret check is reported too; a run the guard cleanly disabled skips
+  # `release-plz` rather than failing it, and `failure()` does not fire on a skip.
+  report:
+    name: report a failed release-plz run
+    needs: [guard, release-plz]
+    if: failure() && github.repository == 'nickderobertis/oneharness'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 5
+    steps:
+      # The script below lives in this repository, and a job's workspace is empty
+      # until it checks out — without this the reporter exits 127 on a missing
+      # file. scripts/check-e2e-matrix.sh holds this contract repository-wide.
+      - uses: actions/checkout@v5
+
+      - name: Open or update the release-automation issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TITLE: Release automation is failing
+          BODY: >-
+            The release-plz run on main failed, so version bumps, tags and
+            GitHub Releases have stopped happening — quietly, since a push to
+            main has no pull request to turn red. Open the run to see which
+            step failed; until it is fixed, no release reaches crates.io, PyPI
+            or npm.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # A script, not inline YAML: the create-vs-comment branch is real
+        # behavior and scripts/report-workflow-failure-test.sh drives both halves
+        # against a stubbed `gh`.
+        run: bash scripts/report-workflow-failure.sh

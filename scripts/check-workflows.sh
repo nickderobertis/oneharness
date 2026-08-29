@@ -123,6 +123,24 @@ if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sd
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi
 
+# Every UNATTENDED workflow must announce its own failure. A push to main and a
+# published Release have no pull request to turn red and no checks list anyone
+# opens, so a failure there is a red square nobody is drawn to — indistinguishable
+# from the workflow not having run. This account already spent months with a
+# published smoke detecting a live publication defect and telling no one.
+#
+# Two halves, both required and neither sufficient: a job that fires ONLY on
+# failure (`if: failure()`, so a green release files nothing) and a `run:` of the
+# reporter, whose create-vs-comment behavior is proven by
+# report-workflow-failure-test.sh. The reporter's own checkout is a separate,
+# repository-wide contract that check-e2e-matrix.sh holds.
+for workflow in .github/workflows/release.yml .github/workflows/release-plz.yml; do
+  require_line "$workflow" 'run: bash scripts/report-workflow-failure.sh' \
+    "report its own failure through the reporter; nothing else announces an unattended run"
+  grep -q 'if: failure()' "$workflow" ||
+    fail "$workflow must gate its reporting job on \`if: failure()\` so a green release files nothing"
+done
+
 if [ "$fails" -ne 0 ]; then
   printf 'check-workflows: %d contract drift(s)\n' "$fails" >&2
   exit 1

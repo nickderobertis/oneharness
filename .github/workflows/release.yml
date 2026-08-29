@@ -599,3 +599,62 @@ jobs:
             exit 1
           }
           echo "npm install + packaged-CLI smoke test passed for @oneharness/sdk $ver"
+
+  # A published Release has no pull request to turn red and nobody waiting on its
+  # checks list: release-plz auto-merges the version bump and cuts the tag, and
+  # everything below runs unattended. A failure here is a red square in the
+  # Actions tab that nothing draws a reader to — so it announces itself as an
+  # issue instead. `needs` names every job so a break anywhere in the release
+  # reaches this one; `failure()` fires when any of them failed, and a job merely
+  # skipped (the publish jobs, until their repo variable is set) is not a failure.
+  report:
+    name: report a failed release
+    needs:
+      - test
+      - publish-crates
+      - upload
+      - verify-attestation
+      - build-wheels
+      - publish-pypi
+      - verify-pypi
+      - build-python-sdk
+      - publish-python-sdk
+      - verify-python-sdk
+      - build-npm
+      - build-node-sdk
+      - publish-npm
+      - verify-npm
+    if: failure() && github.repository == 'nickderobertis/oneharness'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    timeout-minutes: 5
+    steps:
+      # The script below lives in this repository, and a job's workspace is empty
+      # until it checks out — without this the reporter exits 127 on a missing
+      # file, which is how ten consecutive nightly failures went unannounced
+      # elsewhere in this repository. scripts/check-e2e-matrix.sh holds this.
+      - uses: actions/checkout@v5
+
+      - name: Open or update the release-failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # One title for every failed release, so three broken releases are one
+          # thread rather than three issues nobody reads. The tag is in the body,
+          # not the title, for exactly that reason.
+          TITLE: A release workflow is failing
+          BODY: >-
+            The release workflow for ${{ github.ref_name }} failed. Nothing draws
+            a reader to a published Release's checks, so this is the only place
+            the failure is announced. Open the run to see which job failed:
+            publishing is idempotent, so a fixed cause can be re-run from the
+            same Release, and creating the Release by hand fires this workflow
+            again.
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # A script, not inline YAML: the create-vs-comment branch is real
+        # behavior and scripts/report-workflow-failure-test.sh drives both halves
+        # against a stubbed `gh` (this path only ever runs when something is
+        # already broken, so it cannot debug itself in place).
+        run: bash scripts/report-workflow-failure.sh

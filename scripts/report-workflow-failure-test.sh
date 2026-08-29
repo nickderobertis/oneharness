@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Hermetic behavioral test for scripts/report-scheduled-failure.sh.
+# Hermetic behavioral test for scripts/report-workflow-failure.sh.
 #
-# The reporter is the only thing that makes a nightly turn-control failure
-# visible, and it runs exactly when something is already broken — so the one
-# time it matters is the one time nobody is watching it work. It is also the
-# rare path CI cannot rehearse: a real run would file real issues.
+# The reporter is the only thing that makes an unattended failure visible — the
+# nightly turn-control suite, and the release workflows a merged release PR fires
+# and leaves to themselves — and it runs exactly when something is already
+# broken, so the one time it matters is the one time nobody is watching it work.
+# It is also the rare path CI cannot rehearse: a real run would file real issues.
 #
 # So `gh` is stubbed, and both branches are driven: no open issue (must CREATE
 # one) and an open issue already there (must COMMENT, never open a second).
@@ -15,8 +16,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 fail() {
-	echo "report-scheduled-failure-test: $1" >&2
-	echo "  Next: re-run with \`bash -x scripts/report-scheduled-failure-test.sh\` to see the reporter's own commands. The stubbed \`gh\` records every call it was given in \$tmp/calls, and each case's output is above — a broken assertion here means the reporter files, comments, or refuses differently than a nightly failure needs it to." >&2
+	echo "report-workflow-failure-test: $1" >&2
+	echo "  Next: re-run with \`bash -x scripts/report-workflow-failure-test.sh\` to see the reporter's own commands. The stubbed \`gh\` records every call it was given in \$tmp/calls, and each case's output is above — a broken assertion here means the reporter files, comments, or refuses differently than a nightly failure needs it to." >&2
 	exit 1
 }
 
@@ -45,7 +46,7 @@ run_case() {
 		PATH="$tmp/bin:$PATH" \
 		REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
 		BODY="the suite failed" RUN_URL="https://example.invalid/run/1" \
-		bash "$root/scripts/report-scheduled-failure.sh" >"$tmp/out" 2>&1 ||
+		bash "$root/scripts/report-workflow-failure.sh" >"$tmp/out" 2>&1 ||
 		{
 			cat "$tmp/out" >&2
 			fail "$2: the reporter exited non-zero"
@@ -89,7 +90,7 @@ grep -q '^issue create ' "$tmp/calls" || {
 printf '%s' "not-a-number	$TITLE_UNDER_TEST" >"$tmp/existing"
 if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" PATH="$tmp/bin:$PATH" \
 	REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" BODY="x" \
-	bash "$root/scripts/report-scheduled-failure.sh" >"$tmp/out" 2>&1; then
+	bash "$root/scripts/report-workflow-failure.sh" >"$tmp/out" 2>&1; then
 	cat "$tmp/out" >&2
 	fail "a non-numeric issue id must be refused, not addressed"
 fi
@@ -102,7 +103,7 @@ grep -q '^issue comment ' "$tmp/calls" &&
 missing_out="$tmp/missing.out"
 if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" PATH="$tmp/bin:$PATH" \
 	REPO="owner/repo" TITLE="" BODY="x" \
-	bash "$root/scripts/report-scheduled-failure.sh" >"$missing_out" 2>&1; then
+	bash "$root/scripts/report-workflow-failure.sh" >"$missing_out" 2>&1; then
 	fail "an empty title must be refused, not filed"
 fi
 grep -q '^issue ' "$tmp/calls" && fail "a refused run must not call gh at all"
@@ -141,7 +142,7 @@ gh_failure_case() {
 		GH_FAIL_LIST="$fail_list" PATH="$tmp/bin:$PATH" \
 		REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
 		BODY="the suite failed" RUN_URL="https://example.invalid/run/1" \
-		bash "$root/scripts/report-scheduled-failure.sh" >"$out" 2>&1; then
+		bash "$root/scripts/report-workflow-failure.sh" >"$out" 2>&1; then
 		cat "$out" >&2
 		fail "a failing gh must not be reported as a filed issue"
 	fi
@@ -172,4 +173,4 @@ gh_failure_case "HTTP 403: Resource not accessible by integration" "" "41	$TITLE
 # Whatever went wrong, the finding this was reporting must still be findable.
 gh_failure_case "HTTP 500: Server Error" "" "41	$TITLE_UNDER_TEST" "https://example.invalid/run/1"
 
-echo "report-scheduled-failure-test: ok"
+echo "report-workflow-failure-test: ok"

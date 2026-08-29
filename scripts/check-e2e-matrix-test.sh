@@ -201,11 +201,12 @@ run_case "the reporter without a checkout" 1 "report-scheduled-failure.sh out of
 # rather than a script path, leaving neither detection half assumed.
 append_probe_job() {
     # $1 = workflow file, $2 = where the checkout goes relative to the command:
-    # "before" (correct), "after" (too late to help), or "none".
+    # "before" (correct), "after" (too late to help), or "none". $3 = the command
+    # the job runs, defaulting to a recipe of this repository's own justfile.
     {
         printf '\n  probe:\n    runs-on: ubuntu-latest\n    steps:\n'
         if [ "$2" = before ]; then printf '      - uses: actions/checkout@v4\n'; fi
-        printf '      - run: just --list\n'
+        printf '      - run: %s\n' "${3:-just --list}"
         if [ "$2" = after ]; then printf '      - uses: actions/checkout@v4\n'; fi
     } >>"$1"
 }
@@ -224,5 +225,14 @@ run_case "a checkout that comes after the command" 1 "job 'probe' runs justfile"
 build_fixture
 append_probe_job "$tmp/repo/$workflow" before
 run_case "the same job carrying its checkout" 0 "all e2e workflows match the matrix contract"
+
+# A script path this repository does not have is some other tree's file — a
+# runner-local helper, a dependency's — and no checkout of THIS repository would
+# put it in the workspace, so it is not this check's business to demand one.
+build_fixture
+append_probe_job "$tmp/repo/$workflow" none 'bash scripts/belongs-to-another-tree.sh'
+[ -e "$tmp/repo/scripts/belongs-to-another-tree.sh" ] &&
+    fail "fixture setup: the foreign-script case named a script this repository actually has"
+run_case "a checkout-less job running a script from elsewhere" 0 "all e2e workflows match the matrix contract"
 
 echo "check-e2e-matrix-test: ok"

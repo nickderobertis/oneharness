@@ -226,6 +226,33 @@ build_fixture
 append_probe_job "$tmp/repo/$workflow" before
 run_case "the same job carrying its checkout" 0 "all e2e workflows match the matrix contract"
 
+# Text that merely says `uses: actions/checkout@` is not a checkout step: a
+# commented-out one, and one printed by the job's own command. Both leave the
+# workspace as empty as no checkout at all, so neither may satisfy the contract.
+append_impostor_job() {
+    # $1 = workflow file, $2 = where the checkout-looking text sits: "comment"
+    # (a commented-out step) or "run" (inside the command the job runs).
+    {
+        printf '\n  probe:\n    runs-on: ubuntu-latest\n    steps:\n'
+        if [ "$2" = comment ]; then
+            printf '      # - uses: actions/checkout@v4\n'
+            printf '      - run: just --list\n'
+        else
+            printf '      - run: |\n'
+            printf '          echo "uses: actions/checkout@v4"\n'
+            printf '          just --list\n'
+        fi
+    } >>"$1"
+}
+
+build_fixture
+append_impostor_job "$tmp/repo/$workflow" comment
+run_case "a commented-out checkout step" 1 "job 'probe' runs justfile"
+
+build_fixture
+append_impostor_job "$tmp/repo/$workflow" run
+run_case "a command that prints a checkout step" 1 "job 'probe' runs justfile"
+
 # The checkout contract is the one check here that reads every workflow rather
 # than the turn-control one, and a traversal that stopped at e2e-control.yml
 # would still pass every case above. So the same violation is placed in the

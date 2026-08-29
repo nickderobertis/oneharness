@@ -271,6 +271,11 @@ uncheckedout_repo_refs() {
 			# has checked out, nothing it runs is a finding.
 			if (job == "" || checkout) return
 			sub(/(^|[ \t])#.*$/, "", text)
+			# A block body keeps its indentation, and a leading run of
+			# whitespace splits into an empty first field — which would
+			# put every command one position along and hide a `just` at
+			# the head of the line.
+			sub(/^[ \t]+/, "", text)
 			n = split(text, parts, /[ \t]+/)
 			for (i = 1; i <= n; i++) {
 				t = parts[i]
@@ -304,7 +309,12 @@ uncheckedout_repo_refs() {
 				if ($0 ~ /^[ \t]*$/ || ind > runind) { scan($0); next }
 				inrun = 0
 			}
-			if ($0 ~ /uses:[ \t]*actions\/checkout@/) checkout = 1
+			# The step key itself, anchored: a commented-out step or a
+			# command that merely prints this text is not a checkout, and
+			# reading it as one would clear the contract with nothing in
+			# the workspace. Run bodies never reach here (they are
+			# consumed above), so only a real `uses:` key can match.
+			if ($0 ~ /^[ \t]*(- )?uses:[ \t]*actions\/checkout@/) checkout = 1
 			if (match($0, /(^|[ \t-])run:[ \t]*/)) {
 				runind = ind
 				body = substr($0, RSTART + RLENGTH)

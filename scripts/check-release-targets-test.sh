@@ -268,6 +268,14 @@ rewrite "$root" release-targets.toml '
 assert_red overlong-id "an identifier past its bound" \
   "as an identifier longer than 128 characters"
 
+# The alphabet a short name is held to, which is `TargetName`'s: it is typed
+# into a host document and a plan node's `consumes` map, so a name those cannot
+# spell is a target nothing can select.
+root="$(stage short-name-outside-its-alphabet)"
+rewrite "$root" release-targets.toml '{ sub(/^name = "core"$/, "name = \"-core\""); print }'
+assert_red short-name-outside-its-alphabet "a short name that does not start with a letter or a digit" \
+  'writes the short name in [[target]] 1 ("crate:oneharness-core") as "-core"'
+
 root="$(stage overlong-short-name)"
 rewrite "$root" release-targets.toml '{ sub(/^name = "core"$/, "name = \"core-engine-crate-as-a-rust-dependent-takes-it-with-every-word-spelled-out\""); print }'
 assert_red overlong-short-name "a short name past its bound" \

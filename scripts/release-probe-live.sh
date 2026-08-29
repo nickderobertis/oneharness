@@ -59,8 +59,12 @@ assert_within_bound() {
 declared_version="$(sed -n 's/^schema_version = \([0-9]*\)$/\1/p' release-targets.toml)"
 [ "$declared_version" = "$DECLARATION_SCHEMA_VERSION" ] ||
   fail "release-targets.toml declares schema_version '$declared_version' and this suite reads exactly one, version $DECLARATION_SCHEMA_VERSION; leave a single schema_version line, then bring whichever side is behind up to it"
+# One id per [[target]], read the way $probe reads it — a table header always
+# ends the block above it, so a [[retired]] entry's id and a `covers` entry are
+# not probed. Neither is a release target, and this suite would then demand a
+# published version for an artifact this repository deliberately does not serve.
 declared="$(awk '
-  /^\[\[target\]\]$/ { inside = 1; next }
+  /^[[:space:]]*\[/ { inside = ($0 == "[[target]]"); next }
   inside && match($0, /^id = "[^"]+"$/) {
     entry = $0; sub(/^id = "/, "", entry); sub(/"$/, "", entry)
     print entry; inside = 0

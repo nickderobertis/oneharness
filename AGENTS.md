@@ -121,9 +121,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   apart. The probe's three answers must stay distinguishable — a version,
   **empty stdout** for *no release yet*, a **non-zero exit** for *not
   answered* — and everything uncertain resolves to the last, since a consumer
-  stops waiting on the middle. A per-platform `@oneharness/cli-*` package is
-  covered by the launcher's `optionalDependencies`, so a new one goes there
-  rather than into a target.
+  stops waiting on the middle. `release-targets.toml` is written against the
+  canonical release-target schema (`schema_version = 1`, defined in
+  nickderobertis/onevcs's `docs/contract.md`), so a target carries `id`, `name`,
+  `what`, `published_by` and a `manifest`, and a retired artifact is recorded
+  under `[[retired]]` rather than deleted. A per-platform `@oneharness/cli-*`
+  package is NOT a target: a new one goes into BOTH the `covers` list of
+  `npm:oneharness-cli` (what a consumer reading the declaration alone can see)
+  and the launcher's `optionalDependencies` (what makes an install resolve) —
+  `scripts/check-release-targets.sh` holds the shape and both halves.
 - `just live-control` — the per-feature live turn-control suite: interrupt a real
   multi-step turn on every control-capable harness, prove the work stopped, then
   interrupt again with `--input` and prove the redirected work ran. Slow by

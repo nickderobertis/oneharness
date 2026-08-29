@@ -1,5 +1,14 @@
 # What this repository releases, and the name each registry serves it under.
 #
+# Written against the canonical release-target schema — `schema_version = 1`,
+# defined once in nickderobertis/onevcs's `docs/contract.md` and enforced by
+# that crate's `release-targets.toml` reader — so a consumer that has never
+# seen this repository can parse it with a standard TOML reader and learn every
+# artifact it publishes, and the short name each one is waited on by, without
+# knowing anything about this repository.
+# scripts/check-release-targets.sh holds this file to that schema and to what
+# the release configuration really publishes.
+#
 # A consumer that has to wait for a change to land here needs one thing only
 # this repository can say: the registry-qualified identifier of every artifact
 # it publishes. `oneharness-cli` alone names two different artifacts — a PyPI
@@ -13,26 +22,32 @@
 # apart, so comparing their version strings is evidence about neither.
 #
 # A target is a CONSUMABLE artifact — one a dependent names in order to depend
-# on it. The per-platform `@oneharness/cli-<platform>-<arch>` packages are
-# therefore NOT targets: they exist only so `npm:oneharness-cli` can resolve one
-# of them at its own exact version, and that launcher's own manifest is where
-# they are enumerated. scripts/check-release-targets.sh derives the published
-# set from the release configuration itself — publish-crates.sh, the manifests,
+# on it. scripts/check-release-targets.sh derives the published set from the
+# release configuration itself — publish-crates.sh, the manifests,
 # npm-build.mjs's target table, release.yml's publish jobs — and fails on a name
-# that is neither declared here nor covered that way, in either direction.
-#
-# `scripts/release-probe.sh <id>` answers what a registry currently serves for
-# one of these ids.
+# that is neither declared here nor covered by a target below, in either
+# direction.
 
 schema_version = 1
+
+# `scripts/release-probe.sh <id>` answers what a registry currently serves for
+# one of the ids below, and refuses any identifier this document does not
+# declare as a target.
+probe = "scripts/release-probe.sh"
 
 # The reusable engine. Published first; the binary below pins it by version.
 [[target]]
 id = "crate:oneharness-core"
+name = "core"
+what = "The reusable engine — harness registry, hook rendering and installation, config layering, and the sync merge — as a Rust dependent takes it."
+published_by = ".github/workflows/release.yml — the publish-crates job, first of the two scripts/publish-crates.sh calls, under crates/oneharness-core/Cargo.toml's [package] name."
 manifest = "crates/oneharness-core/Cargo.toml"
 
 [[target]]
 id = "crate:oneharness"
+name = "cli-crate"
+what = "The `oneharness` binary as `cargo install oneharness` builds it, compiled against the exact engine version it pins."
+published_by = ".github/workflows/release.yml — the publish-crates job, second of the two scripts/publish-crates.sh calls, under Cargo.toml's [package] name."
 manifest = "Cargo.toml"
 
 # The maturin `bin`-bindings wheels wrapping the prebuilt binary. The bare
@@ -40,19 +55,60 @@ manifest = "Cargo.toml"
 # `oneharness`.
 [[target]]
 id = "pypi:oneharness-cli"
+name = "cli-wheel"
+what = "The prebuilt `oneharness` binary in per-platform wheels, so `pip install oneharness-cli` puts it on PATH without compiling anything."
+published_by = ".github/workflows/release.yml — the publish-pypi job, from the maturin-action wheels build-wheels produces, under pyproject.toml's [project] name."
 manifest = "pyproject.toml"
 
 # The pure-Python client, pinned to the exact `pypi:oneharness-cli` above.
 [[target]]
 id = "pypi:oneharness-sdk"
+name = "python-sdk"
+what = "The typed Python client, imported as `oneharness_sdk`, which drives the `pypi:oneharness-cli` release it pins by exact version."
+published_by = ".github/workflows/release.yml — the publish-python-sdk job, from the distributions scripts/python-sdk-pack.mjs builds, under python/oneharness-sdk/pyproject.toml's [project] name."
 manifest = "python/oneharness-sdk/pyproject.toml"
 
-# The npm launcher. Its optionalDependencies enumerate the per-platform
-# packages this target covers.
+# The npm launcher, and the one target here that covers anything.
+#
+# The per-platform `@oneharness/cli-<platform>-<arch>` packages it covers are
+# published by the same release and are deliberately NOT targets of their own:
+# they exist only so this launcher can resolve one of them at its own exact
+# version, nothing depends on one by name, and `npm:oneharness-cli` is the wait
+# that covers them. They are enumerated in three places that must stay in
+# lockstep — scripts/npm-build.mjs's target table, this launcher's
+# optionalDependencies, and the `covers` list here — and
+# scripts/check-release-targets.sh reconciles all three.
 [[target]]
 id = "npm:oneharness-cli"
+name = "cli-npm"
+what = "The launcher that resolves and execs the prebuilt binary, so `npm install -g oneharness-cli` puts `oneharness` on PATH without compiling anything."
+published_by = ".github/workflows/release.yml — the publish-npm job, from the launcher scripts/npm-build.mjs assembles, under npm/oneharness/package.json's name."
 manifest = "npm/oneharness/package.json"
+covers = [
+  "npm:@oneharness/cli-linux-x64",
+  "npm:@oneharness/cli-linux-arm64",
+  "npm:@oneharness/cli-darwin-x64",
+  "npm:@oneharness/cli-darwin-arm64",
+  "npm:@oneharness/cli-win32-x64",
+]
 
 [[target]]
 id = "npm:@oneharness/sdk"
+name = "node-sdk"
+what = "The typed Node.js client, imported as `@oneharness/sdk`, which drives the `npm:oneharness-cli` release it ships beside."
+published_by = ".github/workflows/release.yml — the publish-npm job, from the tarball scripts/sdk-pack.mjs builds, under npm/oneharness-sdk/package.json's name."
 manifest = "npm/oneharness-sdk/package.json"
+
+# No [[retired]] entries: every artifact this repository has ever published, it
+# still publishes. One is recorded here — never deleted — the first time that
+# stops being true, so a consumer still naming it is told it is gone rather
+# than told nothing.
+#
+# One known deviation, reported upstream rather than papered over here. The
+# canonical validator's `RegistryId` requires a name's first character to be
+# alphanumeric, which refuses every scoped npm package — `npm:@oneharness/sdk`
+# above and all five names it covers. `docs/contract.md` says a name is
+# "exactly what that registry serves", so the spelling here is the correct one
+# and the first-character rule is the defect; writing anything else would name
+# artifacts npm does not serve. Delete this note once that rule accepts an
+# optional leading `@scope/`.

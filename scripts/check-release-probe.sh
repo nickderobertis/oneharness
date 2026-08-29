@@ -173,6 +173,53 @@ printf 'schema_version = 1\nid = "crate:oneharness"\n' >"$fixture/release-target
 assert_not_answered "an id outside any [[target]] block" \
   "declares no release targets" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
+# Only a [[target]] is a release target. A [[retired]] entry names an artifact
+# this repository does not publish any more and a `covers` entry names one
+# nothing depends on by name, and both carry a registry-qualified id — so a
+# probe that answered for either would report a version for something no
+# consumer may wait on. Written with the [[target]] carrying no id of its own,
+# which is what would let a block boundary that does not close leak the next
+# entry's id into the declared set.
+cat >"$fixture/release-targets.toml" <<'NEIGHBOURS'
+schema_version = 1
+
+[[target]]
+name = "cli-crate"
+covers = ["npm:@oneharness/cli-linux-x64"]
+
+[[retired]]
+id = "pypi:oneharness-retired"
+why = "Nothing here publishes it again."
+NEIGHBOURS
+assert_not_answered "a retired id, with the [[target]] above it carrying none" \
+  "declares no release targets" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" pypi:oneharness-retired
+assert_not_answered "a covered id, which is not a target of its own" \
+  "declares no release targets" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" "npm:@oneharness/cli-linux-x64"
+# The same neighbours beside a target that does declare an id, so the refusal is
+# the probe recognising a real declared set without them rather than an empty
+# one. This is the shape the checked-in declaration has.
+cat >"$fixture/release-targets.toml" <<'NEIGHBOURS'
+schema_version = 1
+
+[[target]]
+id = "crate:oneharness"
+name = "cli-crate"
+covers = ["npm:@oneharness/cli-linux-x64"]
+
+[[retired]]
+id = "pypi:oneharness-retired"
+why = "Nothing here publishes it again."
+NEIGHBOURS
+assert_not_answered "a retired id beside a declared target" \
+  "is not a release target of this repository" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" pypi:oneharness-retired
+assert_not_answered "a covered id beside the target that covers it" \
+  "is not a release target of this repository" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" "npm:@oneharness/cli-linux-x64"
+[ ! -s "$reached" ] ||
+  fail "an id the declaration names outside a [[target]] read the network before refusing; decide the declared set from [[target]] blocks alone in scripts/release-probe.sh"
 # Declaring an id says it was written down, not that its name is a package name.
 # The name becomes a path segment of a registry URL, so one carrying a separator
 # would ask a different question and publish that answer as this target's

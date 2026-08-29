@@ -3,10 +3,11 @@
 # network and no real workflow run: each case copies the workflows and scripts
 # into a scratch tree, drifts exactly one thing, and drives the real gate there.
 #
-# Those two checks are what stands between a silent gap in the turn-control
-# suite and a control regression merging unnoticed — a moved source stops
-# triggering the workflow, and an unsupplied provider key drops that harness out
-# of a run `OH_E2E_NO_SKIP` only turns red minutes into paid model calls. Both
+# Those checks are what stands between a silent gap in the turn-control suite
+# and a control regression merging unnoticed — a moved source stops triggering
+# the workflow, an unsupplied provider key drops that harness out of a run
+# `OH_E2E_NO_SKIP` only turns red minutes into paid model calls, and a reporting
+# job with no checkout exits 127 before it can announce anything. All of those
 # failure modes are invisible in a green CI log, so the gate that catches them
 # needs its own proof that it still fires.
 set -euo pipefail
@@ -182,5 +183,91 @@ run_case "the reporter without issues: write" 1 "issues: write"
 build_fixture
 sed -i.bak "/failure() && github.event_name == 'schedule'/d" "$tmp/repo/$workflow"
 run_case "the scheduled-failure report removed" 1 "nightly red"
+
+# The checkout contract, proven against the job the defect was found in: the
+# scheduled-failure reporter runs scripts/report-scheduled-failure.sh, and
+# without a checkout its workspace holds no such file. This is the shape that
+# swallowed ten consecutive nightly failures, so it is checked as itself rather
+# than only through the synthetic job below.
+build_fixture
+sed -i.bak '/^  report:$/,$ { /uses: actions\/checkout@/d; }' "$tmp/repo/$workflow"
+grep -q 'uses: actions/checkout@' "$tmp/repo/$workflow" ||
+    fail "fixture setup: the reporter case removed every checkout in the file, not just the reporter's"
+run_case "the reporter without a checkout" 1 "report-scheduled-failure.sh out of this repository"
+
+# And both halves of that contract against one definition: the same job, once
+# missing the step and once carrying it. `just` is the second way a job reaches
+# into this repository (it needs the justfile), so the synthetic job runs that
+# rather than a script path, leaving neither detection half assumed.
+append_probe_job() {
+    # $1 = workflow file, $2 = where the checkout goes relative to the command:
+    # "before" (correct), "after" (too late to help), or "none". $3 = the command
+    # the job runs, defaulting to a recipe of this repository's own justfile.
+    {
+        printf '\n  probe:\n    runs-on: ubuntu-latest\n    steps:\n'
+        if [ "$2" = before ]; then printf '      - uses: actions/checkout@v4\n'; fi
+        printf '      - run: %s\n' "${3:-just --list}"
+        if [ "$2" = after ]; then printf '      - uses: actions/checkout@v4\n'; fi
+    } >>"$1"
+}
+
+build_fixture
+append_probe_job "$tmp/repo/$workflow" none
+run_case "a job running just with no checkout" 1 "job 'probe' runs justfile"
+
+# Steps run in order, so a checkout further down the job is a workspace the
+# command has already needed and not found — reading the job as a whole would
+# call this one fixed.
+build_fixture
+append_probe_job "$tmp/repo/$workflow" after
+run_case "a checkout that comes after the command" 1 "job 'probe' runs justfile"
+
+build_fixture
+append_probe_job "$tmp/repo/$workflow" before
+run_case "the same job carrying its checkout" 0 "all e2e workflows match the matrix contract"
+
+# Text that merely says `uses: actions/checkout@` is not a checkout step: a
+# commented-out one, and one printed by the job's own command. Both leave the
+# workspace as empty as no checkout at all, so neither may satisfy the contract.
+append_impostor_job() {
+    # $1 = workflow file, $2 = where the checkout-looking text sits: "comment"
+    # (a commented-out step) or "run" (inside the command the job runs).
+    {
+        printf '\n  probe:\n    runs-on: ubuntu-latest\n    steps:\n'
+        if [ "$2" = comment ]; then
+            printf '      # - uses: actions/checkout@v4\n'
+            printf '      - run: just --list\n'
+        else
+            printf '      - run: |\n'
+            printf '          echo "uses: actions/checkout@v4"\n'
+            printf '          just --list\n'
+        fi
+    } >>"$1"
+}
+
+build_fixture
+append_impostor_job "$tmp/repo/$workflow" comment
+run_case "a commented-out checkout step" 1 "job 'probe' runs justfile"
+
+build_fixture
+append_impostor_job "$tmp/repo/$workflow" run
+run_case "a command that prints a checkout step" 1 "job 'probe' runs justfile"
+
+# The checkout contract is the one check here that reads every workflow rather
+# than the turn-control one, and a traversal that stopped at e2e-control.yml
+# would still pass every case above. So the same violation is placed in the
+# repository's own CI workflow, which no other check in this gate reads.
+build_fixture
+append_probe_job "$tmp/repo/.github/workflows/ci.yml" none
+run_case "a checkout-less job in a workflow other than the control suite" 1 "ci.yml job 'probe' runs justfile"
+
+# A script path this repository does not have is some other tree's file — a
+# runner-local helper, a dependency's — and no checkout of THIS repository would
+# put it in the workspace, so it is not this check's business to demand one.
+build_fixture
+append_probe_job "$tmp/repo/$workflow" none 'bash scripts/belongs-to-another-tree.sh'
+[ -e "$tmp/repo/scripts/belongs-to-another-tree.sh" ] &&
+    fail "fixture setup: the foreign-script case named a script this repository actually has"
+run_case "a checkout-less job running a script from elsewhere" 0 "all e2e workflows match the matrix contract"
 
 echo "check-e2e-matrix-test: ok"

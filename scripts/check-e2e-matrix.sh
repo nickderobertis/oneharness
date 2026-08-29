@@ -22,6 +22,9 @@
 #     mangled by the Windows .cmd shim).
 #   - The turn-control suite runs on a SCHEDULE across ubuntu and macos, and a
 #     scheduled failure opens an issue (see check_control below for why).
+#   - No job of ANY workflow runs one of this repository's own scripts without
+#     checking the repository out (see check_checkout below for why that one is
+#     repository-wide rather than e2e-only).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -239,6 +242,104 @@ check_control() {
 	done < <(grep -E '^[[:space:]]*have_env ' "$s")
 }
 check_control
+
+# Every job that runs one of this repository's own scripts must check the
+# repository out. A GitHub job starts with an EMPTY workspace, so `run: bash
+# scripts/x.sh` without `actions/checkout` cannot do anything but exit 127 on a
+# missing file — and where that job is itself the alarm for something else
+# failing, nothing green ever notices. e2e-control.yml's scheduled-failure
+# reporter was written without one: ten consecutive nightly failures on macOS,
+# the platform this suite exists to cover, opened no issue and told nobody.
+#
+# Repository-wide rather than e2e-only, because the shape does not belong to the
+# e2e workflows: any job anywhere is one forgotten line away from it, and the
+# failure is silent precisely in the jobs nobody watches.
+#
+# Emits "<job>\t<reference>" for each of this repository's own scripts a `run:`
+# step invokes with no checkout step BEFORE it — steps run in order, so a
+# checkout further down the job is a workspace the command has already needed
+# and not found. Only run bodies are read: a path named in an `on:` filter or a
+# comment is not something the job executes. $1 = workflow.
+uncheckedout_repo_refs() {
+	awk '
+		function flush(   i) {
+			for (i = 1; i <= nref; i++) printf "%s\t%s\n", job, ref[i]
+			job = ""; checkout = 0; nref = 0; inrun = 0
+		}
+		function scan(text,   n, i, parts, t) {
+			# Recorded only while the workspace is still empty; once the job
+			# has checked out, nothing it runs is a finding.
+			if (job == "" || checkout) return
+			sub(/(^|[ \t])#.*$/, "", text)
+			# A block body keeps its indentation, and a leading run of
+			# whitespace splits into an empty first field — which would
+			# put every command one position along and hide a `just` at
+			# the head of the line.
+			sub(/^[ \t]+/, "", text)
+			n = split(text, parts, /[ \t]+/)
+			for (i = 1; i <= n; i++) {
+				t = parts[i]
+				sub("^" trim "+", "", t)
+				sub(trim "+$", "", t)
+				# `just` is an invocation of the repository justfile, which the
+				# workspace lacks for exactly the same reason.
+				if (t == "just" && (i == 1 || parts[i - 1] ~ /(&&|\|\||;|\|)$/)) {
+					ref[++nref] = "justfile"
+					continue
+				}
+				sub(/^\.\//, "", t)
+				if (t ~ /^scripts\/[A-Za-z0-9._-]+$/) ref[++nref] = t
+			}
+		}
+		BEGIN { injobs = 0; trim = "[\"" sprintf("%c", 39) "();,]" }
+		/^jobs:$/ { injobs = 1; next }
+		injobs == 0 { next }
+		/^[A-Za-z]/ { flush(); injobs = 0; next }
+		/^  [A-Za-z0-9_.-]+:[ \t]*$/ {
+			flush()
+			job = $0
+			sub(/^  /, "", job)
+			sub(/:[ \t]*$/, "", job)
+			next
+		}
+		{
+			match($0, /^ */)
+			ind = RLENGTH
+			if (inrun) {
+				if ($0 ~ /^[ \t]*$/ || ind > runind) { scan($0); next }
+				inrun = 0
+			}
+			# The step key itself, anchored: a commented-out step or a
+			# command that merely prints this text is not a checkout, and
+			# reading it as one would clear the contract with nothing in
+			# the workspace. Run bodies never reach here (they are
+			# consumed above), so only a real `uses:` key can match.
+			if ($0 ~ /^[ \t]*(- )?uses:[ \t]*actions\/checkout@/) checkout = 1
+			if (match($0, /(^|[ \t-])run:[ \t]*/)) {
+				runind = ind
+				body = substr($0, RSTART + RLENGTH)
+				if (body ~ /^[|>][-+0-9]*[ \t]*$/) inrun = 1
+				else scan(body)
+			}
+		}
+		END { flush() }
+	' "$1"
+}
+
+check_checkout() {
+	local f="$1" job ref
+	while IFS="$(printf '\t')" read -r job ref; do
+		# The justfile is this repository by definition; a script reference is
+		# only this repository's if that script is actually here, so a job
+		# running some other tree's file is not this check's business.
+		[ "$ref" = justfile ] || [ -e "$ref" ] || continue
+		fail "$f job '$job' runs $ref out of this repository with no \`actions/checkout\` step before it, so its workspace is empty there and that command exits 127 having done nothing — silently, if the job only runs when something else already failed; add \`- uses: actions/checkout@v4\` as that job's first step"
+	done < <(uncheckedout_repo_refs "$f")
+}
+
+for f in .github/workflows/*.yml; do
+	check_checkout "$f"
+done
 
 if [ "$fails" -ne 0 ]; then
 	printf '\ncheck-e2e-matrix: %d drift(s) from the contract in scripts/check-e2e-matrix.sh\n' "$fails" >&2

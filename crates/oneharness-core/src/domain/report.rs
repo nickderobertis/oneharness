@@ -528,19 +528,69 @@ pub struct RunResult {
 }
 
 impl RunResult {
-    /// Fill in the derived [`work`][RunResult::work] reading from this result's
-    /// own signals, and hand the result back.
+    /// Apply this result's own work evidence to its signals, and hand the
+    /// result back: drop a refusal classification the finished envelope
+    /// contradicts, then fill in the derived [`work`][RunResult::work] reading.
     ///
-    /// Every constructor ends here so the reading is derived in exactly one
-    /// place, from the finished envelope rather than from whatever each call
-    /// site happened to know: a second derivation is how a published signal and
-    /// the verdict that consulted it start disagreeing.
+    /// Every constructor ends here so both are derived in exactly one place,
+    /// from the finished envelope rather than from whatever each call site
+    /// happened to know: a second derivation is how a published signal and the
+    /// verdict that consulted it start disagreeing.
+    ///
+    /// **The refusal reconciliation.** A `failure_kind` naming a *refusal*
+    /// ([`FailureKind::is_refusal`]) is a claim that the harness or its provider
+    /// would not run the task. [`completed_billed_run`] is the run's own
+    /// envelope refuting that claim, and the envelope wins: the classification
+    /// is scanned out of a transcript one record at a time, while the envelope
+    /// is what the harness said about the whole run. A 94-minute Claude Code
+    /// turn that exited 0 having billed $12.11 published `failure_kind:
+    /// "rate_limit"` — read off an intermediate `is_error` record the harness had
+    /// retried past — and the supervisor consuming it killed the finished
+    /// dispatch and threw the completed work away, twice.
+    ///
+    /// This is the sole reconciliation of that contradiction, and it is here
+    /// rather than in the history reader's own validity rule
+    /// ([`crate::domain::history`]) because history is opt-in and best-effort: a
+    /// record refused there warns and disables the store, while the *report* on
+    /// stdout — the contract the supervisor actually read — would still carry
+    /// the refusal. Declining to stamp it closes it for every consumer at once,
+    /// and every history record is derived from a result that already passed
+    /// through here.
+    ///
+    /// It is the same rule
+    /// [`startup_failure_reason`][sfr] applies one level down, where work
+    /// evidence short-circuits every fall-through reason — lifted to the
+    /// classification itself, so a consumer that never reads the fallback block
+    /// gets the same answer the chain's verdict would have given.
+    ///
+    /// [sfr]: crate::domain::fallback::startup_failure_reason
     #[must_use]
     pub fn with_work_evidence(mut self) -> Self {
+        if self.failure_kind.is_some_and(FailureKind::is_refusal)
+            && completed_billed_run(self.status, self.exit_code, RunWork::from_result(&self))
+        {
+            self.failure_kind = None;
+            self.failure_kind_source = None;
+        }
         self.work = unclassified_failure(self.status, self.failure_kind)
             .then(|| RunWork::from_result(&self));
         self
     }
+}
+
+/// Whether a finished run's own envelope says it **completed the task and was
+/// billed for it**: the process ended cleanly ([`Status::Ok`] with exit code
+/// `0`) and its [`RunWork`] evidence — a recorded tool call, or usage the
+/// provider charged for — says the harness did the work.
+///
+/// All three halves are load-bearing. A non-zero exit, a timeout or a
+/// cancellation is a run that did *not* complete, and there a refusal
+/// classification is the best account of why. Work evidence is the same reading
+/// [`RunWork::from_result`] gives the fallback verdict, so "did this candidate
+/// do anything?" has one answer across the crate rather than one per reader.
+#[must_use]
+pub fn completed_billed_run(status: Status, exit_code: Option<i32>, work: RunWork) -> bool {
+    status == Status::Ok && exit_code == Some(0) && work == RunWork::Done
 }
 
 /// Whether a finished run failed with **nothing to classify** — the one case
@@ -970,6 +1020,131 @@ mod tests {
             serde_json::from_value::<Status>(Value::String("cancelled".to_string())).unwrap(),
             Status::Cancelled
         );
+    }
+
+    /// A finished run's envelope: how it ended, and what it billed.
+    fn finished(status: Status, exit_code: Option<i32>, usage: Usage) -> RunResult {
+        RunResult {
+            status,
+            exit_code,
+            usage,
+            usage_source: Some("json".to_string()),
+            error: None,
+            ..sample_result()
+        }
+    }
+
+    /// The accounting the observed run reported: a 94-minute turn that billed
+    /// $12.11.
+    fn billed() -> Usage {
+        Usage {
+            input_tokens: Some(830_514),
+            output_tokens: Some(42_233),
+            cost_usd: Some(12.11),
+            ..Usage::default()
+        }
+    }
+
+    #[test]
+    fn a_completed_billed_run_drops_a_refusal_its_envelope_contradicts() {
+        // The run oneharness published for a turn that finished and cost $12.11:
+        // `rate_limit`, scanned off an intermediate record the harness retried
+        // past. The envelope refutes it, so the classification does not survive —
+        // and its source goes with it rather than dangling.
+        for kind in FailureKind::ALL.into_iter().filter(|k| k.is_refusal()) {
+            let mut result = finished(Status::Ok, Some(0), billed());
+            result.failure_kind = Some(kind);
+            result.failure_kind_source = Some("stdout".to_string());
+            let reconciled = result.with_work_evidence();
+            assert_eq!(
+                reconciled.failure_kind, None,
+                "{kind:?} must not survive a completed, billed run"
+            );
+            assert_eq!(reconciled.failure_kind_source, None);
+            // A clean run needs no work reading — `failure_kind` is gone, but the
+            // status was never a failure to explain.
+            assert_eq!(reconciled.work, None);
+        }
+    }
+
+    #[test]
+    fn a_deferred_tool_dead_end_survives_its_own_clean_billed_exit() {
+        // `tool_deferred` is the one kind that is not a refusal: the turn
+        // completed and the finding is about what it produced, so a clean, billed
+        // exit is the shape it describes rather than one that contradicts it.
+        // Clearing it here would put the Claude Code bridge dead-end (issue
+        // #1114) back to looking like an ordinary empty answer.
+        let mut result = finished(Status::Ok, Some(0), billed());
+        result.failure_kind = Some(FailureKind::ToolDeferred);
+        result.failure_kind_source = Some("stdout".to_string());
+        let reconciled = result.with_work_evidence();
+        assert_eq!(reconciled.failure_kind, Some(FailureKind::ToolDeferred));
+        assert_eq!(reconciled.failure_kind_source.as_deref(), Some("stdout"));
+    }
+
+    #[test]
+    fn a_run_that_did_not_complete_and_be_billed_keeps_its_refusal() {
+        // Each half of `completed_billed_run` is load-bearing, so each is dropped
+        // in turn: a run that failed, one that exited non-zero, and one that
+        // exited cleanly with nothing billed all keep the best account they have
+        // of why. Only all three together refute a refusal.
+        for (label, status, exit_code, usage) in [
+            ("failed the task", Status::Nonzero, Some(1), billed()),
+            ("timed out", Status::Timeout, None, billed()),
+            ("was cancelled", Status::Cancelled, None, billed()),
+            (
+                "exited non-zero on a clean status",
+                Status::Ok,
+                Some(1),
+                billed(),
+            ),
+            ("billed nothing", Status::Ok, Some(0), Usage::default()),
+            (
+                "billed zero",
+                Status::Ok,
+                Some(0),
+                Usage {
+                    input_tokens: Some(0),
+                    output_tokens: Some(0),
+                    cost_usd: Some(0.0),
+                    ..Usage::default()
+                },
+            ),
+        ] {
+            let mut result = finished(status, exit_code, usage);
+            result.failure_kind = Some(FailureKind::RateLimit);
+            result.failure_kind_source = Some("stderr".to_string());
+            let reconciled = result.with_work_evidence();
+            assert_eq!(
+                reconciled.failure_kind,
+                Some(FailureKind::RateLimit),
+                "a run that {label} keeps its classification"
+            );
+            assert_eq!(reconciled.failure_kind_source.as_deref(), Some("stderr"));
+        }
+    }
+
+    #[test]
+    fn a_completed_run_with_only_tool_evidence_also_refutes_a_refusal() {
+        // Work evidence is `RunWork`'s one definition, not a second reading of
+        // "billed": a harness that reported no accounting at all but recorded a
+        // tool call did the task just as decisively.
+        let mut result = finished(Status::Ok, Some(0), Usage::default());
+        result.events = Some(vec![ActionEvent {
+            kind: "tool_call".to_string(),
+            name: Some("Bash".to_string()),
+            input: None,
+            output: None,
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+            timing_source: None,
+        }]);
+        result.failure_kind = Some(FailureKind::RateLimit);
+        assert_eq!(result.with_work_evidence().failure_kind, None);
     }
 
     fn sample_result() -> RunResult {

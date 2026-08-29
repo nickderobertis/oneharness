@@ -150,6 +150,38 @@ impl FailureKind {
         FailureKind::InputTooLarge,
     ];
 
+    /// Whether this kind asserts the harness or its provider **refused to run
+    /// the task** — the claim a run's own completed, billed envelope
+    /// contradicts, and the one
+    /// [`RunResult::with_work_evidence`][wwe] declines to stamp there.
+    ///
+    /// Every kind but [`FailureKind::ToolDeferred`] is a refusal: each says the
+    /// request was rejected (`auth`, `rate_limit`, `quota`, `model_not_found`)
+    /// or never made at all (`session_not_found`, `untrusted_directory`,
+    /// `input_too_large`). `ToolDeferred` is the odd one out because it is not a
+    /// refusal at all: the turn completed, and the finding is about *what it
+    /// produced* — a deferred builtin tool call instead of an executed one — so
+    /// a clean, billed exit is exactly the shape it describes rather than one
+    /// that contradicts it.
+    ///
+    /// Matched exhaustively on purpose: a new kind is a deliberate answer to
+    /// "does a completed, billed run refute this?", not an inherited default.
+    ///
+    /// [wwe]: crate::domain::report::RunResult::with_work_evidence
+    #[must_use]
+    pub fn is_refusal(self) -> bool {
+        match self {
+            FailureKind::Auth
+            | FailureKind::RateLimit
+            | FailureKind::ModelNotFound
+            | FailureKind::Quota
+            | FailureKind::SessionNotFound
+            | FailureKind::UntrustedDirectory
+            | FailureKind::InputTooLarge => true,
+            FailureKind::ToolDeferred => false,
+        }
+    }
+
     /// The snake_case token this kind serializes to — for the few call sites
     /// (stderr diagnostics, the fallback reason map) that need the raw string.
     pub fn as_str(self) -> &'static str {

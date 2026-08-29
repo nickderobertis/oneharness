@@ -351,7 +351,13 @@ check_prose() {
 	fi
 	[ "${#3}" -le "$MAX_PROSE" ] ||
 		fail "$declarations writes $1 in $2 as more than $MAX_PROSE characters; cut it to the one sentence a reader acts on and move the reasoning behind it into a comment above that target"
-	[[ $3 =~ [[:cntrl:]] ]] &&
+	# A control character is found by its own byte value, and never by
+	# `[[:cntrl:]]`: which bytes that class holds is the runner's locale's
+	# answer, and under the Windows job's it holds the continuation bytes of a
+	# UTF-8 character — so every em dash in this document was a finding there and
+	# nowhere else. `tr` deletes the ASCII controls by number, which is one
+	# answer on every platform.
+	[ "$(printf '%s' "$3" | tr -d '\001-\037\177')" = "$3" ] ||
 		fail "$declarations writes $1 in $2 with a control character; it is rendered on one line, so replace it with a space or drop it"
 	return 0
 }

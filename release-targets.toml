@@ -75,8 +75,11 @@ manifest = "python/oneharness-sdk/pyproject.toml"
 # scripts/check-release-targets.sh reconciles all three.
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The scoped npm
 # names below are the ones npm serves, and the canonical validator refuses every
-# one of them: its `RegistryId` requires a name to open with an alphanumeric
-# while permitting `@` and `/` later, so `@scope/name` is refused as a class —
+# one of them: `onevcs release declaration` (onevcs-cli 0.16.0, the release that
+# carries the reader) reads no target at all from this document, stopping at the
+# first scoped id it reaches. Its `RegistryId` requires a name to open with an
+# alphanumeric while permitting `@` and `/` later, so `@scope/name` is refused
+# as a class —
 # which its own contract text ("exactly what that registry serves") contradicts.
 # Spelling them as something that validator accepts would declare artifacts npm
 # does not publish, and dropping them would hide artifacts this repository

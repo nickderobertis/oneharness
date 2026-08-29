@@ -313,6 +313,20 @@ rewrite "$root" release-targets.toml '
 assert_red prose-with-a-control-character "a sentence carrying a control character" \
   "with a control character"
 
+# And the other half of that rule: a control character is an ASCII control, not
+# whatever the runner's locale calls one. This case is red only where that
+# distinction is real — on the Windows job, whose locale reads the continuation
+# bytes of a UTF-8 character as controls, so every em dash in the checked-in
+# document was a finding there. It is a case of its own rather than the
+# baseline's coverage, because prose rewritten into plain ASCII would take that
+# coverage away without anything saying so.
+root="$(stage prose-outside-ascii)"
+rewrite "$root" release-targets.toml '
+  /^what = "The reusable engine/ { print "what = \"The reusable engine — a naïve dependent takes it whole.\""; next }
+  { print }
+'
+assert_green prose-outside-ascii "a sentence carrying a character outside ASCII"
+
 root="$(stage absolute-manifest)"
 rewrite "$root" release-targets.toml '{ sub(/^manifest = "pyproject.toml"$/, "manifest = \"/pyproject.toml\""); print }'
 assert_red absolute-manifest "a manifest path that is absolute" \

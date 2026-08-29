@@ -68,13 +68,18 @@ RETIRED_KEYS="id why"
 # What the canonical schema's own validated types accept.
 #
 # `covers` and `id` are `RegistryId`: `<registry>:<name>`, the name spelled
-# exactly as its registry serves it. The optional leading `@scope/` is this
-# repository's one documented deviation from the canonical validator, which
-# requires the name's first character to be alphanumeric and so refuses every
-# scoped npm package — including `npm:@oneharness/sdk`, which this repository
-# really publishes. Reported upstream rather than worked around by spelling an
-# artifact's name as something npm does not serve; this is the same npm name
-# syntax scripts/release-probe.sh already validates before it builds a URL.
+# exactly as its registry serves it. This is that type's alphabet, restated —
+# a lowercase registry word, then a name opening with an alphanumeric and
+# holding only `A-Za-z0-9._@/-` after it.
+CANONICAL_ID_SYNTAX='^[a-z0-9-]+:[A-Za-z0-9][A-Za-z0-9._@/-]*$'
+# What this gate accepts, which is that alphabet plus one form it refuses: a
+# scoped npm name, whose leading `@` the canonical reader will not let a name
+# open with. This repository really publishes six of them — `npm:@oneharness/sdk`
+# and the five per-platform packages the launcher covers — so an id spelled any
+# other way would name an artifact npm does not serve. They are accepted here
+# and then named by this gate's own success line, so a green never reads as a
+# document the canonical reader would take. (The scoped form is the same npm
+# name syntax scripts/release-probe.sh validates before it builds a URL.)
 ID_SYNTAX='^[a-z0-9-]+:(@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*$'
 MAX_ID=128
 # `TargetName`: the short name a host document and a consumer's plan name a
@@ -90,6 +95,11 @@ fail() {
 	printf 'release-target drift: %s\n' "$1" >&2
 	fails=$((fails + 1))
 }
+
+# Identifiers this gate accepts and the canonical reader does not. Collected
+# rather than failed, because the artifact is real and the refusal is upstream's
+# to lift; reported rather than swallowed, for the same reason.
+deviating_ids=""
 
 # The first `name = "..."` inside a named TOML section. $1 = file, $2 = section.
 toml_section_name() {
@@ -281,8 +291,13 @@ declared_version="$(values_of top 0 schema_version)"
 check_id() {
 	[ "${#3}" -le "$MAX_ID" ] ||
 		fail "$declarations writes $1 in $2 as an identifier longer than $MAX_ID characters; a registry serves no such name, so correct it to the one it really serves"
-	[[ $3 =~ $ID_SYNTAX ]] ||
+	if [[ ! $3 =~ $ID_SYNTAX ]]; then
 		fail "$declarations writes $1 in $2 as \"$3\", which is not <registry>:<name> with the name spelled as its registry serves it; e.g. crate:oneharness, because one name published to two registries is two artifacts"
+		return 0
+	fi
+	[[ $3 =~ $CANONICAL_ID_SYNTAX ]] || deviating_ids="${deviating_ids}${3}
+"
+	return 0
 }
 
 check_name() {
@@ -629,4 +644,13 @@ if [ "$fails" -ne 0 ]; then
 	printf 'check-release-targets: %d drift(s) between %s and what this repository publishes\n' "$fails" "$declarations" >&2
 	exit 1
 fi
-echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares"
+# The success line carries the deviation rather than a second line beside it. An
+# identifier this gate takes that the canonical reader refuses is the one way a
+# pass here could mislead — a consumer parsing the same document with the tool
+# that really reads it gets a refusal, not these targets — so a green says which
+# ones instead of reading as conformance it has not got.
+if [ -n "$deviating_ids" ]; then
+	echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares — except $(printf '%s' "$deviating_ids" | paste -sd, - | sed 's/,/, /g'), whose leading @ its RegistryId refuses, so the canonical reader takes none of this document until that rule takes an optional @scope/"
+else
+	echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares"
+fi

@@ -348,4 +348,29 @@ done
 [ "$readers" -gt 0 ] ||
   fail "this host has neither jq nor python3, so no reader could be exercised; install one (the probe needs it too) and rerun"
 
-echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', and both answers a caller acts on are distinguishable ($readers reader(s))"
+# One definition of what a [[target]] is, held across the two scripts that read
+# it. scripts/release-probe-live.sh drives the probe over every declared target,
+# so it has to know which ids those are, and it reads them with a copy of the
+# probe's own extraction. That copy is the thing to watch: the boundary it draws
+# is exactly what the probe refuses an identifier over, so a [[retired]] id or a
+# `covers` entry admitted on one side and not the other is a live suite
+# demanding a published version for an artifact this repository deliberately
+# does not serve. Held identical rather than merged into a sourced helper,
+# because the probe is spawned standalone under `env -i` by a consumer holding
+# nothing but that one file, and a second file it must find is a way for it to
+# stop answering at all.
+extract_target_reader() {
+  awk -v q="'" '
+    index($0, "declared=\"$(awk " q) == 1 { inside = 1; next }
+    inside && substr($0, 1, 2) == q " " { exit }
+    inside { print }
+  ' "$1"
+}
+probe_reader="$(extract_target_reader scripts/release-probe.sh)"
+live_reader="$(extract_target_reader scripts/release-probe-live.sh)"
+[ -n "$probe_reader" ] ||
+  fail "no [[target]] extraction could be read out of scripts/release-probe.sh; it was rewritten into a shape this reconciliation cannot find, so point the extractor here at its new shape — until then nothing holds the live suite's copy to it"
+[ "$probe_reader" = "$live_reader" ] ||
+  fail "scripts/release-probe.sh and scripts/release-probe-live.sh read [[target]] entries differently, so the set the live suite probes is no longer the set the probe will answer for; copy whichever is right over the other — a [[retired]] id or a covers entry admitted by one alone is a demand for a version this repository never publishes"
+
+echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', both answers a caller acts on are distinguishable ($readers reader(s)), and the live suite reads a [[target]] exactly as the probe does"

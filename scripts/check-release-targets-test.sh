@@ -95,6 +95,14 @@ assert_green() {
   fi
 }
 
+# $1 = fixture name, $2 = description, $3 = text the gate must say while passing.
+assert_green_saying() {
+  local root="$work/$1" description=$2 expected=$3
+  assert_green "$1" "$description"
+  grep -Fq "$expected" "$work/out" ||
+    fail "$description passed the gate without saying '$expected'; a green that stops naming the deviation reads as conformance the document has not got, so restore that in the gate's success line — or, if the canonical schema now expresses these names, drop the deviation and this case together"
+}
+
 # The real tree passes. Anchoring here first means every red below is the
 # mutation rather than a gate that rejects everything.
 root="$(stage baseline)"
@@ -156,6 +164,22 @@ root="$(stage unqualified-id)"
 rewrite "$root" release-targets.toml '{ sub(/^id = "pypi:oneharness-sdk"$/, "id = \"oneharness-sdk\""); print }'
 assert_red unqualified-id "an identifier that names no registry" \
   'as "oneharness-sdk", which is not <registry>:<name>'
+
+# The one identifier shape this gate takes and the canonical reader does not: a
+# scoped npm name, whose leading `@` that reader's RegistryId will not let a
+# name open with. The artifacts are real, so the document keeps the names npm
+# serves — and the gate's own pass has to name them, because a green that said
+# nothing would read as a document the canonical reader takes when it refuses
+# the whole of it. Both halves are proven: that the pass names them, and that
+# the window is exactly a scope rather than any leading `@`.
+root="$(stage scoped-name-reported)"
+assert_green_saying scoped-name-reported "the checked-in declaration's scoped npm names" \
+  'npm:@oneharness/sdk, whose leading @ its RegistryId refuses'
+
+root="$(stage at-sign-without-a-scope)"
+rewrite "$root" release-targets.toml '{ sub(/^id = "npm:@oneharness\/sdk"$/, "id = \"npm:@oneharness\""); print }'
+assert_red at-sign-without-a-scope "a name opening with @ that is not a scope" \
+  'as "npm:@oneharness", which is not <registry>:<name>'
 
 # Two targets answering to one short name: that name is what a host document
 # and a plan node select by, so two of them are two answers to one question.

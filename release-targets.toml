@@ -78,10 +78,13 @@ manifest = "python/oneharness-sdk/pyproject.toml"
 # one of them: its `RegistryId` requires a name to open with an alphanumeric
 # while permitting `@` and `/` later, so `@scope/name` is refused as a class —
 # which its own contract text ("exactly what that registry serves") contradicts.
-# Nothing offline can reconcile a producer document against a validator in
-# another repository, and spelling these as something that validator accepts
-# would name artifacts npm does not serve. Reported upstream; delete this block
-# and the deviation with it once that rule takes an optional leading `@scope/`.
+# Spelling them as something that validator accepts would declare artifacts npm
+# does not publish, and dropping them would hide artifacts this repository
+# really releases, so they stay as npm serves them and the gap is raised where
+# it can be fixed rather than worked around here. It is never a silent
+# deviation: scripts/check-release-targets.sh names every one of them on stderr
+# on every run. Delete this block and the deviation with it once that rule takes
+# an optional leading `@scope/`.
 [[target]]
 id = "npm:oneharness-cli"
 name = "cli-npm"

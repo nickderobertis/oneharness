@@ -25,7 +25,18 @@ trap 'rm -rf "$work"' EXIT
 
 fail() {
   echo "check-release-targets-test: $1" >&2
-  [ -s "$work/out" ] && cat "$work/out" >&2
+  exit 1
+}
+
+# The same, with the gate's own output for the case that just ran printed
+# beneath it. Only an assertion that captured one says this: `rewrite` below
+# fails before any gate has run, and one capture is reused across cases, so
+# printing it unconditionally would name the previous case's diagnostic as this
+# failure's cause.
+fail_showing() {
+  echo "check-release-targets-test: $1" >&2
+  echo "  what the gate said:" >&2
+  cat "$work/out" >&2
   exit 1
 }
 
@@ -80,10 +91,10 @@ assert_red() {
   local root="$work/$1" description=$2 expected=$3
   git -C "$root" add -A
   if bash "$root/scripts/check-release-targets.sh" >"$work/out" 2>&1; then
-    fail "$description should have failed the gate; restore the check for it in scripts/check-release-targets.sh, or drop this case if that drift can no longer happen"
+    fail_showing "$description should have failed the gate; restore the check for it in scripts/check-release-targets.sh, or drop this case if that drift can no longer happen"
   fi
   grep -Fq "$expected" "$work/out" ||
-    fail "$description failed the gate without naming '$expected'; restore that detail in the gate's diagnostic, or update this case's expected text to what the gate says now"
+    fail_showing "$description failed the gate without naming '$expected'; restore that detail in the gate's diagnostic, or update this case's expected text to what the gate says now"
 }
 
 # $1 = fixture name, $2 = description. The gate must accept it.
@@ -91,7 +102,7 @@ assert_green() {
   local root="$work/$1" description=$2
   git -C "$root" add -A
   if ! bash "$root/scripts/check-release-targets.sh" >"$work/out" 2>&1; then
-    fail "$description should have passed the gate; read what it found, printed below, and fix whichever side is wrong — the fixture, or the check that now rejects it"
+    fail_showing "$description should have passed the gate; fix whichever side is wrong — the fixture, or the check that now rejects it"
   fi
 }
 
@@ -100,14 +111,14 @@ assert_green_saying() {
   local root="$work/$1" description=$2 expected=$3
   assert_green "$1" "$description"
   grep -Fq "$expected" "$work/out" ||
-    fail "$description passed the gate without saying '$expected'; a green that stops naming the deviation reads as conformance the document has not got, so restore that in the gate's success line — or, if the canonical schema now expresses these names, drop the deviation and this case together"
+    fail_showing "$description passed the gate without saying '$expected'; a green that stops naming the deviation reads as conformance the document has not got, so restore that in the gate's success line — or, if the canonical schema now expresses these names, drop the deviation and this case together"
 }
 
 # The real tree passes. Anchoring here first means every red below is the
 # mutation rather than a gate that rejects everything.
 root="$(stage baseline)"
 if ! bash "$root/scripts/check-release-targets.sh" >"$work/out" 2>&1; then
-  fail "the checked-in declaration should pass the gate; reconcile release-targets.toml with what the release configuration publishes (the gate names each drift above) before reading any case below"
+  fail_showing "the checked-in declaration should pass the gate; reconcile release-targets.toml with what the release configuration publishes it names each drift below, before any case runs"
 fi
 
 # The cases below hold the document to the canonical schema — the shape six

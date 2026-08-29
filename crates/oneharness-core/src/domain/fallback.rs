@@ -200,10 +200,8 @@ impl FallThroughReason {
 ///   (the provider will not serve *this identity* right now). It belongs beside
 ///   `quota` for the same reason `quota` is there: the task is fine and the next
 ///   candidate — a different identity, with its own limit — can still do it. It
-///   used to fall through only while a model list was being tried, which read
-///   the condition as a property of the *model*; it is a property of whoever is
-///   being billed, so one rate-limited identity ended a chain four further
-///   identities could have served. Non-zero only, like the refusals below: with
+///   is not gated on a model list, because the limit belongs to whoever is being
+///   billed rather than to the model. Non-zero only, like the refusals below: with
 ///   a clean exit the run either did the work (and
 ///   [`completed_run_that_did_work`][cbr] has already dropped the classification) or
 ///   completed without it, and neither is a refusal to hand on.

@@ -633,8 +633,8 @@ jobs:
     steps:
       # The script below lives in this repository, and a job's workspace is empty
       # until it checks out — without this the reporter exits 127 on a missing
-      # file, which is how ten consecutive nightly failures went unannounced
-      # elsewhere in this repository. scripts/check-e2e-matrix.sh holds this.
+      # file and announces nothing. scripts/check-e2e-matrix.sh holds this
+      # contract repository-wide.
       - uses: actions/checkout@v5
 
       - name: Open or update the release-failure issue

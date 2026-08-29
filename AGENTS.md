@@ -1018,28 +1018,26 @@ shape. When you add one:
   candidate that never started reads exactly like one that ran the task and
   lost, and a chain that stopped at the first says nothing about which it was.
   `rate_limit` falls through on ANY chain, not only a model fan-out: the limit
-  belongs to whoever is being billed, not to the model, so one rate-limited
-  identity ended a dispatch four further identities could have served.
+  belongs to whoever is being billed, not to the model, so the next identity
+  carries its own.
   `model_not_found` stays model-list-only — a config mistake the user should see.
-- **A completed, billed run carries no refusal classification.** A
+- **A completed run that did the work carries no refusal classification.** A
   `failure_kind` that names a refusal asserts the provider would not run the
   task, and an envelope of `status: ok` + exit `0` + [`RunWork::Done`] refutes
-  that: the classification is scanned one record at a time out of a transcript,
-  while the envelope is the harness's word on the whole run. So
+  that: the classification is read one record at a time out of a transcript — an
+  intermediate `is_error` record the harness went on to retry past produces
+  one — while the envelope is the harness's word on the whole run. So
   `RunResult::with_work_evidence` — the one funnel every constructor already
   ends at — drops it there (`report::completed_run_that_did_work`, which reads
   work rather than billing: a tool call with no accounting at all is evidence
-  too). A claude turn that exited 0 having done and billed the work published
-  `rate_limit` off an intermediate `is_error` record it had retried past, and
-  the supervisor consuming that field killed the finished dispatch and discarded
-  the work. It lives in the classifier rather than
+  too). It lives in the classifier rather than
   `history`'s validity rule because history is opt-in and best-effort — a record
   refused there warns and disables the store while the *report* a supervisor
   actually reads keeps the refusal — and every record is derived from a result
   that already passed through the funnel. `FailureKind::is_refusal` is matched
   exhaustively, so a new kind is a deliberate answer to "does a completed run
-  that did the work refute this?"; `tool_deferred` answers no, being a statement about
-  what a completed turn produced rather than a refusal to run it.
+  that did the work refute this?"; `tool_deferred` answers no, being a statement
+  about what a completed turn produced rather than a refusal to run it.
 
 ## Scripts and output are context
 
@@ -1149,16 +1147,15 @@ shape. When you add one:
   GitHub PAT set by hand (a PAT can't live in the harness-auth manifest's
   Bitwarden flow). The crate version and `CHANGELOG.md` are managed by
   release-plz — do not hand-bump them.
-- **Every unattended workflow reports its own failure.** `release.yml` and
-  `release-plz.yml` each carry an `if: failure()` job running
-  `scripts/report-workflow-failure.sh` (one open issue per title, commented on
-  at each further failure); `scripts/check-workflows.sh` is the drift gate for
-  both halves and `report-workflow-failure-test.sh` drives create-vs-comment
-  against a stubbed `gh`. A push to main and a published Release have no PR to
-  turn red and no checks list anyone opens, so a failure that announces itself
-  nowhere is the same as not running. The reporter's own `actions/checkout` is
-  the repository-wide contract `check-e2e-matrix.sh` holds: without it the job
-  exits 127 on a missing file and reports nothing it was added to report.
+- **Every unattended workflow reports its own failure**, through
+  `scripts/report-workflow-failure.sh` on an `if: failure()` job: a push to main
+  and a published Release have no PR to turn red and no checks list anyone opens,
+  so a failure that announces itself nowhere is the same as not running. Its two
+  non-obvious constraints: the job needs its own `actions/checkout` (the
+  repository-wide contract `check-e2e-matrix.sh` holds) or it exits 127 on the
+  missing script, and the issue a fuzzy title search names is only a CANDIDATE —
+  a title carrying a newline forges a record, so the reporter reads the chosen
+  issue's own title back before writing to it.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
   every distribution, including the validated idempotent crates.io job — use it

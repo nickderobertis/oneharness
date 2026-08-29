@@ -541,12 +541,9 @@ impl RunResult {
     /// ([`FailureKind::is_refusal`]) is a claim that the harness or its provider
     /// would not run the task. [`completed_run_that_did_work`] is the run's own
     /// envelope refuting that claim, and the envelope wins: the classification
-    /// is scanned out of a transcript one record at a time, while the envelope
-    /// is what the harness said about the whole run. A 94-minute Claude Code
-    /// turn that exited 0 having billed $12.11 published `failure_kind:
-    /// "rate_limit"` — read off an intermediate `is_error` record the harness had
-    /// retried past — and the supervisor consuming it killed the finished
-    /// dispatch and threw the completed work away, twice.
+    /// is scanned out of a transcript one record at a time — an intermediate
+    /// `is_error` record the harness went on to retry past is enough to produce
+    /// one — while the envelope is what the harness said about the whole run.
     ///
     /// This is the sole reconciliation of that contradiction, and it is here
     /// rather than in the history reader's own validity rule

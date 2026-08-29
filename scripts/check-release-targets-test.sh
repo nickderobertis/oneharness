@@ -321,6 +321,28 @@ RETIRED
 assert_red retirement-of-a-target "a retirement of something a target publishes" \
   "retires 'crate:oneharness', which it also declares as a target"
 
+# An entry that wrote nothing still owes every field it declares — and it is the
+# entry the reader emits no record for, so it is the one a count taken from
+# records would never ask about.
+root="$(stage empty-retirement)"
+printf '\n[[retired]]\n' >>"$root/release-targets.toml"
+assert_red empty-retirement "a retirement that declares nothing at all" \
+  'declares no id in [[retired]] 1'
+
+root="$(stage empty-target)"
+printf '\n[[target]]\n' >>"$root/release-targets.toml"
+assert_red empty-target "a target that declares nothing at all" \
+  'declares no name in [[target]] 7'
+
+root="$(stage idless-retirement)"
+cat >>"$root/release-targets.toml" <<'RETIRED'
+
+[[retired]]
+why = "An artifact this repository stopped publishing, without saying which."
+RETIRED
+assert_red idless-retirement "a retirement that names no identifier" \
+  'declares no id in [[retired]] 1'
+
 root="$(stage retirement-of-a-covered-artifact)"
 cat >>"$root/release-targets.toml" <<'RETIRED'
 

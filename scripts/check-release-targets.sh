@@ -247,7 +247,15 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 		}
 		refuse("writes " key " in " where " as a value this reader cannot read; every value is a quoted string, a list of them, or a whole number")
 	}
-	END { if (in_list) refuse("leaves " array_key " open in " array_where "; close its list with ]") }
+	# How many entries of each kind the document opened. Counted from the table
+	# headers rather than from the records they went on to emit, because an entry
+	# that wrote no field at all still has to answer for the fields it owes: one
+	# counted from its records would be an entry nothing was ever asked about.
+	END {
+		if (in_list) refuse("leaves " array_key " open in " array_where "; close its list with ]")
+		printf "count%s%d%s%s%s%d\n", us, 0, us, "target", us, targets + 0
+		printf "count%s%d%s%s%s%d\n", us, 0, us, "retired", us, retireds + 0
+	}
 ' "$declarations")"
 
 # $1 = kind, $2 = index, $3 = key. Every value that key holds, one per line.
@@ -324,8 +332,8 @@ single() {
 top_probe="$(single top 0 probe "the document")"
 [ -z "$top_probe" ] || check_path "probe" "the document" "$top_probe"
 
-target_count="$(printf '%s\n' "$fields" | awk -F"$US" '$1 == "target" { if ($2 + 0 > n) n = $2 + 0 } END { print n + 0 }')"
-retired_count="$(printf '%s\n' "$fields" | awk -F"$US" '$1 == "retired" { if ($2 + 0 > n) n = $2 + 0 } END { print n + 0 }')"
+target_count="$(values_of count 0 target)"
+retired_count="$(values_of count 0 retired)"
 
 if [ "$target_count" -eq 0 ]; then
 	echo "check-release-targets: $declarations declares no [[target]] entries; restore one [[target]] per artifact this repository publishes — a declaration that names nothing says less than no declaration at all, because a consumer cannot tell whether this repository publishes nothing or nobody has said what it publishes." >&2

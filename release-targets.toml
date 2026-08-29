@@ -1,13 +1,8 @@
 # What this repository releases, and the name each registry serves it under.
 #
-# Written against the canonical release-target schema — `schema_version = 1`,
-# defined once in nickderobertis/onevcs's `docs/contract.md` and enforced by
-# that crate's `release-targets.toml` reader — so a consumer that has never
-# seen this repository can parse it with a standard TOML reader and learn every
-# artifact it publishes, and the short name each one is waited on by, without
-# knowing anything about this repository.
-# scripts/check-release-targets.sh holds this file to that schema and to what
-# the release configuration really publishes.
+# Written against the canonical release-target schema, which nickderobertis/
+# onevcs defines in its `docs/contract.md`; scripts/check-release-targets.sh
+# holds this file to it.
 #
 # A consumer that has to wait for a change to land here needs one thing only
 # this repository can say: the registry-qualified identifier of every artifact
@@ -78,6 +73,13 @@ manifest = "python/oneharness-sdk/pyproject.toml"
 # lockstep — scripts/npm-build.mjs's target table, this launcher's
 # optionalDependencies, and the `covers` list here — and
 # scripts/check-release-targets.sh reconciles all three.
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The scoped npm
+# names below are the ones npm serves, and the canonical validator refuses them
+# for a reason its own contract text contradicts (see the note at the foot of
+# this file). Nothing offline can reconcile a producer document with a validator
+# in another repository, and inventing a spelling this one accepts would name
+# artifacts that do not exist — so the deviation is reported upstream and carried
+# here until that rule accepts an optional leading `@scope/`.
 [[target]]
 id = "npm:oneharness-cli"
 name = "cli-npm"
@@ -98,6 +100,7 @@ name = "node-sdk"
 what = "The typed Node.js client, imported as `@oneharness/sdk`, which drives the `npm:oneharness-cli` release it ships beside."
 published_by = ".github/workflows/release.yml — the publish-npm job, from the tarball scripts/sdk-pack.mjs builds, under npm/oneharness-sdk/package.json's name."
 manifest = "npm/oneharness-sdk/package.json"
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 # One known deviation, reported upstream rather than papered over here. The
 # canonical validator's `RegistryId` requires a name's first character to be

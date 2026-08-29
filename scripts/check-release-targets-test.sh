@@ -106,14 +106,6 @@ assert_green() {
   fi
 }
 
-# $1 = fixture name, $2 = description, $3 = text the gate must say while passing.
-assert_green_saying() {
-  local root="$work/$1" description=$2 expected=$3
-  assert_green "$1" "$description"
-  grep -Fq "$expected" "$work/out" ||
-    fail_showing "$description passed the gate without saying '$expected'; a green that stops naming the deviation reads as conformance the document has not got, so restore that in the gate's success line — or, if the canonical schema now expresses these names, drop the deviation and this case together"
-}
-
 # The real tree passes. Anchoring here first means every red below is the
 # mutation rather than a gate that rejects everything.
 root="$(stage baseline)"
@@ -130,7 +122,7 @@ fi
 root="$(stage misspelled-key)"
 rewrite "$root" release-targets.toml '{ sub(/^manifest = "Cargo.toml"$/, "manifset = \"Cargo.toml\""); print }'
 assert_red misspelled-key "a key this schema does not declare" \
-  'names "manifset" in [[target]] 2, which schema_version 1 does not declare'
+  'names "manifset" in [[target]] 2, which schema_version 2 does not declare'
 
 root="$(stage unknown-table)"
 cat >>"$root/release-targets.toml" <<'TABLE'
@@ -139,7 +131,7 @@ cat >>"$root/release-targets.toml" <<'TABLE'
 key = "value"
 TABLE
 assert_red unknown-table "a table this schema does not declare" \
-  "opens [extra], which schema_version 1 does not declare"
+  "opens [extra], which schema_version 2 does not declare"
 
 root="$(stage unreadable-line)"
 printf '\nnonsense\n' >>"$root/release-targets.toml"
@@ -176,21 +168,31 @@ rewrite "$root" release-targets.toml '{ sub(/^id = "pypi:oneharness-sdk"$/, "id 
 assert_red unqualified-id "an identifier that names no registry" \
   'as "oneharness-sdk", which is not <registry>:<name>'
 
-# The one identifier shape this gate takes and the canonical reader does not: a
-# scoped npm name, whose leading `@` that reader's RegistryId will not let a
-# name open with. The artifacts are real, so the document keeps the names npm
-# serves — and the gate's own pass has to name them, because a green that said
-# nothing would read as a document the canonical reader takes when it refuses
-# the whole of it. Both halves are proven: that the pass names them, and that
-# the window is exactly a scope rather than any leading `@`.
-root="$(stage scoped-name-reported)"
-assert_green_saying scoped-name-reported "the checked-in declaration's scoped npm names" \
-  'npm:@oneharness/sdk, whose leading @ its RegistryId refuses'
-
+# A leading `@` commits a name to the scoped form and is decided there in full.
+# That is the half of the identifier grammar a plain-name reading would hide:
+# the plain alphabet holds `@` and `/` anywhere after the first character, so a
+# reader that fell back to it would take all four of these as ordinary names.
+# The checked-in document's own six scoped ids are accepted — the baseline pass
+# above is that, and the gate would not have reached any case here otherwise.
 root="$(stage at-sign-without-a-scope)"
 rewrite "$root" release-targets.toml '{ sub(/^id = "npm:@oneharness\/sdk"$/, "id = \"npm:@oneharness\""); print }'
 assert_red at-sign-without-a-scope "a name opening with @ that is not a scope" \
   'as "npm:@oneharness", which is not <registry>:<name>'
+
+root="$(stage scope-with-no-package)"
+rewrite "$root" release-targets.toml '{ sub(/^id = "npm:@oneharness\/sdk"$/, "id = \"npm:@oneharness/\""); print }'
+assert_red scope-with-no-package "a scope whose package half is empty" \
+  'as "npm:@oneharness/", which is not <registry>:<name>'
+
+root="$(stage no-scope-before-the-slash)"
+rewrite "$root" release-targets.toml '{ sub(/^id = "npm:@oneharness\/sdk"$/, "id = \"npm:@/sdk\""); print }'
+assert_red no-scope-before-the-slash "a scoped name with nothing in its scope" \
+  'as "npm:@/sdk", which is not <registry>:<name>'
+
+root="$(stage scope-inside-a-scope)"
+rewrite "$root" release-targets.toml '{ sub(/^id = "npm:@oneharness\/sdk"$/, "id = \"npm:@oneharness/sdk/node\""); print }'
+assert_red scope-inside-a-scope "a scoped name carrying a second slash" \
+  'as "npm:@oneharness/sdk/node", which is not <registry>:<name>'
 
 # Two targets answering to one short name: that name is what a host document
 # and a plan node select by, so two of them are two answers to one question.
@@ -212,7 +214,7 @@ assert_red trailing-after-string "a second value after a string" \
   "writes name in [[target]] 1 with something after its value"
 
 root="$(stage trailing-after-number)"
-rewrite "$root" release-targets.toml '{ sub(/^schema_version = 1$/, "schema_version = 1 2"); print }'
+rewrite "$root" release-targets.toml '{ sub(/^schema_version = 2$/, "schema_version = 2 3"); print }'
 assert_red trailing-after-number "a second value after a number" \
   "writes schema_version in the document with something after its value"
 
@@ -250,7 +252,7 @@ assert_red number-for-a-scalar "a number where a key holds a string" \
   'writes manifest in [[target]] 2 as a whole number; it holds one quoted string'
 
 root="$(stage string-for-a-number)"
-rewrite "$root" release-targets.toml '{ sub(/^schema_version = 1$/, "schema_version = \"1\""); print }'
+rewrite "$root" release-targets.toml '{ sub(/^schema_version = 2$/, "schema_version = \"2\""); print }'
 assert_red string-for-a-number "a quoted string where a key holds a number" \
   'writes schema_version in the document as a quoted string; it holds a whole number'
 
@@ -476,9 +478,9 @@ assert_red empty-declaration "a declaration with no targets" \
   "declares no [[target]] entries"
 
 root="$(stage schema-drift)"
-rewrite "$root" release-targets.toml '{ sub(/^schema_version = 1$/, "schema_version = 2"); print }'
+rewrite "$root" release-targets.toml '{ sub(/^schema_version = 2$/, "schema_version = 3"); print }'
 assert_red schema-drift "a declaration written to a version this gate cannot read" \
-  "declares schema_version '2'"
+  "declares schema_version '3'"
 
 root="$(stage manifestless)"
 rewrite "$root" release-targets.toml '!/^manifest = "Cargo.toml"$/ { print }'

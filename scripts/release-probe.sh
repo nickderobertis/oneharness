@@ -27,7 +27,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 declarations="$repo_root/release-targets.toml"
-DECLARATION_SCHEMA_VERSION=1
+DECLARATION_SCHEMA_VERSION=2
 
 # A usage error: the caller asked something that cannot be answered about.
 usage_error() {

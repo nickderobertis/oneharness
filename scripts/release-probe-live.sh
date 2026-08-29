@@ -24,7 +24,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 BOUND_SECONDS=60
-DECLARATION_SCHEMA_VERSION=1
+DECLARATION_SCHEMA_VERSION=2
 probe=scripts/release-probe.sh
 
 fail() {
@@ -96,7 +96,7 @@ fixture="$work/fixture"
 mkdir -p "$fixture/scripts"
 cp "$probe" "$fixture/scripts/release-probe.sh"
 cat >"$fixture/release-targets.toml" <<'FIXTURE'
-schema_version = 1
+schema_version = 2
 
 [[target]]
 id = "crate:oneharness-release-probe-absent-fixture"

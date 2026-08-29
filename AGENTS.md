@@ -126,9 +126,10 @@ Use the `just` recipes; do not hand-roll equivalents.
   onevcs defines, so a field goes in only if that schema declares it, and an
   artifact this repository stops publishing is recorded rather than deleted. A
   per-platform `@oneharness/cli-*` package is not a target and needs BOTH halves
-  of its accounting — `covers` and the launcher's `optionalDependencies`. A
-  scoped npm name is the one thing the schema cannot carry, so the gate's own
-  pass names every such id rather than reading as conformance.
+  of its accounting — `covers` and the launcher's `optionalDependencies`. The
+  document declares `schema_version = 2`, the version that spells an npm scoped
+  package: six ids here are one, and a leading `@` commits a name to
+  `@scope/name` and is refused where it does not finish one.
 - `just live-control` — the per-feature live turn-control suite: interrupt a real
   multi-step turn on every control-capable harness, prove the work stopped, then
   interrupt again with `--input` and prove the redirected work ran. Slow by

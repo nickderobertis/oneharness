@@ -7,8 +7,9 @@
 # gate holds both.
 #
 # **The shape.** The document is written against the canonical release-target
-# schema — `schema_version = 1`, defined once in nickderobertis/onevcs's
-# docs/contract.md and enforced by that crate's `release-targets.toml` reader.
+# schema — `schema_version = 2`, the version that spells an npm scoped package,
+# defined once in nickderobertis/onevcs's docs/contract.md and enforced by that
+# crate's `release-targets.toml` reader.
 # Six repositories write one of these, and the point of a canonical shape is
 # that a reader needs no per-repository knowledge to use it — so a required
 # field dropped, an identifier that names no registry, a key this schema does
@@ -45,7 +46,7 @@ cd "$(dirname "$0")/.."
 declarations="release-targets.toml"
 release_workflow=".github/workflows/release.yml"
 probe="scripts/release-probe.sh"
-DECLARATION_SCHEMA_VERSION=1
+DECLARATION_SCHEMA_VERSION=2
 
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The canonical
 # schema is defined by the `onevcs` crate, which is this repository's CONSUMER
@@ -54,11 +55,11 @@ DECLARATION_SCHEMA_VERSION=1
 # cannot be fetched at check time either. What keeps the restatement honest is
 # `schema_version`: this gate reads exactly the one version it was written for
 # and refuses any other by number, so a document brought up to a later schema
-# goes red here until this restatement is brought up with it, and version-1
-# rules can never be applied to a version-2 document. That is the gate; there is
-# no second source of these constants in this repository.
+# goes red here until this restatement is brought up with it, so one schema's
+# rules can never be applied to a document written in another. That is the gate;
+# there is no second source of these constants in this repository.
 #
-# The keys schema_version 1 declares, per table. Spelled out rather than
+# The keys schema_version 2 declares, per table. Spelled out rather than
 # inferred, because a key nobody declared is the finding: a misspelled
 # `manifset` read as an absent `manifest` publishes an answer nobody wrote.
 TOP_KEYS="schema_version probe"
@@ -75,19 +76,19 @@ LIST_KEYS="covers"
 # What the canonical schema's own validated types accept.
 #
 # `covers` and `id` are `RegistryId`: `<registry>:<name>`, the name spelled
-# exactly as its registry serves it. This is that type's alphabet, restated —
-# a lowercase registry word, then a name opening with an alphanumeric and
-# holding only `A-Za-z0-9._@/-` after it.
-CANONICAL_ID_SYNTAX='^[a-z0-9-]+:[A-Za-z0-9][A-Za-z0-9._@/-]*$'
-# What this gate accepts, which is that alphabet plus one form it refuses: a
-# scoped npm name, whose leading `@` the canonical reader will not let a name
-# open with. This repository really publishes six of them — `npm:@oneharness/sdk`
-# and the five per-platform packages the launcher covers — so an id spelled any
-# other way would name an artifact npm does not serve. They are accepted here
-# and then named by this gate's own success line, so a green never reads as a
-# document the canonical reader would take. (The scoped form is the same npm
-# name syntax scripts/release-probe.sh validates before it builds a URL.)
-ID_SYNTAX='^[a-z0-9-]+:(@[A-Za-z0-9][A-Za-z0-9._-]*/)?[A-Za-z0-9][A-Za-z0-9._-]*$'
+# exactly as its registry serves it. This is that type's alphabet, restated — a
+# lowercase registry word, then a name in one of the two forms npm makes
+# necessary. A plain name opens with an alphanumeric and holds `A-Za-z0-9._@/-`
+# after it; a leading `@` instead commits the name to the scoped form
+# `@scope/name`, decided there in full, whose scope and package each open with
+# an alphanumeric and hold only `A-Za-z0-9._-` — which is what refuses `@`,
+# `@/cli`, `@scope/` and a second slash rather than reading any of them as a
+# plain name that happens to start with an `@`. This repository publishes six
+# scoped names — `npm:@oneharness/sdk` and the five per-platform packages the
+# launcher covers — and an id spelled any other way would name an artifact npm
+# does not serve. (The scoped form is the same npm name syntax
+# scripts/release-probe.sh validates before it builds a URL.)
+ID_SYNTAX='^[a-z0-9-]+:(@[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*|[A-Za-z0-9][A-Za-z0-9._@/-]*)$'
 MAX_ID=128
 # `TargetName`: the short name a host document and a consumer's plan name a
 # target by.
@@ -102,11 +103,6 @@ fail() {
 	printf 'release-target drift: %s\n' "$1" >&2
 	fails=$((fails + 1))
 }
-
-# Identifiers this gate accepts and the canonical reader does not. Collected
-# rather than failed, because the artifact is real and the refusal is upstream's
-# to lift; reported rather than swallowed, for the same reason.
-deviating_ids=""
 
 # The first `name = "..."` inside a named TOML section. $1 = file, $2 = section.
 toml_section_name() {
@@ -328,13 +324,8 @@ declared_version="$(values_of top 0 schema_version)"
 check_id() {
 	[ "${#3}" -le "$MAX_ID" ] ||
 		fail "$declarations writes $1 in $2 as an identifier longer than $MAX_ID characters; a registry serves no such name, so correct it to the one it really serves"
-	if [[ ! $3 =~ $ID_SYNTAX ]]; then
-		fail "$declarations writes $1 in $2 as \"$3\", which is not <registry>:<name> with the name spelled as its registry serves it; e.g. crate:oneharness, because one name published to two registries is two artifacts"
-		return 0
-	fi
-	[[ $3 =~ $CANONICAL_ID_SYNTAX ]] || deviating_ids="${deviating_ids}${3}
-"
-	return 0
+	[[ $3 =~ $ID_SYNTAX ]] ||
+		fail "$declarations writes $1 in $2 as \"$3\", which is not <registry>:<name> with the name spelled as its registry serves it, an npm scoped package as @scope/name; e.g. crate:oneharness, because one name published to two registries is two artifacts"
 }
 
 check_name() {
@@ -683,13 +674,4 @@ if [ "$fails" -ne 0 ]; then
 	printf 'check-release-targets: %d drift(s) between %s and what this repository publishes\n' "$fails" "$declarations" >&2
 	exit 1
 fi
-# The success line carries the deviation rather than a second line beside it. An
-# identifier this gate takes that the canonical reader refuses is the one way a
-# pass here could mislead — a consumer parsing the same document with the tool
-# that really reads it gets a refusal, not these targets — so a green says which
-# ones instead of reading as conformance it has not got.
-if [ -n "$deviating_ids" ]; then
-	echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares — except $(printf '%s' "$deviating_ids" | paste -sd, - | sed 's/,/, /g'), whose leading @ its RegistryId refuses, so the canonical reader takes none of this document until that rule takes an optional @scope/"
-else
-	echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares"
-fi
+echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares"

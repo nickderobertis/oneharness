@@ -160,16 +160,16 @@ assert_not_answered "a checkout with no release-targets.toml" \
 assert_not_answered "a declaration with no schema version" \
   "declares schema_version ''" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
-printf 'schema_version = 2\n\n[[target]]\nid = "crate:oneharness"\nmanifest = "Cargo.toml"\n' \
+printf 'schema_version = 3\n\n[[target]]\nid = "crate:oneharness"\nmanifest = "Cargo.toml"\n' \
   >"$fixture/release-targets.toml"
 assert_not_answered "a declaration written to a later version" \
-  "declares schema_version '2'" "$stub_path" \
+  "declares schema_version '3'" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
-printf 'schema_version = 1\n' >"$fixture/release-targets.toml"
+printf 'schema_version = 2\n' >"$fixture/release-targets.toml"
 assert_not_answered "a declaration with no targets" \
   "declares no release targets" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
-printf 'schema_version = 1\nid = "crate:oneharness"\n' >"$fixture/release-targets.toml"
+printf 'schema_version = 2\nid = "crate:oneharness"\n' >"$fixture/release-targets.toml"
 assert_not_answered "an id outside any [[target]] block" \
   "declares no release targets" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
@@ -181,7 +181,7 @@ assert_not_answered "an id outside any [[target]] block" \
 # which is what would let a block boundary that does not close leak the next
 # entry's id into the declared set.
 cat >"$fixture/release-targets.toml" <<'NEIGHBOURS'
-schema_version = 1
+schema_version = 2
 
 [[target]]
 name = "cli-crate"
@@ -201,7 +201,7 @@ assert_not_answered "a covered id, which is not a target of its own" \
 # the probe recognising a real declared set without them rather than an empty
 # one. This is the shape the checked-in declaration has.
 cat >"$fixture/release-targets.toml" <<'NEIGHBOURS'
-schema_version = 1
+schema_version = 2
 
 [[target]]
 id = "crate:oneharness"
@@ -224,7 +224,7 @@ assert_not_answered "a covered id beside the target that covers it" \
 # The name becomes a path segment of a registry URL, so one carrying a separator
 # would ask a different question and publish that answer as this target's
 # version — refused, and before the network, like every other unanswerable id.
-printf 'schema_version = 1\n\n[[target]]\nid = "crate:oneharness/../serde"\nmanifest = "Cargo.toml"\n' \
+printf 'schema_version = 2\n\n[[target]]\nid = "crate:oneharness/../serde"\nmanifest = "Cargo.toml"\n' \
   >"$fixture/release-targets.toml"
 assert_not_answered "a declared name that is not a package name" \
   "is not a crate package name" "$stub_path" \

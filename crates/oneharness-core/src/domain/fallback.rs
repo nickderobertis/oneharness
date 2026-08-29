@@ -205,7 +205,7 @@ impl FallThroughReason {
 ///   being billed, so one rate-limited identity ended a chain four further
 ///   identities could have served. Non-zero only, like the refusals below: with
 ///   a clean exit the run either did the work (and
-///   [`completed_billed_run`][cbr] has already dropped the classification) or
+///   [`completed_run_that_did_work`][cbr] has already dropped the classification) or
 ///   completed without it, and neither is a refusal to hand on.
 /// - [`Status::Nonzero`] with `failure_kind == "untrusted_directory"` →
 ///   `"untrusted-directory"`, and with `"input_too_large"` →
@@ -220,7 +220,7 @@ impl FallThroughReason {
 ///   harness has been observed producing.
 ///
 /// [pre]: crate::domain::signals
-/// [cbr]: crate::domain::report::completed_billed_run
+/// [cbr]: crate::domain::report::completed_run_that_did_work
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a
@@ -548,7 +548,7 @@ mod tests {
             ));
         }
         // Non-zero only. A clean exit either did the work — where
-        // `completed_billed_run` has already dropped the classification — or
+        // `completed_run_that_did_work` has already dropped the classification — or
         // completed without it, and neither is a refusal to hand on.
         assert_eq!(
             startup_failure_reason(

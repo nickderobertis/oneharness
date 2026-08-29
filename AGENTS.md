@@ -142,7 +142,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   refusal-reason mismatch), and a second 26-minute leg per control PR is not
   what that is worth. A scheduled failure opens (or comments on) an issue
   through `scripts/report-workflow-failure.sh`, because a schedule has no PR to
-  turn red — as do the release workflows, for the same reason (see *Releasing*). In CI `OH_E2E_NO_SKIP` makes a
+  turn red, as do the release workflows. In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went
   unauthenticated. Two absences are NOT red, since no credential fixes
@@ -1027,17 +1027,18 @@ shape. When you add one:
   that: the classification is scanned one record at a time out of a transcript,
   while the envelope is the harness's word on the whole run. So
   `RunResult::with_work_evidence` — the one funnel every constructor already
-  ends at — drops it there (`report::completed_billed_run`). A 94-minute claude
-  turn that exited 0 having billed $12.11 published `rate_limit`, read off an
-  intermediate `is_error` record it had retried past, and the supervisor
-  consuming that field killed the finished dispatch and discarded the work;
-  twice, about $24.72. It lives in the classifier rather than
+  ends at — drops it there (`report::completed_run_that_did_work`, which reads
+  work rather than billing: a tool call with no accounting at all is evidence
+  too). A claude turn that exited 0 having done and billed the work published
+  `rate_limit` off an intermediate `is_error` record it had retried past, and
+  the supervisor consuming that field killed the finished dispatch and discarded
+  the work. It lives in the classifier rather than
   `history`'s validity rule because history is opt-in and best-effort — a record
   refused there warns and disables the store while the *report* a supervisor
   actually reads keeps the refusal — and every record is derived from a result
   that already passed through the funnel. `FailureKind::is_refusal` is matched
-  exhaustively, so a new kind is a deliberate answer to "does a completed,
-  billed run refute this?"; `tool_deferred` answers no, being a statement about
+  exhaustively, so a new kind is a deliberate answer to "does a completed run
+  that did the work refute this?"; `tool_deferred` answers no, being a statement about
   what a completed turn produced rather than a refusal to run it.
 
 ## Scripts and output are context
@@ -1155,11 +1156,9 @@ shape. When you add one:
   both halves and `report-workflow-failure-test.sh` drives create-vs-comment
   against a stubbed `gh`. A push to main and a published Release have no PR to
   turn red and no checks list anyone opens, so a failure that announces itself
-  nowhere is the same as not running — this account already spent months with a
-  published smoke detecting a live publication defect and telling no one. The
-  reporter's own `actions/checkout` is the repository-wide contract
-  `check-e2e-matrix.sh` holds: without it the job exits 127 on a missing file,
-  which is how ten consecutive nightly failures went unannounced.
+  nowhere is the same as not running. The reporter's own `actions/checkout` is
+  the repository-wide contract `check-e2e-matrix.sh` holds: without it the job
+  exits 127 on a missing file and reports nothing it was added to report.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
   every distribution, including the validated idempotent crates.io job — use it

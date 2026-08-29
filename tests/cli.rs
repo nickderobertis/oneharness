@@ -17121,7 +17121,7 @@ fn fallback_reads_an_api_error_envelope_across_declarations_and_dialects() {
 /// unclassified — also a stop. Both exit codes, since neither changes the
 /// verdict — though a **clean** exit does change what is left to say about the
 /// run: a completed, billed run refutes a refusal, so there the 429 is not
-/// stamped at all (`completed_billed_run`). Either way the chain stops here.
+/// stamped at all (`completed_run_that_did_work`). Either way the chain stops here.
 #[test]
 fn fallback_stops_at_a_session_limit_that_landed_after_real_work() {
     let mock = mock_bin().display().to_string();

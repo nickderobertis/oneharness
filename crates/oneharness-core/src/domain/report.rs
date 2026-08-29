@@ -539,7 +539,7 @@ impl RunResult {
     ///
     /// **The refusal reconciliation.** A `failure_kind` naming a *refusal*
     /// ([`FailureKind::is_refusal`]) is a claim that the harness or its provider
-    /// would not run the task. [`completed_billed_run`] is the run's own
+    /// would not run the task. [`completed_run_that_did_work`] is the run's own
     /// envelope refuting that claim, and the envelope wins: the classification
     /// is scanned out of a transcript one record at a time, while the envelope
     /// is what the harness said about the whole run. A 94-minute Claude Code
@@ -567,7 +567,7 @@ impl RunResult {
     #[must_use]
     pub fn with_work_evidence(mut self) -> Self {
         if self.failure_kind.is_some_and(FailureKind::is_refusal)
-            && completed_billed_run(self.status, self.exit_code, RunWork::from_result(&self))
+            && completed_run_that_did_work(self.status, self.exit_code, RunWork::from_result(&self))
         {
             self.failure_kind = None;
             self.failure_kind_source = None;
@@ -578,10 +578,12 @@ impl RunResult {
     }
 }
 
-/// Whether a finished run's own envelope says it **completed the task and was
-/// billed for it**: the process ended cleanly ([`Status::Ok`] with exit code
-/// `0`) and its [`RunWork`] evidence — a recorded tool call, or usage the
-/// provider charged for — says the harness did the work.
+/// Whether a finished run's own envelope says it **completed the task and did
+/// the work**: the process ended cleanly ([`Status::Ok`] with exit code `0`) and
+/// its [`RunWork`] evidence says the harness got that far — usage the provider
+/// charged for, *or* a recorded tool call. Either alone is enough, so this is
+/// not a question about billing: a harness that reported no accounting at all
+/// and ran a tool did the task just as decisively.
 ///
 /// All three halves are load-bearing. A non-zero exit, a timeout or a
 /// cancellation is a run that did *not* complete, and there a refusal
@@ -589,7 +591,7 @@ impl RunResult {
 /// [`RunWork::from_result`] gives the fallback verdict, so "did this candidate
 /// do anything?" has one answer across the crate rather than one per reader.
 #[must_use]
-pub fn completed_billed_run(status: Status, exit_code: Option<i32>, work: RunWork) -> bool {
+pub fn completed_run_that_did_work(status: Status, exit_code: Option<i32>, work: RunWork) -> bool {
     status == Status::Ok && exit_code == Some(0) && work == RunWork::Done
 }
 
@@ -1084,10 +1086,10 @@ mod tests {
 
     #[test]
     fn a_run_that_did_not_complete_and_be_billed_keeps_its_refusal() {
-        // Each half of `completed_billed_run` is load-bearing, so each is dropped
-        // in turn: a run that failed, one that exited non-zero, and one that
-        // exited cleanly with nothing billed all keep the best account they have
-        // of why. Only all three together refute a refusal.
+        // Each half of `completed_run_that_did_work` is load-bearing, so each is
+        // dropped in turn: a run that failed, one that exited non-zero, and one
+        // that exited cleanly having done nothing all keep the best account they
+        // have of why. Only all three together refute a refusal.
         for (label, status, exit_code, usage) in [
             ("failed the task", Status::Nonzero, Some(1), billed()),
             ("timed out", Status::Timeout, None, billed()),

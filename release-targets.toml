@@ -74,12 +74,14 @@ manifest = "python/oneharness-sdk/pyproject.toml"
 # optionalDependencies, and the `covers` list here — and
 # scripts/check-release-targets.sh reconciles all three.
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The scoped npm
-# names below are the ones npm serves, and the canonical validator refuses them
-# for a reason its own contract text contradicts (see the note at the foot of
-# this file). Nothing offline can reconcile a producer document with a validator
-# in another repository, and inventing a spelling this one accepts would name
-# artifacts that do not exist — so the deviation is reported upstream and carried
-# here until that rule accepts an optional leading `@scope/`.
+# names below are the ones npm serves, and the canonical validator refuses every
+# one of them: its `RegistryId` requires a name to open with an alphanumeric
+# while permitting `@` and `/` later, so `@scope/name` is refused as a class —
+# which its own contract text ("exactly what that registry serves") contradicts.
+# Nothing offline can reconcile a producer document against a validator in
+# another repository, and spelling these as something that validator accepts
+# would name artifacts npm does not serve. Reported upstream; delete this block
+# and the deviation with it once that rule takes an optional leading `@scope/`.
 [[target]]
 id = "npm:oneharness-cli"
 name = "cli-npm"
@@ -101,12 +103,3 @@ what = "The typed Node.js client, imported as `@oneharness/sdk`, which drives th
 published_by = ".github/workflows/release.yml — the publish-npm job, from the tarball scripts/sdk-pack.mjs builds, under npm/oneharness-sdk/package.json's name."
 manifest = "npm/oneharness-sdk/package.json"
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
-
-# One known deviation, reported upstream rather than papered over here. The
-# canonical validator's `RegistryId` requires a name's first character to be
-# alphanumeric, which refuses every scoped npm package — `npm:@oneharness/sdk`
-# above and all five names it covers. `docs/contract.md` says a name is
-# "exactly what that registry serves", so the spelling here is the correct one
-# and the first-character rule is the defect; writing anything else would name
-# artifacts npm does not serve. Delete this note once that rule accepts an
-# optional leading `@scope/`.

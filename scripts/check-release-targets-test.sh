@@ -91,7 +91,7 @@ assert_green() {
   local root="$work/$1" description=$2
   git -C "$root" add -A
   if ! bash "$root/scripts/check-release-targets.sh" >"$work/out" 2>&1; then
-    fail "$description should have passed the gate; the gate names each finding above"
+    fail "$description should have passed the gate; read what it found, printed below, and fix whichever side is wrong — the fixture, or the check that now rejects it"
   fi
 }
 

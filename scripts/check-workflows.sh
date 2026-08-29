@@ -128,16 +128,23 @@ fi
 # opens, so a failure there is a red square nobody is drawn to — indistinguishable
 # from the workflow not having run.
 #
-# Two halves, both required and neither sufficient: a job that fires ONLY on
-# failure (`if: failure()`, so a green release files nothing) and a `run:` of the
-# reporter, whose create-vs-comment behavior is proven by
-# report-workflow-failure-test.sh. The reporter's own checkout is a separate,
-# repository-wide contract that check-e2e-matrix.sh holds.
+# Two halves, both required and neither sufficient: a `run:` of the reporter
+# (whose create-vs-comment behavior report-workflow-failure-test.sh proves) and
+# an `if: failure()` gate, so a green release files nothing. They must be halves
+# of ONE job, which is why this walks jobs rather than grepping the file twice:
+# an unrelated failure-gated job elsewhere in the workflow would otherwise vouch
+# for an ungated reporter that files an issue after every successful release.
+# The reporter's own checkout is a separate, repository-wide contract that
+# check-e2e-matrix.sh holds.
 for workflow in .github/workflows/release.yml .github/workflows/release-plz.yml; do
-  require_line "$workflow" 'run: bash scripts/report-workflow-failure.sh' \
-    "report its own failure through the reporter; nothing else announces an unattended run"
-  grep -q 'if: failure()' "$workflow" ||
-    fail "$workflow must gate its reporting job on \`if: failure()\` so a green release files nothing"
+  awk '
+    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gated = 0; reports = 0 }
+    /^    if: failure\(\)/ { gated = 1 }
+    /run: bash scripts\/report-workflow-failure\.sh/ { reports = 1 }
+    gated && reports { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' "$workflow" ||
+    fail "$workflow must run scripts/report-workflow-failure.sh from one job gated on \`if: failure()\`; nothing else announces an unattended run, and an ungated reporter files an issue for a green release"
 done
 
 if [ "$fails" -ne 0 ]; then

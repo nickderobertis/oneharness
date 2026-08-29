@@ -133,8 +133,45 @@ while IFS='|' read -r file needle expected; do
   }
   cp "$work/$file" ".github/workflows/$file"
 done <<'CASES'
-release.yml|run: bash scripts/report-workflow-failure.sh|release.yml must report its own failure through the reporter
-release-plz.yml|if: failure()|release-plz.yml must gate its reporting job on `if: failure()`
+release.yml|run: bash scripts/report-workflow-failure.sh|release.yml must run scripts/report-workflow-failure.sh from one job
+release.yml|if: failure()|release.yml must run scripts/report-workflow-failure.sh from one job
+release-plz.yml|run: bash scripts/report-workflow-failure.sh|release-plz.yml must run scripts/report-workflow-failure.sh from one job
+release-plz.yml|if: failure()|release-plz.yml must run scripts/report-workflow-failure.sh from one job
 CASES
+
+# The drift neither half catches alone: an UNGATED reporter beside a
+# failure-gated job that has nothing to do with it. Grepping the file once per
+# half passes this — both strings are present — and then every release, green
+# ones included, files an issue. The gate walks jobs for exactly this reason.
+# The single-quoted program is JavaScript; the argument is fixture text.
+# shellcheck disable=SC2016
+node -e '
+  const fs = require("node:fs");
+  const path = process.argv[1];
+  const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
+  const gate = "    if: failure() && github.repository == \x27nickderobertis/oneharness\x27\n";
+  if (!source.includes(gate)) {
+    throw new Error(
+      `${path} has no line ${gate.trim()}, so this case cannot move it off the reporting job. ` +
+      "Fix: restore it in the workflow, or update this fixture to the condition the reporting job now uses."
+    );
+  }
+  // Ungate the reporting job, and park the same condition on a job of its own.
+  const unrelated = "\n  unrelated:\n" + gate + "    runs-on: ubuntu-latest\n    steps:\n      - run: echo unrelated\n";
+  fs.writeFileSync(path, source.replace(gate, "") + unrelated);
+' "$release_plz"
+
+if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
+  echo 'check-workflows-e2e: an ungated reporter beside an unrelated failure-gated job passed the gate' >&2
+  echo '  fix: the unattended-reporting check in scripts/check-workflows.sh must walk jobs, not grep the file once per half' >&2
+  exit 1
+fi
+grep -Fq 'release-plz.yml must run scripts/report-workflow-failure.sh from one job' "$work/stderr" || {
+  echo 'check-workflows-e2e: the cross-job drift lacked the expected diagnostic' >&2
+  echo "  fix: restore the wording 'must run scripts/report-workflow-failure.sh from one job' in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
+  cat "$work/stderr" >&2
+  exit 1
+}
+cp "$work/release-plz.yml" "$release_plz"
 
 echo 'check-workflows-e2e: ok'

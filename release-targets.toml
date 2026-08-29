@@ -99,11 +99,6 @@ what = "The typed Node.js client, imported as `@oneharness/sdk`, which drives th
 published_by = ".github/workflows/release.yml — the publish-npm job, from the tarball scripts/sdk-pack.mjs builds, under npm/oneharness-sdk/package.json's name."
 manifest = "npm/oneharness-sdk/package.json"
 
-# No [[retired]] entries: every artifact this repository has ever published, it
-# still publishes. One is recorded here — never deleted — the first time that
-# stops being true, so a consumer still naming it is told it is gone rather
-# than told nothing.
-#
 # One known deviation, reported upstream rather than papered over here. The
 # canonical validator's `RegistryId` requires a name's first character to be
 # alphanumeric, which refuses every scoped npm package — `npm:@oneharness/sdk`

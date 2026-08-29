@@ -102,10 +102,9 @@ if ! bash "$root/scripts/check-release-targets.sh" >"$work/out" 2>&1; then
   fail "the checked-in declaration should pass the gate; reconcile release-targets.toml with what the release configuration publishes (the gate names each drift above) before reading any case below"
 fi
 
-# --------------------------------------------------------------------------
-# The canonical schema. These hold the document to the shape six repositories
-# share, so a consumer needs no knowledge of this one to read it.
-# --------------------------------------------------------------------------
+# The cases below hold the document to the canonical schema — the shape six
+# repositories share, so that a consumer needs no knowledge of this one to read
+# it.
 
 # A key nobody declared, which is the likeliest defect in a hand-written
 # document: read as an absent `manifest`, it publishes an answer nobody wrote.
@@ -165,6 +164,88 @@ rewrite "$root" release-targets.toml '{ sub(/^name = "cli-npm"$/, "name = \"core
 assert_red repeated-short-name "one short name taken by two targets" \
   "gives the short name 'core' to more than one target"
 
+# Every way a value can be written that this reader will not read. A value it
+# skipped past would be a field nobody declared taking effect as an absent one.
+root="$(stage unreadable-string)"
+rewrite "$root" release-targets.toml '{ sub(/^name = "core"$/, "name = \"co\\re"); print }'
+assert_red unreadable-string "a string this reader cannot read" \
+  "as a string this reader cannot read"
+
+root="$(stage trailing-after-string)"
+rewrite "$root" release-targets.toml '{ sub(/^name = "core"$/, "name = \"core\" \"engine\""); print }'
+assert_red trailing-after-string "a second value after a string" \
+  "writes name in [[target]] 1 with something after its value"
+
+root="$(stage trailing-after-number)"
+rewrite "$root" release-targets.toml '{ sub(/^schema_version = 1$/, "schema_version = 1 2"); print }'
+assert_red trailing-after-number "a second value after a number" \
+  "writes schema_version in the document with something after its value"
+
+root="$(stage malformed-list)"
+rewrite "$root" release-targets.toml '{ sub(/^covers = \[$/, "covers = [npm:@oneharness/cli-linux-x64]"); print }'
+assert_red malformed-list "a list of something other than quoted names" \
+  "as something other than a list of quoted names"
+
+# A list whose closing bracket is not the end of the line: whatever follows is a
+# value or a key nobody would ever read.
+root="$(stage trailing-after-list)"
+rewrite "$root" release-targets.toml '{ sub(/^\]$/, "] manifest = \"elsewhere\""); print }'
+assert_red trailing-after-list "a second value after a list" \
+  "writes covers in [[target]] 5 with something after its closing bracket"
+
+# Truncated at the opening bracket, because any later line carrying a `]` — the
+# `[[target]]` header below it does — would close the list somewhere nobody meant.
+root="$(stage unclosed-list)"
+rewrite "$root" release-targets.toml '/^\]$/ { exit } { print }'
+assert_red unclosed-list "a list that is never closed" \
+  "leaves covers open in [[target]] 5"
+
+# The bounds each validated type carries, so a refusal quoting a value is still
+# a sentence a reader can act on.
+root="$(stage overlong-id)"
+rewrite "$root" release-targets.toml '
+  /^id = "crate:oneharness-core"$/ {
+    name = ""
+    while (length(name) < 130) name = name "oneharness-core-"
+    print "id = \"crate:" name "\""
+    next
+  }
+  { print }
+'
+assert_red overlong-id "an identifier past its bound" \
+  "as an identifier longer than 128 characters"
+
+root="$(stage overlong-short-name)"
+rewrite "$root" release-targets.toml '{ sub(/^name = "core"$/, "name = \"core-engine-crate-as-a-rust-dependent-takes-it-with-every-word-spelled-out\""); print }'
+assert_red overlong-short-name "a short name past its bound" \
+  "as more than 64 characters"
+
+root="$(stage overlong-prose)"
+rewrite "$root" release-targets.toml '
+  /^what = "The reusable engine/ {
+    filler = ""
+    while (length(filler) < 420) filler = filler "reasoning that belongs in a comment "
+    print "what = \"" filler "\""
+    next
+  }
+  { print }
+'
+assert_red overlong-prose "a sentence past its bound" \
+  "as more than 400 characters"
+
+root="$(stage prose-with-a-control-character)"
+rewrite "$root" release-targets.toml '
+  /^what = "The reusable engine/ { print "what = \"The reusable engine,\011as a Rust dependent takes it.\""; next }
+  { print }
+'
+assert_red prose-with-a-control-character "a sentence carrying a control character" \
+  "with a control character"
+
+root="$(stage absolute-manifest)"
+rewrite "$root" release-targets.toml '{ sub(/^manifest = "pyproject.toml"$/, "manifest = \"/pyproject.toml\""); print }'
+assert_red absolute-manifest "a manifest path that is absolute" \
+  "which is absolute"
+
 root="$(stage repeated-key)"
 rewrite "$root" release-targets.toml '
   { print }
@@ -213,6 +294,14 @@ assert_red uncovered-platform "a published per-platform package no target covers
 # `[[retired]]` is the schema's own field for an artifact this repository once
 # published and does not any more. Both halves are proven: a well-formed one is
 # accepted, and one that contradicts a target is refused.
+root="$(stage twice-covered)"
+rewrite "$root" release-targets.toml '
+  { print }
+  /^  "npm:@oneharness\/cli-win32-x64",$/ { print "  \"npm:@oneharness/cli-linux-x64\"," }
+'
+assert_red twice-covered "one artifact covered twice" \
+  "covers 'npm:@oneharness/cli-linux-x64' from more than one target"
+
 root="$(stage retirement-accepted)"
 cat >>"$root/release-targets.toml" <<'RETIRED'
 
@@ -232,6 +321,30 @@ RETIRED
 assert_red retirement-of-a-target "a retirement of something a target publishes" \
   "retires 'crate:oneharness', which it also declares as a target"
 
+root="$(stage retirement-of-a-covered-artifact)"
+cat >>"$root/release-targets.toml" <<'RETIRED'
+
+[[retired]]
+id = "npm:@oneharness/cli-linux-x64"
+why = "Not actually retired, which is the point of this case."
+RETIRED
+assert_red retirement-of-a-covered-artifact "a retirement of something a target covers" \
+  "retires 'npm:@oneharness/cli-linux-x64', which a target also covers"
+
+root="$(stage repeated-retirement)"
+cat >>"$root/release-targets.toml" <<'RETIRED'
+
+[[retired]]
+id = "pypi:oneharness-retired"
+why = "Nothing here publishes it again."
+
+[[retired]]
+id = "pypi:oneharness-retired"
+why = "Recorded a second time, which is the point of this case."
+RETIRED
+assert_red repeated-retirement "one artifact retired twice" \
+  "retires 'pypi:oneharness-retired' more than once"
+
 root="$(stage reasonless-retirement)"
 cat >>"$root/release-targets.toml" <<'RETIRED'
 
@@ -241,9 +354,8 @@ RETIRED
 assert_red reasonless-retirement "a retirement that says nothing about why" \
   'declares no why in [[retired]] 1'
 
-# --------------------------------------------------------------------------
-# The contents: the declaration against what the release really publishes.
-# --------------------------------------------------------------------------
+# The cases below reconcile the declaration with what the release configuration
+# really publishes, in both directions.
 
 root="$(stage no-declaration)"
 rm "$root/release-targets.toml"

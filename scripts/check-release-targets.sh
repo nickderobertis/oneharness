@@ -47,6 +47,17 @@ release_workflow=".github/workflows/release.yml"
 probe="scripts/release-probe.sh"
 DECLARATION_SCHEMA_VERSION=1
 
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The canonical
+# schema is defined by the `onevcs` crate, which is this repository's CONSUMER
+# rather than its dependency — linking it here to read the definition would
+# invert that — and `just check` is offline by contract, so the definition
+# cannot be fetched at check time either. What keeps the restatement honest is
+# `schema_version`: this gate reads exactly the one version it was written for
+# and refuses any other by number, so a document brought up to a later schema
+# goes red here until this restatement is brought up with it, and version-1
+# rules can never be applied to a version-2 document. That is the gate; there is
+# no second source of these constants in this repository.
+#
 # The keys schema_version 1 declares, per table. Spelled out rather than
 # inferred, because a key nobody declared is the finding: a misspelled
 # `manifset` read as an absent `manifest` publishes an answer nobody wrote.
@@ -72,6 +83,7 @@ NAME_SYNTAX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 MAX_NAME=64
 # `Prose`: one non-blank line, short enough to render beside what it describes.
 MAX_PROSE=400
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 fails=0
 fail() {
@@ -114,8 +126,6 @@ json_optional_dependencies() {
 	exit 1
 }
 
-# ---------------------------------------------------------------- read ------
-#
 # Read as a stream of typed fields rather than scanned for the lines this gate
 # happens to care about, so a key this schema does not declare, a line that is
 # not a key at all, or one key written twice in an entry is a finding instead of
@@ -141,8 +151,19 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 		if (repeated(key)) return
 		printf "%s%s%d%s%s%s%s\n", kind, us, idx, us, key, us, value
 	}
-	# A one-line list of quoted names. Whitespace is stripped first: no name a
-	# registry serves carries any, so what is left is the list itself.
+	# Close a list whose bracket has been found. `tail` is whatever followed that
+	# bracket, held to the rule every scalar value is held to: a key holds one
+	# value, then nothing but a comment. Dropping it would let a second value, or
+	# a whole second key, ride into the document unread.
+	function close_list(body, tail) {
+		if (tail !~ /^[ \t]*(#.*)?$/) {
+			refuse("writes " array_key " in " array_where " with something after its closing bracket; a key holds one value, then nothing but a # comment")
+			return
+		}
+		elements(body)
+	}
+	# A list of quoted names. Whitespace is stripped first: no name a registry
+	# serves carries any, so what is left is the list itself.
 	function elements(body,   work) {
 		work = body
 		gsub(/[ \t\r]/, "", work)
@@ -165,10 +186,9 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 	{ line = $0; sub(/[ \t\r]+$/, "", line) }
 	# Continuation lines of a list opened above, up to its closing bracket.
 	in_list {
-		if (line !~ /\]/) { buffer = buffer line; next }
-		sub(/\].*$/, "", line)
-		elements(buffer line)
+		if (!match(line, /\]/)) { buffer = buffer line; next }
 		in_list = 0
+		close_list(buffer substr(line, 1, RSTART - 1), substr(line, RSTART + 1))
 		buffer = ""
 		next
 	}
@@ -207,8 +227,11 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 		if (rest ~ /^\[/) {
 			if (repeated(key)) next
 			array_kind = kind; array_idx = idx; array_key = key; array_where = where
-			sub(/^\[/, "", rest)
-			if (rest ~ /\]/) { sub(/\].*$/, "", rest); elements(rest); next }
+			rest = substr(rest, 2)
+			if (match(rest, /\]/)) {
+				close_list(substr(rest, 1, RSTART - 1), substr(rest, RSTART + 1))
+				next
+			}
 			in_list = 1
 			buffer = rest
 			next
@@ -234,7 +257,7 @@ values_of() {
 	'
 }
 
-# ------------------------------------------------------- schema conformance --
+# Every refusal the reader made, before anything is asked of what it did read.
 while IFS="$US" read -r kind _ _ message; do
 	[ "$kind" = "!" ] || continue
 	fail "$declarations $message"
@@ -249,14 +272,14 @@ declared_version="$(values_of top 0 schema_version)"
 # $1 = what the value is, $2 = where it is, $3 = the value.
 check_id() {
 	[ "${#3}" -le "$MAX_ID" ] ||
-		fail "$declarations writes $1 in $2 as an identifier longer than $MAX_ID characters"
+		fail "$declarations writes $1 in $2 as an identifier longer than $MAX_ID characters; a registry serves no such name, so correct it to the one it really serves"
 	[[ $3 =~ $ID_SYNTAX ]] ||
 		fail "$declarations writes $1 in $2 as \"$3\", which is not <registry>:<name> with the name spelled as its registry serves it; e.g. crate:oneharness, because one name published to two registries is two artifacts"
 }
 
 check_name() {
 	[ "${#3}" -le "$MAX_NAME" ] ||
-		fail "$declarations writes the short name in $2 as more than $MAX_NAME characters"
+		fail "$declarations writes the short name in $2 as more than $MAX_NAME characters; shorten it to the word a host document and a consumer's plan would type"
 	[[ $3 =~ $NAME_SYNTAX ]] ||
 		fail "$declarations writes the short name in $2 as \"$3\", which may hold only letters, digits, '-', '_' and '.' and must start with a letter or a digit; it is what a host document and a consumer's plan name this target by"
 }
@@ -267,9 +290,9 @@ check_prose() {
 		return
 	fi
 	[ "${#3}" -le "$MAX_PROSE" ] ||
-		fail "$declarations writes $1 in $2 as more than $MAX_PROSE characters; it is rendered on one line beside the entry it describes, and the reasoning behind it belongs in a comment"
+		fail "$declarations writes $1 in $2 as more than $MAX_PROSE characters; cut it to the one sentence a reader acts on and move the reasoning behind it into a comment above that target"
 	[[ $3 =~ [[:cntrl:]] ]] &&
-		fail "$declarations writes $1 in $2 with a control character; it is rendered on one line, so it must be one"
+		fail "$declarations writes $1 in $2 with a control character; it is rendered on one line, so replace it with a space or drop it"
 	return 0
 }
 
@@ -305,7 +328,7 @@ target_count="$(printf '%s\n' "$fields" | awk -F"$US" '$1 == "target" { if ($2 +
 retired_count="$(printf '%s\n' "$fields" | awk -F"$US" '$1 == "retired" { if ($2 + 0 > n) n = $2 + 0 } END { print n + 0 }')"
 
 if [ "$target_count" -eq 0 ]; then
-	echo "check-release-targets: $declarations declares no [[target]] entries; a declaration that names nothing says less than no declaration at all, because a consumer cannot tell whether this repository publishes nothing or nobody has said what it publishes." >&2
+	echo "check-release-targets: $declarations declares no [[target]] entries; restore one [[target]] per artifact this repository publishes — a declaration that names nothing says less than no declaration at all, because a consumer cannot tell whether this repository publishes nothing or nobody has said what it publishes." >&2
 	exit 1
 fi
 
@@ -402,7 +425,7 @@ done < <(printf '%s' "$covered_ids")
 
 while read -r covered; do
 	[ -n "$covered" ] || continue
-	fail "$declarations covers '$covered' from more than one target; one artifact is shipped by one release"
+	fail "$declarations covers '$covered' from more than one target; one artifact is shipped by one release, so drop it from every covers list but the target whose release really ships it"
 done < <(printf '%s' "$covered_ids" | sort | uniq -d)
 
 # A retired artifact is one this repository does not publish any more, so a
@@ -410,17 +433,15 @@ done < <(printf '%s' "$covered_ids" | sort | uniq -d)
 while read -r id; do
 	[ -n "$id" ] || continue
 	printf '%s' "$declared_ids" | grep -Fxq -- "$id" &&
-		fail "$declarations retires '$id', which it also declares as a target; a retired artifact is one this repository does not publish any more"
+		fail "$declarations retires '$id', which it also declares as a target; drop whichever is wrong — the [[retired]] entry if this repository still publishes it, the [[target]] if it does not"
 	printf '%s' "$covered_ids" | grep -Fxq -- "$id" &&
-		fail "$declarations retires '$id', which a target also covers; a retired artifact is one this repository does not publish any more"
+		fail "$declarations retires '$id', which a target also covers; drop whichever is wrong — the [[retired]] entry if that target's release still ships it, the covers entry if it does not"
 done < <(printf '%s' "$retired_ids")
 
 while read -r id; do
 	[ -n "$id" ] || continue
-	fail "$declarations retires '$id' more than once; one artifact is retired once"
+	fail "$declarations retires '$id' more than once; keep the [[retired]] entry whose why says what replaced it and drop the other"
 done < <(printf '%s' "$retired_ids" | sort | uniq -d)
-
-# ------------------------------------------------------------ real drift ----
 
 # The registries this gate can read a name for. The probe is the single source
 # of which registries are supported at all; this list mirrors it and the two are

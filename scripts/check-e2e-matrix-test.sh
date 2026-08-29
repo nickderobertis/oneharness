@@ -226,6 +226,14 @@ build_fixture
 append_probe_job "$tmp/repo/$workflow" before
 run_case "the same job carrying its checkout" 0 "all e2e workflows match the matrix contract"
 
+# The checkout contract is the one check here that reads every workflow rather
+# than the turn-control one, and a traversal that stopped at e2e-control.yml
+# would still pass every case above. So the same violation is placed in the
+# repository's own CI workflow, which no other check in this gate reads.
+build_fixture
+append_probe_job "$tmp/repo/.github/workflows/ci.yml" none
+run_case "a checkout-less job in a workflow other than the control suite" 1 "ci.yml job 'probe' runs justfile"
+
 # A script path this repository does not have is some other tree's file — a
 # runner-local helper, a dependency's — and no checkout of THIS repository would
 # put it in the workspace, so it is not this check's business to demand one.

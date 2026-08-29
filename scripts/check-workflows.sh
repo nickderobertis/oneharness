@@ -126,8 +126,7 @@ fi
 # Every UNATTENDED workflow must announce its own failure. A push to main and a
 # published Release have no pull request to turn red and no checks list anyone
 # opens, so a failure there is a red square nobody is drawn to — indistinguishable
-# from the workflow not having run. This account already spent months with a
-# published smoke detecting a live publication defect and telling no one.
+# from the workflow not having run.
 #
 # Two halves, both required and neither sufficient: a job that fires ONLY on
 # failure (`if: failure()`, so a green release files nothing) and a `run:` of the

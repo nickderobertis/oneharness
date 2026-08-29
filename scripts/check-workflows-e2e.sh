@@ -111,7 +111,12 @@ while IFS='|' read -r file needle expected; do
     const [path, needle] = process.argv.slice(1);
     const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
     const line = source.split("\n").find((l) => l.includes(needle));
-    if (!line) throw new Error(`unattended-reporting fixture is missing: ${needle}`);
+    if (!line) {
+      throw new Error(
+        `${path} has no line containing "${needle}", so this case cannot delete it to prove the gate rejects its absence. ` +
+        "Fix: restore that line in the workflow, or update the CASES table at the bottom of scripts/check-workflows-e2e.sh to the wording it now uses."
+      );
+    }
     fs.writeFileSync(path, source.split("\n").filter((l) => l !== line).join("\n"));
   ' ".github/workflows/$file" "$needle"
 

@@ -2397,6 +2397,67 @@ fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {
 }
 
 #[test]
+fn a_completed_run_whose_only_evidence_is_a_tool_call_also_sheds_the_refusal() {
+    // The other half of the reconciliation, over the interface a consumer reads.
+    // Work evidence is `RunWork`'s one definition rather than a second reading of
+    // "billed": this run reports no accounting at all — no tokens, no cost — and
+    // ran a tool, which says it did the task just as decisively as an invoice
+    // would. A harness whose output format carries a transcript but no usage
+    // block is an ordinary shape, not a corner, so the refusal must not survive
+    // here either.
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","is_error":true,"result":"API Error: 429 rate limit exceeded"}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"the work is green"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "do the thing",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(
+        output.status.success(),
+        "a run that completed must exit 0: {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(result["text"], "the work is green");
+    // Nothing was billed — the evidence is the recorded tool call alone.
+    assert!(
+        result["usage"]["output_tokens"].is_null(),
+        "this fixture reports no accounting, got {}",
+        result["usage"]
+    );
+    assert!(result["usage"]["cost_usd"].is_null());
+    assert_eq!(result["events"][0]["kind"], "tool_call");
+    assert_eq!(result["events"][0]["name"], "Bash");
+    // ...and the mid-run 429 is not stamped onto the finished run.
+    assert!(
+        result["failure_kind"].is_null(),
+        "a completed run that ran a tool must carry no refusal, got {}",
+        result["failure_kind"]
+    );
+    assert!(result["failure_kind_source"].is_null());
+}
+
+#[test]
 fn a_rate_limited_identity_hands_the_turn_to_the_next_one() {
     // A rate limit is a property of whoever is being billed, not of the model, so
     // it hands the turn on exactly as `quota` does — on an identity chain with no

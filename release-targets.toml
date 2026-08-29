@@ -82,9 +82,10 @@ manifest = "python/oneharness-sdk/pyproject.toml"
 # does not publish, and dropping them would hide artifacts this repository
 # really releases, so they stay as npm serves them and the gap is raised where
 # it can be fixed rather than worked around here. It is never a silent
-# deviation: scripts/check-release-targets.sh names every one of them on stderr
-# on every run. Delete this block and the deviation with it once that rule takes
-# an optional leading `@scope/`.
+# deviation: scripts/check-release-targets.sh names every one of them in the
+# line it passes with, so its green cannot read as conformance. Delete this
+# block and the deviation with it once that rule takes an optional leading
+# `@scope/`.
 [[target]]
 id = "npm:oneharness-cli"
 name = "cli-npm"

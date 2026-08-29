@@ -256,16 +256,20 @@ check_control
 # failure is silent precisely in the jobs nobody watches.
 #
 # Emits "<job>\t<reference>" for each of this repository's own scripts a `run:`
-# step in a checkout-less job invokes. Only run bodies are read: a path named in
-# an `on:` filter or a comment is not something the job executes. $1 = workflow.
+# step invokes with no checkout step BEFORE it — steps run in order, so a
+# checkout further down the job is a workspace the command has already needed
+# and not found. Only run bodies are read: a path named in an `on:` filter or a
+# comment is not something the job executes. $1 = workflow.
 uncheckedout_repo_refs() {
 	awk '
 		function flush(   i) {
-			if (job != "" && !checkout)
-				for (i = 1; i <= nref; i++) printf "%s\t%s\n", job, ref[i]
+			for (i = 1; i <= nref; i++) printf "%s\t%s\n", job, ref[i]
 			job = ""; checkout = 0; nref = 0; inrun = 0
 		}
 		function scan(text,   n, i, parts, t) {
+			# Recorded only while the workspace is still empty; once the job
+			# has checked out, nothing it runs is a finding.
+			if (job == "" || checkout) return
 			sub(/(^|[ \t])#.*$/, "", text)
 			n = split(text, parts, /[ \t]+/)
 			for (i = 1; i <= n; i++) {
@@ -319,7 +323,7 @@ check_checkout() {
 		# only this repository's if that script is actually here, so a job
 		# running some other tree's file is not this check's business.
 		[ "$ref" = justfile ] || [ -e "$ref" ] || continue
-		fail "$f job '$job' runs $ref out of this repository but never checks the repository out, so its workspace is empty and that command exits 127 having done nothing — silently, if the job only runs when something else already failed; add \`- uses: actions/checkout@v4\` as that job's first step"
+		fail "$f job '$job' runs $ref out of this repository with no \`actions/checkout\` step before it, so its workspace is empty there and that command exits 127 having done nothing — silently, if the job only runs when something else already failed; add \`- uses: actions/checkout@v4\` as that job's first step"
 	done < <(uncheckedout_repo_refs "$f")
 }
 

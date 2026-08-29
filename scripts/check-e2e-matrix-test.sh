@@ -200,20 +200,29 @@ run_case "the reporter without a checkout" 1 "report-scheduled-failure.sh out of
 # into this repository (it needs the justfile), so the synthetic job runs that
 # rather than a script path, leaving neither detection half assumed.
 append_probe_job() {
-    # $1 = workflow file, $2 = "with-checkout" to give the job its checkout step
+    # $1 = workflow file, $2 = where the checkout goes relative to the command:
+    # "before" (correct), "after" (too late to help), or "none".
     {
         printf '\n  probe:\n    runs-on: ubuntu-latest\n    steps:\n'
-        [ "$2" = with-checkout ] && printf '      - uses: actions/checkout@v4\n'
+        if [ "$2" = before ]; then printf '      - uses: actions/checkout@v4\n'; fi
         printf '      - run: just --list\n'
+        if [ "$2" = after ]; then printf '      - uses: actions/checkout@v4\n'; fi
     } >>"$1"
 }
 
 build_fixture
-append_probe_job "$tmp/repo/$workflow" without-checkout
+append_probe_job "$tmp/repo/$workflow" none
 run_case "a job running just with no checkout" 1 "job 'probe' runs justfile"
 
+# Steps run in order, so a checkout further down the job is a workspace the
+# command has already needed and not found — reading the job as a whole would
+# call this one fixed.
 build_fixture
-append_probe_job "$tmp/repo/$workflow" with-checkout
+append_probe_job "$tmp/repo/$workflow" after
+run_case "a checkout that comes after the command" 1 "job 'probe' runs justfile"
+
+build_fixture
+append_probe_job "$tmp/repo/$workflow" before
 run_case "the same job carrying its checkout" 0 "all e2e workflows match the matrix contract"
 
 echo "check-e2e-matrix-test: ok"

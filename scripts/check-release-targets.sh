@@ -7,14 +7,10 @@
 # gate holds both.
 #
 # **The shape.** The document is written against the canonical release-target
-# schema — `schema_version = 2`, the version that spells an npm scoped package,
-# defined once in nickderobertis/onevcs's docs/contract.md and enforced by that
-# crate's `release-targets.toml` reader.
-# Six repositories write one of these, and the point of a canonical shape is
-# that a reader needs no per-repository knowledge to use it — so a required
-# field dropped, an identifier that names no registry, a key this schema does
-# not declare, or two targets taking one short name is a finding here rather
-# than a surprise in whatever parses it next.
+# schema — `schema_version = 2` — which nickderobertis/onevcs defines in its
+# docs/contract.md. Six repositories write one of these and a reader needs no
+# per-repository knowledge to use one, so a document that leaves that shape is a
+# finding here rather than a surprise in whatever parses it next.
 #
 # **The contents.** A hand-written inventory is exactly the thing that goes
 # stale in silence — a repository that declares no target for an artifact grants
@@ -50,43 +46,34 @@ DECLARATION_SCHEMA_VERSION=2
 
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The canonical
 # schema is defined by the `onevcs` crate, which is this repository's CONSUMER
-# rather than its dependency — linking it here to read the definition would
-# invert that — and `just check` is offline by contract, so the definition
-# cannot be fetched at check time either. What keeps the restatement honest is
-# `schema_version`: this gate reads exactly the one version it was written for
-# and refuses any other by number, so a document brought up to a later schema
-# goes red here until this restatement is brought up with it, so one schema's
-# rules can never be applied to a document written in another. That is the gate;
-# there is no second source of these constants in this repository.
+# rather than its dependency — depending on it to read the definition would
+# invert that — and `just check` is offline by contract, so it cannot be fetched
+# at check time either. What keeps the restatement honest is `schema_version`:
+# this gate reads exactly the one version it was written for and refuses any
+# other by number, so a document brought up to a later schema goes red here
+# until this restatement is brought up with it. There is no second source of
+# these constants in this repository.
 #
-# The keys schema_version 2 declares, per table. Spelled out rather than
-# inferred, because a key nobody declared is the finding: a misspelled
-# `manifset` read as an absent `manifest` publishes an answer nobody wrote.
+# The keys schema_version 2 declares, per table. Spelled out because a key
+# nobody declared is the finding: a misspelled `manifset` read as an absent
+# `manifest` publishes an answer nobody wrote.
 TOP_KEYS="schema_version probe"
 TARGET_KEYS="id name what published_by manifest covers"
 RETIRED_KEYS="id why"
-# And what kind of value each holds. Every key not named here holds a quoted
-# string. The kind is enforced where the value is read, because a key read at
-# the wrong kind is a value nobody wrote reaching the checks below: `name =
-# ["core"]` would arrive as the string `core` and `manifest = 1` as the path
-# `1`, and each would then pass every check that follows.
+# And what kind of value each holds; every key not named here holds a quoted
+# string. It is enforced where the value is read, because `name = ["core"]`
+# would otherwise arrive as the string `core` and `manifest = 1` as the path
+# `1`, and each would pass every check that follows.
 NUMBER_KEYS="schema_version"
 LIST_KEYS="covers"
 
 # What the canonical schema's own validated types accept.
 #
-# `covers` and `id` are `RegistryId`: `<registry>:<name>`, the name spelled
-# exactly as its registry serves it. This is that type's alphabet, restated — a
-# lowercase registry word, then a name in one of the two forms npm makes
-# necessary. A plain name opens with an alphanumeric and holds `A-Za-z0-9._@/-`
-# after it; a leading `@` instead commits the name to the scoped form
-# `@scope/name`, decided there in full, whose scope and package each open with
-# an alphanumeric and hold only `A-Za-z0-9._-` — which is what refuses `@`,
-# `@/cli`, `@scope/` and a second slash rather than reading any of them as a
-# plain name that happens to start with an `@`. This repository publishes six
-# scoped names — `npm:@oneharness/sdk` and the five per-platform packages the
-# launcher covers — and an id spelled any other way would name an artifact npm
-# does not serve. (The scoped form is the same npm name syntax
+# `RegistryId`, which `id` and `covers` are: a lowercase registry word, then
+# either a plain name or npm's scoped `@scope/name`. A leading `@` commits the
+# name to the scoped form and is decided there in full, which is what refuses
+# `@`, `@/cli`, `@scope/` and a second slash rather than reading them as plain
+# names that happen to open with an `@`. (The same npm syntax
 # scripts/release-probe.sh validates before it builds a URL.)
 ID_SYNTAX='^[a-z0-9-]+:(@[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*|[A-Za-z0-9][A-Za-z0-9._@/-]*)$'
 MAX_ID=128

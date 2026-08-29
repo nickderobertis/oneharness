@@ -4,35 +4,17 @@
 # onevcs defines in its `docs/contract.md`; scripts/check-release-targets.sh
 # holds this file to it.
 #
-# A consumer that has to wait for a change to land here needs one thing only
-# this repository can say: the registry-qualified identifier of every artifact
-# it publishes. `oneharness-cli` alone names two different artifacts — a PyPI
-# project and an npm package, published on two cadences from this one
-# repository — so an unqualified name says which artifact only by luck. Every
-# id below is `<registry>:<name>`, and `<name>` is exactly what that registry
-# serves.
+# Every id is `<registry>:<name>`, and the qualification is load-bearing:
+# `oneharness-cli` alone names two artifacts — a PyPI project and an npm
+# package, published on two cadences from this one repository — so an
+# unqualified name says which of them only by luck.
 #
-# The two crates move independently and are separate targets for that reason:
-# the binary and the engine it is compiled against have shipped a whole minor
-# apart, so comparing their version strings is evidence about neither.
-#
-# A target is a CONSUMABLE artifact — one a dependent names in order to depend
-# on it. scripts/check-release-targets.sh derives the published set from the
-# release configuration itself — publish-crates.sh, the manifests,
-# npm-build.mjs's target table, release.yml's publish jobs — and fails on a name
-# that is neither declared here nor covered by a target below, in either
-# direction.
+# The two crates are separate targets because they move independently: the
+# binary and the engine it is compiled against have shipped a whole minor apart,
+# so comparing their version strings is evidence about neither.
 
-# Version 2 of the canonical schema: the one that spells an npm scoped
-# package, `@scope/name`, as a name a registry serves. Six identifiers below
-# are one — `npm:@oneharness/sdk` and the five per-platform packages the
-# launcher covers — so this document says 2 rather than 1, which is how a
-# reader tells what it is holding before it reads it.
 schema_version = 2
 
-# `scripts/release-probe.sh <id>` answers what a registry currently serves for
-# one of the ids below, and refuses any identifier this document does not
-# declare as a target.
 probe = "scripts/release-probe.sh"
 
 # The reusable engine. Published first; the binary below pins it by version.
@@ -68,16 +50,12 @@ what = "The typed Python client, imported as `oneharness_sdk`, which drives the 
 published_by = ".github/workflows/release.yml — the publish-python-sdk job, from the distributions scripts/python-sdk-pack.mjs builds, under python/oneharness-sdk/pyproject.toml's [project] name."
 manifest = "python/oneharness-sdk/pyproject.toml"
 
-# The npm launcher, and the one target here that covers anything.
-#
-# The per-platform `@oneharness/cli-<platform>-<arch>` packages it covers are
-# published by the same release and are deliberately NOT targets of their own:
-# they exist only so this launcher can resolve one of them at its own exact
-# version, nothing depends on one by name, and `npm:oneharness-cli` is the wait
-# that covers them. They are enumerated in three places that must stay in
-# lockstep — scripts/npm-build.mjs's target table, this launcher's
-# optionalDependencies, and the `covers` list here — and
-# scripts/check-release-targets.sh reconciles all three.
+# The npm launcher. The per-platform `@oneharness/cli-<platform>-<arch>`
+# packages it covers are deliberately NOT targets of their own: nothing depends
+# on one by name, they exist so this launcher can resolve one at its own exact
+# version, and waiting on the launcher is waiting on them. They are enumerated
+# here, in scripts/npm-build.mjs and in this launcher's optionalDependencies,
+# which scripts/check-release-targets.sh holds in lockstep.
 [[target]]
 id = "npm:oneharness-cli"
 name = "cli-npm"

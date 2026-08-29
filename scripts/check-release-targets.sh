@@ -141,7 +141,6 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 	-v numberkeys="$NUMBER_KEYS" -v listkeys="$LIST_KEYS" '
 	function refuse(message) { printf "!%s%d%s%s%s%s\n", us, NR, us, "", us, message }
 	function declares(key) { return index(" " keys " ", " " key " ") > 0 }
-	# What kind of value a key holds: one of "number", "list" or "string".
 	function kind_of(key) {
 		if (index(" " numberkeys " ", " " key " ") > 0) return "number"
 		if (index(" " listkeys " ", " " key " ") > 0) return "list"
@@ -211,7 +210,6 @@ fields="$(awk -v us="$US" -v schema="$DECLARATION_SCHEMA_VERSION" \
 	}
 	BEGIN { kind = "top"; idx = 0; where = "the document"; keys = topkeys }
 	{ line = $0; sub(/[ \t\r]+$/, "", line) }
-	# Continuation lines of a list opened above, up to its closing bracket.
 	in_list {
 		if (!match(line, /\]/)) { buffer = buffer line; next }
 		in_list = 0
@@ -372,10 +370,12 @@ if [ "$target_count" -eq 0 ]; then
 	exit 1
 fi
 
-declared_ids=""     # one target id per line, in declaration order
-declared_names=""   # one short name per line
-declared_manifests="" # one manifest path per line, blank where a target declares none
-covered_ids=""      # every id a target covers
+# One value per line, in declaration order; a target declaring no manifest
+# leaves a blank line, so the three stay index-aligned.
+declared_ids=""
+declared_names=""
+declared_manifests=""
+covered_ids=""
 
 entry=1
 while [ "$entry" -le "$target_count" ]; do

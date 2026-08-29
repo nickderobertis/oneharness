@@ -373,4 +373,66 @@ live_reader="$(extract_target_reader scripts/release-probe-live.sh)"
 [ "$probe_reader" = "$live_reader" ] ||
   fail "scripts/release-probe.sh and scripts/release-probe-live.sh read [[target]] entries differently, so the set the live suite probes is no longer the set the probe will answer for; copy whichever is right over the other — a [[retired]] id or a covers entry admitted by one alone is a demand for a version this repository never publishes"
 
-echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', both answers a caller acts on are distinguishable ($readers reader(s)), and the live suite reads a [[target]] exactly as the probe does"
+# One schema version, held across every reader of it. The declaration says which
+# shape it is written in and each reader refuses any other by number — which is
+# the right refusal when a document arrives from elsewhere, and the wrong way to
+# learn it about this repository's own, because a reader only refuses when
+# somebody runs it: the live suite is opt-in and out of the gate entirely, so a
+# copy left behind there surfaces as a network tier that will not start.
+#
+# $1 = the declaration, $2... = the readers. Every disagreement is printed and
+# the answer is non-zero when there was one, rather than failing here, so the
+# fixtures below can watch this refuse.
+readers_on_one_schema_version() {
+  local declaration=$1 declared reader reader_version disagreed=0
+  shift
+  declared="$(sed -n 's/^schema_version = \([0-9]*\)$/\1/p' "$declaration")"
+  if [ -z "$declared" ]; then
+    echo "no schema_version could be read out of $declaration; leave a single 'schema_version = <number>' line, which is what every reader of the declaration holds itself to"
+    return 1
+  fi
+  for reader in "$@"; do
+    reader_version="$(sed -n 's/^DECLARATION_SCHEMA_VERSION=\([0-9]*\)$/\1/p' "$reader")"
+    if [ -z "$reader_version" ]; then
+      echo "no DECLARATION_SCHEMA_VERSION could be read out of $reader; every reader of the declaration states the one version it reads, so restore that line or point this reconciliation at its new spelling"
+      disagreed=1
+    elif [ "$reader_version" != "$declared" ]; then
+      echo "$reader reads schema_version $reader_version and $declaration declares $declared; bring whichever is behind up to the other, because a reader on the old version refuses the document outright"
+      disagreed=1
+    fi
+  done
+  return "$disagreed"
+}
+
+if ! disagreements="$(readers_on_one_schema_version release-targets.toml \
+  scripts/release-probe.sh scripts/release-probe-live.sh scripts/check-release-targets.sh)"; then
+  fail "$disagreements"
+fi
+declared_version="$(sed -n 's/^schema_version = \([0-9]*\)$/\1/p' release-targets.toml)"
+
+# A reconciliation whose only job is to fail, watched failing: a reader left on
+# the version the declaration has moved off, and one that states no version at
+# all. Both are staged rather than mutated into this checkout, because the real
+# readers are what the assertion above holds.
+version_fixture="$work/schema-version"
+mkdir -p "$version_fixture"
+printf 'schema_version = 9\n' >"$version_fixture/declaration.toml"
+printf 'DECLARATION_SCHEMA_VERSION=8\n' >"$version_fixture/stale-reader.sh"
+printf '# a reader that no longer says which version it reads\n' >"$version_fixture/silent-reader.sh"
+: >"$version_fixture/versionless.toml"
+
+if disagreement="$(readers_on_one_schema_version "$version_fixture/declaration.toml" "$version_fixture/stale-reader.sh")"; then
+  fail "the schema-version reconciliation accepted a reader on 8 while the declaration says 9; restore that comparison, or nothing holds scripts/release-probe-live.sh's copy to the version this repository declares"
+fi
+case $disagreement in
+  *"reads schema_version 8"*) ;;
+  *) fail "the reconciliation refused a stale reader without naming the version it reads, so nobody can tell which side to move: $disagreement" ;;
+esac
+if disagreement="$(readers_on_one_schema_version "$version_fixture/declaration.toml" "$version_fixture/silent-reader.sh")"; then
+  fail "the schema-version reconciliation accepted a reader stating no version at all; a reader that says nothing is one this check has stopped reading, so restore that refusal"
+fi
+if disagreement="$(readers_on_one_schema_version "$version_fixture/versionless.toml" "$version_fixture/stale-reader.sh")"; then
+  fail "the schema-version reconciliation accepted a declaration stating no version; every reader holds itself to that number, so it cannot be missing"
+fi
+
+echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', both answers a caller acts on are distinguishable ($readers reader(s)), the live suite reads a [[target]] exactly as the probe does, and every reader is on schema_version $declared_version"

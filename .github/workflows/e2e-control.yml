@@ -31,9 +31,10 @@ name: E2E (Turn control)
 #
 # This workflow is outside that gate's shared PR matrix (its paths and its
 # unix-only platform set are its own), but scripts/check-e2e-matrix.sh still
-# holds the two contracts restated below to their sources: every path in the
-# filter must exist, and every credential a phase in e2e-control.sh reads must
-# be supplied here.
+# holds the contracts restated below to their sources: every path in the filter
+# must exist, every credential a phase in e2e-control.sh reads must be supplied
+# here, the schedule must still cover macOS, and any job of any workflow that
+# runs one of this repository's own scripts must check the repository out.
 #
 # `OH_E2E_NO_SKIP` matters more here than anywhere else: e2e-control.sh notes
 # and continues past a harness whose credentials are missing rather than
@@ -206,6 +207,12 @@ jobs:
       issues: write
     timeout-minutes: 5
     steps:
+      # The script below lives in this repository, and a job's workspace is
+      # empty until it checks out — without this the reporter exits 127 on a
+      # missing file, which is exactly how ten consecutive nightly failures
+      # went unannounced. scripts/check-e2e-matrix.sh now holds this.
+      - uses: actions/checkout@v4
+
       - name: Open or update the drift issue
         env:
           GH_TOKEN: ${{ github.token }}

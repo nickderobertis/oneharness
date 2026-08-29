@@ -30,6 +30,12 @@ printf '%s\n' "$*" >>"$GH_CALLS"
 if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ]; then
 	cat "$GH_EXISTING"
 fi
+# `issue view <n>` answers with that issue's REAL title, which is what the
+# reporter confirms a listing's candidate against. Keyed by number so a case can
+# make the listing claim one thing and the issue say another.
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ]; then
+	if [ -f "$GH_TITLES/${3:-}" ]; then cat "$GH_TITLES/${3:-}"; fi
+fi
 exit 0
 STUB
 chmod +x "$tmp/bin/gh"
@@ -38,11 +44,20 @@ chmod +x "$tmp/bin/gh"
 # matches it exactly and one that only looks like it.
 TITLE_UNDER_TEST="Scheduled turn-control e2e is failing"
 
-# $1 the `number<TAB>title` lines `gh issue list` should print, $2 description
+# The real titles `gh issue view <n>` answers with, one file per issue number.
+mkdir -p "$tmp/titles"
+
+# $1 the `number<TAB>title` lines `gh issue list` should print, $2 description.
+# By default every listed record tells the truth about its own issue, so a case
+# that wants a lying listing overwrites $tmp/titles/<n> after calling this.
 run_case() {
 	printf '%s' "$1" >"$tmp/existing"
+	rm -f "$tmp/titles"/*
+	while IFS=$'\t' read -r number title; do
+		[ -n "$number" ] && printf '%s\n' "$title" >"$tmp/titles/$number"
+	done <<<"$1"
 	: >"$tmp/calls"
-	GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" \
+	GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" GH_TITLES="$tmp/titles" \
 		PATH="$tmp/bin:$PATH" \
 		REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
 		BODY="the suite failed" RUN_URL="https://example.invalid/run/1" \
@@ -84,11 +99,39 @@ grep -q '^issue create ' "$tmp/calls" || {
 	fail "a similar title: an issue that is not this one must not be commented on"
 }
 
+# A FORGED record. The listing is `number<TAB>title` lines and an issue title is
+# third-party text — anyone who can open an issue on the repository can put a
+# newline in one and write a whole extra record, naming an issue number that is
+# not the one the record claims. The digit check below does not catch it: a
+# forged number is a perfectly good number. Here #77's real title is somebody
+# else's, and a release failure commented onto it would be both lost and rude.
+: >"$tmp/calls"
+printf '%s' "77	$TITLE_UNDER_TEST" >"$tmp/existing"
+rm -f "$tmp/titles"/*
+printf '%s\n' "Crash on startup with an empty config" >"$tmp/titles/77"
+GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" GH_TITLES="$tmp/titles" \
+	PATH="$tmp/bin:$PATH" REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
+	BODY="the suite failed" \
+	bash "$root/scripts/report-workflow-failure.sh" >"$tmp/out" 2>&1 || {
+	cat "$tmp/out" >&2
+	fail "a forged listing record: the reporter exited non-zero"
+}
+grep -q '^issue comment 77 ' "$tmp/calls" &&
+	fail "a forged listing record must not be commented on"
+grep -q '^issue create ' "$tmp/calls" || {
+	cat "$tmp/calls" >&2
+	fail "a forged listing record must still get the failure reported, as a new issue"
+}
+grep -qF "not \"$TITLE_UNDER_TEST\"" "$tmp/out" || {
+	cat "$tmp/out" >&2
+	fail "a forged listing record must say why it did not comment on it"
+}
+
 # An id that is not an issue number is drift in `gh issue list`, and addressing
 # a comment at it would be a request to whatever it happens to name.
 : >"$tmp/calls"
 printf '%s' "not-a-number	$TITLE_UNDER_TEST" >"$tmp/existing"
-if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" PATH="$tmp/bin:$PATH" \
+if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" GH_TITLES="$tmp/titles" PATH="$tmp/bin:$PATH" \
 	REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" BODY="x" \
 	bash "$root/scripts/report-workflow-failure.sh" >"$tmp/out" 2>&1; then
 	cat "$tmp/out" >&2
@@ -101,7 +144,7 @@ grep -q '^issue comment ' "$tmp/calls" &&
 # says which one and how to supply it, since the caller is a workflow step.
 : >"$tmp/calls"
 missing_out="$tmp/missing.out"
-if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" PATH="$tmp/bin:$PATH" \
+if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" GH_TITLES="$tmp/titles" PATH="$tmp/bin:$PATH" \
 	REPO="owner/repo" TITLE="" BODY="x" \
 	bash "$root/scripts/report-workflow-failure.sh" >"$missing_out" 2>&1; then
 	fail "an empty title must be refused, not filed"
@@ -127,6 +170,10 @@ if [ "${1:-}" = "issue" ] && [ "${2:-}" = "list" ] && [ -z "${GH_FAIL_LIST:-}" ]
 	cat "$GH_EXISTING"
 	exit 0
 fi
+if [ "${1:-}" = "issue" ] && [ "${2:-}" = "view" ] && [ -z "${GH_FAIL_VIEW:-}" ]; then
+	if [ -f "$GH_TITLES/${3:-}" ]; then cat "$GH_TITLES/${3:-}"; fi
+	exit 0
+fi
 printf '%s\n' "$GH_ERROR" >&2
 exit 1
 STUB
@@ -138,8 +185,13 @@ gh_failure_case() {
 	shift 3
 	printf '%s' "$existing" >"$tmp/existing"
 	: >"$tmp/calls"
+	rm -f "$tmp/titles"/*
+	while IFS=$'\t' read -r number title; do
+		[ -n "$number" ] && printf '%s\n' "$title" >"$tmp/titles/$number"
+	done <<<"$existing"
 	if GH_CALLS="$tmp/calls" GH_EXISTING="$tmp/existing" GH_ERROR="$error" \
-		GH_FAIL_LIST="$fail_list" PATH="$tmp/bin:$PATH" \
+		GH_FAIL_LIST="$fail_list" GH_TITLES="$tmp/titles" \
+		GH_FAIL_VIEW="${GH_FAIL_VIEW:-}" PATH="$tmp/bin:$PATH" \
 		REPO="owner/repo" TITLE="$TITLE_UNDER_TEST" \
 		BODY="the suite failed" RUN_URL="https://example.invalid/run/1" \
 		bash "$root/scripts/report-workflow-failure.sh" >"$out" 2>&1; then
@@ -170,6 +222,10 @@ gh_failure_case "HTTP 403: Resource not accessible by integration" "" "" \
 	"opening an issue" "Next:"
 gh_failure_case "HTTP 403: Resource not accessible by integration" "" "41	$TITLE_UNDER_TEST" \
 	"commenting on #41" "Next:"
+# Confirming the candidate's title is itself a `gh` call, so it fails its own way
+# too — silently skipping the confirmation would put the forgery back.
+GH_FAIL_VIEW=1 gh_failure_case "HTTP 404: Not Found" "" "41	$TITLE_UNDER_TEST" \
+	"confirming the title of #41" "HTTP 404" "Next:"
 # Whatever went wrong, the finding this was reporting must still be findable.
 gh_failure_case "HTTP 500: Server Error" "" "41	$TITLE_UNDER_TEST" "https://example.invalid/run/1"
 

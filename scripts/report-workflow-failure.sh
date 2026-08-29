@@ -105,6 +105,27 @@ while IFS=$'\t' read -r number title; do
 	fi
 done <<<"$listed"
 
+# The listing's records are `number<TAB>title` lines, and an issue title is
+# third-party text: anyone who can open an issue on this repository can put a
+# newline in one and forge a whole extra record, naming an issue number that is
+# not the one the record claims. The digit check above does not catch that — a
+# forged number is a perfectly good number. So the match found above is only a
+# CANDIDATE: read the chosen issue's own title back before writing to it, which
+# is one field from the issue itself with no framing left to forge.
+#
+# A mismatch opens a new issue rather than refusing. Commenting a release failure
+# onto somebody else's thread is worse than opening a second issue, and losing
+# the report entirely is worse than both.
+if [ -n "$existing" ]; then
+	status=0
+	confirmed="$(gh issue view "$existing" --repo "$REPO" --json title --jq .title 2>"$said")" || status=$?
+	[ "$status" -eq 0 ] || gh_failed "confirming the title of #$existing" "$status" "$(cat "$said")"
+	if [ "$confirmed" != "$TITLE" ]; then
+		echo "report-workflow-failure: #$existing is titled \"$confirmed\", not \"$TITLE\" — the listing named an issue that is not this one, so opening a new issue rather than commenting on it" >&2
+		existing=""
+	fi
+fi
+
 # On success `gh` answers with the URL it wrote to, which is the one thing a
 # reader of this log actually wants next.
 #

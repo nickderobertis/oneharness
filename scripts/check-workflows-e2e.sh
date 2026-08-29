@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Prove the workflow drift gate rejects a missing release-tag boundary check and
-# a third-party `just` installer — one required line, one forbidden pattern, so
-# both halves of the gate's machinery are exercised rather than assumed.
+# Prove the workflow drift gate rejects a missing release-tag boundary check, a
+# third-party `just` installer and a deleted unattended-failure reporter — required
+# lines and a forbidden pattern, so every mechanism the gate has is exercised
+# rather than assumed.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -94,6 +95,41 @@ while IFS='|' read -r pattern expected; do
 done <<'CASES'
 run: cargo-semver-checks check-release --workspace --baseline-rev HEAD|run the semver analysis itself
 RUSTUP_TOOLCHAIN=stable|give cargo-semver-checks the toolchain it needs
+CASES
+
+# The unattended-reporting gate's two halves, one per workflow so both files are
+# proven rather than one standing in for the other. Neither is sufficient alone:
+# a reporter nothing gates on `if: failure()` files an issue for a green release,
+# and a failure condition with no reporter under it announces nothing. Deleting
+# either from either workflow is the drift that leaves a broken release
+# reporting to nobody, which is the state this gate exists to refuse.
+while IFS='|' read -r file needle expected; do
+  # The single-quoted program is JavaScript; the argument is fixture text.
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("node:fs");
+    const [path, needle] = process.argv.slice(1);
+    const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
+    const line = source.split("\n").find((l) => l.includes(needle));
+    if (!line) throw new Error(`unattended-reporting fixture is missing: ${needle}`);
+    fs.writeFileSync(path, source.split("\n").filter((l) => l !== line).join("\n"));
+  ' ".github/workflows/$file" "$needle"
+
+  if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
+    echo "check-workflows-e2e: $file without '$needle' unexpectedly passed the gate" >&2
+    echo "  fix: restore the unattended-reporting check for '$needle' in scripts/check-workflows.sh" >&2
+    exit 1
+  fi
+  grep -Fq "$expected" "$work/stderr" || {
+    echo "check-workflows-e2e: the unattended-reporting drift lacked the expected diagnostic" >&2
+    echo "  fix: restore the wording '$expected' in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
+    cat "$work/stderr" >&2
+    exit 1
+  }
+  cp "$work/$file" ".github/workflows/$file"
+done <<'CASES'
+release.yml|run: bash scripts/report-workflow-failure.sh|release.yml must report its own failure through the reporter
+release-plz.yml|if: failure()|release-plz.yml must gate its reporting job on `if: failure()`
 CASES
 
 echo 'check-workflows-e2e: ok'

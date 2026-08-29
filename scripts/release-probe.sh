@@ -27,7 +27,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 declarations="$repo_root/release-targets.toml"
-DECLARATION_SCHEMA_VERSION=1
+DECLARATION_SCHEMA_VERSION=2
 
 # A usage error: the caller asked something that cannot be answered about.
 usage_error() {
@@ -50,11 +50,19 @@ identifier="$1"
 # The declaration authorizes which registries this probe will read, so it is
 # read structurally: the version it was written for, then one id per [[target]]
 # block. A bare `id = "..."` line outside a block declares nothing.
+#
+# What the block boundary is for: only a [[target]] is a release target. A
+# [[retired]] entry records an artifact this repository does NOT publish any
+# more and carries an `id` of its own, and a target's `covers` list names
+# artifacts nothing depends on by name. Answering for either would report a
+# version for something no consumer may wait on — so a table header always ends
+# the block above it, and a [[target]] that somehow carried no id can never
+# reach into the entry below for one.
 declared_version="$(sed -n 's/^schema_version = \([0-9]*\)$/\1/p' "$declarations")"
 [ "$declared_version" = "$DECLARATION_SCHEMA_VERSION" ] ||
   unanswered "$declarations declares schema_version '$declared_version' and this probe reads exactly one, version $DECLARATION_SCHEMA_VERSION; leave a single schema_version line saying which shape the file is written in"
 declared="$(awk '
-  /^\[\[target\]\]$/ { inside = 1; next }
+  /^[[:space:]]*\[/ { inside = ($0 == "[[target]]"); next }
   inside && match($0, /^id = "[^"]+"$/) {
     entry = $0; sub(/^id = "/, "", entry); sub(/"$/, "", entry)
     print entry; inside = 0

@@ -160,24 +160,71 @@ assert_not_answered "a checkout with no release-targets.toml" \
 assert_not_answered "a declaration with no schema version" \
   "declares schema_version ''" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
-printf 'schema_version = 2\n\n[[target]]\nid = "crate:oneharness"\nmanifest = "Cargo.toml"\n' \
+printf 'schema_version = 3\n\n[[target]]\nid = "crate:oneharness"\nmanifest = "Cargo.toml"\n' \
   >"$fixture/release-targets.toml"
 assert_not_answered "a declaration written to a later version" \
-  "declares schema_version '2'" "$stub_path" \
+  "declares schema_version '3'" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
-printf 'schema_version = 1\n' >"$fixture/release-targets.toml"
+printf 'schema_version = 2\n' >"$fixture/release-targets.toml"
 assert_not_answered "a declaration with no targets" \
   "declares no release targets" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
-printf 'schema_version = 1\nid = "crate:oneharness"\n' >"$fixture/release-targets.toml"
+printf 'schema_version = 2\nid = "crate:oneharness"\n' >"$fixture/release-targets.toml"
 assert_not_answered "an id outside any [[target]] block" \
   "declares no release targets" "$stub_path" \
   "$fixture/scripts/release-probe.sh" crate:oneharness
+# Only a [[target]] is a release target. A [[retired]] entry names an artifact
+# this repository does not publish any more and a `covers` entry names one
+# nothing depends on by name, and both carry a registry-qualified id — so a
+# probe that answered for either would report a version for something no
+# consumer may wait on. Written with the [[target]] carrying no id of its own,
+# which is what would let a block boundary that does not close leak the next
+# entry's id into the declared set.
+cat >"$fixture/release-targets.toml" <<'NEIGHBOURS'
+schema_version = 2
+
+[[target]]
+name = "cli-crate"
+covers = ["npm:@oneharness/cli-linux-x64"]
+
+[[retired]]
+id = "pypi:oneharness-retired"
+why = "Nothing here publishes it again."
+NEIGHBOURS
+assert_not_answered "a retired id, with the [[target]] above it carrying none" \
+  "declares no release targets" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" pypi:oneharness-retired
+assert_not_answered "a covered id, which is not a target of its own" \
+  "declares no release targets" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" "npm:@oneharness/cli-linux-x64"
+# The same neighbours beside a target that does declare an id, so the refusal is
+# the probe recognising a real declared set without them rather than an empty
+# one. This is the shape the checked-in declaration has.
+cat >"$fixture/release-targets.toml" <<'NEIGHBOURS'
+schema_version = 2
+
+[[target]]
+id = "crate:oneharness"
+name = "cli-crate"
+covers = ["npm:@oneharness/cli-linux-x64"]
+
+[[retired]]
+id = "pypi:oneharness-retired"
+why = "Nothing here publishes it again."
+NEIGHBOURS
+assert_not_answered "a retired id beside a declared target" \
+  "is not a release target of this repository" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" pypi:oneharness-retired
+assert_not_answered "a covered id beside the target that covers it" \
+  "is not a release target of this repository" "$stub_path" \
+  "$fixture/scripts/release-probe.sh" "npm:@oneharness/cli-linux-x64"
+[ ! -s "$reached" ] ||
+  fail "an id the declaration names outside a [[target]] read the network before refusing; decide the declared set from [[target]] blocks alone in scripts/release-probe.sh"
 # Declaring an id says it was written down, not that its name is a package name.
 # The name becomes a path segment of a registry URL, so one carrying a separator
 # would ask a different question and publish that answer as this target's
 # version — refused, and before the network, like every other unanswerable id.
-printf 'schema_version = 1\n\n[[target]]\nid = "crate:oneharness/../serde"\nmanifest = "Cargo.toml"\n' \
+printf 'schema_version = 2\n\n[[target]]\nid = "crate:oneharness/../serde"\nmanifest = "Cargo.toml"\n' \
   >"$fixture/release-targets.toml"
 assert_not_answered "a declared name that is not a package name" \
   "is not a crate package name" "$stub_path" \
@@ -301,4 +348,91 @@ done
 [ "$readers" -gt 0 ] ||
   fail "this host has neither jq nor python3, so no reader could be exercised; install one (the probe needs it too) and rerun"
 
-echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', and both answers a caller acts on are distinguishable ($readers reader(s))"
+# One definition of what a [[target]] is, held across the two scripts that read
+# it. scripts/release-probe-live.sh drives the probe over every declared target,
+# so it has to know which ids those are, and it reads them with a copy of the
+# probe's own extraction. That copy is the thing to watch: the boundary it draws
+# is exactly what the probe refuses an identifier over, so a [[retired]] id or a
+# `covers` entry admitted on one side and not the other is a live suite
+# demanding a published version for an artifact this repository deliberately
+# does not serve. Held identical rather than merged into a sourced helper,
+# because the probe is spawned standalone under `env -i` by a consumer holding
+# nothing but that one file, and a second file it must find is a way for it to
+# stop answering at all.
+extract_target_reader() {
+  awk -v q="'" '
+    index($0, "declared=\"$(awk " q) == 1 { inside = 1; next }
+    inside && substr($0, 1, 2) == q " " { exit }
+    inside { print }
+  ' "$1"
+}
+probe_reader="$(extract_target_reader scripts/release-probe.sh)"
+live_reader="$(extract_target_reader scripts/release-probe-live.sh)"
+[ -n "$probe_reader" ] ||
+  fail "no [[target]] extraction could be read out of scripts/release-probe.sh; it was rewritten into a shape this reconciliation cannot find, so point the extractor here at its new shape — until then nothing holds the live suite's copy to it"
+[ "$probe_reader" = "$live_reader" ] ||
+  fail "scripts/release-probe.sh and scripts/release-probe-live.sh read [[target]] entries differently, so the set the live suite probes is no longer the set the probe will answer for; copy whichever is right over the other — a [[retired]] id or a covers entry admitted by one alone is a demand for a version this repository never publishes"
+
+# One schema version, held across every reader of it. The declaration says which
+# shape it is written in and each reader refuses any other by number — which is
+# the right refusal when a document arrives from elsewhere, and the wrong way to
+# learn it about this repository's own, because a reader only refuses when
+# somebody runs it: the live suite is opt-in and out of the gate entirely, so a
+# copy left behind there surfaces as a network tier that will not start.
+#
+# $1 = the declaration, $2... = the readers. Every disagreement is printed and
+# the answer is non-zero when there was one, rather than failing here, so the
+# fixtures below can watch this refuse.
+readers_on_one_schema_version() {
+  local declaration=$1 declared reader reader_version disagreed=0
+  shift
+  declared="$(sed -n 's/^schema_version = \([0-9]*\)$/\1/p' "$declaration")"
+  if [ -z "$declared" ]; then
+    echo "no schema_version could be read out of $declaration; leave a single 'schema_version = <number>' line, which is what every reader of the declaration holds itself to"
+    return 1
+  fi
+  for reader in "$@"; do
+    reader_version="$(sed -n 's/^DECLARATION_SCHEMA_VERSION=\([0-9]*\)$/\1/p' "$reader")"
+    if [ -z "$reader_version" ]; then
+      echo "no DECLARATION_SCHEMA_VERSION could be read out of $reader; every reader of the declaration states the one version it reads, so restore that line or point this reconciliation at its new spelling"
+      disagreed=1
+    elif [ "$reader_version" != "$declared" ]; then
+      echo "$reader reads schema_version $reader_version and $declaration declares $declared; bring whichever is behind up to the other, because a reader on the old version refuses the document outright"
+      disagreed=1
+    fi
+  done
+  return "$disagreed"
+}
+
+if ! disagreements="$(readers_on_one_schema_version release-targets.toml \
+  scripts/release-probe.sh scripts/release-probe-live.sh scripts/check-release-targets.sh)"; then
+  fail "$disagreements"
+fi
+declared_version="$(sed -n 's/^schema_version = \([0-9]*\)$/\1/p' release-targets.toml)"
+
+# A reconciliation whose only job is to fail, watched failing: a reader left on
+# the version the declaration has moved off, and one that states no version at
+# all. Both are staged rather than mutated into this checkout, because the real
+# readers are what the assertion above holds.
+version_fixture="$work/schema-version"
+mkdir -p "$version_fixture"
+printf 'schema_version = 9\n' >"$version_fixture/declaration.toml"
+printf 'DECLARATION_SCHEMA_VERSION=8\n' >"$version_fixture/stale-reader.sh"
+printf '# a reader that no longer says which version it reads\n' >"$version_fixture/silent-reader.sh"
+: >"$version_fixture/versionless.toml"
+
+if disagreement="$(readers_on_one_schema_version "$version_fixture/declaration.toml" "$version_fixture/stale-reader.sh")"; then
+  fail "the schema-version reconciliation accepted a reader on 8 while the declaration says 9; restore that comparison, or nothing holds scripts/release-probe-live.sh's copy to the version this repository declares"
+fi
+case $disagreement in
+  *"reads schema_version 8"*) ;;
+  *) fail "the reconciliation refused a stale reader without naming the version it reads, so nobody can tell which side to move: $disagreement" ;;
+esac
+if disagreement="$(readers_on_one_schema_version "$version_fixture/declaration.toml" "$version_fixture/silent-reader.sh")"; then
+  fail "the schema-version reconciliation accepted a reader stating no version at all; a reader that says nothing is one this check has stopped reading, so restore that refusal"
+fi
+if disagreement="$(readers_on_one_schema_version "$version_fixture/versionless.toml" "$version_fixture/stale-reader.sh")"; then
+  fail "the schema-version reconciliation accepted a declaration stating no version; every reader holds itself to that number, so it cannot be missing"
+fi
+
+echo "check-release-probe: every path that cannot produce a version is refused rather than reported as 'no release yet', both answers a caller acts on are distinguishable ($readers reader(s)), the live suite reads a [[target]] exactly as the probe does, and every reader is on schema_version $declared_version"

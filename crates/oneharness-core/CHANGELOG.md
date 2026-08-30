@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.12.1...oneharness-core-v0.12.2) - 2026-08-30
+
+### Fixed
+
+- stop classifying a completed billed turn as a failure, and report a failed release ([#1277](https://github.com/nickderobertis/oneharness/pull/1277))
+
 ## [0.12.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.12.0...oneharness-core-v0.12.1) - 2026-08-26
 
 ### Fixed

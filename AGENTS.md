@@ -1020,23 +1020,14 @@ shape. When you add one:
   belongs to whoever is being billed, not to the model, so the next identity
   carries its own.
   `model_not_found` stays model-list-only — a config mistake the user should see.
-- **A completed run that did the work carries no refusal classification.** A
-  `failure_kind` that names a refusal asserts the provider would not run the
-  task, and an envelope of `status: ok` + exit `0` + [`RunWork::Done`] refutes
-  that: the classification is read one record at a time out of a transcript — an
-  intermediate `is_error` record the harness went on to retry past produces
-  one — while the envelope is the harness's word on the whole run. So
-  `RunResult::with_work_evidence` — the one funnel every constructor already
-  ends at — drops it there (`report::completed_run_that_did_work`, which reads
-  work rather than billing: a tool call with no accounting at all is evidence
-  too). It lives in the classifier rather than
-  `history`'s validity rule because history is opt-in and best-effort — a record
-  refused there warns and disables the store while the *report* a supervisor
-  actually reads keeps the refusal — and every record is derived from a result
-  that already passed through the funnel. `FailureKind::is_refusal` is matched
-  exhaustively, so a new kind is a deliberate answer to "does a completed run
-  that did the work refute this?"; `tool_deferred` answers no, being a statement
-  about what a completed turn produced rather than a refusal to run it.
+- **A completed run that did the work carries no refusal classification.**
+  `status: ok` + exit `0` + [`RunWork::Done`] refutes any `failure_kind` naming a
+  refusal, so `RunResult::with_work_evidence` — the funnel every constructor
+  already ends at — drops it there (`report::completed_run_that_did_work`, which
+  reads work, not billing). That funnel is the single site: `history`'s validity
+  rule is opt-in and best-effort, so refusing the record there would leave the
+  stdout report carrying the refusal. `FailureKind::is_refusal` is matched
+  exhaustively, so a new kind answers deliberately; `tool_deferred` answers no.
 
 ## Scripts and output are context
 

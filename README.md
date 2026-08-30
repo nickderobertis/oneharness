@@ -995,6 +995,21 @@ invalidating earlier ones):
   `claude-code` require a deployment that executes tools inline** (a standalone
   environment or CI); a deferring deployment is unsupported for them, and there is
   no consumer-side flag to force inline execution.
+
+  **A run that completed and did the work carries no `failure_kind`.** A refusal
+  classification says the harness or its provider would not run the task, and a
+  process that exited `0` having recorded a tool call or billed tokens is that
+  claim's own refutation — so the envelope wins and the classification is not
+  stamped. Either kind of evidence is enough on its own: a harness that reported
+  no accounting at all and ran a tool did the task just as decisively. The
+  classification is read one record at a time out of a transcript, while the
+  envelope is what the harness said about the whole run: a 94-minute Claude Code
+  turn that exited 0 having billed $12.11 published `failure_kind: "rate_limit"`,
+  read off an intermediate `is_error` record it had already retried past, and the
+  supervisor consuming that field killed the finished dispatch and threw the
+  completed work away. `tool_deferred` is unaffected, being the one kind that is
+  not a refusal: it describes what a run that *did* complete produced, so a clean,
+  billed exit is its shape rather than a contradiction of it.
 - `work` — what a run that failed with **nothing classified** has to show for
   itself: `"done"` where the harness recorded a tool call or billed usage,
   `"none"` where nothing says it got that far. `null` on every other run (a
@@ -1540,19 +1555,28 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
 | Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
+| Ran, exited non-zero, classified `rate_limit`, no work done | ✅ fall through — `rate-limit` |
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
 | Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
-| Ran and failed the task (`nonzero`, incl. `rate_limit` / `model_not_found`) | ⛔ stop¹ |
+| Ran and failed the task (`nonzero`, incl. `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
 | Never produced a schema-conforming answer (`--schema`) | ⛔ stop (the harness ran) |
 
 ¹ **Exception — a model list.** When the run is fanning out over several models
 (repeated `--model` / config `models`; see [Multiple models](#multiple-models-fan-out-over-the-model-axis)),
 a per-model rejection means "try the next model", so `model_not_found` (fall
-through — `model-not-found`) and `rate_limit` (fall through — `rate-limit`) *do*
-fall through. With a single model both still stop the chain, as above.
+through — `model-not-found`) *does* fall through. With a single model it still
+stops the chain, as above — an unknown model is a configuration mistake the user
+should see rather than one oneharness silently routes around.
+
+> **Behavior change.** A `rate_limit` used to fall through only under a model
+> list, and to stop the chain otherwise. It now falls through on any chain, with
+> reason `rate-limit`. A rate limit is a property of whoever is being billed, not
+> of the model: one rate-limited identity ended a dispatch that four further
+> identities could have served. The zero-work rule below is unchanged and still
+> bounds it — a `429` that spent tokens describes a run, and still stops.
 
 **An unresolvable resume falls through too.** A native session token lives in one
 identity's session store — each `claude-code` variant points the CLI at its own

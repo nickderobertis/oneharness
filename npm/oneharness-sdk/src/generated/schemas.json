@@ -1910,7 +1910,7 @@
             "const": "model-not-found"
           },
           {
-            "description": "This model cannot serve the request right now — only on a model fan-out.",
+            "description": "This candidate is rate limited and cannot serve the request right now.",
             "type": "string",
             "const": "rate-limit"
           }
@@ -2963,7 +2963,7 @@
             "const": "model-not-found"
           },
           {
-            "description": "This model cannot serve the request right now — only on a model fan-out.",
+            "description": "This candidate is rate limited and cannot serve the request right now.",
             "type": "string",
             "const": "rate-limit"
           }

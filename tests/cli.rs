@@ -2308,6 +2308,261 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
 }
 
 #[test]
+fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {
+    // The defect this closes, measured twice on a real host. A 94-minute Claude
+    // Code turn exited 0 having billed $12.11 and written its completion report,
+    // and the run oneharness published carried `failure_kind: "rate_limit"` — read
+    // off an intermediate `is_error` record the harness had already retried past.
+    // The supervisor consuming that field killed the finished dispatch and threw
+    // the work away; it reproduced days later at $12.61. About $24.72 of billed
+    // work destroyed, both completion reports lost.
+    //
+    // The stdout below is that shape: a mid-run rejection the harness recovered
+    // from, then the terminal record saying the whole run completed and what it
+    // cost. The envelope wins — a provider that billed $12.11 and exited 0 did
+    // not refuse the request.
+    let mock = mock_bin().display().to_string();
+    let stdout = serde_json::to_string(concat!(
+        "{\"type\":\"assistant\",\"is_error\":true,",
+        "\"result\":\"API Error: 429 rate limit exceeded\"}\n",
+        "{\"type\":\"result\",\"subtype\":\"success\",\"session_id\":\"sess-long\",",
+        "\"result\":\"the work is green\",\"total_cost_usd\":12.11,",
+        "\"usage\":{\"input_tokens\":830514,\"output_tokens\":42233}}\n",
+    ))
+    .expect("a string always serializes");
+    let project = format!(
+        r#"
+        harnesses = ["claude-code"]
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {stdout} }}
+        "#
+    );
+    let fx = ConfigFixture::new("billed-completion", &project, "");
+    let history = hist_dir("billed-completion");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "do the long thing",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "a run that completed must exit 0: {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    // The envelope the harness itself reported, unchanged.
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(result["usage"]["output_tokens"], 42233);
+    assert_eq!(result["usage"]["cost_usd"], 12.11);
+    assert_eq!(result["text"], "the work is green");
+    // ...and no refusal stamped onto it, nor a dangling source for one.
+    assert!(
+        result["failure_kind"].is_null(),
+        "a completed, billed run must carry no refusal classification, got {}",
+        result["failure_kind"]
+    );
+    assert!(result["failure_kind_source"].is_null());
+
+    // The same reading in the history record, which is what a supervisor reads
+    // back after the fact. Fixing this at the classifier rather than in the
+    // record's own validity rule is what makes these two agree: a record refused
+    // by history would still leave the report on stdout carrying the refusal.
+    let records = materialized_history(Path::new(
+        value["history_file"].as_str().expect("history file"),
+    ));
+    let record = &records[0];
+    assert_eq!(record["status"], "ok");
+    assert_eq!(record["exit_code"], 0);
+    assert_eq!(record["usage"]["output_tokens"], 42233);
+    assert_eq!(record["usage"]["cost_usd"], 12.11);
+    assert!(
+        record["failure_kind"].is_null(),
+        "the record of a completed, billed run must not classify it as failed"
+    );
+}
+
+#[test]
+fn a_completed_run_whose_only_evidence_is_a_tool_call_also_sheds_the_refusal() {
+    // The other half of the reconciliation, over the interface a consumer reads.
+    // Work evidence is `RunWork`'s one definition rather than a second reading of
+    // "billed": this run reports no accounting at all — no tokens, no cost — and
+    // ran a tool, which says it did the task just as decisively as an invoice
+    // would. A harness whose output format carries a transcript but no usage
+    // block is an ordinary shape, not a corner, so the refusal must not survive
+    // here either.
+    let stdout = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","is_error":true,"result":"API Error: 429 rate limit exceeded"}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","result":"the work is green"}"#,
+        "\n",
+    );
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "cursor",
+            "--prompt",
+            "do the thing",
+            "--bin",
+            &bin_override("cursor"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(
+        output.status.success(),
+        "a run that completed must exit 0: {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["exit_code"], 0);
+    assert_eq!(result["text"], "the work is green");
+    // Nothing was billed — the evidence is the recorded tool call alone.
+    assert!(
+        result["usage"]["output_tokens"].is_null(),
+        "this fixture reports no accounting, got {}",
+        result["usage"]
+    );
+    assert!(result["usage"]["cost_usd"].is_null());
+    assert_eq!(result["events"][0]["kind"], "tool_call");
+    assert_eq!(result["events"][0]["name"], "Bash");
+    // ...and the mid-run 429 is not stamped onto the finished run.
+    assert!(
+        result["failure_kind"].is_null(),
+        "a completed run that ran a tool must carry no refusal, got {}",
+        result["failure_kind"]
+    );
+    assert!(result["failure_kind_source"].is_null());
+}
+
+#[test]
+fn a_rate_limited_identity_hands_the_turn_to_the_next_one() {
+    // A rate limit is a property of whoever is being billed, not of the model, so
+    // it hands the turn on exactly as `quota` does — on an identity chain with no
+    // model list in sight. It used to fall through only while a model list was
+    // being tried, so one rate-limited identity ended a dispatch that four
+    // further identities could have served.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",",
+        "\"text\":\"served-by-codex\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ))
+    .expect("a string always serializes");
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "API Error: 429 rate limit exceeded" }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("rate-limit-chain", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "rate_limit");
+    // The chain's reported reason names the rate limit rather than a generic
+    // stop, so a reader learns which identity to stop routing to.
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "rate-limit");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["results"][1]["text"], "served-by-codex");
+}
+
+#[test]
+fn a_rate_limited_candidate_that_was_billed_still_stops_the_chain() {
+    // The other half of the rule, and the one that keeps the change from paying a
+    // second identity to redo work somebody was already charged for: a 429 that
+    // landed after real tokens describes a run, so the chain stops there and the
+    // next candidate is never spawned.
+    let mock = mock_bin().display().to_string();
+    let worked = serde_json::to_string(concat!(
+        "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,",
+        "\"result\":\"API Error: 429 rate limit exceeded\",\"total_cost_usd\":3.5,",
+        "\"usage\":{\"input_tokens\":91000,\"output_tokens\":2200}}\n",
+    ))
+    .expect("a string always serializes");
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {worked} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{{"type":"turn.completed"}}' }}
+        "#
+    );
+    let fx = ConfigFixture::new("rate-limit-billed", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    // The candidate that ran failed the task, so the chain's exit is its own.
+    assert!(!output.status.success());
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "rate_limit");
+    assert_eq!(value["results"][0]["usage"]["cost_usd"], 3.5);
+    assert_eq!(
+        value["fallback"]["fell_through"].as_array().unwrap().len(),
+        0,
+        "a candidate that was billed for work must not be fallen through"
+    );
+    assert_eq!(value["fallback"]["ran"], "claude-code");
+    assert_eq!(
+        value["results"].as_array().unwrap().len(),
+        1,
+        "the second identity must never be spawned"
+    );
+}
+
+#[test]
 fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
     // The defect this closes, measured on a real host: `claude-code:alternate`
     // exited 2 in 64ms because its launcher shim could not resolve the binary,
@@ -16094,51 +16349,41 @@ fn fallback_stops_at_a_real_task_failure_and_does_not_fall_through() {
 }
 
 #[test]
-fn fallback_stops_at_a_classified_rate_limit_and_does_not_fall_through() {
-    // The core guarantee: a non-zero exit that is *classified* (here rate_limit,
-    // a transient hiccup of a WORKING, authenticated harness) is still a real
-    // run — fallback must STOP, not fall through, so a working harness's 429 is
-    // never masked behind the next candidate. Same for an unknown model.
-    for (needle, kind) in [
-        (
-            "Error 429: rate limit exceeded, too many requests",
-            "rate_limit",
-        ),
-        (
-            "model not found: no such model 'gpt-nope'",
-            "model_not_found",
-        ),
-    ] {
-        let output = run(
-            &[
-                "run",
-                "--run-mode",
-                "fallback",
-                "--harness",
-                "claude-code,codex",
-                "--prompt",
-                "hi",
-                "--bin",
-                &bin_override("claude-code"),
-                "--bin",
-                &bin_override("codex"),
-                "--compact",
-            ],
-            &[("MOCK_EXIT", "1"), ("MOCK_STDERR", needle)],
-        );
-        assert_eq!(output.status.code(), Some(1), "{kind}: should stop, exit 1");
-        let v = json_stdout(&output);
-        // Stopped at the first harness — it ran (badly), so it is the answer.
-        assert_eq!(v["fallback"]["ran"], "claude-code", "{kind}");
-        assert_eq!(
-            v["fallback"]["fell_through"].as_array().unwrap().len(),
-            0,
-            "{kind}"
-        );
-        let results = v["results"].as_array().unwrap();
-        assert_eq!(results.len(), 1, "{kind}: codex must never be attempted");
-        assert_eq!(results[0]["failure_kind"], kind);
-    }
+fn fallback_stops_at_a_classified_model_error_and_does_not_fall_through() {
+    // The core guarantee: a non-zero exit that is *classified* as a broken
+    // request — an unknown model — is still a real run, so fallback must STOP
+    // rather than silently route around a configuration mistake the user should
+    // see. (`rate_limit` used to be asserted here too; it is a property of the
+    // identity being billed rather than of the request, so it now hands the turn
+    // on — see `a_rate_limited_identity_hands_the_turn_to_the_next_one`.)
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_EXIT", "1"),
+            ("MOCK_STDERR", "model not found: no such model 'gpt-nope'"),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1), "should stop, exit 1");
+    let v = json_stdout(&output);
+    // Stopped at the first harness — it ran (badly), so it is the answer.
+    assert_eq!(v["fallback"]["ran"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"].as_array().unwrap().len(), 0);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "codex must never be attempted");
+    assert_eq!(results[0]["failure_kind"], "model_not_found");
 }
 
 #[test]
@@ -16934,7 +17179,10 @@ fn fallback_reads_an_api_error_envelope_across_declarations_and_dialects() {
 /// The 429 case is the sharper one: with the limit signal disqualified, the
 /// generic vocabulary reads the embedded status as the transient `rate_limit`,
 /// which is a stop. Without a 429 there is nothing left to read and the run stays
-/// unclassified — also a stop. Both exit codes, since neither is load-bearing.
+/// unclassified — also a stop. Both exit codes, since neither changes the
+/// verdict — though a **clean** exit does change what is left to say about the
+/// run: a completed, billed run refutes a refusal, so there the 429 is not
+/// stamped at all (`completed_run_that_did_work`). Either way the chain stops here.
 #[test]
 fn fallback_stops_at_a_session_limit_that_landed_after_real_work() {
     let mock = mock_bin().display().to_string();
@@ -17003,7 +17251,9 @@ fn fallback_stops_at_a_session_limit_that_landed_after_real_work() {
             assert_eq!(results.len(), 1, "{at}: codex must never be attempted");
             let expected_status = if exit == "0" { "ok" } else { "nonzero" };
             assert_eq!(results[0]["status"], expected_status, "{at}");
-            match expected_kind {
+            // A refusal survives only where the run did not complete. On a
+            // clean, billed exit the envelope refutes it and nothing is stamped.
+            match expected_kind.filter(|_| exit != "0") {
                 Some(kind) => assert_eq!(results[0]["failure_kind"], kind, "{at}"),
                 None => assert!(results[0]["failure_kind"].is_null(), "{at}"),
             }
@@ -18115,13 +18365,22 @@ fn fallback_stops_at_a_tool_call_that_billed_nothing() {
     }
 }
 
-/// The work-evidence short circuit on a **successful** record. A provider
-/// rejection a harness reports while still exiting zero falls through when it
-/// did no work — `fallback_falls_through_a_clean_exit_provider_quota_error` is
-/// that shape exactly — so work has to reverse the verdict on the same
+/// The work-evidence short circuit on a **successful** record, and what a
+/// completed run is left saying about itself.
+///
+/// A provider rejection a harness reports while still exiting zero falls through
+/// when it did no work — `fallback_falls_through_a_clean_exit_provider_quota_error`
+/// is that shape exactly — so work has to reverse the verdict on the same
 /// `Status::Ok`. Only a zero exit shows it: every other end-to-end work case
 /// pairs the classification with a non-zero exit, where the status is already
 /// the one the fall-through reasons are written against.
+///
+/// A clean, billed exit also refutes the rejection itself, so here the chain
+/// stops on a run that carries no classification at all rather than on one
+/// carrying `quota`. The verdict this test exists for is unchanged — a candidate
+/// that did work is never fallen through — and the run's exit follows the
+/// envelope the harness reported instead of a refusal scanned out of a
+/// transcript that the same transcript's accounting contradicts.
 #[test]
 fn fallback_stops_at_a_clean_exit_rejection_that_landed_after_work() {
     let transcript = serde_json::to_string(&format!(
@@ -18134,9 +18393,11 @@ fn fallback_stops_at_a_clean_exit_rejection_that_landed_after_work() {
         "fallback-clean-exit-quota-after-work",
         &format!(r#"{{ MOCK_STDOUT = {transcript} }}"#),
     );
-    // The declared rejection is still a failed run to report — what makes this
-    // the `Status::Ok` arm is the harness's own zero exit, asserted below.
-    assert_eq!(exit, Some(1));
+    // The harness completed and billed for it, so oneharness reports the run its
+    // envelope describes: exit 0, not the 1 a stamped refusal used to force. That
+    // forced 1 is what a supervisor read as "the dispatch failed" on a turn that
+    // had finished and been billed.
+    assert_eq!(exit, Some(0));
     for (path, report) in [("buffered", &buffered), ("streamed", &streamed)] {
         assert_eq!(report["fallback"]["ran"], "claude-code", "{path}");
         assert!(
@@ -18152,8 +18413,11 @@ fn fallback_stops_at_a_clean_exit_rejection_that_landed_after_work() {
         // The exit that makes this the `Status::Ok` arm of the short circuit...
         assert_eq!(first["status"], "ok", "{path}");
         assert_eq!(first["exit_code"], 0, "{path}");
-        // ...still carrying the classification that would otherwise fall through.
-        assert_eq!(first["failure_kind"], "quota", "{path}");
+        // ...and the rejection its own completed, billed envelope refutes: with
+        // no work evidence this record classifies as `quota` and falls through
+        // (the sibling test above), so both halves are shown by one shape.
+        assert!(first["failure_kind"].is_null(), "{path}");
+        assert!(first["failure_kind_source"].is_null(), "{path}");
         assert_eq!(first["usage"]["output_tokens"], 96, "{path}");
     }
 }

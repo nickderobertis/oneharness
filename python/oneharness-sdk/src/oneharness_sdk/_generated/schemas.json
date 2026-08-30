@@ -12908,7 +12908,7 @@
           },
           {
             "const": "rate-limit",
-            "description": "This model cannot serve the request right now \u2014 only on a model fan-out.",
+            "description": "This candidate is rate limited and cannot serve the request right now.",
             "type": "string"
           }
         ]
@@ -14086,7 +14086,7 @@
           },
           {
             "const": "rate-limit",
-            "description": "This model cannot serve the request right now \u2014 only on a model fan-out.",
+            "description": "This candidate is rate limited and cannot serve the request right now.",
             "type": "string"
           }
         ]

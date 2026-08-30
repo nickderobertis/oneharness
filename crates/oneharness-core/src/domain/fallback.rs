@@ -139,7 +139,7 @@ pub enum FallThroughReason {
     InputTooLarge,
     /// This model is unavailable — only on a model fan-out.
     ModelNotFound,
-    /// This model cannot serve the request right now — only on a model fan-out.
+    /// This candidate is rate limited and cannot serve the request right now.
     RateLimit,
 }
 
@@ -196,6 +196,15 @@ impl FallThroughReason {
 ///   would be behavior no harness can produce. It belongs with
 ///   `auth` and `quota` for the same reason: the *task* is fine and the next
 ///   candidate can still do it.
+/// - [`Status::Nonzero`] with `failure_kind == "rate_limit"` → `"rate-limit"`
+///   (the provider will not serve *this identity* right now). It belongs beside
+///   `quota` for the same reason `quota` is there: the task is fine and the next
+///   candidate — a different identity, with its own limit — can still do it. It
+///   is not gated on a model list, because the limit belongs to whoever is being
+///   billed rather than to the model. Non-zero only, like the refusals below: with
+///   a clean exit the run either did the work (and
+///   [`completed_run_that_did_work`][cbr] has already dropped the classification) or
+///   completed without it, and neither is a refusal to hand on.
 /// - [`Status::Nonzero`] with `failure_kind == "untrusted_directory"` →
 ///   `"untrusted-directory"`, and with `"input_too_large"` →
 ///   `"input-too-large"`: the two **precondition** refusals
@@ -209,14 +218,14 @@ impl FallThroughReason {
 ///   harness has been observed producing.
 ///
 /// [pre]: crate::domain::signals
+/// [cbr]: crate::domain::report::completed_run_that_did_work
 ///
 /// Everything else is a **real run**, so `None`: a clean [`Status::Ok`]; a
 /// [`Status::Timeout`] (a genuine, if slow, run — falling through it would let a
 /// long real run masquerade as a setup problem); a [`Status::Cancelled`] one
 /// (nothing about the candidate failed, and falling through would spawn the very
 /// next harness the caller just cancelled); a plain non-zero task failure;
-/// and — by default — a non-zero classified `rate_limit` (a transient condition
-/// of a *working, authenticated* harness) or `model_not_found` (a configuration
+/// and — by default — a non-zero classified `model_not_found` (a configuration
 /// mistake the user should see, not silently route around). A [`Status::Planned`]
 /// dry-run row is not a run at all and is `None` too (the fallback driver never
 /// executes under `--print-command`).
@@ -225,11 +234,10 @@ impl FallThroughReason {
 /// several models in priority order** (`--model` given more than once, or config
 /// `models`). There, a per-model rejection *is* the signal to try the next
 /// candidate: `model_not_found` (this model is unavailable — reason
-/// `"model-not-found"`) and `rate_limit` (this model can't serve the request
-/// right now — reason `"rate-limit"`) both fall through, since the point of a
-/// model list is graceful degradation across models exactly as the harness list
-/// degrades across harnesses. With a single model (`model_fallback == false`) the
-/// historical rule stands: both stop the chain.
+/// `"model-not-found"`) falls through, since the point of a model list is
+/// graceful degradation across models exactly as the harness list degrades
+/// across harnesses. With a single model (`model_fallback == false`) the
+/// historical rule stands: it stops the chain.
 pub fn startup_failure_reason(
     status: Status,
     failure_kind: Option<FailureKind>,
@@ -248,6 +256,7 @@ pub fn startup_failure_reason(
         (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
             Some(FallThroughReason::Quota)
         }
+        (Status::Nonzero, Some(FailureKind::RateLimit)) => Some(FallThroughReason::RateLimit),
         (Status::Nonzero, Some(FailureKind::SessionNotFound)) => {
             Some(FallThroughReason::SessionNotFound)
         }
@@ -260,12 +269,12 @@ pub fn startup_failure_reason(
         (Status::Skipped, _) => Some(FallThroughReason::NotInstalled),
         (Status::SpawnError, _) => Some(FallThroughReason::SpawnError),
         (Status::Nonzero, _) => match failure_kind {
-            // Only when a model list is being tried: an unusable/over-limit model
-            // means "try the next model", not "stop with a real failure".
+            // Only when a model list is being tried: an unusable model means
+            // "try the next model", not "stop with a real failure". With one
+            // model it is a configuration mistake the user should see.
             Some(FailureKind::ModelNotFound) if model_fallback => {
                 Some(FallThroughReason::ModelNotFound)
             }
-            Some(FailureKind::RateLimit) if model_fallback => Some(FallThroughReason::RateLimit),
             _ => None,
         },
         (Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned, _) => None,
@@ -492,15 +501,11 @@ mod tests {
             false,
             RunWork::None
         ));
-        // Transient / configuration / did-run reasons are NOT setup failures for a
-        // single-model run: falling through a 429 would mask a working harness's
-        // real hiccup, an unknown model is a config mistake the user sees, and a
-        // deferred-tool dead-end is a harness that *ran* (so the chain stops there).
-        for kind in [
-            FailureKind::RateLimit,
-            FailureKind::ModelNotFound,
-            FailureKind::ToolDeferred,
-        ] {
+        // Configuration / did-run reasons are NOT setup failures for a
+        // single-model run: an unknown model is a config mistake the user sees,
+        // and a deferred-tool dead-end is a harness that *ran* (so the chain
+        // stops there). A rate limit is neither — see the test below.
+        for kind in [FailureKind::ModelNotFound, FailureKind::ToolDeferred] {
             assert_eq!(
                 startup_failure_reason(Status::Nonzero, Some(kind), false, RunWork::None),
                 None,
@@ -516,9 +521,48 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_limited_identity_falls_through_without_a_model_list() {
+        // A rate limit is a property of whoever is being billed, not of the
+        // model, so it hands the turn to the next *identity* exactly as `quota`
+        // does — with a model list or without one. It used to fall through only
+        // under `model_fallback`, and one rate-limited identity therefore ended a
+        // chain that four further identities could have served.
+        for model_fallback in [false, true] {
+            assert_eq!(
+                startup_failure_reason(
+                    Status::Nonzero,
+                    Some(FailureKind::RateLimit),
+                    model_fallback,
+                    RunWork::None
+                ),
+                Some(FallThroughReason::RateLimit),
+                "a rate limit must hand the turn on (model_fallback={model_fallback})"
+            );
+            assert!(is_startup_failure(
+                Status::Nonzero,
+                Some(FailureKind::RateLimit),
+                model_fallback,
+                RunWork::None
+            ));
+        }
+        // Non-zero only. A clean exit either did the work — where
+        // `completed_run_that_did_work` has already dropped the classification — or
+        // completed without it, and neither is a refusal to hand on.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Ok,
+                Some(FailureKind::RateLimit),
+                false,
+                RunWork::None
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn model_errors_fall_through_only_with_a_model_list() {
-        // Trying several models in order: an unusable or over-limit model is
-        // "try the next model", so both fall through with their own reason.
+        // Trying several models in order: an unusable model is "try the next
+        // model", so it falls through with its own reason.
         assert_eq!(
             startup_failure_reason(
                 Status::Nonzero,
@@ -531,21 +575,15 @@ mod tests {
         assert_eq!(
             startup_failure_reason(
                 Status::Nonzero,
-                Some(FailureKind::RateLimit),
-                true,
+                Some(FailureKind::ModelNotFound),
+                false,
                 RunWork::None
             ),
-            Some(FallThroughReason::RateLimit)
+            None
         );
         assert!(is_startup_failure(
             Status::Nonzero,
             Some(FailureKind::ModelNotFound),
-            true,
-            RunWork::None
-        ));
-        assert!(is_startup_failure(
-            Status::Nonzero,
-            Some(FailureKind::RateLimit),
             true,
             RunWork::None
         ));
@@ -596,7 +634,7 @@ mod tests {
                 false,
             ),
             (Status::Nonzero, Some(FailureKind::InputTooLarge), false),
-            (Status::Nonzero, Some(FailureKind::RateLimit), true),
+            (Status::Nonzero, Some(FailureKind::RateLimit), false),
             (Status::Nonzero, Some(FailureKind::ModelNotFound), true),
             (Status::Skipped, None, false),
             (Status::SpawnError, None, false),

@@ -1016,6 +1016,18 @@ shape. When you add one:
   have failed for free burns the next identity's quota — but without it a
   candidate that never started reads exactly like one that ran the task and
   lost, and a chain that stopped at the first says nothing about which it was.
+  `rate_limit` falls through on ANY chain, not only a model fan-out: the limit
+  belongs to whoever is being billed, not to the model, so the next identity
+  carries its own.
+  `model_not_found` stays model-list-only — a config mistake the user should see.
+- **A completed run that did the work carries no refusal classification.**
+  `status: ok` + exit `0` + [`RunWork::Done`] refutes any `failure_kind` naming a
+  refusal, so `RunResult::with_work_evidence` — the funnel every constructor
+  already ends at — drops it there (`report::completed_run_that_did_work`, which
+  reads work, not billing). That funnel is the single site: `history`'s validity
+  rule is opt-in and best-effort, so refusing the record there would leave the
+  stdout report carrying the refusal. `FailureKind::is_refusal` is matched
+  exhaustively, so a new kind answers deliberately; `tool_deferred` answers no.
 
 ## Scripts and output are context
 

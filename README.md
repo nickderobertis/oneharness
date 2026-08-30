@@ -1001,7 +1001,8 @@ invalidating earlier ones):
   process that exited `0` having recorded a tool call or billed tokens is that
   claim's own refutation — so the envelope wins and the classification is not
   stamped. Either kind of evidence is enough on its own: a harness that reported
-  no accounting at all and ran a tool did the task just as decisively. It is read one record at a time out of a transcript, while the
+  no accounting at all and ran a tool did the task just as decisively. The
+  classification is read one record at a time out of a transcript, while the
   envelope is what the harness said about the whole run: a 94-minute Claude Code
   turn that exited 0 having billed $12.11 published `failure_kind: "rate_limit"`,
   read off an intermediate `is_error` record it had already retried past, and the

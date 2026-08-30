@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.3](https://github.com/nickderobertis/oneharness/compare/v0.11.2...v0.11.3) - 2026-08-30
+
+### Changed
+
+- *(release)* declare release targets in the canonical release-targets.toml ([#1276](https://github.com/nickderobertis/oneharness/pull/1276))
+
+### Fixed
+
+- stop classifying a completed billed turn as a failure, and report a failed release ([#1277](https://github.com/nickderobertis/oneharness/pull/1277))
+
 ## [0.11.2](https://github.com/nickderobertis/oneharness/compare/v0.11.1...v0.11.2) - 2026-08-28
 
 ### Added

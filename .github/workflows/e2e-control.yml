@@ -225,7 +225,7 @@ jobs:
             than a flaky leg to re-run.
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         # A script, not inline YAML: the create-vs-comment branch is real
-        # behavior and scripts/report-workflow-failure-test.sh drives both
+        # behavior and scripts/report-scheduled-failure-test.sh drives both
         # halves against a stubbed `gh` (this path only ever runs when
         # something is already broken, so it cannot debug itself in place).
-        run: bash scripts/report-workflow-failure.sh
+        run: bash scripts/report-scheduled-failure.sh

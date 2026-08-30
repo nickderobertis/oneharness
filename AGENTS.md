@@ -140,9 +140,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   the pull request**: this feature has broken there three times in ways Linux
   cannot show (`/tmp`→`/private/tmp`, the shorter `sun_path` budget, a
   refusal-reason mismatch), and a second 26-minute leg per control PR is not
-  what that is worth. A scheduled failure opens (or comments on) an issue
-  through `scripts/report-workflow-failure.sh`, because a schedule has no PR to
-  turn red, as do the release workflows. In CI `OH_E2E_NO_SKIP` makes a
+  what that is worth. A scheduled failure opens (or comments on) an issue,
+  because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went
   unauthenticated. Two absences are NOT red, since no credential fixes
@@ -1147,15 +1146,6 @@ shape. When you add one:
   GitHub PAT set by hand (a PAT can't live in the harness-auth manifest's
   Bitwarden flow). The crate version and `CHANGELOG.md` are managed by
   release-plz — do not hand-bump them.
-- **Every unattended workflow reports its own failure**, through
-  `scripts/report-workflow-failure.sh` on an `if: failure()` job: a push to main
-  and a published Release have no PR to turn red and no checks list anyone opens,
-  so a failure that announces itself nowhere is the same as not running. Its two
-  non-obvious constraints: the job needs its own `actions/checkout` (the
-  repository-wide contract `check-e2e-matrix.sh` holds) or it exits 127 on the
-  missing script, and the issue a fuzzy title search names is only a CANDIDATE —
-  a title carrying a newline forges a record, so the reporter reads the chosen
-  issue's own title back before writing to it.
 - **Manual fallback.** Creating a GitHub Release by hand (the UI, or
   `gh release create vX.Y.Z`) fires the same `release: published` event and builds
   every distribution, including the validated idempotent crates.io job — use it

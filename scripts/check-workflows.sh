@@ -123,30 +123,6 @@ if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sd
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi
 
-# Every UNATTENDED workflow must announce its own failure. A push to main and a
-# published Release have no pull request to turn red and no checks list anyone
-# opens, so a failure there is a red square nobody is drawn to — indistinguishable
-# from the workflow not having run.
-#
-# Two halves, both required and neither sufficient: a `run:` of the reporter
-# (whose create-vs-comment behavior report-workflow-failure-test.sh proves) and
-# an `if: failure()` gate, so a green release files nothing. They must be halves
-# of ONE job, which is why this walks jobs rather than grepping the file twice:
-# an unrelated failure-gated job elsewhere in the workflow would otherwise vouch
-# for an ungated reporter that files an issue after every successful release.
-# The reporter's own checkout is a separate, repository-wide contract that
-# check-e2e-matrix.sh holds.
-for workflow in .github/workflows/release.yml .github/workflows/release-plz.yml; do
-  awk '
-    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ { gated = 0; reports = 0 }
-    /^    if: failure\(\)/ { gated = 1 }
-    /run: bash scripts\/report-workflow-failure\.sh/ { reports = 1 }
-    gated && reports { found = 1 }
-    END { exit(found ? 0 : 1) }
-  ' "$workflow" ||
-    fail "$workflow must run scripts/report-workflow-failure.sh from one job gated on \`if: failure()\`; nothing else announces an unattended run, and an ungated reporter files an issue for a green release"
-done
-
 if [ "$fails" -ne 0 ]; then
   printf 'check-workflows: %d contract drift(s)\n' "$fails" >&2
   exit 1

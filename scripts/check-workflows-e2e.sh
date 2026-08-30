@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Prove the workflow drift gate rejects a missing release-tag boundary check, a
-# third-party `just` installer and a deleted unattended-failure reporter — required
-# lines and a forbidden pattern, so every mechanism the gate has is exercised
-# rather than assumed.
+# Prove the workflow drift gate rejects a missing release-tag boundary check and
+# a third-party `just` installer — one required line, one forbidden pattern, so
+# both halves of the gate's machinery are exercised rather than assumed.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -96,82 +95,5 @@ done <<'CASES'
 run: cargo-semver-checks check-release --workspace --baseline-rev HEAD|run the semver analysis itself
 RUSTUP_TOOLCHAIN=stable|give cargo-semver-checks the toolchain it needs
 CASES
-
-# The unattended-reporting gate's two halves, one per workflow so both files are
-# proven rather than one standing in for the other. Neither is sufficient alone:
-# a reporter nothing gates on `if: failure()` files an issue for a green release,
-# and a failure condition with no reporter under it announces nothing. Deleting
-# either from either workflow is the drift that leaves a broken release
-# reporting to nobody, which is the state this gate exists to refuse.
-while IFS='|' read -r file needle expected; do
-  # The single-quoted program is JavaScript; the argument is fixture text.
-  # shellcheck disable=SC2016
-  node -e '
-    const fs = require("node:fs");
-    const [path, needle] = process.argv.slice(1);
-    const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
-    const line = source.split("\n").find((l) => l.includes(needle));
-    if (!line) {
-      throw new Error(
-        `${path} has no line containing "${needle}", so this case cannot delete it to prove the gate rejects its absence. ` +
-        "Fix: restore that line in the workflow, or update the CASES table at the bottom of scripts/check-workflows-e2e.sh to the wording it now uses."
-      );
-    }
-    fs.writeFileSync(path, source.split("\n").filter((l) => l !== line).join("\n"));
-  ' ".github/workflows/$file" "$needle"
-
-  if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
-    echo "check-workflows-e2e: $file without '$needle' unexpectedly passed the gate" >&2
-    echo "  fix: restore the unattended-reporting check for '$needle' in scripts/check-workflows.sh" >&2
-    exit 1
-  fi
-  grep -Fq "$expected" "$work/stderr" || {
-    echo "check-workflows-e2e: the unattended-reporting drift lacked the expected diagnostic" >&2
-    echo "  fix: restore the wording '$expected' in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
-    cat "$work/stderr" >&2
-    exit 1
-  }
-  cp "$work/$file" ".github/workflows/$file"
-done <<'CASES'
-release.yml|run: bash scripts/report-workflow-failure.sh|release.yml must run scripts/report-workflow-failure.sh from one job
-release.yml|if: failure()|release.yml must run scripts/report-workflow-failure.sh from one job
-release-plz.yml|run: bash scripts/report-workflow-failure.sh|release-plz.yml must run scripts/report-workflow-failure.sh from one job
-release-plz.yml|if: failure()|release-plz.yml must run scripts/report-workflow-failure.sh from one job
-CASES
-
-# The drift neither half catches alone: an UNGATED reporter beside a
-# failure-gated job that has nothing to do with it. Grepping the file once per
-# half passes this — both strings are present — and then every release, green
-# ones included, files an issue. The gate walks jobs for exactly this reason.
-# The single-quoted program is JavaScript; the argument is fixture text.
-# shellcheck disable=SC2016
-node -e '
-  const fs = require("node:fs");
-  const path = process.argv[1];
-  const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
-  const gate = "    if: failure() && github.repository == \x27nickderobertis/oneharness\x27\n";
-  if (!source.includes(gate)) {
-    throw new Error(
-      `${path} has no line ${gate.trim()}, so this case cannot move it off the reporting job. ` +
-      "Fix: restore it in the workflow, or update this fixture to the condition the reporting job now uses."
-    );
-  }
-  // Ungate the reporting job, and park the same condition on a job of its own.
-  const unrelated = "\n  unrelated:\n" + gate + "    runs-on: ubuntu-latest\n    steps:\n      - run: echo unrelated\n";
-  fs.writeFileSync(path, source.replace(gate, "") + unrelated);
-' "$release_plz"
-
-if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
-  echo 'check-workflows-e2e: an ungated reporter beside an unrelated failure-gated job passed the gate' >&2
-  echo '  fix: the unattended-reporting check in scripts/check-workflows.sh must walk jobs, not grep the file once per half' >&2
-  exit 1
-fi
-grep -Fq 'release-plz.yml must run scripts/report-workflow-failure.sh from one job' "$work/stderr" || {
-  echo 'check-workflows-e2e: the cross-job drift lacked the expected diagnostic' >&2
-  echo "  fix: restore the wording 'must run scripts/report-workflow-failure.sh from one job' in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
-  cat "$work/stderr" >&2
-  exit 1
-}
-cp "$work/release-plz.yml" "$release_plz"
 
 echo 'check-workflows-e2e: ok'

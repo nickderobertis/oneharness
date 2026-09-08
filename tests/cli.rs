@@ -18825,6 +18825,13 @@ fn the_claude_usage_probe_sends_one_get_usage_request_and_no_user_message() {
          whatever session-start work its working directory registers: {argv:?}"
     );
     assert_eq!(
+        flags_of(&argv),
+        documented_claude_probe_flags(),
+        "`docs/harness-usage.md` states this invocation for a reader who has to \
+         reproduce it by hand, and nothing but this reconciled the two — so a \
+         flag added or dropped here left that page quietly wrong"
+    );
+    assert_eq!(
         argv.iter()
             .filter(|a| a.as_str() == "--input-format")
             .count(),
@@ -19088,6 +19095,55 @@ fn a_probe_whose_binary_cannot_be_spawned_says_so_naming_the_binary() {
         "the message names the binary that could not start, then the OS's own \
          reason: {message}"
     );
+}
+
+/// The flags in an invocation, in order — the part of an argv that has to agree
+/// across every place it is written down. Values are left out: they are read
+/// from the argv itself where they matter (the `--setting-sources user` and
+/// `--input-format` assertions above), and the documented invocation spells
+/// some of them for a shell rather than for `execve` (`--tools ''`).
+fn flags_of(argv: &[String]) -> Vec<String> {
+    argv.iter()
+        .filter(|a| a.starts_with('-'))
+        .cloned()
+        .collect()
+}
+
+/// The flags of the `claude-code` probe invocation as `docs/harness-usage.md`
+/// prints it: the `claude …` command inside the `get_usage` console block,
+/// including the lines a trailing backslash continues it onto.
+fn documented_claude_probe_flags() -> Vec<String> {
+    let doc = include_str!("../docs/harness-usage.md");
+    let block = doc
+        .split_once("### `claude-code` — the `get_usage` control request")
+        .expect("the doc documents the claude-code probe")
+        .1;
+    let mut command = String::new();
+    let mut in_command = false;
+    for line in block.lines() {
+        if !in_command {
+            if !line.trim_start().starts_with("claude ") {
+                continue;
+            }
+            in_command = true;
+        }
+        let more = line.trim_end().ends_with('\\');
+        command.push_str(line.trim_end().trim_end_matches('\\'));
+        command.push(' ');
+        if !more {
+            break;
+        }
+    }
+    assert!(
+        in_command,
+        "the console block must show the `claude` invocation a reader reproduces"
+    );
+    flags_of(
+        &command
+            .split_whitespace()
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// The `oneharness-core` version the handshake announces as its client version,

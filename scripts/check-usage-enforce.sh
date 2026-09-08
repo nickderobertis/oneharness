@@ -167,6 +167,7 @@ chmod +x "$tmp/oneharness-cwd"
 # preparation it runs cannot touch the developer's own ~/.claude.json.
 drive_cwd() {
     local harness_bin="$1" hook_sleep="$2" probe_sleep="$3" hooked="$4" plain="$5"
+    local id="${6:-claude-code}"
     local home
     home="$(mktemp -d)"
     set +e
@@ -177,7 +178,7 @@ drive_cwd() {
             HOME="$home" ONEHARNESS_BIN="$tmp/oneharness-cwd" \
             bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
                      OH_USAGE_HOOK_MARGIN=1
-                     oh_usage_cwd_enforce claude-code" 2>&1
+                     oh_usage_cwd_enforce $id" 2>&1
     )"
     rc=$?
     set -e
@@ -324,6 +325,17 @@ drive_cwd "$tmp/claude" 4 "" \
 case "$out" in
 *"a window has no id"*) ;;
 *) fail "a window without an id must say so, got: $out" ;;
+esac
+
+# 17. The phase's fixture and its control are the harness's OWN mechanisms, so a
+#     harness it has no arms for is a loud usage error — never a run that reports
+#     a probe independent of a cost nothing registered. It refuses before any
+#     scratch space exists, so the refusal leaks nothing either.
+drive_cwd "$tmp/claude" 4 "" "$(reading max)" "$(reading max)" codex
+[ "$rc" -eq 1 ] || fail "an unsupported harness must fail, got exit $rc: $out"
+case "$out" in
+*"FAIL:"*"no session-start fixture or zero-turn control for codex"*) ;;
+*) fail "an unsupported harness must name what it lacks, got: $out" ;;
 esac
 
 # The usage output contract, held against the one place it is defined.

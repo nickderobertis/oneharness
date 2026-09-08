@@ -605,11 +605,25 @@ OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan selector variant)
 #             without paying that cost;
 #   plain   — a directory registering nothing, whose answer the probed one must
 #             match in plan, window keys and identity attribution.
-#   $1 harness id
+# Two of those three are the HARNESS's own mechanisms rather than anything
+# generic — how a working directory is made expensive, and how a zero-turn
+# session is opened there — so both are dispatched per harness by
+# [_oh_usage_cwd_fixture] and [_oh_usage_cwd_control]. A harness with no entry is
+# a loud usage error, never a phase that reports a probe independent of a cost it
+# never registered.
+#   $1 harness id (one the two dispatches below have an arm for)
 oh_usage_cwd_enforce() {
     local id="$1"
     local bin harness_bin root hooked plain report_hooked report_plain
     local t0 t_control t_probe t_plain rc
+
+    # Before any scratch space exists, so an unsupported harness leaks nothing.
+    case "$id" in
+    claude-code) ;;
+    *)
+        fail "oh_usage_cwd_enforce has no session-start fixture or zero-turn control for $id — give it arms in _oh_usage_cwd_fixture and _oh_usage_cwd_control (scripts/e2e-lib.sh), sourced from that harness's own docs, or do not call this phase for it"
+        ;;
+    esac
 
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -621,24 +635,15 @@ oh_usage_cwd_enforce() {
     root="$(oh_native_path "$root")"
     hooked="$root/hooked"
     plain="$root/plain"
-    mkdir -p "$hooked/.claude" "$plain"
-    cat >"$hooked/.claude/settings.json" <<JSON
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "sleep $OH_USAGE_HOOK_SECS", "timeout": 300 } ] }
-    ]
-  }
-}
-JSON
+    mkdir -p "$hooked" "$plain"
+    _oh_usage_cwd_fixture "$id" "$hooked"
     oh_sandbox_prepare "$id" "$hooked"
     oh_sandbox_prepare "$id" "$plain"
 
     local errf
     errf="$(mktemp)"
     t0=$SECONDS
-    (cd "$hooked" && "$harness_bin" -p --input-format stream-json \
-        --output-format stream-json --verbose </dev/null >/dev/null 2>"$errf") && rc=0 || rc=$?
+    _oh_usage_cwd_control "$id" "$harness_bin" "$hooked" "$errf" && rc=0 || rc=$?
     t_control=$((SECONDS - t0))
     # A control that never opened a session establishes nothing about the
     # fixture, and reading it as "the platform cannot sleep" would blame the
@@ -738,6 +743,53 @@ JSON
     rm -rf "$root"
     # The readings are the evidence, and this log is their only record.
     note "PASS: $id's usage probe is independent of its working directory — ${t_probe}s at a directory whose session start costs the CLI ${t_control}s, ${t_plain}s at one registering nothing, same reading both times (${key_hooked})"
+}
+
+# Register session-start work costing $OH_USAGE_HOOK_SECS at `$2`, in the way
+# `$1` expresses it. Claude Code reads a project `.claude/settings.json` and runs
+# its `SessionStart` hooks before answering a control request; the `timeout` is
+# the ceiling a real project may declare, and is what makes this a correctness
+# fixture rather than a slow one.
+#   $1 harness id   $2 directory
+_oh_usage_cwd_fixture() {
+    local id="$1" dir="$2"
+    case "$id" in
+    claude-code)
+        mkdir -p "$dir/.claude"
+        cat >"$dir/.claude/settings.json" <<JSON
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "sleep $OH_USAGE_HOOK_SECS", "timeout": 300 } ] }
+    ]
+  }
+}
+JSON
+        ;;
+    # Unreachable while the caller's guard and this dispatch name the same
+    # harnesses; it is here so adding one to that guard alone is loud.
+    *) fail "_oh_usage_cwd_fixture has no session-start fixture for $id" ;;
+    esac
+}
+
+# Open one zero-turn session at `$3` with `$1`'s own CLI, its stderr to `$4`, and
+# return that CLI's exit code — the measurement of what the fixture costs, taken
+# rather than assumed.
+#
+# Deliberately NOT a copy of the probe's argv: it omits `--tools` and the flag
+# under test, so it needs no keeping in step with
+# crates/oneharness-core/src/io/usage.rs, and a probe that passed only because
+# the control was the same command could not show it.
+#   $1 harness id   $2 harness binary   $3 directory   $4 stderr file
+_oh_usage_cwd_control() {
+    local id="$1" harness_bin="$2" dir="$3" errf="$4"
+    case "$id" in
+    claude-code)
+        (cd "$dir" && "$harness_bin" -p --input-format stream-json \
+            --output-format stream-json --verbose </dev/null >/dev/null 2>"$errf")
+        ;;
+    *) fail "_oh_usage_cwd_control has no zero-turn invocation for $id" ;;
+    esac
 }
 
 # One probed identity reduced to the string this phase compares: every property

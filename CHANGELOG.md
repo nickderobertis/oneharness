@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.11.4](https://github.com/nickderobertis/oneharness/compare/v0.11.3...v0.11.4) - 2026-09-08
+
+### Fixed
+
+- *(usage)* answer the claude headroom probe without the project's session-start work ([#1280](https://github.com/nickderobertis/oneharness/pull/1280))
+
 ## [0.11.3](https://github.com/nickderobertis/oneharness/compare/v0.11.2...v0.11.3) - 2026-08-30
 
 ### Changed

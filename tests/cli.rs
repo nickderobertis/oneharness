@@ -18812,14 +18812,14 @@ fn the_claude_usage_probe_sends_one_get_usage_request_and_no_user_message() {
     );
     // The working directory's own settings must not reach the probe: Claude Code
     // runs a project's `SessionStart` hooks before answering a control request,
-    // so a probe that loaded them would report headroom on the project's clock
-    // (measured: 3.8s against a directory with no hooks, 19.0s against one whose
-    // session start sleeps 18s) — and would fail outright where that work outlasts
-    // the probe's deadline.
+    // so a probe that loaded them would report headroom on the project's clock —
+    // and would fail outright where that work outlasts the probe's deadline.
+    let setting_sources = argv
+        .windows(2)
+        .find(|pair| pair[0] == "--setting-sources")
+        .map(|pair| pair[1].clone());
     assert_eq!(
-        argv.windows(2)
-            .find(|pair| pair[0] == "--setting-sources")
-            .map(|pair| pair[1].as_str()),
+        setting_sources.as_deref(),
         Some("user"),
         "the probe loads user settings only, so its answer does not wait on \
          whatever session-start work its working directory registers: {argv:?}"
@@ -18830,6 +18830,15 @@ fn the_claude_usage_probe_sends_one_get_usage_request_and_no_user_message() {
         "`docs/harness-usage.md` states this invocation for a reader who has to \
          reproduce it by hand, and nothing but this reconciled the two — so a \
          flag added or dropped here left that page quietly wrong"
+    );
+    // A flag whose VALUE carries the behavior needs the value reconciled too: the
+    // page would otherwise keep printing `--setting-sources user` after the probe
+    // moved to another source list, and a reader reproducing it by hand would get
+    // an answer the probe no longer gives.
+    assert_eq!(
+        documented_claude_probe_value("--setting-sources"),
+        setting_sources,
+        "`docs/harness-usage.md` must print the setting sources the probe passes"
     );
     assert_eq!(
         argv.iter()
@@ -19098,10 +19107,9 @@ fn a_probe_whose_binary_cannot_be_spawned_says_so_naming_the_binary() {
 }
 
 /// The flags in an invocation, in order — the part of an argv that has to agree
-/// across every place it is written down. Values are left out: they are read
-/// from the argv itself where they matter (the `--setting-sources user` and
-/// `--input-format` assertions above), and the documented invocation spells
-/// some of them for a shell rather than for `execve` (`--tools ''`).
+/// across every place it is written down. Values are compared separately by
+/// [`documented_claude_probe_value`], because the page spells some of them for a
+/// shell rather than for `execve` (`--tools ''`).
 fn flags_of(argv: &[String]) -> Vec<String> {
     argv.iter()
         .filter(|a| a.starts_with('-'))
@@ -19109,10 +19117,26 @@ fn flags_of(argv: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The value `docs/harness-usage.md` gives `flag`, with the shell quoting the
+/// page writes it with stripped — so the value on that page can be held against
+/// the one the probe actually passes rather than against a literal repeated here.
+fn documented_claude_probe_value(flag: &str) -> Option<String> {
+    documented_claude_probe_command()
+        .windows(2)
+        .find(|pair| pair[0] == flag)
+        .map(|pair| pair[1].trim_matches('\'').trim_matches('"').to_string())
+}
+
 /// The flags of the `claude-code` probe invocation as `docs/harness-usage.md`
+/// prints it.
+fn documented_claude_probe_flags() -> Vec<String> {
+    flags_of(&documented_claude_probe_command())
+}
+
+/// The tokens of the `claude-code` probe invocation as `docs/harness-usage.md`
 /// prints it: the `claude …` command inside the `get_usage` console block,
 /// including the lines a trailing backslash continues it onto.
-fn documented_claude_probe_flags() -> Vec<String> {
+fn documented_claude_probe_command() -> Vec<String> {
     let doc = include_str!("../docs/harness-usage.md");
     let block = doc
         .split_once("### `claude-code` — the `get_usage` control request")
@@ -19138,12 +19162,7 @@ fn documented_claude_probe_flags() -> Vec<String> {
         in_command,
         "the console block must show the `claude` invocation a reader reproduces"
     );
-    flags_of(
-        &command
-            .split_whitespace()
-            .map(str::to_string)
-            .collect::<Vec<_>>(),
-    )
+    command.split_whitespace().map(str::to_string).collect()
 }
 
 /// The `oneharness-core` version the handshake announces as its client version,

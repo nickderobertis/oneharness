@@ -176,7 +176,7 @@ drive_cwd() {
             FAKE_PROBE_SLEEP="$probe_sleep" FAKE_HOOKED="$hooked" FAKE_PLAIN="$plain" \
             HOME="$home" ONEHARNESS_BIN="$tmp/oneharness-cwd" \
             bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
-                     OH_USAGE_HOOK_MARGIN=2
+                     OH_USAGE_HOOK_MARGIN=1
                      oh_usage_cwd_enforce claude-code" 2>&1
     )"
     rc=$?
@@ -220,7 +220,7 @@ esac
 # 8. The regression itself: the probe pays the directory's session-start cost.
 #    This is the whole reason the phase exists, so it must be a hard failure that
 #    names the issue and says what to check.
-drive_cwd "$tmp/claude" 3 3 "$(reading max)" "$(reading max)"
+drive_cwd "$tmp/claude" 4 4 "$(reading max)" "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a probe that waited out the hook must fail, got exit $rc: $out"
 case "$out" in
 *"Next, in order:"*"setting-sources"*"FAIL:"*"depends on its working directory"*) ;;
@@ -229,7 +229,7 @@ esac
 
 # 9. The fix in place: the probe answers without paying, and answers the same
 #    thing it answers where nothing is registered.
-drive_cwd "$tmp/claude" 3 "" "$(reading max)" "$(reading max)"
+drive_cwd "$tmp/claude" 4 "" "$(reading max)" "$(reading max)"
 [ "$rc" -eq 0 ] || fail "an independent probe must pass, got exit $rc: $out"
 case "$out" in
 *"PASS:"*"independent of its working directory"*) ;;
@@ -239,7 +239,7 @@ esac
 # 10. Fast but different: dropping the directory's settings must change what the
 #     probe WAITS ON, never what it reports. A phase that only timed the probe
 #     would go green on a flag that silently changed the answer.
-drive_cwd "$tmp/claude" 3 "" "$(reading pro)" "$(reading max)"
+drive_cwd "$tmp/claude" 4 "" "$(reading pro)" "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a changed reading must fail even when fast, got exit $rc: $out"
 case "$out" in
 *"FAIL:"*"different identity from the hooked directory"*) ;;
@@ -249,7 +249,7 @@ esac
 # 11. A probe that learned nothing has no duration to compare, so `unknown` is a
 #     failure rather than a fast pass — the phase would otherwise read a probe
 #     that asked and got no reply as one that answered without waiting.
-drive_cwd "$tmp/claude" 3 "" \
+drive_cwd "$tmp/claude" 4 "" \
     '{"identities":[{"harness":"claude-code","availability":{"state":"unknown","reason":{"kind":"probe_failed"}}}]}' \
     "$(reading max)"
 [ "$rc" -eq 1 ] || fail "an unanswered probe must fail, got exit $rc: $out"
@@ -261,7 +261,7 @@ esac
 # 12. The report is external input: a state the phase has never heard of, and a
 #     report carrying no state at all, must be refused rather than measured as a
 #     good answer that happened to arrive quickly.
-drive_cwd "$tmp/claude" 3 "" \
+drive_cwd "$tmp/claude" 4 "" \
     '{"identities":[{"harness":"claude-code","availability":{"state":"throttled"}}]}' \
     "$(reading max)"
 [ "$rc" -eq 1 ] || fail "an unrecognized state must fail, got exit $rc: $out"
@@ -270,7 +270,7 @@ case "$out" in
 *) fail "an unrecognized state must name it, got: $out" ;;
 esac
 
-drive_cwd "$tmp/claude" 3 "" \
+drive_cwd "$tmp/claude" 4 "" \
     '{"identities":[{"harness":"claude-code","availability":{}}]}' \
     "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a stateless report must fail, got exit $rc: $out"
@@ -282,7 +282,7 @@ esac
 # 13. A report the probe accepted as an ANSWER can still be one the comparison
 #     cannot judge. Two equally malformed reports produce two equal keys, so a
 #     comparison that skipped validation would read that as proof.
-drive_cwd "$tmp/claude" 3 "" \
+drive_cwd "$tmp/claude" 4 "" \
     '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}' \
     '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}'
 [ "$rc" -eq 1 ] || fail "a report missing a required identity field must fail, got exit $rc: $out"
@@ -294,13 +294,36 @@ esac
 # 14. And a field the key does not cover is refused rather than ignored: an
 #     identity gaining one is a difference the comparison would otherwise call
 #     "the same attribution".
-drive_cwd "$tmp/claude" 3 "" \
+drive_cwd "$tmp/claude" 4 "" \
     '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","tenant":"acme","availability":{"state":"available","windows":[]}}]}' \
     "$(reading max)"
 [ "$rc" -eq 1 ] || fail "an unknown identity field must fail, got exit $rc: $out"
 case "$out" in
 *"identity carries unknown field(s): tenant"*) ;;
 *) fail "an unknown identity field must be named, got: $out" ;;
+esac
+
+# 15. An OPTIONAL property is optional, not untyped: present but null, it would
+#     otherwise join the key as the same empty value a second malformed report
+#     contributes, and the two would compare equal.
+drive_cwd "$tmp/claude" 4 "" \
+    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","plan":null,"availability":{"state":"available","windows":[]}}]}' \
+    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","plan":null,"availability":{"state":"available","windows":[]}}]}'
+[ "$rc" -eq 1 ] || fail "a present-but-null optional field must fail, got exit $rc: $out"
+case "$out" in
+*"plan is null, not string"*) ;;
+*) fail "a mistyped optional field must name its type, got: $out" ;;
+esac
+
+# 16. The windows are reduced into the key, so a window that carries no id is a
+#     window the comparison cannot tell from any other.
+drive_cwd "$tmp/claude" 4 "" \
+    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","availability":{"state":"available","windows":[{"usage":{}}]}}]}' \
+    "$(reading max)"
+[ "$rc" -eq 1 ] || fail "a window without an id must fail, got exit $rc: $out"
+case "$out" in
+*"a window has no id"*) ;;
+*) fail "a window without an id must say so, got: $out" ;;
 esac
 
 # The usage output contract, held against the one place it is defined.

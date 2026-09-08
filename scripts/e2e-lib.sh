@@ -653,7 +653,10 @@ JSON
         skip "$id's CLI would not open a zero-turn session here (exit $rc${why:+: $why}), so the cost of this directory's session-start work is unmeasured and there is nothing to hold the probe against"
     fi
     rm -f "$errf"
-    if [ "$t_control" -lt "$OH_USAGE_HOOK_MARGIN" ]; then
+    # `-le`, not `-lt`: the comparison below is against `t_control - margin`, so a
+    # control that only MATCHES the margin leaves a threshold of zero, which any
+    # probe meets. That is a fixture that established nothing, not a regression.
+    if [ "$t_control" -le "$OH_USAGE_HOOK_MARGIN" ]; then
         rm -rf "$root"
         skip "$id's session-start hook did not cost anything here (${t_control}s for a ${OH_USAGE_HOOK_SECS}s sleep) — this platform cannot run the fixture's command, so there is nothing for the probe to be independent OF"
     fi
@@ -759,6 +762,11 @@ _oh_usage_identity_key() {
             elif ($o[$f] | type) != $t
             then error("identity\u0027s \($f) is \($o[$f] | type), not \($t)")
             else $o[$f] end;
+        # An optional property renders as <absent> only when it is ABSENT; a
+        # present one is held to its type like any other, so a null or a number
+        # cannot join the key as a value two malformed reports would share.
+        def opt($o; $f):
+            if ($o | has($f) | not) then "<absent>" else need($o; $f; "string") end;
         (if (.identities | type) == "array" and (.identities | length) > 0
          then .identities[0] else error("report carries no probed identity") end) as $i
         | (($i | keys) - $ARGS.positional) as $extra
@@ -766,13 +774,23 @@ _oh_usage_identity_key() {
           then error("identity carries unknown field(s): \($extra | join(", "))")
           else . end
         | need($i; "availability"; "object") as $a
+        | (if ($a | has("windows") | not) then []
+           elif ($a.windows | type) != "array"
+           then error("availability.windows is \($a.windows | type), not array")
+           else $a.windows end) as $windows
+        | ($windows | map(
+              if type != "object" then error("a window is \(type), not an object")
+              elif (has("id") | not) then error("a window has no id")
+              elif (.id | type) != "string"
+              then error("a window id is \(.id | type), not string")
+              else .id end) | sort) as $window_ids
         | [ need($i; "harness"; "string"),
-            ($i.variant // "<absent>"),
+            opt($i; "variant"),
             (need($i; "selector"; "object") | tostring),
             need($i; "auth_mode"; "string"),
-            ($i.plan // "<absent>"),
+            opt($i; "plan"),
             need($a; "state"; "string"),
-            (($a.windows // []) | map(.id) | sort | tostring) ]
+            ($window_ids | tostring) ]
         | join(" | ")' "${OH_USAGE_IDENTITY_FIELDS[@]}"
 }
 

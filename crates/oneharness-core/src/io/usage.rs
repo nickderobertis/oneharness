@@ -395,33 +395,20 @@ fn converse(
     }
 }
 
-/// The setting sources a headroom probe loads. `user` alone, because everything
-/// below it belongs to whatever directory the probe happens to be pointed at.
-///
-/// Claude Code loads the settings at its working directory and runs that
-/// project's `SessionStart` hooks *before* it answers a control request, so
-/// without this the probe's latency is the project's provisioning cost: measured
-/// at 3.8s against a directory registering no hooks and 19.0s against one whose
-/// `SessionStart` sleeps 18s, for the same answer. A project may register that
-/// work with a `timeout` of up to 300s — five minutes of waiting behind a probe
-/// whose own default deadline is 60 — which turns a readable window into a
-/// `probe_failed` that reads exactly like the harness having gone silent.
-///
-/// User settings stay loaded: they are the identity's own, they are the same
-/// wherever the probe runs, and [`CLAUDE_IDENTITY_ENV`] selects which of them
-/// applies — so per-identity attribution is untouched, and so is the answer.
+/// The setting sources a headroom probe loads. `user` alone, because Claude Code
+/// runs the working directory's project `SessionStart` hooks before answering a
+/// control request, and the answer must not depend on where the probe was
+/// pointed. User settings stay loaded: they are the identity's own and
+/// [`CLAUDE_IDENTITY_ENV`] still selects which of them applies, so per-identity
+/// attribution is unaffected.
 const CLAUDE_SETTING_SOURCES: &str = "user";
 
 /// The exact zero-turn invocation: `-p` with stream-json in and out, an empty
 /// tool set, user settings only, and no prompt. The control request rides stdin;
 /// no user message is ever sent, so the session completes zero turns.
 ///
-/// Compatibility: `--setting-sources` raises no floor here. It is declared by
-/// Claude Code from **1.0.125** on (1.0.124 does not), while `--tools` — which
-/// this invocation already carried — arrived in **2.0.31** (2.0.30 does not).
-/// So every build that can run this probe at all already takes both, and a build
-/// below 2.0.31 reports what it always did: `exited without an answer: error:
-/// unknown option '--tools'`, measured against 1.0.124.
+/// `--setting-sources` raises no compatibility floor: every build new enough to
+/// take `--tools`, which this invocation already carried, takes it too.
 fn claude_argv(bin: &str) -> Vec<String> {
     vec![
         bin.to_string(),

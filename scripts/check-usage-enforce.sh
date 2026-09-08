@@ -107,9 +107,6 @@ case "$out" in
 *) fail "a reported headroom must be logged, got: $out" ;;
 esac
 
-
-# --- oh_usage_cwd_enforce ----------------------------------------------------
-#
 # The sibling phase holds a different distinction: whether the probe's ANSWER
 # still depends on the directory it was pointed at (#1279). Only a real Claude
 # Code can exercise that live, so its branches are pinned here against a stubbed
@@ -237,6 +234,39 @@ drive_cwd "$tmp/claude" 3 "" "$(reading pro)" "$(reading max)"
 case "$out" in
 *"FAIL:"*"different identity from the hooked directory"*) ;;
 *) fail "a changed reading must say what differed, got: $out" ;;
+esac
+
+# 11. A probe that learned nothing has no duration to compare, so `unknown` is a
+#     failure rather than a fast pass — the phase would otherwise read a probe
+#     that asked and got no reply as one that answered without waiting.
+drive_cwd "$tmp/claude" 3 "" \
+    '{"identities":[{"harness":"claude-code","availability":{"state":"unknown","reason":{"kind":"probe_failed"}}}]}' \
+    "$(reading max)"
+[ "$rc" -eq 1 ] || fail "an unanswered probe must fail, got exit $rc: $out"
+case "$out" in
+*"Next, in order:"*"FAIL:"*"got no answer out of the harness"*) ;;
+*) fail "an unanswered probe must fail with its next actions, got: $out" ;;
+esac
+
+# 12. The report is external input: a state the phase has never heard of, and a
+#     report carrying no state at all, must be refused rather than measured as a
+#     good answer that happened to arrive quickly.
+drive_cwd "$tmp/claude" 3 "" \
+    '{"identities":[{"harness":"claude-code","availability":{"state":"throttled"}}]}' \
+    "$(reading max)"
+[ "$rc" -eq 1 ] || fail "an unrecognized state must fail, got exit $rc: $out"
+case "$out" in
+*"FAIL:"*"cannot judge"*"state=throttled"*) ;;
+*) fail "an unrecognized state must name it, got: $out" ;;
+esac
+
+drive_cwd "$tmp/claude" 3 "" \
+    '{"identities":[{"harness":"claude-code","availability":{}}]}' \
+    "$(reading max)"
+[ "$rc" -eq 1 ] || fail "a stateless report must fail, got exit $rc: $out"
+case "$out" in
+*"FAIL:"*"cannot judge"*"state=<absent>"*) ;;
+*) fail "a stateless report must say the field was absent, got: $out" ;;
 esac
 
 echo "check-usage-enforce: ok"

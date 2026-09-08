@@ -44,8 +44,8 @@ oh_cache_assert claude-code
 # Usage headroom: the zero-turn probe must still get an answer out of the real
 # CLI, and that answer must not depend on WHERE the probe runs — Claude Code runs
 # the working directory's project `SessionStart` hooks before answering, which is
-# what made every claude-code identity read as a timeout in #1279.
-note "» usage: the zero-turn probe must answer, and must not wait on its cwd's session hooks"
+# what made every claude-code identity read as a timeout in #1279. Both phases
+# announce their own reading when they pass, so neither needs a banner here.
 oh_usage_enforce claude-code
 oh_usage_cwd_enforce claude-code
 

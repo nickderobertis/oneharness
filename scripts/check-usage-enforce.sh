@@ -31,10 +31,20 @@ exit "${FAKE_EXIT:-0}"
 STUB
 chmod +x "$tmp/oneharness"
 
+# Every case below pins one branch of oh_usage_enforce / oh_usage_cwd_enforce, so
+# every failure has the same three next actions and they live here rather than
+# eighteen times over.
 fail() {
     echo "check-usage-enforce: $1" >&2
-    echo "  Re-run the failing case on its own to see the helper's whole output:" >&2
-    echo "    bash -x scripts/check-usage-enforce.sh" >&2
+    echo "  Next, in order:" >&2
+    echo "    1. See the helper's whole output for the case that failed:" >&2
+    echo "         bash -x scripts/check-usage-enforce.sh" >&2
+    echo "    2. If the helper changed on purpose, the case above is now the stale half —" >&2
+    echo "       update it in this file to the branch's new wording." >&2
+    echo "    3. If it did not, the branch regressed: fix it in scripts/e2e-lib.sh, whose" >&2
+    echo "       oh_usage_* helpers are the code under test here." >&2
+    echo "       A SKIP where a PASS was expected usually means the stub never ran — check" >&2
+    echo "       the FAKE_* variables the failing case sets." >&2
     exit 1
 }
 
@@ -268,5 +278,55 @@ case "$out" in
 *"FAIL:"*"cannot judge"*"state=<absent>"*) ;;
 *) fail "a stateless report must say the field was absent, got: $out" ;;
 esac
+
+# 13. A report the probe accepted as an ANSWER can still be one the comparison
+#     cannot judge. Two equally malformed reports produce two equal keys, so a
+#     comparison that skipped validation would read that as proof.
+drive_cwd "$tmp/claude" 3 "" \
+    '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}' \
+    '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}'
+[ "$rc" -eq 1 ] || fail "a report missing a required identity field must fail, got exit $rc: $out"
+case "$out" in
+*"identity has no auth_mode"*"FAIL:"*"not one this phase can compare"*) ;;
+*) fail "a missing required field must be named, got: $out" ;;
+esac
+
+# 14. And a field the key does not cover is refused rather than ignored: an
+#     identity gaining one is a difference the comparison would otherwise call
+#     "the same attribution".
+drive_cwd "$tmp/claude" 3 "" \
+    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","tenant":"acme","availability":{"state":"available","windows":[]}}]}' \
+    "$(reading max)"
+[ "$rc" -eq 1 ] || fail "an unknown identity field must fail, got exit $rc: $out"
+case "$out" in
+*"identity carries unknown field(s): tenant"*) ;;
+*) fail "an unknown identity field must be named, got: $out" ;;
+esac
+
+# The usage output contract, held against the one place it is defined.
+#
+# oh_usage_cwd_enforce decides two things from it in shell: which availability
+# states mean the harness ANSWERED, and which identity properties make up "the
+# same attribution". Both are restatements of Rust and can fall behind it. The
+# generated `usage_report` schema is that Rust's derived form — `sdk-check`
+# refuses any drift between the two — so holding the shell against the schema is
+# holding it against `UsageAvailability` and `UsageIdentity` themselves.
+#
+# The lists are read out of the helper rather than retyped here: a gate that
+# restated them would be a third copy, and would pass while the helper drifted.
+schema="$root/npm/oneharness-sdk/src/generated/schemas.json"
+declared="$(bash -c "source '$root/scripts/e2e-lib.sh'
+    printf '%s\n' \"\$OH_USAGE_ANSWERED_STATES \$OH_USAGE_SILENT_STATES\"
+    printf '%s\n' \"\${OH_USAGE_IDENTITY_FIELDS[*]}\"")"
+declared_states="$(printf '%s' "$declared" | sed -n 1p | tr ' ' '\n' | sort | tr '\n' ' ')"
+declared_fields="$(printf '%s' "$declared" | sed -n 2p | tr ' ' '\n' | sort | tr '\n' ' ')"
+
+schema_states="$(jq -r '[.usage_report."$defs".UsageAvailability.oneOf[].properties.state.const]
+                        | sort | join(" ") + " "' "$schema")"
+[ "$declared_states" = "$schema_states" ] || fail "oh_usage_cwd_enforce classifies the availability states [$declared_states] but UsageAvailability declares [$schema_states] — put each new state in OH_USAGE_ANSWERED_STATES or OH_USAGE_SILENT_STATES (scripts/e2e-lib.sh)"
+
+schema_fields="$(jq -r '[.usage_report."$defs".UsageIdentity.properties | keys[]]
+                        | sort | join(" ") + " "' "$schema")"
+[ "$declared_fields" = "$schema_fields" ] || fail "the identity equivalence key covers [$declared_fields] but UsageIdentity declares [$schema_fields] — a property outside the key is a difference the phase would call 'the same attribution' (scripts/e2e-lib.sh)"
 
 echo "check-usage-enforce: ok"

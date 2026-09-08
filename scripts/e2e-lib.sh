@@ -563,6 +563,24 @@ oh_usage_enforce() {
 OH_USAGE_HOOK_SECS=20
 OH_USAGE_HOOK_MARGIN=10
 
+# The usage output contract, as much of it as this phase has to decide from.
+# Both lists are restatements of Rust, so both are held against the generated
+# `usage_report` schema by scripts/check-usage-enforce.sh — a state or a property
+# added to `UsageAvailability` / `UsageIdentity` fails there, inside `just check`,
+# rather than months later in a lane that runs on demand.
+#
+# The split between them is this phase's own judgement and not the contract's:
+# `available` and `unavailable` are both the harness ANSWERING (an API-key box
+# affirmatively reports no plan headroom), and only `unknown` means nothing was
+# learned — which has no duration worth comparing.
+OH_USAGE_ANSWERED_STATES="available unavailable"
+OH_USAGE_SILENT_STATES="unknown"
+
+# Every property `UsageIdentity` declares. The equivalence key covers all of
+# them, and refuses a report carrying one it does not know, so a field added to
+# the identity cannot slip past the comparison as "the same attribution".
+OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan selector variant)
+
 # Live proof that the zero-turn `usage` probe's answer does not depend on WHERE
 # it runs — the drift alarm for `--setting-sources user` in the claude probe's
 # argv (crates/oneharness-core/src/io/usage.rs), which the hermetic suite can
@@ -677,13 +695,24 @@ JSON
         fail "$id: the usage probe took ${t_probe}s at the hooked directory against ${t_plain}s at one registering nothing — the two must be about the same"
     fi
 
-    local key='[.identities[0].harness, .identities[0].plan, .identities[0].auth_mode,
-                (.identities[0].selector | tostring),
-                .identities[0].availability.state,
-                ((.identities[0].availability.windows // []) | map(.id) | sort | tostring)] | join(" | ")'
     local key_hooked key_plain
-    key_hooked="$(printf '%s' "$report_hooked" | jq -r "$key")"
-    key_plain="$(printf '%s' "$report_plain" | jq -r "$key")"
+    if ! key_hooked="$(_oh_usage_identity_key "$report_hooked")" ||
+        ! key_plain="$(_oh_usage_identity_key "$report_plain")"; then
+        note "  hooked report: $report_hooked"
+        note "  plain report:  $report_plain"
+        note "  jq's error above names the field. Next, in order:"
+        note "    1. Both reports were already accepted as answers, so a required field"
+        note "       missing HERE means the usage output contract changed shape rather than"
+        note "       the probe failing. Read one in full:"
+        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $plain --format json"
+        note "    2. Reconcile it with UsageIdentity in"
+        note "       crates/oneharness-core/src/domain/usage.rs, then update"
+        note "       OH_USAGE_IDENTITY_FIELDS and _oh_usage_identity_key (scripts/e2e-lib.sh)."
+        note "       Their drift gate in scripts/check-usage-enforce.sh will name the same"
+        note "       field if the schema moved, and is the faster way to confirm it."
+        rm -rf "$root"
+        fail "$id: the usage report at $hooked or $plain is not one this phase can compare"
+    fi
     if [ "$key_hooked" != "$key_plain" ]; then
         note "  hooked: $key_hooked"
         note "  plain:  $key_plain"
@@ -708,16 +737,54 @@ JSON
     note "PASS: $id's usage probe is independent of its working directory — ${t_probe}s at a directory whose session start costs the CLI ${t_control}s, ${t_plain}s at one registering nothing, same reading both times (${key_hooked})"
 }
 
+# One probed identity reduced to the string this phase compares: every property
+# `UsageIdentity` declares, with `availability` as its state and its window ids.
+#
+# The four properties the contract makes required are checked for presence and
+# type before anything is reduced, because the comparison is between two reports
+# from the same run: two EQUALLY malformed reports produce two equal keys, and
+# the phase would read that as proof that nothing changed. `plan` and `variant`
+# are optional in the contract (an API-key session reports no plan), so they
+# render as `<absent>` rather than failing. A property outside
+# $OH_USAGE_IDENTITY_FIELDS is refused, so a field added to the identity cannot
+# pass through the comparison unexamined.
+#
+# jq writes the offending field to stderr and exits non-zero; the caller reports
+# it.
+#   $1 a usage report
+_oh_usage_identity_key() {
+    printf '%s' "$1" | jq -er --args '
+        def need($o; $f; $t):
+            if ($o | has($f) | not) then error("identity has no \($f)")
+            elif ($o[$f] | type) != $t
+            then error("identity\u0027s \($f) is \($o[$f] | type), not \($t)")
+            else $o[$f] end;
+        (if (.identities | type) == "array" and (.identities | length) > 0
+         then .identities[0] else error("report carries no probed identity") end) as $i
+        | (($i | keys) - $ARGS.positional) as $extra
+        | if ($extra | length) > 0
+          then error("identity carries unknown field(s): \($extra | join(", "))")
+          else . end
+        | need($i; "availability"; "object") as $a
+        | [ need($i; "harness"; "string"),
+            ($i.variant // "<absent>"),
+            (need($i; "selector"; "object") | tostring),
+            need($i; "auth_mode"; "string"),
+            ($i.plan // "<absent>"),
+            need($a; "state"; "string"),
+            (($a.windows // []) | map(.id) | sort | tostring) ]
+        | join(" | ")' "${OH_USAGE_IDENTITY_FIELDS[@]}"
+}
+
 # One `oneharness usage` probe at `$3`, left in $OH_USAGE_REPORT. Fails loudly
 # for everything a probe is allowed to answer with EXCEPT an absent binary, which
 # the caller has already ruled out: this phase measures how long an ANSWER takes,
 # and a probe that learned nothing has no duration worth comparing.
 #
-# The report is external input, so the state is checked against the three the
-# contract declares (`available` / `unavailable` / `unknown`, see UsageAvailability
-# in crates/oneharness-core/src/domain/usage.rs) rather than tested for the one
-# that means failure: a report missing the field, or carrying a state this helper
-# has never heard of, would otherwise be measured as a good answer.
+# The report is external input, so the state is classified against the declared
+# $OH_USAGE_ANSWERED_STATES / $OH_USAGE_SILENT_STATES rather than tested for the
+# one value that means failure: a report missing the field, or carrying a state
+# this helper predates, would otherwise be measured as a good answer.
 #
 # The report comes back through a global rather than stdout because `fail` exits,
 # and an exit inside a command substitution ends only the subshell — the caller
@@ -748,9 +815,23 @@ _oh_usage_report() {
     fi
     rm -f "$errf"
     state="$(printf '%s' "$OH_USAGE_REPORT" | jq -r '.identities[0].availability.state // "<absent>"')"
-    case "$state" in
-    available | unavailable) ;;
-    unknown)
+    case " $OH_USAGE_ANSWERED_STATES $OH_USAGE_SILENT_STATES " in
+    *" $state "*) ;;
+    *)
+        note "  report: $OH_USAGE_REPORT"
+        note "  Next, in order:"
+        note "    1. \`<absent>\` means the report has no identities[0].availability.state at"
+        note "       all — the usage output contract changed shape. Diff it against"
+        note "       UsageAvailability in crates/oneharness-core/src/domain/usage.rs."
+        note "    2. Any other value is a state this helper predates. Add it to"
+        note "       OH_USAGE_ANSWERED_STATES (scripts/e2e-lib.sh) if it means the harness"
+        note "       ANSWERED, else to OH_USAGE_SILENT_STATES, and re-run their drift gate:"
+        note "         bash scripts/check-usage-enforce.sh"
+        fail "$id: the usage probe reported an availability state this phase cannot judge at $cwd (state=$state)"
+        ;;
+    esac
+    case " $OH_USAGE_SILENT_STATES " in
+    *" $state "*)
         note "  report: $OH_USAGE_REPORT"
         note "  Next, in order:"
         note "    1. Read the reason: \`binary_missing\` means the harness went away"
@@ -764,18 +845,7 @@ _oh_usage_report() {
         note "    3. If it answers from nowhere, the exchange itself drifted: follow"
         note "       oh_usage_enforce's steps for a silent probe, which start from $id's"
         note "       recorded request lines in docs/harness-usage.md."
-        fail "$id: the usage probe got no answer out of the harness at $cwd (state=unknown)"
-        ;;
-    *)
-        note "  report: $OH_USAGE_REPORT"
-        note "  Next, in order:"
-        note "    1. \`<absent>\` means the report has no identities[0].availability.state at"
-        note "       all — the usage output contract changed shape. Diff it against"
-        note "       UsageAvailability in crates/oneharness-core/src/domain/usage.rs."
-        note "    2. Any other value is a state this helper predates. Add it to the accepted"
-        note "       set in _oh_usage_report (scripts/e2e-lib.sh) if it means the harness"
-        note "       ANSWERED, and to the failing arm if it does not."
-        fail "$id: the usage probe reported an availability state this phase cannot judge at $cwd (state=$state)"
+        fail "$id: the usage probe got no answer out of the harness at $cwd (state=$state)"
         ;;
     esac
 }

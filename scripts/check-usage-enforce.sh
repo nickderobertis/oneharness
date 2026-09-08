@@ -121,6 +121,10 @@ esac
 cat >"$tmp/claude" <<'HARNESS'
 #!/usr/bin/env bash
 [ -n "${FAKE_HOOK_SLEEP:-}" ] && sleep "$FAKE_HOOK_SLEEP"
+if [ -n "${FAKE_HARNESS_ERROR:-}" ]; then
+    printf '%s\n' "$FAKE_HARNESS_ERROR" >&2
+    exit 2
+fi
 exit 0
 HARNESS
 chmod +x "$tmp/claude"
@@ -161,6 +165,7 @@ drive_cwd() {
     set +e
     out="$(
         FAKE_HARNESS_BIN="$harness_bin" FAKE_HOOK_SLEEP="$hook_sleep" \
+            FAKE_HARNESS_ERROR="${FAKE_HARNESS_ERROR:-}" \
             FAKE_PROBE_SLEEP="$probe_sleep" FAKE_HOOKED="$hooked" FAKE_PLAIN="$plain" \
             HOME="$home" ONEHARNESS_BIN="$tmp/oneharness-cwd" \
             bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
@@ -192,6 +197,17 @@ drive_cwd "$tmp/claude" "" "" "$(reading max)" "$(reading max)"
 case "$out" in
 *"SKIP:"*"did not cost anything here"*) ;;
 *) fail "an unfired fixture must skip naming what did not happen, got: $out" ;;
+esac
+
+# 7b. A control that would not open a session at all establishes nothing about
+#     the fixture, so it skips carrying the CLI's own words rather than blaming
+#     the platform for a sleep it never got to.
+FAKE_HARNESS_ERROR="Error: this workspace has not been trusted" \
+    drive_cwd "$tmp/claude" "" "" "$(reading max)" "$(reading max)"
+[ "$rc" -eq 0 ] || fail "a refused control must exit 0, got $rc: $out"
+case "$out" in
+*"SKIP:"*"would not open a zero-turn session"*"has not been trusted"*) ;;
+*) fail "a refused control must skip in the CLI's own words, got: $out" ;;
 esac
 
 # 8. The regression itself: the probe pays the directory's session-start cost.

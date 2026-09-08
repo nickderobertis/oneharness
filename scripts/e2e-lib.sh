@@ -617,11 +617,26 @@ JSON
     oh_sandbox_prepare "$id" "$plain"
 
     note "  usage-cwd[control]: what this directory's session-start work costs the real CLI"
+    local errf
+    errf="$(mktemp)"
     t0=$SECONDS
     (cd "$hooked" && "$harness_bin" -p --input-format stream-json \
-        --output-format stream-json --verbose </dev/null >/dev/null 2>&1) && rc=0 || rc=$?
+        --output-format stream-json --verbose </dev/null >/dev/null 2>"$errf") && rc=0 || rc=$?
     t_control=$((SECONDS - t0))
     note "  control: the CLI's own zero-turn session at that directory took ${t_control}s (exit $rc)"
+    # A control that never opened a session establishes nothing about the
+    # fixture, and reading it as "the platform cannot sleep" would blame the
+    # wrong thing — so it is its own skip, carrying the CLI's own words.
+    if [ "$rc" -ne 0 ]; then
+        note "  the CLI's stderr:"
+        sed 's/^/    /' "$errf" >&2 || true
+        local why
+        why="$(tr -d '\r' <"$errf" | grep -v '^[[:space:]]*$' | head -n 1)"
+        rm -f "$errf"
+        rm -rf "$root"
+        skip "$id's CLI would not open a zero-turn session here (exit $rc${why:+: $why}), so the cost of this directory's session-start work is unmeasured and there is nothing to hold the probe against"
+    fi
+    rm -f "$errf"
     if [ "$t_control" -lt "$OH_USAGE_HOOK_MARGIN" ]; then
         rm -rf "$root"
         skip "$id's session-start hook did not cost anything here (${t_control}s for a ${OH_USAGE_HOOK_SECS}s sleep) — this platform cannot run the fixture's command, so there is nothing for the probe to be independent OF"

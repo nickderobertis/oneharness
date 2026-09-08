@@ -556,6 +556,147 @@ oh_usage_enforce() {
     note "PASS: $id answered its usage probe — $detail"
 }
 
+# How long the session-start work this phase registers takes, and the margin it
+# is judged by. Long enough that a probe waiting it out cannot be mistaken for a
+# slow machine, and short enough to stay affordable in a lane that pays wall
+# clock rather than tokens.
+OH_USAGE_HOOK_SECS=20
+OH_USAGE_HOOK_MARGIN=10
+
+# Live proof that the zero-turn `usage` probe's answer does not depend on WHERE
+# it runs — the drift alarm for `--setting-sources user` in the claude probe's
+# argv (crates/oneharness-core/src/io/usage.rs), which the hermetic suite can
+# only assert as a flag.
+#
+# Claude Code loads the settings at its working directory and runs that
+# project's `SessionStart` hooks BEFORE answering a control request, so a probe
+# that loaded them reported headroom on the project's clock. A project may
+# declare that work with a `timeout` of up to 300s against a probe deadline of
+# 60, which is issue #1279: every claude-code identity reading as a timeout while
+# dispatches at the same directory ran normally.
+#
+# Three real invocations, no stub:
+#   control — the harness's own CLI opening a zero-turn session at a directory
+#             whose `SessionStart` sleeps, with its project settings loaded.
+#             That is what the hook costs here, MEASURED rather than assumed, so
+#             a platform that cannot run the hook command at all skips instead of
+#             passing on a fixture that never fired. It is deliberately not a
+#             copy of the probe's argv — it omits `--tools` and the flag under
+#             test — so it needs no keeping in step with it.
+#   probed  — the same directory through `oneharness usage`, which must answer
+#             without paying that cost;
+#   plain   — a directory registering nothing, whose answer the probed one must
+#             match in plan, window keys and identity attribution.
+#   $1 harness id
+oh_usage_cwd_enforce() {
+    local id="$1"
+    local bin harness_bin root hooked plain report_hooked report_plain
+    local t0 t_control t_probe t_plain rc
+
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+    harness_bin="$(ONEHARNESS_NO_CONFIG=1 "$bin" detect --harness "$id" --compact 2>/dev/null |
+        jq -r 'if .detected[0].available then .detected[0].path else "" end')"
+    [ -n "$harness_bin" ] || skip "$id is not installed (oneharness detect found no binary); nothing to probe"
+
+    root="$(mktemp -d)"
+    root="$(oh_native_path "$root")"
+    hooked="$root/hooked"
+    plain="$root/plain"
+    mkdir -p "$hooked/.claude" "$plain"
+    cat >"$hooked/.claude/settings.json" <<JSON
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "sleep $OH_USAGE_HOOK_SECS", "timeout": 300 } ] }
+    ]
+  }
+}
+JSON
+    oh_sandbox_prepare "$id" "$hooked"
+    oh_sandbox_prepare "$id" "$plain"
+
+    note "  usage-cwd[control]: what this directory's session-start work costs the real CLI"
+    t0=$SECONDS
+    (cd "$hooked" && "$harness_bin" -p --input-format stream-json \
+        --output-format stream-json --verbose </dev/null >/dev/null 2>&1) && rc=0 || rc=$?
+    t_control=$((SECONDS - t0))
+    note "  control: the CLI's own zero-turn session at that directory took ${t_control}s (exit $rc)"
+    if [ "$t_control" -lt "$OH_USAGE_HOOK_MARGIN" ]; then
+        rm -rf "$root"
+        skip "$id's session-start hook did not cost anything here (${t_control}s for a ${OH_USAGE_HOOK_SECS}s sleep) — this platform cannot run the fixture's command, so there is nothing for the probe to be independent OF"
+    fi
+
+    note "  usage-cwd[probed]: the probe at that same directory must not pay it"
+    t0=$SECONDS
+    _oh_usage_report "$bin" "$id" "$hooked"
+    report_hooked="$OH_USAGE_REPORT"
+    t_probe=$((SECONDS - t0))
+
+    note "  usage-cwd[plain]: and must answer the same thing it answers with no hooks at all"
+    t0=$SECONDS
+    _oh_usage_report "$bin" "$id" "$plain"
+    report_plain="$OH_USAGE_REPORT"
+    t_plain=$((SECONDS - t0))
+    note "  timings: control ${t_control}s · hooked ${t_probe}s · plain ${t_plain}s"
+
+    if [ "$t_probe" -ge $((t_control - OH_USAGE_HOOK_MARGIN)) ]; then
+        note "  hooked report: $report_hooked"
+        note "  The probe waited out the directory's session-start work. Next, in order:"
+        note "    1. Check the probe still passes \`--setting-sources user\`:"
+        note "         grep -n setting-sources crates/oneharness-core/src/io/usage.rs"
+        note "    2. If it does, the CLI stopped honoring the flag. Re-measure by hand at a"
+        note "       directory whose .claude/settings.json registers a slow SessionStart hook,"
+        note "       with the flag and without it, then record the new mechanism in"
+        note "       docs/harness-usage.md and change claude_argv to match."
+        rm -rf "$root"
+        fail "$id: the usage probe took ${t_probe}s at a directory whose session start costs ${t_control}s — its answer still depends on its working directory (#1279)"
+    fi
+    if [ "$t_probe" -gt $((t_plain + OH_USAGE_HOOK_MARGIN)) ]; then
+        rm -rf "$root"
+        fail "$id: the usage probe took ${t_probe}s at the hooked directory against ${t_plain}s at one registering nothing — the two must be about the same"
+    fi
+
+    local key='[.identities[0].harness, .identities[0].plan, .identities[0].auth_mode,
+                (.identities[0].selector | tostring),
+                .identities[0].availability.state,
+                ((.identities[0].availability.windows // []) | map(.id) | sort | tostring)] | join(" | ")'
+    local key_hooked key_plain
+    key_hooked="$(printf '%s' "$report_hooked" | jq -r "$key")"
+    key_plain="$(printf '%s' "$report_plain" | jq -r "$key")"
+    if [ "$key_hooked" != "$key_plain" ]; then
+        note "  hooked: $key_hooked"
+        note "  plain:  $key_plain"
+        rm -rf "$root"
+        fail "$id: the probe reported a different identity from the hooked directory than from the plain one — dropping project settings must not change the ANSWER, only what it waits on"
+    fi
+
+    rm -rf "$root"
+    # The readings are the evidence, and this log is their only record.
+    note "PASS: $id's usage probe is independent of its working directory — ${t_probe}s against a ${t_control}s session start, same reading as plain (${key_hooked})"
+}
+
+# One `oneharness usage` probe at `$3`, left in $OH_USAGE_REPORT. Fails loudly
+# for everything a probe is allowed to answer with EXCEPT an absent binary, which
+# the caller has already ruled out: this phase measures how long an ANSWER takes,
+# and a probe that learned nothing has no duration worth comparing.
+#
+# The report comes back through a global rather than stdout because `fail` exits,
+# and an exit inside a command substitution ends only the subshell — the caller
+# would carry on measuring an empty string.
+OH_USAGE_REPORT=""
+_oh_usage_report() {
+    local bin="$1" id="$2" cwd="$3" state
+    OH_USAGE_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" --cwd "$cwd" \
+        --timeout "${OH_TIMEOUT:-120}" --compact 2>/dev/null)" || true
+    [ -n "$OH_USAGE_REPORT" ] || fail "$id: 'oneharness usage --cwd $cwd' produced no report"
+    state="$(printf '%s' "$OH_USAGE_REPORT" | jq -r '.identities[0].availability.state')"
+    if [ "$state" = "unknown" ]; then
+        note "  report: $OH_USAGE_REPORT"
+        fail "$id: the usage probe got no answer out of the harness at $cwd (see oh_usage_enforce's guidance for what a silent probe means)"
+    fi
+}
+
 # --- normalized tool-call / action events ------------------------------------
 
 # Live proof that oneharness surfaces normalized tool-call events in the

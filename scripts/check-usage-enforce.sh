@@ -107,4 +107,120 @@ case "$out" in
 *) fail "a reported headroom must be logged, got: $out" ;;
 esac
 
+
+# --- oh_usage_cwd_enforce ----------------------------------------------------
+#
+# The sibling phase holds a different distinction: whether the probe's ANSWER
+# still depends on the directory it was pointed at (#1279). Only a real Claude
+# Code can exercise that live, so its branches are pinned here against a stubbed
+# harness whose "session start" is a sleep the driver chooses.
+
+# The stub harness. With no argument to sleep for it returns at once, which is
+# the platform-cannot-run-the-fixture case; with one it stands in for a project
+# whose session-start work costs that long.
+cat >"$tmp/claude" <<'HARNESS'
+#!/usr/bin/env bash
+[ -n "${FAKE_HOOK_SLEEP:-}" ] && sleep "$FAKE_HOOK_SLEEP"
+exit 0
+HARNESS
+chmod +x "$tmp/claude"
+
+# The stub `oneharness`, which answers both verbs this phase drives: `detect`
+# names the harness binary above, and `usage` returns a chosen report — after
+# sleeping, when the probe is being made to pay the hook's cost.
+cat >"$tmp/oneharness-cwd" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+detect)
+    if [ -n "${FAKE_HARNESS_BIN:-}" ]; then
+        printf '{"detected":[{"id":"claude-code","available":true,"path":"%s"}]}\n' "$FAKE_HARNESS_BIN"
+    else
+        printf '{"detected":[{"id":"claude-code","available":false,"path":null}]}\n'
+    fi
+    ;;
+usage)
+    case " $* " in
+    *"/hooked "*)
+        [ -n "${FAKE_PROBE_SLEEP:-}" ] && sleep "$FAKE_PROBE_SLEEP"
+        printf '%s\n' "${FAKE_HOOKED:-$FAKE_PLAIN}"
+        ;;
+    *) printf '%s\n' "$FAKE_PLAIN" ;;
+    esac
+    ;;
+esac
+exit 0
+STUB
+chmod +x "$tmp/oneharness-cwd"
+
+# Drive oh_usage_cwd_enforce once, under a throwaway HOME so the workspace-trust
+# preparation it runs cannot touch the developer's own ~/.claude.json.
+drive_cwd() {
+    local harness_bin="$1" hook_sleep="$2" probe_sleep="$3" hooked="$4" plain="$5"
+    local home
+    home="$(mktemp -d)"
+    set +e
+    out="$(
+        FAKE_HARNESS_BIN="$harness_bin" FAKE_HOOK_SLEEP="$hook_sleep" \
+            FAKE_PROBE_SLEEP="$probe_sleep" FAKE_HOOKED="$hooked" FAKE_PLAIN="$plain" \
+            HOME="$home" ONEHARNESS_BIN="$tmp/oneharness-cwd" \
+            bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
+                     OH_USAGE_HOOK_MARGIN=2
+                     oh_usage_cwd_enforce claude-code" 2>&1
+    )"
+    rc=$?
+    set -e
+    rm -rf "$home"
+}
+
+reading() {
+    printf '{"identities":[{"harness":"claude-code","plan":"%s","auth_mode":"subscription","selector":{"kind":"env_path","env":"CLAUDE_CONFIG_DIR","path":"/h/.claude"},"availability":{"state":"available","windows":[{"id":"five_hour"}]}}]}' "$1"
+}
+
+# 6. Absent harness: nothing to point at a directory, so the phase steps aside.
+drive_cwd "" "" "" "$(reading max)" "$(reading max)"
+[ "$rc" -eq 0 ] || fail "an absent harness must exit 0 for the cwd phase, got $rc: $out"
+case "$out" in
+*"SKIP:"*"not installed"*"nothing to probe"*) ;;
+*) fail "an absent harness must skip with a stated reason, got: $out" ;;
+esac
+
+# 7. A fixture that costs nothing: the platform could not run the hook command,
+#    so there is no working-directory dependence to be free of and a PASS here
+#    would be a pass nobody established.
+drive_cwd "$tmp/claude" "" "" "$(reading max)" "$(reading max)"
+[ "$rc" -eq 0 ] || fail "an unfired fixture must exit 0, got $rc: $out"
+case "$out" in
+*"SKIP:"*"did not cost anything here"*) ;;
+*) fail "an unfired fixture must skip naming what did not happen, got: $out" ;;
+esac
+
+# 8. The regression itself: the probe pays the directory's session-start cost.
+#    This is the whole reason the phase exists, so it must be a hard failure that
+#    names the issue and says what to check.
+drive_cwd "$tmp/claude" 3 3 "$(reading max)" "$(reading max)"
+[ "$rc" -eq 1 ] || fail "a probe that waited out the hook must fail, got exit $rc: $out"
+case "$out" in
+*"Next, in order:"*"setting-sources"*"FAIL:"*"depends on its working directory"*) ;;
+*) fail "the regression must fail with its next actions, got: $out" ;;
+esac
+
+# 9. The fix in place: the probe answers without paying, and answers the same
+#    thing it answers where nothing is registered.
+drive_cwd "$tmp/claude" 3 "" "$(reading max)" "$(reading max)"
+[ "$rc" -eq 0 ] || fail "an independent probe must pass, got exit $rc: $out"
+case "$out" in
+*"PASS:"*"independent of its working directory"*) ;;
+*) fail "an independent probe must log its readings, got: $out" ;;
+esac
+
+# 10. Fast but different: dropping the directory's settings must change what the
+#     probe WAITS ON, never what it reports. A phase that only timed the probe
+#     would go green on a flag that silently changed the answer.
+drive_cwd "$tmp/claude" 3 "" "$(reading pro)" "$(reading max)"
+[ "$rc" -eq 1 ] || fail "a changed reading must fail even when fast, got exit $rc: $out"
+case "$out" in
+*"FAIL:"*"different identity from the hooked directory"*) ;;
+*) fail "a changed reading must say what differed, got: $out" ;;
+esac
+
 echo "check-usage-enforce: ok"

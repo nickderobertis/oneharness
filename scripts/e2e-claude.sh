@@ -41,6 +41,14 @@ oh_long_prompt_enforce claude-code
 note "» cache reporting: a second run must surface cache_read_tokens"
 oh_cache_assert claude-code
 
+# Usage headroom: the zero-turn probe must still get an answer out of the real
+# CLI, and that answer must not depend on WHERE the probe runs — Claude Code runs
+# the working directory's project `SessionStart` hooks before answering, which is
+# what made every claude-code identity read as a timeout in #1279.
+note "» usage: the zero-turn probe must answer, and must not wait on its cwd's session hooks"
+oh_usage_enforce claude-code
+oh_usage_cwd_enforce claude-code
+
 # Normalized tool events: Claude Code's default single-document `json` result
 # carries no transcript, so `--events` upgrades it to `stream-json` (oneharness
 # adds the required `--verbose`), surfacing the Anthropic content-block transcript

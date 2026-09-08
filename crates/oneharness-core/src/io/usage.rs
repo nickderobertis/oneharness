@@ -395,9 +395,20 @@ fn converse(
     }
 }
 
+/// The setting sources a headroom probe loads. `user` alone, because Claude Code
+/// runs the working directory's project `SessionStart` hooks before answering a
+/// control request, and the answer must not depend on where the probe was
+/// pointed. User settings stay loaded: they are the identity's own and
+/// [`CLAUDE_IDENTITY_ENV`] still selects which of them applies, so per-identity
+/// attribution is unaffected.
+const CLAUDE_SETTING_SOURCES: &str = "user";
+
 /// The exact zero-turn invocation: `-p` with stream-json in and out, an empty
-/// tool set, and no prompt. The control request rides stdin; no user message is
-/// ever sent, so the session completes zero turns.
+/// tool set, user settings only, and no prompt. The control request rides stdin;
+/// no user message is ever sent, so the session completes zero turns.
+///
+/// `--setting-sources` raises no compatibility floor: every build new enough to
+/// take `--tools`, which this invocation already carried, takes it too.
 fn claude_argv(bin: &str) -> Vec<String> {
     vec![
         bin.to_string(),
@@ -409,6 +420,8 @@ fn claude_argv(bin: &str) -> Vec<String> {
         "--verbose".to_string(),
         "--tools".to_string(),
         String::new(),
+        "--setting-sources".to_string(),
+        CLAUDE_SETTING_SOURCES.to_string(),
     ]
 }
 
@@ -1221,8 +1234,12 @@ mod tests {
                 "--verbose",
                 "--tools",
                 "",
+                "--setting-sources",
+                "user",
             ],
-            "the zero-turn invocation is load-bearing: an empty tool set and no prompt"
+            "the zero-turn invocation is load-bearing: an empty tool set, no prompt, \
+             and user settings only — project settings would make the answer's latency \
+             whatever session-start work the probe's working directory registers"
         );
 
         let line = claude_request_line();

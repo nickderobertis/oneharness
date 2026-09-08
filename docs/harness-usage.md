@@ -53,13 +53,15 @@ The first is settled; the second could change with an upstream release.
 ### `claude-code` — the `get_usage` control request
 
 **Observed.** Spawn the CLI in stream-json input/output mode with an empty tool
-set, write exactly one control request, read the matching control response, then
-terminate. No user message is ever sent, which is what keeps it free.
+set and user settings only, write exactly one control request, read the matching
+control response, then terminate. No user message is ever sent, which is what
+keeps it free.
 
 ```console
 $ printf '{"type":"control_request","request_id":"oneharness-usage-1","request":{"subtype":"get_usage"}}' |
     CLAUDE_CONFIG_DIR=<isolated-claude-home> \
-    claude -p --input-format stream-json --output-format stream-json --verbose --tools ''
+    claude -p --input-format stream-json --output-format stream-json --verbose --tools '' \
+      --setting-sources user
 {"type":"control_response","response":{"subtype":"success","request_id":"oneharness-usage-1","response":{
   "session":{"total_cost_usd":0,"total_api_duration_ms":0,"model_usage":{}},
   "subscription_type":"<PLAN:enum>",
@@ -72,6 +74,20 @@ $ printf '{"type":"control_request","request_id":"oneharness-usage-1","request":
               {"kind":"weekly_all", ...},
               {"kind":"weekly_scoped","scope":{"model":{"display_name":"<MODEL>"}}, ...}]}}}}
 ```
+
+`--setting-sources user` is what keeps the answer independent of *where* the
+probe runs. Claude Code loads the settings at its working directory and runs
+that project's `SessionStart` hooks before answering a control request, so
+without it the probe waits out whatever provisioning the caller's project
+registers — measured at 3.8s against a directory registering none and 19.0s
+against one whose session start sleeps 18s, for a byte-identical answer. A
+project may declare that work with a `timeout` of up to 300s, five times the
+probe's own default deadline, so this is a correctness fix rather than a speed
+one. User settings stay loaded: they are the identity's own, `CLAUDE_CONFIG_DIR`
+still selects which of them applies, and per-identity attribution is unchanged.
+The flag raises no compatibility floor — Claude Code declares `--setting-sources`
+from 1.0.125 and `--tools`, which this invocation already carried, only from
+2.0.31, so a build too old for the flag was already too old for the probe.
 
 Field semantics, quoted from schema text embedded in the shipped binary:
 `subscription_type` is the *“Claude.ai subscription type ('pro', 'max', 'team',

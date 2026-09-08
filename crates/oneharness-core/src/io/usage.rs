@@ -395,9 +395,33 @@ fn converse(
     }
 }
 
+/// The setting sources a headroom probe loads. `user` alone, because everything
+/// below it belongs to whatever directory the probe happens to be pointed at.
+///
+/// Claude Code loads the settings at its working directory and runs that
+/// project's `SessionStart` hooks *before* it answers a control request, so
+/// without this the probe's latency is the project's provisioning cost: measured
+/// at 3.8s against a directory registering no hooks and 19.0s against one whose
+/// `SessionStart` sleeps 18s, for the same answer. A project may register that
+/// work with a `timeout` of up to 300s — five minutes of waiting behind a probe
+/// whose own default deadline is 60 — which turns a readable window into a
+/// `probe_failed` that reads exactly like the harness having gone silent.
+///
+/// User settings stay loaded: they are the identity's own, they are the same
+/// wherever the probe runs, and [`CLAUDE_IDENTITY_ENV`] selects which of them
+/// applies — so per-identity attribution is untouched, and so is the answer.
+const CLAUDE_SETTING_SOURCES: &str = "user";
+
 /// The exact zero-turn invocation: `-p` with stream-json in and out, an empty
-/// tool set, and no prompt. The control request rides stdin; no user message is
-/// ever sent, so the session completes zero turns.
+/// tool set, user settings only, and no prompt. The control request rides stdin;
+/// no user message is ever sent, so the session completes zero turns.
+///
+/// Compatibility: `--setting-sources` raises no floor here. It is declared by
+/// Claude Code from **1.0.125** on (1.0.124 does not), while `--tools` — which
+/// this invocation already carried — arrived in **2.0.31** (2.0.30 does not).
+/// So every build that can run this probe at all already takes both, and a build
+/// below 2.0.31 reports what it always did: `exited without an answer: error:
+/// unknown option '--tools'`, measured against 1.0.124.
 fn claude_argv(bin: &str) -> Vec<String> {
     vec![
         bin.to_string(),
@@ -409,6 +433,8 @@ fn claude_argv(bin: &str) -> Vec<String> {
         "--verbose".to_string(),
         "--tools".to_string(),
         String::new(),
+        "--setting-sources".to_string(),
+        CLAUDE_SETTING_SOURCES.to_string(),
     ]
 }
 
@@ -1221,8 +1247,12 @@ mod tests {
                 "--verbose",
                 "--tools",
                 "",
+                "--setting-sources",
+                "user",
             ],
-            "the zero-turn invocation is load-bearing: an empty tool set and no prompt"
+            "the zero-turn invocation is load-bearing: an empty tool set, no prompt, \
+             and user settings only — project settings would make the answer's latency \
+             whatever session-start work the probe's working directory registers"
         );
 
         let line = claude_request_line();

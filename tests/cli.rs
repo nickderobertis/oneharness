@@ -18810,6 +18810,20 @@ fn the_claude_usage_probe_sends_one_get_usage_request_and_no_user_message() {
         argv.contains(&"-p".to_string()) && argv.contains(&"--tools".to_string()),
         "the probe runs headless with an empty tool set: {argv:?}"
     );
+    // The working directory's own settings must not reach the probe: Claude Code
+    // runs a project's `SessionStart` hooks before answering a control request,
+    // so a probe that loaded them would report headroom on the project's clock
+    // (measured: 3.8s against a directory with no hooks, 19.0s against one whose
+    // session start sleeps 18s) — and would fail outright where that work outlasts
+    // the probe's deadline.
+    assert_eq!(
+        argv.windows(2)
+            .find(|pair| pair[0] == "--setting-sources")
+            .map(|pair| pair[1].as_str()),
+        Some("user"),
+        "the probe loads user settings only, so its answer does not wait on \
+         whatever session-start work its working directory registers: {argv:?}"
+    );
     assert_eq!(
         argv.iter()
             .filter(|a| a.as_str() == "--input-format")
@@ -18935,6 +18949,144 @@ fn the_codex_usage_probe_sends_exactly_the_zero_turn_handshake_in_order() {
         expected,
         "the whole zero-turn handshake, exactly, in this order:\n{}",
         stdin.text()
+    );
+}
+
+/// The `probe_failed` message a caller reads for the one probed identity in a
+/// report, which is the whole of what a probe that learned nothing hands over.
+fn probe_failure_message(report: &Value) -> String {
+    let availability = &usage_identity(report, "claude-code")["availability"];
+    assert_eq!(
+        availability["state"], "unknown",
+        "a probe that learned nothing is `unknown`, never headroom: {availability}"
+    );
+    assert_eq!(
+        availability["reason"]["kind"], "probe_failed",
+        "the reason names the probe, not the account: {availability}"
+    );
+    availability["reason"]["message"]
+        .as_str()
+        .expect("a probe failure states a message")
+        .to_string()
+}
+
+/// Drive the `usage` verb's claude probe against a mock scripted by `env`, and
+/// return the sentence it reported.
+fn claude_probe_failure(env: &[(&str, &str)], timeout: &str) -> String {
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--timeout",
+            timeout,
+            "--compact",
+        ],
+        env,
+    );
+    assert!(
+        output.status.success(),
+        "a probe failure is data in the report, never a non-zero exit: {:?}",
+        output.status.code()
+    );
+    probe_failure_message(&json_stdout(&output))
+}
+
+// The four sentences below are a caller's whole diagnosis when a probe learns
+// nothing, and they are what parts "this harness is broken" from "this account
+// is out of room" — the read a supervisor makes from the report. Each is induced
+// through the probe's own path and asserted verbatim, so rewording one fails
+// here rather than reaching a consumer as an unannounced change.
+
+#[test]
+fn a_probe_whose_harness_exits_talking_reports_the_harness_own_words() {
+    // The child's own first meaningful line is carried up rather than
+    // paraphrased: it is the only thing that says *why* — a rejected flag, a
+    // broken install, a refused credential — and a probe that dropped it would
+    // report the same sentence for all three.
+    let message = claude_probe_failure(
+        &[
+            ("MOCK_STDOUT", ""),
+            ("MOCK_STDERR", "error: unknown option '--tools'"),
+            ("MOCK_EXIT", "1"),
+        ],
+        "30",
+    );
+    assert_eq!(
+        message,
+        "claude-code's `get_usage` control request exited without an answer: \
+         error: unknown option '--tools'"
+    );
+}
+
+#[test]
+fn a_probe_whose_harness_exits_silently_says_there_was_nothing_to_read() {
+    // Distinct from the sentence above on purpose: "no output" tells the reader
+    // not to go looking for a harness error message that was never written.
+    let message = claude_probe_failure(
+        &[("MOCK_STDOUT", ""), ("MOCK_STDERR", ""), ("MOCK_EXIT", "1")],
+        "30",
+    );
+    assert_eq!(
+        message,
+        "claude-code's `get_usage` control request exited without an answer: no output"
+    );
+}
+
+#[test]
+fn a_probe_whose_harness_never_answers_names_the_deadline_and_the_flag_that_moves_it() {
+    // A harness that is alive but slow is the one failure a caller can fix from
+    // the message alone, so the message carries the deadline it waited and the
+    // flag that raises it. The mock is told to outlast that deadline by far, so
+    // this reads a timeout rather than a race.
+    let message = claude_probe_failure(&[("MOCK_STDOUT", ""), ("MOCK_SLEEP_MS", "60000")], "1");
+    assert_eq!(
+        message,
+        "claude-code's `get_usage` control request did not answer within 1s \
+         (raise --timeout if the harness is slow to start)"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_probe_whose_binary_cannot_be_spawned_says_so_naming_the_binary() {
+    // Not the same failure as an absent harness, which is `binary_missing`: this
+    // one is installed — `which` finds it and it carries the executable bit — and
+    // still cannot start. A script whose interpreter does not exist is exactly
+    // that shape, and it is what a broken npm shim or a half-written install
+    // looks like to the probe.
+    use std::os::unix::fs::PermissionsExt;
+    let dir = ScratchDir::new("usage-spawn").unwrap();
+    let program = dir.path().join("claude-unspawnable");
+    std::fs::write(&program, "#!/oneharness/no/such/interpreter\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let bin = format!("claude-code={}", program.display());
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin,
+            "--timeout",
+            "30",
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(
+        output.status.success(),
+        "a spawn failure is data in the report, never a non-zero exit: {:?}",
+        output.status.code()
+    );
+    let message = probe_failure_message(&json_stdout(&output));
+    assert!(
+        message.starts_with(&format!("failed to spawn `{}`: ", program.display())),
+        "the message names the binary that could not start, then the OS's own \
+         reason: {message}"
     );
 }
 

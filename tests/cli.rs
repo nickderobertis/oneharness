@@ -2572,10 +2572,16 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
     // empty accounting") is the same record a candidate that tried the task and
     // lost would leave. The stderr below is that run's, verbatim.
     //
-    // Three candidates, one contrast: a refusal a classifier recognizes, a
-    // failure it does not with nothing to show for itself, and a failure it does
-    // not from a candidate that demonstrably worked. The verdict is unchanged in
-    // all three — only what the run SAYS about the middle one is new.
+    // Five candidates, three endings and one fall-through: a refusal a
+    // classifier recognizes (hands on); a failure it does not with nothing to
+    // show for itself, once from a non-zero exit and once from a deadline; a
+    // failure it does not from a candidate that demonstrably worked; and a
+    // failure it names but does not hand on (a single-model `model_not_found`).
+    // Every one that stops, stops — the decision `startup_failure_reason`
+    // states — and what the run SAYS about each is what this pins: the one line
+    // a supervisor publishes names which ending it was and carries the
+    // candidate's own words, since the per-result fields it used to point at
+    // reach no supervisor (and, for a plain non-zero exit, `error` is null).
     let mock = mock_bin().display().to_string();
     let served = serde_json::to_string(concat!(
         "{\"type\":\"turn.started\"}\n",
@@ -2600,6 +2606,12 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         /// The stopping candidate's published work reading, if it has one.
         work: Option<&'static str>,
         record_version: &'static str,
+        /// The ending the summary names, and the candidate's own words it
+        /// carries — both `None` for a candidate that hands the task on.
+        summary: Option<(&'static str, &'static str)>,
+        /// A deadline for the run, where the ending is a candidate that ran
+        /// out of time.
+        timeout: Option<&'static str>,
     }
     let cases = [
         Case {
@@ -2612,6 +2624,8 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             falls_through: true,
             work: None,
             record_version: "1.6",
+            summary: None,
+            timeout: None,
         },
         Case {
             tag: "unclassified-no-work",
@@ -2619,13 +2633,65 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             falls_through: false,
             work: Some("none"),
             record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 2) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) No claude executable found for nodejs 26.5.0",
+            )),
+            timeout: None,
+        },
+        Case {
+            // The candidate that merely ran out of time: killed at the deadline
+            // with nothing billed on record. It stops the chain like the exit
+            // above — the empty accounting cannot say the call was never made —
+            // and the summary says which of the two it was.
+            tag: "unclassified-timeout",
+            env: r#"{ MOCK_SLEEP_MS = "10000", MOCK_STDOUT = "" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status timeout) — so the chain stopped there and tried no candidate after \
+                 it; it said: harness `claude-code` hit its oneharness deadline:",
+            )),
+            timeout: Some("1"),
         },
         Case {
             tag: "unclassified-worked",
-            env: format!(r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked} }}"#),
+            env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked}, MOCK_STDERR = 'gave up after a partial answer' }}"#
+            ),
             falls_through: false,
             work: Some("done"),
             record_version: "1.7",
+            summary: Some((
+                "did the task's work and did not succeed, for a cause it could not classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) gave up after a partial answer",
+            )),
+            timeout: None,
+        },
+        Case {
+            // A failure the classifier names and the chain still stops at: a
+            // single-model `model_not_found` is a configuration mistake the user
+            // should see, not one to route around.
+            tag: "classified-task-failure",
+            env: r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = 'model not found: gpt-9' }"#.to_string(),
+            falls_through: false,
+            work: None,
+            // `model_not_found` is not version-gated, so the record needs no
+            // reader newer than the one the `error` text itself asks for.
+            record_version: "1.3",
+            summary: Some((
+                "ran but did not succeed",
+                "(status nonzero, exit 1, failure_kind model_not_found) — so the chain \
+                 stopped there and tried no candidate after it; it said: (stderr) model not \
+                 found: gpt-9",
+            )),
+            timeout: None,
         },
     ];
 
@@ -2636,6 +2702,8 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             falls_through,
             work,
             record_version,
+            summary: expected_summary,
+            timeout,
         } = case;
         let project = format!(
             r#"
@@ -2653,21 +2721,23 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         );
         let fx = ConfigFixture::new(&format!("work-evidence-{tag}"), &project, "");
         let history = hist_dir(&format!("work-evidence-{tag}"));
-        let output = run_with_config(
-            &[
-                "run",
-                "--prompt",
-                "hi",
-                "--cwd",
-                &fx.cwd(),
-                "--history",
-                "--history-dir",
-                &history.display().to_string(),
-                "--compact",
-            ],
-            &[],
-            &fx.user_config(),
-        );
+        let history_arg = history.display().to_string();
+        let cwd = fx.cwd();
+        let mut args = vec![
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &cwd,
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ];
+        if let Some(seconds) = timeout {
+            args.extend(["--timeout", seconds]);
+        }
+        let output = run_with_config(&args, &[], &fx.user_config());
         let value = json_stdout(&output);
         let stopped = value["fallback"]["stopped_without_work"]
             .as_bool()
@@ -2698,26 +2768,40 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
                     && value["results"].as_array().unwrap().len() == 1,
                 "{tag}: the chain must stop here, leaving codex untried"
             );
-            assert_eq!(value["results"][0]["work"], work.unwrap(), "{tag}");
-            // ...and the attribution names the difference between the two: the
-            // candidate that did nothing is called out where a reader of a failed
-            // run looks, not left to be re-derived from empty accounting.
+            match work {
+                Some(reading) => assert_eq!(value["results"][0]["work"], reading, "{tag}"),
+                None => assert!(
+                    value["results"][0]["work"].is_null(),
+                    "{tag}: a classified failure has already said why"
+                ),
+            }
+            // ...and the attribution names the difference: the candidate that
+            // did nothing is called out where a reader of a failed run looks,
+            // not left to be re-derived from empty accounting.
             assert_eq!(stopped, work == Some("none"), "{tag}");
             // Including in the one line a supervisor quotes when it reports the
-            // run. "ran but did not succeed" is what the chain said the day it
-            // truncated to one identity, and it is only true of the candidate
-            // that actually ran the task.
+            // run — the whole line, because that line is a detached run's
+            // death payload and nothing downstream of it can open the report.
+            // It names the ending ("ran but did not succeed" is only true of a
+            // candidate that failed at a task the crate can name; a candidate
+            // that worked and one that showed nothing are each said as such)
+            // and carries the candidate's own words, so a consumer holding
+            // only this line can say why the chain stopped.
             let summary = String::from_utf8_lossy(&output.stderr).to_string();
-            if work == Some("none") {
+            let (ending, account) = expected_summary.expect("a stop names its ending");
+            let expected = format!("oneharness: fallback harness `claude-code` {ending} {account}");
+            assert!(
+                summary.contains(&expected),
+                "{tag}: the summary must name the ending and carry the cause:\n  want: {expected}\n  got:  {summary}"
+            );
+            for stale in [
+                "see results[].status",
+                "see results[].error",
+                "see results[].work",
+            ] {
                 assert!(
-                    summary.contains("failed with nothing to show for it")
-                        && summary.contains("tried no candidate after it"),
-                    "{tag}: the summary must name the stop: {summary}"
-                );
-            } else {
-                assert!(
-                    summary.contains("ran but did not succeed"),
-                    "{tag}: a candidate that worked is reported as one: {summary}"
+                    !summary.contains(stale),
+                    "{tag}: a pointer to a field only the report holds is what hid a night of deaths: {summary}"
                 );
             }
         }
@@ -2742,19 +2826,19 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         // verdict through one `fallback_step`, but they assemble the block
         // separately, so the reading a consumer acts on live is pinned here
         // rather than inferred from the buffered one.
-        let streamed = run_with_config(
-            &[
-                "run",
-                "--prompt",
-                "hi",
-                "--cwd",
-                &fx.cwd(),
-                "--stream",
-                "--compact",
-            ],
-            &[],
-            &fx.user_config(),
-        );
+        let mut stream_args = vec![
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &cwd,
+            "--stream",
+            "--compact",
+        ];
+        if let Some(seconds) = timeout {
+            stream_args.extend(["--timeout", seconds]);
+        }
+        let streamed = run_with_config(&stream_args, &[], &fx.user_config());
         let report = stream_envelopes(&streamed)
             .last()
             .map(|envelope| envelope["report"].clone())

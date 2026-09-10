@@ -1522,6 +1522,16 @@ pub fn run_supervised(
 /// succeed. Each run mode has its own shape: a fallback chain that never got a
 /// candidate off the ground, a fallback candidate that ran and failed, or the
 /// parallel count of failed harnesses.
+///
+/// A chain that stopped at a candidate says which of three endings it was —
+/// the candidate failed at a task it is known to have done, showed nothing
+/// for itself, or failed for a cause this crate could not classify — and
+/// carries that candidate's own account ([`failure_account`]) in the sentence.
+/// This line is what a supervisor publishes when it reports the run, and for a
+/// detached run it is the only thing that reaches one: the per-result fields
+/// live in the report and the process's stderr is a log nobody opens. A
+/// pointer to `results[].error` sent a whole night of deaths to a field the
+/// reader could not open — and, for a plain non-zero exit, one that was `null`.
 fn failure_summary(report: &RunReport, require_available: bool) -> String {
     match &report.fallback {
         // Fallback where nothing could run: every candidate failed to start.
@@ -1538,24 +1548,46 @@ fn failure_summary(report: &RunReport, require_available: bool) -> String {
                 fb.fell_through.len()
             )
         }
-        // Fallback where a candidate stopped the chain having shown nothing for
-        // itself. Said in the summary and not only in the report, because this
-        // sentence is what a supervisor quotes when it reports the run: "ran but
-        // did not succeed" is the reading that made a five-identity chain look
-        // like a candidate's own task failure and hid the untried rest.
-        Some(fb) if fb.stopped_without_work => format!(
-            "oneharness: fallback harness `{}` failed with nothing to show for it — no tool \
-             call, no billed usage, and no cause it could classify — so the chain stopped \
-             there and tried no candidate after it (see results[].work and \
-             results[].error)",
-            fb.ran.as_deref().unwrap_or_default()
-        ),
-        // Fallback where a harness ran but its task failed.
-        Some(fb) => format!(
-            "oneharness: fallback harness `{}` ran but did not succeed (see results[].status \
-             and results[].error)",
-            fb.ran.as_deref().unwrap_or_default()
-        ),
+        // Fallback where a candidate ran and stopped the chain: both drivers
+        // push the fallen-through results first and the one that ran last, so
+        // the candidate is the last result. Named by its variant-qualified id,
+        // because on a chain of identities the identity is the finding.
+        Some(fb) => {
+            let candidate = report.results.last();
+            let ran = candidate
+                .map(|r| r.harness_id.as_str())
+                .or(fb.ran.as_deref())
+                .unwrap_or_default();
+            let account = candidate.map(failure_account).unwrap_or_default();
+            let envelope = candidate.map(failure_envelope).unwrap_or_default();
+            // The `stopped_without_work` reading is the report's own, read back
+            // rather than re-derived; the other two are told apart by the
+            // candidate's published `work` — `done` where the crate saw the
+            // task done and still has no name for the failure, `null` where a
+            // classifier (or the status alone) already says what happened.
+            let ending = if fb.stopped_without_work {
+                // A candidate that showed nothing for itself. Said in the
+                // summary and not only in the report, because this sentence is
+                // what a supervisor quotes: "ran but did not succeed" is the
+                // reading that made a five-identity chain look like a
+                // candidate's own task failure and hid the untried rest.
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify"
+            } else if candidate.is_some_and(|r| r.work == Some(fallback::RunWork::Done)) {
+                // A candidate the crate saw do the task's work, whose failure
+                // it could not name: the stop is the right verdict (the work
+                // was billed), and the cause is whatever the harness said.
+                "did the task's work and did not succeed, for a cause it could not classify"
+            } else {
+                // A candidate that failed at its task with a named cause, or a
+                // status that is its own explanation.
+                "ran but did not succeed"
+            };
+            format!(
+                "oneharness: fallback harness `{ran}` {ending} ({envelope}) — so the chain \
+                 stopped there and tried no candidate after it; it said: {account}"
+            )
+        }
         None => {
             let failed = report
                 .results
@@ -1576,6 +1608,66 @@ fn failure_summary(report: &RunReport, require_available: bool) -> String {
             )
         }
     }
+}
+
+/// The status half of a stopped candidate's one-line account: the report's own
+/// tokens (`status`, `exit_code`, `failure_kind`), so a reader can find the same
+/// values in the JSON beside the sentence.
+fn failure_envelope(result: &RunResult) -> String {
+    let mut parts = vec![format!("status {}", result.status.as_str())];
+    if let Some(code) = result.exit_code {
+        parts.push(format!("exit {code}"));
+    }
+    if let Some(kind) = result.failure_kind {
+        parts.push(format!("failure_kind {}", kind.as_str()));
+    }
+    parts.join(", ")
+}
+
+/// Longest account a summary carries of what a candidate said; past this the
+/// line stops being one a supervisor can publish, and the report has the rest.
+const FAILURE_ACCOUNT_CHARS: usize = 400;
+
+/// A stopped candidate's **own** account of its failure, for the summary line:
+/// the result's `error` where oneharness composed one (a deadline, a
+/// cancellation, a refusal the provider stated); else the schema verdict on a
+/// run whose answer did not conform; else the last thing the harness wrote to
+/// stderr, then to stdout — a plain non-zero exit composes no `error` at all,
+/// so the harness's last words are the only cause there is. Never empty: a
+/// candidate that died silently says so, because "nothing" is itself the
+/// finding a reader needs. Folded onto one line and bounded at
+/// [`FAILURE_ACCOUNT_CHARS`].
+fn failure_account(result: &RunResult) -> String {
+    let last_words = |captured: &str| {
+        captured
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(str::to_string)
+    };
+    let account = result
+        .error
+        .clone()
+        .or_else(|| {
+            result
+                .schema_error
+                .as_ref()
+                .map(|why| format!("the answer did not conform to the schema: {why}"))
+        })
+        .or_else(|| last_words(&result.stderr).map(|words| format!("(stderr) {words}")))
+        .or_else(|| last_words(&result.stdout).map(|words| format!("(stdout) {words}")))
+        .unwrap_or_else(|| "nothing — it wrote no error, no stderr and no stdout".to_string());
+    let folded = account.split_whitespace().collect::<Vec<_>>().join(" ");
+    if folded.chars().count() <= FAILURE_ACCOUNT_CHARS {
+        return folded;
+    }
+    let mut cut = folded
+        .chars()
+        .take(FAILURE_ACCOUNT_CHARS)
+        .collect::<String>();
+    cut.push('…');
+    cut
 }
 
 fn apply_result_identity(result: &mut RunResult, composed: &str) {
@@ -3574,11 +3666,17 @@ fn fallback_step(result: &RunResult, multi_model: bool, report: &mut FallbackRep
         }
         None => {
             report.ran = Some(result.harness.clone());
-            // The candidate that stops the chain is the one a reader is left
-            // looking at, so it is here that "it failed and nothing says why,
-            // and nothing says it did anything either" has to be said. Read off
-            // the result's own published reading rather than re-derived, so the
-            // attribution and the verdict above cannot disagree.
+            // The chain stops here for every failure the classifier could not
+            // name, whatever the candidate has to show for itself — decided in
+            // `startup_failure_reason`'s contract, and repeated here because
+            // this is where a reader will look for the alternative: `work ==
+            // None` is missing evidence, not proof nothing was billed, so it
+            // licenses no re-run on the next identity. The candidate that stops
+            // the chain is the one a reader is left looking at, so it is here
+            // that "it failed and nothing says why, and nothing says it did
+            // anything either" has to be said. Read off the result's own
+            // published reading rather than re-derived, so the attribution and
+            // the verdict above cannot disagree.
             report.stopped_without_work = result.work == Some(fallback::RunWork::None);
             false
         }
@@ -4631,6 +4729,68 @@ mod tests {
             stderr: String::new(),
             error: None,
         }
+    }
+
+    #[test]
+    fn a_stopped_candidate_accounts_for_itself_from_whatever_it_left() {
+        // `error` first: oneharness composed it (a deadline, a refusal object)
+        // and it already says the most.
+        let mut r = result(Status::Timeout, true);
+        r.error = Some("harness `x` hit its oneharness deadline: 1s".into());
+        r.stderr = "ignored when error speaks\n".into();
+        assert_eq!(
+            failure_account(&r),
+            "harness `x` hit its oneharness deadline: 1s"
+        );
+        assert_eq!(failure_envelope(&r), "status timeout");
+
+        // A conforming-answer failure exits 0 with no error: the schema verdict
+        // is the cause.
+        let mut r = result(Status::Ok, true);
+        r.exit_code = Some(0);
+        r.schema_error = Some("\"answer\" is a required property".into());
+        assert_eq!(
+            failure_account(&r),
+            "the answer did not conform to the schema: \"answer\" is a required property"
+        );
+        assert_eq!(failure_envelope(&r), "status ok, exit 0");
+
+        // A plain non-zero exit composes no `error`, so the harness's last
+        // non-blank stderr line is what there is — folded onto one line.
+        let mut r = result(Status::Nonzero, true);
+        r.exit_code = Some(2);
+        r.failure_kind = Some(signals::FailureKind::ModelNotFound);
+        r.stderr = "warning: first\nmodel not found:\n\t gpt-9  \n\n".into();
+        assert_eq!(failure_account(&r), "(stderr) gpt-9");
+        assert_eq!(
+            failure_envelope(&r),
+            "status nonzero, exit 2, failure_kind model_not_found"
+        );
+
+        // Then stdout, where a harness that wrote nothing to stderr may have
+        // left an error record.
+        let mut r = result(Status::Nonzero, true);
+        r.stdout = "{\"type\":\"error\",\"message\":\"boom\"}\n".into();
+        assert_eq!(
+            failure_account(&r),
+            "(stdout) {\"type\":\"error\",\"message\":\"boom\"}"
+        );
+
+        // Silence is itself the finding, never an empty sentence.
+        let r = result(Status::Nonzero, true);
+        assert_eq!(
+            failure_account(&r),
+            "nothing — it wrote no error, no stderr and no stdout"
+        );
+
+        // Bounded, in characters, so the line stays one a supervisor can
+        // publish; the report keeps the whole text.
+        let mut r = result(Status::Nonzero, true);
+        r.stderr = "é".repeat(FAILURE_ACCOUNT_CHARS + 50);
+        let account = failure_account(&r);
+        assert_eq!(account.chars().count(), FAILURE_ACCOUNT_CHARS + 1);
+        assert!(account.ends_with('…'), "{account}");
+        assert!(account.starts_with("(stderr) éé"), "{account}");
     }
 
     fn crush_plan() -> HarnessPlan {

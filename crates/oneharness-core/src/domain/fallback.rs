@@ -230,6 +230,26 @@ impl FallThroughReason {
 /// dry-run row is not a run at all and is `None` too (the fallback driver never
 /// executes under `--print-command`).
 ///
+/// **An unclassified failure stops the chain whatever its work reading** — a
+/// decision, not an oversight. With `failure_kind == None` the crate cannot
+/// name why the candidate failed, and [`RunWork::None`] does not fill that gap:
+/// it is the *absence* of work evidence, not proof nothing was spent. A harness
+/// killed at its deadline mid-call, or one that crashed after its request went
+/// out, leaves the same empty accounting as a launcher shim that never found
+/// the binary, and this function cannot tell them apart. Handing such a
+/// candidate on would re-bill the first of those on the next identity, and
+/// would re-run a task that hangs once per identity in the chain. So the
+/// fall-through set is exactly the refusals a classifier decided from the
+/// harness's own words — the ones known to have been raised *before* a request
+/// was made — and a zero-work failure with a recognizable phrasing joins it by
+/// being taught to [`signals`][crate::domain::signals], never by inference from
+/// empty accounting. The cost of stopping is borne by the report instead: the
+/// stop is attributed ([`FallbackReport::stopped_without_work`][swo]) and the
+/// failure summary carries the candidate's own words, so the reader left
+/// holding it can see what was untried and why.
+///
+/// [swo]: crate::domain::report::FallbackReport::stopped_without_work
+///
 /// `model_fallback` widens the fall-through set for a run that is **trying
 /// several models in priority order** (`--model` given more than once, or config
 /// `models`). There, a per-model rejection *is* the signal to try the next

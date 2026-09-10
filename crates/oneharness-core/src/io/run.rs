@@ -1635,8 +1635,9 @@ const FAILURE_ACCOUNT_CHARS: usize = 400;
 /// stderr, then to stdout — a plain non-zero exit composes no `error` at all,
 /// so the harness's last words are the only cause there is. Never empty: a
 /// candidate that died silently says so, because "nothing" is itself the
-/// finding a reader needs. Folded onto one line and bounded at
-/// [`FAILURE_ACCOUNT_CHARS`].
+/// finding a reader needs. Folded onto one line, stripped of control
+/// characters (harness output is untrusted, and a terminal escape has no place
+/// in a line a supervisor publishes), and bounded at [`FAILURE_ACCOUNT_CHARS`].
 fn failure_account(result: &RunResult) -> String {
     let last_words = |captured: &str| {
         captured
@@ -1658,7 +1659,13 @@ fn failure_account(result: &RunResult) -> String {
         .or_else(|| last_words(&result.stderr).map(|words| format!("(stderr) {words}")))
         .or_else(|| last_words(&result.stdout).map(|words| format!("(stdout) {words}")))
         .unwrap_or_else(|| "nothing — it wrote no error, no stderr and no stdout".to_string());
-    let folded = account.split_whitespace().collect::<Vec<_>>().join(" ");
+    let folded = account
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>();
     if folded.chars().count() <= FAILURE_ACCOUNT_CHARS {
         return folded;
     }
@@ -3666,17 +3673,14 @@ fn fallback_step(result: &RunResult, multi_model: bool, report: &mut FallbackRep
         }
         None => {
             report.ran = Some(result.harness.clone());
-            // The chain stops here for every failure the classifier could not
-            // name, whatever the candidate has to show for itself — decided in
-            // `startup_failure_reason`'s contract, and repeated here because
-            // this is where a reader will look for the alternative: `work ==
-            // None` is missing evidence, not proof nothing was billed, so it
-            // licenses no re-run on the next identity. The candidate that stops
-            // the chain is the one a reader is left looking at, so it is here
-            // that "it failed and nothing says why, and nothing says it did
-            // anything either" has to be said. Read off the result's own
-            // published reading rather than re-derived, so the attribution and
-            // the verdict above cannot disagree.
+            // An unclassified failure stops here under either work reading
+            // (why: `startup_failure_reason`); what is decided here is only
+            // the attribution. The candidate that stops the chain is the one a
+            // reader is left looking at, so it is here that "it failed and
+            // nothing says why, and nothing says it did anything either" has
+            // to be said. Read off the result's own published reading rather
+            // than re-derived, so the attribution and the verdict above cannot
+            // disagree.
             report.stopped_without_work = result.work == Some(fallback::RunWork::None);
             false
         }
@@ -4775,6 +4779,12 @@ mod tests {
             failure_account(&r),
             "(stdout) {\"type\":\"error\",\"message\":\"boom\"}"
         );
+
+        // Control characters are the harness's, not the summary's: a
+        // terminal escape or a bell is dropped at this boundary.
+        let mut r = result(Status::Nonzero, true);
+        r.stderr = "\u{1b}[31mred\u{7} words\u{1b}[0m".into();
+        assert_eq!(failure_account(&r), "(stderr) [31mred words[0m");
 
         // Silence is itself the finding, never an empty sentence.
         let r = result(Status::Nonzero, true);

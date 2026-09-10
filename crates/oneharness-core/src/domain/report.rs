@@ -900,7 +900,24 @@ mod tests {
     fn status_prose_token_is_its_wire_token() {
         // `as_str` exists so a summary can name a status in prose; it must spell
         // the status exactly as the report does, or the sentence names a value a
-        // reader cannot find in the JSON beside it.
+        // reader cannot find in the JSON beside it. `ALL` is checked against
+        // the enum's own generated schema, so a variant added without being
+        // listed fails here instead of escaping the token check.
+        let rendered = serde_json::to_value(schemars::schema_for!(Status)).expect("serializes");
+        let generated: Vec<Value> = rendered["oneOf"]
+            .as_array()
+            .expect("Status renders as a union of serialized consts")
+            .iter()
+            .map(|variant| variant["const"].clone())
+            .collect();
+        let listed: Vec<Value> = Status::ALL
+            .into_iter()
+            .map(|status| serde_json::to_value(status).expect("a status serializes"))
+            .collect();
+        assert_eq!(
+            listed, generated,
+            "Status::ALL must list every variant, in order"
+        );
         for status in Status::ALL {
             let wire = serde_json::to_value(status).expect("a status serializes");
             assert_eq!(wire, status.as_str(), "{status:?}");

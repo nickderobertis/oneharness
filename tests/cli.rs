@@ -2608,10 +2608,13 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         record_version: &'static str,
         /// The ending the summary names, and the candidate's own words it
         /// carries — both `None` for a candidate that hands the task on.
-        summary: Option<(&'static str, &'static str)>,
+        summary: Option<(&'static str, String)>,
         /// A deadline for the run, where the ending is a candidate that ran
         /// out of time.
         timeout: Option<&'static str>,
+        /// A schema the answer must conform to, where the ending is an answer
+        /// that did not. Buffered only: `--stream` refuses `--schema`.
+        schema: bool,
     }
     let cases = [
         Case {
@@ -2626,6 +2629,7 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             record_version: "1.6",
             summary: None,
             timeout: None,
+            schema: false,
         },
         Case {
             tag: "unclassified-no-work",
@@ -2637,9 +2641,11 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
                 "failed with nothing to show for it — no tool call, no billed usage, and no \
                  cause it could classify",
                 "(status nonzero, exit 2) — so the chain stopped there and tried no \
-                 candidate after it; it said: (stderr) No claude executable found for nodejs 26.5.0",
+                 candidate after it; it said: (stderr) No claude executable found for nodejs 26.5.0"
+                     .to_string(),
             )),
             timeout: None,
+            schema: false,
         },
         Case {
             // The candidate that merely ran out of time: killed at the deadline
@@ -2655,9 +2661,11 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
                 "failed with nothing to show for it — no tool call, no billed usage, and no \
                  cause it could classify",
                 "(status timeout) — so the chain stopped there and tried no candidate after \
-                 it; it said: harness `claude-code` hit its oneharness deadline:",
+                 it; it said: harness `claude-code` hit its oneharness deadline:"
+                     .to_string(),
             )),
             timeout: Some("1"),
+            schema: false,
         },
         Case {
             tag: "unclassified-worked",
@@ -2670,9 +2678,11 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             summary: Some((
                 "did the task's work and did not succeed, for a cause it could not classify",
                 "(status nonzero, exit 1) — so the chain stopped there and tried no \
-                 candidate after it; it said: (stderr) gave up after a partial answer",
+                 candidate after it; it said: (stderr) gave up after a partial answer"
+                     .to_string(),
             )),
             timeout: None,
+            schema: false,
         },
         Case {
             // A failure the classifier names and the chain still stops at: a
@@ -2689,9 +2699,105 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
                 "ran but did not succeed",
                 "(status nonzero, exit 1, failure_kind model_not_found) — so the chain \
                  stopped there and tried no candidate after it; it said: (stderr) model not \
-                 found: gpt-9",
+                 found: gpt-9"
+                     .to_string(),
             )),
             timeout: None,
+            schema: false,
+        },
+        // The rest are the account's fallbacks, each one what a real harness
+        // leaves: an error record on stdout and nothing on stderr; a candidate
+        // that died silently; a terminal escape in its last words; a last line
+        // longer than a supervisor can publish; and an answer that did not
+        // conform to the schema (exit 0, no `error`, a verdict only).
+        Case {
+            tag: "stdout-last-words",
+            env: r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "fatal: the model returned nothing\n" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stdout) fatal: the model returned nothing"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "silent",
+            env: r#"{ MOCK_EXIT = "3", MOCK_STDOUT = "" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 3) — so the chain stopped there and tried no \
+                 candidate after it; it said: nothing — it wrote no error, no stderr and no \
+                 stdout"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "control-characters",
+            env: r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = "\u001b[31mdied\u0007 loudly\u001b[0m" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) [31mdied loudly[0m"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "bounded",
+            env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = "{}" }}"#,
+                "x".repeat(450)
+            ),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                // 400 characters of the account — the `(stderr)` tag counts —
+                // then the ellipsis: the report keeps the rest.
+                format!(
+                    "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                     candidate after it; it said: (stderr) {}…",
+                    "x".repeat(400 - "(stderr) ".len())
+                ),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "schema-verdict",
+            env: r#"{ MOCK_EXIT = "0", MOCK_STDOUT = '{"type":"result","result":"not json at all"}' }"#.to_string(),
+            falls_through: false,
+            work: None,
+            // Exit 0 and no `error` text: nothing in the record asks for a
+            // newer reader than the schema fields themselves.
+            record_version: "1.1",
+            summary: Some((
+                "ran but did not succeed",
+                "(status ok, exit 0) — so the chain stopped there and tried no candidate \
+                 after it; it said: the answer did not conform to the schema:"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: true,
         },
     ];
 
@@ -2704,6 +2810,7 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             record_version,
             summary: expected_summary,
             timeout,
+            schema,
         } = case;
         let project = format!(
             r#"
@@ -2736,6 +2843,12 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         ];
         if let Some(seconds) = timeout {
             args.extend(["--timeout", seconds]);
+        }
+        let schema_file = std::path::Path::new(&cwd).join("schema.json");
+        let schema_arg = schema_file.display().to_string();
+        if schema {
+            std::fs::write(&schema_file, r#"{"type":"object"}"#).unwrap();
+            args.extend(["--schema", &schema_arg, "--schema-max-retries", "0"]);
         }
         let output = run_with_config(&args, &[], &fx.user_config());
         let value = json_stdout(&output);
@@ -2825,7 +2938,11 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         // ...and a streamed chain says the same thing. The two drivers reach the
         // verdict through one `fallback_step`, but they assemble the block
         // separately, so the reading a consumer acts on live is pinned here
-        // rather than inferred from the buffered one.
+        // rather than inferred from the buffered one. (Not for the schema
+        // ending: `--stream` refuses `--schema` before any chain runs.)
+        if schema {
+            continue;
+        }
         let mut stream_args = vec![
             "run",
             "--prompt",

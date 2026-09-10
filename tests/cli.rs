@@ -2727,6 +2727,41 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             schema: false,
         },
         Case {
+            // A multi-line diagnostic, the shape a Node-based launcher dies
+            // with: the cause is three lines up from a footer that names only
+            // the runtime. The whole diagnostic fits, so the whole diagnostic
+            // is what the line carries — a consumer holding only the summary
+            // reads the ENOENT, not "Node.js v22.14.0".
+            tag: "multi-line-diagnostic",
+            env: concat!(
+                r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = ""#,
+                r#"(node:4131) Warning: deprecated --experimental flag\n"#,
+                r#"Error: ENOENT: no such file or directory, open '/home/u/.claude/settings.json'\n"#,
+                r#"    at Object.<anonymous> (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11)\n"#,
+                r#"    at Module._compile (node:internal/modules/cjs/loader:1554:14)\n"#,
+                r#"\n"#,
+                r#"Node.js v22.14.0\n"#,
+                r#"" }"#,
+            )
+            .to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) (node:4131) Warning: deprecated \
+                 --experimental flag Error: ENOENT: no such file or directory, open \
+                 '/home/u/.claude/settings.json' at Object.<anonymous> \
+                 (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11) at \
+                 Module._compile (node:internal/modules/cjs/loader:1554:14) Node.js v22.14.0"
+                    .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
             tag: "silent",
             env: r#"{ MOCK_EXIT = "3", MOCK_STDOUT = "" }"#.to_string(),
             falls_through: false,

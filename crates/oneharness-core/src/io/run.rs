@@ -1638,15 +1638,15 @@ const FAILURE_ACCOUNT_CHARS: usize = 400;
 /// finding a reader needs. Folded onto one line, stripped of control
 /// characters (harness output is untrusted, and a terminal escape has no place
 /// in a line a supervisor publishes), and bounded at [`FAILURE_ACCOUNT_CHARS`].
+///
+/// The last words are a **tail of lines**, not the last line: a diagnostic is
+/// written after the warnings that preceded it, so the tail is the right
+/// region, but its final line is the least of it — a Node crash ends in a
+/// version footer, a shell wrapper in the exit line, a Python traceback in the
+/// exception with its frames above. So [`last_words`] keeps as many trailing
+/// non-blank lines as fit the bound, whole when the diagnostic does, and a
+/// leading `…` says where earlier lines were dropped.
 fn failure_account(result: &RunResult) -> String {
-    let last_words = |captured: &str| {
-        captured
-            .lines()
-            .rev()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map(str::to_string)
-    };
     let account = result
         .error
         .clone()
@@ -1656,8 +1656,8 @@ fn failure_account(result: &RunResult) -> String {
                 .as_ref()
                 .map(|why| format!("the answer did not conform to the schema: {why}"))
         })
-        .or_else(|| last_words(&result.stderr).map(|words| format!("(stderr) {words}")))
-        .or_else(|| last_words(&result.stdout).map(|words| format!("(stdout) {words}")))
+        .or_else(|| last_words(&result.stderr, "(stderr) "))
+        .or_else(|| last_words(&result.stdout, "(stdout) "))
         .unwrap_or_else(|| "nothing — it wrote no error, no stderr and no stdout".to_string());
     let folded = account
         .split_whitespace()
@@ -1675,6 +1675,42 @@ fn failure_account(result: &RunResult) -> String {
         .collect::<String>();
     cut.push('…');
     cut
+}
+
+/// The trailing non-blank lines of a captured stream that fit
+/// [`FAILURE_ACCOUNT_CHARS`] behind `tag`, joined on one line — at least the
+/// final line, however long (the caller's bound then cuts it). `None` for a
+/// stream with no words at all. A leading `…` marks lines dropped before the
+/// kept ones, so a reader knows the diagnostic began earlier than the line
+/// shows and the report has it whole.
+fn last_words(captured: &str, tag: &str) -> Option<String> {
+    let budget = FAILURE_ACCOUNT_CHARS.saturating_sub(tag.chars().count());
+    let mut kept: Vec<&str> = Vec::new();
+    let mut width = 0;
+    let mut dropped = false;
+    for line in captured
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+    {
+        // One separator per join, plus the marker a drop would add.
+        let cost = line.chars().count() + usize::from(!kept.is_empty());
+        if !kept.is_empty() && width + cost + 1 > budget {
+            dropped = true;
+            break;
+        }
+        width += cost;
+        kept.push(line);
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    kept.reverse();
+    let marker = if dropped { "…" } else { "" };
+    Some(format!("{tag}{marker}{}", kept.join(" ")))
 }
 
 fn apply_result_identity(result: &mut RunResult, composed: &str) {
@@ -4760,15 +4796,56 @@ mod tests {
         assert_eq!(failure_envelope(&r), "status ok, exit 0");
 
         // A plain non-zero exit composes no `error`, so the harness's last
-        // non-blank stderr line is what there is — folded onto one line.
+        // words on stderr are what there is — blank lines dropped, the rest
+        // folded onto one line.
         let mut r = result(Status::Nonzero, true);
         r.exit_code = Some(2);
         r.failure_kind = Some(signals::FailureKind::ModelNotFound);
         r.stderr = "warning: first\nmodel not found:\n\t gpt-9  \n\n".into();
-        assert_eq!(failure_account(&r), "(stderr) gpt-9");
+        assert_eq!(
+            failure_account(&r),
+            "(stderr) warning: first model not found: gpt-9"
+        );
         assert_eq!(
             failure_envelope(&r),
             "status nonzero, exit 2, failure_kind model_not_found"
+        );
+
+        // A multi-line diagnostic that fits is carried whole: the crash's own
+        // message, not the footer a Node process signs off with.
+        let mut r = result(Status::Nonzero, true);
+        r.stderr = concat!(
+            "(node:41) Warning: deprecated\n",
+            "Error: ENOENT: no such file or directory, open '/home/u/.claude/settings.json'\n",
+            "    at Object.<anonymous> (/usr/lib/node_modules/claude/cli.js:12:11)\n",
+            "\n",
+            "Node.js v22.14.0\n",
+        )
+        .into();
+        assert_eq!(
+            failure_account(&r),
+            "(stderr) (node:41) Warning: deprecated Error: ENOENT: no such file or directory, \
+             open '/home/u/.claude/settings.json' at Object.<anonymous> \
+             (/usr/lib/node_modules/claude/cli.js:12:11) Node.js v22.14.0"
+        );
+
+        // One that does not fit keeps its tail — the lines nearest the end —
+        // and says that earlier lines were dropped.
+        let mut r = result(Status::Nonzero, true);
+        let frames = (0..20)
+            .map(|n| format!("  File \"/srv/agent/step{n}.py\", line {n}, in run\n"))
+            .collect::<String>();
+        r.stderr = format!("Traceback (most recent call last):\n{frames}KeyError: 'session'\n");
+        let account = failure_account(&r);
+        assert!(account.starts_with("(stderr) …File \""), "{account}");
+        assert!(account.ends_with("KeyError: 'session'"), "{account}");
+        assert!(
+            account.chars().count() <= FAILURE_ACCOUNT_CHARS,
+            "{account}"
+        );
+        assert!(
+            !account.contains("Traceback"),
+            "the head was dropped: {account}"
         );
 
         // Then stdout, where a harness that wrote nothing to stderr may have

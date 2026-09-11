@@ -24,6 +24,16 @@ use crate::domain::usage::UtcInstant;
 /// `sync`, and `config` — so one number describes the whole surface; the history
 /// records carry their own (`domain::history::SCHEMA_VERSION`).
 ///
+/// `0.10` added [`RunResult::observed_model`] — the model the harness itself
+/// reported the conversation would run under, read off its own protocol before
+/// any token was spent (codex's app-server names it on the `thread/start` /
+/// `thread/resume` response) — with the `model_mismatch` [`FailureKind`] and
+/// its `"model-mismatch"` fall-through reason: the refusal oneharness answers,
+/// before the turn starts, when that report and the requested model differ.
+/// Purely additive — every 0.9 field keeps its name, type, and meaning — but a
+/// consumer that exhaustively matches `failure_kind` learns of the new value
+/// only from the version.
+///
 /// `0.9` added the work reading a failed run has to show for itself:
 /// [`RunResult::work`] on a failure no classifier recognized, and
 /// [`FallbackReport::stopped_without_work`] where such a candidate is the one a
@@ -64,7 +74,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.9";
+pub const SCHEMA_VERSION: &str = "0.10";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///
@@ -457,6 +467,15 @@ pub struct RunResult {
     /// model) pair. The model is also visible in `command`; this field surfaces it
     /// without parsing the argv.
     pub model: Option<String>,
+    /// The model the harness **itself** reported the conversation would run
+    /// under, read off its own protocol before any token was spent — for codex
+    /// over `app-server`, `result.model` of the `thread/start` / `thread/resume`
+    /// response. `null` on every path that reports none, which today is every
+    /// path but codex's app-server. Never inferred and never copied from
+    /// `model`: where both are set they are the requested model and the served
+    /// one, and a difference between them is exactly the `model_mismatch`
+    /// refusal, which this field then names the other half of.
+    pub observed_model: Option<String>,
     /// Process exit code; `null` when not run, timed out, or signalled.
     pub exit_code: Option<i32>,
     /// Wall-clock duration of the run; `null` when not executed.
@@ -519,7 +538,8 @@ pub struct RunResult {
     /// Best-effort failure reason; `null` when unclassified. Distinct from
     /// `status`, which records oneharness's relationship to the process. Two
     /// families: coarse reasons for a non-zero run (`auth`, `rate_limit`,
-    /// `model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited
+    /// `model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,
+    /// `input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited
     /// *cleanly* but only deferred a builtin tool call instead of executing it
     /// (Claude Code bridge/managed deployments), so it did no useful work. The
     /// deferred case is the only `failure_kind` that can appear on a `status: ok`
@@ -761,7 +781,8 @@ pub struct FallbackReport {
     /// The candidates fallen through because they could not run the task at all,
     /// in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
     /// `quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,
-    /// and — on a model fan-out — `model-not-found` / `rate-limit`; see
+    /// `model-mismatch`, and — on a model fan-out — `model-not-found` /
+    /// `rate-limit`; see
     /// [`crate::domain::fallback::startup_failure_reason`]).
     pub fell_through: Vec<FallThrough>,
     /// Whether the candidate named by `ran` stopped the chain **having shown no
@@ -1226,6 +1247,7 @@ mod tests {
             status: Status::Cancelled,
             prompt: None,
             model: None,
+            observed_model: None,
             exit_code: None,
             duration_ms: Some(1_200),
             telemetry: Some(ExecutionTelemetry::StdoutObserved { tool_ms: 12 }),

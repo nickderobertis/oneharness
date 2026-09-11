@@ -93,6 +93,7 @@ export type FallThroughReason =
   | "session-not-found"
   | "untrusted-directory"
   | "input-too-large"
+  | "model-mismatch"
   | "model-not-found"
   | "rate-limit";
 /**
@@ -114,7 +115,8 @@ export type FailureKind =
   | "session_not_found"
   | "tool_deferred"
   | "untrusted_directory"
-  | "input_too_large";
+  | "input_too_large"
+  | "model_mismatch";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *
@@ -409,7 +411,8 @@ export interface FallbackReport {
    * The candidates fallen through because they could not run the task at all,
    * in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
    * `quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,
-   * and — on a model fan-out — `model-not-found` / `rate-limit`; see
+   * `model-mismatch`, and — on a model fan-out — `model-not-found` /
+   * `rate-limit`; see
    * [`crate::domain::fallback::startup_failure_reason`]).
    */
   fell_through: FallThrough[];
@@ -519,7 +522,8 @@ export interface RunResult {
    * Best-effort failure reason; `null` when unclassified. Distinct from
    * `status`, which records oneharness's relationship to the process. Two
    * families: coarse reasons for a non-zero run (`auth`, `rate_limit`,
-   * `model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited
+   * `model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,
+   * `input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited
    * *cleanly* but only deferred a builtin tool call instead of executing it
    * (Claude Code bridge/managed deployments), so it did no useful work. The
    * deferred case is the only `failure_kind` that can appear on a `status: ok`
@@ -549,6 +553,17 @@ export interface RunResult {
    * without parsing the argv.
    */
   model: string | null;
+  /**
+   * The model the harness **itself** reported the conversation would run
+   * under, read off its own protocol before any token was spent — for codex
+   * over `app-server`, `result.model` of the `thread/start` / `thread/resume`
+   * response. `null` on every path that reports none, which today is every
+   * path but codex's app-server. Never inferred and never copied from
+   * `model`: where both are set they are the requested model and the served
+   * one, and a difference between them is exactly the `model_mismatch`
+   * refusal, which this field then names the other half of.
+   */
+  observed_model: string | null;
   output_format: OutputFormat;
   /**
    * The prompt this result ran, set only on a **batch** run (one harness

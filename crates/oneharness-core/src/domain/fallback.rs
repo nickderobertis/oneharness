@@ -137,6 +137,9 @@ pub enum FallThroughReason {
     UntrustedDirectory,
     /// The harness refused the input's size before making the request.
     InputTooLarge,
+    /// The harness reported it would run under a model other than the one
+    /// requested, so the turn was refused before it started.
+    ModelMismatch,
     /// This model is unavailable — only on a model fan-out.
     ModelNotFound,
     /// This candidate is rate limited and cannot serve the request right now.
@@ -156,6 +159,7 @@ impl FallThroughReason {
             FallThroughReason::SessionNotFound => "session-not-found",
             FallThroughReason::UntrustedDirectory => "untrusted-directory",
             FallThroughReason::InputTooLarge => "input-too-large",
+            FallThroughReason::ModelMismatch => "model-mismatch",
             FallThroughReason::ModelNotFound => "model-not-found",
             FallThroughReason::RateLimit => "rate-limit",
         }
@@ -285,6 +289,13 @@ pub fn startup_failure_reason(
         }
         (Status::Nonzero, Some(FailureKind::InputTooLarge)) => {
             Some(FallThroughReason::InputTooLarge)
+        }
+        // The third precondition: the harness said which model the thread would
+        // run under before any token was spent, and it was not the one asked
+        // for. No work was done, so the next identity — which may honour the
+        // model — gets the task on ANY chain, not only a model fan-out.
+        (Status::Nonzero, Some(FailureKind::ModelMismatch)) => {
+            Some(FallThroughReason::ModelMismatch)
         }
         (Status::Skipped, _) => Some(FallThroughReason::NotInstalled),
         (Status::SpawnError, _) => Some(FallThroughReason::SpawnError),
@@ -445,6 +456,7 @@ mod tests {
                 FallThroughReason::UntrustedDirectory,
             ),
             (FailureKind::InputTooLarge, FallThroughReason::InputTooLarge),
+            (FailureKind::ModelMismatch, FallThroughReason::ModelMismatch),
         ] {
             assert_eq!(
                 startup_failure_reason(Status::Nonzero, Some(kind), false, RunWork::None),
@@ -654,6 +666,7 @@ mod tests {
                 false,
             ),
             (Status::Nonzero, Some(FailureKind::InputTooLarge), false),
+            (Status::Nonzero, Some(FailureKind::ModelMismatch), false),
             (Status::Nonzero, Some(FailureKind::RateLimit), false),
             (Status::Nonzero, Some(FailureKind::ModelNotFound), true),
             (Status::Skipped, None, false),
@@ -733,6 +746,7 @@ mod tests {
             status: Status::Nonzero,
             prompt: None,
             model: None,
+            observed_model: None,
             exit_code: Some(1),
             duration_ms: Some(401),
             telemetry: None,

@@ -10,7 +10,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -36,7 +36,7 @@ export type HistoryLine =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | undefined;
+          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
           [k: string]: unknown;
         } & (
           | {
@@ -55,9 +55,20 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.7" | undefined;
+            schema_version?: "1.7" | "1.8" | undefined;
             status?: "nonzero" | "timeout" | "cancelled" | undefined;
             work: "done" | "none";
+            [k: string]: unknown;
+          }
+      ) &
+      (
+        | {
+            observed_model?: null | undefined;
+            [k: string]: unknown;
+          }
+        | {
+            observed_model: string;
+            schema_version?: "1.8" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -67,7 +78,7 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | undefined;
+            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -81,22 +92,49 @@ export type HistoryLine =
               | "tool_deferred"
               | "untrusted_directory"
               | "input_too_large"
+              | "model_mismatch"
               | null;
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.5" | "1.6" | "1.7" | undefined;
+            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | undefined;
             [k: string]: unknown;
           }
       ) &
         (
           | {
               failure_kind?:
-                "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred" | null;
+                | "auth"
+                | "rate_limit"
+                | "model_not_found"
+                | "quota"
+                | "session_not_found"
+                | "tool_deferred"
+                | "model_mismatch"
+                | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.6" | "1.7" | undefined;
+              schema_version?: "1.6" | "1.7" | "1.8" | undefined;
+              [k: string]: unknown;
+            }
+        ) &
+        (
+          | {
+              failure_kind?:
+                | "auth"
+                | "rate_limit"
+                | "model_not_found"
+                | "quota"
+                | "session_not_found"
+                | "tool_deferred"
+                | "untrusted_directory"
+                | "input_too_large"
+                | null;
+              [k: string]: unknown;
+            }
+          | {
+              schema_version?: "1.8" | undefined;
               [k: string]: unknown;
             }
         )) &
@@ -118,11 +156,16 @@ export type HistoryLine =
             model: string | null;
             model_ms: number;
             name: string;
+            /**
+             * The model the harness itself reported it would run under (see
+             * [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+             */
+            observed_model?: string | null | undefined;
             observed_tool_ms?: never | undefined;
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -159,11 +202,16 @@ export type HistoryLine =
             model: string | null;
             model_ms: number;
             name: string;
+            /**
+             * The model the harness itself reported it would run under (see
+             * [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+             */
+            observed_model?: string | null | undefined;
             observed_tool_ms?: never | undefined;
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -200,11 +248,16 @@ export type HistoryLine =
             model: string | null;
             model_ms?: never | undefined;
             name: string;
+            /**
+             * The model the harness itself reported it would run under (see
+             * [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+             */
+            observed_model?: string | null | undefined;
             observed_tool_ms: number;
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -241,11 +294,16 @@ export type HistoryLine =
             model: string | null;
             model_ms?: never | undefined;
             name: string;
+            /**
+             * The model the harness itself reported it would run under (see
+             * [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+             */
+            observed_model?: string | null | undefined;
             observed_tool_ms?: never | undefined;
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -282,11 +340,16 @@ export type HistoryLine =
             model: string | null;
             model_ms?: never | undefined;
             name: string;
+            /**
+             * The model the harness itself reported it would run under (see
+             * [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+             */
+            observed_model?: string | null | undefined;
             observed_tool_ms?: never | undefined;
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -323,11 +386,16 @@ export type HistoryLine =
             model: string | null;
             model_ms?: never | undefined;
             name: string;
+            /**
+             * The model the harness itself reported it would run under (see
+             * [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+             */
+            observed_model?: string | null | undefined;
             observed_tool_ms?: never | undefined;
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -372,7 +440,8 @@ export type FailureKind =
   | "session_not_found"
   | "tool_deferred"
   | "untrusted_directory"
-  | "input_too_large";
+  | "input_too_large"
+  | "model_mismatch";
 /**
  * The unified approval mode, from least to most autonomy. A harness may not
  * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the

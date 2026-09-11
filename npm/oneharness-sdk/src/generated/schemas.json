@@ -1837,6 +1837,11 @@
             "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
             "type": "string",
             "const": "input_too_large"
+          },
+          {
+            "description": "The harness reported it would run the conversation under a model other\nthan the one requested, and oneharness refused the turn before it\nstarted (codex's app-server names the thread's model on its\n`thread/start` / `thread/resume` response, before any token is spent).\nThe third precondition refusal: no work was done, no token was spent, and\nthe next identity may honour the model.",
+            "type": "string",
+            "const": "model_mismatch"
           }
         ]
       },
@@ -1905,6 +1910,11 @@
             "const": "input-too-large"
           },
           {
+            "description": "The harness reported it would run under a model other than the one\nrequested, so the turn was refused before it started.",
+            "type": "string",
+            "const": "model-mismatch"
+          },
+          {
             "description": "This model is unavailable — only on a model fan-out.",
             "type": "string",
             "const": "model-not-found"
@@ -1921,7 +1931,7 @@
         "type": "object",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\nand — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, and — on a model fan-out — `model-not-found` /\n`rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FallThrough"
@@ -2062,7 +2072,7 @@
             "format": "int32"
           },
           "failure_kind": {
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
             "anyOf": [
               {
                 "$ref": "#/$defs/FailureKind"
@@ -2089,6 +2099,13 @@
           },
           "model": {
             "description": "The model this result ran with (the value oneharness put on the harness's\nmodel flag), or `null` when no model was requested and the harness used its\nown default. On a **model fan-out** run (`RunReport::models`), this is what\ndistinguishes results that share a harness — each entry is one (harness,\nmodel) pair. The model is also visible in `command`; this field surfaces it\nwithout parsing the argv.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` / `thread/resume`\nresponse. `null` on every path that reports none, which today is every\npath but codex's app-server. Never inferred and never copied from\n`model`: where both are set they are the requested model and the served\none, and a difference between them is exactly the `model_mismatch`\nrefusal, which this field then names the other half of.",
             "type": [
               "string",
               "null"
@@ -2214,6 +2231,7 @@
           "status",
           "prompt",
           "model",
+          "observed_model",
           "exit_code",
           "duration_ms",
           "telemetry",
@@ -2890,6 +2908,11 @@
             "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
             "type": "string",
             "const": "input_too_large"
+          },
+          {
+            "description": "The harness reported it would run the conversation under a model other\nthan the one requested, and oneharness refused the turn before it\nstarted (codex's app-server names the thread's model on its\n`thread/start` / `thread/resume` response, before any token is spent).\nThe third precondition refusal: no work was done, no token was spent, and\nthe next identity may honour the model.",
+            "type": "string",
+            "const": "model_mismatch"
           }
         ]
       },
@@ -2958,6 +2981,11 @@
             "const": "input-too-large"
           },
           {
+            "description": "The harness reported it would run under a model other than the one\nrequested, so the turn was refused before it started.",
+            "type": "string",
+            "const": "model-mismatch"
+          },
+          {
             "description": "This model is unavailable — only on a model fan-out.",
             "type": "string",
             "const": "model-not-found"
@@ -2974,7 +3002,7 @@
         "type": "object",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\nand — on a model fan-out — `model-not-found` / `rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, and — on a model fan-out — `model-not-found` /\n`rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FallThrough"
@@ -3279,7 +3307,7 @@
             "format": "int32"
           },
           "failure_kind": {
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
             "anyOf": [
               {
                 "$ref": "#/$defs/FailureKind"
@@ -3306,6 +3334,13 @@
           },
           "model": {
             "description": "The model this result ran with (the value oneharness put on the harness's\nmodel flag), or `null` when no model was requested and the harness used its\nown default. On a **model fan-out** run (`RunReport::models`), this is what\ndistinguishes results that share a harness — each entry is one (harness,\nmodel) pair. The model is also visible in `command`; this field surfaces it\nwithout parsing the argv.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` / `thread/resume`\nresponse. `null` on every path that reports none, which today is every\npath but codex's app-server. Never inferred and never copied from\n`model`: where both are set they are the requested model and the served\none, and a difference between them is exactly the `model_mismatch`\nrefusal, which this field then names the other half of.",
             "type": [
               "string",
               "null"
@@ -3431,6 +3466,7 @@
           "status",
           "prompt",
           "model",
+          "observed_model",
           "exit_code",
           "duration_ms",
           "telemetry",
@@ -4175,7 +4211,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "type": {
@@ -4294,7 +4331,8 @@
                               "1.4",
                               "1.5",
                               "1.6",
-                              "1.7"
+                              "1.7",
+                              "1.8"
                             ]
                           }
                         },
@@ -4354,7 +4392,8 @@
                           "schema_version": {
                             "type": "string",
                             "enum": [
-                              "1.7"
+                              "1.7",
+                              "1.8"
                             ]
                           },
                           "status": {
@@ -4377,6 +4416,35 @@
                           "work"
                         ]
                       }
+                    ]
+                  }
+                ]
+              },
+              {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "observed_model": {
+                        "type": "null"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "observed_model": {
+                        "type": "string"
+                      },
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.8"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "observed_model"
                     ]
                   }
                 ]
@@ -4408,7 +4476,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       }
                     }
@@ -4431,6 +4500,7 @@
                               "tool_deferred",
                               "untrusted_directory",
                               "input_too_large",
+                              "model_mismatch",
                               null
                             ]
                           }
@@ -4444,7 +4514,8 @@
                             "enum": [
                               "1.5",
                               "1.6",
-                              "1.7"
+                              "1.7",
+                              "1.8"
                             ]
                           }
                         }
@@ -4464,6 +4535,7 @@
                               "quota",
                               "session_not_found",
                               "tool_deferred",
+                              "model_mismatch",
                               null
                             ]
                           }
@@ -4476,7 +4548,41 @@
                             "type": "string",
                             "enum": [
                               "1.6",
-                              "1.7"
+                              "1.7",
+                              "1.8"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "enum": [
+                              "auth",
+                              "rate_limit",
+                              "model_not_found",
+                              "quota",
+                              "session_not_found",
+                              "tool_deferred",
+                              "untrusted_directory",
+                              "input_too_large",
+                              null
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schema_version": {
+                            "type": "string",
+                            "enum": [
+                              "1.8"
                             ]
                           }
                         }
@@ -4557,6 +4663,13 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_model": {
+                        "description": "The model the harness itself reported it would run under (see\n[`HistoryRecord::observed_model`]). Omitted on the wire when absent.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
@@ -4577,7 +4690,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "session": {
@@ -4753,6 +4867,13 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_model": {
+                        "description": "The model the harness itself reported it would run under (see\n[`HistoryRecord::observed_model`]). Omitted on the wire when absent.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
@@ -4773,7 +4894,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "session": {
@@ -4946,6 +5068,13 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_model": {
+                        "description": "The model the harness itself reported it would run under (see\n[`HistoryRecord::observed_model`]). Omitted on the wire when absent.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "observed_tool_ms": {
                         "type": "integer",
                         "minimum": 0
@@ -4967,7 +5096,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "session": {
@@ -5122,6 +5252,13 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_model": {
+                        "description": "The model the harness itself reported it would run under (see\n[`HistoryRecord::observed_model`]). Omitted on the wire when absent.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
@@ -5142,7 +5279,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "session": {
@@ -5299,6 +5437,13 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_model": {
+                        "description": "The model the harness itself reported it would run under (see\n[`HistoryRecord::observed_model`]). Omitted on the wire when absent.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
@@ -5316,7 +5461,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "session": {
@@ -5487,6 +5633,13 @@
                       "name": {
                         "type": "string"
                       },
+                      "observed_model": {
+                        "description": "The model the harness itself reported it would run under (see\n[`HistoryRecord::observed_model`]). Omitted on the wire when absent.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "observed_tool_ms": false,
                       "permission_mode": {
                         "$ref": "#/$defs/PermissionMode"
@@ -5507,7 +5660,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "session": {
@@ -5738,6 +5892,11 @@
             "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
             "type": "string",
             "const": "input_too_large"
+          },
+          {
+            "description": "The harness reported it would run the conversation under a model other\nthan the one requested, and oneharness refused the turn before it\nstarted (codex's app-server names the thread's model on its\n`thread/start` / `thread/resume` response, before any token is spent).\nThe third precondition refusal: no work was done, no token was spent, and\nthe next identity may honour the model.",
+            "type": "string",
+            "const": "model_mismatch"
           }
         ]
       },
@@ -5963,7 +6122,8 @@
                       "1.4",
                       "1.5",
                       "1.6",
-                      "1.7"
+                      "1.7",
+                      "1.8"
                     ]
                   }
                 },
@@ -6023,7 +6183,8 @@
                   "schema_version": {
                     "type": "string",
                     "enum": [
-                      "1.7"
+                      "1.7",
+                      "1.8"
                     ]
                   },
                   "status": {
@@ -6046,6 +6207,35 @@
                   "work"
                 ]
               }
+            ]
+          }
+        ]
+      },
+      {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "observed_model": {
+                "type": "null"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "properties": {
+              "observed_model": {
+                "type": "string"
+              },
+              "schema_version": {
+                "type": "string",
+                "enum": [
+                  "1.8"
+                ]
+              }
+            },
+            "required": [
+              "observed_model"
             ]
           }
         ]
@@ -6077,7 +6267,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               }
             }
@@ -6100,6 +6291,7 @@
                       "tool_deferred",
                       "untrusted_directory",
                       "input_too_large",
+                      "model_mismatch",
                       null
                     ]
                   }
@@ -6113,7 +6305,8 @@
                     "enum": [
                       "1.5",
                       "1.6",
-                      "1.7"
+                      "1.7",
+                      "1.8"
                     ]
                   }
                 }
@@ -6133,6 +6326,7 @@
                       "quota",
                       "session_not_found",
                       "tool_deferred",
+                      "model_mismatch",
                       null
                     ]
                   }
@@ -6145,7 +6339,41 @@
                     "type": "string",
                     "enum": [
                       "1.6",
-                      "1.7"
+                      "1.7",
+                      "1.8"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "session_not_found",
+                      "tool_deferred",
+                      "untrusted_directory",
+                      "input_too_large",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.8"
                     ]
                   }
                 }
@@ -6392,7 +6620,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -6405,6 +6633,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -6427,7 +6662,8 @@
               "1.4",
               "1.5",
               "1.6",
-              "1.7"
+              "1.7",
+              "1.8"
             ]
           },
           "session": {
@@ -6773,7 +7009,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -6786,6 +7022,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -7020,7 +7263,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -7030,6 +7273,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -7052,7 +7302,8 @@
               "1.4",
               "1.5",
               "1.6",
-              "1.7"
+              "1.7",
+              "1.8"
             ]
           },
           "session": {
@@ -7206,7 +7457,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -7216,6 +7467,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": {
             "type": "integer",
@@ -7241,7 +7499,8 @@
               "1.4",
               "1.5",
               "1.6",
-              "1.7"
+              "1.7",
+              "1.8"
             ]
           },
           "session": {
@@ -7396,7 +7655,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -7406,6 +7665,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -7428,7 +7694,8 @@
               "1.4",
               "1.5",
               "1.6",
-              "1.7"
+              "1.7",
+              "1.8"
             ]
           },
           "session": {
@@ -7585,7 +7852,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -7595,6 +7862,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -7616,7 +7890,8 @@
               "1.4",
               "1.5",
               "1.6",
-              "1.7"
+              "1.7",
+              "1.8"
             ]
           },
           "session": {
@@ -7797,7 +8072,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -7807,6 +8082,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -8042,7 +8324,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -8052,6 +8334,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": false,
           "permission_mode": {
@@ -8258,7 +8547,7 @@
             "$ref": "#/$defs/HistoryLabels"
           },
           "model": {
-            "description": "The effective top-level model for the run, if any.",
+            "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
             "type": [
               "string",
               "null"
@@ -8275,6 +8564,13 @@
           "name": {
             "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
             "type": "string"
+          },
+          "observed_model": {
+            "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "observed_tool_ms": {
             "description": "Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,\nthis is not provider-measured and has no model-latency counterpart.",
@@ -8544,6 +8840,11 @@
             "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
             "type": "string",
             "const": "input_too_large"
+          },
+          {
+            "description": "The harness reported it would run the conversation under a model other\nthan the one requested, and oneharness refused the turn before it\nstarted (codex's app-server names the thread's model on its\n`thread/start` / `thread/resume` response, before any token is spent).\nThe third precondition refusal: no work was done, no token was spent, and\nthe next identity may honour the model.",
+            "type": "string",
+            "const": "model_mismatch"
           }
         ]
       },
@@ -8918,6 +9219,11 @@
             "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
             "type": "string",
             "const": "input_too_large"
+          },
+          {
+            "description": "The harness reported it would run the conversation under a model other\nthan the one requested, and oneharness refused the turn before it\nstarted (codex's app-server names the thread's model on its\n`thread/start` / `thread/resume` response, before any token is spent).\nThe third precondition refusal: no work was done, no token was spent, and\nthe next identity may honour the model.",
+            "type": "string",
+            "const": "model_mismatch"
           }
         ]
       },
@@ -8955,7 +9261,8 @@
                       "1.4",
                       "1.5",
                       "1.6",
-                      "1.7"
+                      "1.7",
+                      "1.8"
                     ]
                   },
                   "variant": {
@@ -9080,7 +9387,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       }
                     },
@@ -9140,7 +9448,8 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "status": {
@@ -9163,6 +9472,35 @@
                       "work"
                     ]
                   }
+                ]
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "observed_model": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "observed_model": {
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.8"
+                    ]
+                  }
+                },
+                "required": [
+                  "observed_model"
                 ]
               }
             ]
@@ -9194,7 +9532,8 @@
                       "1.4",
                       "1.5",
                       "1.6",
-                      "1.7"
+                      "1.7",
+                      "1.8"
                     ]
                   }
                 }
@@ -9217,6 +9556,7 @@
                           "tool_deferred",
                           "untrusted_directory",
                           "input_too_large",
+                          "model_mismatch",
                           null
                         ]
                       }
@@ -9230,7 +9570,8 @@
                         "enum": [
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       }
                     }
@@ -9250,6 +9591,7 @@
                           "quota",
                           "session_not_found",
                           "tool_deferred",
+                          "model_mismatch",
                           null
                         ]
                       }
@@ -9262,7 +9604,41 @@
                         "type": "string",
                         "enum": [
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.8"
                         ]
                       }
                     }
@@ -9509,7 +9885,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -9522,6 +9898,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -9544,7 +9927,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -9890,7 +10274,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -9903,6 +10287,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -10137,7 +10528,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -10147,6 +10538,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -10169,7 +10567,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -10323,7 +10722,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -10333,6 +10732,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": {
                 "type": "integer",
@@ -10358,7 +10764,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -10513,7 +10920,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -10523,6 +10930,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -10545,7 +10959,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -10702,7 +11117,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -10712,6 +11127,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -10733,7 +11155,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -10914,7 +11337,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -10924,6 +11347,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -11159,7 +11589,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -11169,6 +11599,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -11375,7 +11812,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -11392,6 +11829,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": {
                 "description": "Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,\nthis is not provider-measured and has no model-latency counterpart.",
@@ -11842,6 +12286,11 @@
             "description": "The request exceeded the input size the provider accepts and was refused\nbefore the model was called (Codex reports the machine-readable\n`input_error_code: input_too_large` with `max_chars`/`actual_chars`). The\nother precondition refusal: no tokens were spent, and a candidate with a\nlarger window can still run the task.",
             "type": "string",
             "const": "input_too_large"
+          },
+          {
+            "description": "The harness reported it would run the conversation under a model other\nthan the one requested, and oneharness refused the turn before it\nstarted (codex's app-server names the thread's model on its\n`thread/start` / `thread/resume` response, before any token is spent).\nThe third precondition refusal: no work was done, no token was spent, and\nthe next identity may honour the model.",
+            "type": "string",
+            "const": "model_mismatch"
           }
         ]
       },
@@ -11892,7 +12341,8 @@
                           "1.4",
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       }
                     },
@@ -11952,7 +12402,8 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       },
                       "status": {
@@ -11975,6 +12426,35 @@
                       "work"
                     ]
                   }
+                ]
+              }
+            ]
+          },
+          {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "observed_model": {
+                    "type": "null"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "observed_model": {
+                    "type": "string"
+                  },
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.8"
+                    ]
+                  }
+                },
+                "required": [
+                  "observed_model"
                 ]
               }
             ]
@@ -12006,7 +12486,8 @@
                       "1.4",
                       "1.5",
                       "1.6",
-                      "1.7"
+                      "1.7",
+                      "1.8"
                     ]
                   }
                 }
@@ -12029,6 +12510,7 @@
                           "tool_deferred",
                           "untrusted_directory",
                           "input_too_large",
+                          "model_mismatch",
                           null
                         ]
                       }
@@ -12042,7 +12524,8 @@
                         "enum": [
                           "1.5",
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
                         ]
                       }
                     }
@@ -12062,6 +12545,7 @@
                           "quota",
                           "session_not_found",
                           "tool_deferred",
+                          "model_mismatch",
                           null
                         ]
                       }
@@ -12074,7 +12558,41 @@
                         "type": "string",
                         "enum": [
                           "1.6",
-                          "1.7"
+                          "1.7",
+                          "1.8"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.8"
                         ]
                       }
                     }
@@ -12321,7 +12839,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -12334,6 +12852,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -12356,7 +12881,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -12702,7 +13228,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -12715,6 +13241,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -12949,7 +13482,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -12959,6 +13492,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -12981,7 +13521,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -13135,7 +13676,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -13145,6 +13686,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": {
                 "type": "integer",
@@ -13170,7 +13718,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -13325,7 +13874,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -13335,6 +13884,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -13357,7 +13913,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -13514,7 +14071,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -13524,6 +14081,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -13545,7 +14109,8 @@
                   "1.4",
                   "1.5",
                   "1.6",
-                  "1.7"
+                  "1.7",
+                  "1.8"
                 ]
               },
               "session": {
@@ -13726,7 +14291,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -13736,6 +14301,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -13971,7 +14543,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -13981,6 +14553,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": false,
               "permission_mode": {
@@ -14187,7 +14766,7 @@
                 "$ref": "#/$defs/HistoryLabels"
               },
               "model": {
-                "description": "The effective top-level model for the run, if any.",
+                "description": "The model this run **requested** — the value oneharness put on the\nharness's model flag or protocol frame — if any. Copied from\n[`RunResult::model`], so it keeps meaning the requested model even where\n`observed_model` below is present.",
                 "type": [
                   "string",
                   "null"
@@ -14204,6 +14783,13 @@
               "name": {
                 "description": "The human-meaningful session name (see [`session_name`]); repeated on\nevery record so a reader can resolve a session by name from any line.",
                 "type": "string"
+              },
+              "observed_model": {
+                "description": "The model the harness **itself** reported the conversation would run\nunder, read off its own protocol before any token was spent — for codex\nover `app-server`, `result.model` of the `thread/start` /\n`thread/resume` response. Copied from [`RunResult::observed_model`]:\nnever inferred and never copied from `model`, and omitted on the wire on\nevery path that reports none.\n\nOn a completed app-server turn the two agree, because a turn whose\nreported model differed from the requested one was refused before it\nran (`model_mismatch`) — so a completed record's `model` is what codex\nran, and the record can no longer say one model while another was\nbilled. They differ only on such a refused record, and where no model\nwas requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "observed_tool_ms": {
                 "description": "Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,\nthis is not provider-measured and has no model-latency counterpart.",

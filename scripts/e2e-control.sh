@@ -265,6 +265,13 @@ for declaration in "${CONTROLLABLE[@]}"; do
         oh_control_redirect_enforce "$id" || exit $?
         note "» $id: a named handle must CONTINUE one conversation, or refuse to — never start over quietly"
         oh_control_session_enforce "$id" "$mechanism" || exit $?
+        if [ "$id" = codex ]; then
+            # Codex-scoped: its app-server is the one mechanism that states the
+            # thread's model before the turn (`observed_model`). A model this
+            # identity cannot serve is a loud refusal there, never a silent pass.
+            note "» $id: a [harness.codex] model must reach the controlled turn, and the server must say it runs it"
+            oh_control_model_enforce "$id" "${CODEX_E2E_MODEL:-gpt-5.6-sol}" || exit $?
+        fi
         if [ -n "$mode_gap" ]; then
             note "» $id: KNOWN GAP, not run — a controlled turn under the mode's OWN policy"
             note "    $mode_gap"

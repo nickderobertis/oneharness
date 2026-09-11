@@ -1171,15 +1171,15 @@ pub fn run_supervised(
         None => None,
     };
     // Everything the sequential driver needs to bind a candidate's mechanism as
-    // it takes the turn. The per-turn values (cwd, mode, model) are the run's;
-    // the prompt and the mechanism are the candidate's.
+    // it takes the turn. The per-turn values (cwd, mode) are the run's; the
+    // prompt, the model and the mechanism are the candidate's — the model
+    // deliberately NOT the run-level `model` above, see `ControlledRun::bind`.
     let controlled = match control_listener.as_ref() {
         Some(listener) => Some(ControlledRun {
             handle: listener.handle_ref(),
             prompts: &control_prompts,
             cwd: control_cwd(args)?,
             mode,
-            model: model.map(str::to_string),
             // The same token the argv path puts on the anchor's `--resume`, on
             // the one route a driven turn has for it. `setup_session` already
             // refused a continue whose mechanism cannot ask for one, so a
@@ -1262,7 +1262,17 @@ pub fn run_supervised(
             .control
             .expect("validate_control refuses a controlled harness with no mechanism");
         let prompt = chain.prompt(0);
-        chain.bind(shape, specs[0], &selected_ids[0], &prompt);
+        let candidate_model = match &plan[0] {
+            Plan::Pending { model, .. } => model.clone(),
+            Plan::Ready(_) => None,
+        };
+        chain.bind(
+            shape,
+            specs[0],
+            &selected_ids[0],
+            candidate_model.as_deref(),
+            &prompt,
+        );
         let input = runner::ControlledInput {
             handle: chain.handle,
             prompt,
@@ -2442,7 +2452,6 @@ struct ControlledRun<'a> {
     prompts: &'a [Option<String>],
     cwd: control::AbsolutePath,
     mode: PermissionMode,
-    model: Option<String>,
     /// The stored conversation this run continues, and the identity that minted
     /// it. `None` on a fresh session (or with no `--session` at all).
     resume: Option<ControlResume>,
@@ -2468,11 +2477,17 @@ impl ControlledRun<'_> {
     /// `harness_id` is the variant-qualified selector of the candidate taking
     /// the turn — the axis the session token is scoped to, since a chain holds
     /// several candidates and the token belongs to exactly one of them.
+    ///
+    /// `model` is the candidate's **own** resolved model (`unit.model`, the
+    /// value the result's and the record's `model` report), never the
+    /// run-level one.
+    // llmlint: ignore[comments_earn_their_place] The measured mechanism behind issue #1283 is stated here by that issue's own resolution: the issue's diagnosis was wrong, and this is the one place a reader of the binding finds the corrected one. Until this change `bind` took the run-level model (`--model`, else top-level `model`), which no other path used, so a per-harness `[harness.codex].model` never reached `thread/start` — the frame went out as `{"approvalPolicy":"never","cwd":…}` — and codex ran its own default, which moved from `gpt-5.6-sol` to `gpt-6-astra` at codex 0.153; the top-level `model` workaround did reach the wire, which is what made the defect read as a version regression.
     fn bind(
         &self,
         shape: ControlShape,
         spec: &'static HarnessSpec,
         harness_id: &str,
+        model: Option<&str>,
         prompt: &str,
     ) {
         let dialogue = Dialogue::new(
@@ -2480,7 +2495,7 @@ impl ControlledRun<'_> {
             DialogueConfig {
                 prompt: prompt.to_string(),
                 cwd: self.cwd.clone(),
-                model: self.model.clone(),
+                model: model.map(str::to_string),
                 mode: self.mode,
                 // Only the anchor's own turn continues the stored conversation:
                 // every other candidate opens a fresh one, exactly as the argv
@@ -2675,7 +2690,7 @@ fn drive_controlled_candidate(
             persisted_event_indexes: BTreeSet::new(),
         };
     }
-    chain.bind(shape, spec, unit.harness_id, &prompt);
+    chain.bind(shape, spec, unit.harness_id, unit.model.as_deref(), &prompt);
     let mut streamed = stream_one_harness(
         unit,
         history,
@@ -3301,17 +3316,46 @@ fn candidate_address(
 /// A server-backed mechanism's stdout is a JSON-RPC stream, not the harness's
 /// ordinary output document, so the generic extractors read nothing from it.
 /// The dialogue already parsed the same stream to drive the turn, and is the
-/// only thing that knows which frame carried the session id and which carried
-/// the answer. It leaves both `null` when the turn produced neither — a
+/// only thing that knows which frame carried the session id, which carried the
+/// answer, and which carried the server's own statement of the model the
+/// thread runs under. It leaves each `null` when the turn produced none — a
 /// protocol run never fabricates a signal any more than a plain one does.
+///
+/// A dialogue that ended in a [`DialogueRefusal`] never opened a turn, and the
+/// runner's teardown of the server it was talking to is not that server
+/// failing — so the refusal is written over the envelope here: a non-`ok`
+/// status, the classified kind, and an `error` naming both models. The
+/// `exit_code` stays `null`, since the server was torn down rather than exited.
+///
+/// [`DialogueRefusal`]: crate::domain::dialogue::DialogueRefusal
 fn apply_dialogue_signals(result: &mut RunResult, handle: &crate::io::control::ControlHandle) {
     if !handle.drives_turn_over_stdin() {
         return;
     }
     result.session_id = handle.session_id();
+    result.observed_model = handle.observed_model();
     if let Some((text, source)) = handle.text() {
         result.text = Some(text);
         result.text_source = Some(source.to_string());
+    }
+    if let Some((refusal, source)) = handle.refusal() {
+        // Matched exhaustively on purpose: a new refusal kind is a deliberate
+        // answer to which `FailureKind` it publishes as, not an inherited one.
+        let kind = match &refusal {
+            crate::domain::dialogue::DialogueRefusal::ModelMismatch { .. } => {
+                signals::FailureKind::ModelMismatch
+            }
+        };
+        result.status = Status::Nonzero;
+        result.exit_code = None;
+        result.failure_kind = Some(kind);
+        result.failure_kind_source = Some(source.to_string());
+        result.error = Some(refusal.error(&result.harness));
+        // Re-derived from the envelope just written, exactly as every
+        // constructor derives it: a classified refusal publishes no reading.
+        result.work =
+            crate::domain::report::unclassified_failure(result.status, result.failure_kind)
+                .then(|| fallback::RunWork::from_result(result));
     }
 }
 
@@ -3785,6 +3829,7 @@ fn planned_result(
         status: Status::Planned,
         prompt,
         model,
+        observed_model: None,
         exit_code: None,
         duration_ms: None,
         telemetry: None,
@@ -3828,6 +3873,7 @@ fn skipped_result(
         status: Status::Skipped,
         prompt,
         model,
+        observed_model: None,
         exit_code: None,
         duration_ms: None,
         telemetry: None,
@@ -4122,6 +4168,7 @@ fn executed_result(
         status: capture.status,
         prompt,
         model,
+        observed_model: None,
         exit_code: capture.exit_code,
         duration_ms: capture.duration_ms,
         telemetry,
@@ -4749,6 +4796,7 @@ mod tests {
             status,
             prompt: None,
             model: None,
+            observed_model: None,
             exit_code: None,
             duration_ms: None,
             telemetry: None,

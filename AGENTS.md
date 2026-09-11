@@ -383,7 +383,16 @@ Use the `just` recipes; do not hand-roll equivalents.
   through oneharness. Stdin control keeps the child stdin open, then closes it
   on `is_turn_terminal`. Dialogue control owns its JSON-RPC child per dispatch:
   codex ends on `turn/completed`, not the `turn/start` response, and ACP must
-  answer `session/request_permission`. Dialogue-derived session ids are usable
+  answer `session/request_permission`. The MODEL a driven turn negotiates is
+  the CANDIDATE's own (`unit.model`, what the result and record report), never
+  the run-level one, and it rides `thread/start`, `thread/resume` AND
+  `turn/start`; the server's own answer (`ThreadStartResponse.model`, required;
+  `turn/started` carries none) is read back as `observed_model`, and a
+  difference is refused as `model_mismatch` BEFORE `turn/start` — a zero-cost
+  classified failure naming both models, never a turn billed to the wrong one.
+  Its live alarm, `oh_control_model_enforce`, delivers the model through a
+  harness-scoped config key, since `--model` is the path that cannot show the
+  defect. Dialogue-derived session ids are usable
   only under `--control` (`session_capable_under`) — but a `--session` handle
   under `--control` names the CHANNEL, and whether it also continues a
   CONVERSATION is the mechanism's own question (`ControlShape::carries_session`):

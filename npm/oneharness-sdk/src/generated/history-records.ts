@@ -80,7 +80,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms: number;
@@ -89,6 +92,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -104,7 +123,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -231,7 +250,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels1 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms: number;
@@ -240,6 +262,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -354,7 +392,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels2 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: never | undefined;
@@ -363,6 +404,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -378,7 +435,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -463,7 +520,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels3 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: never | undefined;
@@ -472,6 +532,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms: number;
       /**
        * The normalized approval mode requested for the run.
@@ -487,7 +563,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -572,7 +648,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels4 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: never | undefined;
@@ -581,6 +660,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -596,7 +691,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+      schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -681,7 +776,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels5 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: never | undefined;
@@ -690,6 +788,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -705,7 +819,7 @@ export type HistoryRecord =
        * run's single prompt).
        */
       prompt: string;
-      schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7";
+      schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
       /**
        * The oneharness session id this run belongs to (the history file's stem).
        */
@@ -795,7 +909,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels6 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: never | undefined;
@@ -804,6 +921,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -921,7 +1054,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels7 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: never | undefined;
@@ -930,6 +1066,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       observed_tool_ms?: never | undefined;
       /**
        * The normalized approval mode requested for the run.
@@ -1035,7 +1187,10 @@ export type HistoryRecord =
       history_id: string;
       labels?: HistoryLabels8 | undefined;
       /**
-       * The effective top-level model for the run, if any.
+       * The model this run **requested** — the value oneharness put on the
+       * harness's model flag or protocol frame — if any. Copied from
+       * [`RunResult::model`], so it keeps meaning the requested model even where
+       * `observed_model` below is present.
        */
       model: string | null;
       model_ms?: number | null | undefined;
@@ -1044,6 +1199,22 @@ export type HistoryRecord =
        * every record so a reader can resolve a session by name from any line.
        */
       name: string;
+      /**
+       * The model the harness **itself** reported the conversation would run
+       * under, read off its own protocol before any token was spent — for codex
+       * over `app-server`, `result.model` of the `thread/start` /
+       * `thread/resume` response. Copied from [`RunResult::observed_model`]:
+       * never inferred and never copied from `model`, and omitted on the wire on
+       * every path that reports none.
+       *
+       * On a completed app-server turn the two agree, because a turn whose
+       * reported model differed from the requested one was refused before it
+       * ran (`model_mismatch`) — so a completed record's `model` is what codex
+       * ran, and the record can no longer say one model while another was
+       * billed. They differ only on such a refused record, and where no model
+       * was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+       */
+      observed_model?: string | null | undefined;
       /**
        * Union of tool intervals observed at the stdout pipe. Unlike `tool_ms`,
        * this is not provider-measured and has no model-latency counterpart.
@@ -1138,7 +1309,8 @@ export type FailureKind =
   | "session_not_found"
   | "tool_deferred"
   | "untrusted_directory"
-  | "input_too_large";
+  | "input_too_large"
+  | "model_mismatch";
 /**
  * The outcome of attempting to run one harness.
  */
@@ -1170,7 +1342,7 @@ export type HistoryRecords = ((
     }
   | ({
       error: string;
-      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | undefined;
+      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
       [k: string]: unknown;
     } & (
       | {
@@ -1189,9 +1361,20 @@ export type HistoryRecords = ((
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.7" | undefined;
+        schema_version?: "1.7" | "1.8" | undefined;
         status?: "nonzero" | "timeout" | "cancelled" | undefined;
         work: "done" | "none";
+        [k: string]: unknown;
+      }
+  ) &
+  (
+    | {
+        observed_model?: null | undefined;
+        [k: string]: unknown;
+      }
+    | {
+        observed_model: string;
+        schema_version?: "1.8" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -1201,7 +1384,7 @@ export type HistoryRecords = ((
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | undefined;
+        schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -1215,22 +1398,49 @@ export type HistoryRecords = ((
           | "tool_deferred"
           | "untrusted_directory"
           | "input_too_large"
+          | "model_mismatch"
           | null;
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.5" | "1.6" | "1.7" | undefined;
+        schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | undefined;
         [k: string]: unknown;
       }
   ) &
     (
       | {
           failure_kind?:
-            "auth" | "rate_limit" | "model_not_found" | "quota" | "session_not_found" | "tool_deferred" | null;
+            | "auth"
+            | "rate_limit"
+            | "model_not_found"
+            | "quota"
+            | "session_not_found"
+            | "tool_deferred"
+            | "model_mismatch"
+            | null;
           [k: string]: unknown;
         }
       | {
-          schema_version?: "1.6" | "1.7" | undefined;
+          schema_version?: "1.6" | "1.7" | "1.8" | undefined;
+          [k: string]: unknown;
+        }
+    ) &
+    (
+      | {
+          failure_kind?:
+            | "auth"
+            | "rate_limit"
+            | "model_not_found"
+            | "quota"
+            | "session_not_found"
+            | "tool_deferred"
+            | "untrusted_directory"
+            | "input_too_large"
+            | null;
+          [k: string]: unknown;
+        }
+      | {
+          schema_version?: "1.8" | undefined;
           [k: string]: unknown;
         }
     )) &

@@ -1819,6 +1819,88 @@ _oh_control_session_turn() {
         "${model_args[@]+"${model_args[@]}"}" >"$6" 2>"$7"
 }
 
+# A controlled turn must run under the model a HARNESS-SCOPED config key names,
+# and the report must say the server runs it: `results[0].observed_model` must
+# equal `results[0].model`. The model is planted as `[harness.<id>] model = …`
+# and NEVER passed as `--model`: the run-level flag reaches the wire by a
+# different path, so it cannot show a per-harness model failing to.
+#   $1 harness id, $2 the model the config names
+oh_control_model_enforce() {
+    local id="$1" model="$2"
+    local bin sandbox store report status requested observed kind
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+    # The model is written into a TOML string, so it is held to a model id's
+    # own alphabet before anything is planted: a quote or a newline in
+    # CODEX_E2E_MODEL would otherwise rewrite the config rather than name one.
+    case "$model" in
+    '' | *[!A-Za-z0-9._:/-]*)
+        fail "$id: '$model' is not a model id (letters, digits, and ._:/- only); set CODEX_E2E_MODEL to the model this identity should run"
+        ;;
+    esac
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    store="$sandbox/store"
+    report="$sandbox/report.json"
+    printf '[harness.%s]\nmodel = "%s"\n' "$id" "$model" >"$sandbox/oneharness.toml"
+
+    note "  control-model: one controlled turn with $model under [harness.$id] only (no --model)"
+    # --config pins the planted file and the explicit empty ONEHARNESS_NO_CONFIG
+    # guards against a hermetic wrapper's env, exactly as oh_sync_enforce does.
+    # These turns ask for no tools at all, so the grant buys nothing here — but
+    # the mode has to be one EVERY control mechanism ends a turn under, and
+    # `default` is not (see `known_gap` in e2e-control.sh). Confined to a fresh
+    # mktemp sandbox, like every other oh_*_enforce phase.
+    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+    # llmlint: ignore-block[boundary_inputs_validated] Both timeouts are the suite-wide knobs every sibling phase forwards the same way, and each consumer validates its own: `timeout(1)` refuses a malformed duration, and `--timeout` is a clap-validated value oneharness rejects as a usage error before anything spawns.
+    if ! ONEHARNESS_NO_CONFIG='' timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+        --config "$sandbox/oneharness.toml" \
+        --harness "$id" --prompt "Reply with the single word READY and stop." \
+        --control --session "model-$id" --session-dir "$store" --cwd "$sandbox" \
+        "${grant[@]}" --timeout "${OH_TIMEOUT:-120}" --compact \
+        >"$report" 2>"$sandbox/run.err"; then
+        : # a non-zero exit is data the report explains; the fields below decide
+    fi
+    # llmlint: ignore-end[boundary_inputs_validated]
+    if _oh_note_provider_refusal "$id" "$report"; then
+        rm -rf "$sandbox"
+        return "$_OH_NOT_RUN"
+    fi
+    status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
+    requested="$(jq -er '.results[0].model' <"$report" 2>/dev/null || true)"
+    observed="$(jq -er '.results[0].observed_model' <"$report" 2>/dev/null || true)"
+    kind="$(jq -er '.results[0].failure_kind' <"$report" 2>/dev/null || true)"
+    if [ "$status" = skipped ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ "$requested" != "$model" ]; then
+        _oh_control_evidence "$sandbox" "$report"
+        rm -rf "$sandbox"
+        fail "$id: the report's model is '${requested:-<null>}', not the '$model' the [harness.$id] key named — the per-harness model never resolved for the controlled turn"
+    fi
+    if [ -z "$observed" ]; then
+        _oh_control_evidence "$sandbox" "$report"
+        rm -rf "$sandbox"
+        fail "$id: the report carries no observed_model — the server's own statement of the thread's model (\`thread/start\` response \`result.model\`) was not read back, so a wrong model would spend the turn silently again. Next: read \`results[0].stdout\` for the thread/start response and compare it with \`domain::dialogue\`'s open arm"
+    fi
+    if [ "$observed" != "$requested" ]; then
+        _oh_control_evidence "$sandbox" "$report"
+        rm -rf "$sandbox"
+        fail "$id: the server would run this thread under '$observed', not the requested '$requested' (status=$status, failure_kind=${kind:-null}) — the config's model is not reaching the wire, or the identity cannot serve it; either way oneharness refused the turn rather than spending it"
+    fi
+    if [ "$status" != ok ]; then
+        _oh_control_evidence "$sandbox" "$report"
+        rm -rf "$sandbox"
+        fail "$id: the turn ran under the requested model '$requested' but did not end cleanly (status=$status)"
+    fi
+    note "PASS: $id ran a controlled turn under the [harness.$id] model, and the server reported running $observed"
+    rm -rf "$sandbox"
+    return 0
+}
+
 oh_control_enforce() {
     local id="$1" expected_mechanism="$2"
     # Three attempts, not two: an inconclusive attempt is a model that refused or

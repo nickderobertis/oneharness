@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.13.0...oneharness-core-v0.13.1) - 2026-09-11
+
+### Fixed
+
+- *(fallback)* carry a stopped candidate's own error, and decide what an unclassified failure stops ([#1286](https://github.com/nickderobertis/oneharness/pull/1286))
+
 ## [0.13.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.12.3...oneharness-core-v0.13.0) - 2026-09-11
 
 ### Fixed

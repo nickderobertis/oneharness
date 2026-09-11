@@ -42,6 +42,7 @@ $ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
       "usage": { "input_tokens": 1234, "output_tokens": 8, "cache_read_tokens": 7, "cache_write_tokens": null, "cost_usd": 0.0095 },
       "usage_source": "json",
       "session_id": "0f3c…",
+      "observed_model": null,
       "events": null,
       "events_source": null,
       "failure_kind": null,
@@ -908,6 +909,16 @@ invalidating earlier ones):
   `--fork` (Claude Code / OpenCode) to branch independent follow-ups off one cached
   prefix. `null` for a harness that emits no id headlessly (Goose, Copilot) — their
   handle is caller-supplied, never scraped (see the support matrix).
+- `observed_model` — the model the harness **itself** reported the conversation
+  would run under, read off its own protocol before any token was spent. Today
+  only codex's app-server reports one (a [`--control`](#turn-control-interrupt-a-running-turn) turn:
+  `result.model` of its `thread/start` / `thread/resume` response, which names
+  the thread's model before the turn is submitted); every other path reports
+  `null`. Never inferred and never copied from `model`: where both are set they
+  are the requested model and the served one, and when the two differ the turn is
+  **refused before it starts** as `model_mismatch` (below) rather than spent on
+  the wrong one — which is what a per-harness `[harness.codex] model` silently
+  did while codex ran its own default (issue #1283).
 - `session` — the uniform `--session` handle in play (else `null`): `{name, phase
   (create|continue), token, store_file}`. Lets a consumer thread one stable name
   across turns while oneharness maps it to the harness's `session_id` above. See
@@ -970,7 +981,7 @@ invalidating earlier ones):
   `--no-stream`.
 - `failure_kind` / `failure_kind_source` — on a non-zero run, a coarse reason
   (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
-  `untrusted_directory`, `input_too_large`) so a
+  `untrusted_directory`, `input_too_large`, `model_mismatch`) so a
   caller can tell a retryable condition from a broken request. `session_not_found`
   is the harness refusing to continue a session its identity has never seen — a
   resumed token belongs to exactly one identity's session store, so it is a
@@ -982,7 +993,13 @@ invalidating earlier ones):
   terms — Codex's `{"input_error_code":"input_too_large","max_chars":…,
   "actual_chars":…}` — that object is quoted **verbatim** into the result's
   `error` and into the fallback block's `detail`, so a caller can shard against
-  the real cap instead of re-parsing raw stdout. This is **distinct from `status`**,
+  the real cap instead of re-parsing raw stdout. `model_mismatch` is the third
+  precondition refusal, and the one oneharness answers itself: the harness
+  reported (in `observed_model`) that it would run the conversation under a model
+  other than the requested one, so no turn was submitted — no work done, no token
+  spent — and the `error` names both models as the config and the server spelled
+  them (`codex would run this turn under "gpt-6-astra", not the requested
+  "gpt-5.6-sol"`). This is **distinct from `status`**,
   which only records oneharness's relationship to the process. One kind,
   `tool_deferred`, is reported even on a `status: ok` run: the harness exited
   cleanly but only **deferred** a builtin tool call (`Read`, `Bash`, …) instead
@@ -1559,6 +1576,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
 | Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |
+| Reported it would run under a model other than the requested one, refused before the turn started as `model_mismatch`, no work done | ✅ fall through — `model-mismatch` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
 | Ran and failed the task (`nonzero`, incl. `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
@@ -1928,7 +1946,12 @@ The same rule versions the enums a reader has to know: a `cancelled` run declare
 failed with **nothing classified** also carries `work` — the same `"done"` /
 `"none"` reading the report publishes, and the only thing that tells a candidate
 which never got started apart from one that ran the task and lost — and declares
-**v1.7** for it.
+**v1.7** for it. A record carrying `observed_model` — the model the harness
+itself reported it would run under, omitted when the path reported none — or
+classified `model_mismatch` declares **v1.8**. Its `model` keeps meaning the
+*requested* one; on a completed app-server turn the two are equal, because a turn
+whose reported model differed was refused before it ran, so a completed record can
+no longer say one model while another was billed.
 
 It is **off by default** and opt-in three ways, layered like every other setting
 (CLI > env > project file > user file):

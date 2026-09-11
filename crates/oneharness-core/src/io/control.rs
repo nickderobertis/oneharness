@@ -92,8 +92,10 @@ enum Backend {
     /// drives a turn nor needs a server, so the variant needs no payload.
     Stdin,
     /// A JSON-RPC conversation drives the turn and is the only thing that knows
-    /// the ids an interrupt has to address.
-    Dialogue(Dialogue),
+    /// the ids an interrupt has to address. Boxed, as [`Binding::Dialogue`]
+    /// already hands it over: a conversation carries its config, its text and
+    /// what the server said, several times the size of the other variants.
+    Dialogue(Box<Dialogue>),
     /// Submitted to a control server, so an interrupt is one more request
     /// against the same session. The turn is `Some` only between its opening
     /// and its end — the window in which there is something to abort.
@@ -112,7 +114,7 @@ impl Backend {
     fn of(binding: Binding) -> Self {
         match binding {
             Binding::Stdin => Backend::Stdin,
-            Binding::Dialogue(dialogue) => Backend::Dialogue(*dialogue),
+            Binding::Dialogue(dialogue) => Backend::Dialogue(dialogue),
             Binding::PooledServer(http) => Backend::Http(http, None),
         }
     }
@@ -351,6 +353,29 @@ impl ControlHandle {
     pub fn session_id(&self) -> Option<String> {
         match self.mechanism().as_ref() {
             Some(Backend::Dialogue(dialogue)) => dialogue.session_id().map(str::to_string),
+            Some(Backend::Stdin | Backend::Http(..)) | None => None,
+        }
+    }
+
+    /// The model the server itself said the conversation would run under, when
+    /// the dialogue read one off its open response. `None` for every other
+    /// mechanism — never inferred.
+    #[must_use]
+    pub fn observed_model(&self) -> Option<String> {
+        match self.mechanism().as_ref() {
+            Some(Backend::Dialogue(dialogue)) => dialogue.observed_model().map(str::to_string),
+            Some(Backend::Stdin | Backend::Http(..)) | None => None,
+        }
+    }
+
+    /// Why the dialogue ended without opening a turn, when it did — with the
+    /// source the reading came from, for the result's `failure_kind_source`.
+    #[must_use]
+    pub fn refusal(&self) -> Option<(crate::domain::dialogue::DialogueRefusal, &'static str)> {
+        match self.mechanism().as_ref() {
+            Some(Backend::Dialogue(dialogue)) => dialogue
+                .refusal()
+                .map(|refusal| (refusal.clone(), dialogue.text_source())),
             Some(Backend::Stdin | Backend::Http(..)) | None => None,
         }
     }

@@ -118,6 +118,20 @@
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
+//!   MOCK_CODEX_MODEL           with MOCK_CODEX_APP_SERVER_LOG, the model the
+//!                              `thread/start` / `thread/resume` response names
+//!                              (`ThreadStartResponse.model`, a required string
+//!                              on the real server) INSTEAD of echoing the one
+//!                              the request asked for — a server that runs the
+//!                              thread under something else. Unset, the response
+//!                              echoes the requested model, or names
+//!                              `mock-codex-default` when the request named none,
+//!                              exactly as the real server answers its own default.
+//!   MOCK_CODEX_OMIT_MODEL      with MOCK_CODEX_APP_SERVER_LOG, answer
+//!                              `thread/start` / `thread/resume` with NO `model`
+//!                              field at all — a server that states nothing
+//!                              about the model, which the client must take as
+//!                              no claim rather than a wrong one.
 //!   MOCK_CODEX_TOOL_STARTED_ONLY  with MOCK_CODEX_TOOL_EVENTS, emit only the
 //!                              captured `item/started` tool notification.
 //!   MOCK_CODEX_DIE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, acknowledge the
@@ -1014,7 +1028,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
             Some("thread/start") => send(&json!({
                 "jsonrpc": "2.0",
                 "id": id,
-                "result": {"thread": {"id": "mock-codex-thread"}},
+                "result": open_response("mock-codex-thread", &message),
             })),
             // Rejoining the thread the client named, exactly as the real
             // app-server does: `ThreadResumeResponse` carries the same required
@@ -1045,7 +1059,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 send(&json!({
                     "jsonrpc": "2.0",
                     "id": id,
-                    "result": {"thread": {"id": requested}},
+                    "result": open_response(requested, &message),
                 }));
             }
             Some("turn/start") => {
@@ -1130,6 +1144,33 @@ fn run_codex_app_server(log_path: &str) -> ! {
         }
     }
     std::process::exit(0);
+}
+
+/// The `result` of a `thread/start` / `thread/resume` answer: the thread under
+/// `thread_id`, plus the model the server says it runs under unless
+/// `MOCK_CODEX_OMIT_MODEL` withholds the claim altogether.
+fn open_response(thread_id: &str, open_request: &serde_json::Value) -> serde_json::Value {
+    let mut result = serde_json::json!({"thread": {"id": thread_id}});
+    if std::env::var_os("MOCK_CODEX_OMIT_MODEL").is_none() {
+        result["model"] = serde_json::Value::String(served_model(open_request));
+    }
+    result
+}
+
+/// The model the mock app-server says a thread runs under: `MOCK_CODEX_MODEL`
+/// when set (a server that runs something other than what was asked), else the
+/// model the open request named, else a default — the real `ThreadStartResponse`
+/// always carries one, and a fixture that omitted it would pass a client that
+/// never read it.
+fn served_model(open_request: &serde_json::Value) -> String {
+    std::env::var("MOCK_CODEX_MODEL").ok().unwrap_or_else(|| {
+        open_request
+            .get("params")
+            .and_then(|params| params.get("model"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("mock-codex-default")
+            .to_string()
+    })
 }
 
 /// Act like an ACP server: the protocol `copilot --acp` and `goose acp` speak,

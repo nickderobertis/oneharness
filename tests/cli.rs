@@ -292,7 +292,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.9";
+    let version = "0.10";
     let printed = run(
         &[
             "run",
@@ -335,7 +335,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.9");
+    assert_eq!(value["schema_version"], "0.10");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -6063,7 +6063,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.9");
+    assert_eq!(value["schema_version"], "0.10");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     // A cancellation classifies as nothing either, so the report carries the
@@ -8846,7 +8846,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.9");
+    assert_eq!(value["schema_version"], "0.10");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -11942,6 +11942,15 @@ fn history_records_a_run_and_reports_the_file() {
     );
     // Normalized only — no raw stdout/stderr leaks into history.
     assert!(rec.get("stdout").is_none());
+    // The argv path has no server stating a model, so the report says `null`
+    // and the record OMITS the field on the wire rather than writing one — an
+    // old reader must not meet a key it does not know.
+    assert!(value["results"][0]["observed_model"].is_null());
+    let raw = std::fs::read_to_string(hf).unwrap();
+    assert!(
+        !raw.contains("observed_model"),
+        "an absent observation is omitted on the wire: {raw}"
+    );
     let _ = std::fs::remove_file(argv_file);
 }
 
@@ -14551,7 +14560,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.7");
+    assert_eq!(envelope["line"]["schema_version"], "1.8");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"
@@ -21376,7 +21385,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.9");
+    assert_eq!(report["schema_version"], "0.10");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
@@ -23702,6 +23711,401 @@ fn a_controlled_candidate_is_never_handed_another_identitys_session_token() {
     // now continues on the identity that actually ran.
     assert_eq!(second["session"]["phase"], "create");
     assert_eq!(second["session"]["token"], "mock-codex-thread");
+}
+
+/// The frames a mock app-server logged for one request `method`, parsed.
+#[cfg(unix)]
+fn app_server_frames(log: &Path, method: &str) -> Vec<Value> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|frame| frame["method"] == method)
+        .collect()
+}
+
+/// A controlled codex turn runs under the model the CANDIDATE resolved, not the
+/// run-level one — and says which model the server will actually run.
+///
+/// The defect (issue #1283): `ControlledRun` bound `DialogueConfig.model` from
+/// the run-level `--model` / top-level `model`, while the argv path, the
+/// result's `model` and the record's `model` all use the candidate's own
+/// `[harness.codex].model`. So a per-harness model with no run-level one sent
+/// `thread/start` with no `model` at all and codex ran its own default — which
+/// moved from Sol to Astra at 0.153, ten times the quota per token. Nothing in
+/// the report could see it: the turn succeeded, `model` said Sol, and the live
+/// suite drove the model through `--model`, the one path that always worked.
+/// So this reads the frames the client actually SENT, from the config keys the
+/// issue used, and the model the server answered with.
+#[cfg(unix)]
+#[test]
+fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
+    let mock = mock_bin().display().to_string();
+    for (tag, harness, table) in [
+        ("harness-model", "codex", "[harness.codex]"),
+        ("variant-model", "codex:sol", "[harness.codex.variant.sol]"),
+    ] {
+        let store = control_store_dir(&format!("model-{tag}"));
+        let store_arg = store.display().to_string();
+        let log = store.join("app-server.log");
+        let log_arg = log.display().to_string();
+        // The model under the HARNESS key only — no top-level `model`, no
+        // `--model` — which is exactly the shape that spent the wrong model.
+        let project = format!(
+            r#"
+            {table}
+            bin = '{mock}'
+            model = "gpt-5.6-sol"
+            env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
+        "#
+        );
+        let fx = ConfigFixture::new(&format!("control-{tag}"), &project, "");
+        let cwd_arg = fx.cwd();
+        let dispatch = || {
+            run_with_config(
+                &[
+                    "run",
+                    "--harness",
+                    harness,
+                    "--control",
+                    "--session",
+                    "sol",
+                    "--session-dir",
+                    &store_arg,
+                    "--cwd",
+                    &cwd_arg,
+                    "--mode",
+                    "bypass",
+                    "--prompt",
+                    "keep working",
+                    "--compact",
+                ],
+                &[],
+                &fx.user_config(),
+            )
+        };
+
+        let first = dispatch();
+        assert!(
+            first.status.success(),
+            "{tag}: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        let report = json_stdout(&first);
+        let result = &report["results"][0];
+        assert_eq!(result["status"], "ok", "{tag}");
+        assert_eq!(result["model"], "gpt-5.6-sol", "{tag}");
+        // Both frames that take a model carry the candidate's: the thread is
+        // opened under it and the turn restates it.
+        let opened = app_server_frames(&log, "thread/start");
+        assert_eq!(opened.len(), 1, "{tag}: one thread/start:\n{opened:?}");
+        assert_eq!(
+            opened[0]["params"]["model"], "gpt-5.6-sol",
+            "{tag}: thread/start must name the candidate's model: {}",
+            opened[0]
+        );
+        let turns = app_server_frames(&log, "turn/start");
+        assert_eq!(turns.len(), 1, "{tag}");
+        assert_eq!(
+            turns[0]["params"]["model"], "gpt-5.6-sol",
+            "{tag}: turn/start must name it too: {}",
+            turns[0]
+        );
+        // And the server's own statement of what it will run is read back,
+        // beside — never derived from — the requested one.
+        assert_eq!(result["observed_model"], "gpt-5.6-sol", "{tag}");
+        assert!(result["failure_kind"].is_null(), "{tag}: {result}");
+
+        // The continued conversation reopens under the same model: `thread/
+        // resume` is the other frame that opens a thread, and the resumed
+        // turn is where a model the thread was created under would otherwise
+        // silently win.
+        let second = dispatch();
+        assert!(
+            second.status.success(),
+            "{tag}: {}",
+            String::from_utf8_lossy(&second.stderr)
+        );
+        let report = json_stdout(&second);
+        assert_eq!(report["session"]["phase"], "continue", "{tag}");
+        let resumed = app_server_frames(&log, "thread/resume");
+        assert_eq!(resumed.len(), 1, "{tag}: one thread/resume:\n{resumed:?}");
+        assert_eq!(
+            resumed[0]["params"]["threadId"], "mock-codex-thread",
+            "{tag}"
+        );
+        assert_eq!(
+            resumed[0]["params"]["model"], "gpt-5.6-sol",
+            "{tag}: thread/resume must name the candidate's model: {}",
+            resumed[0]
+        );
+        assert_eq!(
+            report["results"][0]["observed_model"], "gpt-5.6-sol",
+            "{tag}"
+        );
+        assert_eq!(app_server_frames(&log, "turn/start").len(), 2, "{tag}");
+    }
+}
+
+/// An open response that names NO model is no claim at all, so the turn
+/// proceeds under the requested model exactly as before the check existed:
+/// `turn/start` goes out naming it and the report's `observed_model` is `null`
+/// (never copied from the request). Refusing here would end every controlled
+/// turn against an app-server whose open response carries no `model`, with
+/// nothing to say the model was wrong.
+#[cfg(unix)]
+#[test]
+fn a_controlled_codex_turn_proceeds_when_the_server_names_no_model() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("model-unstated");
+    let store_arg = store.display().to_string();
+    let log = store.join("app-server.log");
+    let log_arg = log.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        model = "gpt-5.6-sol"
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_OMIT_MODEL = "1" }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-model-unstated", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "sol",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "an unstated model refuses nothing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "ok", "{result}");
+    assert!(result["failure_kind"].is_null(), "{result}");
+    assert_eq!(
+        result["model"], "gpt-5.6-sol",
+        "the requested model, unchanged"
+    );
+    assert!(
+        result["observed_model"].is_null(),
+        "nothing was reported, so nothing is observed — never the request echoed: {result}"
+    );
+    let opened = app_server_frames(&log, "thread/start");
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0]["params"]["model"], "gpt-5.6-sol", "{}", opened[0]);
+    let turns = app_server_frames(&log, "turn/start");
+    assert_eq!(turns.len(), 1, "the turn still goes out:\n{turns:?}");
+    assert_eq!(turns[0]["params"]["model"], "gpt-5.6-sol", "{}", turns[0]);
+}
+
+/// A server that would run the thread under another model is refused BEFORE
+/// the turn is submitted: no `turn/start`, a classified zero-cost failure naming
+/// both models, and — in a chain — the next identity gets the task.
+///
+/// This is the half that makes the class of failure above never silent again:
+/// the server states the thread's model on the open response, before any token
+/// is spent, so a wrong model is a refused, classified turn with both names in
+/// the record rather than a successful one that quietly billed ten times the
+/// quota.
+#[cfg(unix)]
+#[test]
+fn a_controlled_codex_turn_is_refused_when_the_server_would_run_another_model() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("model-mismatch");
+    let store_arg = store.display().to_string();
+    let history = store.join("history");
+    let log = store.join("app-server.log");
+    let log_arg = log.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        model = "gpt-5.6-sol"
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_MODEL = "gpt-6-astra" }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-model-mismatch", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "sol",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a refused turn is a failed run: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{result}");
+    assert_eq!(result["failure_kind"], "model_mismatch", "{result}");
+    assert_eq!(result["failure_kind_source"], "jsonrpc:codex-app-server");
+    assert_eq!(
+        result["model"], "gpt-5.6-sol",
+        "the requested model, unchanged"
+    );
+    assert_eq!(
+        result["observed_model"], "gpt-6-astra",
+        "the server's own word"
+    );
+    let error = result["error"].as_str().expect("a refusal says why");
+    assert!(
+        error.contains("\"gpt-6-astra\"") && error.contains("\"gpt-5.6-sol\""),
+        "the error names both models as spelled: {error}"
+    );
+    // Nothing was spent: no turn went out, no accounting came back, and a
+    // classified refusal publishes no work reading (it has already said why).
+    assert!(
+        app_server_frames(&log, "turn/start").is_empty(),
+        "no turn/start may reach a server running the wrong model:\n{}",
+        std::fs::read_to_string(&log).unwrap_or_default()
+    );
+    assert_eq!(app_server_frames(&log, "thread/start").len(), 1);
+    assert!(result["usage"]["input_tokens"].is_null(), "{result}");
+    assert!(result["work"].is_null(), "{result}");
+    assert!(result["text"].is_null(), "no answer was produced: {result}");
+
+    // The record carries the refusal with both names, at the version that has
+    // them.
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "nonzero");
+    assert_eq!(record["failure_kind"], "model_mismatch");
+    assert_eq!(record["model"], "gpt-5.6-sol");
+    assert_eq!(record["observed_model"], "gpt-6-astra");
+    assert_eq!(record["schema_version"], "1.8");
+    assert!(record.get("work").is_none(), "{record}");
+}
+
+/// In a fallback chain a model mismatch is a precondition refusal like
+/// `untrusted_directory`: no work was done and no token spent, so the next
+/// identity — which may honour the model — runs the task.
+#[cfg(unix)]
+#[test]
+fn a_controlled_fallback_chain_falls_through_a_model_mismatch() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("mismatch-chain");
+    let store_arg = store.display().to_string();
+    let astra_log = store.join("astra.log");
+    let astra_log_arg = astra_log.display().to_string();
+    let honest_log = store.join("honest.log");
+    let honest_log_arg = honest_log.display().to_string();
+    // Two identities of codex asking for the same model: the first's server
+    // would run Astra, the second's runs what it is asked.
+    let project = format!(
+        r#"
+        [harness.codex.variant.astra-server]
+        bin = '{mock}'
+        model = "gpt-5.6-sol"
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{astra_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_MODEL = "gpt-6-astra" }}
+        [harness.codex.variant.honest]
+        bin = '{mock}'
+        model = "gpt-5.6-sol"
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{honest_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-mismatch-chain", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex:astra-server,codex:honest",
+            "--run-mode",
+            "fallback",
+            "--control",
+            "--session",
+            "chain",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "the chain served the turn: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(
+        report["fallback"]["fell_through"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["reason"], "model-mismatch",
+        "{}",
+        report["fallback"]
+    );
+    assert_eq!(
+        report["fallback"]["fell_through"][0]["harness"], "codex:astra-server",
+        "{}",
+        report["fallback"]
+    );
+    assert_eq!(report["fallback"]["ran"], "codex:honest");
+    assert_eq!(report["results"][0]["failure_kind"], "model_mismatch");
+    assert_eq!(report["results"][0]["observed_model"], "gpt-6-astra");
+    assert!(
+        app_server_frames(&astra_log, "turn/start").is_empty(),
+        "the refused candidate submitted no turn"
+    );
+    // The candidate that served ran under — and reported — the requested model.
+    let served = &report["results"][1];
+    assert_eq!(served["harness_id"], "codex:honest");
+    assert_eq!(served["status"], "ok");
+    assert_eq!(served["model"], "gpt-5.6-sol");
+    assert_eq!(served["observed_model"], "gpt-5.6-sol");
+    assert_eq!(
+        app_server_frames(&honest_log, "turn/start")[0]["params"]["model"],
+        "gpt-5.6-sol"
+    );
+    assert_eq!(report["session"]["token"], "mock-codex-thread");
 }
 
 /// A handle whose mechanism cannot reopen a conversation is refused, loudly.

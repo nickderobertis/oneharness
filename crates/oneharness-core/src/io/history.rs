@@ -1349,6 +1349,7 @@ mod tests {
             status: Status::Ok,
             prompt: None,
             model: None,
+            observed_model: None,
             exit_code: Some(0),
             duration_ms: Some(10),
             telemetry: Some(ExecutionTelemetry::ProviderMeasured {

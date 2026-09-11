@@ -1065,6 +1065,118 @@
         "session_id": null, "events": null,
         "failure_kind": null, "work": "none", "error": "`claude` not found on PATH"
       }
+    },
+    {
+      "name": "history record v1.8 accepts the observed model on a completed app-server turn",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.8", "history_id": "0198f0d0-7b31-7000-8000-000000000036",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "observed_model": "gpt-5.6-sol", "prompt": "test",
+        "permission_mode": "bypass", "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-09-11T00:00:00Z", "finished_at": "2026-09-11T00:00:01Z", "model_ms": 600, "tool_ms": 300, "text": "done", "text_source": "jsonrpc:codex-app-server",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d", "events": null,
+        "failure_kind": null
+      }
+    },
+    {
+      "name": "history record v1.7 rejects the observed model, which arrived in v1.8",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.7", "history_id": "0198f0d0-7b31-7000-8000-000000000037",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "observed_model": "gpt-5.6-sol", "prompt": "test",
+        "permission_mode": "bypass", "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-09-11T00:00:00Z", "finished_at": "2026-09-11T00:00:01Z", "model_ms": 600, "tool_ms": 300, "text": "done", "text_source": "jsonrpc:codex-app-server",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d", "events": null,
+        "failure_kind": null
+      }
+    },
+    {
+      "name": "history record v1.8 accepts a record whose path reported no model",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.8", "history_id": "0198f0d0-7b31-7000-8000-000000000038",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "prompt": "test",
+        "permission_mode": "bypass", "status": "ok", "exit_code": 0, "duration_ms": 1000,
+        "started_at": "2026-09-11T00:00:00Z", "finished_at": "2026-09-11T00:00:01Z", "model_ms": 600, "tool_ms": 300, "text": "done", "text_source": "jsonrpc:codex-app-server",
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d", "events": null,
+        "failure_kind": null
+      }
+    },
+    {
+      "name": "history record v1.8 accepts the model_mismatch failure kind naming the model the server reported",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.8", "history_id": "0198f0d0-7b31-7000-8000-000000000039",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "observed_model": "gpt-6-astra", "prompt": "test",
+        "permission_mode": "bypass", "status": "nonzero", "exit_code": null, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d", "events": null,
+        "failure_kind": "model_mismatch", "error": "harness `codex` reported it would run this turn under \"gpt-6-astra\", not the requested \"gpt-5.6-sol\", so the turn was refused before it started"
+      }
+    },
+    {
+      "name": "history record v1.7 rejects the model_mismatch failure kind, which arrived in v1.8",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.7", "history_id": "0198f0d0-7b31-7000-8000-00000000003a",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "prompt": "test",
+        "permission_mode": "bypass", "status": "nonzero", "exit_code": null, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d", "events": null,
+        "failure_kind": "model_mismatch", "error": "harness `codex` reported it would run this turn under \"gpt-6-astra\", not the requested \"gpt-5.6-sol\", so the turn was refused before it started"
+      }
+    },
+    {
+      "name": "history line run v1.8 accepts the model_mismatch refusal with its observed model",
+      "root": "history_line",
+      "accepted": true,
+      "value": {
+        "type": "run", "schema_version": "1.8", "history_id": "0198f0d0-7b31-7000-8000-00000000003b",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "observed_model": "gpt-6-astra", "prompt": "test",
+        "permission_mode": "bypass", "status": "nonzero", "exit_code": null, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d",
+        "failure_kind": "model_mismatch", "error": "harness `codex` reported it would run this turn under \"gpt-6-astra\", not the requested \"gpt-5.6-sol\", so the turn was refused before it started"
+      }
+    },
+    {
+      "name": "history line run rejects the model_mismatch failure kind at v1.7",
+      "root": "history_line",
+      "accepted": false,
+      "value": {
+        "type": "run", "schema_version": "1.7", "history_id": "0198f0d0-7b31-7000-8000-00000000003c",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex",
+        "harness_id": "codex", "model": "gpt-5.6-sol", "prompt": "test",
+        "permission_mode": "bypass", "status": "nonzero", "exit_code": null, "duration_ms": 1000,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d",
+        "failure_kind": "model_mismatch", "error": "harness `codex` reported it would run this turn under \"gpt-6-astra\", not the requested \"gpt-5.6-sol\", so the turn was refused before it started"
+      }
     }
   ]
 }

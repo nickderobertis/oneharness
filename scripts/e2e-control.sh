@@ -265,6 +265,19 @@ for declaration in "${CONTROLLABLE[@]}"; do
         oh_control_redirect_enforce "$id" || exit $?
         note "» $id: a named handle must CONTINUE one conversation, or refuse to — never start over quietly"
         oh_control_session_enforce "$id" "$mechanism" || exit $?
+        if [ "$id" = codex ]; then
+            # Codex-scoped, because codex's app-server is the one mechanism that
+            # states the thread's model before the turn (`observed_model`); no
+            # other path reports one to compare. The model goes through a
+            # harness-scoped config key and NOT `--model`: `--model` is the path
+            # that always worked and is exactly what let this suite pass through
+            # issue #1283. `CODEX_E2E_MODEL` still picks the model; its absence
+            # falls back to Sol, the model the issue measured being misrouted
+            # (a model this identity cannot serve is a loud refusal here, never
+            # a silent pass).
+            note "» $id: a [harness.codex] model must reach the controlled turn, and the server must say it runs it"
+            oh_control_model_enforce "$id" "${CODEX_E2E_MODEL:-gpt-5.6-sol}" || exit $?
+        fi
         if [ -n "$mode_gap" ]; then
             note "» $id: KNOWN GAP, not run — a controlled turn under the mode's OWN policy"
             note "    $mode_gap"

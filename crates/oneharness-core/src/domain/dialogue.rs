@@ -38,7 +38,16 @@ pub struct DialogueConfig {
     /// a separate process that would resolve a relative path against its own
     /// directory, which is silently a different place.
     pub cwd: AbsolutePath,
-    /// The model to request, when one was resolved.
+    /// The model to request, when one was resolved — the **candidate's own**
+    /// (`[harness.<id>].model`, a variant's `model`, or the run-level `--model`
+    /// that resolution already folds in), never the run-level value alone. It
+    /// rides every frame that takes one: `thread/start` and `thread/resume`
+    /// open the conversation under it, and `turn/start` restates it
+    /// (`TurnStartParams.model`, "override the model for this turn and
+    /// subsequent turns") so the turn cannot run under whatever the thread was
+    /// created with. What the server then says it will run under is read back
+    /// into [`Dialogue::observed_model`], and a difference is refused before the
+    /// turn starts ([`Dialogue::refusal`]).
     pub model: Option<String>,
     /// The approval mode the turn runs under, for the protocols that name it on
     /// the wire (codex's per-turn `SandboxPolicy` is derived from it). What the
@@ -125,6 +134,34 @@ impl DialogueStep {
     }
 }
 
+/// Why a dialogue ended before it opened a turn — a refusal oneharness itself
+/// answered off the server's own pre-turn statements, at zero cost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogueRefusal {
+    /// The server said the conversation would run under `observed`, and the run
+    /// asked for `requested`. Compared byte for byte: a model id is the
+    /// provider's own token, and oneharness has no aliasing table to guess with.
+    ModelMismatch { requested: String, observed: String },
+}
+
+impl DialogueRefusal {
+    /// The refusal as the result's `error`, naming `harness_id` as the party
+    /// that would have run the turn, with both models spelled exactly as the
+    /// config and the server spelled them.
+    #[must_use]
+    pub fn error(&self, harness_id: &str) -> String {
+        match self {
+            DialogueRefusal::ModelMismatch {
+                requested,
+                observed,
+            } => format!(
+                "harness `{harness_id}` reported it would run this turn under \"{observed}\", \
+                 not the requested \"{requested}\", so the turn was refused before it started"
+            ),
+        }
+    }
+}
+
 /// How far along one turn's conversation is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -152,6 +189,13 @@ pub struct Dialogue {
     open_id: u64,
     /// The harness's own session/thread identifier, once it exists.
     session_id: Option<String>,
+    /// The model the server said the conversation would run under, once it
+    /// said so — codex's `ThreadStartResponse.model` / `ThreadResumeResponse.model`,
+    /// both required strings in its own schema. Read off the open response,
+    /// before any turn is submitted, and never derived from the request.
+    observed_model: Option<String>,
+    /// Why this dialogue ended without opening a turn, when it did.
+    refusal: Option<DialogueRefusal>,
     /// Codex's per-turn identifier, which `turn/interrupt` addresses.
     turn_id: Option<String>,
     /// Assistant text accumulated from the update stream.
@@ -189,6 +233,8 @@ impl Dialogue {
             handshake_id: 0,
             open_id: 0,
             session_id: None,
+            observed_model: None,
+            refusal: None,
             turn_id: None,
             text: String::new(),
             text_item: None,
@@ -320,6 +366,22 @@ impl Dialogue {
     #[must_use]
     pub fn session_id(&self) -> Option<&str> {
         self.session_id.as_deref()
+    }
+
+    /// The model the server itself reported the conversation would run under,
+    /// once it reported one — `None` on a protocol that names none (ACP) and
+    /// on an open response that carried no `model`. Never inferred from the
+    /// request: this is the harness's claim or nothing.
+    #[must_use]
+    pub fn observed_model(&self) -> Option<&str> {
+        self.observed_model.as_deref()
+    }
+
+    /// Why the conversation ended **without opening a turn**, when it did —
+    /// `None` on every dialogue that submitted (or is still to submit) one.
+    #[must_use]
+    pub fn refusal(&self) -> Option<&DialogueRefusal> {
+        self.refusal.as_ref()
     }
 
     /// The assistant text accumulated from the update stream, or `None` when
@@ -505,11 +567,41 @@ impl Dialogue {
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 };
+                // The server's own statement of the model the thread runs
+                // under, made before any token is spent: `ThreadStartResponse`
+                // and `ThreadResumeResponse` both carry a required `model`
+                // (measured against codex 0.153.4 — a `thread/start` naming
+                // `gpt-5.6-sol` is answered `"model":"gpt-5.6-sol"`, and one
+                // naming nothing is answered with the server's default). Read
+                // on this arm only: `turn/started` carries no model at all.
+                if self.shape == ControlShape::CodexAppServer {
+                    self.observed_model = result
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
+                }
                 let Some(session) = self.session_id.clone() else {
                     // No identifier means no turn to address and no handle to
                     // resume; stop rather than send a prompt nobody can interrupt.
                     return self.finish();
                 };
+                // The requested model and the reported one differ: the turn
+                // would be billed to a model nobody asked for, so it is refused
+                // HERE, before `turn/start`, at zero cost. An absent claim on
+                // either side contradicts nothing and proceeds — the server may
+                // not name one, and a run may not have asked for one.
+                if let (Some(requested), Some(observed)) =
+                    (self.config.model.as_deref(), self.observed_model.as_deref())
+                {
+                    if requested != observed {
+                        self.refusal = Some(DialogueRefusal::ModelMismatch {
+                            requested: requested.to_string(),
+                            observed: observed.to_string(),
+                        });
+                        self.phase = Phase::Done;
+                        return DialogueStep::Terminal;
+                    }
+                }
                 self.phase = Phase::InTurn;
                 let turn_id = self.take_id();
                 self.turn_request_id = Some(turn_id);
@@ -620,13 +712,23 @@ impl Dialogue {
     /// posture and working directory the original was.
     fn turn_params(&self, session: &str, prompt: &str) -> Value {
         match self.shape {
-            ControlShape::CodexAppServer => json!({
-                "threadId": session,
-                "cwd": self.config.cwd.to_string(),
-                "input": [{"type": "text", "text": prompt}],
-                "approvalPolicy": self.codex_approval_policy(),
-                "sandboxPolicy": self.codex_sandbox_policy(),
-            }),
+            ControlShape::CodexAppServer => {
+                let mut params = json!({
+                    "threadId": session,
+                    "cwd": self.config.cwd.to_string(),
+                    "input": [{"type": "text", "text": prompt}],
+                    "approvalPolicy": self.codex_approval_policy(),
+                    "sandboxPolicy": self.codex_sandbox_policy(),
+                });
+                // Restated per turn (`TurnStartParams.model` overrides the
+                // model for this turn and the ones after it), so the turn runs
+                // under the model the run resolved even on a thread that was
+                // created — or resumed — under another.
+                if let Some(model) = &self.config.model {
+                    params["model"] = json!(model);
+                }
+                params
+            }
             _ => json!({
                 "sessionId": session,
                 "prompt": [{"type": "text", "text": prompt}],
@@ -912,6 +1014,216 @@ mod tests {
         let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
         assert!(step.is_terminal());
         assert!(d.interrupt(None).is_none(), "no turn left to interrupt");
+    }
+
+    /// Drive a codex dialogue through its handshake and return the open
+    /// request (`thread/start` or `thread/resume`) it sent.
+    fn codex_opened(d: &mut Dialogue) -> Value {
+        d.open();
+        let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        parse(&step.frames()[1])
+    }
+
+    /// The model rides every codex frame that takes one, and it is the
+    /// candidate's own: `thread/start` opens the conversation under it and
+    /// `turn/start` restates it, so a turn cannot run under whatever model the
+    /// thread happened to be created with.
+    #[test]
+    fn codex_requests_the_model_on_thread_start_and_turn_start_alike() {
+        let mut d = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        assert_eq!(codex_opened(&mut d)["params"]["model"], "gpt-5-codex");
+        let step = d.on_line(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"},"model":"gpt-5-codex"}}"#,
+        );
+        let turn = parse(&step.frames()[0]);
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(turn["params"]["model"], "gpt-5-codex");
+        assert_eq!(d.observed_model(), Some("gpt-5-codex"));
+        assert!(d.refusal().is_none());
+
+        // A redirected turn is negotiated under the same model as the first.
+        d.on_line(r#"{"jsonrpc":"2.0","method":"turn/started","params":{"turn":{"id":"tu-9"}}}"#);
+        d.interrupt(Some(&redirection("do X instead"))).unwrap();
+        let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+        let next = parse(&step.frames()[0]);
+        assert_eq!(next["method"], "turn/start");
+        assert_eq!(next["params"]["model"], "gpt-5-codex");
+
+        // With no model resolved, no frame names one — the server's default is
+        // the honest request, and `null` is not a model.
+        let mut unset = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                model: None,
+                ..config()
+            },
+        )
+        .unwrap();
+        assert!(codex_opened(&mut unset)["params"].get("model").is_none());
+        let step = unset.on_line(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"},"model":"gpt-6-astra"}}"#,
+        );
+        let turn = parse(&step.frames()[0]);
+        assert_eq!(
+            turn["method"], "turn/start",
+            "nothing requested, nothing to contradict"
+        );
+        assert!(turn["params"].get("model").is_none());
+        assert_eq!(unset.observed_model(), Some("gpt-6-astra"));
+        assert!(unset.refusal().is_none());
+    }
+
+    /// The server said it would run the thread under a model other than the one
+    /// requested: no `turn/start` goes out, the dialogue ends, and it says why
+    /// with both names spelled as the config and the server spelled them.
+    #[test]
+    fn codex_refuses_a_thread_the_server_would_run_under_another_model() {
+        let mut d = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        codex_opened(&mut d);
+        let step = d.on_line(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"},"model":"gpt-6-astra"}}"#,
+        );
+        assert!(
+            step.is_terminal(),
+            "the turn must not be submitted: {step:?}"
+        );
+        assert!(step.frames().is_empty(), "no turn/start: {step:?}");
+        assert_eq!(
+            d.refusal(),
+            Some(&DialogueRefusal::ModelMismatch {
+                requested: "gpt-5-codex".to_string(),
+                observed: "gpt-6-astra".to_string(),
+            })
+        );
+        assert_eq!(d.observed_model(), Some("gpt-6-astra"));
+        // The thread the server opened is still real, and still the handle.
+        assert_eq!(d.session_id(), Some("th-1"));
+        let error = d.refusal().unwrap().error("codex");
+        assert!(
+            error.contains("\"gpt-6-astra\"") && error.contains("\"gpt-5-codex\""),
+            "both names verbatim: {error}"
+        );
+        assert!(error.starts_with("harness `codex`"), "{error}");
+        // Ended: nothing to interrupt, and later lines change nothing.
+        assert!(d.interrupt(None).is_none());
+        assert_eq!(
+            d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#),
+            DialogueStep::default()
+        );
+
+        // Byte for byte: a case or suffix difference is a different model id.
+        let mut cased = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        codex_opened(&mut cased);
+        let step = cased.on_line(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"},"model":"GPT-5-codex"}}"#,
+        );
+        assert!(step.is_terminal());
+        assert!(cased.refusal().is_some());
+
+        // The same on a resumed thread: `ThreadResumeResponse.model` is the
+        // same required field, read on the same arm.
+        let mut resumed = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                resume: DialogueResume::new(ControlShape::CodexAppServer, "th-stored".to_string()),
+                ..config()
+            },
+        )
+        .unwrap();
+        assert_eq!(codex_opened(&mut resumed)["method"], "thread/resume");
+        let step = resumed.on_line(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-stored"},"model":"gpt-6-astra"}}"#,
+        );
+        assert!(step.is_terminal());
+        assert_eq!(resumed.observed_model(), Some("gpt-6-astra"));
+        assert!(resumed.refusal().is_some());
+    }
+
+    /// An open response that names no model contradicts nothing: the turn
+    /// proceeds exactly as before the field was read, and nothing is inferred.
+    #[test]
+    fn codex_proceeds_when_the_open_response_names_no_model() {
+        let mut d = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        codex_opened(&mut d);
+        let step = d.on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"}}}"#);
+        let turn = parse(&step.frames()[0]);
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(d.observed_model(), None, "never derived from the request");
+        assert!(d.refusal().is_none());
+
+        // ACP names no model on `session/new` at all, and is never refused.
+        let mut acp = Dialogue::new(ControlShape::AcpCancel, config()).unwrap();
+        acp.open();
+        acp.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        let step = acp
+            .on_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-7","model":"other"}}"#);
+        assert_eq!(parse(&step.frames()[0])["method"], "session/prompt");
+        assert_eq!(acp.observed_model(), None);
+        assert!(acp.refusal().is_none());
+    }
+
+    /// The open response as codex 0.153.4 really answers it, with `result.model`
+    /// where the dialogue reads it — captured exchange in
+    /// `tests/fixtures/codex-app-server-thread-start.jsonl` (request as sent,
+    /// response, `thread/started`). `thread/start` spends nothing, so the
+    /// fixture cost no quota and the scheduled live suite is its re-check.
+    #[test]
+    fn codex_reads_the_served_model_off_a_captured_thread_start_response() {
+        let fixture =
+            include_str!("../../../../tests/fixtures/codex-app-server-thread-start.jsonl");
+        let mut lines = fixture.lines();
+        let request: Value = serde_json::from_str(lines.next().unwrap()).unwrap();
+        let response = lines.next().unwrap();
+        let started = lines.next().unwrap();
+        assert_eq!(request["method"], "thread/start");
+        let requested = request["params"]["model"].as_str().unwrap();
+        assert_eq!(requested, "gpt-5.6-sol");
+
+        // Requested exactly what the capture requested: the server answers the
+        // same model and the turn goes out.
+        let mut d = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                model: Some(requested.to_string()),
+                ..config()
+            },
+        )
+        .unwrap();
+        assert_eq!(codex_opened(&mut d)["params"]["model"], requested);
+        let step = d.on_line(response);
+        assert_eq!(d.observed_model(), Some(requested));
+        assert!(d.refusal().is_none());
+        let turn = parse(&step.frames()[0]);
+        assert_eq!(turn["method"], "turn/start");
+        assert_eq!(
+            turn["params"]["threadId"],
+            "01a0908e-1c1e-74e2-94f6-2b7d76737f6d"
+        );
+        assert_eq!(turn["params"]["model"], requested);
+        // `thread/started` repeats it under `thread.model` and changes nothing.
+        assert_eq!(d.on_line(started), DialogueStep::default());
+        assert_eq!(d.observed_model(), Some(requested));
+
+        // The same response against a run that asked for another model is the
+        // refusal — the server's word, not the request, decides `observed_model`.
+        let mut other = Dialogue::new(
+            ControlShape::CodexAppServer,
+            DialogueConfig {
+                model: Some("gpt-6-astra".to_string()),
+                ..config()
+            },
+        )
+        .unwrap();
+        codex_opened(&mut other);
+        assert!(other.on_line(response).is_terminal());
+        assert_eq!(other.observed_model(), Some(requested));
+        assert_eq!(
+            other.refusal(),
+            Some(&DialogueRefusal::ModelMismatch {
+                requested: "gpt-6-astra".to_string(),
+                observed: requested.to_string(),
+            })
+        );
     }
 
     #[test]

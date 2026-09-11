@@ -2572,10 +2572,16 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
     // empty accounting") is the same record a candidate that tried the task and
     // lost would leave. The stderr below is that run's, verbatim.
     //
-    // Three candidates, one contrast: a refusal a classifier recognizes, a
-    // failure it does not with nothing to show for itself, and a failure it does
-    // not from a candidate that demonstrably worked. The verdict is unchanged in
-    // all three — only what the run SAYS about the middle one is new.
+    // Five candidates, three endings and one fall-through: a refusal a
+    // classifier recognizes (hands on); a failure it does not with nothing to
+    // show for itself, once from a non-zero exit and once from a deadline; a
+    // failure it does not from a candidate that demonstrably worked; and a
+    // failure it names but does not hand on (a single-model `model_not_found`).
+    // Every one that stops, stops — the decision `startup_failure_reason`
+    // states — and what the run SAYS about each is what this pins: the one line
+    // a supervisor publishes names which ending it was and carries the
+    // candidate's own words, since the per-result fields it used to point at
+    // reach no supervisor (and, for a plain non-zero exit, `error` is null).
     let mock = mock_bin().display().to_string();
     let served = serde_json::to_string(concat!(
         "{\"type\":\"turn.started\"}\n",
@@ -2600,6 +2606,15 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         /// The stopping candidate's published work reading, if it has one.
         work: Option<&'static str>,
         record_version: &'static str,
+        /// The ending the summary names, and the candidate's own words it
+        /// carries — both `None` for a candidate that hands the task on.
+        summary: Option<(&'static str, String)>,
+        /// A deadline for the run, where the ending is a candidate that ran
+        /// out of time.
+        timeout: Option<&'static str>,
+        /// A schema the answer must conform to, where the ending is an answer
+        /// that did not. Buffered only: `--stream` refuses `--schema`.
+        schema: bool,
     }
     let cases = [
         Case {
@@ -2612,6 +2627,9 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             falls_through: true,
             work: None,
             record_version: "1.6",
+            summary: None,
+            timeout: None,
+            schema: false,
         },
         Case {
             tag: "unclassified-no-work",
@@ -2619,13 +2637,241 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             falls_through: false,
             work: Some("none"),
             record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 2) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) No claude executable found for nodejs 26.5.0"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            // The candidate that merely ran out of time: killed at the deadline
+            // with nothing billed on record. It stops the chain like the exit
+            // above — the empty accounting cannot say the call was never made —
+            // and the summary says which of the two it was.
+            tag: "unclassified-timeout",
+            env: r#"{ MOCK_SLEEP_MS = "10000", MOCK_STDOUT = "" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status timeout) — so the chain stopped there and tried no candidate after \
+                 it; it said: harness `claude-code` hit its oneharness deadline:"
+                     .to_string(),
+            )),
+            timeout: Some("1"),
+            schema: false,
         },
         Case {
             tag: "unclassified-worked",
-            env: format!(r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked} }}"#),
+            env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = {worked}, MOCK_STDERR = 'gave up after a partial answer' }}"#
+            ),
             falls_through: false,
             work: Some("done"),
             record_version: "1.7",
+            summary: Some((
+                "did the task's work and did not succeed, for a cause it could not classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) gave up after a partial answer"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            // A failure the classifier names and the chain still stops at: a
+            // single-model `model_not_found` is a configuration mistake the user
+            // should see, not one to route around.
+            tag: "classified-task-failure",
+            env: r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = 'model not found: gpt-9' }"#.to_string(),
+            falls_through: false,
+            work: None,
+            // `model_not_found` is not version-gated, so the record needs no
+            // reader newer than the one the `error` text itself asks for.
+            record_version: "1.3",
+            summary: Some((
+                "ran but did not succeed",
+                "(status nonzero, exit 1, failure_kind model_not_found) — so the chain \
+                 stopped there and tried no candidate after it; it said: (stderr) model not \
+                 found: gpt-9"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        // The rest are the account's fallbacks, each one what a real harness
+        // leaves: an error record on stdout and nothing on stderr; a candidate
+        // that died silently; a terminal escape in its last words; a last line
+        // longer than a supervisor can publish; and an answer that did not
+        // conform to the schema (exit 0, no `error`, a verdict only).
+        Case {
+            tag: "stdout-last-words",
+            env: r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "fatal: the model returned nothing\n" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stdout) fatal: the model returned nothing"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            // A multi-line diagnostic, the shape a Node-based launcher dies
+            // with: the cause is three lines up from a footer that names only
+            // the runtime. The whole diagnostic fits, so the whole diagnostic
+            // is what the line carries — a consumer holding only the summary
+            // reads the ENOENT, not "Node.js v22.14.0".
+            tag: "multi-line-diagnostic",
+            env: concat!(
+                r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = ""#,
+                r#"(node:4131) Warning: deprecated --experimental flag\n"#,
+                r#"Error: ENOENT: no such file or directory, open '/home/u/.claude/settings.json'\n"#,
+                r#"    at Object.<anonymous> (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11)\n"#,
+                r#"    at Module._compile (node:internal/modules/cjs/loader:1554:14)\n"#,
+                r#"\n"#,
+                r#"Node.js v22.14.0\n"#,
+                r#"" }"#,
+            )
+            .to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) (node:4131) Warning: deprecated \
+                 --experimental flag Error: ENOENT: no such file or directory, open \
+                 '/home/u/.claude/settings.json' at Object.<anonymous> \
+                 (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11) at \
+                 Module._compile (node:internal/modules/cjs/loader:1554:14) Node.js v22.14.0"
+                    .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            // The same diagnostic behind more preamble than the line can hold:
+            // a Node launcher's deprecation and experimental-module warnings
+            // run to hundreds of characters before the error. The tail keeps
+            // every trailing line that fits — the ENOENT and its frames, whole
+            // — and drops the warnings above it behind a leading `…`, so the
+            // reader knows the stream began earlier and the report has it.
+            // Neither "last line only" (the runtime footer) nor "first 400
+            // characters" (the warnings, and no error at all) would do.
+            tag: "overlong-tail",
+            env: concat!(
+                r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = ""#,
+                r#"(node:4131) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.\n"#,
+                r#"(Use `node --trace-deprecation ...` to show where the warning was created)\n"#,
+                r#"(node:4131) ExperimentalWarning: CommonJS module /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js is loading ES Module /usr/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/index.mjs using require().\n"#,
+                r#"Error: ENOENT: no such file or directory, open '/home/u/.claude/settings.json'\n"#,
+                r#"    at Object.<anonymous> (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11)\n"#,
+                r#"    at Module._compile (node:internal/modules/cjs/loader:1554:14)\n"#,
+                r#"\n"#,
+                r#"Node.js v22.14.0\n"#,
+                r#"" }"#,
+            )
+            .to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) …Error: ENOENT: no such file or \
+                 directory, open '/home/u/.claude/settings.json' at Object.<anonymous> \
+                 (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11) at \
+                 Module._compile (node:internal/modules/cjs/loader:1554:14) Node.js v22.14.0"
+                    .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "silent",
+            env: r#"{ MOCK_EXIT = "3", MOCK_STDOUT = "" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 3) — so the chain stopped there and tried no \
+                 candidate after it; it said: nothing — it wrote no error, no stderr and no \
+                 stdout"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "control-characters",
+            env: r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = "\u001b[31mdied\u0007 loudly\u001b[0m" }"#.to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) [31mdied loudly[0m"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "bounded",
+            env: format!(
+                r#"{{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = "{}" }}"#,
+                "x".repeat(450)
+            ),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                // 400 characters of the account — the `(stderr)` tag counts —
+                // then the ellipsis: the report keeps the rest.
+                format!(
+                    "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                     candidate after it; it said: (stderr) {}…",
+                    "x".repeat(400 - "(stderr) ".len())
+                ),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
+            tag: "schema-verdict",
+            env: r#"{ MOCK_EXIT = "0", MOCK_STDOUT = '{"type":"result","result":"not json at all"}' }"#.to_string(),
+            falls_through: false,
+            work: None,
+            // Exit 0 and no `error` text: nothing in the record asks for a
+            // newer reader than the schema fields themselves.
+            record_version: "1.1",
+            summary: Some((
+                "ran but did not succeed",
+                "(status ok, exit 0) — so the chain stopped there and tried no candidate \
+                 after it; it said: the answer did not conform to the schema:"
+                     .to_string(),
+            )),
+            timeout: None,
+            schema: true,
         },
     ];
 
@@ -2636,6 +2882,9 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             falls_through,
             work,
             record_version,
+            summary: expected_summary,
+            timeout,
+            schema,
         } = case;
         let project = format!(
             r#"
@@ -2653,25 +2902,66 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         );
         let fx = ConfigFixture::new(&format!("work-evidence-{tag}"), &project, "");
         let history = hist_dir(&format!("work-evidence-{tag}"));
-        let output = run_with_config(
-            &[
-                "run",
-                "--prompt",
-                "hi",
-                "--cwd",
-                &fx.cwd(),
-                "--history",
-                "--history-dir",
-                &history.display().to_string(),
-                "--compact",
-            ],
-            &[],
-            &fx.user_config(),
-        );
+        let history_arg = history.display().to_string();
+        let cwd = fx.cwd();
+        let mut args = vec![
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &cwd,
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--compact",
+        ];
+        if let Some(seconds) = timeout {
+            args.extend(["--timeout", seconds]);
+        }
+        let schema_file = std::path::Path::new(&cwd).join("schema.json");
+        let schema_arg = schema_file.display().to_string();
+        if schema {
+            std::fs::write(&schema_file, r#"{"type":"object"}"#).unwrap();
+            args.extend(["--schema", &schema_arg, "--schema-max-retries", "0"]);
+        }
+        let output = run_with_config(&args, &[], &fx.user_config());
         let value = json_stdout(&output);
         let stopped = value["fallback"]["stopped_without_work"]
             .as_bool()
             .unwrap_or_else(|| panic!("{tag}: the fallback block must state this"));
+        // The one line a supervisor quotes when it reports the run — the whole
+        // line, because that line is a detached run's death payload and nothing
+        // downstream of it can open the report. It names the ending ("ran but
+        // did not succeed" is only true of a candidate that failed at a task
+        // the crate can name; a candidate that worked and one that showed
+        // nothing are each said as such) and carries the candidate's own words,
+        // so a consumer holding only this line can say why the chain stopped.
+        // Asserted on the stderr each driver actually emitted, since the
+        // buffered and streamed drivers reach it through one summary builder
+        // but hand it their own report.
+        let expected_line = expected_summary.map(|(ending, account)| {
+            format!("oneharness: fallback harness `claude-code` {ending} {account}")
+        });
+        let assert_summary = |output: &Output, driver: &str| {
+            let summary = String::from_utf8_lossy(&output.stderr).to_string();
+            let expected = expected_line
+                .as_deref()
+                .unwrap_or_else(|| panic!("{tag}: a stop names its ending"));
+            assert!(
+                summary.contains(expected),
+                "{tag} ({driver}): the summary must name the ending and carry the cause:\n  want: {expected}\n  got:  {summary}"
+            );
+            for stale in [
+                "see results[].status",
+                "see results[].error",
+                "see results[].work",
+            ] {
+                assert!(
+                    !summary.contains(stale),
+                    "{tag} ({driver}): a pointer to a field only the report holds is what hid a night of deaths: {summary}"
+                );
+            }
+        };
 
         if falls_through {
             // Unchanged: a candidate the classifier recognizes still hands the
@@ -2698,28 +2988,19 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
                     && value["results"].as_array().unwrap().len() == 1,
                 "{tag}: the chain must stop here, leaving codex untried"
             );
-            assert_eq!(value["results"][0]["work"], work.unwrap(), "{tag}");
-            // ...and the attribution names the difference between the two: the
-            // candidate that did nothing is called out where a reader of a failed
-            // run looks, not left to be re-derived from empty accounting.
-            assert_eq!(stopped, work == Some("none"), "{tag}");
-            // Including in the one line a supervisor quotes when it reports the
-            // run. "ran but did not succeed" is what the chain said the day it
-            // truncated to one identity, and it is only true of the candidate
-            // that actually ran the task.
-            let summary = String::from_utf8_lossy(&output.stderr).to_string();
-            if work == Some("none") {
-                assert!(
-                    summary.contains("failed with nothing to show for it")
-                        && summary.contains("tried no candidate after it"),
-                    "{tag}: the summary must name the stop: {summary}"
-                );
-            } else {
-                assert!(
-                    summary.contains("ran but did not succeed"),
-                    "{tag}: a candidate that worked is reported as one: {summary}"
-                );
+            match work {
+                Some(reading) => assert_eq!(value["results"][0]["work"], reading, "{tag}"),
+                None => assert!(
+                    value["results"][0]["work"].is_null(),
+                    "{tag}: a classified failure has already said why"
+                ),
             }
+            // ...and the attribution names the difference: the candidate that
+            // did nothing is called out where a reader of a failed run looks,
+            // not left to be re-derived from empty accounting.
+            assert_eq!(stopped, work == Some("none"), "{tag}");
+            // Including in the line a supervisor quotes.
+            assert_summary(&output, "buffered");
         }
 
         let records = materialized_history(Path::new(
@@ -2741,20 +3022,26 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         // ...and a streamed chain says the same thing. The two drivers reach the
         // verdict through one `fallback_step`, but they assemble the block
         // separately, so the reading a consumer acts on live is pinned here
-        // rather than inferred from the buffered one.
-        let streamed = run_with_config(
-            &[
-                "run",
-                "--prompt",
-                "hi",
-                "--cwd",
-                &fx.cwd(),
-                "--stream",
-                "--compact",
-            ],
-            &[],
-            &fx.user_config(),
-        );
+        // rather than inferred from the buffered one — and so is the summary
+        // line, which is built from the report the streamed driver assembled.
+        // (Not for the schema ending: `--stream` refuses `--schema` before any
+        // chain runs.)
+        if schema {
+            continue;
+        }
+        let mut stream_args = vec![
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &cwd,
+            "--stream",
+            "--compact",
+        ];
+        if let Some(seconds) = timeout {
+            stream_args.extend(["--timeout", seconds]);
+        }
+        let streamed = run_with_config(&stream_args, &[], &fx.user_config());
         let report = stream_envelopes(&streamed)
             .last()
             .map(|envelope| envelope["report"].clone())
@@ -2766,6 +3053,82 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         assert_eq!(
             report["results"][0]["work"], value["results"][0]["work"],
             "{tag}: and publish the same reading on the candidate"
+        );
+        if falls_through {
+            assert!(
+                streamed.status.success(),
+                "{tag}: a streamed chain that was served has no failure to summarize: {}",
+                String::from_utf8_lossy(&streamed.stderr)
+            );
+        } else {
+            assert_eq!(streamed.status.code(), Some(1), "{tag}");
+            assert_summary(&streamed, "streamed");
+        }
+    }
+}
+
+#[test]
+fn a_stopped_chain_names_the_identity_that_stopped_it() {
+    // The measured night was one identity of one harness: `claude-code:alternate`
+    // died on every scheduled run with the identities behind it untried, and its
+    // healthy sibling was what the health report described. A summary naming
+    // `claude-code` would send the reader to that healthy sibling — on a chain
+    // of identities the identity IS the finding. So the line names the candidate
+    // by its variant-qualified id, and names the candidate that STOPPED the
+    // chain: here the anchor falls through on a refusal a classifier recognizes,
+    // so the stopping candidate is the second result, not the first, on both
+    // drivers.
+    let project = variant_fallback_project(
+        r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+        r#"MOCK_EXIT = "2", MOCK_STDOUT = "", MOCK_STDERR = "No claude executable found for nodejs 26.5.0""#,
+    );
+    let fx = ConfigFixture::new("stop-names-identity", &project, "");
+    let cwd = fx.cwd();
+    let expected = "oneharness: fallback harness `claude-code:alternate` failed with nothing to \
+                    show for it — no tool call, no billed usage, and no cause it could classify \
+                    (status nonzero, exit 2) — so the chain stopped there and tried no candidate \
+                    after it; it said: (stderr) No claude executable found for nodejs 26.5.0";
+    for driver in ["buffered", "streamed"] {
+        let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+        if driver == "streamed" {
+            args.push("--stream");
+        }
+        let output = run_with_config(&args, &[], &fx.user_config());
+        assert_eq!(output.status.code(), Some(1), "{driver}");
+        let report = if driver == "streamed" {
+            stream_envelopes(&output)
+                .last()
+                .map(|envelope| envelope["report"].clone())
+                .unwrap_or_else(|| panic!("{driver}: a streamed run ends with its report"))
+        } else {
+            json_stdout(&output)
+        };
+        assert_eq!(
+            report["fallback"]["fell_through"][0]["harness"], "claude-code:primary",
+            "{driver}"
+        );
+        assert_eq!(
+            report["fallback"]["fell_through"][0]["reason"], "quota",
+            "{driver}"
+        );
+        assert_eq!(
+            report["fallback"]["ran"], "claude-code:alternate",
+            "{driver}"
+        );
+        assert_eq!(report["fallback"]["stopped_without_work"], true, "{driver}");
+        assert_eq!(report["results"].as_array().unwrap().len(), 2, "{driver}");
+        assert_eq!(
+            report["results"][1]["harness_id"], "claude-code:alternate",
+            "{driver}"
+        );
+        let summary = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            summary.contains(expected),
+            "{driver}: the summary must name the identity that stopped the chain:\n  want: {expected}\n  got:  {summary}"
+        );
+        assert!(
+            !summary.contains("harness `claude-code`"),
+            "{driver}: the base id names the healthy sibling as readily as the dead one: {summary}"
         );
     }
 }
@@ -21408,6 +21771,118 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     assert_eq!(report["results"][0]["status"], "ok");
     assert_eq!(report["session"]["name"], "watched");
     assert_eq!(report["session"]["token"], "sess-ctl");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_run_reports_a_request_still_in_flight_when_its_turn_ended() {
+    use oneharness_core::domain::control::ControlRequest;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    let mock_profile = mock_profile_redirect();
+    // The report's `control.interrupts` must be what the socket answered, not
+    // what had been recorded by the moment the turn ended: a request the run's
+    // address has already taken can still be in flight while the run assembles
+    // its report, and read off the live handle that report said `interrupts:
+    // []` about a request whose client was answered. Driven through the real
+    // `run` process, with the request held half-sent over the socket until the
+    // mock has ended the turn on its own — so the run reaches its report with
+    // the request outstanding, whichever way it reads the interrupts.
+    let store = control_store_dir("in-flight");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("in-flight-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        // The turn is in flight long enough to take the half-sent request,
+        // then ends by itself; the interrupt is not what ends it.
+        .env("MOCK_TURN_RESULT_DELAY_MS", "1500")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-ctl"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "flight",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("flight.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    // Half a request: the run has accepted the connection and is reading a
+    // frame that does not finish until after its turn is over.
+    let mut stream = UnixStream::connect(&socket).expect("the run is listening");
+    let mut frame = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
+    frame.push('\n');
+    let (head, tail) = frame.split_at(frame.len() / 2);
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    wait_until("the turn to end on its own", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("TURN_ENDED"))
+            .unwrap_or(false)
+    });
+    // The run has its terminal document and is assembling its report; only
+    // now does the request finish arriving.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    stream.write_all(tail.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let mut reply = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut reply)
+        .expect("the request was read");
+    // Zero bytes is the run hanging up on a request its own address took.
+    assert!(!reply.is_empty(), "the run hung up on a request in flight");
+    let answer: Value = serde_json::from_str(reply.trim()).expect("a control response");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(answer["reason"], "no_active_turn", "{answer}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(report["results"][0]["status"], "ok");
+    // The report says what the socket said: the request its client was
+    // answered about is in it, as the refusal it was.
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1, "{report}");
+    assert_eq!(interrupts[0]["verb"], "interrupt");
+    assert_eq!(interrupts[0]["outcome"], "refused");
+    assert_eq!(interrupts[0]["reason"], "no_active_turn");
+    // Refused means never delivered: the harness saw no control frame.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(!log.contains("control_request"), "turn log:\n{log}");
+    assert!(
+        !socket.exists(),
+        "socket must be removed when the run exits"
+    );
 }
 
 #[cfg(unix)]

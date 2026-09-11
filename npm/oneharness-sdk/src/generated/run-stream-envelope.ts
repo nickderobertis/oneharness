@@ -427,13 +427,16 @@ export interface FallbackReport {
    * [`RunResult::work`] read [`RunWork::None`] on a failure no classifier
    * recognized.
    *
-   * The chain still stops there, deliberately: re-running a task that may
-   * genuinely have failed for free would burn the next identity's quota on
-   * the same failure, which is worse than stopping (see
+   * The chain still stops there, deliberately — decided, not inherited:
+   * empty accounting is the absence of work evidence, not proof nothing was
+   * spent, so handing the candidate on could bill a task twice (the decision
+   * and its reasoning are stated once, at
    * [`crate::domain::fallback::startup_failure_reason`]). What this flag adds
    * is the *attribution* — without it a candidate that never got started reads
    * in the report exactly like one that tried the task and failed it, and the
-   * remaining candidates look untried for a reason nobody can name.
+   * remaining candidates look untried for a reason nobody can name — and the
+   * failure summary carries the candidate's own words beside it, so the
+   * reader left holding that one line can act on the cause.
    *
    * `false` whenever `ran` is `null` (no candidate ran at all — every one is
    * in `fell_through`, each with its reason).

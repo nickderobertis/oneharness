@@ -133,6 +133,33 @@ pub enum Status {
     Planned,
 }
 
+impl Status {
+    /// Every status, for the surfaces that enumerate them.
+    pub const ALL: [Status; 7] = [
+        Status::Ok,
+        Status::Nonzero,
+        Status::Timeout,
+        Status::Cancelled,
+        Status::SpawnError,
+        Status::Skipped,
+        Status::Planned,
+    ];
+
+    /// The JSON token this status serializes to, for prose that names it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Ok => "ok",
+            Status::Nonzero => "nonzero",
+            Status::Timeout => "timeout",
+            Status::Cancelled => "cancelled",
+            Status::SpawnError => "spawn-error",
+            Status::Skipped => "skipped",
+            Status::Planned => "planned",
+        }
+    }
+}
+
 /// The raw capture from running a subprocess — produced by the io layer,
 /// consumed (with extraction) by the command layer. Carries no extraction so
 /// the spawn path and the parse path stay independently testable.
@@ -763,13 +790,16 @@ pub struct FallbackReport {
     /// [`RunResult::work`] read [`RunWork::None`] on a failure no classifier
     /// recognized.
     ///
-    /// The chain still stops there, deliberately: re-running a task that may
-    /// genuinely have failed for free would burn the next identity's quota on
-    /// the same failure, which is worse than stopping (see
+    /// The chain still stops there, deliberately — decided, not inherited:
+    /// empty accounting is the absence of work evidence, not proof nothing was
+    /// spent, so handing the candidate on could bill a task twice (the decision
+    /// and its reasoning are stated once, at
     /// [`crate::domain::fallback::startup_failure_reason`]). What this flag adds
     /// is the *attribution* — without it a candidate that never got started reads
     /// in the report exactly like one that tried the task and failed it, and the
-    /// remaining candidates look untried for a reason nobody can name.
+    /// remaining candidates look untried for a reason nobody can name — and the
+    /// failure summary carries the candidate's own words beside it, so the
+    /// reader left holding that one line can act on the cause.
     ///
     /// `false` whenever `ran` is `null` (no candidate ran at all — every one is
     /// in `fell_through`, each with its reason).
@@ -879,6 +909,46 @@ impl<'de> Deserialize<'de> for RunStreamEnvelope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn status_prose_token_is_its_wire_token() {
+        // `as_str` exists so a summary can name a status in prose; it must spell
+        // the status exactly as the report does, or the sentence names a value a
+        // reader cannot find in the JSON beside it. `ALL` is checked against
+        // the enum's own generated schema, so a variant added without being
+        // listed fails here instead of escaping the token check.
+        //
+        // A structural assertion, deliberately, in place of an end-to-end one:
+        // the summary journey (`tests/cli.rs`, the chain that stops each way)
+        // already reads `ok`, `nonzero` and `timeout` off the emitted line, and
+        // no chain the CLI can be driven through reports the other four. A
+        // `skipped` or `spawn-error` candidate always falls through, named by
+        // its fall-through *reason*, never by its status; `planned` is a dry
+        // run, which runs no chain; and `cancelled` reaches a summary only from
+        // a signal timed into a live chain. Driving that to check the spelling
+        // of one token would cost more than the misspelling it prevents, and
+        // this check catches the same drift — a token that stops matching the
+        // wire — deterministically.
+        let rendered = serde_json::to_value(schemars::schema_for!(Status)).expect("serializes");
+        let generated: Vec<Value> = rendered["oneOf"]
+            .as_array()
+            .expect("Status renders as a union of serialized consts")
+            .iter()
+            .map(|variant| variant["const"].clone())
+            .collect();
+        let listed: Vec<Value> = Status::ALL
+            .into_iter()
+            .map(|status| serde_json::to_value(status).expect("a status serializes"))
+            .collect();
+        assert_eq!(
+            listed, generated,
+            "Status::ALL must list every variant, in order"
+        );
+        for status in Status::ALL {
+            let wire = serde_json::to_value(status).expect("a status serializes");
+            assert_eq!(wire, status.as_str(), "{status:?}");
+        }
+    }
 
     fn round_trip(telemetry: ExecutionTelemetry) -> Value {
         let wire = serde_json::to_value(&telemetry).expect("telemetry serializes");

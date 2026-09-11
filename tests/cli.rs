@@ -21766,6 +21766,118 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
 #[cfg(unix)]
 #[test]
+fn a_run_reports_a_request_still_in_flight_when_its_turn_ended() {
+    use oneharness_core::domain::control::ControlRequest;
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    let mock_profile = mock_profile_redirect();
+    // The report's `control.interrupts` must be what the socket answered, not
+    // what had been recorded by the moment the turn ended: a request the run's
+    // address has already taken can still be in flight while the run assembles
+    // its report, and read off the live handle that report said `interrupts:
+    // []` about a request whose client was answered. Driven through the real
+    // `run` process, with the request held half-sent over the socket until the
+    // mock has ended the turn on its own — so the run reaches its report with
+    // the request outstanding, whichever way it reads the interrupts.
+    let store = control_store_dir("in-flight");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("in-flight-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        // The turn is in flight long enough to take the half-sent request,
+        // then ends by itself; the interrupt is not what ends it.
+        .env("MOCK_TURN_RESULT_DELAY_MS", "1500")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-ctl"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "flight",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("flight.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    // Half a request: the run has accepted the connection and is reading a
+    // frame that does not finish until after its turn is over.
+    let mut stream = UnixStream::connect(&socket).expect("the run is listening");
+    let mut frame = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
+    frame.push('\n');
+    let (head, tail) = frame.split_at(frame.len() / 2);
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    wait_until("the turn to end on its own", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("TURN_ENDED"))
+            .unwrap_or(false)
+    });
+    // The run has its terminal document and is assembling its report; only
+    // now does the request finish arriving.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    stream.write_all(tail.as_bytes()).unwrap();
+    stream.flush().unwrap();
+    let mut reply = String::new();
+    BufReader::new(&stream)
+        .read_line(&mut reply)
+        .expect("the request was read");
+    // Zero bytes is the run hanging up on a request its own address took.
+    assert!(!reply.is_empty(), "the run hung up on a request in flight");
+    let answer: Value = serde_json::from_str(reply.trim()).expect("a control response");
+    assert_eq!(answer["ok"], false, "{answer}");
+    assert_eq!(answer["reason"], "no_active_turn", "{answer}");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(report["results"][0]["status"], "ok");
+    // The report says what the socket said: the request its client was
+    // answered about is in it, as the refusal it was.
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1, "{report}");
+    assert_eq!(interrupts[0]["verb"], "interrupt");
+    assert_eq!(interrupts[0]["outcome"], "refused");
+    assert_eq!(interrupts[0]["reason"], "no_active_turn");
+    // Refused means never delivered: the harness saw no control frame.
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(!log.contains("control_request"), "turn log:\n{log}");
+    assert!(
+        !socket.exists(),
+        "socket must be removed when the run exits"
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn a_controlled_turn_with_an_omitted_timeout_outlives_the_former_default() {
     let store = control_store_dir("omitted-timeout");
     let store_arg = store.display().to_string();

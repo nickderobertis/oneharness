@@ -1460,9 +1460,8 @@ pub fn run_supervised(
     // serving (`finish`) and before it is dropped (which removes the socket).
     // Not off the live handle: the turn is over, but the request that ended it
     // may still be between delivering its abort and recording itself, and a
-    // report assembled in that window told a supervisor `served` with an empty
-    // `interrupts` — which is how this run's codex control journey failed
-    // under a loaded coverage run.
+    // report assembled in that window would say `served` with an empty
+    // `interrupts`.
     // `bind` canonicalized the socket path, so it is absolute by construction;
     // a run that somehow held a relative one has no address to publish.
     let control_report = match control_listener.as_mut() {
@@ -1534,9 +1533,8 @@ pub fn run_supervised(
 /// carries that candidate's own account ([`failure_account`]) in the sentence.
 /// This line is what a supervisor publishes when it reports the run, and for a
 /// detached run it is the only thing that reaches one: the per-result fields
-/// live in the report and the process's stderr is a log nobody opens. A
-/// pointer to `results[].error` sent a whole night of deaths to a field the
-/// reader could not open — and, for a plain non-zero exit, one that was `null`.
+/// live in the report and the process's stderr is a log nobody opens, so the
+/// sentence must carry the cause itself rather than point at a report field.
 fn failure_summary(report: &RunReport, require_available: bool) -> String {
     match &report.fallback {
         // Fallback where nothing could run: every candidate failed to start.

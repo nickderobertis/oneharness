@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.12.3...oneharness-core-v0.13.0) - 2026-09-11
+
+### Fixed
+
+- *(control)* [**breaking**] run a controlled codex turn under its candidate's model, and refuse one the server would run elsewhere ([#1284](https://github.com/nickderobertis/oneharness/pull/1284))
+
 ## [0.12.3](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.12.2...oneharness-core-v0.12.3) - 2026-09-08
 
 ### Fixed

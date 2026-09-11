@@ -23705,6 +23705,7 @@ fn a_controlled_candidate_is_never_handed_another_identitys_session_token() {
 }
 
 /// The frames a mock app-server logged for one request `method`, parsed.
+#[cfg(unix)]
 fn app_server_frames(log: &Path, method: &str) -> Vec<Value> {
     std::fs::read_to_string(log)
         .unwrap_or_default()

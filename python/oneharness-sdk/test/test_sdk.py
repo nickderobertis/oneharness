@@ -636,18 +636,59 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", prompt],
         )
 
-    def test_a_preferred_pair_still_resolves_instead_of_refusing(self) -> None:
+    async def test_a_preferred_pair_still_resolves_instead_of_refusing(self) -> None:
         """`{session, last}` is one request, and `--last` is what it means.
 
         The lookup union deliberately accepts both halves and defines them as
         "the most recent", so this is the pair the manifest annotates `prefer`.
         Refusing it the way a contradiction is refused would break the very
         lookup the suppression mechanism was written for.
+
+        Driven through the public `history()` rather than the argv builder it
+        calls: what a caller can observe is which record comes back, and a test
+        that asserts on the flags instead would still pass if the refusal were
+        wired in one layer above them.
         """
-        parsed = _input("history_lookup", {"session": "older", "last": True}, "lookup")
-        rendered = _capability_arguments("history", parsed)
-        self.assertIn("--last", rendered)
-        self.assertNotIn("older", rendered)
+        history_dir = tempfile.mkdtemp(prefix="oneharness-python-prefer-")
+        client = self.client()
+        older = await client.run(
+            {
+                "prompt": "the older session",
+                "harnesses": ["codex"],
+                "mode": "bypass",
+                "history": True,
+                "history_name": "older-session",
+                "history_dir": history_dir,
+                "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                "bins": {"codex": str(MOCK)},
+            }
+        )
+
+        # A session's start time is its first record's timestamp at whole-second
+        # precision, so two real runs can tie and make "last" ambiguous. Deriving
+        # the newer session from this run's own recorded file keeps every other
+        # field real while pinning the one thing this test turns on.
+        older_file = older["history_file"]
+        assert older_file is not None
+        line = Path(older_file).read_text(encoding="utf-8").strip().split("\n")[0]
+        Path(older_file).with_name("newer-session-id.jsonl").write_text(
+            json.dumps(
+                {
+                    **json.loads(line),
+                    "session": "newer-session-id",
+                    "name": "newer-session",
+                    "prompt": "the newer session",
+                    "timestamp": "2099-01-01T00:00:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        records = await client.history(
+            {"session": "older-session", "last": True, "history_dir": history_dir}
+        )
+        self.assertEqual(records[0]["name"], "newer-session")
 
     async def test_a_contradiction_is_refused_rather_than_edited_out(self) -> None:
         """A caller who asked for two different things is told, not answered.
@@ -711,6 +752,29 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             r"mutually exclusive",
         ):
             await client.history_list({"project": "somewhere", "all_projects": True})
+
+        # Not only the verbs that return a report: `detect` decides which
+        # binaries are probed, and the same pair means the same contradiction.
+        with self.assertRaisesRegex(
+            ContractError,
+            r"invalid oneharness detect options: `all` and `harnesses` are mutually "
+            r"exclusive",
+        ):
+            await client.detect({"all": True, "harnesses": ["codex"]})
+
+        # `run_stream` returns a lazy iterator but refuses eagerly: it builds its
+        # argv in the method body rather than in an async generator, so the
+        # refusal raises where the call is written and not on the first record.
+        # A caller who only ever awaits the iteration would otherwise meet it
+        # somewhere it cannot be caught alongside the call. Note the missing
+        # `await` — the raise happens before there is anything to await.
+        with self.assertRaisesRegex(
+            ContractError,
+            r"invalid oneharness run options: `all` and `harnesses` are mutually exclusive",
+        ):
+            client.run_stream(
+                {"prompt": "never spawned", "all": True, "harnesses": ["codex"]}
+            )
 
         # The switch half is a value like any other: `False` renders nothing, so
         # there is no second answer and the call proceeds on the one it has.

@@ -2340,20 +2340,10 @@ impl ControlledRun<'_> {
     /// the turn — the axis the session token is scoped to, since a chain holds
     /// several candidates and the token belongs to exactly one of them.
     ///
-    /// `model` is the candidate's **own** resolved model (`unit.model`, i.e.
-    /// `cfg.model_for(<harness id>)`: `[harness.codex].model`, a variant's
-    /// `model`, or the run-level `--model` that resolution already folds in) —
-    /// the same value the result's and the record's `model` report. Until
-    /// issue #1283 this took the *run-level* model instead (`--model`, else
-    /// top-level config `model`), which the argv path, the HTTP-controlled path
-    /// and the recorded `model` never used. So with a per-harness model and no
-    /// run-level one, `thread/start` went out with no `model` at all (captured
-    /// with a tee'd `codex` binary: `{"approvalPolicy":"never","cwd":…}` and
-    /// nothing else) and codex ran its own default — which moved from
-    /// `gpt-5.6-sol` to `gpt-6-astra` at codex 0.153, which is why 0.145 read as
-    /// honouring the config and why a top-level `model` (the issue's host-level
-    /// workaround) did reach the wire. The per-harness model had never reached
-    /// it.
+    /// `model` is the candidate's **own** resolved model (`unit.model`, the
+    /// value the result's and the record's `model` report), never the
+    /// run-level one.
+    // llmlint: ignore[comments_earn_their_place] The measured mechanism behind issue #1283 is stated here by that issue's own resolution: the issue's diagnosis was wrong, and this is the one place a reader of the binding finds the corrected one. Until this change `bind` took the run-level model (`--model`, else top-level `model`), which no other path used, so a per-harness `[harness.codex].model` never reached `thread/start` — the frame went out as `{"approvalPolicy":"never","cwd":…}` — and codex ran its own default, which moved from `gpt-5.6-sol` to `gpt-6-astra` at codex 0.153; the top-level `model` workaround did reach the wire, which is what made the defect read as a version regression.
     fn bind(
         &self,
         shape: ControlShape,

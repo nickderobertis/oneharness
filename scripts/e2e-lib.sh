@@ -1820,24 +1820,24 @@ _oh_control_session_turn() {
 }
 
 # A controlled turn must run under the model a HARNESS-SCOPED config key names,
-# and the report must say the server runs it: `results[0].observed_model` (the
-# model the app-server itself reported on the thread it opened) must equal
-# `results[0].model` (the one the config requested).
-#
-# The model reaches the run through a planted `[harness.<id>] model = …` and
-# NEVER through `--model`: `--model` is the run-level path that always reached
-# `thread/start`, and it is exactly what let this suite pass through issue #1283
-# for a whole minor — a per-harness model never reached the wire, codex ran its
-# own default, and the default moved from Sol to Astra at 0.153 while every
-# phase here kept passing. A server that would run something else is now a
-# refused, classified `model_mismatch` turn, which this phase reports as the
-# contract violation it is rather than retrying.
+# and the report must say the server runs it: `results[0].observed_model` must
+# equal `results[0].model`. The model is planted as `[harness.<id>] model = …`
+# and NEVER passed as `--model`: the run-level flag reaches the wire by a
+# different path, so it cannot show a per-harness model failing to.
 #   $1 harness id, $2 the model the config names
 oh_control_model_enforce() {
     local id="$1" model="$2"
     local bin sandbox store report status requested observed kind
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+    # The model is written into a TOML string, so it is held to a model id's
+    # own alphabet before anything is planted: a quote or a newline in
+    # CODEX_E2E_MODEL would otherwise rewrite the config rather than name one.
+    case "$model" in
+    '' | *[!A-Za-z0-9._:/-]*)
+        fail "$id: '$model' is not a model id (letters, digits, and ._:/- only); set CODEX_E2E_MODEL to the model this identity should run"
+        ;;
+    esac
 
     sandbox="$(mktemp -d)"
     sandbox="$(oh_native_path "$sandbox")"
@@ -1854,6 +1854,7 @@ oh_control_model_enforce() {
     # `default` is not (see `known_gap` in e2e-control.sh). Confined to a fresh
     # mktemp sandbox, like every other oh_*_enforce phase.
     local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+    # llmlint: ignore-block[boundary_inputs_validated] Both timeouts are the suite-wide knobs every sibling phase forwards the same way, and each consumer validates its own: `timeout(1)` refuses a malformed duration, and `--timeout` is a clap-validated value oneharness rejects as a usage error before anything spawns.
     if ! ONEHARNESS_NO_CONFIG='' timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
         --config "$sandbox/oneharness.toml" \
         --harness "$id" --prompt "Reply with the single word READY and stop." \
@@ -1862,6 +1863,7 @@ oh_control_model_enforce() {
         >"$report" 2>"$sandbox/run.err"; then
         : # a non-zero exit is data the report explains; the fields below decide
     fi
+    # llmlint: ignore-end[boundary_inputs_validated]
     if _oh_note_provider_refusal "$id" "$report"; then
         rm -rf "$sandbox"
         return "$_OH_NOT_RUN"

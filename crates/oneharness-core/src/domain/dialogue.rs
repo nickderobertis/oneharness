@@ -568,12 +568,9 @@ impl Dialogue {
                         .map(str::to_string),
                 };
                 // The server's own statement of the model the thread runs
-                // under, made before any token is spent: `ThreadStartResponse`
-                // and `ThreadResumeResponse` both carry a required `model`
-                // (measured against codex 0.153.4 — a `thread/start` naming
-                // `gpt-5.6-sol` is answered `"model":"gpt-5.6-sol"`, and one
-                // naming nothing is answered with the server's default). Read
-                // on this arm only: `turn/started` carries no model at all.
+                // under, before any token is spent: a required field of both
+                // `ThreadStartResponse` and `ThreadResumeResponse`, and of
+                // nothing later — `turn/started` carries no model.
                 if self.shape == ControlShape::CodexAppServer {
                     self.observed_model = result
                         .get("model")

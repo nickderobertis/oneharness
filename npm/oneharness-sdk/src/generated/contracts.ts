@@ -348,18 +348,11 @@ export interface FallbackReport {
    * [`RunResult::work`] read [`RunWork::None`] on a failure no classifier
    * recognized.
    *
-   * The chain still stops there, deliberately — decided, not inherited.
-   * [`RunWork::None`] is the *absence* of work evidence, not proof that
-   * nothing was spent: a harness killed at its deadline mid-call, or one
-   * that crashed after its request went out, leaves exactly the empty
-   * accounting a launcher shim that never found the binary does, and the
-   * crate cannot tell the two apart. Handing such a candidate on would
-   * re-bill the first of those on the next identity, and a chain of N
-   * identities would re-run a task that hangs N times over. The refusals it
-   * is safe to hand on are the ones a classifier decided *before* a request
-   * was made (see [`crate::domain::fallback::startup_failure_reason`]); a
-   * failure with a recognizable phrasing that belongs among them is taught to
-   * the classifier, never inferred from empty accounting. What this flag adds
+   * The chain still stops there, deliberately — decided, not inherited:
+   * empty accounting is the absence of work evidence, not proof nothing was
+   * spent, so handing the candidate on could bill a task twice (the decision
+   * and its reasoning are stated once, at
+   * [`crate::domain::fallback::startup_failure_reason`]). What this flag adds
    * is the *attribution* — without it a candidate that never got started reads
    * in the report exactly like one that tried the task and failed it, and the
    * remaining candidates look untried for a reason nobody can name — and the

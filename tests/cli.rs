@@ -11942,6 +11942,15 @@ fn history_records_a_run_and_reports_the_file() {
     );
     // Normalized only — no raw stdout/stderr leaks into history.
     assert!(rec.get("stdout").is_none());
+    // The argv path has no server stating a model, so the report says `null`
+    // and the record OMITS the field on the wire rather than writing one — an
+    // old reader must not meet a key it does not know.
+    assert!(value["results"][0]["observed_model"].is_null());
+    let raw = std::fs::read_to_string(hf).unwrap();
+    assert!(
+        !raw.contains("observed_model"),
+        "an absent observation is omitted on the wire: {raw}"
+    );
     let _ = std::fs::remove_file(argv_file);
 }
 
@@ -23836,6 +23845,76 @@ fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
         );
         assert_eq!(app_server_frames(&log, "turn/start").len(), 2, "{tag}");
     }
+}
+
+/// An open response that names NO model is no claim at all, so the turn
+/// proceeds under the requested model exactly as before the check existed:
+/// `turn/start` goes out naming it and the report's `observed_model` is `null`
+/// (never copied from the request). Refusing here would end every controlled
+/// turn against an app-server whose open response carries no `model`, with
+/// nothing to say the model was wrong.
+#[cfg(unix)]
+#[test]
+fn a_controlled_codex_turn_proceeds_when_the_server_names_no_model() {
+    let mock = mock_bin().display().to_string();
+    let store = control_store_dir("model-unstated");
+    let store_arg = store.display().to_string();
+    let log = store.join("app-server.log");
+    let log_arg = log.display().to_string();
+    let project = format!(
+        r#"
+        [harness.codex]
+        bin = '{mock}'
+        model = "gpt-5.6-sol"
+        env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_OMIT_MODEL = "1" }}
+    "#
+    );
+    let fx = ConfigFixture::new("control-model-unstated", &project, "");
+    let cwd_arg = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--control",
+            "--session",
+            "sol",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "an unstated model refuses nothing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "ok", "{result}");
+    assert!(result["failure_kind"].is_null(), "{result}");
+    assert_eq!(
+        result["model"], "gpt-5.6-sol",
+        "the requested model, unchanged"
+    );
+    assert!(
+        result["observed_model"].is_null(),
+        "nothing was reported, so nothing is observed — never the request echoed: {result}"
+    );
+    let opened = app_server_frames(&log, "thread/start");
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0]["params"]["model"], "gpt-5.6-sol", "{}", opened[0]);
+    let turns = app_server_frames(&log, "turn/start");
+    assert_eq!(turns.len(), 1, "the turn still goes out:\n{turns:?}");
+    assert_eq!(turns[0]["params"]["model"], "gpt-5.6-sol", "{}", turns[0]);
 }
 
 /// A server that would run the thread under another model is refused BEFORE

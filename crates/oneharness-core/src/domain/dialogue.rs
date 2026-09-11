@@ -571,6 +571,16 @@ impl Dialogue {
                 // under, before any token is spent: a required field of both
                 // `ThreadStartResponse` and `ThreadResumeResponse`, and of
                 // nothing later — `turn/started` carries no model.
+                // llmlint: ignore[boundary_inputs_validated] A response that
+                // states no model is deliberately no observation rather than a
+                // refusal: the check below refuses a model the server NAMED
+                // that differs from the one requested, and an app-server whose
+                // open response carries no `model` (0.153.4's schema requires
+                // one; a server of another version need not) has claimed
+                // nothing to refuse — ending every controlled turn against it
+                // would be a regression with no wrong model to point at. The
+                // tolerated arm is pinned end to end by
+                // `a_controlled_codex_turn_proceeds_when_the_server_names_no_model`.
                 if self.shape == ControlShape::CodexAppServer {
                     self.observed_model = result
                         .get("model")

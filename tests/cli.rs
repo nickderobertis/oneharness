@@ -2762,6 +2762,45 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             schema: false,
         },
         Case {
+            // The same diagnostic behind more preamble than the line can hold:
+            // a Node launcher's deprecation and experimental-module warnings
+            // run to hundreds of characters before the error. The tail keeps
+            // every trailing line that fits — the ENOENT and its frames, whole
+            // — and drops the warnings above it behind a leading `…`, so the
+            // reader knows the stream began earlier and the report has it.
+            // Neither "last line only" (the runtime footer) nor "first 400
+            // characters" (the warnings, and no error at all) would do.
+            tag: "overlong-tail",
+            env: concat!(
+                r#"{ MOCK_EXIT = "1", MOCK_STDOUT = "", MOCK_STDERR = ""#,
+                r#"(node:4131) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.\n"#,
+                r#"(Use `node --trace-deprecation ...` to show where the warning was created)\n"#,
+                r#"(node:4131) ExperimentalWarning: CommonJS module /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js is loading ES Module /usr/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/index.mjs using require().\n"#,
+                r#"Error: ENOENT: no such file or directory, open '/home/u/.claude/settings.json'\n"#,
+                r#"    at Object.<anonymous> (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11)\n"#,
+                r#"    at Module._compile (node:internal/modules/cjs/loader:1554:14)\n"#,
+                r#"\n"#,
+                r#"Node.js v22.14.0\n"#,
+                r#"" }"#,
+            )
+            .to_string(),
+            falls_through: false,
+            work: Some("none"),
+            record_version: "1.7",
+            summary: Some((
+                "failed with nothing to show for it — no tool call, no billed usage, and no \
+                 cause it could classify",
+                "(status nonzero, exit 1) — so the chain stopped there and tried no \
+                 candidate after it; it said: (stderr) …Error: ENOENT: no such file or \
+                 directory, open '/home/u/.claude/settings.json' at Object.<anonymous> \
+                 (/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js:12:11) at \
+                 Module._compile (node:internal/modules/cjs/loader:1554:14) Node.js v22.14.0"
+                    .to_string(),
+            )),
+            timeout: None,
+            schema: false,
+        },
+        Case {
             tag: "silent",
             env: r#"{ MOCK_EXIT = "3", MOCK_STDOUT = "" }"#.to_string(),
             falls_through: false,
@@ -2890,6 +2929,39 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         let stopped = value["fallback"]["stopped_without_work"]
             .as_bool()
             .unwrap_or_else(|| panic!("{tag}: the fallback block must state this"));
+        // The one line a supervisor quotes when it reports the run — the whole
+        // line, because that line is a detached run's death payload and nothing
+        // downstream of it can open the report. It names the ending ("ran but
+        // did not succeed" is only true of a candidate that failed at a task
+        // the crate can name; a candidate that worked and one that showed
+        // nothing are each said as such) and carries the candidate's own words,
+        // so a consumer holding only this line can say why the chain stopped.
+        // Asserted on the stderr each driver actually emitted, since the
+        // buffered and streamed drivers reach it through one summary builder
+        // but hand it their own report.
+        let expected_line = expected_summary.map(|(ending, account)| {
+            format!("oneharness: fallback harness `claude-code` {ending} {account}")
+        });
+        let assert_summary = |output: &Output, driver: &str| {
+            let summary = String::from_utf8_lossy(&output.stderr).to_string();
+            let expected = expected_line
+                .as_deref()
+                .unwrap_or_else(|| panic!("{tag}: a stop names its ending"));
+            assert!(
+                summary.contains(expected),
+                "{tag} ({driver}): the summary must name the ending and carry the cause:\n  want: {expected}\n  got:  {summary}"
+            );
+            for stale in [
+                "see results[].status",
+                "see results[].error",
+                "see results[].work",
+            ] {
+                assert!(
+                    !summary.contains(stale),
+                    "{tag} ({driver}): a pointer to a field only the report holds is what hid a night of deaths: {summary}"
+                );
+            }
+        };
 
         if falls_through {
             // Unchanged: a candidate the classifier recognizes still hands the
@@ -2927,31 +2999,8 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
             // did nothing is called out where a reader of a failed run looks,
             // not left to be re-derived from empty accounting.
             assert_eq!(stopped, work == Some("none"), "{tag}");
-            // Including in the one line a supervisor quotes when it reports the
-            // run — the whole line, because that line is a detached run's
-            // death payload and nothing downstream of it can open the report.
-            // It names the ending ("ran but did not succeed" is only true of a
-            // candidate that failed at a task the crate can name; a candidate
-            // that worked and one that showed nothing are each said as such)
-            // and carries the candidate's own words, so a consumer holding
-            // only this line can say why the chain stopped.
-            let summary = String::from_utf8_lossy(&output.stderr).to_string();
-            let (ending, account) = expected_summary.expect("a stop names its ending");
-            let expected = format!("oneharness: fallback harness `claude-code` {ending} {account}");
-            assert!(
-                summary.contains(&expected),
-                "{tag}: the summary must name the ending and carry the cause:\n  want: {expected}\n  got:  {summary}"
-            );
-            for stale in [
-                "see results[].status",
-                "see results[].error",
-                "see results[].work",
-            ] {
-                assert!(
-                    !summary.contains(stale),
-                    "{tag}: a pointer to a field only the report holds is what hid a night of deaths: {summary}"
-                );
-            }
+            // Including in the line a supervisor quotes.
+            assert_summary(&output, "buffered");
         }
 
         let records = materialized_history(Path::new(
@@ -2973,8 +3022,10 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         // ...and a streamed chain says the same thing. The two drivers reach the
         // verdict through one `fallback_step`, but they assemble the block
         // separately, so the reading a consumer acts on live is pinned here
-        // rather than inferred from the buffered one. (Not for the schema
-        // ending: `--stream` refuses `--schema` before any chain runs.)
+        // rather than inferred from the buffered one — and so is the summary
+        // line, which is built from the report the streamed driver assembled.
+        // (Not for the schema ending: `--stream` refuses `--schema` before any
+        // chain runs.)
         if schema {
             continue;
         }
@@ -3002,6 +3053,82 @@ fn a_failure_nothing_classified_says_whether_the_candidate_did_anything() {
         assert_eq!(
             report["results"][0]["work"], value["results"][0]["work"],
             "{tag}: and publish the same reading on the candidate"
+        );
+        if falls_through {
+            assert!(
+                streamed.status.success(),
+                "{tag}: a streamed chain that was served has no failure to summarize: {}",
+                String::from_utf8_lossy(&streamed.stderr)
+            );
+        } else {
+            assert_eq!(streamed.status.code(), Some(1), "{tag}");
+            assert_summary(&streamed, "streamed");
+        }
+    }
+}
+
+#[test]
+fn a_stopped_chain_names_the_identity_that_stopped_it() {
+    // The measured night was one identity of one harness: `claude-code:alternate`
+    // died on every scheduled run with the identities behind it untried, and its
+    // healthy sibling was what the health report described. A summary naming
+    // `claude-code` would send the reader to that healthy sibling — on a chain
+    // of identities the identity IS the finding. So the line names the candidate
+    // by its variant-qualified id, and names the candidate that STOPPED the
+    // chain: here the anchor falls through on a refusal a classifier recognizes,
+    // so the stopping candidate is the second result, not the first, on both
+    // drivers.
+    let project = variant_fallback_project(
+        r#"MOCK_EXIT = "1", MOCK_STDERR = "Error: insufficient_quota""#,
+        r#"MOCK_EXIT = "2", MOCK_STDOUT = "", MOCK_STDERR = "No claude executable found for nodejs 26.5.0""#,
+    );
+    let fx = ConfigFixture::new("stop-names-identity", &project, "");
+    let cwd = fx.cwd();
+    let expected = "oneharness: fallback harness `claude-code:alternate` failed with nothing to \
+                    show for it — no tool call, no billed usage, and no cause it could classify \
+                    (status nonzero, exit 2) — so the chain stopped there and tried no candidate \
+                    after it; it said: (stderr) No claude executable found for nodejs 26.5.0";
+    for driver in ["buffered", "streamed"] {
+        let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+        if driver == "streamed" {
+            args.push("--stream");
+        }
+        let output = run_with_config(&args, &[], &fx.user_config());
+        assert_eq!(output.status.code(), Some(1), "{driver}");
+        let report = if driver == "streamed" {
+            stream_envelopes(&output)
+                .last()
+                .map(|envelope| envelope["report"].clone())
+                .unwrap_or_else(|| panic!("{driver}: a streamed run ends with its report"))
+        } else {
+            json_stdout(&output)
+        };
+        assert_eq!(
+            report["fallback"]["fell_through"][0]["harness"], "claude-code:primary",
+            "{driver}"
+        );
+        assert_eq!(
+            report["fallback"]["fell_through"][0]["reason"], "quota",
+            "{driver}"
+        );
+        assert_eq!(
+            report["fallback"]["ran"], "claude-code:alternate",
+            "{driver}"
+        );
+        assert_eq!(report["fallback"]["stopped_without_work"], true, "{driver}");
+        assert_eq!(report["results"].as_array().unwrap().len(), 2, "{driver}");
+        assert_eq!(
+            report["results"][1]["harness_id"], "claude-code:alternate",
+            "{driver}"
+        );
+        let summary = String::from_utf8_lossy(&output.stderr).to_string();
+        assert!(
+            summary.contains(expected),
+            "{driver}: the summary must name the identity that stopped the chain:\n  want: {expected}\n  got:  {summary}"
+        );
+        assert!(
+            !summary.contains("harness `claude-code`"),
+            "{driver}: the base id names the healthy sibling as readily as the dead one: {summary}"
         );
     }
 }

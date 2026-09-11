@@ -903,6 +903,18 @@ mod tests {
         // reader cannot find in the JSON beside it. `ALL` is checked against
         // the enum's own generated schema, so a variant added without being
         // listed fails here instead of escaping the token check.
+        //
+        // A structural assertion, deliberately, in place of an end-to-end one:
+        // the summary journey (`tests/cli.rs`, the chain that stops each way)
+        // already reads `ok`, `nonzero` and `timeout` off the emitted line, and
+        // no chain the CLI can be driven through reports the other four. A
+        // `skipped` or `spawn-error` candidate always falls through, named by
+        // its fall-through *reason*, never by its status; `planned` is a dry
+        // run, which runs no chain; and `cancelled` reaches a summary only from
+        // a signal timed into a live chain. Driving that to check the spelling
+        // of one token would cost more than the misspelling it prevents, and
+        // this check catches the same drift — a token that stops matching the
+        // wire — deterministically.
         let rendered = serde_json::to_value(schemars::schema_for!(Status)).expect("serializes");
         let generated: Vec<Value> = rendered["oneOf"]
             .as_array()

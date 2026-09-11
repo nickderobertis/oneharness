@@ -1150,7 +1150,7 @@ pub fn run_supervised(
     // a chain has not chosen one yet — so the socket is bound unbound, and an
     // interrupt racing the first spawn is an honest `no_active_turn`.
     // `--print-command` executes nothing, so it opens nothing.
-    let control_listener = match control_shape.filter(|_| !args.print_command) {
+    let mut control_listener = match control_shape.filter(|_| !args.print_command) {
         Some(starts_on) => {
             let wiring = session_wiring
                 .as_ref()
@@ -1456,11 +1456,16 @@ pub fn run_supervised(
         None => results.first(),
     };
     let session_report = finalize_session(session_wiring, session_ran, args.print_command);
-    // Every interrupt this run served, read off the live handle before the
-    // listener is dropped (which removes the socket).
+    // Every interrupt this run served, read once the listener has stopped
+    // serving (`finish`) and before it is dropped (which removes the socket).
+    // Not off the live handle: the turn is over, but the request that ended it
+    // may still be between delivering its abort and recording itself, and a
+    // report assembled in that window told a supervisor `served` with an empty
+    // `interrupts` — which is how this run's codex control journey failed
+    // under a loaded coverage run.
     // `bind` canonicalized the socket path, so it is absolute by construction;
     // a run that somehow held a relative one has no address to publish.
-    let control_report = match control_listener.as_ref() {
+    let control_report = match control_listener.as_mut() {
         Some(listener) => Some(ControlReport {
             socket: control::AbsolutePath::new(listener.path()).map_err(|message| {
                 OneharnessError::ControlSocket {
@@ -1469,7 +1474,7 @@ pub fn run_supervised(
                 }
             })?,
             mechanism: listener.handle_ref().shape(),
-            interrupts: listener.handle_ref().events(),
+            interrupts: listener.finish(),
         }),
         None => None,
     };

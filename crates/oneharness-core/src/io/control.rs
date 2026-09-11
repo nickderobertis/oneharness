@@ -726,6 +726,23 @@ impl ControlListener {
     pub fn handle_ref(&self) -> &ControlHandle {
         &self.handle
     }
+
+    /// Stop serving and return every request this run served, in order.
+    ///
+    /// The report's `control.interrupts` is read off this, never off the live
+    /// [`ControlHandle::events`]: a request is recorded once its delivery has
+    /// returned, and the turn an abort ended can finish — and the run assemble
+    /// its report — in the window between the frame landing on the harness and
+    /// that record. Joining the accept loop first completes the request it was
+    /// in the middle of (an in-flight connection is served before the loop
+    /// notices it was asked to stop), so an interrupt the supervisor was told
+    /// was `served` is never missing from the report that says so. A request
+    /// arriving after this is refused as `not_running`, which by then it is.
+    /// The socket file stays until the listener is dropped.
+    pub fn finish(&mut self) -> Vec<ControlEvent> {
+        imp::stop_serving(self);
+        self.handle.events()
+    }
 }
 
 #[cfg(unix)]
@@ -808,6 +825,13 @@ mod imp {
 
     /// Accept connections until asked to stop. Non-blocking accept plus a short
     /// sleep keeps the thread responsive to shutdown without a second socket.
+    ///
+    /// Asked to stop, it first answers every connection already waiting: a
+    /// client whose `connect` succeeded was accepted by the kernel into the
+    /// backlog, and the loop learns of the stop while it is *between* accepts —
+    /// returning there would hang up on a request the run's own address took,
+    /// and the run reports what it served ([`ControlListener::finish`]) from
+    /// exactly this point.
     fn serve_loop(
         listener: UnixListener,
         handle: Arc<ControlHandle>,
@@ -818,7 +842,12 @@ mod imp {
                 Ok((stream, _)) => serve_connection(stream, &handle),
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
                     match shutdown.recv_timeout(std::time::Duration::from_millis(25)) {
-                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                            while let Ok((stream, _)) = listener.accept() {
+                                serve_connection(stream, &handle);
+                            }
+                            return;
+                        }
                         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
                     }
                 }
@@ -946,13 +975,19 @@ mod imp {
         }
     }
 
-    pub fn shutdown(listener: &mut ControlListener) {
+    /// Ask the accept loop to stop and wait for it: idempotent, and by the
+    /// time it returns every connection accepted so far has been answered.
+    pub fn stop_serving(listener: &mut ControlListener) {
         if let Some(tx) = listener.shutdown.take() {
             let _ = tx.send(());
         }
         if let Some(worker) = listener.worker.take() {
             let _ = worker.join();
         }
+    }
+
+    pub fn shutdown(listener: &mut ControlListener) {
+        stop_serving(listener);
         let _ = std::fs::remove_file(&listener.path);
     }
 }
@@ -977,6 +1012,8 @@ mod imp {
             ControlReason::NotRunning,
         )
     }
+
+    pub fn stop_serving(_listener: &mut ControlListener) {}
 
     pub fn shutdown(_listener: &mut ControlListener) {}
 }
@@ -1193,6 +1230,91 @@ mod tests {
         assert_eq!(events[0].verb(), ControlVerb::Interrupt);
         assert!(events[0].is_served());
         assert!(!events[0].at().as_str().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_request_in_flight_when_the_run_reports_is_in_what_it_reports() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::os::unix::net::UnixStream;
+        // The turn an interrupt aborts ends as soon as the abort lands, and the
+        // run assembles its report then — while the request that ended it can
+        // still be between delivering the frame and recording itself. Read off
+        // the live handle, that report said `interrupts: []` about an interrupt
+        // its own client was told was served. `finish` closes that window by
+        // waiting for the request in flight, so what it returns is what the
+        // socket answered, whichever thread got there first.
+        let dir = temp_dir("in-flight");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let mut listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        handle.bind(Binding::Stdin);
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        // A request the run has accepted but cannot answer yet: its second half
+        // is deliberately late, so the run reports while it is in flight.
+        let (connected, connected_rx) = std::sync::mpsc::channel();
+        let client_path = path.clone();
+        let client = std::thread::spawn(move || -> String {
+            let mut stream = UnixStream::connect(&client_path).expect("the run is listening");
+            let mut frame = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
+            frame.push('\n');
+            let (head, tail) = frame.split_at(frame.len() / 2);
+            stream.write_all(head.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            connected.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            stream.write_all(tail.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            let mut reply = String::new();
+            // Zero bytes is the run hanging up on a request its address took.
+            BufReader::new(&stream)
+                .read_line(&mut reply)
+                .expect("a request in flight when the run stopped serving was answered");
+            reply
+        });
+        connected_rx
+            .recv()
+            .expect("the client connected before the run reported");
+
+        // The run reporting: what it publishes must already hold the request
+        // the socket is answering.
+        let reported = listener.finish();
+        let reply = client.join().unwrap();
+        assert!(
+            !reply.is_empty(),
+            "the run hung up on a request in flight when it stopped serving"
+        );
+        let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
+        assert!(response.is_ok(), "{reply}");
+        assert_eq!(reported.len(), 1, "{reported:?}");
+        assert!(reported[0].is_served());
+        assert_eq!(reported[0].verb(), ControlVerb::Interrupt);
+
+        // Served means delivered: the frame is on the child's stdin.
+        handle.end_turn();
+        let mut delivered = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut delivered)
+            .unwrap();
+        child.wait().ok();
+        let frame: serde_json::Value = serde_json::from_str(delivered.trim()).unwrap();
+        assert_eq!(frame["request"]["subtype"], "interrupt");
+        // A request after the run stopped serving is refused as not running,
+        // never answered by a run that has already reported.
+        let late = send(&path, &ControlRequest::interrupt());
+        assert_eq!(late.reason(), Some(ControlReason::NotRunning), "{late:?}");
+        drop(listener);
+        assert!(!path.exists(), "dropping the listener removes the socket");
         std::fs::remove_dir_all(&dir).ok();
     }
 

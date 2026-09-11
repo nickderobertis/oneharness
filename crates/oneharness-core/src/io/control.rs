@@ -1319,6 +1319,93 @@ mod tests {
     }
 
     #[test]
+    fn a_request_waiting_in_the_backlog_when_the_run_stops_serving_is_answered() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::os::unix::net::UnixStream;
+        // The other place a request the run's address took can be when the run
+        // stops serving: not yet accepted at all. A client's `connect` succeeds
+        // once the kernel has queued it in the backlog, before the accept loop
+        // has seen it — and the loop learns of the stop *between* accepts, so
+        // returning there would hang up on a request that was already the
+        // run's to answer.
+        let dir = temp_dir("backlog");
+        let path = socket_path(&dir, "queued")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let mut listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        handle.bind(Binding::Stdin);
+        handle.begin_turn(child.stdin.take().unwrap());
+        let mut frame = serde_json::to_string(&ControlRequest::interrupt()).unwrap();
+        frame.push('\n');
+
+        // The loop idles in 25 ms sleeps between accepts, at a phase this test
+        // cannot see — unless it sets it. A first request held half-sent parks
+        // the loop in that connection; its reply marks the instant the loop
+        // finds nothing more to accept and begins a fresh sleep, so a request
+        // queued a few milliseconds later, with the stop asked for at once, is
+        // in the backlog when the loop wakes to the stop.
+        let mut first = UnixStream::connect(&path).expect("the run is listening");
+        let (head, tail) = frame.split_at(frame.len() / 2);
+        first.write_all(head.as_bytes()).unwrap();
+        first.flush().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        first.write_all(tail.as_bytes()).unwrap();
+        first.flush().unwrap();
+        let mut first_reply = String::new();
+        BufReader::new(&first)
+            .read_line(&mut first_reply)
+            .expect("the first request was answered");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut queued = UnixStream::connect(&path).expect("the run is listening");
+        queued.write_all(frame.as_bytes()).unwrap();
+        queued.flush().unwrap();
+        // Stop serving with the whole request queued and unaccepted. What the
+        // run reports must already hold it, and its client must be answered.
+        let reported = listener.finish();
+
+        let mut reply = String::new();
+        BufReader::new(&queued)
+            .read_line(&mut reply)
+            .expect("a request queued when the run stopped serving was answered");
+        assert!(
+            !reply.is_empty(),
+            "the run hung up on a request waiting in its backlog"
+        );
+        let response: ControlResponse = serde_json::from_str(reply.trim()).unwrap();
+        assert!(response.is_ok(), "{reply}");
+        assert_eq!(reported.len(), 2, "{reported:?}");
+        assert!(reported.iter().all(ControlEvent::is_served), "{reported:?}");
+
+        // Served means delivered: both frames are on the child's stdin.
+        handle.end_turn();
+        let mut delivered = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut delivered)
+            .unwrap();
+        child.wait().ok();
+        let frames: Vec<serde_json::Value> = delivered
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(frames.len(), 2, "{delivered}");
+        assert!(frames
+            .iter()
+            .all(|frame| frame["request"]["subtype"] == "interrupt"));
+        drop(listener);
+        assert!(!path.exists(), "dropping the listener removes the socket");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn an_interrupt_between_two_candidates_reaches_neither_of_them() {
         use std::io::Read;
         // The fall-through window, held open deliberately: candidate A's turn

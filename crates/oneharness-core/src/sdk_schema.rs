@@ -11,8 +11,9 @@ use crate::domain::fallback::RunWork;
 use crate::domain::history::{
     gated_failure_kind_version, HistoryLine, HistoryRecord, HistoryStreamEnvelope,
     FIRST_CANCELLED_SCHEMA_VERSION, FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION,
-    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
-    OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
+    FIRST_MODEL_OBSERVATION_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
+    FIRST_WORK_EVIDENCE_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
+    PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
 };
 use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
 use crate::domain::report::{attempted_failure, RunReport, RunStreamEnvelope, Status};
@@ -325,6 +326,7 @@ fn add_history_line_conditions(value: &mut serde_json::Value) {
                     serde_json::json!([
                         error_placement_gate(),
                         work_placement_gate(),
+                        observed_model_version_gate(),
                         cancelled_version_gate(),
                         failure_kind_version_gate()
                     ]),
@@ -546,6 +548,29 @@ fn work_values() -> Vec<serde_json::Value> {
         .iter()
         .map(|variant| variant["const"].clone())
         .collect()
+}
+
+/// The observed model is legible only to a reader at or after the version that
+/// introduced it — the rule [`crate::domain::history`]'s `observed_model_valid`
+/// applies, stated here so a generated SDK validator refuses the same v1.7
+/// record carrying a field v1.7 never had. No cross-field condition: the field
+/// is the harness's own report and is legal on any run that produced one.
+fn observed_model_version_gate() -> serde_json::Value {
+    serde_json::json!({
+        "oneOf": [
+            {"type": "object", "properties": {"observed_model": {"type": "null"}}},
+            {
+                "type": "object",
+                "properties": {
+                    "schema_version": versions_schema(
+                        &versions_from(FIRST_MODEL_OBSERVATION_SCHEMA_VERSION)
+                    ),
+                    "observed_model": {"type": "string"}
+                },
+                "required": ["observed_model"]
+            }
+        ]
+    })
 }
 
 /// The `cancelled` status is legible only to a reader at or after the version
@@ -919,6 +944,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                     serde_json::json!([
                         error_placement_gate(),
                         work_placement_gate(),
+                        observed_model_version_gate(),
                         cancelled_version_gate(),
                         failure_kind_version_gate()
                     ]),

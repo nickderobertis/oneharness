@@ -38,7 +38,13 @@ use crate::domain::signals::{FailureKind, Usage};
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.7";
+pub const SCHEMA_VERSION: &str = "1.8";
+/// v1.8 introduced `observed_model` — the model the harness itself reported the
+/// conversation would run under (see [`HistoryRecord::observed_model`]) — and
+/// the `model_mismatch` failure kind, the refusal oneharness answers when that
+/// report and the requested model differ. A v1.7 reader has neither the field
+/// nor the enum value, so a record carrying either declares this version.
+pub const FIRST_MODEL_OBSERVATION_SCHEMA_VERSION: &str = "1.8";
 /// v1.7 introduced `work` — what a run that failed with **nothing to classify**
 /// has to show for itself (see [`HistoryRecord::work`]). A v1.6 reader has no
 /// such field, so a record carrying it declares this version rather than letting
@@ -74,7 +80,7 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 8] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 9] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
@@ -83,6 +89,7 @@ pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 8] = [
     FIRST_SESSION_NOT_FOUND_SCHEMA_VERSION,
     FIRST_PRECONDITION_SCHEMA_VERSION,
     FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
+    FIRST_MODEL_OBSERVATION_SCHEMA_VERSION,
 ];
 
 fn version_rank(version: &str) -> Option<usize> {
@@ -225,6 +232,10 @@ pub struct HistoryRunRecord {
     // llmlint: ignore[invalid_states_unrepresentable] This remains optional to read v1.0 records; v1.1 writers always derive it with base/variant from one composed selector and round-trip tests pin consistency.
     pub harness_id: Option<String>,
     pub model: Option<String>,
+    /// The model the harness itself reported it would run under (see
+    /// [`HistoryRecord::observed_model`]). Omitted on the wire when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_model: Option<String>,
     pub prompt: String,
     pub permission_mode: PermissionMode,
     pub status: Status,
@@ -281,6 +292,7 @@ impl HistoryRunRecord {
                 self.failure_kind,
             )
             || !work_evidence_valid(&self.schema_version, self.work, self.status)
+            || !observed_model_valid(&self.schema_version, self.observed_model.as_deref())
         {
             return false;
         }
@@ -334,6 +346,7 @@ impl HistoryRunRecord {
             variant: record.variant.clone(),
             harness_id: Some(record.harness_id.clone()),
             model: record.model.clone(),
+            observed_model: record.observed_model.clone(),
             prompt: record.prompt.clone(),
             permission_mode: record.permission_mode,
             status: record.status,
@@ -373,6 +386,7 @@ impl HistoryRunRecord {
             variant: self.variant,
             harness_id,
             model: self.model,
+            observed_model: self.observed_model,
             prompt: self.prompt,
             permission_mode: self.permission_mode,
             status: self.status,
@@ -684,8 +698,26 @@ pub struct HistoryRecord {
     pub variant: Option<String>,
     // llmlint: ignore[invalid_states_unrepresentable] The composed selector is a public serialized SDK field; materialization derives it from the validated wire tuple and never accepts caller-provided independent pieces.
     pub harness_id: String,
-    /// The effective top-level model for the run, if any.
+    /// The model this run **requested** — the value oneharness put on the
+    /// harness's model flag or protocol frame — if any. Copied from
+    /// [`RunResult::model`], so it keeps meaning the requested model even where
+    /// `observed_model` below is present.
     pub model: Option<String>,
+    /// The model the harness **itself** reported the conversation would run
+    /// under, read off its own protocol before any token was spent — for codex
+    /// over `app-server`, `result.model` of the `thread/start` /
+    /// `thread/resume` response. Copied from [`RunResult::observed_model`]:
+    /// never inferred and never copied from `model`, and omitted on the wire on
+    /// every path that reports none.
+    ///
+    /// On a completed app-server turn the two agree, because a turn whose
+    /// reported model differed from the requested one was refused before it
+    /// ran (`model_mismatch`) — so a completed record's `model` is what codex
+    /// ran, and the record can no longer say one model while another was
+    /// billed. They differ only on such a refused record, and where no model
+    /// was requested at all. Gated to [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_model: Option<String>,
     /// The prompt this harness run received (its own, on a batch run; else the
     /// run's single prompt).
     pub prompt: String,
@@ -844,25 +876,31 @@ impl HistoryRecord {
             .flatten();
         HistoryRecord {
             // The oldest reader that can understand this record: only the shape a
-            // record actually carries forces its version forward.
-            schema_version: if work.is_some() {
-                FIRST_WORK_EVIDENCE_SCHEMA_VERSION
-            } else if let Some(introduced) = gated_failure_kind_version(r.failure_kind) {
-                introduced
-            } else if r.status == Status::Cancelled {
-                FIRST_CANCELLED_SCHEMA_VERSION
-            } else if error.is_some() {
-                FIRST_ERROR_SCHEMA_VERSION
-            } else if partial.is_some() {
-                FIRST_PARTIAL_TIMING_SCHEMA_VERSION
-            } else if matches!(
-                telemetry,
-                Some(crate::domain::report::ExecutionTelemetry::StdoutObserved { .. })
-            ) {
-                OBSERVED_TIMING_SCHEMA_VERSION
-            } else {
-                PREVIOUS_CURRENT_SCHEMA_VERSION
-            }
+            // record actually carries forces its version forward, and where it
+            // carries several gated shapes the newest of their gates wins — a
+            // `model_mismatch` refusal (v1.8) beside a `work` reading (v1.7)
+            // must not be declared at the older of the two.
+            schema_version: [
+                r.observed_model
+                    .is_some()
+                    .then_some(FIRST_MODEL_OBSERVATION_SCHEMA_VERSION),
+                gated_failure_kind_version(r.failure_kind),
+                work.is_some().then_some(FIRST_WORK_EVIDENCE_SCHEMA_VERSION),
+                (r.status == Status::Cancelled).then_some(FIRST_CANCELLED_SCHEMA_VERSION),
+                error.is_some().then_some(FIRST_ERROR_SCHEMA_VERSION),
+                partial
+                    .is_some()
+                    .then_some(FIRST_PARTIAL_TIMING_SCHEMA_VERSION),
+                matches!(
+                    telemetry,
+                    Some(crate::domain::report::ExecutionTelemetry::StdoutObserved { .. })
+                )
+                .then_some(OBSERVED_TIMING_SCHEMA_VERSION),
+            ]
+            .into_iter()
+            .flatten()
+            .max_by_key(|version| version_rank(version))
+            .unwrap_or(PREVIOUS_CURRENT_SCHEMA_VERSION)
             .to_string(),
             history_id,
             session: session.to_string(),
@@ -874,6 +912,7 @@ impl HistoryRecord {
             variant: r.variant.clone(),
             harness_id: r.harness_id.clone(),
             model: model.map(str::to_string),
+            observed_model: r.observed_model.clone(),
             prompt: r.prompt.clone().unwrap_or_else(|| run_prompt.to_string()),
             permission_mode: mode,
             status: r.status,
@@ -917,6 +956,7 @@ impl HistoryRecord {
                 self.failure_kind,
             )
             || !work_evidence_valid(&self.schema_version, self.work, self.status)
+            || !observed_model_valid(&self.schema_version, self.observed_model.as_deref())
         {
             return false;
         }
@@ -1118,6 +1158,7 @@ impl HistoryRecord {
             variant: wire.variant,
             harness_id: wire.harness_id.unwrap_or_else(|| wire.harness.clone()),
             model: wire.model,
+            observed_model: wire.observed_model,
             prompt: wire.prompt,
             permission_mode: wire.permission_mode,
             status: wire.status,
@@ -1391,10 +1432,10 @@ fn status_version_valid(schema_version: &str, status: Status) -> bool {
 }
 
 /// The same promise for `failure_kind`: a kind introduced after `schema_version`
-/// is refused rather than read back at a version whose enum never had it. Three
-/// kinds are gated — [`FailureKind::SessionNotFound`] at v1.5 and the two
-/// precondition refusals at v1.6; every other kind predates the oldest readable
-/// version. Stated here because the generated SDK schemas gate the same values
+/// is refused rather than read back at a version whose enum never had it. Four
+/// kinds are gated — [`FailureKind::SessionNotFound`] at v1.5, the two
+/// precondition refusals at v1.6 and [`FailureKind::ModelMismatch`] at v1.8;
+/// every other kind predates the oldest readable version. Stated here because the generated SDK schemas gate the same values
 /// the same way — one rule, two validators.
 fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<FailureKind>) -> bool {
     match gated_failure_kind_version(failure_kind) {
@@ -1404,7 +1445,8 @@ fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<Failure
 }
 
 /// The version a gated `failure_kind` arrived in, or `None` for a kind every
-/// readable version already had. One table so the runtime reader and the
+/// readable version already had. Four gates: `session_not_found` at v1.5, the
+/// two precondition refusals at v1.6, and `model_mismatch` at v1.8. One table so the runtime reader and the
 /// generated SDK schemas ([`crate::sdk_schema`]) enumerate the same gates —
 /// a second list is how the two validators drift apart. Crate-visible, since
 /// both of those readers are in this crate: a consumer reads the gate from the
@@ -1418,6 +1460,7 @@ pub(crate) fn gated_failure_kind_version(
         FailureKind::UntrustedDirectory | FailureKind::InputTooLarge => {
             Some(FIRST_PRECONDITION_SCHEMA_VERSION)
         }
+        FailureKind::ModelMismatch => Some(FIRST_MODEL_OBSERVATION_SCHEMA_VERSION),
         FailureKind::Auth
         | FailureKind::RateLimit
         | FailureKind::ModelNotFound
@@ -1462,6 +1505,15 @@ fn work_evidence_valid(schema_version: &str, work: Option<RunWork>, status: Stat
             && attempted_failure(status))
 }
 
+/// Whether a record's observed model agrees with its version: the field arrived
+/// in [`FIRST_MODEL_OBSERVATION_SCHEMA_VERSION`], so an older record carrying it
+/// was not written by any oneharness. Stated here because the generated SDK
+/// schemas gate the same field the same way — one rule, two validators.
+fn observed_model_valid(schema_version: &str, observed_model: Option<&str>) -> bool {
+    observed_model.is_none()
+        || version_at_least(schema_version, FIRST_MODEL_OBSERVATION_SCHEMA_VERSION)
+}
+
 impl<'de> Deserialize<'de> for HistoryRecord {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -1490,6 +1542,8 @@ struct HistoryRecordWire {
     // llmlint: ignore[invalid_states_unrepresentable] This private optional field exists only for v1.0 compatibility and is normalized into the required materialized composed id.
     harness_id: Option<String>,
     model: Option<String>,
+    #[serde(default)]
+    observed_model: Option<String>,
     prompt: String,
     permission_mode: PermissionMode,
     status: Status,
@@ -1784,6 +1838,7 @@ mod tests {
             status: Status::Ok,
             prompt: None,
             model: None,
+            observed_model: None,
             exit_code: Some(0),
             duration_ms: Some(42),
             telemetry: Some(
@@ -2144,7 +2199,8 @@ mod tests {
             "/project",
             "2026-01-01T00:00:00Z".to_string(),
             PermissionMode::Default,
-            None,
+            // The result's own model, exactly as `io::history`'s writer passes it.
+            r.model.as_deref(),
             "prompt",
             r,
         )
@@ -2260,6 +2316,108 @@ mod tests {
         );
         assert_eq!(skipped.work, None);
         assert_eq!(skipped.schema_version, FIRST_ERROR_SCHEMA_VERSION);
+    }
+
+    /// The model the harness itself reported, carried beside the requested one
+    /// and never derived from it: a completed turn records both as equal, a
+    /// refused one records the difference, and a path that reports nothing
+    /// records nothing — at the version that first had the field.
+    #[test]
+    fn an_observed_model_is_recorded_beside_the_requested_one_at_its_own_version() {
+        let completed = record_of(&RunResult {
+            model: Some("gpt-5.6-sol".to_string()),
+            observed_model: Some("gpt-5.6-sol".to_string()),
+            ..result()
+        });
+        assert_eq!(completed.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(completed.observed_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(
+            completed.schema_version,
+            FIRST_MODEL_OBSERVATION_SCHEMA_VERSION
+        );
+        assert!(completed.complete());
+        assert!(HistoryRunRecord::from_record(&completed).valid());
+
+        // A refused turn carries both names and its own gated kind, on top of a
+        // failure text — the newest gate among them decides the version.
+        let refused = record_of(
+            &RunResult {
+                model: Some("gpt-5.6-sol".to_string()),
+                observed_model: Some("gpt-6-astra".to_string()),
+                status: Status::Nonzero,
+                exit_code: None,
+                failure_kind: Some(FailureKind::ModelMismatch),
+                failure_kind_source: Some("jsonrpc:codex-app-server".to_string()),
+                error: Some("codex would run this turn under \"gpt-6-astra\"".to_string()),
+                ..result()
+            }
+            .with_work_evidence(),
+        );
+        assert_eq!(refused.failure_kind, Some(FailureKind::ModelMismatch));
+        assert_eq!(refused.observed_model.as_deref(), Some("gpt-6-astra"));
+        assert_eq!(refused.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(refused.work, None, "a classified refusal has said why");
+        assert_eq!(
+            refused.schema_version,
+            FIRST_MODEL_OBSERVATION_SCHEMA_VERSION
+        );
+        assert!(refused.complete());
+
+        // The kind alone — no observed model on the result — still needs the
+        // reader that has the value.
+        let kind_only = record_of(
+            &RunResult {
+                status: Status::Nonzero,
+                exit_code: None,
+                failure_kind: Some(FailureKind::ModelMismatch),
+                error: Some("refused".to_string()),
+                ..result()
+            }
+            .with_work_evidence(),
+        );
+        assert_eq!(
+            kind_only.schema_version,
+            FIRST_MODEL_OBSERVATION_SCHEMA_VERSION
+        );
+
+        // A path that reports no model records none, and is not derived from
+        // the requested one — the field is the harness's own claim or nothing.
+        let unreported = record_of(&RunResult {
+            model: Some("gpt-5.6-sol".to_string()),
+            ..result()
+        });
+        assert_eq!(unreported.observed_model, None);
+        assert_eq!(unreported.schema_version, PREVIOUS_CURRENT_SCHEMA_VERSION);
+        let wire = serde_json::to_value(&unreported).unwrap();
+        assert!(
+            wire.get("observed_model").is_none(),
+            "omitted on the wire when absent: {wire}"
+        );
+        assert!(
+            serde_json::to_value(HistoryRunRecord::from_record(&unreported))
+                .unwrap()
+                .get("observed_model")
+                .is_none()
+        );
+
+        // Offered to a reader whose version never had the field, it is refused
+        // rather than read back as a record that version never wrote.
+        let wire = serde_json::to_value(&completed).unwrap();
+        for version in [
+            FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
+            FIRST_PRECONDITION_SCHEMA_VERSION,
+        ] {
+            let mut older = wire.clone();
+            older["schema_version"] = Value::String(version.to_string());
+            assert!(
+                serde_json::from_value::<HistoryRecord>(older.clone()).is_err(),
+                "{version} predates the observed model"
+            );
+            let mut run: HistoryRunRecord = serde_json::from_value(older).unwrap();
+            run.schema_version = version.to_string();
+            assert!(!run.valid(), "{version} predates the observed model");
+        }
+        assert!(serde_json::from_value::<HistoryRecord>(wire).is_ok());
     }
 
     #[test]

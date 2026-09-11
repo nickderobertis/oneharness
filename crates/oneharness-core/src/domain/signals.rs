@@ -131,6 +131,13 @@ pub enum FailureKind {
     /// other precondition refusal: no tokens were spent, and a candidate with a
     /// larger window can still run the task.
     InputTooLarge,
+    /// The harness reported it would run the conversation under a model other
+    /// than the one requested, and oneharness refused the turn before it
+    /// started (codex's app-server names the thread's model on its
+    /// `thread/start` / `thread/resume` response, before any token is spent).
+    /// The third precondition refusal: no work was done, no token was spent, and
+    /// the next identity may honour the model.
+    ModelMismatch,
 }
 
 impl FailureKind {
@@ -139,7 +146,7 @@ impl FailureKind {
     /// against the enum's own generated schema (`sdk_schema`), so a kind added
     /// without being listed here fails the gate rather than shipping an SDK that
     /// accepts it at a version whose reader refuses it.
-    pub const ALL: [FailureKind; 8] = [
+    pub const ALL: [FailureKind; 9] = [
         FailureKind::Auth,
         FailureKind::RateLimit,
         FailureKind::ModelNotFound,
@@ -148,6 +155,7 @@ impl FailureKind {
         FailureKind::ToolDeferred,
         FailureKind::UntrustedDirectory,
         FailureKind::InputTooLarge,
+        FailureKind::ModelMismatch,
     ];
 
     /// Whether this kind asserts the harness or its provider **refused to run
@@ -158,7 +166,7 @@ impl FailureKind {
     /// Every kind but [`FailureKind::ToolDeferred`] is a refusal: each says the
     /// request was rejected (`auth`, `rate_limit`, `quota`, `model_not_found`)
     /// or never made at all (`session_not_found`, `untrusted_directory`,
-    /// `input_too_large`). `ToolDeferred` is the odd one out because it is not a
+    /// `input_too_large`, `model_mismatch`). `ToolDeferred` is the odd one out because it is not a
     /// refusal at all: the turn completed, and the finding is about *what it
     /// produced* — a deferred builtin tool call instead of an executed one — so
     /// a clean, billed exit is exactly the shape it describes rather than one
@@ -177,7 +185,8 @@ impl FailureKind {
             | FailureKind::Quota
             | FailureKind::SessionNotFound
             | FailureKind::UntrustedDirectory
-            | FailureKind::InputTooLarge => true,
+            | FailureKind::InputTooLarge
+            | FailureKind::ModelMismatch => true,
             FailureKind::ToolDeferred => false,
         }
     }
@@ -194,6 +203,7 @@ impl FailureKind {
             FailureKind::ToolDeferred => "tool_deferred",
             FailureKind::UntrustedDirectory => "untrusted_directory",
             FailureKind::InputTooLarge => "input_too_large",
+            FailureKind::ModelMismatch => "model_mismatch",
         }
     }
 }
@@ -1216,6 +1226,7 @@ mod tests {
             "untrusted_directory"
         );
         assert_eq!(FailureKind::InputTooLarge.as_str(), "input_too_large");
+        assert_eq!(FailureKind::ModelMismatch.as_str(), "model_mismatch");
     }
 
     #[test]

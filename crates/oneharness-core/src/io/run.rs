@@ -29,6 +29,7 @@
 //! emitted them, so a warning a run produces is never silently dropped.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Finite backstop applied only when an omitted timeout meets a mode that may
@@ -3522,6 +3523,8 @@ fn run_in_waves(
     let mut slots: Vec<Option<Outcome>> = (0..jobs.len()).map(|_| None).collect();
     for wave in waves {
         let wave_jobs: Vec<Job> = wave.iter().map(|&i| jobs[i].clone()).collect();
+        let overload_attempts: Vec<_> = wave.iter().map(|_| AtomicU32::new(0)).collect();
+        let schema_attempts: Vec<_> = wave.iter().map(|_| AtomicU32::new(0)).collect();
         let outs = match schema {
             // After each run, first retry a zero-work overload (including its
             // bounded backoff), otherwise validate structured output and, when
@@ -3531,35 +3534,48 @@ fn run_in_waves(
                 &wave_jobs,
                 max_parallel,
                 spawn,
-                |k, attempt, capture| {
-                    server_overloaded_retry_decision(
+                |k, _attempt, capture| {
+                    let overload_attempt = overload_attempts[k].load(Ordering::Relaxed) + 1;
+                    if let Some(next) = server_overloaded_retry_decision(
                         &job_plans[wave[k]],
-                        attempt,
+                        overload_attempt,
                         retry_limits.server_overloaded,
                         capture,
-                    )
-                    .or_else(|| {
-                        retry_decision(
-                            &job_plans[wave[k]],
-                            sch,
-                            attempt,
-                            retry_limits.schema,
-                            capture,
-                        )
-                    })
+                        Some(sch),
+                    ) {
+                        overload_attempts[k].fetch_add(1, Ordering::Relaxed);
+                        return Some(next);
+                    }
+                    let schema_attempt = schema_attempts[k].load(Ordering::Relaxed) + 1;
+                    let next = retry_decision(
+                        &job_plans[wave[k]],
+                        sch,
+                        schema_attempt,
+                        retry_limits.schema,
+                        capture,
+                    );
+                    if next.is_some() {
+                        schema_attempts[k].fetch_add(1, Ordering::Relaxed);
+                    }
+                    next
                 },
             ),
             None => runner::run_jobs_supervised(
                 &wave_jobs,
                 max_parallel,
                 spawn,
-                |k, attempt, capture| {
+                |k, _attempt, capture| {
+                    let overload_attempt = overload_attempts[k].load(Ordering::Relaxed) + 1;
                     server_overloaded_retry_decision(
                         &job_plans[wave[k]],
-                        attempt,
+                        overload_attempt,
                         retry_limits.server_overloaded,
                         capture,
+                        None,
                     )
+                    .inspect(|_| {
+                        overload_attempts[k].fetch_add(1, Ordering::Relaxed);
+                    })
                 },
             ),
         };
@@ -3731,13 +3747,28 @@ fn run_one_job(
     spawn: SpawnControls<'_>,
 ) -> Outcome {
     let jobs = std::slice::from_ref(job);
-    let outs = runner::run_jobs_supervised(jobs, 1, spawn, |_, attempt, capture| {
-        server_overloaded_retry_decision(plan, attempt, retry_limits.server_overloaded, capture)
-            .or_else(|| {
-                schema.and_then(|sch| {
-                    retry_decision(plan, sch, attempt, retry_limits.schema, capture)
-                })
-            })
+    let overload_attempts = AtomicU32::new(0);
+    let schema_attempts = AtomicU32::new(0);
+    let outs = runner::run_jobs_supervised(jobs, 1, spawn, |_, _attempt, capture| {
+        let overload_attempt = overload_attempts.load(Ordering::Relaxed) + 1;
+        if let Some(next) = server_overloaded_retry_decision(
+            plan,
+            overload_attempt,
+            retry_limits.server_overloaded,
+            capture,
+            schema,
+        ) {
+            overload_attempts.fetch_add(1, Ordering::Relaxed);
+            return Some(next);
+        }
+        schema.and_then(|sch| {
+            let schema_attempt = schema_attempts.load(Ordering::Relaxed) + 1;
+            let next = retry_decision(plan, sch, schema_attempt, retry_limits.schema, capture);
+            if next.is_some() {
+                schema_attempts.fetch_add(1, Ordering::Relaxed);
+            }
+            next
+        })
     });
     outs.into_iter().next().expect("one job, one outcome")
 }
@@ -4491,6 +4522,7 @@ fn server_overloaded_retry_decision(
     attempt: u32,
     max_retries: u32,
     capture: &Capture,
+    schema: Option<&Schema>,
 ) -> Option<NextRun> {
     if attempt > max_retries || !matches!(capture.status, Status::Ok | Status::Nonzero) {
         return None;
@@ -4506,7 +4538,7 @@ fn server_overloaded_retry_decision(
         return None;
     }
     server_overloaded_backoff(attempt);
-    let built = plan.build(None, None);
+    let built = plan.build(schema, None);
     Some(NextRun {
         argv: built.argv,
         stdin: built.stdin,

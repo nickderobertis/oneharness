@@ -11503,6 +11503,54 @@ fn schema_retry_loop_recovers_on_a_later_attempt() {
 }
 
 #[test]
+fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_delivery() {
+    let schema = temp_file("schema-overload", PERSON_SCHEMA);
+    let counter = temp_counter("schema-overload");
+    let argv_file = temp_file("schema-overload-argv", "");
+    let overloaded = r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#;
+    let invalid =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\"}"}}"#;
+    let valid = r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\",\"age\":36}"}}"#;
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "describe ada",
+            "--schema",
+            &schema,
+            "--schema-max-retries",
+            "1",
+            "--server-overloaded-max-retries",
+            "1",
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            ("MOCK_ATTEMPT_FILE", &counter),
+            ("MOCK_ARGV_FILE", &argv_file),
+            ("MOCK_STDOUT_1", overloaded),
+            ("MOCK_STDOUT_2", invalid),
+            ("MOCK_STDOUT_3", valid),
+        ],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["schema_valid"], true);
+    assert_eq!(value["results"][0]["structured"]["age"], 36);
+    assert_eq!(value["results"][0]["schema_attempts"], 3);
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
+    let final_argv = std::fs::read_to_string(argv_file).unwrap();
+    assert!(
+        final_argv.contains("JSON Schema"),
+        "the overload retry dropped schema delivery: {final_argv}"
+    );
+}
+
+#[test]
 fn schema_invalid_after_retries_is_a_failure() {
     // Every attempt misses `age`; after the budget is spent the run fails with the
     // last invalid value and a validation error surfaced.

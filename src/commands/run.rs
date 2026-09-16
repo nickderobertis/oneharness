@@ -217,6 +217,8 @@ mod tests {
             "s.json",
             "--schema-max-retries",
             "4",
+            "--server-overloaded-max-retries",
+            "5",
             "--output-dir",
             "/tmp/out",
             "--timeout",
@@ -283,6 +285,7 @@ mod tests {
             Some(std::path::Path::new("s.json"))
         );
         assert_eq!(request.schema_max_retries, Some(4));
+        assert_eq!(request.server_overloaded_max_retries, Some(5));
         assert_eq!(
             request.output_dir.as_deref(),
             Some(std::path::Path::new("/tmp/out"))

@@ -9195,7 +9195,7 @@ fn config_max_parallel_is_accepted_and_runs_succeed() {
 fn config_command_shows_values_with_sources() {
     let fx = ConfigFixture::new(
         "cmd",
-        "model = \"project-model\"\n[harness.claude-code]\nmodel = \"sonnet\"\n",
+        "model = \"project-model\"\nserver_overloaded_max_retries = 7\n[harness.claude-code]\nmodel = \"sonnet\"\n",
         "model = \"user-model\"\ntimeout = 30\n[env]\nFOO = \"bar\"\n",
     );
     let output = run_with_config(
@@ -9227,6 +9227,11 @@ fn config_command_shows_values_with_sources() {
     // `stream` is the field schema 0.4 added; it reports like any other scalar.
     assert_eq!(value["stream"]["value"], false);
     assert_eq!(value["stream"]["source"], "default");
+    assert_eq!(value["server_overloaded_max_retries"]["value"], 7);
+    assert!(value["server_overloaded_max_retries"]["source"]
+        .as_str()
+        .unwrap()
+        .ends_with("oneharness.toml"));
     // `mode` has no built-in default (it derives from `bypass` when unset).
     assert!(value["mode"]["value"].is_null());
     assert!(value["mode"]["source"].is_null());
@@ -18183,6 +18188,41 @@ fn codex_server_overloaded_falls_through_after_configured_retries() {
     // The variant inherits the base counter: two primary attempts plus the one
     // successful alternate invocation.
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
+}
+
+#[test]
+fn codex_server_overloaded_recovers_in_parallel_mode() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-parallel");
+    let overloaded = serde_json::to_string(
+        r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#,
+    )
+    .unwrap();
+    let recovered = serde_json::to_string(
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"parallel-recovered"}}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        server_overloaded_max_retries = 1
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT_1 = {overloaded}, MOCK_STDOUT_2 = {recovered} }}
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-parallel", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["text"], "parallel-recovered");
+    assert!(value["fallback"].is_null());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
 }
 
 #[test]

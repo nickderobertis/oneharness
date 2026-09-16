@@ -1284,40 +1284,54 @@ pub fn run_supervised(
             handle: chain.handle,
             prompt,
         };
-        let capture = runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
-            runner::StreamStep::Continue
-        });
-        let results = plan
-            .into_iter()
-            .map(|entry| match entry {
-                Plan::Ready(result) => *result,
-                Plan::Pending {
-                    spec,
-                    bin,
-                    output_format,
-                    job_index,
-                    prompt,
-                    model,
-                } => {
-                    let mut result = executed_result(
+        let mut attempts = 0;
+        let results = loop {
+            attempts += 1;
+            let capture =
+                runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
+                    runner::StreamStep::Continue
+                });
+            let results: Vec<_> = plan
+                .iter()
+                .map(|entry| match entry {
+                    Plan::Ready(result) => (**result).clone(),
+                    Plan::Pending {
                         spec,
                         bin,
-                        jobs[job_index].argv.clone(),
                         output_format,
-                        &capture,
-                        schema.as_ref(),
-                        1,
+                        job_index,
                         prompt,
                         model,
-                    );
-                    // Read off the conversation before the mechanism is
-                    // released: a driven turn's session id and answer are
-                    // knowable only from its protocol frames.
-                    apply_dialogue_signals(&mut result, chain.handle);
-                    result
-                }
-            })
-            .collect();
+                    } => {
+                        let mut result = executed_result(
+                            spec,
+                            bin.clone(),
+                            jobs[*job_index].argv.clone(),
+                            *output_format,
+                            &capture,
+                            schema.as_ref(),
+                            attempts,
+                            prompt.clone(),
+                            model.clone(),
+                        );
+                        // Read off the conversation before the mechanism is
+                        // released: a driven turn's session id and answer are
+                        // knowable only from its protocol frames.
+                        apply_dialogue_signals(&mut result, chain.handle);
+                        result
+                    }
+                })
+                .collect();
+            let retry = attempts <= server_overloaded_max_retries
+                && results.iter().any(|result| {
+                    result.failure_kind == Some(signals::FailureKind::ServerOverloaded)
+                        && fallback::RunWork::from_result(result) == fallback::RunWork::None
+                });
+            if !retry {
+                break results;
+            }
+            server_overloaded_backoff(attempts);
+        };
         chain.handle.release();
         (results, None)
     } else if fallback_mode && !args.print_command {

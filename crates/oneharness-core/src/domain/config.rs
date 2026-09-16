@@ -88,6 +88,9 @@ pub struct FileConfig {
     /// Maximum retries per harness when a response fails schema validation
     /// (like `--schema-max-retries`; default 2). Only meaningful with a schema.
     pub schema_max_retries: Option<u32>,
+    /// Maximum retries for a zero-work Codex `server_overloaded` refusal
+    /// (default 2). `0` disables same-candidate retries.
+    pub server_overloaded_max_retries: Option<u32>,
     /// Concurrency cap (like `--max-parallel`).
     pub max_parallel: Option<usize>,
     /// How the selected harnesses are run (like `--run-mode`): `parallel` (the
@@ -521,6 +524,11 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
             "ONEHARNESS_SCHEMA_MAX_RETRIES",
             "a non-negative integer",
         )?,
+        server_overloaded_max_retries: env_num(
+            &read,
+            "ONEHARNESS_SERVER_OVERLOADED_MAX_RETRIES",
+            "a non-negative integer",
+        )?,
         max_parallel: env_num(&read, "ONEHARNESS_MAX_PARALLEL", "a non-negative integer")?,
         run_mode: env_run_mode(&read)?,
         require_available: env_bool(&read, "ONEHARNESS_REQUIRE_AVAILABLE")?,
@@ -682,6 +690,9 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         stream: over.stream.or(base.stream),
         schema_file: over.schema_file.or(base.schema_file),
         schema_max_retries: over.schema_max_retries.or(base.schema_max_retries),
+        server_overloaded_max_retries: over
+            .server_overloaded_max_retries
+            .or(base.server_overloaded_max_retries),
         max_parallel: over.max_parallel.or(base.max_parallel),
         run_mode: over.run_mode.or(base.run_mode),
         require_available: over.require_available.or(base.require_available),
@@ -949,6 +960,7 @@ pub struct ConfigReport {
     pub stream: Field<bool>,
     pub schema_file: Field<String>,
     pub schema_max_retries: Field<u32>,
+    pub server_overloaded_max_retries: Field<u32>,
     pub max_parallel: Field<usize>,
     /// The configured run mode, if any. Unset falls back to `parallel` (the
     /// built-in default) at run time.
@@ -1178,6 +1190,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         stream: pick(layers, |c| c.stream).or_default(false),
         schema_file: pick(layers, |c| c.schema_file.clone()),
         schema_max_retries: pick(layers, |c| c.schema_max_retries),
+        server_overloaded_max_retries: pick(layers, |c| c.server_overloaded_max_retries),
         max_parallel: pick(layers, |c| c.max_parallel),
         run_mode: pick(layers, |c| c.run_mode),
         require_available: pick(layers, |c| c.require_available).or_default(false),
@@ -1800,6 +1813,7 @@ variant = true
             ("ONEHARNESS_OUTPUT_FORMAT", "stream-json"),
             ("ONEHARNESS_SCHEMA_FILE", "schema.json"),
             ("ONEHARNESS_SCHEMA_MAX_RETRIES", "4"),
+            ("ONEHARNESS_SERVER_OVERLOADED_MAX_RETRIES", "3"),
             ("ONEHARNESS_MAX_PARALLEL", "2"),
             ("ONEHARNESS_RUN_MODE", "fallback"),
             ("ONEHARNESS_REQUIRE_AVAILABLE", "1"),
@@ -1820,6 +1834,7 @@ variant = true
         assert_eq!(c.output_format, Some(OutputFormat::StreamJson));
         assert_eq!(c.schema_file.as_deref(), Some("schema.json"));
         assert_eq!(c.schema_max_retries, Some(4));
+        assert_eq!(c.server_overloaded_max_retries, Some(3));
         assert_eq!(c.max_parallel, Some(2));
         assert_eq!(c.run_mode, Some(RunMode::Fallback));
         assert_eq!(c.require_available, Some(true));

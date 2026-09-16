@@ -1177,6 +1177,34 @@
         "session_id": "01a0908e-1c1e-74e2-94f6-2b7d76737f6d",
         "failure_kind": "model_mismatch", "error": "harness `codex` reported it would run this turn under \"gpt-6-astra\", not the requested \"gpt-5.6-sol\", so the turn was refused before it started"
       }
+    },
+    {
+      "name": "history record v1.9 accepts server_overloaded",
+      "root": "history_record",
+      "accepted": true,
+      "value": {
+        "schema_version": "1.9", "history_id": "0198f0d0-7b31-7000-8000-00000000003d",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex", "harness_id": "codex", "model": null, "prompt": "test",
+        "permission_mode": "bypass", "status": "nonzero", "exit_code": 1, "duration_ms": 100,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null, "failure_kind": "server_overloaded", "error": "server overloaded"
+      }
+    },
+    {
+      "name": "history record v1.8 rejects server_overloaded",
+      "root": "history_record",
+      "accepted": false,
+      "value": {
+        "schema_version": "1.8", "history_id": "0198f0d0-7b31-7000-8000-00000000003e",
+        "session": "session", "name": "name", "labels": {}, "project": "/tmp/project",
+        "timestamp": "2026-09-11T00:00:01Z", "harness": "codex", "harness_id": "codex", "model": null, "prompt": "test",
+        "permission_mode": "bypass", "status": "nonzero", "exit_code": 1, "duration_ms": 100,
+        "finished_at": null, "text": null, "text_source": null,
+        "usage": {"input_tokens": null, "output_tokens": null, "cache_read_tokens": null, "cache_write_tokens": null, "cost_usd": null},
+        "session_id": null, "events": null, "failure_kind": "server_overloaded", "error": "server overloaded"
+      }
     }
   ]
 }

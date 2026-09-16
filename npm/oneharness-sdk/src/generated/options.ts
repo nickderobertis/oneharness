@@ -133,6 +133,10 @@ export interface RunOptions {
    * Max retries when a response fails schema validation.
    */
   schemaMaxRetries?: number | undefined;
+  /**
+   * Max retries for a zero-work Codex server-overloaded refusal.
+   */
+  serverOverloadedMaxRetries?: number | undefined;
   session?: string | undefined;
   /**
    * Directory the `session` store lives in.

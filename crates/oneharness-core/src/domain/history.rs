@@ -38,7 +38,9 @@ use crate::domain::signals::{FailureKind, Usage};
 /// newer reader. That is what lets an additive field ship without rewriting the
 /// shape of every record — and what makes each version constant below the exact
 /// gate for the one field it introduced.
-pub const SCHEMA_VERSION: &str = "1.8";
+pub const SCHEMA_VERSION: &str = "1.9";
+/// First history schema that accepts `server_overloaded`.
+pub const FIRST_SERVER_OVERLOADED_SCHEMA_VERSION: &str = "1.9";
 /// v1.8 introduced `observed_model` — the model the harness itself reported the
 /// conversation would run under (see [`HistoryRecord::observed_model`]) — and
 /// the `model_mismatch` failure kind, the refusal oneharness answers when that
@@ -80,7 +82,7 @@ pub(crate) const FIRST_EVENT_SCHEMA_VERSION: &str = "1.0";
 /// Every event-sourced history version this build reads, oldest first. Order is
 /// the contract: a field introduced in version N is legible to N and everything
 /// after it, which is what [`version_at_least`] answers.
-pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 9] = [
+pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 10] = [
     FIRST_EVENT_SCHEMA_VERSION,
     PREVIOUS_CURRENT_SCHEMA_VERSION,
     OBSERVED_TIMING_SCHEMA_VERSION,
@@ -90,6 +92,7 @@ pub(crate) const READABLE_SCHEMA_VERSIONS: [&str; 9] = [
     FIRST_PRECONDITION_SCHEMA_VERSION,
     FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
     FIRST_MODEL_OBSERVATION_SCHEMA_VERSION,
+    FIRST_SERVER_OVERLOADED_SCHEMA_VERSION,
 ];
 
 fn version_rank(version: &str) -> Option<usize> {
@@ -831,7 +834,10 @@ impl HistoryRecord {
     // group naturally — the session id and name — are already threaded through
     // the I/O writer that owns them; a parameter struct here would only move the
     // same list one call up.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each value is an independent published history field; a parameter object would duplicate the wire shape"
+    )]
     pub fn from_result(
         history_id: HistoryId,
         session: &str,
@@ -1432,9 +1438,10 @@ fn status_version_valid(schema_version: &str, status: Status) -> bool {
 }
 
 /// The same promise for `failure_kind`: a kind introduced after `schema_version`
-/// is refused rather than read back at a version whose enum never had it. Four
+/// is refused rather than read back at a version whose enum never had it. Five
 /// kinds are gated — [`FailureKind::SessionNotFound`] at v1.5, the two
-/// precondition refusals at v1.6 and [`FailureKind::ModelMismatch`] at v1.8;
+/// precondition refusals at v1.6, [`FailureKind::ModelMismatch`] at v1.8, and
+/// [`FailureKind::ServerOverloaded`] at v1.9;
 /// every other kind predates the oldest readable version. Stated here because the generated SDK schemas gate the same values
 /// the same way — one rule, two validators.
 fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<FailureKind>) -> bool {
@@ -1445,8 +1452,9 @@ fn failure_kind_version_valid(schema_version: &str, failure_kind: Option<Failure
 }
 
 /// The version a gated `failure_kind` arrived in, or `None` for a kind every
-/// readable version already had. Four gates: `session_not_found` at v1.5, the
-/// two precondition refusals at v1.6, and `model_mismatch` at v1.8. One table so the runtime reader and the
+/// readable version already had. Five gates: `session_not_found` at v1.5, the
+/// two precondition refusals at v1.6, `model_mismatch` at v1.8, and
+/// `server_overloaded` at v1.9. One table so the runtime reader and the
 /// generated SDK schemas ([`crate::sdk_schema`]) enumerate the same gates —
 /// a second list is how the two validators drift apart. Crate-visible, since
 /// both of those readers are in this crate: a consumer reads the gate from the
@@ -1461,6 +1469,7 @@ pub(crate) fn gated_failure_kind_version(
             Some(FIRST_PRECONDITION_SCHEMA_VERSION)
         }
         FailureKind::ModelMismatch => Some(FIRST_MODEL_OBSERVATION_SCHEMA_VERSION),
+        FailureKind::ServerOverloaded => Some(FIRST_SERVER_OVERLOADED_SCHEMA_VERSION),
         FailureKind::Auth
         | FailureKind::RateLimit
         | FailureKind::ModelNotFound

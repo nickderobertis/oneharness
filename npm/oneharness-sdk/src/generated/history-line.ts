@@ -10,7 +10,7 @@ export type HistoryLine =
           harness: string;
           harness_id?: string | null | undefined;
           run_id: string;
-          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+          schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -36,7 +36,7 @@ export type HistoryLine =
         }
       | ({
           error: string;
-          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
+          schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | undefined;
           [k: string]: unknown;
         } & (
           | {
@@ -55,7 +55,7 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.7" | "1.8" | undefined;
+            schema_version?: "1.7" | "1.8" | "1.9" | undefined;
             status?: "nonzero" | "timeout" | "cancelled" | undefined;
             work: "done" | "none";
             [k: string]: unknown;
@@ -68,7 +68,7 @@ export type HistoryLine =
           }
         | {
             observed_model: string;
-            schema_version?: "1.8" | undefined;
+            schema_version?: "1.8" | "1.9" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -78,7 +78,7 @@ export type HistoryLine =
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
+            schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -93,11 +93,12 @@ export type HistoryLine =
               | "untrusted_directory"
               | "input_too_large"
               | "model_mismatch"
+              | "server_overloaded"
               | null;
             [k: string]: unknown;
           }
         | {
-            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | undefined;
+            schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | undefined;
             [k: string]: unknown;
           }
       ) &
@@ -111,11 +112,12 @@ export type HistoryLine =
                 | "session_not_found"
                 | "tool_deferred"
                 | "model_mismatch"
+                | "server_overloaded"
                 | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.6" | "1.7" | "1.8" | undefined;
+              schema_version?: "1.6" | "1.7" | "1.8" | "1.9" | undefined;
               [k: string]: unknown;
             }
         ) &
@@ -130,11 +132,32 @@ export type HistoryLine =
                 | "tool_deferred"
                 | "untrusted_directory"
                 | "input_too_large"
+                | "server_overloaded"
                 | null;
               [k: string]: unknown;
             }
           | {
-              schema_version?: "1.8" | undefined;
+              schema_version?: "1.8" | "1.9" | undefined;
+              [k: string]: unknown;
+            }
+        ) &
+        (
+          | {
+              failure_kind?:
+                | "auth"
+                | "rate_limit"
+                | "model_not_found"
+                | "quota"
+                | "session_not_found"
+                | "tool_deferred"
+                | "untrusted_directory"
+                | "input_too_large"
+                | "model_mismatch"
+                | null;
+              [k: string]: unknown;
+            }
+          | {
+              schema_version?: "1.9" | undefined;
               [k: string]: unknown;
             }
         )) &
@@ -165,7 +188,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -211,7 +234,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -257,7 +280,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+            schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -303,7 +326,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -349,7 +372,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+            schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
             session: string;
             session_id: string | null;
             started_at: string;
@@ -395,7 +418,7 @@ export type HistoryLine =
             permission_mode: PermissionMode;
             project: string;
             prompt: string;
-            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+            schema_version: "1.0" | "1.1" | "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
             session: string;
             session_id: string | null;
             started_at?: never | undefined;
@@ -426,7 +449,7 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
  * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
- * `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+ * `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
  * keeps a misspelled or invalid kind unrepresentable and gives every
  * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
  * the report, history) one definition to share instead of scattered string
@@ -441,7 +464,8 @@ export type FailureKind =
   | "tool_deferred"
   | "untrusted_directory"
   | "input_too_large"
-  | "model_mismatch";
+  | "model_mismatch"
+  | "server_overloaded";
 /**
  * The unified approval mode, from least to most autonomy. A harness may not
  * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the

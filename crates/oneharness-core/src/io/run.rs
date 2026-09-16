@@ -252,6 +252,8 @@ pub struct RunRequest {
     pub schema: Option<PathBuf>,
     /// Max re-prompts when a response fails schema validation (default 2).
     pub schema_max_retries: Option<u32>,
+    /// Max retries for a zero-work Codex server-overloaded refusal (default 2).
+    pub server_overloaded_max_retries: Option<u32>,
     /// Also write each harness's raw stdout/stderr under this directory.
     pub output_dir: Option<PathBuf>,
     /// Per-harness timeout in seconds; omitted or zero means no timeout.
@@ -550,6 +552,10 @@ pub fn run_supervised(
     let max_retries = args
         .schema_max_retries
         .or(cfg.schema_max_retries)
+        .unwrap_or(2);
+    let server_overloaded_max_retries = args
+        .server_overloaded_max_retries
+        .or(cfg.server_overloaded_max_retries)
         .unwrap_or(2);
     // A CLI selection (--all / --harness) replaces the config selection
     // entirely; config `exclude` still applies unless --exclude is given.
@@ -1213,6 +1219,7 @@ pub fn run_supervised(
             controlled.as_ref(),
             &mut event_sink,
             spawn,
+            server_overloaded_max_retries,
         );
         streamed_history = streamed.history;
         // A driven turn's signals are applied per candidate, inside the driver:
@@ -1322,7 +1329,10 @@ pub fn run_supervised(
             &jobs,
             &job_plans,
             schema.as_ref(),
-            max_retries,
+            RetryLimits {
+                schema: max_retries,
+                server_overloaded: server_overloaded_max_retries,
+            },
             multi_model,
             spawn,
         );
@@ -1386,7 +1396,10 @@ pub fn run_supervised(
                 &jobs,
                 &job_plans,
                 schema.as_ref(),
-                max_retries,
+                RetryLimits {
+                    schema: max_retries,
+                    server_overloaded: server_overloaded_max_retries,
+                },
                 max_parallel,
                 &waves,
                 spawn,
@@ -2573,6 +2586,7 @@ fn drive_plan_sequentially(
     controlled: Option<&ControlledRun<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
     spawn: SpawnControls<'_>,
+    server_overloaded_max_retries: u32,
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<StreamedHistory> = Vec::new();
@@ -2605,21 +2619,39 @@ fn drive_plan_sequentially(
                     model,
                     harness_id: unit_ids[index],
                 };
-                match controlled {
+                let mut run_candidate = || match controlled {
                     // Every candidate, not just one chosen up front: the channel
                     // binds to whichever is serving and releases when its turn
                     // ends, so a chain that falls through carries control with
                     // it instead of leaving the rest of the run unaddressable.
                     Some(chain) => drive_controlled_candidate(
-                        unit,
+                        unit.clone(),
                         chain,
                         index,
                         history_writer.zip(run_id),
                         sink,
                         spawn,
                     ),
-                    None => stream_one_harness(unit, history_writer.zip(run_id), None, sink, spawn),
+                    None => stream_one_harness(
+                        unit.clone(),
+                        history_writer.zip(run_id),
+                        None,
+                        sink,
+                        spawn,
+                    ),
+                };
+                let mut streamed = run_candidate();
+                for retry in 0..server_overloaded_max_retries {
+                    if streamed.result.failure_kind != Some(signals::FailureKind::ServerOverloaded)
+                        || fallback::RunWork::from_result(&streamed.result)
+                            != fallback::RunWork::None
+                    {
+                        break;
+                    }
+                    server_overloaded_backoff(retry + 1);
+                    streamed = run_candidate();
                 }
+                streamed
             }
         };
         let StreamedHarness {
@@ -2717,6 +2749,7 @@ struct StreamedHarness {
 }
 
 /// One plan entry, resolved, as the streaming driver needs it.
+#[derive(Clone)]
 struct StreamedUnit<'a> {
     job: &'a Job,
     spec: &'static HarnessSpec,
@@ -3467,7 +3500,7 @@ fn run_in_waves(
     jobs: &[Job],
     job_plans: &[HarnessPlan],
     schema: Option<&Schema>,
-    max_retries: u32,
+    retry_limits: RetryLimits,
     max_parallel: usize,
     waves: &[Vec<usize>],
     spawn: SpawnControls<'_>,
@@ -3484,10 +3517,36 @@ fn run_in_waves(
                 max_parallel,
                 spawn,
                 |k, attempt, capture| {
-                    retry_decision(&job_plans[wave[k]], sch, attempt, max_retries, capture)
+                    server_overloaded_retry_decision(
+                        &job_plans[wave[k]],
+                        attempt,
+                        retry_limits.server_overloaded,
+                        capture,
+                    )
+                    .or_else(|| {
+                        retry_decision(
+                            &job_plans[wave[k]],
+                            sch,
+                            attempt,
+                            retry_limits.schema,
+                            capture,
+                        )
+                    })
                 },
             ),
-            None => runner::run_jobs_supervised(&wave_jobs, max_parallel, spawn, |_, _, _| None),
+            None => runner::run_jobs_supervised(
+                &wave_jobs,
+                max_parallel,
+                spawn,
+                |k, attempt, capture| {
+                    server_overloaded_retry_decision(
+                        &job_plans[wave[k]],
+                        attempt,
+                        retry_limits.server_overloaded,
+                        capture,
+                    )
+                },
+            ),
         };
         for (k, out) in outs.into_iter().enumerate() {
             slots[wave[k]] = Some(out);
@@ -3642,20 +3701,28 @@ fn validate_multi_model(
 /// Run a single harness job under the structured-output retry loop — the
 /// one-harness analogue of a [`run_in_waves`] wave of size one — returning its
 /// outcome. Used by the fallback driver, which spawns harnesses one at a time.
+#[derive(Clone, Copy)]
+struct RetryLimits {
+    schema: u32,
+    server_overloaded: u32,
+}
+
 fn run_one_job(
     job: &Job,
     plan: &HarnessPlan,
     schema: Option<&Schema>,
-    max_retries: u32,
+    retry_limits: RetryLimits,
     spawn: SpawnControls<'_>,
 ) -> Outcome {
     let jobs = std::slice::from_ref(job);
-    let outs = match schema {
-        Some(sch) => runner::run_jobs_supervised(jobs, 1, spawn, |_, attempt, capture| {
-            retry_decision(plan, sch, attempt, max_retries, capture)
-        }),
-        None => runner::run_jobs_supervised(jobs, 1, spawn, |_, _, _| None),
-    };
+    let outs = runner::run_jobs_supervised(jobs, 1, spawn, |_, attempt, capture| {
+        server_overloaded_retry_decision(plan, attempt, retry_limits.server_overloaded, capture)
+            .or_else(|| {
+                schema.and_then(|sch| {
+                    retry_decision(plan, sch, attempt, retry_limits.schema, capture)
+                })
+            })
+    });
     outs.into_iter().next().expect("one job, one outcome")
 }
 
@@ -3673,7 +3740,7 @@ fn run_fallback(
     jobs: &[Job],
     job_plans: &[HarnessPlan],
     schema: Option<&Schema>,
-    max_retries: u32,
+    retry_limits: RetryLimits,
     multi_model: bool,
     spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport) {
@@ -3698,7 +3765,7 @@ fn run_fallback(
                     &jobs[job_index],
                     &job_plans[job_index],
                     schema,
-                    max_retries,
+                    retry_limits,
                     spawn,
                 );
                 let command = jobs[job_index].argv.clone();
@@ -4395,6 +4462,45 @@ fn retry_decision(
         argv: built.argv,
         stdin: built.stdin,
     })
+}
+
+/// Initial and maximum delay for same-candidate Codex overload retries. The
+/// exponential is saturated and capped, so every wait remains bounded even for
+/// an unusually large configured retry count.
+const SERVER_OVERLOADED_BACKOFF_INITIAL: Duration = Duration::from_millis(100);
+const SERVER_OVERLOADED_BACKOFF_MAX: Duration = Duration::from_secs(1);
+
+fn server_overloaded_retry_decision(
+    plan: &HarnessPlan,
+    attempt: u32,
+    max_retries: u32,
+    capture: &Capture,
+) -> Option<NextRun> {
+    if attempt > max_retries || !matches!(capture.status, Status::Ok | Status::Nonzero) {
+        return None;
+    }
+    let failure =
+        signals::detect_harness_provider_failure(failure_dialect(plan.spec), &capture.stdout)?;
+    (failure.kind == signals::FailureKind::ServerOverloaded).then_some(())?;
+    server_overloaded_backoff(attempt);
+    let built = plan.build(None, None);
+    Some(NextRun {
+        argv: built.argv,
+        stdin: built.stdin,
+    })
+}
+
+fn server_overloaded_backoff(attempt: u32) {
+    std::thread::sleep(server_overloaded_backoff_duration(attempt));
+}
+
+fn server_overloaded_backoff_duration(attempt: u32) -> Duration {
+    let shift = attempt.saturating_sub(1).min(31);
+    let millis = SERVER_OVERLOADED_BACKOFF_INITIAL
+        .as_millis()
+        .saturating_mul(1u128 << shift)
+        .min(SERVER_OVERLOADED_BACKOFF_MAX.as_millis()) as u64;
+    Duration::from_millis(millis)
 }
 
 /// Load and compile the structured-output schema, if one was requested. A
@@ -5607,5 +5713,21 @@ mod tests {
             ),
             Err(OneharnessError::SessionUnsupported { .. })
         ));
+    }
+
+    #[test]
+    fn server_overloaded_backoff_is_exponential_and_capped() {
+        assert_eq!(
+            server_overloaded_backoff_duration(1),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            server_overloaded_backoff_duration(2),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            server_overloaded_backoff_duration(32),
+            Duration::from_secs(1)
+        );
     }
 }

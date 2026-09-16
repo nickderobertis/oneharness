@@ -430,7 +430,7 @@ caller rather than being dropped.
 | `run_stream_envelope` | `event`, `report`, `type` | 89 | yes | yes | yes |
 | `list_report` | `harnesses`, `schema_version` | 36 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
-| `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `stream`, `system`, `timeout` | 39 | yes | yes | yes |
+| `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `system`, `timeout` | 40 | yes | yes | yes |
 | `sync_report` | `check`, `config_files`, `results`, `schema_version` | 9 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 33 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |

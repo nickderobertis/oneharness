@@ -292,7 +292,7 @@ fn every_report_carries_the_shared_schema_version() {
     // so a consumer reads any of them with one number — and a bump must move
     // every surface at once. Pinned literally on purpose: asserting against the
     // constant would pass through a bump nobody intended.
-    let version = "0.10";
+    let version = "0.11";
     let printed = run(
         &[
             "run",
@@ -335,7 +335,7 @@ fn list_describes_every_harness() {
     let output = run(&["list"], &[]);
     assert!(output.status.success());
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.10");
+    assert_eq!(value["schema_version"], "0.11");
     let ids: Vec<&str> = value["harnesses"]
         .as_array()
         .unwrap()
@@ -6426,7 +6426,7 @@ fn a_host_signal_cancels_the_run_and_terminates_a_silent_harness() {
     // The report is still the contract: a cancelled run is a value a consumer
     // reads, not a process that vanished.
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.10");
+    assert_eq!(value["schema_version"], "0.11");
     let result = &value["results"][0];
     assert_eq!(result["status"], "cancelled");
     // A cancellation classifies as nothing either, so the report carries the
@@ -6916,7 +6916,7 @@ fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
 
     let last = String::from_utf8_lossy(&output.stdout)
         .lines()
-        .last()
+        .next_back()
         .expect("the stream ended without any line")
         .to_string();
     match serde_json::from_str::<RunStreamEnvelope>(&last).expect("terminal envelope is typed") {
@@ -9209,7 +9209,7 @@ fn config_command_shows_values_with_sources() {
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    assert_eq!(value["schema_version"], "0.10");
+    assert_eq!(value["schema_version"], "0.11");
     assert_eq!(value["config_files"].as_array().unwrap().len(), 2);
 
     // The project file wins for model and is named as the source...
@@ -14923,7 +14923,7 @@ fn history_watch_streams_stdout_observed_event_at_the_current_version() {
     // Event lines are written by the current writer and read live, so they
     // always declare the current version (unlike a run record, whose version is
     // the oldest reader that can understand the fields it carries).
-    assert_eq!(envelope["line"]["schema_version"], "1.8");
+    assert_eq!(envelope["line"]["schema_version"], "1.9");
     assert_eq!(
         envelope["line"]["event"]["timing_source"],
         "stdout_observed"
@@ -18066,6 +18066,168 @@ fn fallback_falls_through_a_codex_usage_limit_to_the_alternate_account() {
         assert_eq!(value["results"][1]["status"], "ok", "exit {exit}");
         assert_eq!(value["results"][1]["text"], "served-by-alternate");
     }
+}
+
+#[test]
+fn codex_server_overloaded_recovers_on_the_same_candidate_retry() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-recovers");
+    let overloaded = serde_json::to_string(
+        r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#,
+    )
+    .unwrap();
+    let recovered = serde_json::to_string(
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"recovered"}}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        run_mode = "fallback"
+        server_overloaded_max_retries = 2
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT_1 = {overloaded}, MOCK_STDOUT_2 = {recovered} }}
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-recovers", &project, "");
+    let bin = format!("codex={mock}");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--stream",
+            "--bin",
+            &bin,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let terminal = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .next_back()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(terminal).unwrap();
+    let value = &envelope["report"];
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["results"][0]["text"], "recovered");
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
+}
+
+#[test]
+fn codex_server_overloaded_falls_through_after_configured_retries() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-exhausted");
+    let overloaded = serde_json::to_string(
+        r#"{"type":"turn.failed","error":{"input_error_code":"server_overloaded"}}"#,
+    )
+    .unwrap();
+    let alternate =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"alternate"}}"#;
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT = {overloaded} }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = '{alternate}' }}
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-exhausted", &project, "");
+    let bin = format!("codex={mock}");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--server-overloaded-max-retries",
+            "1",
+            "--bin",
+            &bin,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["reason"],
+        "server-overloaded"
+    );
+    assert_eq!(value["fallback"]["ran"], "codex:alternate");
+    // The variant inherits the base counter: two primary attempts plus the one
+    // successful alternate invocation.
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
+}
+
+#[test]
+fn codex_server_overloaded_zero_retries_ends_classified_without_rerun() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-zero");
+    let overloaded = serde_json::to_string(
+        r#"{"type":"turn.failed","error":{"codexErrorInfo":"serverOverloaded"}}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        run_mode = "fallback"
+        [harness.codex]
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT = {overloaded} }}
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-zero", &project, "");
+    let bin = format!("codex={mock}");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--server-overloaded-max-retries",
+            "0",
+            "--bin",
+            &bin,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["reason"],
+        "server-overloaded"
+    );
+    assert!(value["fallback"]["ran"].is_null());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
 }
 
 /// The same chain, refused over the **app-server** protocol a `--control` turn
@@ -22022,7 +22184,7 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
     let output = child.wait_with_output().expect("run did not finish");
     assert!(output.status.success(), "{output:?}");
     let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
-    assert_eq!(report["schema_version"], "0.10");
+    assert_eq!(report["schema_version"], "0.11");
     assert_eq!(report["control"]["mechanism"], "claude-control-request");
     assert_eq!(report["control"]["socket"], socket.display().to_string());
     let interrupts = report["control"]["interrupts"].as_array().unwrap();
@@ -24761,7 +24923,7 @@ fn a_controlled_codex_turn_is_refused_when_the_server_would_run_another_model() 
     assert_eq!(record["failure_kind"], "model_mismatch");
     assert_eq!(record["model"], "gpt-5.6-sol");
     assert_eq!(record["observed_model"], "gpt-6-astra");
-    assert_eq!(record["schema_version"], "1.8");
+    assert_eq!(record["schema_version"], "1.9");
     assert!(record.get("work").is_none(), "{record}");
 }
 

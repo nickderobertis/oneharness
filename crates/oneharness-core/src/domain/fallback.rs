@@ -145,6 +145,8 @@ pub enum FallThroughReason {
     ModelNotFound,
     /// This candidate is rate limited and cannot serve the request right now.
     RateLimit,
+    /// Codex serving capacity remained exhausted after local retries.
+    ServerOverloaded,
 }
 
 impl FallThroughReason {
@@ -163,6 +165,7 @@ impl FallThroughReason {
             FallThroughReason::ModelMismatch => "model-mismatch",
             FallThroughReason::ModelNotFound => "model-not-found",
             FallThroughReason::RateLimit => "rate-limit",
+            FallThroughReason::ServerOverloaded => "server-overloaded",
         }
     }
 }
@@ -282,6 +285,9 @@ pub fn startup_failure_reason(
             Some(FallThroughReason::Quota)
         }
         (Status::Nonzero, Some(FailureKind::RateLimit)) => Some(FallThroughReason::RateLimit),
+        (Status::Nonzero | Status::Ok, Some(FailureKind::ServerOverloaded)) => {
+            Some(FallThroughReason::ServerOverloaded)
+        }
         (Status::Nonzero, Some(FailureKind::SessionNotFound)) => {
             Some(FallThroughReason::SessionNotFound)
         }

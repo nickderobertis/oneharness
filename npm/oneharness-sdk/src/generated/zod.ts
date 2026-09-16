@@ -172,6 +172,9 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
   schema_file: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   schema_max_retries: z.lazy(() => Field7Schema).refine((value) => value !== undefined, { message: "Required" }),
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  server_overloaded_max_retries: z
+    .lazy(() => Field7Schema)
+    .refine((value) => value !== undefined, { message: "Required" }),
   stream: z.lazy(() => FieldSchema).refine((value) => value !== undefined, { message: "Required" }),
   system: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   timeout: z.lazy(() => Field5Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -295,6 +298,7 @@ export const FailureKindSchema: z.ZodType<FailureKind> = z.union([
   z.literal("untrusted_directory"),
   z.literal("input_too_large"),
   z.literal("model_mismatch"),
+  z.literal("server_overloaded"),
 ]);
 
 export const FallThroughSchema: z.ZodType<FallThrough> = z.looseObject({
@@ -314,6 +318,7 @@ export const FallThroughReasonSchema: z.ZodType<FallThroughReason> = z.union([
   z.literal("model-mismatch"),
   z.literal("model-not-found"),
   z.literal("rate-limit"),
+  z.literal("server-overloaded"),
 ]);
 
 export const FallbackReportSchema: z.ZodType<FallbackReport> = z.looseObject({
@@ -504,6 +509,7 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.union([
         z.literal("1.6"),
         z.literal("1.7"),
         z.literal("1.8"),
+        z.literal("1.9"),
       ])
       .refine((value) => value !== undefined, { message: "Required" }),
     variant: z.union([z.string(), z.null()]).optional(),
@@ -574,6 +580,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
           z.literal("1.6"),
           z.literal("1.7"),
           z.literal("1.8"),
+          z.literal("1.9"),
         ])
         .refine((value) => value !== undefined, { message: "Required" }),
       type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
@@ -670,6 +677,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -759,6 +767,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -850,6 +859,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -925,6 +935,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1006,6 +1017,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1092,6 +1104,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .refine((value) => value !== undefined, { message: "Required" }),
                 session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1130,6 +1143,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                       z.literal("1.6"),
                       z.literal("1.7"),
                       z.literal("1.8"),
+                      z.literal("1.9"),
                     ])
                     .optional(),
                 }),
@@ -1159,7 +1173,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
               work: z.null().optional(),
             }),
             z.looseObject({
-              schema_version: z.union([z.literal("1.7"), z.literal("1.8")]).optional(),
+              schema_version: z.union([z.literal("1.7"), z.literal("1.8"), z.literal("1.9")]).optional(),
               status: z.union([z.literal("nonzero"), z.literal("timeout"), z.literal("cancelled")]).optional(),
               work: z
                 .union([z.literal("done"), z.literal("none")])
@@ -1173,7 +1187,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
           }),
           z.looseObject({
             observed_model: z.string().refine((value) => value !== undefined, { message: "Required" }),
-            schema_version: z.literal("1.8").optional(),
+            schema_version: z.union([z.literal("1.8"), z.literal("1.9")]).optional(),
           }),
         ]),
       ),
@@ -1192,35 +1206,67 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
         }),
         z.looseObject({
           schema_version: z
-            .union([z.literal("1.4"), z.literal("1.5"), z.literal("1.6"), z.literal("1.7"), z.literal("1.8")])
+            .union([
+              z.literal("1.4"),
+              z.literal("1.5"),
+              z.literal("1.6"),
+              z.literal("1.7"),
+              z.literal("1.8"),
+              z.literal("1.9"),
+            ])
             .optional(),
         }),
       ]),
     ),
     z.intersection(
       z.intersection(
-        z.union([
-          z.looseObject({
-            failure_kind: z
-              .union([
-                z.literal("auth"),
-                z.literal("rate_limit"),
-                z.literal("model_not_found"),
-                z.literal("quota"),
-                z.literal("tool_deferred"),
-                z.literal("untrusted_directory"),
-                z.literal("input_too_large"),
-                z.literal("model_mismatch"),
-                z.literal(null),
-              ])
-              .optional(),
-          }),
-          z.looseObject({
-            schema_version: z
-              .union([z.literal("1.5"), z.literal("1.6"), z.literal("1.7"), z.literal("1.8")])
-              .optional(),
-          }),
-        ]),
+        z.intersection(
+          z.union([
+            z.looseObject({
+              failure_kind: z
+                .union([
+                  z.literal("auth"),
+                  z.literal("rate_limit"),
+                  z.literal("model_not_found"),
+                  z.literal("quota"),
+                  z.literal("tool_deferred"),
+                  z.literal("untrusted_directory"),
+                  z.literal("input_too_large"),
+                  z.literal("model_mismatch"),
+                  z.literal("server_overloaded"),
+                  z.literal(null),
+                ])
+                .optional(),
+            }),
+            z.looseObject({
+              schema_version: z
+                .union([z.literal("1.5"), z.literal("1.6"), z.literal("1.7"), z.literal("1.8"), z.literal("1.9")])
+                .optional(),
+            }),
+          ]),
+          z.union([
+            z.looseObject({
+              failure_kind: z
+                .union([
+                  z.literal("auth"),
+                  z.literal("rate_limit"),
+                  z.literal("model_not_found"),
+                  z.literal("quota"),
+                  z.literal("session_not_found"),
+                  z.literal("tool_deferred"),
+                  z.literal("model_mismatch"),
+                  z.literal("server_overloaded"),
+                  z.literal(null),
+                ])
+                .optional(),
+            }),
+            z.looseObject({
+              schema_version: z
+                .union([z.literal("1.6"), z.literal("1.7"), z.literal("1.8"), z.literal("1.9")])
+                .optional(),
+            }),
+          ]),
+        ),
         z.union([
           z.looseObject({
             failure_kind: z
@@ -1231,13 +1277,15 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
                 z.literal("quota"),
                 z.literal("session_not_found"),
                 z.literal("tool_deferred"),
-                z.literal("model_mismatch"),
+                z.literal("untrusted_directory"),
+                z.literal("input_too_large"),
+                z.literal("server_overloaded"),
                 z.literal(null),
               ])
               .optional(),
           }),
           z.looseObject({
-            schema_version: z.union([z.literal("1.6"), z.literal("1.7"), z.literal("1.8")]).optional(),
+            schema_version: z.union([z.literal("1.8"), z.literal("1.9")]).optional(),
           }),
         ]),
       ),
@@ -1253,12 +1301,13 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
               z.literal("tool_deferred"),
               z.literal("untrusted_directory"),
               z.literal("input_too_large"),
+              z.literal("model_mismatch"),
               z.literal(null),
             ])
             .optional(),
         }),
         z.looseObject({
-          schema_version: z.literal("1.8").optional(),
+          schema_version: z.literal("1.9").optional(),
         }),
       ]),
     ),
@@ -1462,6 +1511,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.6"),
                   z.literal("1.7"),
                   z.literal("1.8"),
+                  z.literal("1.9"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1734,6 +1784,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.6"),
                   z.literal("1.7"),
                   z.literal("1.8"),
+                  z.literal("1.9"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1815,6 +1866,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.6"),
                   z.literal("1.7"),
                   z.literal("1.8"),
+                  z.literal("1.9"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1890,6 +1942,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.6"),
                   z.literal("1.7"),
                   z.literal("1.8"),
+                  z.literal("1.9"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -1973,6 +2026,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                   z.literal("1.6"),
                   z.literal("1.7"),
                   z.literal("1.8"),
+                  z.literal("1.9"),
                 ])
                 .refine((value) => value !== undefined, { message: "Required" }),
               session: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2286,6 +2340,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                     z.literal("1.6"),
                     z.literal("1.7"),
                     z.literal("1.8"),
+                    z.literal("1.9"),
                   ])
                   .optional(),
               }),
@@ -2315,7 +2370,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
             work: z.null().optional(),
           }),
           z.looseObject({
-            schema_version: z.union([z.literal("1.7"), z.literal("1.8")]).optional(),
+            schema_version: z.union([z.literal("1.7"), z.literal("1.8"), z.literal("1.9")]).optional(),
             status: z.union([z.literal("nonzero"), z.literal("timeout"), z.literal("cancelled")]).optional(),
             work: z
               .union([z.literal("done"), z.literal("none")])
@@ -2329,7 +2384,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
         }),
         z.looseObject({
           observed_model: z.string().refine((value) => value !== undefined, { message: "Required" }),
-          schema_version: z.literal("1.8").optional(),
+          schema_version: z.union([z.literal("1.8"), z.literal("1.9")]).optional(),
         }),
       ]),
     ),
@@ -2348,33 +2403,67 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
       }),
       z.looseObject({
         schema_version: z
-          .union([z.literal("1.4"), z.literal("1.5"), z.literal("1.6"), z.literal("1.7"), z.literal("1.8")])
+          .union([
+            z.literal("1.4"),
+            z.literal("1.5"),
+            z.literal("1.6"),
+            z.literal("1.7"),
+            z.literal("1.8"),
+            z.literal("1.9"),
+          ])
           .optional(),
       }),
     ]),
   ),
   z.intersection(
     z.intersection(
-      z.union([
-        z.looseObject({
-          failure_kind: z
-            .union([
-              z.literal("auth"),
-              z.literal("rate_limit"),
-              z.literal("model_not_found"),
-              z.literal("quota"),
-              z.literal("tool_deferred"),
-              z.literal("untrusted_directory"),
-              z.literal("input_too_large"),
-              z.literal("model_mismatch"),
-              z.literal(null),
-            ])
-            .optional(),
-        }),
-        z.looseObject({
-          schema_version: z.union([z.literal("1.5"), z.literal("1.6"), z.literal("1.7"), z.literal("1.8")]).optional(),
-        }),
-      ]),
+      z.intersection(
+        z.union([
+          z.looseObject({
+            failure_kind: z
+              .union([
+                z.literal("auth"),
+                z.literal("rate_limit"),
+                z.literal("model_not_found"),
+                z.literal("quota"),
+                z.literal("tool_deferred"),
+                z.literal("untrusted_directory"),
+                z.literal("input_too_large"),
+                z.literal("model_mismatch"),
+                z.literal("server_overloaded"),
+                z.literal(null),
+              ])
+              .optional(),
+          }),
+          z.looseObject({
+            schema_version: z
+              .union([z.literal("1.5"), z.literal("1.6"), z.literal("1.7"), z.literal("1.8"), z.literal("1.9")])
+              .optional(),
+          }),
+        ]),
+        z.union([
+          z.looseObject({
+            failure_kind: z
+              .union([
+                z.literal("auth"),
+                z.literal("rate_limit"),
+                z.literal("model_not_found"),
+                z.literal("quota"),
+                z.literal("session_not_found"),
+                z.literal("tool_deferred"),
+                z.literal("model_mismatch"),
+                z.literal("server_overloaded"),
+                z.literal(null),
+              ])
+              .optional(),
+          }),
+          z.looseObject({
+            schema_version: z
+              .union([z.literal("1.6"), z.literal("1.7"), z.literal("1.8"), z.literal("1.9")])
+              .optional(),
+          }),
+        ]),
+      ),
       z.union([
         z.looseObject({
           failure_kind: z
@@ -2385,13 +2474,15 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
               z.literal("quota"),
               z.literal("session_not_found"),
               z.literal("tool_deferred"),
-              z.literal("model_mismatch"),
+              z.literal("untrusted_directory"),
+              z.literal("input_too_large"),
+              z.literal("server_overloaded"),
               z.literal(null),
             ])
             .optional(),
         }),
         z.looseObject({
-          schema_version: z.union([z.literal("1.6"), z.literal("1.7"), z.literal("1.8")]).optional(),
+          schema_version: z.union([z.literal("1.8"), z.literal("1.9")]).optional(),
         }),
       ]),
     ),
@@ -2407,12 +2498,13 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
             z.literal("tool_deferred"),
             z.literal("untrusted_directory"),
             z.literal("input_too_large"),
+            z.literal("model_mismatch"),
             z.literal(null),
           ])
           .optional(),
       }),
       z.looseObject({
-        schema_version: z.literal("1.8").optional(),
+        schema_version: z.literal("1.9").optional(),
       }),
     ]),
   ),
@@ -2634,6 +2726,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   runMode: z.lazy(() => RunModeSchema).optional(),
   schema: z.string().optional(),
   schemaMaxRetries: z.int().gte(0).optional(),
+  serverOverloadedMaxRetries: z.int().gte(0).optional(),
   session: z.string().optional(),
   sessionDir: z.string().optional(),
   spyFile: z.string().optional(),

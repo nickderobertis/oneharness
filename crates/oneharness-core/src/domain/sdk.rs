@@ -335,6 +335,10 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u32")]
     pub schema_max_retries: Option<u32>,
+    /// Max retries for a zero-work Codex server-overloaded refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u32")]
+    pub server_overloaded_max_retries: Option<u32>,
     /// Write each harness's raw stdout/stderr under this directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
@@ -946,6 +950,7 @@ mod tests {
             spy_file: None,
             schema: None,
             schema_max_retries: None,
+            server_overloaded_max_retries: None,
             output_dir: None,
             permit_prompts: None,
             config: None,

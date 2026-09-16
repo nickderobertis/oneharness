@@ -134,6 +134,7 @@ impl From<&RunArgs> for RunRequest {
             spy_file: args.spy_file.clone(),
             schema: args.schema.clone(),
             schema_max_retries: args.schema_max_retries,
+            server_overloaded_max_retries: args.server_overloaded_max_retries,
             output_dir: args.output_dir.clone(),
             timeout: args.timeout,
             cwd: args.cwd.clone(),

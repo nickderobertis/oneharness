@@ -90,7 +90,7 @@ pub struct UsageReading {
 /// harness's output. It is the single source for the `failure_kind` contract
 /// value: serialized as the snake_case token a consumer reads in the report
 /// (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
-/// `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+/// `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
 /// keeps a misspelled or invalid kind unrepresentable and gives every
 /// producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
 /// the report, history) one definition to share instead of scattered string
@@ -140,6 +140,10 @@ pub enum FailureKind {
     /// The third precondition refusal: no work was done, no token was spent, and
     /// the next identity may honour the model.
     ModelMismatch,
+    /// Codex's provider could not accept the turn because serving capacity was
+    /// exhausted. No work was performed, so retrying this identity briefly and
+    /// then trying a fallback identity is safe.
+    ServerOverloaded,
 }
 
 impl FailureKind {
@@ -148,7 +152,7 @@ impl FailureKind {
     /// against the enum's own generated schema (`sdk_schema`), so a kind added
     /// without being listed here fails the gate rather than shipping an SDK that
     /// accepts it at a version whose reader refuses it.
-    pub const ALL: [FailureKind; 9] = [
+    pub const ALL: [FailureKind; 10] = [
         FailureKind::Auth,
         FailureKind::RateLimit,
         FailureKind::ModelNotFound,
@@ -158,6 +162,7 @@ impl FailureKind {
         FailureKind::UntrustedDirectory,
         FailureKind::InputTooLarge,
         FailureKind::ModelMismatch,
+        FailureKind::ServerOverloaded,
     ];
 
     /// Whether this kind asserts the harness or its provider **refused to run
@@ -188,7 +193,8 @@ impl FailureKind {
             | FailureKind::SessionNotFound
             | FailureKind::UntrustedDirectory
             | FailureKind::InputTooLarge
-            | FailureKind::ModelMismatch => true,
+            | FailureKind::ModelMismatch
+            | FailureKind::ServerOverloaded => true,
             FailureKind::ToolDeferred => false,
         }
     }
@@ -206,6 +212,7 @@ impl FailureKind {
             FailureKind::UntrustedDirectory => "untrusted_directory",
             FailureKind::InputTooLarge => "input_too_large",
             FailureKind::ModelMismatch => "model_mismatch",
+            FailureKind::ServerOverloaded => "server_overloaded",
         }
     }
 }
@@ -830,13 +837,10 @@ fn is_provider_failure_envelope(value: &Value) -> bool {
         || value.get("api_error_status").is_some_and(Value::is_number)
 }
 
-/// Codex reports an exhausted account inside its stdout stream — never on
-/// stderr — and the process can still exit zero. Only an error the harness
-/// itself attached to a turn that will not complete is read, and only when it
-/// carries the usage-limit signature: classifying an ordinary failed turn here
-/// would let a fallback chain silently re-run the task on another account. The
-/// turn started but did no work, so the rejection is a provisioning failure like
-/// `auth`.
+/// Codex reports usage exhaustion and serving overload inside its stdout stream
+/// — never on stderr — and the process can still exit zero. Only an error the
+/// harness attached to a terminal turn is read, and only when it carries one of
+/// those machine-readable signatures; ordinary failed turns stay unclassified.
 ///
 /// Both transports are read because the *run* picks one, not the caller: an
 /// ordinary dispatch gets `codex exec`'s event stream, a `--control` dispatch
@@ -844,7 +848,21 @@ fn is_provider_failure_envelope(value: &Value) -> bool {
 fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
     (dialect == FailureDialect::Codex).then_some(())?;
     let error = codex_exec_turn_error(value).or_else(|| codex_app_server_turn_error(value))?;
-    codex_usage_limit_error(error).then_some(FailureKind::Quota)
+    if codex_server_overloaded_error(error) {
+        Some(FailureKind::ServerOverloaded)
+    } else {
+        codex_usage_limit_error(error).then_some(FailureKind::Quota)
+    }
+}
+
+/// Whether a Codex terminal error carries its stable overload code. Both field
+/// spellings are emitted by supported Codex surfaces: app-server uses camel
+/// case while rollout/exec captures expose snake case.
+fn codex_server_overloaded_error(error: &Value) -> bool {
+    ["codexErrorInfo", "codex_error_info", "input_error_code"]
+        .iter()
+        .filter_map(|key| error.get(key).and_then(Value::as_str))
+        .any(|code| matches!(code, "serverOverloaded" | "server_overloaded"))
 }
 
 /// The error object `codex exec` attaches to its `turn.failed` stream event.
@@ -1935,6 +1953,19 @@ mod tests {
                 .kind,
             FailureKind::Quota
         );
+    }
+
+    #[test]
+    fn codex_server_overloaded_codes_classify_on_exec_and_app_server_surfaces() {
+        for stdout in [
+            r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#,
+            r#"{"type":"turn.failed","error":{"input_error_code":"server_overloaded"}}"#,
+            r#"{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"codexErrorInfo":"serverOverloaded"}}}}"#,
+        ] {
+            let got = detect_harness_provider_failure(FailureDialect::Codex, stdout)
+                .unwrap_or_else(|| panic!("unclassified overload: {stdout}"));
+            assert_eq!(got.kind, FailureKind::ServerOverloaded, "{stdout}");
+        }
     }
 
     #[test]

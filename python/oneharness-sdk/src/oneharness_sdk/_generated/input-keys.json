@@ -114,6 +114,7 @@
     "run_mode": "runMode",
     "schema": "schema",
     "schema_max_retries": "schemaMaxRetries",
+    "server_overloaded_max_retries": "serverOverloadedMaxRetries",
     "session": "session",
     "session_dir": "sessionDir",
     "spy_file": "spyFile",

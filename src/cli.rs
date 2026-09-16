@@ -717,7 +717,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "N")]
     pub schema_max_retries: Option<u32>,
 
-    /// Max retries after Codex reports server_overloaded with no work (default
+    /// Max retries after Codex reports `server_overloaded` with no work (default
     /// 2). Each retry waits with bounded exponential backoff; 0 disables retry.
     #[arg(long, value_name = "N")]
     pub server_overloaded_max_retries: Option<u32>,

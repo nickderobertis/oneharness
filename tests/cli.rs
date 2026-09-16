@@ -17007,66 +17007,148 @@ fn fallback_falls_through_a_clean_exit_provider_quota_error() {
 }
 
 /// The capture from issue #1290, driven through the real binary: an empty
-/// Claude config directory answers `Not logged in · Please run /login` in a
-/// zero-token terminal record. Nothing in that sentence is in the generic
-/// failure vocabulary, so the reading fell to whatever else the same failed run
-/// said — the record's own `"duration_ms":429`, read by the coarse `429` needle
-/// as a rate limit, plus a warning line on stderr saying the same thing. An
+/// Claude config directory answers `Not logged in · Please run /login`. Nothing
+/// in that sentence is in the generic failure vocabulary, so the reading fell to
+/// whatever else the same failed run said — in the terminal record its own
+/// `"duration_ms":429`, read by the coarse `429` needle as a rate limit, and on
+/// the bare-text surface a warning line on stderr saying the same thing. An
 /// operator was then sent to wait out a limit that does not exist, and the
 /// chain's own account of why it moved on said `rate-limit`.
+///
+/// Every surface a run reads the refusal off is driven here, because each is a
+/// separate scan: the structured record, the sentence printed on either stream,
+/// and the `/login` instruction alone (the half that classifies on its own).
 #[test]
 fn fallback_falls_through_a_claude_login_refusal_as_auth() {
     let mock = mock_bin().display().to_string();
-    let capture =
-        serde_json::to_string(include_str!("fixtures/claude-not-logged-in.jsonl").trim()).unwrap();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    let line = include_str!("fixtures/claude-not-logged-in.txt").trim();
+    // Unrelated rate-limit vocabulary in the same failed run, on whichever
+    // stream is not carrying the refusal — or beside it, when the refusal is the
+    // one bare line the harness printed.
+    let warning = "Warning: this account is approaching its rate limit.";
+    let captures = [
+        (
+            "record",
+            include_str!("fixtures/claude-not-logged-in.jsonl")
+                .trim()
+                .to_string(),
+            warning.to_string(),
+        ),
+        ("text-stderr", String::new(), format!("{warning}\n{line}")),
+        ("text-stdout", line.to_string(), warning.to_string()),
+        // The instruction half on its own: a reworded first half must not
+        // strand the sentence that names the remedy.
+        (
+            "login-instruction",
+            String::new(),
+            format!("{warning}\nError: please run /login to authenticate this workspace."),
+        ),
+    ];
+
+    for (tag, out, err) in captures {
+        let out = serde_json::to_string(&out).unwrap();
+        let err = serde_json::to_string(&err).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["claude-code", "codex"]
+            run_mode = "fallback"
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {out}, MOCK_STDERR = {err} }}
+
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_STDOUT = '{alternate}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("fallback-claude-login-{tag}"), &project, "");
+        let output = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &fx.cwd(),
+                // The stream-json transcript the record was captured from, so
+                // that reading is taken off the format a real run emits.
+                "--events",
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(
+            output.status.success(),
+            "{tag}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        // The refused candidate is reported as unauthenticated, and the chain
+        // says the same: an operator reading either is sent to authenticate.
+        assert_eq!(value["results"][0]["harness"], "claude-code", "{tag}");
+        assert_eq!(value["results"][0]["status"], "nonzero", "{tag}");
+        assert_eq!(value["results"][0]["failure_kind"], "auth", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"][0]["reason"], "auth",
+            "{tag}"
+        );
+        // ...and the next identity did the task.
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(value["results"][1]["text"], "served-by-codex", "{tag}");
+    }
+}
+
+/// The refusal is Claude Code's own sentence, read for Claude Code only. Another
+/// harness printing the same words is classified exactly as it was before
+/// #1290 — unclassified, so the chain stops at it as the real failure it is
+/// rather than routing around a harness that is perfectly well authenticated.
+#[test]
+fn another_harnesss_login_wording_is_not_read_as_a_claude_refusal() {
+    let mock = mock_bin().display().to_string();
+    let line =
+        serde_json::to_string(include_str!("fixtures/claude-not-logged-in.txt").trim()).unwrap();
     let project = format!(
         r#"
-        harnesses = ["claude-code", "codex"]
+        harnesses = ["codex", "claude-code"]
         run_mode = "fallback"
-
-        [harness.claude-code]
-        bin = '{mock}'
-        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {capture}, MOCK_STDERR = "Warning: this account is approaching its rate limit." }}
 
         [harness.codex]
         bin = '{mock}'
-        env = {{ MOCK_STDOUT = '{alternate}' }}
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = {line} }}
+
+        [harness.claude-code]
+        bin = '{mock}'
         "#
     );
-    let fx = ConfigFixture::new("fallback-claude-not-logged-in", &project, "");
+    let fx = ConfigFixture::new("fallback-foreign-login-wording", &project, "");
     let output = run_with_config(
-        &[
-            "run",
-            "--prompt",
-            "hi",
-            "--cwd",
-            &fx.cwd(),
-            // The stream-json transcript the refusal was captured from, so the
-            // reading is taken off the format a real controlled run emits.
-            "--events",
-            "--compact",
-        ],
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
         &[],
         &fx.user_config(),
     );
-    assert!(
-        output.status.success(),
-        "exit {:?}, stderr {}",
+    assert_eq!(
         output.status.code(),
+        Some(1),
+        "an unclassified failure fails the run: stderr {}",
         String::from_utf8_lossy(&output.stderr)
     );
     let value = json_stdout(&output);
-    // The refused candidate is reported as unauthenticated, and the chain says
-    // the same: an operator reading either one is sent to authenticate.
-    assert_eq!(value["results"][0]["harness"], "claude-code");
-    assert_eq!(value["results"][0]["status"], "nonzero");
-    assert_eq!(value["results"][0]["failure_kind"], "auth");
-    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
-    // ...and the next identity did the task.
+    assert_eq!(value["results"][0]["harness"], "codex");
+    assert!(
+        value["results"][0]["failure_kind"].is_null(),
+        "another harness's wording must not classify: {}",
+        value["results"][0]["failure_kind"]
+    );
     assert_eq!(value["fallback"]["ran"], "codex");
-    assert_eq!(value["results"][1]["text"], "served-by-codex");
+    assert_eq!(
+        value["fallback"]["fell_through"].as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
 }
 
 /// The bound on the reading above: an agent that merely *wrote* the sentence

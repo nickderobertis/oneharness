@@ -665,26 +665,17 @@ fn harness_quota_failure(
 /// that does not exist instead of authenticating the config directory the run
 /// named (issue #1290).
 ///
-/// Both rules [`harness_quota_failure`] encodes hold here, for the same
-/// reasons. **Order**: this is the more specific reading of the same bytes, so
-/// every caller consults it before the generic vocabulary. **Work done, not
-/// error text**: `auth` is a fall-through kind, and that is only true of a
-/// candidate that never ran. A harness that spent tokens was logged in, so the
-/// same sentence in a transcript reporting billed work is one the agent
-/// *wrote* rather than one it received — the generic vocabulary gets its turn
-/// there, and the chain stops as it did before. That gate is deliberately
-/// narrower than the fall-through bound it doubles ([`RunWork`][rw] already
-/// stops a candidate with work evidence handing its task on); it keeps the
-/// *classification* honest for every consumer that never reads the fallback
-/// block.
+/// Both of [`harness_quota_failure`]'s rules hold here unchanged: checked
+/// before the generic vocabulary, and only of a run whose own accounting
+/// reports no work. What the second one means for *this* refusal is that a
+/// harness which spent tokens was logged in, so the sentence is one its agent
+/// wrote rather than one it received.
 ///
 /// Scope: the Claude dialect only, rather than dialect-agnostic like
 /// [`unknown_session_rejection`]. That list holds phrases a CLI can only be
 /// saying about itself; `not logged in` is ordinary English about any service
 /// an agent might touch, so leaving it unscoped would let another harness's
 /// unrelated text read as a login refusal.
-///
-/// [rw]: crate::domain::fallback::RunWork
 fn harness_auth_refusal(
     dialect: FailureDialect,
     text: &str,
@@ -1478,14 +1469,19 @@ mod tests {
         assert_eq!(got.source, "stdout");
 
         // ...and the bare-line surface, where there is no record to read at all.
-        let bare = classify_harness_failure(
-            FailureDialect::ClaudeCode,
-            "",
-            "Not logged in · Please run /login",
-        )
-        .expect("the bare refusal classifies too");
+        let line = include_str!("../../../../tests/fixtures/claude-not-logged-in.txt");
+        let bare = classify_harness_failure(FailureDialect::ClaudeCode, "", line)
+            .expect("the bare refusal classifies too");
         assert_eq!(bare.kind, FailureKind::Auth);
         assert_eq!(bare.source, "stderr");
+
+        // Either half of the sentence classifies on its own, so a reworded half
+        // does not strand the other.
+        for half in ["Not logged in.", "Error: please run /login to continue."] {
+            let got = classify_harness_failure(FailureDialect::ClaudeCode, "", half)
+                .unwrap_or_else(|| panic!("unclassified: {half}"));
+            assert_eq!(got.kind, FailureKind::Auth, "{half}");
+        }
     }
 
     #[test]

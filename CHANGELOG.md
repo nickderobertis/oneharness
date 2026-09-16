@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.12.2](https://github.com/nickderobertis/oneharness/compare/v0.12.1...v0.12.2) - 2026-09-16
+
+### Fixed
+
+- *(signals)* classify Claude's login refusal as an auth failure ([#1293](https://github.com/nickderobertis/oneharness/pull/1293))
+
 ## [0.12.1](https://github.com/nickderobertis/oneharness/compare/v0.12.0...v0.12.1) - 2026-09-11
 
 ### Fixed

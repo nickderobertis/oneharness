@@ -1193,7 +1193,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         stream: pick(layers, |c| c.stream).or_default(false),
         schema_file: pick(layers, |c| c.schema_file.clone()),
         schema_max_retries: pick(layers, |c| c.schema_max_retries),
-        server_overloaded_max_retries: pick(layers, |c| c.server_overloaded_max_retries),
+        server_overloaded_max_retries: pick(layers, |c| c.server_overloaded_max_retries)
+            .or_default(SERVER_OVERLOADED_MAX_RETRIES_DEFAULT),
         max_parallel: pick(layers, |c| c.max_parallel),
         run_mode: pick(layers, |c| c.run_mode),
         require_available: pick(layers, |c| c.require_available).or_default(false),

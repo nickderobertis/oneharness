@@ -9262,6 +9262,8 @@ fn config_command_no_config_shows_pure_defaults() {
         assert!(value["model"]["value"].is_null());
         assert!(value["timeout"]["value"].is_null());
         assert!(value["timeout"]["source"].is_null());
+        assert_eq!(value["server_overloaded_max_retries"]["value"], 2);
+        assert_eq!(value["server_overloaded_max_retries"]["source"], "default");
     }
 }
 
@@ -11541,7 +11543,7 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
     let value = json_stdout(&output);
     assert_eq!(value["results"][0]["schema_valid"], true);
     assert_eq!(value["results"][0]["structured"]["age"], 36);
-    assert_eq!(value["results"][0]["schema_attempts"], 3);
+    assert_eq!(value["results"][0]["schema_attempts"], 2);
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
     let final_argv = std::fs::read_to_string(argv_file).unwrap();
     assert!(

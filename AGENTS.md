@@ -993,7 +993,7 @@ shape. When you add one:
   to a candidate the chain then discards. So a fall-through is decided by
   `fallback::RunWork` first — a candidate whose result carries a tool call or
   billed usage (`signals::Usage::reports_billed_work`, the one definition
-  `record_reports_work` also classifies a raw record with) ran the task and never
+  `record_work_evidence` also reads a raw record with) ran the task and never
   falls through, whatever its terminal record then says.
   Both drivers read that evidence from the same normalized result, so **streamed
   and buffered chains always select the same candidate**; there is no

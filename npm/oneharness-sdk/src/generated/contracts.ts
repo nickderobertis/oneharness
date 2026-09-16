@@ -153,8 +153,9 @@ export type ExecutionTelemetry =
  *
  * - **Tool events.** A recorded tool call is the harness acting on the task.
  * - **Usage accounting.** [`Usage::reports_billed_work`][billed] — the same definition
- *   `signals::record_reports_work` classifies a raw harness record with, so the
- *   two readings of "billed" are one contract with one implementation.
+ *   `signals::record_work_evidence` reads a raw harness record with, and it answers
+ *   in this same type, so the two readings of "billed" are one contract with one
+ *   implementation.
  *
  * It is also a **published reading**, not only an internal one: a run that
  * failed with nothing to classify carries it as [`RunResult::work`] and in its

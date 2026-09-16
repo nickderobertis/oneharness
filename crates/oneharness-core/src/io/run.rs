@@ -3537,7 +3537,7 @@ fn run_in_waves(
                 spawn,
                 |k, _attempt, capture| {
                     let overload_attempt = overload_attempts[k].load(Ordering::Relaxed) + 1;
-                    if let Some(next) = server_overloaded_retry_decision(
+                    if let Some(next) = server_overloaded_retry_after_backoff(
                         &job_plans[wave[k]],
                         overload_attempt,
                         retry_limits.server_overloaded,
@@ -3567,7 +3567,7 @@ fn run_in_waves(
                 spawn,
                 |k, _attempt, capture| {
                     let overload_attempt = overload_attempts[k].load(Ordering::Relaxed) + 1;
-                    server_overloaded_retry_decision(
+                    server_overloaded_retry_after_backoff(
                         &job_plans[wave[k]],
                         overload_attempt,
                         retry_limits.server_overloaded,
@@ -3752,7 +3752,7 @@ fn run_one_job(
     let schema_attempts = AtomicU32::new(0);
     let outs = runner::run_jobs_supervised(jobs, 1, spawn, |_, _attempt, capture| {
         let overload_attempt = overload_attempts.load(Ordering::Relaxed) + 1;
-        if let Some(next) = server_overloaded_retry_decision(
+        if let Some(next) = server_overloaded_retry_after_backoff(
             plan,
             overload_attempt,
             retry_limits.server_overloaded,
@@ -4522,7 +4522,7 @@ const SERVER_OVERLOADED_BACKOFF_INITIAL: Duration =
 const SERVER_OVERLOADED_BACKOFF_MAX: Duration =
     Duration::from_millis(SERVER_OVERLOADED_BACKOFF_MAX_MS);
 
-fn server_overloaded_retry_decision(
+fn server_overloaded_retry_after_backoff(
     plan: &HarnessPlan,
     attempt: u32,
     max_retries: u32,

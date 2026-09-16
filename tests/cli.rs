@@ -18239,7 +18239,7 @@ fn codex_server_overloaded_falls_through_after_configured_retries() {
 }
 
 #[test]
-fn codex_server_overloaded_recovers_in_parallel_mode() {
+fn codex_nonzero_server_overloaded_recovers_in_parallel_mode() {
     let mock = mock_bin().display().to_string();
     let counter = temp_counter("server-overloaded-parallel");
     let overloaded = serde_json::to_string(
@@ -18256,7 +18256,7 @@ fn codex_server_overloaded_recovers_in_parallel_mode() {
         server_overloaded_max_retries = 1
         [harness.codex]
         bin = '{mock}'
-        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT_1 = {overloaded}, MOCK_STDOUT_2 = {recovered} }}
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_EXIT_1 = "1", MOCK_EXIT_2 = "0", MOCK_STDOUT_1 = {overloaded}, MOCK_STDOUT_2 = {recovered} }}
         "#
     );
     let fx = ConfigFixture::new("server-overloaded-parallel", &project, "");

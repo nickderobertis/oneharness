@@ -1260,11 +1260,11 @@ pub fn run_supervised(
         );
         (results, None)
     } else if let Some(chain) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
-        // One turn, one capture: `--schema` (the only thing that re-runs a job)
-        // is refused alongside `--control` up front. Parallel selection is one
-        // harness under `--control`, so the single candidate binds the channel
-        // once for the run's one turn — the same binding a chain does per
-        // candidate, on a chain of one.
+        // `--schema` is refused alongside `--control` up front. Parallel
+        // selection is one harness under `--control`, so the single candidate
+        // binds the channel once while any zero-work overload retries repeat
+        // its turn — the same binding a chain does per candidate, on a chain
+        // of one.
         let shape = specs[0]
             .control
             .expect("validate_control refuses a controlled harness with no mechanism");
@@ -3523,9 +3523,10 @@ fn run_in_waves(
     for wave in waves {
         let wave_jobs: Vec<Job> = wave.iter().map(|&i| jobs[i].clone()).collect();
         let outs = match schema {
-            // Structured output: after each run, validate and (if it failed and
-            // retries remain) re-run with a feedback prompt. The closure is pure
-            // domain validation; the runner owns the spawning.
+            // After each run, first retry a zero-work overload (including its
+            // bounded backoff), otherwise validate structured output and, when
+            // retries remain, rebuild with a feedback prompt. The runner owns
+            // the spawning.
             Some(sch) => runner::run_jobs_supervised(
                 &wave_jobs,
                 max_parallel,
@@ -3712,9 +3713,10 @@ fn validate_multi_model(
     Ok(())
 }
 
-/// Run a single harness job under the structured-output retry loop — the
-/// one-harness analogue of a [`run_in_waves`] wave of size one — returning its
-/// outcome. Used by the fallback driver, which spawns harnesses one at a time.
+/// Run a single harness job under the overload and structured-output retry
+/// loops — the one-harness analogue of a [`run_in_waves`] wave of size one —
+/// returning its outcome. Used by the fallback driver, which spawns harnesses
+/// one at a time.
 #[derive(Clone, Copy)]
 struct RetryLimits {
     schema: u32,

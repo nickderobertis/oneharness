@@ -726,13 +726,13 @@ fn stdout_work_evidence(stdout: &str) -> RunWork {
 /// the callers this rule exists to serve. Only a harness that says it spent
 /// something counts as having run.
 fn record_work_evidence(value: &Value) -> RunWork {
-    let billed = single_object_usage(value)
+    let witnessed = single_object_usage(value)
         .is_some_and(|reading| reading.usage.reports_billed_work())
         || value
             .get("modelUsage")
             .and_then(Value::as_object)
             .is_some_and(|models| !models.is_empty());
-    if billed {
+    if witnessed {
         RunWork::Done
     } else {
         RunWork::None

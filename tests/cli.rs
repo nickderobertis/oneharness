@@ -17017,7 +17017,9 @@ fn fallback_falls_through_a_clean_exit_provider_quota_error() {
 ///
 /// Every surface a run reads the refusal off is driven here, because each is a
 /// separate scan: the structured record, the sentence printed on either stream,
-/// and the `/login` instruction alone (the half that classifies on its own).
+/// and each half alone — the signature matches either one, so a reworded
+/// `Not logged in` and a dropped `/login` must each still be read as the
+/// refusal the other half names.
 #[test]
 fn fallback_falls_through_a_claude_login_refusal_as_auth() {
     let mock = mock_bin().display().to_string();
@@ -17044,6 +17046,16 @@ fn fallback_falls_through_a_claude_login_refusal_as_auth() {
             "login-instruction",
             String::new(),
             format!("{warning}\nError: please run /login to authenticate this workspace."),
+        ),
+        // ...and the state half on its own, carrying no `/login` at all: a
+        // release that drops the remedy from the sentence must not take the
+        // reading with it.
+        (
+            "not-logged-in-alone",
+            String::new(),
+            format!(
+                "{warning}\nError: Not logged in. Authenticate this configuration directory first."
+            ),
         ),
     ];
 

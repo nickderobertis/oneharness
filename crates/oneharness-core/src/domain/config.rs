@@ -20,6 +20,9 @@ use crate::domain::hooks::HookSpec;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::OutputFormat;
 
+/// Default same-candidate retries after a zero-work Codex overload refusal.
+pub const SERVER_OVERLOADED_MAX_RETRIES_DEFAULT: u32 = 2;
+
 /// One config file, as written by the user. Every field is optional: an absent
 /// field defers to the next layer down. Unknown fields are rejected so a typo
 /// fails loudly instead of being silently ignored.
@@ -88,8 +91,8 @@ pub struct FileConfig {
     /// Maximum retries per harness when a response fails schema validation
     /// (like `--schema-max-retries`; default 2). Only meaningful with a schema.
     pub schema_max_retries: Option<u32>,
-    /// Maximum retries for a zero-work Codex `server_overloaded` refusal
-    /// (default 2). `0` disables same-candidate retries.
+    /// Maximum retries for a zero-work Codex `server_overloaded` refusal.
+    /// Defaults to [`SERVER_OVERLOADED_MAX_RETRIES_DEFAULT`]; `0` disables it.
     pub server_overloaded_max_retries: Option<u32>,
     /// Concurrency cap (like `--max-parallel`).
     pub max_parallel: Option<usize>,

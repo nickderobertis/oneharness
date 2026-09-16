@@ -253,7 +253,8 @@ pub struct RunRequest {
     pub schema: Option<PathBuf>,
     /// Max re-prompts when a response fails schema validation (default 2).
     pub schema_max_retries: Option<u32>,
-    /// Max retries for a zero-work Codex server-overloaded refusal (default 2).
+    /// Max retries for a zero-work Codex server-overloaded refusal; omitted
+    /// uses [`crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT`].
     pub server_overloaded_max_retries: Option<u32>,
     /// Also write each harness's raw stdout/stderr under this directory.
     pub output_dir: Option<PathBuf>,
@@ -557,7 +558,7 @@ pub fn run_supervised(
     let server_overloaded_max_retries = args
         .server_overloaded_max_retries
         .or(cfg.server_overloaded_max_retries)
-        .unwrap_or(2);
+        .unwrap_or(crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT);
     // A CLI selection (--all / --harness) replaces the config selection
     // entirely; config `exclude` still applies unless --exclude is given.
     let (all, include) = if args.all || !args.harness.is_empty() {
@@ -4514,8 +4515,12 @@ fn retry_decision(
 /// Initial and maximum delay for same-candidate Codex overload retries. The
 /// exponential is saturated and capped, so every wait remains bounded even for
 /// an unusually large configured retry count.
-const SERVER_OVERLOADED_BACKOFF_INITIAL: Duration = Duration::from_millis(100);
-const SERVER_OVERLOADED_BACKOFF_MAX: Duration = Duration::from_secs(1);
+const SERVER_OVERLOADED_BACKOFF_INITIAL_MS: u64 = 100;
+const SERVER_OVERLOADED_BACKOFF_MAX_MS: u64 = 1_000;
+const SERVER_OVERLOADED_BACKOFF_INITIAL: Duration =
+    Duration::from_millis(SERVER_OVERLOADED_BACKOFF_INITIAL_MS);
+const SERVER_OVERLOADED_BACKOFF_MAX: Duration =
+    Duration::from_millis(SERVER_OVERLOADED_BACKOFF_MAX_MS);
 
 fn server_overloaded_retry_decision(
     plan: &HarnessPlan,
@@ -5784,5 +5789,29 @@ mod tests {
             server_overloaded_backoff_duration(32),
             Duration::from_secs(1)
         );
+    }
+
+    #[test]
+    fn server_overloaded_readme_values_match_runtime_constants() {
+        let readme = include_str!("../../../../README.md");
+        let cli = include_str!("../../../../src/cli.rs");
+        assert!(readme.contains(&format!(
+            "before fallback (default {};",
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
+        assert!(readme.contains(&format!(
+            "from {} ms, capped at\n  {} second per retry",
+            SERVER_OVERLOADED_BACKOFF_INITIAL_MS,
+            SERVER_OVERLOADED_BACKOFF_MAX_MS / 1_000
+        )));
+        assert!(readme.contains(&format!(
+            "server_overloaded_max_retries = {} # --server-overloaded-max-retries (default {})",
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT,
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
+        assert!(cli.contains(&format!(
+            "/// {}). Each retry waits with bounded exponential backoff; 0 disables retry.",
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
     }
 }

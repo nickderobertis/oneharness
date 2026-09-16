@@ -796,6 +796,8 @@ describe("OneHarness", () => {
 			env: { MOCK_STDOUT: '{"type":"result","result":"done"}' },
 			bins: { "claude-code": mock },
 		});
+		// HistoryRecord's version-gated union is too large for TypeScript to
+		// spread; this JSON view preserves the public runtime validation below.
 		const [unmeasured] = (await client.history({
 			session: "node-session-unmeasured",
 			historyDir,

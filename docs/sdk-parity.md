@@ -182,6 +182,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--spy-file` | `spyFile` | `--flag VALUE` |
 | `--schema` | `schema` | `--flag VALUE` |
 | `--schema-max-retries` | `schemaMaxRetries` | `--flag VALUE` |
+| `--server-overloaded-max-retries` | `serverOverloadedMaxRetries` | `--flag VALUE` |
 | `--output-dir` | `outputDir` | `--flag VALUE` |
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
 | `--cwd` | `cwd` | `--flag VALUE` |
@@ -234,6 +235,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--spy-file` | `spyFile` | `--flag VALUE` |
 | `--schema` | `schema` | `--flag VALUE` |
 | `--schema-max-retries` | `schemaMaxRetries` | `--flag VALUE` |
+| `--server-overloaded-max-retries` | `serverOverloadedMaxRetries` | `--flag VALUE` |
 | `--output-dir` | `outputDir` | `--flag VALUE` |
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
 | `--cwd` | `cwd` | `--flag VALUE` |

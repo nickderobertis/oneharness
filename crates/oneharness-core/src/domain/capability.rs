@@ -425,6 +425,10 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind("spyFile", FlagKind::Value("--spy-file")),
     bind("schema", FlagKind::Value("--schema")),
     bind("schemaMaxRetries", FlagKind::Value("--schema-max-retries")),
+    bind(
+        "serverOverloadedMaxRetries",
+        FlagKind::Value("--server-overloaded-max-retries"),
+    ),
     bind("outputDir", FlagKind::Value("--output-dir")),
     bind("timeoutSeconds", FlagKind::Value("--timeout")),
     bind("cwd", FlagKind::Value("--cwd")),

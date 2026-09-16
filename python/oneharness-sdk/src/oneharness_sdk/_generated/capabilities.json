@@ -693,6 +693,12 @@
         "unless": null
       },
       {
+        "flag": "--server-overloaded-max-retries",
+        "kind": "value",
+        "option": "serverOverloadedMaxRetries",
+        "unless": null
+      },
+      {
         "flag": "--output-dir",
         "kind": "value",
         "option": "outputDir",
@@ -977,6 +983,12 @@
         "flag": "--schema-max-retries",
         "kind": "value",
         "option": "schemaMaxRetries",
+        "unless": null
+      },
+      {
+        "flag": "--server-overloaded-max-retries",
+        "kind": "value",
+        "option": "serverOverloadedMaxRetries",
         "unless": null
       },
       {

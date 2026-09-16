@@ -1312,7 +1312,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       ]),
     ),
   ),
-]);
+]) as unknown as z.ZodType<HistoryLine>;
 
 export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => HistorySessionSummarySchema));
 
@@ -2508,7 +2508,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
       }),
     ]),
   ),
-);
+) as unknown as z.ZodType<HistoryRecord>;
 
 export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(() => HistoryRecordSchema));
 

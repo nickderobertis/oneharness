@@ -189,6 +189,12 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "serverOverloadedMaxRetries",
+				flag: "--server-overloaded-max-retries",
+				kind: "value",
+				unless: null,
+			},
+			{
 				option: "outputDir",
 				flag: "--output-dir",
 				kind: "value",
@@ -468,6 +474,12 @@ export const CAPABILITIES = {
 			{
 				option: "schemaMaxRetries",
 				flag: "--schema-max-retries",
+				kind: "value",
+				unless: null,
+			},
+			{
+				option: "serverOverloadedMaxRetries",
+				flag: "--server-overloaded-max-retries",
 				kind: "value",
 				unless: null,
 			},

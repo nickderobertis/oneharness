@@ -1003,7 +1003,11 @@ fn run_codex_app_server(log_path: &str) -> ! {
     let attempt = std::env::var("MOCK_ATTEMPT_FILE").ok().map(|path| {
         let prior = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|text| text.trim().parse::<u32>().ok())
+            .map(|text| {
+                text.trim()
+                    .parse::<u32>()
+                    .expect("MOCK_ATTEMPT_FILE must contain an unsigned integer")
+            })
             .unwrap_or(0);
         let attempt = prior + 1;
         let _ = std::fs::write(path, attempt.to_string());
@@ -1011,7 +1015,10 @@ fn run_codex_app_server(log_path: &str) -> ! {
     });
     let overload_attempts = std::env::var("MOCK_CODEX_OVERLOAD_ATTEMPTS")
         .ok()
-        .and_then(|text| text.parse::<u32>().ok())
+        .map(|text| {
+            text.parse::<u32>()
+                .expect("MOCK_CODEX_OVERLOAD_ATTEMPTS must be an unsigned integer")
+        })
         .unwrap_or(0);
     // Opened once, up front: a log path that cannot be written is a fixture
     // that answers correctly while recording nothing, which reads as a client

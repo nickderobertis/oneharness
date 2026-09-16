@@ -1273,13 +1273,6 @@ pub fn run_supervised(
             Plan::Pending { model, .. } => model.clone(),
             Plan::Ready(_) => None,
         };
-        chain.bind(
-            shape,
-            specs[0],
-            &selected_ids[0],
-            candidate_model.as_deref(),
-            &prompt,
-        );
         let input = runner::ControlledInput {
             handle: chain.handle,
             prompt,
@@ -1287,6 +1280,13 @@ pub fn run_supervised(
         let mut attempts = 0;
         let results = loop {
             attempts += 1;
+            chain.bind(
+                shape,
+                specs[0],
+                &selected_ids[0],
+                candidate_model.as_deref(),
+                &input.prompt,
+            );
             let capture =
                 runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
                     runner::StreamStep::Continue
@@ -1322,6 +1322,7 @@ pub fn run_supervised(
                     }
                 })
                 .collect();
+            chain.handle.release();
             let retry = attempts <= server_overloaded_max_retries
                 && results.iter().any(|result| {
                     result.failure_kind == Some(signals::FailureKind::ServerOverloaded)
@@ -1332,7 +1333,6 @@ pub fn run_supervised(
             }
             server_overloaded_backoff(attempts);
         };
-        chain.handle.release();
         (results, None)
     } else if fallback_mode && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.

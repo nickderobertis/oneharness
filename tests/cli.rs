@@ -18225,6 +18225,104 @@ fn codex_server_overloaded_recovers_in_parallel_mode() {
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
 }
 
+#[cfg(unix)]
+#[test]
+fn controlled_codex_server_overloaded_recovers_on_the_same_app_server_candidate() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-controlled-recovers");
+    let store = control_store_dir("overload-retry");
+    let log = store.join("app-server.log");
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        server_overloaded_max_retries = 1
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_CODEX_APP_SERVER_LOG = '{log}', MOCK_CODEX_OVERLOAD_ATTEMPTS = "1", MOCK_CODEX_COMPLETE_TURN = "1" }}
+        "#,
+        log = log.display(),
+    );
+    let fx = ConfigFixture::new("server-overloaded-controlled-recovers", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--control",
+            "--session",
+            "overload-recovery",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["text"], "still working");
+    assert!(value["results"][0]["failure_kind"].is_null());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
+    assert_eq!(app_server_frames(&log, "turn/start").len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_codex_server_overloaded_exhaustion_falls_through_to_the_alternate() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-controlled-exhausted");
+    let store = control_store_dir("overload-fallback");
+    let log = store.join("app-server.log");
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+        server_overloaded_max_retries = 1
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_CODEX_APP_SERVER_LOG = '{log}', MOCK_CODEX_OVERLOAD_ATTEMPTS = "2", MOCK_CODEX_COMPLETE_TURN = "1" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#,
+        log = log.display(),
+    );
+    let fx = ConfigFixture::new("server-overloaded-controlled-exhausted", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--control",
+            "--session",
+            "overload-fallback",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["reason"],
+        "server-overloaded"
+    );
+    assert_eq!(value["fallback"]["ran"], "codex:alternate");
+    assert_eq!(value["results"][1]["text"], "still working");
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
+    assert_eq!(app_server_frames(&log, "turn/start").len(), 3);
+}
+
 #[test]
 fn codex_server_overloaded_zero_retries_ends_classified_without_rerun() {
     let mock = mock_bin().display().to_string();

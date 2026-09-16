@@ -25254,7 +25254,7 @@ fn a_controlled_codex_turn_is_refused_when_the_server_would_run_another_model() 
     assert_eq!(record["failure_kind"], "model_mismatch");
     assert_eq!(record["model"], "gpt-5.6-sol");
     assert_eq!(record["observed_model"], "gpt-6-astra");
-    assert_eq!(record["schema_version"], "1.9");
+    assert_eq!(record["schema_version"], "1.8");
     assert!(record.get("work").is_none(), "{record}");
 }
 

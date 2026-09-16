@@ -981,6 +981,7 @@ impl HistoryRecord {
             // that failed, which has no timing *because* it failed.
             Ok(HistoryTiming::Unavailable) => {
                 run_failed(self.status)
+                    || self.failure_kind.is_some()
                     || (self.harness_lacks_trace() && self.untimed_trace_valid())
             }
             // A measurement cut short belongs to a run that was cut short. On a
@@ -990,7 +991,7 @@ impl HistoryRecord {
                 started_at,
                 time_to_first_token_ms,
             }) => {
-                run_failed(self.status)
+                (run_failed(self.status) || self.failure_kind.is_some())
                     && version_at_least(&self.schema_version, FIRST_PARTIAL_TIMING_SCHEMA_VERSION)
                     && partial_trace_valid(started_at, time_to_first_token_ms, self.duration_ms)
             }

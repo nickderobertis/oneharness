@@ -18459,6 +18459,106 @@ fn codex_server_overloaded_with_work_evidence_is_not_retried_or_fallen_through()
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
 }
 
+#[test]
+fn codex_server_overloaded_after_a_tool_event_is_not_retried_or_fallen_through() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-tool-work");
+    let overloaded_after_tool = serde_json::to_string(concat!(
+        r#"{"type":"item.completed","item":{"type":"command_execution","command":"echo hi","aggregated_output":"hi","exit_code":0}}"#,
+        "\n",
+        r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+        server_overloaded_max_retries = 2
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_EXIT = "1", MOCK_STDOUT = {overloaded_after_tool} }}
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-tool-work", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["events"][0]["kind"], "tool_call");
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
+}
+
+#[test]
+fn codex_server_overloaded_default_retries_are_bounded_and_persist_the_failure() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-default");
+    let history = hist_dir("server-overloaded-default");
+    let overloaded = serde_json::to_string(
+        r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#,
+    )
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        run_mode = "fallback"
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT = {overloaded} }}
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-default", &project, "");
+    let started = std::time::Instant::now();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    let elapsed = started.elapsed();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
+    assert!(
+        elapsed >= std::time::Duration::from_millis(250),
+        "two configured backoffs were not observed: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "bounded 100ms + 200ms backoffs took too long: {elapsed:?}"
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
+    let history_file = Path::new(value["history_file"].as_str().unwrap());
+    assert!(
+        history_file.exists(),
+        "history was not persisted: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let record = first_history_run(history_file);
+    assert_eq!(record["schema_version"], "1.9");
+    assert_eq!(record["failure_kind"], "server_overloaded");
+}
+
 /// The same chain, refused over the **app-server** protocol a `--control` turn
 /// drives instead of `codex exec`. The frames differ completely (`method`, not
 /// `type`; the payload under `params`), and reading only the event stream left

@@ -1422,9 +1422,10 @@ fn failure_text(status: Status, error: Option<&str>, stderr: &str) -> Option<Fai
 /// harness's words in its transcript, not in a diagnostic — so no other kind
 /// justifies failure text on a `status: ok` record.
 ///
-/// Deliberately broader than [`run_failed`], which gates *timing* and must stay
-/// keyed on the status alone: a clean exit claims the run worked, so its
-/// telemetry is still held to the full bar.
+/// Deliberately narrower than timing validation: any classified failure may
+/// lack a complete provider trace even when its transport exited zero, but only
+/// `tool_deferred` has a oneharness-authored failure message to persist from
+/// such a clean exit.
 fn reported_failure(status: Status, failure_kind: Option<FailureKind>) -> bool {
     run_failed(status) || failure_kind == Some(FailureKind::ToolDeferred)
 }

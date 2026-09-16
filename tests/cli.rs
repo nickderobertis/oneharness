@@ -17006,6 +17006,132 @@ fn fallback_falls_through_a_clean_exit_provider_quota_error() {
     assert_eq!(value["results"][1]["status"], "ok");
 }
 
+/// The capture from issue #1290, driven through the real binary: an empty
+/// Claude config directory answers `Not logged in · Please run /login` in a
+/// zero-token terminal record. Nothing in that sentence is in the generic
+/// failure vocabulary, so the reading fell to whatever else the same failed run
+/// said — the record's own `"duration_ms":429`, read by the coarse `429` needle
+/// as a rate limit, plus a warning line on stderr saying the same thing. An
+/// operator was then sent to wait out a limit that does not exist, and the
+/// chain's own account of why it moved on said `rate-limit`.
+#[test]
+fn fallback_falls_through_a_claude_login_refusal_as_auth() {
+    let mock = mock_bin().display().to_string();
+    let capture =
+        serde_json::to_string(include_str!("fixtures/claude-not-logged-in.jsonl").trim()).unwrap();
+    let alternate =
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {capture}, MOCK_STDERR = "Warning: this account is approaching its rate limit." }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = '{alternate}' }}
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-claude-not-logged-in", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            // The stream-json transcript the refusal was captured from, so the
+            // reading is taken off the format a real controlled run emits.
+            "--events",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    // The refused candidate is reported as unauthenticated, and the chain says
+    // the same: an operator reading either one is sent to authenticate.
+    assert_eq!(value["results"][0]["harness"], "claude-code");
+    assert_eq!(value["results"][0]["status"], "nonzero");
+    assert_eq!(value["results"][0]["failure_kind"], "auth");
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
+    // ...and the next identity did the task.
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["results"][1]["text"], "served-by-codex");
+}
+
+/// The bound on the reading above: an agent that merely *wrote* the sentence
+/// mid-run must not hand its task on. A harness that spent tokens was logged
+/// in, so its own accounting refutes the refusal — the run stays unclassified
+/// and the chain stops at it as the real failure it is, with the second
+/// identity never spawned.
+#[test]
+fn a_login_refusal_written_by_a_run_that_did_work_stops_the_chain() {
+    let mock = mock_bin().display().to_string();
+    let worked = concat!(
+        r#"{"type":"assistant","message":{"content":[{"type":"text","text":"The deploy tool answered Not logged in · Please run /login."}]}}"#,
+        "
+",
+        r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the deploy tool answered Not logged in · Please run /login, so the task did not finish","total_cost_usd":0.0412,"usage":{"input_tokens":4102,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":311}}"#,
+    );
+    let worked = serde_json::to_string(worked).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {worked} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-claude-login-quoted", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--events",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a run that failed having done work fails the chain: stderr {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["harness"], "claude-code");
+    assert!(
+        value["results"][0]["failure_kind"].is_null(),
+        "a run that did work is not an unauthenticated identity: {}",
+        value["results"][0]["failure_kind"]
+    );
+    assert_eq!(value["fallback"]["ran"], "claude-code");
+    assert_eq!(
+        value["fallback"]["fell_through"].as_array().unwrap().len(),
+        0
+    );
+    assert_eq!(value["results"].as_array().unwrap().len(), 1);
+}
+
 #[test]
 fn fallback_falls_through_zero_work_claude_subscription_limit_captures() {
     let mock = mock_bin().display().to_string();

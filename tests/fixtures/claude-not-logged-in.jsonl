@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","cwd":"/work","session_id":"3f6b1d02-4a7e-4a0a-9a2b-0f1c8b6e4d21","tools":["Bash","Read","Write"],"model":"claude-opus-5","permissionMode":"bypassPermissions","apiKeySource":"none"}
+{"type":"result","subtype":"success","is_error":true,"duration_ms":429,"duration_api_ms":0,"num_turns":0,"result":"Not logged in · Please run /login","session_id":"3f6b1d02-4a7e-4a0a-9a2b-0f1c8b6e4d21","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"permission_denials":[]}

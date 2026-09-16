@@ -453,7 +453,10 @@ fn scan_failure(
 /// whole transcript would risk reading an agent's own mention of a usage limit
 /// as exhaustion and silently re-running the task on another account.
 ///
-/// The adapter signal is checked **before** the generic vocabulary — see
+/// Claude Code's *login* refusal is the second adapter signal, and it is scoped
+/// the same way for the same reason — see [`harness_auth_refusal`].
+///
+/// The adapter signals are checked **before** the generic vocabulary — see
 /// [`harness_quota_failure`] for why that order is load-bearing — and the
 /// precondition refusals ([`precondition_refusal`]) and the unknown-session one
 /// ([`unknown_session_rejection`]) sit between them, so a rejection that names
@@ -470,6 +473,11 @@ pub fn classify_harness_failure(
     let worked = stdout_reports_work(stdout);
     scan_failure(stdout, stderr, |text| {
         harness_quota_failure(dialect, text, worked).map(Refusal::plain)
+    })
+    .or_else(|| {
+        scan_failure(stdout, stderr, |text| {
+            harness_auth_refusal(dialect, text, worked).map(Refusal::plain)
+        })
     })
     .or_else(|| scan_failure(stdout, stderr, precondition_refusal))
     .or_else(|| {
@@ -643,6 +651,61 @@ fn harness_quota_failure(
     (!did_work).then_some(FailureKind::Quota)
 }
 
+/// The adapter-specific **authentication refusal** in `text` — a
+/// [`FailureKind::Auth`] rejection — or `None` when this dialect has none, the
+/// text does not carry it, or the harness **did work** before it appeared.
+///
+/// Claude Code's unauthenticated answer is `Not logged in · Please run /login`,
+/// and not one of those words is in the generic vocabulary [`match_failure`]
+/// scans: no `unauthorized`, no `credentials`, no `401`. So the reading fell
+/// through to whatever else the same failed run happened to say — and its
+/// terminal record carries incidental digits (a `duration_ms` of `429`) that
+/// the coarse `429` needle reads as a rate limit. An unauthenticated identity
+/// was reported as rate-limited, which sends an operator to wait out a limit
+/// that does not exist instead of authenticating the config directory the run
+/// named (issue #1290).
+///
+/// Both rules [`harness_quota_failure`] encodes hold here, for the same
+/// reasons. **Order**: this is the more specific reading of the same bytes, so
+/// every caller consults it before the generic vocabulary. **Work done, not
+/// error text**: `auth` is a fall-through kind, and that is only true of a
+/// candidate that never ran. A harness that spent tokens was logged in, so the
+/// same sentence in a transcript reporting billed work is one the agent
+/// *wrote* rather than one it received — the generic vocabulary gets its turn
+/// there, and the chain stops as it did before. That gate is deliberately
+/// narrower than the fall-through bound it doubles ([`RunWork`][rw] already
+/// stops a candidate with work evidence handing its task on); it keeps the
+/// *classification* honest for every consumer that never reads the fallback
+/// block.
+///
+/// Scope: the Claude dialect only, rather than dialect-agnostic like
+/// [`unknown_session_rejection`]. That list holds phrases a CLI can only be
+/// saying about itself; `not logged in` is ordinary English about any service
+/// an agent might touch, so leaving it unscoped would let another harness's
+/// unrelated text read as a login refusal.
+///
+/// [rw]: crate::domain::fallback::RunWork
+fn harness_auth_refusal(
+    dialect: FailureDialect,
+    text: &str,
+    did_work: bool,
+) -> Option<FailureKind> {
+    (dialect == FailureDialect::ClaudeCode).then_some(())?;
+    claude_login_refusal(text).then_some(())?;
+    (!did_work).then_some(FailureKind::Auth)
+}
+
+/// Claude Code's login-refusal signature, matched on either half of the
+/// captured sentence `Not logged in · Please run /login` so a reworded half
+/// does not strand the other. `/login` is anchored to the instruction naming
+/// it, never matched bare: that spelling is also the path of an ordinary URL,
+/// and a false positive here reports a genuine task failure as an
+/// unauthenticated identity.
+fn claude_login_refusal(text: &str) -> bool {
+    let text = text.to_lowercase();
+    text.contains("not logged in") || text.contains("please run /login")
+}
+
 /// Whether any record in `stdout` reports work — the run-level view of
 /// [`record_reports_work`].
 fn stdout_reports_work(stdout: &str) -> bool {
@@ -708,6 +771,7 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
     // whole-run totals, so its own accounting is the run's accounting.
     let did_work = record_reports_work(value);
     harness_quota_failure(dialect, &serialized, did_work)
+        .or_else(|| harness_auth_refusal(dialect, &serialized, did_work))
         .or_else(|| zero_work_rate_limit_rejection(value, did_work))
         .or_else(|| match_failure(&serialized))
 }
@@ -1381,6 +1445,85 @@ mod tests {
     #[test]
     fn classify_none_when_no_signal() {
         assert!(classify_failure("just some output", "a normal error").is_none());
+    }
+
+    /// The capture from issue #1290: an empty Claude config directory answers
+    /// `Not logged in · Please run /login` in a zero-token terminal record. Not
+    /// one of those words is in the generic vocabulary, so the reading fell to
+    /// whatever else the same failed run said — here the record's own
+    /// `"duration_ms":429`, which the coarse `429` needle reads as a rate
+    /// limit. The refusal is what the record is about, so it decides.
+    #[test]
+    fn a_claude_login_refusal_is_auth_whatever_else_the_failed_run_says() {
+        let capture = include_str!("../../../../tests/fixtures/claude-not-logged-in.jsonl");
+
+        // The record path first, because that is the one a real run takes: the
+        // harness declared the failure itself (`is_error`), so this reading is
+        // taken before any text scan.
+        let got = detect_harness_provider_failure(FailureDialect::ClaudeCode, capture)
+            .expect("the login refusal must be classified");
+        assert_eq!(got.kind, FailureKind::Auth);
+        assert_eq!(got.source, "stdout");
+
+        // The text path, with unrelated warning text on the stream it scans
+        // *first*: the refusal still decides, rather than the neighbouring
+        // words winning by being read sooner.
+        let got = classify_harness_failure(
+            FailureDialect::ClaudeCode,
+            capture,
+            "Warning: this account is approaching its rate limit.",
+        )
+        .expect("the login refusal must be classified");
+        assert_eq!(got.kind, FailureKind::Auth);
+        assert_eq!(got.source, "stdout");
+
+        // ...and the bare-line surface, where there is no record to read at all.
+        let bare = classify_harness_failure(
+            FailureDialect::ClaudeCode,
+            "",
+            "Not logged in · Please run /login",
+        )
+        .expect("the bare refusal classifies too");
+        assert_eq!(bare.kind, FailureKind::Auth);
+        assert_eq!(bare.source, "stderr");
+    }
+
+    #[test]
+    fn the_login_refusal_is_read_for_claude_only_and_not_for_another_harness() {
+        let capture = include_str!("../../../../tests/fixtures/claude-not-logged-in.jsonl");
+        // The same bytes under another harness's dialect classify exactly as
+        // they did before #1290 — on the coarse `429` the duration happens to
+        // contain — because `not logged in` is ordinary English about any
+        // service an agent touches, not a sentence only this CLI prints.
+        let got = detect_harness_provider_failure(FailureDialect::Generic, capture)
+            .expect("the record still classifies generically");
+        assert_eq!(got.kind, FailureKind::RateLimit);
+        // And an unrelated CLI merely saying the words stays unclassified: the
+        // honest default, which stops the chain at the real failure.
+        assert!(classify_harness_failure(
+            FailureDialect::Generic,
+            "",
+            "the deploy target reported: not logged in",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_login_refusal_quoted_by_a_run_that_did_work_is_not_an_auth_refusal() {
+        // A harness that spent tokens was logged in, so this sentence is one
+        // the agent *wrote* mid-run rather than one it received. The refusal
+        // reading is refuted by the harness's own accounting — the same rule a
+        // mid-run limit follows — so the run stays unclassified and the chain
+        // stops at it.
+        let worked = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"the deploy tool answered Not logged in · Please run /login, so the task did not finish","usage":{"input_tokens":4102,"output_tokens":311}}"#;
+        assert_eq!(
+            detect_harness_provider_failure(FailureDialect::ClaudeCode, worked),
+            None
+        );
+        assert_eq!(
+            classify_harness_failure(FailureDialect::ClaudeCode, worked, ""),
+            None
+        );
     }
 
     #[test]

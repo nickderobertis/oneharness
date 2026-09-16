@@ -25,6 +25,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::domain::fallback::RunWork;
+
 /// Normalized token/cost accounting. Every field is best-effort and independently
 /// nullable: a harness may report tokens but not dollar cost (cost is commonly
 /// absent on subscription auth), or report nothing at all (plain-text harnesses).
@@ -58,11 +60,11 @@ impl Usage {
     /// Whether this accounting says the provider **billed real work**: any
     /// non-zero token count (prompt-cache counts included) or a non-zero dollar
     /// cost. Absent accounting is deliberately not work — see
-    /// [`record_reports_work`], which reads this off a raw harness record, and
-    /// [`crate::domain::fallback::RunWork`], which reads it off a normalized
-    /// result. Both share this one definition so the quota classifier and a
-    /// fallback chain's stop/fall-through verdict can never disagree about what
-    /// counts as billed.
+    /// [`record_work_evidence`], which reads this off a raw harness record, and
+    /// [`RunWork::from_result`], which reads it off a normalized result. Both
+    /// share this one definition — and answer in the one [`RunWork`] type — so
+    /// the quota classifier and a fallback chain's stop/fall-through verdict can
+    /// never disagree about what counts as billed.
     pub fn reports_billed_work(&self) -> bool {
         [
             self.input_tokens,
@@ -470,13 +472,13 @@ pub fn classify_harness_failure(
     // The harness's own accounting for the whole run: a limit message printed on
     // stderr says nothing about whether the run got anywhere, so the work
     // evidence has to come from the transcript, not from the matched text.
-    let worked = stdout_reports_work(stdout);
+    let work = stdout_work_evidence(stdout);
     scan_failure(stdout, stderr, |text| {
-        harness_quota_failure(dialect, text, worked).map(Refusal::plain)
+        harness_quota_failure(dialect, text, work).map(Refusal::plain)
     })
     .or_else(|| {
         scan_failure(stdout, stderr, |text| {
-            harness_auth_refusal(dialect, text, worked).map(Refusal::plain)
+            harness_auth_refusal(dialect, text, work).map(Refusal::plain)
         })
     })
     .or_else(|| scan_failure(stdout, stderr, precondition_refusal))
@@ -609,7 +611,8 @@ fn unknown_session_rejection(text: &str) -> Option<FailureKind> {
 
 /// The adapter-specific subscription-limit signature in `text` — a [`FailureKind::Quota`]
 /// rejection — or `None` when this dialect has none, the text does not carry it,
-/// or the harness **did work** before the limit landed.
+/// or the harness's evidence is [`RunWork::Done`] — it **did work** before the
+/// limit landed.
 ///
 /// Two rules are encoded here, and both are load-bearing.
 ///
@@ -628,7 +631,7 @@ fn unknown_session_rejection(text: &str) -> Option<FailureKind> {
 /// only true of a rejection that did no work. A limit that lands mid-run leaves
 /// real tokens spent and possibly a partial answer, and falling through it burns
 /// the next candidate's quota re-running work that already happened. So the same
-/// message with `did_work` reads as an ordinary run: the generic vocabulary still
+/// message with [`RunWork::Done`] reads as an ordinary run: the generic vocabulary still
 /// gets its turn (a mid-run `429` lands as `rate_limit`, which stops the chain),
 /// and a limit with no generic signal at all stays unclassified — also a stop.
 ///
@@ -644,16 +647,17 @@ fn unknown_session_rejection(text: &str) -> Option<FailureKind> {
 fn harness_quota_failure(
     dialect: FailureDialect,
     text: &str,
-    did_work: bool,
+    work: RunWork,
 ) -> Option<FailureKind> {
     (dialect == FailureDialect::ClaudeCode).then_some(())?;
     claude_subscription_limit(text).then_some(())?;
-    (!did_work).then_some(FailureKind::Quota)
+    (work == RunWork::None).then_some(FailureKind::Quota)
 }
 
 /// The adapter-specific **authentication refusal** in `text` — a
 /// [`FailureKind::Auth`] rejection — or `None` when this dialect has none, the
-/// text does not carry it, or the harness **did work** before it appeared.
+/// text does not carry it, or the harness's evidence is [`RunWork::Done`] — it
+/// **did work** before the sentence appeared.
 ///
 /// Claude Code's unauthenticated answer is `Not logged in · Please run /login`,
 /// and not one of those words is in the generic vocabulary [`match_failure`]
@@ -667,7 +671,8 @@ fn harness_quota_failure(
 ///
 /// Both of [`harness_quota_failure`]'s rules hold here unchanged: checked
 /// before the generic vocabulary, and only of a run whose own accounting
-/// reports no work. What the second one means for *this* refusal is that a
+/// reports [`RunWork::None`]. What the second one means for *this* refusal is
+/// that a
 /// harness which spent tokens was logged in, so the sentence is one its agent
 /// wrote rather than one it received.
 ///
@@ -676,14 +681,10 @@ fn harness_quota_failure(
 /// saying about itself; `not logged in` is ordinary English about any service
 /// an agent might touch, so leaving it unscoped would let another harness's
 /// unrelated text read as a login refusal.
-fn harness_auth_refusal(
-    dialect: FailureDialect,
-    text: &str,
-    did_work: bool,
-) -> Option<FailureKind> {
+fn harness_auth_refusal(dialect: FailureDialect, text: &str, work: RunWork) -> Option<FailureKind> {
     (dialect == FailureDialect::ClaudeCode).then_some(())?;
     claude_login_refusal(text).then_some(())?;
-    (!did_work).then_some(FailureKind::Auth)
+    (work == RunWork::None).then_some(FailureKind::Auth)
 }
 
 /// Claude Code's login-refusal signature, matched on either half of the
@@ -697,29 +698,45 @@ fn claude_login_refusal(text: &str) -> bool {
     text.contains("not logged in") || text.contains("please run /login")
 }
 
-/// Whether any record in `stdout` reports work — the run-level view of
-/// [`record_reports_work`].
-fn stdout_reports_work(stdout: &str) -> bool {
-    json_candidates(stdout).iter().any(record_reports_work)
+/// The run-level [`RunWork`] evidence in `stdout` — [`RunWork::Done`] as soon as
+/// any one record in it reports work, on [`record_work_evidence`]'s reading.
+fn stdout_work_evidence(stdout: &str) -> RunWork {
+    if json_candidates(stdout)
+        .iter()
+        .any(|record| record_work_evidence(record) == RunWork::Done)
+    {
+        RunWork::Done
+    } else {
+        RunWork::None
+    }
 }
 
-/// Whether this record's own accounting says the harness **did work** before it
-/// failed: billed usage ([`Usage::reports_billed_work`], the shared definition),
-/// or a non-empty per-model usage map (Claude Code's `modelUsage`, which is `{}`
-/// when no model was ever reached — a raw-record witness with no counterpart in
-/// the normalized [`Usage`]).
+/// This record's own accounting as [`RunWork`] evidence — the raw-record
+/// counterpart of [`RunWork::from_result`], answering in the same type so a
+/// classifier here and a fall-through verdict there read one value rather than
+/// two spellings of it. [`RunWork::Done`] on billed usage
+/// ([`Usage::reports_billed_work`], the shared definition) or a non-empty
+/// per-model usage map (Claude Code's `modelUsage`, which is `{}` when no model
+/// was ever reached — a raw-record witness with no counterpart in the normalized
+/// [`Usage`]).
 ///
 /// Absent accounting is deliberately **not** work. A bare `You've hit your
 /// session limit` line on stderr carries no usage block at all, and it is still
 /// a zero-work rejection; requiring positive proof of zero would strand exactly
 /// the callers this rule exists to serve. Only a harness that says it spent
 /// something counts as having run.
-fn record_reports_work(value: &Value) -> bool {
-    single_object_usage(value).is_some_and(|reading| reading.usage.reports_billed_work())
+fn record_work_evidence(value: &Value) -> RunWork {
+    let billed = single_object_usage(value)
+        .is_some_and(|reading| reading.usage.reports_billed_work())
         || value
             .get("modelUsage")
             .and_then(Value::as_object)
-            .is_some_and(|models| !models.is_empty())
+            .is_some_and(|models| !models.is_empty());
+    if billed {
+        RunWork::Done
+    } else {
+        RunWork::None
+    }
 }
 
 /// Classify a provider-declared failed result even when its CLI exits zero.
@@ -760,10 +777,10 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
     // Adapter signal first, and only when this record did no work: see
     // `harness_quota_failure` for both rules. Claude's terminal record carries
     // whole-run totals, so its own accounting is the run's accounting.
-    let did_work = record_reports_work(value);
-    harness_quota_failure(dialect, &serialized, did_work)
-        .or_else(|| harness_auth_refusal(dialect, &serialized, did_work))
-        .or_else(|| zero_work_rate_limit_rejection(value, did_work))
+    let work = record_work_evidence(value);
+    harness_quota_failure(dialect, &serialized, work)
+        .or_else(|| harness_auth_refusal(dialect, &serialized, work))
+        .or_else(|| zero_work_rate_limit_rejection(value, work))
         .or_else(|| match_failure(&serialized))
 }
 
@@ -781,7 +798,7 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
 /// says *this identity may not run right now*, the one condition another
 /// identity can serve — a zero-work `500` is a provider fault the next candidate
 /// hits too, and `401`/`403` already fall through as [`FailureKind::Auth`].
-/// **Zero work**, on the [`record_reports_work`] reading the adapter path uses
+/// **Zero work**, on the [`record_work_evidence`] reading the adapter path uses
 /// so the two can never disagree: a 429 that landed after real tokens describes
 /// a run, and falling through it pays the next candidate to redo it, so that
 /// record keeps its chain-stopping [`FailureKind::RateLimit`].
@@ -789,8 +806,8 @@ fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<Failur
 /// Dialect-agnostic like [`is_provider_failure_envelope`]: `api_error_status`
 /// states what the provider did, whichever harness emits it. The *prose* is what
 /// stays dialect-scoped.
-fn zero_work_rate_limit_rejection(value: &Value, did_work: bool) -> Option<FailureKind> {
-    (!did_work).then_some(())?;
+fn zero_work_rate_limit_rejection(value: &Value, work: RunWork) -> Option<FailureKind> {
+    (work == RunWork::None).then_some(())?;
     (value.get("api_error_status").and_then(Value::as_u64) == Some(429))
         .then_some(FailureKind::Quota)
 }

@@ -4482,6 +4482,13 @@ fn server_overloaded_retry_decision(
     let failure =
         signals::detect_harness_provider_failure(failure_dialect(plan.spec), &capture.stdout)?;
     (failure.kind == signals::FailureKind::ServerOverloaded).then_some(())?;
+    let billed_work = signals::extract_usage(&capture.stdout)
+        .is_some_and(|reading| reading.usage.reports_billed_work());
+    let used_tools = events::extract_events(&capture.stdout, plan.output_format)
+        .is_some_and(|reading| !reading.events.is_empty());
+    if billed_work || used_tools {
+        return None;
+    }
     server_overloaded_backoff(attempt);
     let built = plan.build(None, None);
     Some(NextRun {

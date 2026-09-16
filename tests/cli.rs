@@ -18084,7 +18084,7 @@ fn codex_server_overloaded_recovers_on_the_same_candidate_retry() {
         r#"
         harnesses = ["codex"]
         run_mode = "fallback"
-        server_overloaded_max_retries = 2
+        server_overloaded_max_retries = 0
 
         [harness.codex]
         bin = '{mock}'
@@ -18105,7 +18105,7 @@ fn codex_server_overloaded_recovers_on_the_same_candidate_retry() {
             "--bin",
             &bin,
         ],
-        &[],
+        &[("ONEHARNESS_SERVER_OVERLOADED_MAX_RETRIES", "1")],
         &fx.user_config(),
     );
     assert!(
@@ -18227,6 +18227,49 @@ fn codex_server_overloaded_zero_retries_ends_classified_without_rerun() {
         "server-overloaded"
     );
     assert!(value["fallback"]["ran"].is_null());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
+}
+
+#[test]
+fn codex_server_overloaded_with_work_evidence_is_not_retried_or_fallen_through() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-work");
+    let overloaded_after_work = serde_json::to_string(concat!(
+        "{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":1}}\n",
+        "{\"type\":\"turn.failed\",\"error\":{\"codex_error_info\":\"server_overloaded\"}}"
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+        server_overloaded_max_retries = 2
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_EXIT = "1", MOCK_STDOUT = {overloaded_after_work} }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = '{{"type":"item.completed","item":{{"type":"agent_message","text":"must-not-run"}}}}' }}
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-work", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
+    assert_eq!(value["results"][0]["usage"]["input_tokens"], 4);
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
 }
 

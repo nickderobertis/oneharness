@@ -20,7 +20,7 @@ use crate::domain::hooks::HookSpec;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::OutputFormat;
 
-/// Default same-candidate retries after a zero-work Codex overload refusal.
+/// Default of two same-candidate retries after a zero-work Codex overload refusal.
 pub const SERVER_OVERLOADED_MAX_RETRIES_DEFAULT: u32 = 2;
 
 /// One config file, as written by the user. Every field is optional: an absent

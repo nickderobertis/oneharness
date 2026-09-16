@@ -3547,6 +3547,9 @@ fn run_in_waves(
                         overload_attempts[k].fetch_add(1, Ordering::Relaxed);
                         return Some(next);
                     }
+                    if is_server_overloaded_without_work(&job_plans[wave[k]], capture) {
+                        return None;
+                    }
                     let schema_attempt = schema_attempts[k].load(Ordering::Relaxed) + 1;
                     let next = retry_decision(
                         &job_plans[wave[k]],
@@ -3771,6 +3774,9 @@ fn run_one_job(
         ) {
             overload_attempts.fetch_add(1, Ordering::Relaxed);
             return Some(next);
+        }
+        if is_server_overloaded_without_work(plan, capture) {
+            return None;
         }
         schema.and_then(|sch| {
             let schema_attempt = schema_attempts.load(Ordering::Relaxed) + 1;
@@ -4543,17 +4549,7 @@ fn server_overloaded_retry_after_backoff(
     capture: &Capture,
     schema: Option<&Schema>,
 ) -> Option<NextRun> {
-    if attempt > max_retries || !matches!(capture.status, Status::Ok | Status::Nonzero) {
-        return None;
-    }
-    let failure =
-        signals::detect_harness_provider_failure(failure_dialect(plan.spec), &capture.stdout)?;
-    (failure.kind == signals::FailureKind::ServerOverloaded).then_some(())?;
-    let billed_work = signals::extract_usage(&capture.stdout)
-        .is_some_and(|reading| reading.usage.reports_billed_work());
-    let used_tools = events::extract_events(&capture.stdout, plan.output_format)
-        .is_some_and(|reading| !reading.events.is_empty());
-    if billed_work || used_tools {
+    if attempt > max_retries || !is_server_overloaded_without_work(plan, capture) {
         return None;
     }
     server_overloaded_backoff(attempt);
@@ -4562,6 +4558,22 @@ fn server_overloaded_retry_after_backoff(
         argv: built.argv,
         stdin: built.stdin,
     })
+}
+
+fn is_server_overloaded_without_work(plan: &HarnessPlan, capture: &Capture) -> bool {
+    if !matches!(capture.status, Status::Ok | Status::Nonzero) {
+        return false;
+    }
+    let failure =
+        signals::detect_harness_provider_failure(failure_dialect(plan.spec), &capture.stdout);
+    if failure.map(|failure| failure.kind) != Some(signals::FailureKind::ServerOverloaded) {
+        return false;
+    }
+    let billed_work = signals::extract_usage(&capture.stdout)
+        .is_some_and(|reading| reading.usage.reports_billed_work());
+    let used_tools = events::extract_events(&capture.stdout, plan.output_format)
+        .is_some_and(|reading| !reading.events.is_empty());
+    !billed_work && !used_tools
 }
 
 fn server_overloaded_backoff(attempt: u32) {

@@ -11553,6 +11553,59 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
 }
 
 #[test]
+fn codex_exhausted_overload_budget_does_not_spend_the_schema_budget() {
+    let mock = mock_bin().display().to_string();
+    let schema = temp_file("schema-overload-exhausted", PERSON_SCHEMA);
+    let overloaded = serde_json::to_string(
+        r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#,
+    )
+    .unwrap();
+
+    for mode in ["parallel", "fallback"] {
+        let counter = temp_counter(&format!("schema-overload-exhausted-{mode}"));
+        let project = format!(
+            r#"
+            harnesses = ["codex"]
+            run_mode = "{mode}"
+            server_overloaded_max_retries = 1
+            schema_max_retries = 3
+            [harness.codex]
+            bin = '{mock}'
+            env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_STDOUT = {overloaded} }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("schema-overload-exhausted-{mode}"), &project, "");
+        let output = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "describe ada",
+                "--cwd",
+                &fx.cwd(),
+                "--schema",
+                &schema,
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+
+        assert_eq!(output.status.code(), Some(1), "{mode}: {output:?}");
+        let value = json_stdout(&output);
+        assert_eq!(
+            value["results"][0]["failure_kind"], "server_overloaded",
+            "{mode}"
+        );
+        assert_eq!(value["results"][0]["schema_attempts"], 1, "{mode}");
+        assert_eq!(
+            std::fs::read_to_string(counter).unwrap(),
+            "2",
+            "{mode}: schema retries must not extend an exhausted overload budget"
+        );
+    }
+}
+
+#[test]
 fn schema_invalid_after_retries_is_a_failure() {
     // Every attempt misses `age`; after the budget is spent the run fails with the
     // last invalid value and a validation error surfaced.
@@ -18127,13 +18180,16 @@ fn fallback_falls_through_a_codex_usage_limit_to_the_alternate_account() {
 fn codex_server_overloaded_recovers_on_the_same_candidate_retry() {
     let mock = mock_bin().display().to_string();
     let counter = temp_counter("server-overloaded-recovers");
+    let history = hist_dir("server-overloaded-recovers");
     let overloaded = serde_json::to_string(
         r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#,
     )
     .unwrap();
-    let recovered = serde_json::to_string(
+    let recovered = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"recovered"}}"#,
-    )
+        "\n{\"type\":\"turn.completed\"}",
+    ))
     .unwrap();
     let project = format!(
         r#"
@@ -18157,6 +18213,9 @@ fn codex_server_overloaded_recovers_on_the_same_candidate_retry() {
             &fx.cwd(),
             "--compact",
             "--stream",
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
             "--bin",
             &bin,
         ],
@@ -18179,6 +18238,16 @@ fn codex_server_overloaded_recovers_on_the_same_candidate_retry() {
     assert_eq!(value["fallback"]["ran"], "codex");
     assert_eq!(value["results"][0]["text"], "recovered");
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
+    let history_file = Path::new(value["history_file"].as_str().unwrap());
+    assert!(
+        history_file.exists(),
+        "history file missing: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let records = materialized_history(history_file);
+    assert_eq!(records.len(), 1, "a retry is one logical history run");
+    assert_eq!(records[0]["text"], "recovered");
+    assert!(records[0]["failure_kind"].is_null(), "{}", records[0]);
 }
 
 #[test]

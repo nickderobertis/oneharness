@@ -17114,6 +17114,60 @@ fn fallback_falls_through_a_claude_login_refusal_as_auth() {
     }
 }
 
+/// The same refusal on the **clean-exit** surface, which is its own scan: Claude
+/// Code reports a provider rejection in a terminal record that still exits zero,
+/// so it is read out of the record by `detect_harness_provider_failure` rather
+/// than by the text scan the case above drives. The record is the #1290 capture
+/// itself, whose only rate-limit-shaped bytes are the incidental
+/// `"duration_ms":429` the coarse needle read as a limit.
+#[test]
+fn fallback_falls_through_a_clean_exit_claude_login_refusal() {
+    let mock = mock_bin().display().to_string();
+    let record =
+        serde_json::to_string(include_str!("fixtures/claude-not-logged-in.jsonl").trim()).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_STDOUT = {record} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("fallback-clean-claude-login", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--events",
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    // The harness exited zero, so only the record says anything is wrong — and
+    // what it says is that this identity is not authenticated.
+    assert_eq!(value["results"][0]["harness"], "claude-code");
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["failure_kind"], "auth");
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "auth");
+    assert_eq!(value["fallback"]["ran"], "codex");
+}
+
 /// The refusal is Claude Code's own sentence, read for Claude Code only. Another
 /// harness printing the same words is classified exactly as it was before
 /// #1290 — unclassified, so the chain stops at it as the real failure it is

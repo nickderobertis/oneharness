@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.13.2...oneharness-core-v0.14.0) - 2026-09-17
+
+### Fixed
+
+- *(codex)* [**breaking**] retry a server-overloaded turn, then fall through ([#1300](https://github.com/nickderobertis/oneharness/pull/1300))
+
 ## [0.13.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.13.1...oneharness-core-v0.13.2) - 2026-09-16
 
 ### Fixed

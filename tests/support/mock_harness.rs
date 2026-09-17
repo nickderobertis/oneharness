@@ -27,6 +27,10 @@
 //!                   argv-delivered temp file existed and what it carried.
 //!   MOCK_REPLY_AFTER_LINES  if set to N, read N newline-terminated request
 //!                   lines from stdin, then answer with MOCK_STDOUT and exit.
+//!                   With MOCK_ATTEMPT_FILE, the invocation is counted and
+//!                   MOCK_STDOUT_<n> is preferred for attempt n exactly as on
+//!                   the default path — so a `usage` probe that asks again can
+//!                   be answered differently the second time.
 //!   MOCK_REQUEST_FILE  with MOCK_REPLY_AFTER_LINES, the requests read from stdin
 //!                   are written here, one per line, and reading continues for a
 //!                   short grace past the Nth so a line the caller should NOT
@@ -225,6 +229,35 @@ const EXTRA_REQUEST_GRACE: std::time::Duration = std::time::Duration::from_milli
 /// while any larger value is a typo that would otherwise overflow the `Instant`
 /// deadline the delay becomes.
 const MAX_REPLY_DELAY_MS: u64 = 600_000;
+
+/// Per-attempt scripting: with MOCK_ATTEMPT_FILE set, read the prior count,
+/// increment it, write it back, and return this invocation's 1-based attempt
+/// number — so a test can answer the same caller differently on its second
+/// spawn. `None` when the knob is unset.
+fn scripted_attempt() -> Option<u32> {
+    std::env::var("MOCK_ATTEMPT_FILE").ok().map(|path| {
+        let prior = std::fs::read_to_string(&path)
+            .ok()
+            .map(|text| {
+                text.trim()
+                    .parse::<u32>()
+                    .expect("MOCK_ATTEMPT_FILE must contain an unsigned integer")
+            })
+            .unwrap_or(0);
+        let attempt = prior + 1;
+        let _ = std::fs::write(path, attempt.to_string());
+        attempt
+    })
+}
+
+/// The stdout scripted for this invocation: MOCK_STDOUT_<attempt> when the
+/// attempt is counted and that knob is set, else MOCK_STDOUT, else `default`.
+fn scripted_stdout(attempt: Option<u32>, default: &str) -> String {
+    attempt
+        .and_then(|n| std::env::var(format!("MOCK_STDOUT_{n}")).ok())
+        .or_else(|| std::env::var("MOCK_STDOUT").ok())
+        .unwrap_or_else(|| default.to_string())
+}
 
 /// Read `wanted` newline-terminated request lines from stdin, then keep
 /// listening for a window, and report whether stdin reached EOF.
@@ -1001,19 +1034,7 @@ fn exit_shortly() {
 /// naming both the thread and the turn arrives.
 fn run_codex_app_server(log_path: &str) -> ! {
     use serde_json::{json, Value};
-    let attempt = std::env::var("MOCK_ATTEMPT_FILE").ok().map(|path| {
-        let prior = std::fs::read_to_string(&path)
-            .ok()
-            .map(|text| {
-                text.trim()
-                    .parse::<u32>()
-                    .expect("MOCK_ATTEMPT_FILE must contain an unsigned integer")
-            })
-            .unwrap_or(0);
-        let attempt = prior + 1;
-        let _ = std::fs::write(path, attempt.to_string());
-        attempt
-    });
+    let attempt = scripted_attempt();
     let overload_attempts = std::env::var("MOCK_CODEX_OVERLOAD_ATTEMPTS")
         .ok()
         .map(|text| {
@@ -1639,7 +1660,7 @@ pub fn run() -> ! {
         let _ = writeln!(
             std::io::stdout(),
             "{}",
-            std::env::var("MOCK_STDOUT").unwrap_or_default()
+            scripted_stdout(scripted_attempt(), "")
         );
         let _ = std::io::stdout().flush();
         std::process::exit(
@@ -1700,22 +1721,10 @@ pub fn run() -> ! {
         let _ = write!(std::io::stderr(), "{text}");
     }
 
-    // Per-attempt scripting: with MOCK_ATTEMPT_FILE set, increment a counter and
-    // prefer MOCK_STDOUT_<attempt> when present, so a test can make the first
-    // response invalid and a later one valid to exercise the retry loop.
-    let attempt = std::env::var("MOCK_ATTEMPT_FILE").ok().map(|path| {
-        let prior = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .unwrap_or(0);
-        let n = prior + 1;
-        let _ = std::fs::write(&path, n.to_string());
-        n
-    });
-    let attempt_stdout = attempt.and_then(|n| std::env::var(format!("MOCK_STDOUT_{n}")).ok());
-    let stdout = attempt_stdout
-        .or_else(|| std::env::var("MOCK_STDOUT").ok())
-        .unwrap_or_else(|| "{\"result\":\"mock ok\"}".to_string());
+    // Per-attempt scripting, so a test can make the first response invalid and
+    // a later one valid to exercise the structured-output retry loop.
+    let attempt = scripted_attempt();
+    let stdout = scripted_stdout(attempt, "{\"result\":\"mock ok\"}");
     let stdout = if std::env::var("MOCK_PRESERVE_STDOUT").as_deref() == Ok("1") {
         stdout
     } else {

@@ -26,10 +26,10 @@ use serde_json::Value;
 
 use crate::domain::config::VariantName;
 use crate::domain::usage::{
-    claude_control_response, parse_claude_get_usage, parse_codex_rate_limits, parse_copilot_http,
-    parse_cursor_about, without_control_chars, AuthMode, IdentitySelector, ParsedUsage,
-    UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity, UsageProbe, UsageReport,
-    UsageSupport, UtcInstant,
+    claude_control_response, claude_usage_snapshot_missing, parse_claude_get_usage,
+    parse_codex_rate_limits, parse_copilot_http, parse_cursor_about, without_control_chars,
+    AuthMode, IdentitySelector, ParsedUsage, UnavailableReason, UnknownReason, UsageAvailability,
+    UsageIdentity, UsageProbe, UsageReport, UsageSupport, UtcInstant,
 };
 use crate::errors::OneharnessError;
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
@@ -81,6 +81,16 @@ const COPILOT_STATUS_MARKER: &str = "oneharness-http-status:";
 const CLAUDE_REQUEST_ID: &str = "oneharness-usage-1";
 /// The JSON-RPC id of codex's `account/rateLimits/read` request.
 const CODEX_RATE_LIMITS_ID: i64 = 2;
+/// How many times, in all, the claude probe asks for a snapshot the CLI says it
+/// could not fetch right now ([`claude_usage_snapshot_missing`]) before
+/// settling on that answer. Each attempt is a fresh `claude -p`, since the
+/// control request is answered on the way out of the input stream. Bounded
+/// because a credential that stays expired answers so indefinitely, and a
+/// probe is a pre-flight check rather than a wait.
+const CLAUDE_SNAPSHOT_ATTEMPTS: usize = 3;
+/// The pause between those attempts. A retry is taken only when this fits in
+/// what is left of the caller's timeout; otherwise the probe settles at once.
+const CLAUDE_SNAPSHOT_RETRY_PAUSE: Duration = Duration::from_secs(1);
 /// How long a child that has already answered gets to exit on its own before its
 /// tree is terminated. Bounded so an idling harness cannot hold the probe.
 const EXIT_GRACE: Duration = Duration::from_millis(500);
@@ -126,6 +136,16 @@ impl UsageProbeRequest {
     #[must_use]
     pub fn effective_timeout(&self) -> Duration {
         self.timeout.min(MAX_TIMEOUT)
+    }
+
+    /// The instant this probe gives up, computed **once** per probe from
+    /// [`Self::effective_timeout`]: every exchange the probe makes — a retry
+    /// included — reads against the same one, so asking again can never
+    /// outlive the timeout the caller set.
+    fn deadline(&self) -> Instant {
+        // Clamped at the boundary, so this addition cannot overflow whatever a
+        // caller asked for.
+        Instant::now() + self.effective_timeout()
     }
 }
 
@@ -284,21 +304,23 @@ enum StdinAfterRequests {
 }
 
 /// Spawn `argv`, write `stdin_lines` (each newline-terminated), then read stdout
-/// line by line until `on_line` recognizes an answer, the child exits, or the
-/// deadline passes. `stdin_after` decides when the child's stdin is closed; it
+/// line by line until `on_line` recognizes an answer, the child exits, or
+/// `deadline` passes. `stdin_after` decides when the child's stdin is closed; it
 /// is closed either way before the child is given its moment to exit. The
 /// process tree is always terminated on the way out, so a harness that would
 /// idle waiting for more input cannot outlive the probe.
+///
+/// The deadline is the probe's ([`UsageProbeRequest::deadline`]), handed in
+/// rather than computed here, so a probe that converses more than once still
+/// answers within one timeout.
 fn converse(
     request: &UsageProbeRequest,
+    deadline: Instant,
     argv: &[String],
     stdin_lines: &[String],
     stdin_after: StdinAfterRequests,
     mut on_line: impl FnMut(&str) -> Option<ParsedUsage>,
 ) -> ProbeCapture {
-    // Clamped at the boundary, so this addition cannot overflow whatever a
-    // caller asked for.
-    let deadline = Instant::now() + request.effective_timeout();
     // Resolved exactly as the runner resolves a harness binary: a probe reads the
     // same bare registry name (`codex`), and on Windows that name is an npm
     // `.cmd` shim `CreateProcess` cannot find. Skipping this reported a harness
@@ -434,10 +456,14 @@ fn claude_request_line() -> String {
     .to_string()
 }
 
-fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
-    let selector = env_path_selector(&request.env_view(), CLAUDE_IDENTITY_ENV);
-    let mut capture = converse(
+/// One `get_usage` exchange, against the probe's shared deadline. Alongside the
+/// capture: whether the recognized answer was the transient no-snapshot one,
+/// decided by the domain's predicate rather than by reading its message back.
+fn claude_exchange(request: &UsageProbeRequest, deadline: Instant) -> (ProbeCapture, bool) {
+    let mut snapshot_missing = false;
+    let capture = converse(
         request,
+        deadline,
         &claude_argv(&request.bin),
         &[claude_request_line()],
         // `claude -p` answers the queued control request on its way out of the
@@ -454,15 +480,90 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
             {
                 return None;
             }
-            Some(parse_claude_get_usage(claude_control_response(&value)?))
+            let payload = claude_control_response(&value)?;
+            snapshot_missing = claude_usage_snapshot_missing(payload);
+            Some(parse_claude_get_usage(payload))
         },
     );
-    let parsed = capture.answer.take().unwrap_or_else(|| {
-        capture.failure(
-            "claude-code's `get_usage` control request",
-            request.effective_timeout(),
-        )
-    });
+    (capture, snapshot_missing)
+}
+
+/// Why the claude probe stopped asking for a snapshot the CLI said it could
+/// not fetch, so the settled reason can say it.
+#[derive(Clone, Copy)]
+enum SnapshotStop {
+    /// The CLI answered so [`CLAUDE_SNAPSHOT_ATTEMPTS`] times.
+    Bound,
+    /// Another pause would not fit in what was left of the timeout.
+    Budget,
+    /// A further attempt produced no answer at all.
+    Unanswered,
+}
+
+/// The transient reason as the probe settles it: how many times in a row the
+/// CLI answered so and, when that is fewer than the bound, why it was not
+/// asked again.
+fn claude_snapshot_missing_settled(
+    transient: ParsedUsage,
+    answered: usize,
+    stop: SnapshotStop,
+) -> ParsedUsage {
+    let UsageAvailability::Unknown {
+        reason: UnknownReason::ProbeFailed { message },
+    } = transient.availability
+    else {
+        return transient;
+    };
+    let times = match answered {
+        1 => "once".to_string(),
+        n => format!("{n} times in a row"),
+    };
+    let stopped = match stop {
+        SnapshotStop::Bound => "",
+        SnapshotStop::Budget => "; the timeout left no room to ask again",
+        SnapshotStop::Unanswered => "; a further attempt produced no answer",
+    };
+    ParsedUsage::unknown(UnknownReason::ProbeFailed {
+        message: format!("{message} (answered so {times}{stopped})"),
+    })
+}
+
+fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
+    let selector = env_path_selector(&request.env_view(), CLAUDE_IDENTITY_ENV);
+    let deadline = request.deadline();
+    // The transient answer in hand, if the CLI has given one, and how many times.
+    let mut transient: Option<(ParsedUsage, usize)> = None;
+    let parsed = loop {
+        let (mut capture, snapshot_missing) = claude_exchange(request, deadline);
+        let Some(answer) = capture.answer.take() else {
+            // A retry that produced nothing does not overwrite the answer the CLI
+            // already gave: reporting the deadline here would send the reader
+            // after a hung harness when the diagnosis was already in hand.
+            break match transient {
+                Some((answer, answered)) => {
+                    claude_snapshot_missing_settled(answer, answered, SnapshotStop::Unanswered)
+                }
+                None => capture.failure(
+                    "claude-code's `get_usage` control request",
+                    request.effective_timeout(),
+                ),
+            };
+        };
+        if !snapshot_missing {
+            // Drift, an API-key or logged-out answer, or headroom: each is the
+            // CLI's settled word, so none of them is asked twice.
+            break answer;
+        }
+        let answered = transient.as_ref().map_or(1, |(_, answered)| answered + 1);
+        if answered >= CLAUDE_SNAPSHOT_ATTEMPTS {
+            break claude_snapshot_missing_settled(answer, answered, SnapshotStop::Bound);
+        }
+        if deadline.saturating_duration_since(Instant::now()) <= CLAUDE_SNAPSHOT_RETRY_PAUSE {
+            break claude_snapshot_missing_settled(answer, answered, SnapshotStop::Budget);
+        }
+        transient = Some((answer, answered));
+        std::thread::sleep(CLAUDE_SNAPSHOT_RETRY_PAUSE);
+    };
     ProbedIdentity { selector, parsed }
 }
 
@@ -511,6 +612,7 @@ fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
     let selector = env_path_selector(&request.env_view(), CODEX_IDENTITY_ENV);
     let mut capture = converse(
         request,
+        request.deadline(),
         &codex_argv(&request.bin),
         &codex_request_lines(),
         StdinAfterRequests::HoldUntilAnswered,
@@ -560,6 +662,7 @@ fn probe_cursor(request: &UsageProbeRequest) -> ProbedIdentity {
     };
     let capture = converse(
         &guarded,
+        guarded.deadline(),
         &cursor_argv(&request.bin),
         &[],
         StdinAfterRequests::Close,
@@ -677,9 +780,14 @@ fn copilot_fetch(request: &UsageProbeRequest, config: String) -> ParsedUsage {
     ];
     // curl reads its config to EOF before it makes the request, so this close is
     // what starts the exchange rather than what ends it.
-    let capture = converse(request, &argv, &[config], StdinAfterRequests::Close, |_| {
-        None
-    });
+    let capture = converse(
+        request,
+        request.deadline(),
+        &argv,
+        &[config],
+        StdinAfterRequests::Close,
+        |_| None,
+    );
     match split_copilot_response(&capture.stdout) {
         Some((status, body)) => parse_copilot_http(status, &body),
         None => capture.failure(

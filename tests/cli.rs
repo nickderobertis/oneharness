@@ -18513,13 +18513,28 @@ fn codex_server_overloaded_with_work_evidence_is_not_retried_or_fallen_through()
     );
     let fx = ConfigFixture::new("server-overloaded-work", &project, "");
     let output = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+            "--stream",
+        ],
         &[],
         &fx.user_config(),
     );
 
     assert_eq!(output.status.code(), Some(1));
-    let value = json_stdout(&output);
+    let terminal = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .next_back()
+        .unwrap();
+    let envelope: Value = serde_json::from_slice(terminal).unwrap();
+    let value = &envelope["report"];
     assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
     assert_eq!(value["results"][0]["usage"]["input_tokens"], 4);
     assert_eq!(value["fallback"]["ran"], "codex");
@@ -18609,6 +18624,57 @@ fn codex_server_overloaded_after_an_answer_is_not_retried_or_fallen_through() {
         .unwrap()
         .is_empty());
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
+}
+
+#[cfg(unix)]
+#[test]
+fn controlled_codex_overload_after_a_tool_event_is_not_retried_or_fallen_through() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("controlled-server-overloaded-answer-work");
+    let store = control_store_dir("overload-answer-work");
+    let log = store.join("app-server.log");
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+        server_overloaded_max_retries = 2
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_CODEX_APP_SERVER_LOG = '{log}', MOCK_CODEX_OVERLOAD_ATTEMPTS = "1", MOCK_CODEX_OVERLOAD_AFTER_TOOL = "1" }}
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#,
+        log = log.display(),
+    );
+    let fx = ConfigFixture::new("controlled-server-overloaded-answer-work", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--control",
+            "--session",
+            "overload-answer-work",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["events"][0]["kind"], "tool_call");
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
+    assert_eq!(app_server_frames(&log, "turn/start").len(), 1);
 }
 
 #[test]

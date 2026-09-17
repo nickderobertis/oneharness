@@ -2589,6 +2589,15 @@ mod tests {
             serde_json::to_value(HistoryLine::Run(HistoryRunRecord::from_record(&read))).unwrap();
         assert!(serde_json::from_value::<HistoryLine>(line.clone()).is_ok());
 
+        // A classified provider failure may exit cleanly and still have only
+        // invocation-bound timing; the failure kind, not the process exit code,
+        // is what says the turn was cut short.
+        let mut clean_classified = partial.clone();
+        clean_classified["status"] = Value::String("ok".to_string());
+        clean_classified["exit_code"] = Value::from(0);
+        clean_classified["error"] = Value::Null;
+        assert!(serde_json::from_value::<HistoryRecord>(clean_classified).is_ok());
+
         // The same shape on a run that succeeded is refused, record and line alike.
         for succeeded in ["ok", "planned"] {
             let mut worked = partial.clone();

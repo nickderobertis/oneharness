@@ -1094,6 +1094,17 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
                 }));
                 if attempt.is_some_and(|attempt| attempt <= overload_attempts) {
+                    if std::env::var_os("MOCK_CODEX_OVERLOAD_AFTER_TOOL").is_some() {
+                        for frame in
+                            include_str!("../fixtures/codex-app-server-command-execution.jsonl")
+                                .lines()
+                        {
+                            send(
+                                &serde_json::from_str(frame)
+                                    .expect("captured app-server frame is JSON"),
+                            );
+                        }
+                    }
                     send(&json!({
                         "jsonrpc": "2.0",
                         "method": "error",

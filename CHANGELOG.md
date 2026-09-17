@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/nickderobertis/oneharness/compare/v0.13.0...v0.13.1) - 2026-09-17
+
+### Fixed
+
+- *(usage)* read a null claude rate-limit snapshot as a transient to retry, never as drift ([#1304](https://github.com/nickderobertis/oneharness/pull/1304))
+
 ## [0.13.0](https://github.com/nickderobertis/oneharness/compare/v0.12.2...v0.13.0) - 2026-09-17
 
 ### Fixed

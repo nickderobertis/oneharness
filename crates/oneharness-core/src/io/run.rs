@@ -4577,7 +4577,12 @@ fn is_server_overloaded_without_work(plan: &HarnessPlan, capture: &Capture) -> b
         .is_some_and(|reading| reading.usage.reports_billed_work());
     let used_tools = events::extract_events(&capture.stdout, plan.output_format)
         .is_some_and(|reading| !reading.events.is_empty());
-    !billed_work && !used_tools
+    // On Codex, normalized text comes only from an agent-message item; the
+    // terminal overload object's diagnostic is not an answer. Retrying after
+    // an emitted answer could repeat work even when usage was not reported.
+    let produced_answer = normalize::extract(&capture.stdout, plan.output_format)
+        .is_some_and(|reading| !reading.text.is_empty());
+    !billed_work && !used_tools && !produced_answer
 }
 
 fn server_overloaded_backoff(attempt: u32) {

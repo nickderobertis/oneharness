@@ -105,7 +105,12 @@ impl RunWork {
     /// signal by contract, so its evidence is always [`RunWork::None`].
     pub fn from_result(result: &RunResult) -> Self {
         let used_tools = result.events.as_ref().is_some_and(|e| !e.is_empty());
-        if used_tools || result.usage.reports_billed_work() {
+        // Refusal text is not work (Claude's quota response is normalized into
+        // `text`), but a Codex overload after an agent message is: Codex's
+        // terminal overload object itself is not normalized as answer text.
+        let overloaded_after_answer = result.failure_kind == Some(FailureKind::ServerOverloaded)
+            && result.text.as_ref().is_some_and(|text| !text.is_empty());
+        if used_tools || result.usage.reports_billed_work() || overloaded_after_answer {
             RunWork::Done
         } else {
             RunWork::None
@@ -740,6 +745,14 @@ mod tests {
         let mut used_tools = zero_work_result();
         used_tools.events = Some(vec![tool_call()]);
         assert_eq!(RunWork::from_result(&used_tools), RunWork::Done);
+
+        let mut overloaded_after_answer = zero_work_result();
+        overloaded_after_answer.failure_kind = Some(FailureKind::ServerOverloaded);
+        overloaded_after_answer.text = Some("partial answer".to_string());
+        assert_eq!(
+            RunWork::from_result(&overloaded_after_answer),
+            RunWork::Done
+        );
     }
 
     /// A result shaped like the real zero-work Claude session-limit rejection.

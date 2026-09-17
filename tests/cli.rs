@@ -18571,6 +18571,47 @@ fn codex_server_overloaded_after_a_tool_event_is_not_retried_or_fallen_through()
 }
 
 #[test]
+fn codex_server_overloaded_after_an_answer_is_not_retried_or_fallen_through() {
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-answer-work");
+    let overloaded_after_answer = serde_json::to_string(concat!(
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"partial answer"}}"#,
+        "\n",
+        r#"{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}"#
+    ))
+    .unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex", "codex:alternate"]
+        run_mode = "fallback"
+        server_overloaded_max_retries = 2
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_EXIT = "1", MOCK_STDOUT = {overloaded_after_answer} }}
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        "#
+    );
+    let fx = ConfigFixture::new("server-overloaded-answer-work", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["text"], "partial answer");
+    assert_eq!(value["results"][0]["failure_kind"], "server_overloaded");
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert!(value["fallback"]["fell_through"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "1");
+}
+
+#[test]
 fn codex_server_overloaded_default_retries_are_bounded_and_persist_the_failure() {
     let mock = mock_bin().display().to_string();
     let counter = temp_counter("server-overloaded-default");

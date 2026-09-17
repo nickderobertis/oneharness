@@ -334,6 +334,12 @@ Use the `just` recipes; do not hand-roll equivalents.
   codex's app-server drops an in-flight reply on EOF, which reported a readable
   45%-used window as unreadable for a whole release, and only the live
   `oh_usage_enforce` phase can catch it — a mock that answers inline cannot.
+  Claude's null `rate_limits` under `rate_limits_available: true` is a
+  **transient** (an expired or refreshing credential), not drift: the pure
+  `claude_usage_snapshot_missing` names it, the probe asks again a bounded
+  number of times inside its one deadline, and the reason says what the
+  payload means — calling it "changed shape" sent a reader after a release
+  break that did not exist.
   And the Cursor probe must keep masking
   `CURSOR_API_KEY` from its child: passing it authenticates rather than selects,
   a hazard any future Cursor dispatch also hits.

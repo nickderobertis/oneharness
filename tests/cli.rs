@@ -20942,6 +20942,312 @@ fn usage_degrades_to_unknown_when_the_claude_payload_changes_shape() {
     );
 }
 
+/// Claude's transient no-snapshot answer, as observed against 2.1.273 on an
+/// identity whose OAuth token was expired or refreshing: a plan string and
+/// `rate_limits_available: true`, with `rate_limits: null`.
+fn claude_snapshot_missing_response() -> String {
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "session": {"total_cost_usd": 0, "model_usage": {}},
+                "subscription_type": "max",
+                "rate_limits_available": true,
+                "rate_limits": null,
+                "behaviors": null
+            }
+        }
+    })
+    .to_string()
+}
+
+/// The mock's invocation counter for a `usage` retry journey, under the suite's
+/// own scratch guard so a failed run gives the directory back too.
+struct UsageAttempts {
+    dir: ScratchDir,
+}
+
+impl UsageAttempts {
+    fn new(tag: &str) -> Self {
+        Self {
+            dir: ScratchDir::new(&format!("usage-attempts-{tag}")).unwrap(),
+        }
+    }
+
+    fn env(&self) -> String {
+        self.dir.path().join("attempts").display().to_string()
+    }
+
+    /// How many times the probe spawned the harness. Absent means it never did,
+    /// which is a failure rather than zero.
+    fn count(&self) -> u32 {
+        std::fs::read_to_string(self.dir.path().join("attempts"))
+            .expect("the mock counted its invocations")
+            .trim()
+            .parse()
+            .expect("a whole number of invocations")
+    }
+}
+
+/// Drive the claude `usage` probe against a mock that counts its invocations,
+/// scripted by `env`, and return (the report, the wall time it took).
+fn claude_counted_probe(
+    attempts: &UsageAttempts,
+    env: &[(&str, &str)],
+    timeout: &str,
+) -> (Value, std::time::Duration) {
+    let counter = attempts.env();
+    let mut envs = vec![
+        ("MOCK_REPLY_AFTER_LINES", "1"),
+        ("MOCK_ATTEMPT_FILE", counter.as_str()),
+    ];
+    envs.extend_from_slice(env);
+    let started = std::time::Instant::now();
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--timeout",
+            timeout,
+            "--compact",
+        ],
+        &envs,
+    );
+    let elapsed = started.elapsed();
+    assert!(
+        output.status.success(),
+        "a probe's answer is data in the report, never a non-zero exit: {:?}",
+        output.status.code()
+    );
+    (json_stdout(&output), elapsed)
+}
+
+/// The sentence the transient answer is reported under, shared by every
+/// journey below so a rewording fails in one place.
+fn assert_transient_snapshot_reason(message: &str) {
+    assert!(
+        message.starts_with(
+            "claude-code returned no rate-limit snapshot (`rate_limits_available` is true \
+             but `rate_limits` is null): the credential is likely expired or refreshing, \
+             or the usage fetch failed; the probe is worth repeating"
+        ),
+        "the reason says what the payload means, its likely causes, and that asking \
+         again is worth it: {message}"
+    );
+    assert!(
+        !message.contains("changed shape") && !message.contains("did not answer"),
+        "a transient is neither a parser break nor a hung harness: {message}"
+    );
+}
+
+#[test]
+fn usage_asks_again_when_claude_could_not_fetch_its_snapshot_and_reports_the_second_answer() {
+    // The observed transient cleared on its own; the probe asks again before it
+    // settles, and the report carries the headroom the second answer held — so
+    // a reader deciding which identity can carry a run sees the account, not
+    // the moment.
+    let attempts = UsageAttempts::new("recovers");
+    let (report, _) = claude_counted_probe(
+        &attempts,
+        &[
+            ("MOCK_STDOUT_1", &claude_snapshot_missing_response()),
+            ("MOCK_STDOUT", &claude_usage_response()),
+        ],
+        "30",
+    );
+
+    let claude = usage_identity(&report, "claude-code");
+    assert_eq!(claude["availability"]["state"], "available", "{claude}");
+    assert_eq!(claude["plan"], "max");
+    let windows = claude["availability"]["windows"]
+        .as_array()
+        .expect("windows");
+    let five_hour = windows
+        .iter()
+        .find(|w| w["id"] == "five_hour")
+        .expect("five_hour");
+    assert_eq!(five_hour["usage"]["used_percent"], 42.0);
+    assert_eq!(
+        attempts.count(),
+        2,
+        "one ask for the transient, one for the answer, and no third"
+    );
+}
+
+#[test]
+fn usage_settles_on_the_transient_after_a_bounded_number_of_asks_inside_its_timeout() {
+    // A credential that stays expired answers so indefinitely. The probe asks a
+    // bounded number of times, says how many, and settles well inside the
+    // timeout it was given — `unknown`, with no window a renderer could draw.
+    let attempts = UsageAttempts::new("persists");
+    let (report, elapsed) = claude_counted_probe(
+        &attempts,
+        &[("MOCK_STDOUT", &claude_snapshot_missing_response())],
+        "30",
+    );
+
+    let claude = usage_identity(&report, "claude-code");
+    let message = probe_failure_message(&report);
+    assert_transient_snapshot_reason(&message);
+    assert!(
+        message.ends_with("(answered so 3 times in a row)"),
+        "the reason says how many times the CLI answered so: {message}"
+    );
+    assert_eq!(attempts.count(), 3, "the bound is three attempts in all");
+    assert!(
+        elapsed < std::time::Duration::from_secs(30),
+        "three attempts a second apart settle inside the timeout, not at it: {elapsed:?}"
+    );
+    assert!(
+        claude["availability"]["windows"].is_null(),
+        "no window and no percentage for an identity nothing was learned about: {claude}"
+    );
+    assert_eq!(claude["plan"], Value::Null);
+}
+
+#[test]
+fn usage_does_not_ask_again_when_the_pause_would_outlive_its_timeout() {
+    // The retry lives inside the caller's timeout: with no room left for the
+    // pause after the first answer, the probe settles on that answer at once —
+    // and reports it, never the deadline, because an answer WAS received.
+    let attempts = UsageAttempts::new("budget");
+    let (report, _) = claude_counted_probe(
+        &attempts,
+        &[("MOCK_STDOUT", &claude_snapshot_missing_response())],
+        "1",
+    );
+
+    let message = probe_failure_message(&report);
+    assert_transient_snapshot_reason(&message);
+    assert!(
+        message.ends_with("(answered so once; the timeout left no room to ask again)"),
+        "{message}"
+    );
+    assert_eq!(attempts.count(), 1, "no second invocation");
+
+    // The same sentence is what a human reads on the identity's `unknown:` line.
+    let text_attempts = UsageAttempts::new("budget-text");
+    let counter = text_attempts.env();
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "claude-code",
+            "--bin",
+            &bin_override("claude-code"),
+            "--timeout",
+            "1",
+            "--format",
+            "text",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "1"),
+            ("MOCK_ATTEMPT_FILE", counter.as_str()),
+            ("MOCK_STDOUT", &claude_snapshot_missing_response()),
+        ],
+    );
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(&format!("  unknown: {message}\n")),
+        "the text rendering carries the same reason: {text}"
+    );
+}
+
+#[test]
+fn usage_keeps_the_transient_diagnosis_when_a_further_ask_produces_nothing() {
+    // The answer already in hand is the diagnosis; a retry that exits without
+    // one does not replace it with a sentence about a harness that never spoke.
+    let attempts = UsageAttempts::new("then-silent");
+    let (report, _) = claude_counted_probe(
+        &attempts,
+        &[
+            ("MOCK_STDOUT_1", &claude_snapshot_missing_response()),
+            ("MOCK_STDOUT", ""),
+        ],
+        "30",
+    );
+
+    let message = probe_failure_message(&report);
+    assert_transient_snapshot_reason(&message);
+    assert!(
+        message.ends_with("(answered so once; a further attempt produced no answer)"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("exited without an answer"),
+        "the unanswered retry is said, not reported as the outcome: {message}"
+    );
+    assert_eq!(attempts.count(), 2);
+}
+
+#[test]
+fn usage_asks_once_for_every_settled_claude_answer() {
+    // Only the transient earns a second ask. Drift, API-key auth, and a child
+    // that exits without answering are each the CLI's settled word: one
+    // invocation, and today's message unchanged.
+    let drifted = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "subscription_type": "max",
+                "rate_limits_available": true,
+                "rate_limits": []
+            }
+        }
+    })
+    .to_string();
+    let attempts = UsageAttempts::new("drift");
+    let (report, _) = claude_counted_probe(&attempts, &[("MOCK_STDOUT", &drifted)], "30");
+    let message = probe_failure_message(&report);
+    assert_eq!(
+        message,
+        "claude-code's `get_usage` payload changed shape: `rate_limits_available` is true \
+         but `rate_limits` is not an object"
+    );
+    assert_eq!(attempts.count(), 1, "drift is not asked twice");
+
+    let api_key = serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "oneharness-usage-1",
+            "response": {
+                "subscription_type": null,
+                "rate_limits_available": false,
+                "rate_limits": null
+            }
+        }
+    })
+    .to_string();
+    let attempts = UsageAttempts::new("api-key");
+    let (report, _) = claude_counted_probe(&attempts, &[("MOCK_STDOUT", &api_key)], "30");
+    let claude = usage_identity(&report, "claude-code");
+    assert_eq!(claude["availability"]["state"], "unavailable");
+    assert_eq!(claude["availability"]["reason"], "api_key_auth");
+    assert_eq!(attempts.count(), 1, "API-key auth is not asked twice");
+
+    let attempts = UsageAttempts::new("silent");
+    let (report, _) = claude_counted_probe(&attempts, &[("MOCK_STDOUT", "")], "30");
+    let message = probe_failure_message(&report);
+    assert_eq!(
+        message,
+        "claude-code's `get_usage` control request exited without an answer: no output"
+    );
+    assert_eq!(
+        attempts.count(),
+        1,
+        "a child that never answered is not asked twice"
+    );
+}
+
 #[test]
 fn usage_reports_a_malformed_payload_and_a_timeout_as_data_not_a_crash() {
     let garbled = run(

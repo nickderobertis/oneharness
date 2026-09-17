@@ -127,6 +127,52 @@ field's *absence* — an absent discriminator means API-key auth, an absent flag
 means no headroom — so a rename would otherwise publish “no headroom” as fact
 for every user at once.
 
+**The transient no-snapshot answer (observed, `claude` 2.1.273).** An identity
+whose OAuth token is expired or refreshing, with no cached snapshot in its
+`.claude.json`, answers the same control request with every contracted field in
+place and the snapshot itself null:
+
+```console
+{"type":"control_response","response":{"subtype":"success","request_id":"oneharness-usage-1","response":{
+  "session":{"total_cost_usd":0,"total_api_duration_ms":0,"model_usage":{}},
+  "subscription_type":"<PLAN:enum>",
+  "rate_limits_available":true,
+  "rate_limits":null, ...}}}
+```
+
+`subscription_type` a plan string and `rate_limits_available: true` say “a
+subscription account with windows”; `rate_limits: null` says “claude-code could
+not fetch the snapshot right now”. Forty minutes later the same identity
+answered normally, and three sibling identities answered normally throughout on
+the same binary — a transient, not drift. Reading it as drift sent a reader
+after a claude-code release that had not broken anything, so the parser names
+it instead (`claude_usage_snapshot_missing`): still **unknown**, never a number,
+under a `probe_failed` message that says what the payload carried, that the
+credential is likely expired or refreshing or the usage fetch failed, and that
+the probe is worth repeating. Every *other* non-object `rate_limits` — an
+array, a string, a number, a boolean — is still drift, and a null one under
+`rate_limits_available: false` keeps its affirmative reading above.
+
+To reproduce it without a real credential: copy a `.credentials.json` into an
+empty directory, replace **both** `accessToken` and `refreshToken` with invalid
+strings (so nothing can refresh and no real token leaves the box), export
+`CLAUDE_CONFIG_DIR` at that directory, and send the request above.
+
+**Retry policy.** Because the answer clears on its own, the probe asks again
+before it settles: three attempts in all, one second apart, each a fresh
+`claude -p` (the control request is answered on the way out of the input
+stream, so there is no second ask within one process). Every attempt reads
+against the one deadline the probe computed from its timeout, and a retry is
+taken only when its pause fits in the time left — so a retry never outlives
+`--timeout`, and a short timeout settles on the first answer at once. The
+settled reason says how many times in a row the CLI answered so, and, when
+that is fewer than the bound, why it stopped asking. Nothing else is retried:
+drift, an API-key answer, a timeout, a child that exits without answering and
+a spawn failure are each one attempt. The numbers are
+`CLAUDE_SNAPSHOT_ATTEMPTS` and `CLAUDE_SNAPSHOT_RETRY_PAUSE` in `io::usage`,
+and `documented_claude_snapshot_retry_tracks_the_constants` holds this prose
+to them.
+
 ### `codex` — the app-server `account/rateLimits/read`
 
 **Observed.** Spawn `codex app-server --stdio`; send `initialize`, the

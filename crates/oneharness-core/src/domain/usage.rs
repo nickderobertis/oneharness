@@ -1125,6 +1125,9 @@ pub fn claude_control_response(line: &Value) -> Option<&Value> {
 ///
 /// A *new* key or a new `kind` alongside a recognized one is not drift: the key
 /// set is open by contract and unknown keys already degrade to an opaque window.
+/// Nor is the transient no-snapshot answer ([`claude_usage_snapshot_missing`]):
+/// every field it carries is the contracted one, and calling it drift sent a
+/// reader chasing a parser break that did not exist.
 fn claude_usage_drift(payload: &Value) -> Option<String> {
     match payload.get("subscription_type") {
         None => return Some("the payload carries no `subscription_type` field".to_string()),
@@ -1146,6 +1149,11 @@ fn claude_usage_drift(payload: &Value) -> Option<String> {
     if !available {
         // An affirmative "no plan headroom" — the API-key answer, and the one
         // shape that needs no window surface at all.
+        return None;
+    }
+    if claude_usage_snapshot_missing(payload) {
+        // Nothing was renamed: the CLI is saying it could not fetch the
+        // snapshot right now, which is a transient the parser names as one.
         return None;
     }
     let Some(rate_limits) = payload.get("rate_limits").filter(|value| value.is_object()) else {
@@ -1184,6 +1192,42 @@ fn claude_usage_drift(payload: &Value) -> Option<String> {
     ))
 }
 
+/// Whether a Claude `get_usage` payload is the **transient** no-snapshot answer:
+/// a subscription account with windows (`subscription_type` a plan string,
+/// `rate_limits_available` true) whose snapshot claude-code could not fetch
+/// right now (`rate_limits` JSON `null`).
+///
+/// Observed against claude-code 2.1.273 on an identity whose OAuth token was
+/// expired or refreshing and which had no cached snapshot; forty minutes later
+/// the same identity answered normally, and three sibling identities answered
+/// normally throughout on the same binary. So it is not drift — nothing moved —
+/// and [`claude_usage_drift`] lets it through, while [`parse_claude_get_usage`]
+/// reads it as [`UnknownReason::ProbeFailed`] with
+/// [`CLAUDE_SNAPSHOT_MISSING_MESSAGE`]. It is public because the probe decides
+/// whether to ask again from this predicate, never from that message. Any other
+/// non-object `rate_limits` (an array, a string, a number, a boolean) is still
+/// drift, and a null one under `rate_limits_available: false` keeps its
+/// affirmative reading.
+#[must_use]
+pub fn claude_usage_snapshot_missing(payload: &Value) -> bool {
+    payload
+        .get("subscription_type")
+        .is_some_and(Value::is_string)
+        && payload
+            .get("rate_limits_available")
+            .and_then(Value::as_bool)
+            == Some(true)
+        && payload.get("rate_limits").is_some_and(Value::is_null)
+}
+
+/// The reason a payload [`claude_usage_snapshot_missing`] accepts is reported
+/// under: what the payload carried, the likely causes, and that the probe is
+/// worth repeating. A reader chasing a parser break here would be chasing a
+/// release that did not happen; the answer is to ask again in a minute.
+pub const CLAUDE_SNAPSHOT_MISSING_MESSAGE: &str = "claude-code returned no rate-limit snapshot \
+    (`rate_limits_available` is true but `rate_limits` is null): the credential is likely \
+    expired or refreshing, or the usage fetch failed; the probe is worth repeating";
+
 /// Every `limits[].kind` the observed payload carries. `weekly_scoped` maps to
 /// no named window key (see [`CLAUDE_LIMIT_KIND_KEYS`]) but is still an expected
 /// member, so the drift guard recognizes it.
@@ -1211,12 +1255,20 @@ fn is_known_claude_limit_kind(kind: &str) -> bool {
 /// Every affirmative state below rests on a field's absence, so the payload is
 /// checked for contract drift first ([`claude_usage_drift`]) and a drifted one
 /// degrades to [`UsageAvailability::Unknown`]. That check is not a step a caller
-/// can skip: there is no unguarded way in.
+/// can skip: there is no unguarded way in. The one non-object `rate_limits` that
+/// is not drift is the transient no-snapshot answer
+/// ([`claude_usage_snapshot_missing`]), which degrades to the same state under
+/// a message that says what the payload means rather than that its shape moved.
 #[must_use]
 pub fn parse_claude_get_usage(payload: &Value) -> ParsedUsage {
     if let Some(reason) = claude_usage_drift(payload) {
         return ParsedUsage::unknown(UnknownReason::ProbeFailed {
             message: format!("claude-code's `get_usage` payload changed shape: {reason}"),
+        });
+    }
+    if claude_usage_snapshot_missing(payload) {
+        return ParsedUsage::unknown(UnknownReason::ProbeFailed {
+            message: CLAUDE_SNAPSHOT_MISSING_MESSAGE.to_string(),
         });
     }
 
@@ -2229,6 +2281,98 @@ mod tests {
         );
     }
 
+    /// The observed transient: a plan string and `rate_limits_available: true`
+    /// with `rate_limits: null` — a subscription whose snapshot claude-code
+    /// could not fetch right now.
+    fn claude_snapshot_missing_payload() -> Value {
+        json!({
+            "session": {"total_cost_usd": 0, "model_usage": {}},
+            "subscription_type": "max",
+            "rate_limits_available": true,
+            "rate_limits": null,
+            "behaviors": null
+        })
+    }
+
+    #[test]
+    fn claude_missing_snapshot_is_a_transient_that_says_what_the_payload_means() {
+        let parsed = parse_claude_get_usage(&claude_snapshot_missing_payload());
+
+        let UsageAvailability::Unknown {
+            reason: UnknownReason::ProbeFailed { message },
+        } = parsed.availability
+        else {
+            panic!("a missing snapshot is unknown, never a number: {parsed:?}");
+        };
+        assert!(
+            message.contains("returned no rate-limit snapshot")
+                && message.contains("`rate_limits_available` is true")
+                && message.contains("`rate_limits` is null"),
+            "the message says what the payload carried: {message}"
+        );
+        assert!(
+            message.contains("expired or refreshing") && message.contains("usage fetch failed"),
+            "the message names the likely causes: {message}"
+        );
+        assert!(
+            message.contains("worth repeating"),
+            "the message says the probe is worth repeating: {message}"
+        );
+        assert!(
+            !message.contains("changed shape"),
+            "a transient is not a parser break, and saying so sent a reader after one: {message}"
+        );
+    }
+
+    #[test]
+    fn claude_snapshot_missing_recognizes_exactly_the_transient_shape() {
+        assert!(claude_usage_snapshot_missing(
+            &claude_snapshot_missing_payload()
+        ));
+
+        assert!(
+            !claude_usage_snapshot_missing(&claude_subscription_payload()),
+            "a full snapshot is an answer"
+        );
+        assert!(
+            !claude_usage_snapshot_missing(&json!({
+                "subscription_type": null,
+                "rate_limits_available": false,
+                "rate_limits": null
+            })),
+            "API-key auth is an affirmative answer, not a missing one"
+        );
+        for non_object in [json!([]), json!("none"), json!(0), json!(false)] {
+            let mut payload = claude_snapshot_missing_payload();
+            payload["rate_limits"] = non_object.clone();
+            assert!(
+                !claude_usage_snapshot_missing(&payload),
+                "{non_object} is a shape the parser was not written against, not a transient"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_every_other_non_object_rate_limits_is_still_drift() {
+        for non_object in [json!([]), json!("none"), json!(0), json!(false)] {
+            let mut payload = claude_snapshot_missing_payload();
+            payload["rate_limits"] = non_object.clone();
+
+            let parsed = parse_claude_get_usage(&payload);
+
+            let UsageAvailability::Unknown {
+                reason: UnknownReason::ProbeFailed { message },
+            } = parsed.availability
+            else {
+                panic!("{non_object} is drift, never an answer: {parsed:?}");
+            };
+            assert!(
+                message.contains("changed shape") && message.contains("rate_limits"),
+                "{non_object} keeps the drift verdict: {message}"
+            );
+        }
+    }
+
     #[test]
     fn claude_control_response_unwraps_only_a_successful_usage_line() {
         let payload = claude_subscription_payload();
@@ -3011,7 +3155,7 @@ mod tests {
 
     #[test]
     fn claude_drift_guard_catches_rate_limits_that_stopped_being_an_object() {
-        let payload = json!({
+        let mut payload = json!({
             "subscription_type": "max",
             "rate_limits_available": true,
             "rate_limits": []
@@ -3019,6 +3163,20 @@ mod tests {
 
         let drift = claude_usage_drift(&payload).expect("a non-object surface is drift");
         assert!(drift.contains("rate_limits"), "{drift}");
+
+        // Every non-object but the transient null keeps that verdict.
+        for non_object in [json!("none"), json!(0), json!(false)] {
+            let mut payload = payload.clone();
+            payload["rate_limits"] = non_object.clone();
+            let drift = claude_usage_drift(&payload)
+                .unwrap_or_else(|| panic!("{non_object} is a non-object surface, so drift"));
+            assert!(drift.contains("rate_limits"), "{drift}");
+        }
+
+        // The observed transient is the one null the guard lets through: nothing
+        // in it moved, and the parser names it as a transient instead.
+        payload["rate_limits"] = Value::Null;
+        assert_eq!(claude_usage_drift(&payload), None);
     }
 
     #[test]

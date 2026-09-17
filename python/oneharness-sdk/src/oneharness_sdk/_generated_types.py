@@ -42,6 +42,7 @@ class _RunOptionsOptional(TypedDict, total=False):
     run_mode: str
     schema: str
     schema_max_retries: int
+    server_overloaded_max_retries: int
     session: str
     session_dir: str
     spy_file: str

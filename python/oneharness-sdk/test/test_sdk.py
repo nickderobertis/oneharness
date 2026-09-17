@@ -138,6 +138,7 @@ POPULATED: dict[str, Any] = {
     "runMode": "parallel",
     "schema": "/nowhere/schema.json",
     "schemaMaxRetries": 2,
+    "serverOverloadedMaxRetries": 3,
     "session": "work",
     "sessionDir": "/nowhere/sessions",
     "spyFile": "/nowhere/spy.jsonl",

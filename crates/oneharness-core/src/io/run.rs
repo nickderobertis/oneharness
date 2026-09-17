@@ -29,6 +29,7 @@
 //! emitted them, so a warning a run produces is never silently dropped.
 
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 /// Finite backstop applied only when an omitted timeout meets a mode that may
@@ -252,6 +253,9 @@ pub struct RunRequest {
     pub schema: Option<PathBuf>,
     /// Max re-prompts when a response fails schema validation (default 2).
     pub schema_max_retries: Option<u32>,
+    /// Max retries for a zero-work Codex server-overloaded refusal; omitted
+    /// uses [`crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT`].
+    pub server_overloaded_max_retries: Option<u32>,
     /// Also write each harness's raw stdout/stderr under this directory.
     pub output_dir: Option<PathBuf>,
     /// Per-harness timeout in seconds; omitted or zero means no timeout.
@@ -551,6 +555,10 @@ pub fn run_supervised(
         .schema_max_retries
         .or(cfg.schema_max_retries)
         .unwrap_or(2);
+    let server_overloaded_max_retries = args
+        .server_overloaded_max_retries
+        .or(cfg.server_overloaded_max_retries)
+        .unwrap_or(crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT);
     // A CLI selection (--all / --harness) replaces the config selection
     // entirely; config `exclude` still applies unless --exclude is given.
     let (all, include) = if args.all || !args.harness.is_empty() {
@@ -1213,6 +1221,7 @@ pub fn run_supervised(
             controlled.as_ref(),
             &mut event_sink,
             spawn,
+            server_overloaded_max_retries,
         );
         streamed_history = streamed.history;
         // A driven turn's signals are applied per candidate, inside the driver:
@@ -1253,11 +1262,11 @@ pub fn run_supervised(
         );
         (results, None)
     } else if let Some(chain) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
-        // One turn, one capture: `--schema` (the only thing that re-runs a job)
-        // is refused alongside `--control` up front. Parallel selection is one
-        // harness under `--control`, so the single candidate binds the channel
-        // once for the run's one turn — the same binding a chain does per
-        // candidate, on a chain of one.
+        // `--schema` is refused alongside `--control` up front. Parallel
+        // selection is one harness under `--control`, so the single candidate
+        // binds the channel once while any zero-work overload retries repeat
+        // its turn — the same binding a chain does per candidate, on a chain
+        // of one.
         let shape = specs[0]
             .control
             .expect("validate_control refuses a controlled harness with no mechanism");
@@ -1266,52 +1275,66 @@ pub fn run_supervised(
             Plan::Pending { model, .. } => model.clone(),
             Plan::Ready(_) => None,
         };
-        chain.bind(
-            shape,
-            specs[0],
-            &selected_ids[0],
-            candidate_model.as_deref(),
-            &prompt,
-        );
         let input = runner::ControlledInput {
             handle: chain.handle,
             prompt,
         };
-        let capture = runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
-            runner::StreamStep::Continue
-        });
-        let results = plan
-            .into_iter()
-            .map(|entry| match entry {
-                Plan::Ready(result) => *result,
-                Plan::Pending {
-                    spec,
-                    bin,
-                    output_format,
-                    job_index,
-                    prompt,
-                    model,
-                } => {
-                    let mut result = executed_result(
+        let mut attempts = 0;
+        let results = loop {
+            attempts += 1;
+            chain.bind(
+                shape,
+                specs[0],
+                &selected_ids[0],
+                candidate_model.as_deref(),
+                &input.prompt,
+            );
+            let capture =
+                runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
+                    runner::StreamStep::Continue
+                });
+            let results: Vec<_> = plan
+                .iter()
+                .map(|entry| match entry {
+                    Plan::Ready(result) => (**result).clone(),
+                    Plan::Pending {
                         spec,
                         bin,
-                        jobs[job_index].argv.clone(),
                         output_format,
-                        &capture,
-                        schema.as_ref(),
-                        1,
+                        job_index,
                         prompt,
                         model,
-                    );
-                    // Read off the conversation before the mechanism is
-                    // released: a driven turn's session id and answer are
-                    // knowable only from its protocol frames.
-                    apply_dialogue_signals(&mut result, chain.handle);
-                    result
-                }
-            })
-            .collect();
-        chain.handle.release();
+                    } => {
+                        let mut result = executed_result(
+                            spec,
+                            bin.clone(),
+                            jobs[*job_index].argv.clone(),
+                            *output_format,
+                            &capture,
+                            schema.as_ref(),
+                            attempts,
+                            prompt.clone(),
+                            model.clone(),
+                        );
+                        // Read off the conversation before the mechanism is
+                        // released: a driven turn's session id and answer are
+                        // knowable only from its protocol frames.
+                        apply_dialogue_signals(&mut result, chain.handle);
+                        result
+                    }
+                })
+                .collect();
+            chain.handle.release();
+            let retry = attempts <= server_overloaded_max_retries
+                && results.iter().any(|result| {
+                    result.failure_kind == Some(signals::FailureKind::ServerOverloaded)
+                        && fallback::RunWork::from_result(result) == fallback::RunWork::None
+                });
+            if !retry {
+                break results;
+            }
+            server_overloaded_backoff(attempts);
+        };
         (results, None)
     } else if fallback_mode && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.
@@ -1322,7 +1345,10 @@ pub fn run_supervised(
             &jobs,
             &job_plans,
             schema.as_ref(),
-            max_retries,
+            RetryLimits {
+                schema: max_retries,
+                server_overloaded: server_overloaded_max_retries,
+            },
             multi_model,
             spawn,
         );
@@ -1338,6 +1364,10 @@ pub fn run_supervised(
         // token saving on these CLIs (a static --system is re-created per
         // process, so plain warm-then-fan saves nothing). It needs the warm-up's
         // *runtime* session id, so it cannot run under --print-command.
+        // Codex cannot enter this branch: `server_overloaded` is a Codex-only
+        // failure dialect, while only Claude Code declares `fork_reuses_cache`.
+        // Codex batches therefore use `run_in_waves` below, including its
+        // same-candidate overload retry policy.
         let fork_batch = batch_run
             && batch_strategy == BatchStrategy::MinTokens
             && specs[0].fork_reuses_cache
@@ -1386,7 +1416,10 @@ pub fn run_supervised(
                 &jobs,
                 &job_plans,
                 schema.as_ref(),
-                max_retries,
+                RetryLimits {
+                    schema: max_retries,
+                    server_overloaded: server_overloaded_max_retries,
+                },
                 max_parallel,
                 &waves,
                 spawn,
@@ -2573,6 +2606,7 @@ fn drive_plan_sequentially(
     controlled: Option<&ControlledRun<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
     spawn: SpawnControls<'_>,
+    server_overloaded_max_retries: u32,
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
     let mut history: Vec<StreamedHistory> = Vec::new();
@@ -2605,21 +2639,39 @@ fn drive_plan_sequentially(
                     model,
                     harness_id: unit_ids[index],
                 };
-                match controlled {
+                let mut run_candidate = || match controlled {
                     // Every candidate, not just one chosen up front: the channel
                     // binds to whichever is serving and releases when its turn
                     // ends, so a chain that falls through carries control with
                     // it instead of leaving the rest of the run unaddressable.
                     Some(chain) => drive_controlled_candidate(
-                        unit,
+                        unit.clone(),
                         chain,
                         index,
                         history_writer.zip(run_id),
                         sink,
                         spawn,
                     ),
-                    None => stream_one_harness(unit, history_writer.zip(run_id), None, sink, spawn),
+                    None => stream_one_harness(
+                        unit.clone(),
+                        history_writer.zip(run_id),
+                        None,
+                        sink,
+                        spawn,
+                    ),
+                };
+                let mut streamed = run_candidate();
+                for retry in 0..server_overloaded_max_retries {
+                    if streamed.result.failure_kind != Some(signals::FailureKind::ServerOverloaded)
+                        || fallback::RunWork::from_result(&streamed.result)
+                            != fallback::RunWork::None
+                    {
+                        break;
+                    }
+                    server_overloaded_backoff(retry + 1);
+                    streamed = run_candidate();
                 }
+                streamed
             }
         };
         let StreamedHarness {
@@ -2717,6 +2769,7 @@ struct StreamedHarness {
 }
 
 /// One plan entry, resolved, as the streaming driver needs it.
+#[derive(Clone)]
 struct StreamedUnit<'a> {
     job: &'a Job,
     spec: &'static HarnessSpec,
@@ -3467,7 +3520,7 @@ fn run_in_waves(
     jobs: &[Job],
     job_plans: &[HarnessPlan],
     schema: Option<&Schema>,
-    max_retries: u32,
+    retry_limits: RetryLimits,
     max_parallel: usize,
     waves: &[Vec<usize>],
     spawn: SpawnControls<'_>,
@@ -3475,19 +3528,64 @@ fn run_in_waves(
     let mut slots: Vec<Option<Outcome>> = (0..jobs.len()).map(|_| None).collect();
     for wave in waves {
         let wave_jobs: Vec<Job> = wave.iter().map(|&i| jobs[i].clone()).collect();
+        let overload_attempts: Vec<_> = wave.iter().map(|_| AtomicU32::new(0)).collect();
+        let schema_attempts: Vec<_> = wave.iter().map(|_| AtomicU32::new(0)).collect();
         let outs = match schema {
-            // Structured output: after each run, validate and (if it failed and
-            // retries remain) re-run with a feedback prompt. The closure is pure
-            // domain validation; the runner owns the spawning.
+            // After each run, first retry a zero-work overload (including its
+            // bounded backoff), otherwise validate structured output and, when
+            // retries remain, rebuild with a feedback prompt. The runner owns
+            // the spawning.
             Some(sch) => runner::run_jobs_supervised(
                 &wave_jobs,
                 max_parallel,
                 spawn,
-                |k, attempt, capture| {
-                    retry_decision(&job_plans[wave[k]], sch, attempt, max_retries, capture)
+                |k, _attempt, capture| {
+                    let overload_attempt = overload_attempts[k].load(Ordering::Relaxed) + 1;
+                    if let Some(next) = server_overloaded_retry_after_backoff(
+                        &job_plans[wave[k]],
+                        overload_attempt,
+                        retry_limits.server_overloaded,
+                        capture,
+                        Some(sch),
+                    ) {
+                        overload_attempts[k].fetch_add(1, Ordering::Relaxed);
+                        return Some(next);
+                    }
+                    if is_server_overloaded_without_work(&job_plans[wave[k]], capture) {
+                        return None;
+                    }
+                    let schema_attempt = schema_attempts[k].load(Ordering::Relaxed) + 1;
+                    let next = retry_decision(
+                        &job_plans[wave[k]],
+                        sch,
+                        schema_attempt,
+                        retry_limits.schema,
+                        capture,
+                    );
+                    if next.is_some() {
+                        schema_attempts[k].fetch_add(1, Ordering::Relaxed);
+                    }
+                    next
                 },
             ),
-            None => runner::run_jobs_supervised(&wave_jobs, max_parallel, spawn, |_, _, _| None),
+            None => runner::run_jobs_supervised(
+                &wave_jobs,
+                max_parallel,
+                spawn,
+                |k, _attempt, capture| {
+                    let overload_attempt = overload_attempts[k].load(Ordering::Relaxed) + 1;
+                    server_overloaded_retry_after_backoff(
+                        &job_plans[wave[k]],
+                        overload_attempt,
+                        retry_limits.server_overloaded,
+                        capture,
+                        None,
+                    )
+                    .inspect(|_| {
+                        overload_attempts[k].fetch_add(1, Ordering::Relaxed);
+                    })
+                },
+            ),
         };
         for (k, out) in outs.into_iter().enumerate() {
             slots[wave[k]] = Some(out);
@@ -3639,23 +3737,50 @@ fn validate_multi_model(
     Ok(())
 }
 
-/// Run a single harness job under the structured-output retry loop — the
-/// one-harness analogue of a [`run_in_waves`] wave of size one — returning its
-/// outcome. Used by the fallback driver, which spawns harnesses one at a time.
+/// Run a single harness job under the overload and structured-output retry
+/// loops — the one-harness analogue of a [`run_in_waves`] wave of size one —
+/// returning its outcome. Used by the fallback driver, which spawns harnesses
+/// one at a time.
+#[derive(Clone, Copy)]
+struct RetryLimits {
+    schema: u32,
+    server_overloaded: u32,
+}
+
 fn run_one_job(
     job: &Job,
     plan: &HarnessPlan,
     schema: Option<&Schema>,
-    max_retries: u32,
+    retry_limits: RetryLimits,
     spawn: SpawnControls<'_>,
 ) -> Outcome {
     let jobs = std::slice::from_ref(job);
-    let outs = match schema {
-        Some(sch) => runner::run_jobs_supervised(jobs, 1, spawn, |_, attempt, capture| {
-            retry_decision(plan, sch, attempt, max_retries, capture)
-        }),
-        None => runner::run_jobs_supervised(jobs, 1, spawn, |_, _, _| None),
-    };
+    let overload_attempts = AtomicU32::new(0);
+    let schema_attempts = AtomicU32::new(0);
+    let outs = runner::run_jobs_supervised(jobs, 1, spawn, |_, _attempt, capture| {
+        let overload_attempt = overload_attempts.load(Ordering::Relaxed) + 1;
+        if let Some(next) = server_overloaded_retry_after_backoff(
+            plan,
+            overload_attempt,
+            retry_limits.server_overloaded,
+            capture,
+            schema,
+        ) {
+            overload_attempts.fetch_add(1, Ordering::Relaxed);
+            return Some(next);
+        }
+        if is_server_overloaded_without_work(plan, capture) {
+            return None;
+        }
+        schema.and_then(|sch| {
+            let schema_attempt = schema_attempts.load(Ordering::Relaxed) + 1;
+            let next = retry_decision(plan, sch, schema_attempt, retry_limits.schema, capture);
+            if next.is_some() {
+                schema_attempts.fetch_add(1, Ordering::Relaxed);
+            }
+            next
+        })
+    });
     outs.into_iter().next().expect("one job, one outcome")
 }
 
@@ -3673,7 +3798,7 @@ fn run_fallback(
     jobs: &[Job],
     job_plans: &[HarnessPlan],
     schema: Option<&Schema>,
-    max_retries: u32,
+    retry_limits: RetryLimits,
     multi_model: bool,
     spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport) {
@@ -3698,7 +3823,7 @@ fn run_fallback(
                     &jobs[job_index],
                     &job_plans[job_index],
                     schema,
-                    max_retries,
+                    retry_limits,
                     spawn,
                 );
                 let command = jobs[job_index].argv.clone();
@@ -4395,6 +4520,68 @@ fn retry_decision(
         argv: built.argv,
         stdin: built.stdin,
     })
+}
+
+/// Initial and maximum delay for same-candidate Codex overload retries. The
+/// exponential is saturated and capped, so every wait remains bounded even for
+/// an unusually large configured retry count.
+const SERVER_OVERLOADED_BACKOFF_INITIAL_MS: u64 = 100;
+const SERVER_OVERLOADED_BACKOFF_MAX_MS: u64 = 1_000;
+const SERVER_OVERLOADED_BACKOFF_INITIAL: Duration =
+    Duration::from_millis(SERVER_OVERLOADED_BACKOFF_INITIAL_MS);
+const SERVER_OVERLOADED_BACKOFF_MAX: Duration =
+    Duration::from_millis(SERVER_OVERLOADED_BACKOFF_MAX_MS);
+
+fn server_overloaded_retry_after_backoff(
+    plan: &HarnessPlan,
+    attempt: u32,
+    max_retries: u32,
+    capture: &Capture,
+    schema: Option<&Schema>,
+) -> Option<NextRun> {
+    if attempt > max_retries || !is_server_overloaded_without_work(plan, capture) {
+        return None;
+    }
+    server_overloaded_backoff(attempt);
+    let built = plan.build(schema, None);
+    Some(NextRun {
+        argv: built.argv,
+        stdin: built.stdin,
+    })
+}
+
+fn is_server_overloaded_without_work(plan: &HarnessPlan, capture: &Capture) -> bool {
+    if !matches!(capture.status, Status::Ok | Status::Nonzero) {
+        return false;
+    }
+    let failure =
+        signals::detect_harness_provider_failure(failure_dialect(plan.spec), &capture.stdout);
+    if failure.map(|failure| failure.kind) != Some(signals::FailureKind::ServerOverloaded) {
+        return false;
+    }
+    let billed_work = signals::extract_usage(&capture.stdout)
+        .is_some_and(|reading| reading.usage.reports_billed_work());
+    let used_tools = events::extract_events(&capture.stdout, plan.output_format)
+        .is_some_and(|reading| !reading.events.is_empty());
+    // On Codex, normalized text comes only from an agent-message item; the
+    // terminal overload object's diagnostic is not an answer. Retrying after
+    // an emitted answer could repeat work even when usage was not reported.
+    let produced_answer = normalize::extract(&capture.stdout, plan.output_format)
+        .is_some_and(|reading| !reading.text.is_empty());
+    !billed_work && !used_tools && !produced_answer
+}
+
+fn server_overloaded_backoff(attempt: u32) {
+    std::thread::sleep(server_overloaded_backoff_duration(attempt));
+}
+
+fn server_overloaded_backoff_duration(attempt: u32) -> Duration {
+    let shift = attempt.saturating_sub(1).min(31);
+    let millis = SERVER_OVERLOADED_BACKOFF_INITIAL
+        .as_millis()
+        .saturating_mul(1u128 << shift)
+        .min(SERVER_OVERLOADED_BACKOFF_MAX.as_millis()) as u64;
+    Duration::from_millis(millis)
 }
 
 /// Load and compile the structured-output schema, if one was requested. A
@@ -5607,5 +5794,53 @@ mod tests {
             ),
             Err(OneharnessError::SessionUnsupported { .. })
         ));
+    }
+
+    #[test]
+    fn server_overloaded_backoff_is_exponential_and_capped() {
+        // Integration journeys prove that configured waits happen. Keep the
+        // saturation proof structural: observing a full capped sleep end to
+        // end would add a deliberate second to the ordinary unit-test tier for
+        // no additional boundary coverage.
+        assert_eq!(
+            server_overloaded_backoff_duration(1),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            server_overloaded_backoff_duration(2),
+            Duration::from_millis(200)
+        );
+        assert_eq!(
+            server_overloaded_backoff_duration(32),
+            Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn server_overloaded_readme_values_match_runtime_constants() {
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        let cli = include_str!("../../../../src/cli.rs");
+        assert!(readme.contains(&format!(
+            "before fallback (default {};",
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
+        assert!(readme.contains(&format!(
+            "from {} ms, capped at\n  {} second per retry",
+            SERVER_OVERLOADED_BACKOFF_INITIAL_MS,
+            SERVER_OVERLOADED_BACKOFF_MAX_MS / 1_000
+        )));
+        assert!(readme.contains(&format!(
+            "server_overloaded_max_retries = {} # --server-overloaded-max-retries (default {})",
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT,
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
+        assert!(readme.contains(&format!(
+            "fall through — `{}`",
+            fallback::FallThroughReason::ServerOverloaded.as_str()
+        )));
+        assert!(cli.contains(&format!(
+            "/// {}). Each retry waits with bounded exponential backoff; 0 disables retry.",
+            crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
     }
 }

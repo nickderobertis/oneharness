@@ -10,6 +10,7 @@
 //!   MOCK_STDOUT     bytes written to stdout (default: a JSON `result` doc)
 //!   MOCK_STDERR     bytes written to stderr
 //!   MOCK_EXIT       process exit code (default: 0)
+//!   MOCK_EXIT_<n>   with MOCK_ATTEMPT_FILE, process exit code for attempt n
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
@@ -118,6 +119,10 @@
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
+//!   MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_CODEX_APP_SERVER_LOG and
+//!                              MOCK_ATTEMPT_FILE, fail this many app-server
+//!                              invocations with Codex's terminal
+//!                              `serverOverloaded` error before completing.
 //!   MOCK_CODEX_MODEL           with MOCK_CODEX_APP_SERVER_LOG, the model the
 //!                              `thread/start` / `thread/resume` response names
 //!                              (`ThreadStartResponse.model`, a required string
@@ -996,6 +1001,26 @@ fn exit_shortly() {
 /// naming both the thread and the turn arrives.
 fn run_codex_app_server(log_path: &str) -> ! {
     use serde_json::{json, Value};
+    let attempt = std::env::var("MOCK_ATTEMPT_FILE").ok().map(|path| {
+        let prior = std::fs::read_to_string(&path)
+            .ok()
+            .map(|text| {
+                text.trim()
+                    .parse::<u32>()
+                    .expect("MOCK_ATTEMPT_FILE must contain an unsigned integer")
+            })
+            .unwrap_or(0);
+        let attempt = prior + 1;
+        let _ = std::fs::write(path, attempt.to_string());
+        attempt
+    });
+    let overload_attempts = std::env::var("MOCK_CODEX_OVERLOAD_ATTEMPTS")
+        .ok()
+        .map(|text| {
+            text.parse::<u32>()
+                .expect("MOCK_CODEX_OVERLOAD_ATTEMPTS must be an unsigned integer")
+        })
+        .unwrap_or(0);
     // Opened once, up front: a log path that cannot be written is a fixture
     // that answers correctly while recording nothing, which reads as a client
     // that never sent the frames the test is looking for.
@@ -1068,6 +1093,45 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "id": id,
                     "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
                 }));
+                if attempt.is_some_and(|attempt| attempt <= overload_attempts) {
+                    if std::env::var_os("MOCK_CODEX_OVERLOAD_AFTER_TOOL").is_some() {
+                        for frame in
+                            include_str!("../fixtures/codex-app-server-command-execution.jsonl")
+                                .lines()
+                        {
+                            send(
+                                &serde_json::from_str(frame)
+                                    .expect("captured app-server frame is JSON"),
+                            );
+                        }
+                    }
+                    send(&json!({
+                        "jsonrpc": "2.0",
+                        "method": "error",
+                        "params": {
+                            "error": {
+                                "message": "The server is overloaded",
+                                "codexErrorInfo": "serverOverloaded"
+                            },
+                            "willRetry": false
+                        }
+                    }));
+                    send(&json!({
+                        "jsonrpc": "2.0",
+                        "method": "turn/completed",
+                        "params": {
+                            "turn": {
+                                "id": "mock-codex-turn",
+                                "status": "failed",
+                                "error": {
+                                    "message": "The server is overloaded",
+                                    "codexErrorInfo": "serverOverloaded"
+                                }
+                            }
+                        }
+                    }));
+                    continue;
+                }
                 send(&json!({
                     "jsonrpc": "2.0",
                     "method": "item/agentMessage/delta",
@@ -1708,9 +1772,13 @@ pub fn run() -> ! {
     let _ = write!(std::io::stdout(), "{stdout}");
     let _ = std::io::stdout().flush();
 
-    let code = std::env::var("MOCK_EXIT")
-        .ok()
-        .and_then(|c| c.parse::<i32>().ok())
+    let code = attempt
+        .and_then(|n| std::env::var(format!("MOCK_EXIT_{n}")).ok())
+        .or_else(|| std::env::var("MOCK_EXIT").ok())
+        .map(|text| {
+            text.parse::<i32>()
+                .expect("MOCK_EXIT[_<attempt>] must be an integer")
+        })
         .unwrap_or(0);
     std::process::exit(code);
 }

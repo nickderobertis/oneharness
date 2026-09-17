@@ -348,6 +348,11 @@ Useful `run` flags:
 - `--run-mode <parallel|fallback>` — how the selected harnesses are run
   (`parallel`, the default, or `fallback`); also `run_mode` in config /
   `ONEHARNESS_RUN_MODE`. See [Fallback mode](#fallback-mode-first-that-runs-wins).
+- `--server-overloaded-max-retries <N>` — retry a zero-work Codex
+  `server_overloaded` refusal on the same identity before fallback (default 2;
+  `0` disables retries). Waits use exponential backoff from 100 ms, capped at
+  1 second per retry. Also `server_overloaded_max_retries` in config /
+  `ONEHARNESS_SERVER_OVERLOADED_MAX_RETRIES`.
 - `--model <m>` — passed to each harness that supports a model flag. **Repeatable**:
   pass it more than once (or set config `models` / `ONEHARNESS_MODELS`) to fan out
   over several models — see [Multiple models](#multiple-models-fan-out-over-the-model-axis).
@@ -530,6 +535,7 @@ output_format = "json"          # --output-format
 stream = false                  # --stream / --no-stream (incremental events)
 schema_file = "person.json"     # --schema (structured output; relative to project)
 schema_max_retries = 2          # --schema-max-retries (default 2)
+server_overloaded_max_retries = 2 # --server-overloaded-max-retries (default 2)
 max_parallel = 4                # --max-parallel
 run_mode = "parallel"           # --run-mode ("parallel" or "fallback")
 require_available = false       # --require-available
@@ -1573,6 +1579,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
 | Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
 | Ran, exited non-zero, classified `rate_limit`, no work done | ✅ fall through — `rate-limit` |
+| Codex reported `server_overloaded`, no work done, and same-identity retries were exhausted | ✅ fall through — `server-overloaded` |
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
 | Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |

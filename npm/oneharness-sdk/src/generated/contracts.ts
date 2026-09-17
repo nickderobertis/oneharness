@@ -71,7 +71,8 @@ export type FallThroughReason =
   | "input-too-large"
   | "model-mismatch"
   | "model-not-found"
-  | "rate-limit";
+  | "rate-limit"
+  | "server-overloaded";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.
@@ -82,7 +83,7 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
  * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
- * `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+ * `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
  * keeps a misspelled or invalid kind unrepresentable and gives every
  * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
  * the report, history) one definition to share instead of scattered string
@@ -97,7 +98,8 @@ export type FailureKind =
   | "tool_deferred"
   | "untrusted_directory"
   | "input_too_large"
-  | "model_mismatch";
+  | "model_mismatch"
+  | "server_overloaded";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *
@@ -448,11 +450,11 @@ export interface RunResult {
    * `status`, which records oneharness's relationship to the process. Two
    * families: coarse reasons for a non-zero run (`auth`, `rate_limit`,
    * `model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,
-   * `input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited
-   * *cleanly* but only deferred a builtin tool call instead of executing it
-   * (Claude Code bridge/managed deployments), so it did no useful work. The
-   * deferred case is the only `failure_kind` that can appear on a `status: ok`
-   * run, and it also marks the run as failed for exit-code purposes.
+   * `input_too_large`, `model_mismatch`, `server_overloaded`), and
+   * `tool_deferred` — a run that only deferred a builtin tool call instead of
+   * executing it (Claude Code bridge/managed deployments), so it did no useful
+   * work. Both `tool_deferred` and `server_overloaded` can accompany a clean
+   * transport exit; either still marks the run as failed for exit-code purposes.
    * Serialized as its snake_case token (see [`FailureKind`]).
    */
   failure_kind: FailureKind | null;

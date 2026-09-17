@@ -12,7 +12,7 @@ export type HistoryRecord = (
     }
   | ({
       error: string;
-      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
+      schema_version?: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | undefined;
       [k: string]: unknown;
     } & (
       | {
@@ -31,7 +31,7 @@ export type HistoryRecord = (
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.7" | "1.8" | undefined;
+        schema_version?: "1.7" | "1.8" | "1.9" | undefined;
         status?: "nonzero" | "timeout" | "cancelled" | undefined;
         work: "done" | "none";
         [k: string]: unknown;
@@ -44,7 +44,7 @@ export type HistoryRecord = (
       }
     | {
         observed_model: string;
-        schema_version?: "1.8" | undefined;
+        schema_version?: "1.8" | "1.9" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -54,7 +54,7 @@ export type HistoryRecord = (
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | undefined;
+        schema_version?: "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -69,11 +69,12 @@ export type HistoryRecord = (
           | "untrusted_directory"
           | "input_too_large"
           | "model_mismatch"
+          | "server_overloaded"
           | null;
         [k: string]: unknown;
       }
     | {
-        schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | undefined;
+        schema_version?: "1.5" | "1.6" | "1.7" | "1.8" | "1.9" | undefined;
         [k: string]: unknown;
       }
   ) &
@@ -87,11 +88,12 @@ export type HistoryRecord = (
             | "session_not_found"
             | "tool_deferred"
             | "model_mismatch"
+            | "server_overloaded"
             | null;
           [k: string]: unknown;
         }
       | {
-          schema_version?: "1.6" | "1.7" | "1.8" | undefined;
+          schema_version?: "1.6" | "1.7" | "1.8" | "1.9" | undefined;
           [k: string]: unknown;
         }
     ) &
@@ -106,11 +108,32 @@ export type HistoryRecord = (
             | "tool_deferred"
             | "untrusted_directory"
             | "input_too_large"
+            | "server_overloaded"
             | null;
           [k: string]: unknown;
         }
       | {
-          schema_version?: "1.8" | undefined;
+          schema_version?: "1.8" | "1.9" | undefined;
+          [k: string]: unknown;
+        }
+    ) &
+    (
+      | {
+          failure_kind?:
+            | "auth"
+            | "rate_limit"
+            | "model_not_found"
+            | "quota"
+            | "session_not_found"
+            | "tool_deferred"
+            | "untrusted_directory"
+            | "input_too_large"
+            | "model_mismatch"
+            | null;
+          [k: string]: unknown;
+        }
+      | {
+          schema_version?: "1.9" | undefined;
           [k: string]: unknown;
         }
     )) &
@@ -237,7 +260,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -549,7 +572,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -677,7 +700,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -805,7 +828,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+        schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -933,7 +956,7 @@ export type HistoryRecord = (
          * run's single prompt).
          */
         prompt: string;
-        schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8";
+        schema_version: "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
         /**
          * The oneharness session id this run belongs to (the history file's stem).
          */
@@ -1410,7 +1433,7 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
  * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
- * `tool_deferred`), so the wire shape is unchanged — modeling it as an enum
+ * `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
  * keeps a misspelled or invalid kind unrepresentable and gives every
  * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
  * the report, history) one definition to share instead of scattered string
@@ -1425,7 +1448,8 @@ export type FailureKind =
   | "tool_deferred"
   | "untrusted_directory"
   | "input_too_large"
-  | "model_mismatch";
+  | "model_mismatch"
+  | "server_overloaded";
 /**
  * The outcome of attempting to run one harness.
  */

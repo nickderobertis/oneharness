@@ -796,10 +796,12 @@ describe("OneHarness", () => {
 			env: { MOCK_STDOUT: '{"type":"result","result":"done"}' },
 			bins: { "claude-code": mock },
 		});
-		const [unmeasured] = await client.history({
+		// HistoryRecord's version-gated union is too large for TypeScript to
+		// spread; this JSON view preserves the public runtime validation below.
+		const [unmeasured] = (await client.history({
 			session: "node-session-unmeasured",
 			historyDir,
-		});
+		})) as unknown as Array<Record<string, unknown>>;
 		expect(unmeasured?.schema_version).toBe("1.1");
 		expect(unmeasured).not.toHaveProperty("model_ms");
 		expect(HistoryRecordSchema.safeParse(unmeasured).success).toBe(true);
@@ -1218,6 +1220,24 @@ describe("OneHarness", () => {
 		const argv = (await readFile(argvFile, "utf8")).split("\n");
 		expect(argv).toContain("--effort");
 		expect(argv).toContain("high");
+	});
+
+	test("forwards the Codex overload retry limit through the public client", async () => {
+		const counter = resolve(await scratch("overload-retries"), "attempts");
+		const report = await sdk().run({
+			prompt: "overloaded provider",
+			harnesses: ["codex"],
+			runMode: "fallback",
+			serverOverloadedMaxRetries: 0,
+			env: {
+				MOCK_ATTEMPT_FILE: counter,
+				MOCK_STDOUT:
+					'{"type":"turn.failed","error":{"codex_error_info":"server_overloaded"}}',
+			},
+			bins: { codex: mock },
+		});
+		expect(report.results[0]?.failure_kind).toBe("server_overloaded");
+		expect(await readFile(counter, "utf8")).toBe("1");
 	});
 
 	test("suppresses a bound option only when its suppressor renders an argument", async () => {

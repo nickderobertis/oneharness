@@ -71,6 +71,7 @@ export interface ConfigReport {
   schema_file: Field3;
   schema_max_retries: Field7;
   schema_version: string;
+  server_overloaded_max_retries: Field7;
   stream: Field1;
   system: Field3;
   timeout: Field5;

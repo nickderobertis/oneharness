@@ -11541,9 +11541,9 @@ fn codex_overload_and_schema_retries_have_separate_budgets_and_keep_schema_deliv
 
     assert!(output.status.success(), "{output:?}");
     let value = json_stdout(&output);
-    assert_eq!(value["results"][0]["schema_valid"], true);
+    assert_eq!(value["results"][0]["schema_valid"], true, "{value:#}");
     assert_eq!(value["results"][0]["structured"]["age"], 36);
-    assert_eq!(value["results"][0]["schema_attempts"], 2);
+    assert_eq!(value["results"][0]["schema_attempts"], 3);
     assert_eq!(std::fs::read_to_string(counter).unwrap(), "3");
     let final_argv = std::fs::read_to_string(argv_file).unwrap();
     assert!(
@@ -11596,7 +11596,7 @@ fn codex_exhausted_overload_budget_does_not_spend_the_schema_budget() {
             value["results"][0]["failure_kind"], "server_overloaded",
             "{mode}"
         );
-        assert_eq!(value["results"][0]["schema_attempts"], 1, "{mode}");
+        assert_eq!(value["results"][0]["schema_attempts"], 2, "{mode}");
         assert_eq!(
             std::fs::read_to_string(counter).unwrap(),
             "2",

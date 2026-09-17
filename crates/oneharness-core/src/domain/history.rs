@@ -325,9 +325,10 @@ impl HistoryRunRecord {
             }
             // Invocation bounds with no split derived from them, and no provider
             // finish either: what a run cut short leaves, legible only on a run
-            // that was cut short and only to a reader that knows the shape.
+            // that was cut short or classified as failed, and only to a reader
+            // that knows the shape.
             (Some(started_at), None, None, None, time_to_first_token_ms) => {
-                run_failed(self.status)
+                (run_failed(self.status) || self.failure_kind.is_some())
                     && version_at_least(&self.schema_version, FIRST_PARTIAL_TIMING_SCHEMA_VERSION)
                     && partial_trace_valid(started_at, time_to_first_token_ms, self.duration_ms)
             }

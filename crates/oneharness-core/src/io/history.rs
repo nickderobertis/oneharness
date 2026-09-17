@@ -1332,7 +1332,7 @@ fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
 mod tests {
     use super::*;
     use crate::domain::report::{ExecutionTelemetry, OutputFormat, Status};
-    use crate::domain::signals::Usage;
+    use crate::domain::signals::{FailureKind, Usage};
     use crate::io::scratch::ScratchDir;
 
     fn temp_dir(tag: &str) -> ScratchDir {
@@ -1393,6 +1393,49 @@ mod tests {
         if let Some(def) = resolve_dir(None) {
             assert!(def.ends_with("oneharness/history"));
         }
+    }
+
+    #[test]
+    fn clean_exit_classified_failures_round_trip_without_complete_timing() {
+        let dir = temp_dir("clean-classified-timing");
+        let project = temp_dir("clean-classified-project");
+        let writer = HistoryWriter::open(
+            &dir,
+            &project,
+            "clean classified timing",
+            HistoryLabels::default(),
+        )
+        .unwrap();
+
+        for telemetry in [
+            None,
+            Some(ExecutionTelemetry::PartialInvocation {
+                started_at: "2026-07-19T00:00:00.000Z".parse().unwrap(),
+            }),
+        ] {
+            let mut overloaded = result("codex");
+            overloaded.telemetry = telemetry;
+            overloaded.text = None;
+            overloaded.text_source = None;
+            overloaded.failure_kind = Some(FailureKind::ServerOverloaded);
+            overloaded.stdout = r#"{"error":{"codex_error_info":"server_overloaded"}}"#.into();
+
+            writer
+                .append(PermissionMode::Default, None, "retry later", &overloaded)
+                .unwrap();
+        }
+
+        let records = read_session(writer.path()).unwrap();
+        assert_eq!(records.len(), 2);
+        assert!(records
+            .iter()
+            .all(|record| record.failure_kind == Some(FailureKind::ServerOverloaded)));
+        assert!(records[0].started_at.is_none());
+        assert_eq!(
+            records[1].started_at.as_deref(),
+            Some("2026-07-19T00:00:00Z")
+        );
+        assert!(records.iter().all(HistoryRecord::complete));
     }
 
     #[test]

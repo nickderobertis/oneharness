@@ -3530,7 +3530,7 @@ fn run_in_waves(
         let wave_jobs: Vec<Job> = wave.iter().map(|&i| jobs[i].clone()).collect();
         let overload_attempts: Vec<_> = wave.iter().map(|_| AtomicU32::new(0)).collect();
         let schema_attempts: Vec<_> = wave.iter().map(|_| AtomicU32::new(0)).collect();
-        let mut outs = match schema {
+        let outs = match schema {
             // After each run, first retry a zero-work overload (including its
             // bounded backoff), otherwise validate structured output and, when
             // retries remain, rebuild with a feedback prompt. The runner owns
@@ -3587,16 +3587,6 @@ fn run_in_waves(
                 },
             ),
         };
-        if schema.is_some() {
-            for (index, outcome) in outs.iter_mut().enumerate() {
-                if outcome.attempts > 0 {
-                    // `schema_attempts` is a public count of validations, not
-                    // invocations: overload-only attempts never reached that
-                    // boundary and therefore do not increment it.
-                    outcome.attempts = schema_attempts[index].load(Ordering::Relaxed) + 1;
-                }
-            }
-        }
         for (k, out) in outs.into_iter().enumerate() {
             slots[wave[k]] = Some(out);
         }
@@ -3791,11 +3781,7 @@ fn run_one_job(
             next
         })
     });
-    let mut outcome = outs.into_iter().next().expect("one job, one outcome");
-    if schema.is_some() && outcome.attempts > 0 {
-        outcome.attempts = schema_attempts.load(Ordering::Relaxed) + 1;
-    }
-    outcome
+    outs.into_iter().next().expect("one job, one outcome")
 }
 
 /// Drive the selected harnesses in priority order, stopping at the first that

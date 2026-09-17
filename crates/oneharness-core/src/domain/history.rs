@@ -830,10 +830,6 @@ impl HistoryRecord {
     /// (an I/O read, kept out of this pure function); `model` is the run's
     /// effective top-level model. `run_prompt` is the fallback prompt for an
     /// ordinary run — a batch result carries its own `prompt`, which wins.
-    // Every argument is a distinct caller-owned value, and the two that would
-    // group naturally — the session id and name — are already threaded through
-    // the I/O writer that owns them; a parameter struct here would only move the
-    // same list one call up.
     #[allow(
         clippy::too_many_arguments,
         reason = "each value is an independent published history field; a parameter object would duplicate the wire shape"

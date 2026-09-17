@@ -5832,7 +5832,7 @@ mod tests {
 
     #[test]
     fn server_overloaded_readme_values_match_runtime_constants() {
-        let readme = include_str!("../../../../README.md");
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
         let cli = include_str!("../../../../src/cli.rs");
         assert!(readme.contains(&format!(
             "before fallback (default {};",

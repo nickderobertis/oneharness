@@ -1364,6 +1364,10 @@ pub fn run_supervised(
         // token saving on these CLIs (a static --system is re-created per
         // process, so plain warm-then-fan saves nothing). It needs the warm-up's
         // *runtime* session id, so it cannot run under --print-command.
+        // Codex cannot enter this branch: `server_overloaded` is a Codex-only
+        // failure dialect, while only Claude Code declares `fork_reuses_cache`.
+        // Codex batches therefore use `run_in_waves` below, including its
+        // same-candidate overload retry policy.
         let fork_batch = batch_run
             && batch_strategy == BatchStrategy::MinTokens
             && specs[0].fork_reuses_cache

@@ -5807,6 +5807,10 @@ mod tests {
 
     #[test]
     fn server_overloaded_backoff_is_exponential_and_capped() {
+        // Integration journeys prove that configured waits happen. Keep the
+        // saturation proof structural: observing a full capped sleep end to
+        // end would add a deliberate second to the ordinary unit-test tier for
+        // no additional boundary coverage.
         assert_eq!(
             server_overloaded_backoff_duration(1),
             Duration::from_millis(100)
@@ -5838,6 +5842,10 @@ mod tests {
             "server_overloaded_max_retries = {} # --server-overloaded-max-retries (default {})",
             crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT,
             crate::domain::config::SERVER_OVERLOADED_MAX_RETRIES_DEFAULT
+        )));
+        assert!(readme.contains(&format!(
+            "fall through — `{}`",
+            fallback::FallThroughReason::ServerOverloaded.as_str()
         )));
         assert!(cli.contains(&format!(
             "/// {}). Each retry waits with bounded exponential backoff; 0 disables retry.",

@@ -140,9 +140,10 @@ pub enum FailureKind {
     /// The third precondition refusal: no work was done, no token was spent, and
     /// the next identity may honour the model.
     ModelMismatch,
-    /// Codex's provider could not accept the turn because serving capacity was
-    /// exhausted. No work was performed, so retrying this identity briefly and
-    /// then trying a fallback identity is safe.
+    /// Codex's provider reported that serving capacity was exhausted. When the
+    /// result has no answer, tool event, or billed usage, oneharness may retry
+    /// this identity briefly and then try a fallback identity; work evidence
+    /// preserves the classified failure without retry or fallback.
     ServerOverloaded,
 }
 

@@ -2094,7 +2094,7 @@
             "format": "int32"
           },
           "failure_kind": {
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`, `server_overloaded`), and\n`tool_deferred` — a run that only deferred a builtin tool call instead of\nexecuting it (Claude Code bridge/managed deployments), so it did no useful\nwork. Both `tool_deferred` and `server_overloaded` can accompany a clean\ntransport exit; either still marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
             "anyOf": [
               {
                 "$ref": "#/$defs/FailureKind"
@@ -3339,7 +3339,7 @@
             "format": "int32"
           },
           "failure_kind": {
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`, `server_overloaded`), and\n`tool_deferred` — a run that only deferred a builtin tool call instead of\nexecuting it (Claude Code bridge/managed deployments), so it did no useful\nwork. Both `tool_deferred` and `server_overloaded` can accompany a clean\ntransport exit; either still marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`]).",
             "anyOf": [
               {
                 "$ref": "#/$defs/FailureKind"

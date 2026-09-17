@@ -1020,7 +1020,7 @@
           },
           {
             "const": "server_overloaded",
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string"
           }
         ]
@@ -3281,7 +3281,7 @@
           },
           {
             "const": "server_overloaded",
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string"
           }
         ]
@@ -6283,7 +6283,7 @@
           },
           {
             "const": "server_overloaded",
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string"
           }
         ]
@@ -9291,7 +9291,7 @@
           },
           {
             "const": "server_overloaded",
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string"
           }
         ]
@@ -13621,7 +13621,7 @@
           },
           {
             "const": "server_overloaded",
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string"
           }
         ]
@@ -13865,7 +13865,7 @@
                 "type": "null"
               }
             ],
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`), and `tool_deferred` \u2014 a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`])."
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`, `server_overloaded`), and\n`tool_deferred` \u2014 a run that only deferred a builtin tool call instead of\nexecuting it (Claude Code bridge/managed deployments), so it did no useful\nwork. Both `tool_deferred` and `server_overloaded` can accompany a clean\ntransport exit; either still marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`])."
           },
           "failure_kind_source": {
             "description": "Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`\nfor a candidate refused before spawning); `null` when absent.",
@@ -14827,7 +14827,7 @@
           },
           {
             "const": "server_overloaded",
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string"
           }
         ]
@@ -15235,7 +15235,7 @@
                 "type": "null"
               }
             ],
-            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`), and `tool_deferred` \u2014 a run that exited\n*cleanly* but only deferred a builtin tool call instead of executing it\n(Claude Code bridge/managed deployments), so it did no useful work. The\ndeferred case is the only `failure_kind` that can appear on a `status: ok`\nrun, and it also marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`])."
+            "description": "Best-effort failure reason; `null` when unclassified. Distinct from\n`status`, which records oneharness's relationship to the process. Two\nfamilies: coarse reasons for a non-zero run (`auth`, `rate_limit`,\n`model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,\n`input_too_large`, `model_mismatch`, `server_overloaded`), and\n`tool_deferred` \u2014 a run that only deferred a builtin tool call instead of\nexecuting it (Claude Code bridge/managed deployments), so it did no useful\nwork. Both `tool_deferred` and `server_overloaded` can accompany a clean\ntransport exit; either still marks the run as failed for exit-code purposes.\nSerialized as its snake_case token (see [`FailureKind`])."
           },
           "failure_kind_source": {
             "description": "Where `failure_kind` was read (`stderr`/`stdout`, or `config:env_from`\nfor a candidate refused before spawning); `null` when absent.",

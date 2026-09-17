@@ -543,11 +543,11 @@ pub struct RunResult {
     /// `status`, which records oneharness's relationship to the process. Two
     /// families: coarse reasons for a non-zero run (`auth`, `rate_limit`,
     /// `model_not_found`, `quota`, `session_not_found`, `untrusted_directory`,
-    /// `input_too_large`, `model_mismatch`), and `tool_deferred` — a run that exited
-    /// *cleanly* but only deferred a builtin tool call instead of executing it
-    /// (Claude Code bridge/managed deployments), so it did no useful work. The
-    /// deferred case is the only `failure_kind` that can appear on a `status: ok`
-    /// run, and it also marks the run as failed for exit-code purposes.
+    /// `input_too_large`, `model_mismatch`, `server_overloaded`), and
+    /// `tool_deferred` — a run that only deferred a builtin tool call instead of
+    /// executing it (Claude Code bridge/managed deployments), so it did no useful
+    /// work. Both `tool_deferred` and `server_overloaded` can accompany a clean
+    /// transport exit; either still marks the run as failed for exit-code purposes.
     /// Serialized as its snake_case token (see [`FailureKind`]).
     pub failure_kind: Option<FailureKind>,
     /// What this run has to show for itself when `failure_kind` has nothing to

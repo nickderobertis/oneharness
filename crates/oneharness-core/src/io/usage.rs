@@ -1191,6 +1191,43 @@ mod tests {
         );
     }
 
+    /// The retry policy is spelled out in prose, which is the only place a
+    /// reader learns how many times the probe asks and how far apart. Changing
+    /// either constant would leave that prose confidently wrong, so the
+    /// sentence is generated from the constants and searched for.
+    #[test]
+    fn documented_claude_snapshot_retry_tracks_the_constants() {
+        fn collapsed(text: &str) -> String {
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        fn in_words(n: usize) -> String {
+            match n {
+                1 => "one".to_string(),
+                2 => "two".to_string(),
+                3 => "three".to_string(),
+                n => n.to_string(),
+            }
+        }
+
+        let reference = collapsed(include_str!("../../../../docs/harness-usage.md"));
+        let policy = format!(
+            "{} attempts in all, {} second apart",
+            in_words(CLAUDE_SNAPSHOT_ATTEMPTS),
+            in_words(
+                usize::try_from(CLAUDE_SNAPSHOT_RETRY_PAUSE.as_secs()).expect("a small pause")
+            )
+        );
+        assert!(
+            reference.contains(&policy),
+            "docs/harness-usage.md must state the retry policy as `{policy}`"
+        );
+        assert_eq!(
+            CLAUDE_SNAPSHOT_RETRY_PAUSE,
+            Duration::from_secs(CLAUDE_SNAPSHOT_RETRY_PAUSE.as_secs()),
+            "the prose states the pause in whole seconds"
+        );
+    }
+
     #[test]
     fn a_library_caller_gets_the_documented_timeout_ceiling_too() {
         // `probe` is public API, so the ceiling has to be enforced here rather

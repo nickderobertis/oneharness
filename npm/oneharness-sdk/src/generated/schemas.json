@@ -1856,7 +1856,7 @@
             "const": "model_mismatch"
           },
           {
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
           }
@@ -2937,7 +2937,7 @@
             "const": "model_mismatch"
           },
           {
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
           }
@@ -5988,7 +5988,7 @@
             "const": "model_mismatch"
           },
           {
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
           }
@@ -8990,7 +8990,7 @@
             "const": "model_mismatch"
           },
           {
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
           }
@@ -9374,7 +9374,7 @@
             "const": "model_mismatch"
           },
           {
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
           }
@@ -12496,7 +12496,7 @@
             "const": "model_mismatch"
           },
           {
-            "description": "Codex's provider could not accept the turn because serving capacity was\nexhausted. No work was performed, so retrying this identity briefly and\nthen trying a fallback identity is safe.",
+            "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
           }

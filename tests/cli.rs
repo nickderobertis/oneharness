@@ -9120,6 +9120,86 @@ fn env_var_bin_override_beats_config_bin() {
 }
 
 #[test]
+fn base_env_var_bin_override_covers_a_variant_qualified_selection() {
+    // Issue #1308. `ONEHARNESS_BIN_CLAUDE_CODE` was derived from the whole
+    // composed id — `ONEHARNESS_BIN_CLAUDE_CODE:WORK`, a name no environment can
+    // carry — so a caller who faked every member of a harness with the base key
+    // got the real binary for `claude-code:work`, and a real, billed Claude turn
+    // ran inside a test believed fully faked. The config-file `bin` already fell
+    // back from a variant to its base; the env layer must cover it the same way.
+    //
+    // The base's config bin points at nothing on purpose: before the fix that is
+    // what the variant resolved to, so the run below read `skipped` rather than
+    // reaching for whatever `claude` this host carries.
+    let fx = ConfigFixture::new(
+        "bin-env-variant",
+        concat!(
+            "[harness.claude-code]\n",
+            "bin = \"/no/such/oneharness-binary-xyz\"\n",
+            "[harness.claude-code.variant.work]\n",
+            "model = \"sonnet\"\n",
+        ),
+        "",
+    );
+    let mock = mock_bin().display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "claude-code:work",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--compact",
+    ];
+    let output = run_with_config(
+        &args,
+        &[
+            ("ONEHARNESS_BIN_CLAUDE_CODE", mock.as_str()),
+            (
+                "MOCK_STDOUT",
+                r#"{"result":"base env key covers the variant"}"#,
+            ),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["harness_id"], "claude-code:work");
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(
+        value["results"][0]["text"],
+        "base env key covers the variant"
+    );
+
+    // The variant's own spelling is checked first, so when both are set the
+    // more specific one names the binary.
+    let output = run_with_config(
+        &args,
+        &[
+            ("ONEHARNESS_BIN_CLAUDE_CODE", "/no/such/oneharness-base-xyz"),
+            ("ONEHARNESS_BIN_CLAUDE_CODE_WORK", mock.as_str()),
+            ("MOCK_STDOUT", r#"{"result":"variant key wins"}"#),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["text"], "variant key wins");
+}
+
+#[test]
 fn project_config_is_discovered_walking_up_and_dotted_name_works() {
     let fx = ConfigFixture::new("discovery", "model = \"outer\"\n", "");
     // A nested dir with no config of its own walks up to the fixture root...

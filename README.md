@@ -439,7 +439,12 @@ Useful `run` flags:
 - `--permit-prompts` — silence the "may block on a prompt" warning for the chosen
   mode (use once allow-rules are synced so the prompt never fires).
 - `--require-available` — treat a not-installed harness as a failure.
-- `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`).
+- `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`,
+  the id upper-cased with `-` and `:` as `_`). A variant-qualified selection
+  (`claude-code:work`) reads its own key first (`ONEHARNESS_BIN_CLAUDE_CODE_WORK`)
+  and then its base harness's (`ONEHARNESS_BIN_CLAUDE_CODE`), so one base key
+  covers every member of that harness — the same fallback a config-file `bin`
+  makes from a variant to its base.
 - `--config <path>` / `--no-config` — load exactly one config file / ignore all
   config files (see below).
 - `--compact` — single-line JSON.
@@ -492,7 +497,11 @@ everywhere as `<id>:<name>`. `--all` selects base harnesses only; variants never
 silently join an all-run. Names match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`.
 Variants accept the same model/bin/args/env/reasoning and sync fields as their
 base section. Precedence is built-ins → top level → base harness → variant →
-CLI. Each report result retains the base `harness`, and also records `variant`
+CLI. A binary override reaches a variant the same way at every layer: the
+config-file `bin` falls back from the variant to its base, and so does the
+environment — `ONEHARNESS_BIN_CLAUDE_CODE_WORK` names the binary for
+`claude-code:work`, else `ONEHARNESS_BIN_CLAUDE_CODE` does (see `--bin` under
+[Usage](#usage)). Each report result retains the base `harness`, and also records `variant`
 and the composed `harness_id`.
 
 Credential values stay outside committed config. Within a variant child,

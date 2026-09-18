@@ -2512,6 +2512,69 @@ fn a_rate_limited_identity_hands_the_turn_to_the_next_one() {
 }
 
 #[test]
+fn a_rate_limited_identity_that_exited_clean_still_hands_the_turn_on() {
+    // Issue #1297. The same refusal as the journey above, reported the way a
+    // harness that recovers its own exit code reports it: a terminal error
+    // record naming the provider's 429 in a run that exited 0. `quota` and
+    // `auth` records already handed on from a clean exit; `rate_limit` did not,
+    // so this record — no tokens spent, no tool called — ended a chain on an
+    // identity whose neighbour had quota, and an operator had to restart it.
+    let mock = mock_bin().display().to_string();
+    let refused = serde_json::to_string(concat!(
+        "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,",
+        "\"result\":\"API Error: 429 rate limit exceeded\",",
+        "\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n",
+    ))
+    .expect("a string always serializes");
+    let served = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",",
+        "\"text\":\"served-by-codex\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ))
+    .expect("a string always serializes");
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {refused} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("rate-limit-clean-exit-chain", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    // The clean exit is what this journey is about: the refusal is read off the
+    // record, not the exit code, so the first result is `ok` AND `rate_limit`.
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["exit_code"], 0);
+    assert_eq!(value["results"][0]["failure_kind"], "rate_limit");
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "rate-limit");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["results"][1]["text"], "served-by-codex");
+}
+
+#[test]
 fn a_rate_limited_candidate_that_was_billed_still_stops_the_chain() {
     // The other half of the rule, and the one that keeps the change from paying a
     // second identity to redo work somebody was already charged for: a 429 that

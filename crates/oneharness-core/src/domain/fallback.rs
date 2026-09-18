@@ -209,15 +209,18 @@ impl FallThroughReason {
 ///   would be behavior no harness can produce. It belongs with
 ///   `auth` and `quota` for the same reason: the *task* is fine and the next
 ///   candidate can still do it.
-/// - [`Status::Nonzero`] with `failure_kind == "rate_limit"` → `"rate-limit"`
-///   (the provider will not serve *this identity* right now). It belongs beside
-///   `quota` for the same reason `quota` is there: the task is fine and the next
-///   candidate — a different identity, with its own limit — can still do it. It
-///   is not gated on a model list, because the limit belongs to whoever is being
-///   billed rather than to the model. Non-zero only, like the refusals below: with
-///   a clean exit the run either did the work (and
-///   [`completed_run_that_did_work`][cbr] has already dropped the classification) or
-///   completed without it, and neither is a refusal to hand on.
+/// - [`Status::Nonzero`] or [`Status::Ok`] with `failure_kind == "rate_limit"` →
+///   `"rate-limit"` (the provider will not serve *this identity* right now). It
+///   belongs beside `quota` for the same reason `quota` is there: the task is
+///   fine and the next candidate — a different identity, with its own limit —
+///   can still do it. It is not gated on a model list, because the limit belongs
+///   to whoever is being billed rather than to the model. A clean exit counts
+///   exactly as it does for `quota`: a harness that reports a provider's `429`
+///   in its terminal record and exits 0 has still been refused, and the work
+///   reading is what separates that refusal from a completed run — a record
+///   that billed for the task has [`RunWork::Done`], which short-circuits above
+///   (issue #1297: this arm was non-zero only, so a clean-exit rate limit ended
+///   a chain on an identity whose neighbour had quota).
 /// - [`Status::Nonzero`] with `failure_kind == "untrusted_directory"` →
 ///   `"untrusted-directory"`, and with `"input_too_large"` →
 ///   `"input-too-large"`: the two **precondition** refusals
@@ -289,7 +292,9 @@ pub fn startup_failure_reason(
         (_, Some(FailureKind::Quota)) if matches!(status, Status::Ok | Status::Nonzero) => {
             Some(FallThroughReason::Quota)
         }
-        (Status::Nonzero, Some(FailureKind::RateLimit)) => Some(FallThroughReason::RateLimit),
+        (Status::Nonzero | Status::Ok, Some(FailureKind::RateLimit)) => {
+            Some(FallThroughReason::RateLimit)
+        }
         (Status::Nonzero | Status::Ok, Some(FailureKind::ServerOverloaded)) => {
             Some(FallThroughReason::ServerOverloaded)
         }
@@ -589,18 +594,22 @@ mod tests {
                 RunWork::None
             ));
         }
-        // Non-zero only. A clean exit either did the work — where
-        // `completed_run_that_did_work` has already dropped the classification — or
-        // completed without it, and neither is a refusal to hand on.
-        assert_eq!(
-            startup_failure_reason(
-                Status::Ok,
-                Some(FailureKind::RateLimit),
-                false,
-                RunWork::None
-            ),
-            None
-        );
+        // A clean exit hands on too, as `quota` and `auth` do: a provider that
+        // answered `429` before any token was spent refused the identity whatever
+        // exit code the harness chose. Issue #1297 — this read `None`, so one
+        // clean-exit rate limit stopped a chain with quota still on it.
+        for model_fallback in [false, true] {
+            assert_eq!(
+                startup_failure_reason(
+                    Status::Ok,
+                    Some(FailureKind::RateLimit),
+                    model_fallback,
+                    RunWork::None
+                ),
+                Some(FallThroughReason::RateLimit),
+                "a clean-exit rate limit must hand the turn on (model_fallback={model_fallback})"
+            );
+        }
     }
 
     #[test]
@@ -680,6 +689,7 @@ mod tests {
             (Status::Nonzero, Some(FailureKind::InputTooLarge), false),
             (Status::Nonzero, Some(FailureKind::ModelMismatch), false),
             (Status::Nonzero, Some(FailureKind::RateLimit), false),
+            (Status::Ok, Some(FailureKind::RateLimit), false),
             (Status::Nonzero, Some(FailureKind::ModelNotFound), true),
             (Status::Skipped, None, false),
             (Status::SpawnError, None, false),

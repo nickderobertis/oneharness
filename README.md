@@ -1576,9 +1576,9 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Not installed (`skipped`) | ✅ fall through — `not-installed` |
 | Installed, but the variant's [`env_from`](#configuration) home directory is absent (`skipped`, `auth`) | ✅ fall through — `auth` |
 | Resolved but unspawnable (`spawn-error`) | ✅ fall through — `spawn-error` |
-| Ran, exited non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
-| Ran, exited non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
-| Ran, exited non-zero, classified `rate_limit`, no work done | ✅ fall through — `rate-limit` |
+| Ran, exited zero or non-zero, classified `auth`, no work done | ✅ fall through — `auth` |
+| Ran, exited zero or non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
+| Ran, exited zero or non-zero, classified `rate_limit`, no work done | ✅ fall through — `rate-limit` |
 | Codex reported `server_overloaded`, no work done, and same-identity retries were exhausted | ✅ fall through — `server-overloaded` |
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
@@ -1600,8 +1600,12 @@ should see rather than one oneharness silently routes around.
 > list, and to stop the chain otherwise. It now falls through on any chain, with
 > reason `rate-limit`. A rate limit is a property of whoever is being billed, not
 > of the model: one rate-limited identity ended a dispatch that four further
-> identities could have served. The zero-work rule below is unchanged and still
-> bounds it — a `429` that spent tokens describes a run, and still stops.
+> identities could have served. It also falls through from a clean exit, as
+> `auth` and `quota` do: a harness that reports the provider's `429` in its
+> terminal record and exits 0 has still been refused, and stopping there left a
+> chain on an identity whose neighbour had quota. The zero-work rule below is
+> unchanged and still bounds it — a `429` that spent tokens describes a run,
+> and still stops.
 
 **An unresolvable resume falls through too.** A native session token lives in one
 identity's session store — each `claude-code` variant points the CLI at its own

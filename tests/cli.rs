@@ -30708,3 +30708,280 @@ fn compact_beside_format_text_is_accepted_and_changes_nothing() {
         "`--format json --compact` is one line"
     );
 }
+
+#[test]
+fn run_text_view_carries_the_batch_history_and_events_lines() {
+    // A batch fans one harness over N prompts: the report's `batch` block,
+    // each result's own prompt, the history file the run streamed to, and the
+    // per-result events summary all have a row.
+    let dir = hist_dir("format-batch");
+    let ds = dir.display().to_string();
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"text","part":{"type":"text","text":"working"}}"#,
+        "\n",
+    );
+    let args = [
+        "run",
+        "--harness",
+        "opencode",
+        "--prompt",
+        "first prompt",
+        "--prompt",
+        "second prompt",
+        "--bin",
+        &bin_override("opencode"),
+        "--history",
+        "--history-dir",
+        &ds,
+    ];
+    let envs = [("MOCK_STDOUT", stdout)];
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    let report = json_stdout(&json);
+    assert_eq!(report["batch"]["prompt_count"], 2);
+    assert!(report["history_file"].is_string());
+
+    assert!(
+        text.contains("batch: speed · 2 prompts · forked no\n"),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("history: ") && line.ends_with(".jsonl")),
+        "the history file the run streamed to:\n{text}"
+    );
+    assert!(text.contains("\n  prompt: first prompt\n"), "{text}");
+    assert!(text.contains("\n  prompt: second prompt\n"), "{text}");
+    assert_eq!(
+        text.matches("  events: 1 (json:opencode-parts)\n").count(),
+        2,
+        "{text}"
+    );
+}
+
+#[test]
+fn run_text_view_carries_the_resume_and_spy_lines() {
+    let scratch = ScratchDir::new("format-spy").unwrap();
+    let spy = scratch.join("spy.jsonl");
+    let spy_arg = spy.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "again",
+        "--bin",
+        &bin_override("claude-code"),
+        "--resume",
+        "sess-prev",
+        "--fork",
+        "--spy-file",
+        &spy_arg,
+    ];
+    let envs = [(
+        "MOCK_STDOUT",
+        r#"{"type":"result","result":"continued","session_id":"sess-next"}"#,
+    )];
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    let report = json_stdout(&json);
+    let spy_file = report["spy_file"].as_str().unwrap();
+
+    assert!(text.contains("resume: sess-prev (forked)\n"), "{text}");
+    assert!(text.contains(&format!("spy log: {spy_file}\n")), "{text}");
+    assert!(text.contains("  session id: sess-next\n"), "{text}");
+}
+
+#[test]
+fn run_text_view_says_when_a_chain_stopped_without_work_evidence() {
+    // An unclassified failure that shows no work still stops a fallback chain
+    // (re-running a task that may have failed for real burns the next
+    // identity's quota); the text view says which candidate stopped it and
+    // that it had nothing to show.
+    let args = [
+        "run",
+        "--harness",
+        "codex,claude-code",
+        "--run-mode",
+        "fallback",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("codex"),
+        "--bin",
+        &bin_override("claude-code"),
+    ];
+    let envs = [
+        ("MOCK_EXIT", "1"),
+        ("MOCK_STDERR", "something unexpected happened"),
+        ("MOCK_STDOUT", ""),
+    ];
+    let (json, text) = text_view_of(&args, &envs);
+    assert_eq!(json.status.code(), Some(1));
+    let report = json_stdout(&json);
+    assert_eq!(report["fallback"]["stopped_without_work"], true);
+
+    assert!(
+        text.contains("fallback: ran codex (stopped without work evidence)\n"),
+        "{text}"
+    );
+    assert!(text.contains("\ncodex: nonzero · exit 1 · "), "{text}");
+    assert!(text.contains("  work evidence: none\n"), "{text}");
+    assert!(
+        !text.contains("\nclaude-code:"),
+        "the chain stopped, so the next candidate was never tried:\n{text}"
+    );
+}
+
+#[test]
+fn run_text_view_shows_a_schema_error_and_a_structured_value_that_could_not_be_extracted() {
+    let schema = ScratchDir::new("format-schema-fail").unwrap();
+    let schema_path = schema.join("person.json");
+    std::fs::write(&schema_path, PERSON_SCHEMA).unwrap();
+    let schema_arg = schema_path.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "codex",
+        "--prompt",
+        "who",
+        "--bin",
+        &bin_override("codex"),
+        "--schema",
+        &schema_arg,
+        "--schema-max-retries",
+        "0",
+    ];
+
+    // A value that does not conform: shown, with the validator's own words.
+    let invalid = [(
+        "MOCK_STDOUT",
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\"}"}}"#,
+    )];
+    let (json, text) = text_view_of(&args, &invalid);
+    assert_eq!(json.status.code(), Some(1));
+    let report = json_stdout(&json);
+    let error = report["results"][0]["schema_error"].as_str().unwrap();
+    assert!(text.contains("schema: applied · max retries 0\n"), "{text}");
+    assert!(
+        text.contains("  structured: invalid · attempts 1\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("    {\n      \"name\": \"Ada\"\n    }\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("  schema error: {error}\n")),
+        "{text}"
+    );
+
+    // No JSON at all: the value is null, and said to be.
+    let none = [(
+        "MOCK_STDOUT",
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"no json here"}}"#,
+    )];
+    let (json, text) = text_view_of(&args, &none);
+    assert_eq!(json.status.code(), Some(1));
+    assert!(json_stdout(&json)["results"][0]["structured"].is_null());
+    assert!(
+        text.contains(
+            "  structured: invalid · attempts 1\n    null (no JSON value could be extracted)\n"
+        ),
+        "{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_text_view_shows_the_model_a_server_said_it_would_run() {
+    // `observed_model` is set only by a dialogue-driven turn (codex's
+    // app-server states the model it opened the thread under), so the row is
+    // proven through a controlled run against the mock server.
+    let store = control_store_dir("format-observed");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("format-observed-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("app-server.log");
+    let log_arg = log.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "codex",
+        "--control",
+        "--session",
+        "sol",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd_arg,
+        "--mode",
+        "bypass",
+        "--model",
+        "gpt-5.6-sol",
+        "--prompt",
+        "keep working",
+        "--bin",
+        &bin_override("codex"),
+        "--format",
+        "text",
+    ];
+    let output = run(
+        &args,
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", &log_arg),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("codex [model gpt-5.6-sol]: ok · exit null · "),
+        "{text}"
+    );
+    assert!(text.contains("  observed model: gpt-5.6-sol\n"), "{text}");
+    assert!(
+        text.contains("control: codex-app-server · socket "),
+        "{text}"
+    );
+}
+
+#[test]
+fn list_text_view_shows_configured_variants() {
+    let fx = ConfigFixture::new(
+        "format-list-variants",
+        "",
+        "[harness.claude-code.variant.work]\nmodel = \"opus\"\nbin = \"/opt/claude-work\"\n",
+    );
+    let output = run_with_config(&["list", "--format", "text"], &[], &fx.user_config());
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("  variant work → claude-code:work · model opus · bin /opt/claude-work\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn detect_text_view_says_unknown_when_a_binary_answers_no_version() {
+    let args = [
+        "detect",
+        "--harness",
+        "codex",
+        "--bin",
+        &bin_override("codex"),
+    ];
+    let envs = [("MOCK_STDOUT", "")];
+    let (json, text) = text_view_of(&args, &envs);
+    let codex = &json_stdout(&json)["detected"][0];
+    assert!(codex["version"].is_null());
+    assert!(
+        text.contains(&format!(
+            "codex: available · {} · version unknown\n",
+            codex["path"].as_str().unwrap()
+        )),
+        "{text}"
+    );
+}

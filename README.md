@@ -449,24 +449,22 @@ Useful `run` flags:
 
 ### `--format` and `--compact`
 
-Every verb whose stdout is a JSON document — `run`, `list`, `detect`, `config`,
-`sync`, `usage`, `interrupt`, and `history list`/`show`/`clear`/`migrate` —
-takes the same `--format <json|text>` flag. **`json` is the default**: the
-programmatic contract, unchanged. `--format text` renders the same report for a
-person at a terminal — for `run`, each candidate with its status, exit code,
-duration, the normalized `text` (or a line saying it is `null` and why), the
-failure classification and error when present, the structured value under
-`--schema`, the `session` and `fallback` blocks, and each command under
-`--print-command`; for `config`, every field with its value and source; for
-`sync`, each file and what changed plus the check-mode verdict; and so on. The
-text view never invents a value the JSON does not carry, and a control
-character a harness wrote is flattened before it is drawn. Exit codes and
-stderr are the same under either format. Any other value is a usage error.
+Every verb whose stdout is a JSON document takes the same `--format
+<json|text>` flag (its `--help` names it, with the default). **`json` is the
+default**: the programmatic contract, unchanged. `--format text` renders the
+same report for a person at a terminal — for `run`, each candidate with its
+status, exit code, duration, the normalized `text` (or a line saying it is
+`null` and why), the failure classification and error when present, the
+structured value under `--schema`, the `session` and `fallback` blocks, and
+each command under `--print-command`; for `config`, every field with its value
+and source; for `sync`, each file and what changed plus the check-mode verdict;
+and so on. The text view never invents a value the JSON does not carry, and a
+control character a harness wrote is flattened before it is drawn. Exit codes
+and stderr are the same under either format. Any other value is a usage error.
 
 `--format` is a printing choice, not a setting: it has no `oneharness.toml` key
-and no `ONEHARNESS_FORMAT` override (`oneharness config` reports no such
-field), and a program that wants the JSON should say `--format json` rather
-than lean on the default — the SDKs already do.
+and no `ONEHARNESS_FORMAT` override, and a program that wants the JSON should
+say `--format json` rather than lean on the default — the SDKs already do.
 
 `--compact` selects single-line JSON. Beside `--format text` it is accepted and
 has no effect. A streaming `run --stream` keeps its NDJSON event/result protocol

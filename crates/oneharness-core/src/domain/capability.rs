@@ -395,10 +395,13 @@ const fn skip(flag: &'static str, reason: &'static str) -> UncoveredFlag {
     UncoveredFlag { flag, reason }
 }
 
-/// Why a `--format text` flag is never an option: the SDKs consume the JSON
-/// contract, and `text` is the human-readable view of the same data.
-const TEXT_FORMAT: &str =
-    "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not";
+/// The argv every JSON-document capability always emits: the SDKs parse the
+/// JSON, so the rendering is compact and the format is stated outright rather
+/// than left to the CLI's default — which is what lets that default move to
+/// the human-readable view later without any SDK noticing. `--format text` is
+/// therefore never an option: an SDK consumes the contract, and text is the
+/// view of the same data a person reads.
+const JSON_DOCUMENT: &[&str] = &["--compact", "--format", "json"];
 
 /// Bindings shared by `run` and `runStream`: both drive the same verb, and the
 /// two methods differ only in how they read its stdout.
@@ -471,6 +474,10 @@ const RUN_STREAM_UNCOVERED: &[UncoveredFlag] = &[
         "--no-stream",
         "this method streams by definition, so the negative half cannot apply",
     ),
+    skip(
+        "--format",
+        "a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes",
+    ),
 ];
 
 /// Every capability this CLI exposes, and how each consumer surface reaches it.
@@ -488,7 +495,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("run_report"),
         stdin: false,
         rust: "oneharness_core::io::run::run",
-        always: &["--compact", "--no-stream"],
+        always: &["--compact", "--format", "json", "--no-stream"],
         bindings: RUN_BINDINGS,
         uncovered: RUN_UNCOVERED,
     },
@@ -512,7 +519,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("list_report"),
         stdin: false,
         rust: "oneharness_core::io::registry::list",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[],
         uncovered: &[],
     },
@@ -523,7 +530,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("detect_report"),
         stdin: false,
         rust: "oneharness_core::io::detect::detect",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("harnesses", FlagKind::Repeated("--harness")),
             bind_refuse("all", FlagKind::Switch("--all"), "harnesses"),
@@ -542,7 +549,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("config_report"),
         stdin: false,
         rust: "oneharness_core::domain::config::explain",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("cwd", FlagKind::Value("--cwd")),
             bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
@@ -557,7 +564,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("sync_report"),
         stdin: false,
         rust: "oneharness_core::io::sync::sync",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("cwd", FlagKind::Value("--cwd")),
             bind("harnesses", FlagKind::Repeated("--harness")),
@@ -589,7 +596,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("usage_report"),
         stdin: false,
         rust: "oneharness_core::io::usage::report",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("harnesses", FlagKind::Repeated("--harness")),
             bind_refuse("all", FlagKind::Switch("--all"), "harnesses"),
@@ -600,7 +607,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
-        uncovered: &[skip("--format", TEXT_FORMAT)],
+        uncovered: &[],
     },
     Capability {
         method: "gate",
@@ -639,7 +646,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("interrupt_response"),
         stdin: false,
         rust: "oneharness_core::io::control::send",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("session", FlagKind::Value("--session")),
             bind("input", FlagKind::Value("--input")),
@@ -655,7 +662,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("history_records"),
         stdin: false,
         rust: "oneharness_core::io::history::read_session",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind_prefer("session", FlagKind::Positional, "last"),
             bind("last", FlagKind::Switch("--last")),
@@ -666,7 +673,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
-        uncovered: &[skip("--format", TEXT_FORMAT)],
+        uncovered: &[],
     },
     Capability {
         method: "historyList",
@@ -675,7 +682,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("history_list"),
         stdin: false,
         rust: "oneharness_core::io::history::list_sessions",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("variant", FlagKind::Value("--variant")),
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
@@ -684,7 +691,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
-        uncovered: &[skip("--format", TEXT_FORMAT)],
+        uncovered: &[],
     },
     Capability {
         method: "historyWatch",
@@ -714,7 +721,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("history_clear_report"),
         stdin: false,
         rust: "oneharness_core::io::history::remove_sessions",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
@@ -732,7 +739,7 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("history_migrate_report"),
         stdin: false,
         rust: "oneharness_core::io::history::migrate",
-        always: &["--compact"],
+        always: JSON_DOCUMENT,
         bindings: &[
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind_refuse("config", FlagKind::Value("--config"), "noConfig"),

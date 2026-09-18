@@ -1,7 +1,9 @@
 {
   "config": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "config"
@@ -37,7 +39,9 @@
   },
   "detect": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "detect"
@@ -131,7 +135,9 @@
   },
   "history": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "history",
@@ -196,16 +202,13 @@
     "rust": "oneharness_core::io::history::read_session",
     "stdin": false,
     "stdout": "json",
-    "uncovered": [
-      {
-        "flag": "--format",
-        "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
-      }
-    ]
+    "uncovered": []
   },
   "historyClear": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "history",
@@ -261,7 +264,9 @@
   },
   "historyList": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "history",
@@ -313,16 +318,13 @@
     "rust": "oneharness_core::io::history::list_sessions",
     "stdin": false,
     "stdout": "json",
-    "uncovered": [
-      {
-        "flag": "--format",
-        "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
-      }
-    ]
+    "uncovered": []
   },
   "historyMigrate": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "history",
@@ -461,7 +463,9 @@
   },
   "interrupt": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "interrupt"
@@ -502,7 +506,9 @@
   },
   "list": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "list"
@@ -552,6 +558,8 @@
   "run": {
     "always": [
       "--compact",
+      "--format",
+      "json",
       "--no-stream"
     ],
     "argv": [
@@ -1132,12 +1140,18 @@
       {
         "flag": "--no-stream",
         "reason": "this method streams by definition, so the negative half cannot apply"
+      },
+      {
+        "flag": "--format",
+        "reason": "a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes"
       }
     ]
   },
   "sync": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "sync"
@@ -1191,7 +1205,9 @@
   },
   "usage": {
     "always": [
-      "--compact"
+      "--compact",
+      "--format",
+      "json"
     ],
     "argv": [
       "usage"
@@ -1254,11 +1270,6 @@
     "rust": "oneharness_core::io::usage::report",
     "stdin": false,
     "stdout": "json",
-    "uncovered": [
-      {
-        "flag": "--format",
-        "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
-      }
-    ]
+    "uncovered": []
   }
 }

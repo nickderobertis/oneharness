@@ -12,6 +12,8 @@
       "rust": "oneharness_core::io::run::run",
       "always": [
         "--compact",
+        "--format",
+        "json",
         "--no-stream"
       ],
       "bindings": [
@@ -583,6 +585,10 @@
         {
           "flag": "--no-stream",
           "reason": "this method streams by definition, so the negative half cannot apply"
+        },
+        {
+          "flag": "--format",
+          "reason": "a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes"
         }
       ]
     },
@@ -597,7 +603,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::registry::list",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [],
       "uncovered": []
@@ -613,7 +621,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::detect::detect",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -674,7 +684,9 @@
       "stdin": false,
       "rust": "oneharness_core::domain::config::explain",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -710,7 +722,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::sync::sync",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -791,7 +805,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::usage::report",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -845,12 +861,7 @@
           "unless": null
         }
       ],
-      "uncovered": [
-        {
-          "flag": "--format",
-          "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
-        }
-      ]
+      "uncovered": []
     },
     {
       "method": "gate",
@@ -929,7 +940,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::control::send",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -971,7 +984,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::history::read_session",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -1026,12 +1041,7 @@
           "unless": null
         }
       ],
-      "uncovered": [
-        {
-          "flag": "--format",
-          "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
-        }
-      ]
+      "uncovered": []
     },
     {
       "method": "historyList",
@@ -1045,7 +1055,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::history::list_sessions",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -1087,12 +1099,7 @@
           "unless": null
         }
       ],
-      "uncovered": [
-        {
-          "flag": "--format",
-          "reason": "the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not"
-        }
-      ]
+      "uncovered": []
     },
     {
       "method": "historyWatch",
@@ -1181,7 +1188,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::history::remove_sessions",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {
@@ -1237,7 +1246,9 @@
       "stdin": false,
       "rust": "oneharness_core::io::history::migrate",
       "always": [
-        "--compact"
+        "--compact",
+        "--format",
+        "json"
       ],
       "bindings": [
         {

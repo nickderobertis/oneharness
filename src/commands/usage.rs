@@ -26,8 +26,8 @@
 
 use std::time::Duration;
 
-use crate::cli::{UsageArgs, UsageFormat};
-use crate::commands::{print_json, print_text};
+use crate::cli::UsageArgs;
+use crate::commands::print_report;
 use oneharness_core::domain::usage::{
     AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
     UsageReport, UsageWindow, WindowUsage,
@@ -47,10 +47,7 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
         no_config: args.no_config,
     })?;
 
-    match args.format {
-        UsageFormat::Json => print_json(&report, args.compact)?,
-        UsageFormat::Text => print_text(&render_text(&report))?,
-    }
+    print_report(&report, args.format, args.compact, render_text)?;
     Ok(0)
 }
 

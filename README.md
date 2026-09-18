@@ -307,10 +307,12 @@ of silently degrading installs to the checksum fallback.
 
 ## Usage
 
-`list`/`detect`/`config`/`sync`/`run`/`usage` emit JSON to **stdout**
-(diagnostics go to **stderr**), `gate` speaks a harness's hook protocol on
-stdin/stdout, and `init` scaffolds a starter config with a plain confirmation
-line.
+`list`/`detect`/`config`/`sync`/`run`/`usage`/`interrupt` and the bounded
+`history` subcommands emit JSON to **stdout** by default (diagnostics go to
+**stderr**) and take `--format text` for a human-readable view of the same
+report (see *`--format` and `--compact`* below), `gate` speaks a harness's
+hook protocol on stdin/stdout, and `init` scaffolds a starter config with a
+plain confirmation line.
 
 ```console
 oneharness init                                   # scaffold a starter oneharness.toml (refuses to overwrite; --force to replace)
@@ -328,6 +330,7 @@ oneharness run --all --print-command --prompt "…" # dry run: show commands, ru
 oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an installed hook invokes (reads stdin)
 oneharness usage                                  # how much subscription headroom is left (costs no model turn)
 oneharness usage --format text                    # …the same, for humans
+oneharness run --harness codex --prompt "…" --format text  # any JSON verb, rendered for a person
 ```
 
 Useful `run` flags:
@@ -442,7 +445,30 @@ Useful `run` flags:
 - `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`).
 - `--config <path>` / `--no-config` — load exactly one config file / ignore all
   config files (see below).
-- `--compact` — single-line JSON.
+- `--format <json|text>` / `--compact` — see the next section.
+
+### `--format` and `--compact`
+
+Every verb whose stdout is a JSON document takes the same `--format
+<json|text>` flag (its `--help` names it, with the default). **`json` is the
+default**: the programmatic contract, unchanged. `--format text` renders the
+same report for a person at a terminal — for `run`, each candidate with its
+status, exit code, duration, the normalized `text` (or a line saying it is
+`null` and why), the failure classification and error when present, the
+structured value under `--schema`, the `session` and `fallback` blocks, and
+each command under `--print-command`; for `config`, every field with its value
+and source; for `sync`, each file and what changed plus the check-mode verdict;
+and so on. The text view never invents a value the JSON does not carry, and a
+control character a harness wrote is flattened before it is drawn. Exit codes
+and stderr are the same under either format. Any other value is a usage error.
+
+`--format` is a printing choice, not a setting: it has no `oneharness.toml` key
+and no `ONEHARNESS_FORMAT` override, and a program that wants the JSON should
+say `--format json` rather than lean on the default — the SDKs already do.
+
+`--compact` selects single-line JSON. Beside `--format text` it is accepted and
+has no effect. A streaming `run --stream` keeps its NDJSON event/result protocol
+whatever `--format` says, and `history watch` keeps its own `--format jsonl`.
 
 ### Configuration
 
@@ -2025,7 +2051,8 @@ from the session's first prompt — or set explicitly with `--history-name <NAME
 **Programmatic handoff.** The run report echoes the session file as
 `history_file` (absolute), so a consumer captures it and reads the session back
 later. The `oneharness history` verb views and manages the store — JSON on stdout
-by default (the programmatic contract), `--format text` for a human view:
+by default (the programmatic contract), `--format text` for a human view on
+every bounded subcommand:
 
 ```bash
 oneharness history list [--project <dir> | --all-projects]   # sessions, newest first

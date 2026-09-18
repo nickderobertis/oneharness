@@ -52,7 +52,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::run::run",
-		always: ["--compact", "--no-stream"],
+		always: ["--compact", "--format", "json", "--no-stream"],
 		bindings: [
 			{
 				option: "prompt",
@@ -620,6 +620,11 @@ export const CAPABILITIES = {
 				reason:
 					"this method streams by definition, so the negative half cannot apply",
 			},
+			{
+				flag: "--format",
+				reason:
+					"a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes",
+			},
 		],
 	},
 	list: {
@@ -630,7 +635,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::registry::list",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [],
 		uncovered: [],
 	},
@@ -642,7 +647,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::detect::detect",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "harnesses",
@@ -699,7 +704,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::domain::config::explain",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "cwd",
@@ -731,7 +736,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::sync::sync",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "cwd",
@@ -806,7 +811,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::usage::report",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "harnesses",
@@ -859,13 +864,7 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 		],
-		uncovered: [
-			{
-				flag: "--format",
-				reason:
-					"the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not",
-			},
-		],
+		uncovered: [],
 	},
 	gate: {
 		method: "gate",
@@ -937,7 +936,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::control::send",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "session",
@@ -974,7 +973,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::history::read_session",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "session",
@@ -1028,13 +1027,7 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 		],
-		uncovered: [
-			{
-				flag: "--format",
-				reason:
-					"the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not",
-			},
-		],
+		uncovered: [],
 	},
 	historyList: {
 		method: "historyList",
@@ -1044,7 +1037,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::history::list_sessions",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "variant",
@@ -1085,13 +1078,7 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 		],
-		uncovered: [
-			{
-				flag: "--format",
-				reason:
-					"the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not",
-			},
-		],
+		uncovered: [],
 	},
 	historyWatch: {
 		method: "historyWatch",
@@ -1170,7 +1157,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::history::remove_sessions",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "project",
@@ -1221,7 +1208,7 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::history::migrate",
-		always: ["--compact"],
+		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
 				option: "historyDir",

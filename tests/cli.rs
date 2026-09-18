@@ -30659,15 +30659,31 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
     let (_, text) = text_view_of(&show, &[]);
     assert!(text.contains("[codex] ok"), "{text}");
 
+    // clear / migrate name the session file exactly as their JSON does — under
+    // the store as `--history-dir` spelled it — while the run's `history_file`
+    // is canonicalized (`/var/…` → `/private/var/…` on macOS). The text view
+    // echoes the JSON, so the expected spelling is read from the JSON of the
+    // same invocation and proven to be the seeded file by resolving both.
+    let names_the_seeded_file = |listed: &str| {
+        assert_eq!(
+            std::fs::canonicalize(listed).expect("the listed session file exists"),
+            std::fs::canonicalize(&session_file).expect("the seeded session file exists"),
+            "the listed file is not the seeded session"
+        );
+    };
+
     // clear: a dry run says so and removes nothing.
     let dry = ["history", "clear", "--all-projects", "--history-dir", &ds];
     assert_json_default_is_unchanged_by_the_flag(&dry, &[]);
     let (json, text) = text_view_of(&dry, &[]);
-    assert_eq!(json_stdout(&json)["dry_run"], true);
+    let json = json_stdout(&json);
+    assert_eq!(json["dry_run"], true);
+    let listed = json["files"][0].as_str().unwrap().to_string();
+    names_the_seeded_file(&listed);
     assert_eq!(
         text,
         format!(
-            "dry run: would remove 1 session file\n  {session_file}\nnothing was deleted; re-run with --yes to delete\n"
+            "dry run: would remove 1 session file\n  {listed}\nnothing was deleted; re-run with --yes to delete\n"
         )
     );
     assert!(Path::new(&session_file).exists());
@@ -30675,20 +30691,25 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
     // migrate over an already-current store: every file counted, none rewritten.
     let migrate = ["history", "migrate", "--history-dir", &ds];
     assert_json_default_is_unchanged_by_the_flag(&migrate, &[]);
-    let (_, text) = text_view_of(&migrate, &[]);
+    let (json, text) = text_view_of(&migrate, &[]);
+    let migrated = json_stdout(&json)["files"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    names_the_seeded_file(&migrated);
     assert_eq!(
         text,
         format!(
-            "migrated 1 session file\n  {session_file}: 0 records migrated, 1 already current, 0 skipped\n"
+            "migrated 1 session file\n  {migrated}: 0 records migrated, 1 already current, 0 skipped\n"
         )
     );
 
-    // clear --yes: the deletion, in the past tense.
+    // clear --yes: the deletion, in the past tense, naming the same file.
     let yes = run(&[&dry[..], &["--yes", "--format", "text"]].concat(), &[]);
     assert!(yes.status.success(), "{yes:?}");
     assert_eq!(
         String::from_utf8_lossy(&yes.stdout),
-        format!("removed 1 session file\n  {session_file}\n")
+        format!("removed 1 session file\n  {listed}\n")
     );
     assert!(!Path::new(&session_file).exists());
 }

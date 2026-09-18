@@ -160,7 +160,7 @@ export type UnknownReason =
  *
  * Deserializing is a consumer boundary — `oneharness-core` is published for
  * sibling tools — so the envelope is validated on the way in rather than
- * trusted: see [`UsageReportWire`].
+ * trusted: see the private `UsageReportWire` shape.
  */
 export interface UsageReport {
   identities: UsageIdentity[];
@@ -178,8 +178,8 @@ export interface UsageReport {
  * One harness identity's headroom.
  *
  * Deserializing is a consumer boundary like the envelope's, so every string an
- * identity carries is flattened through [`without_control_chars`] on the way in
- * — see [`UsageIdentityWire`].
+ * identity carries is flattened through the private `without_control_chars`
+ * filter on the way in — see the private `UsageIdentityWire` shape.
  */
 export interface UsageIdentity {
   auth_mode: AuthMode;

@@ -1842,7 +1842,7 @@
             "const": "quota"
           },
           {
-            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "description": "The session this run asked to continue does not exist for the identity\nit ran as, so the harness refused before doing any work (see the private\n`unknown_session_rejection` rule). Distinct from every other kind\nbecause the task itself is fine: another identity — or a fresh session\non this one — can still run it.",
             "type": "string",
             "const": "session_not_found"
           },
@@ -2057,7 +2057,7 @@
             "type": "string"
           },
           "command": {
-            "description": "The exact argv oneharness built (argv[0] is the binary).",
+            "description": "The exact argv oneharness built; its first element is the binary.",
             "type": "array",
             "items": {
               "type": "string"
@@ -2923,7 +2923,7 @@
             "const": "quota"
           },
           {
-            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "description": "The session this run asked to continue does not exist for the identity\nit ran as, so the harness refused before doing any work (see the private\n`unknown_session_rejection` rule). Distinct from every other kind\nbecause the task itself is fine: another identity — or a fresh session\non this one — can still run it.",
             "type": "string",
             "const": "session_not_found"
           },
@@ -3302,7 +3302,7 @@
             "type": "string"
           },
           "command": {
-            "description": "The exact argv oneharness built (argv[0] is the binary).",
+            "description": "The exact argv oneharness built; its first element is the binary.",
             "type": "array",
             "items": {
               "type": "string"
@@ -5974,7 +5974,7 @@
             "const": "quota"
           },
           {
-            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "description": "The session this run asked to continue does not exist for the identity\nit ran as, so the harness refused before doing any work (see the private\n`unknown_session_rejection` rule). Distinct from every other kind\nbecause the task itself is fine: another identity — or a fresh session\non this one — can still run it.",
             "type": "string",
             "const": "session_not_found"
           },
@@ -8976,7 +8976,7 @@
             "const": "quota"
           },
           {
-            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "description": "The session this run asked to continue does not exist for the identity\nit ran as, so the harness refused before doing any work (see the private\n`unknown_session_rejection` rule). Distinct from every other kind\nbecause the task itself is fine: another identity — or a fresh session\non this one — can still run it.",
             "type": "string",
             "const": "session_not_found"
           },
@@ -9360,7 +9360,7 @@
             "const": "quota"
           },
           {
-            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "description": "The session this run asked to continue does not exist for the identity\nit ran as, so the harness refused before doing any work (see the private\n`unknown_session_rejection` rule). Distinct from every other kind\nbecause the task itself is fine: another identity — or a fresh session\non this one — can still run it.",
             "type": "string",
             "const": "session_not_found"
           },
@@ -12482,7 +12482,7 @@
             "const": "quota"
           },
           {
-            "description": "The session this run asked to continue does not exist for the identity it\nran as, so the harness refused before doing any work (see\n[`unknown_session_rejection`]). Distinct from every other kind because the\ntask itself is fine: another identity — or a fresh session on this one —\ncan still run it.",
+            "description": "The session this run asked to continue does not exist for the identity\nit ran as, so the harness refused before doing any work (see the private\n`unknown_session_rejection` rule). Distinct from every other kind\nbecause the task itself is fine: another identity — or a fresh session\non this one — can still run it.",
             "type": "string",
             "const": "session_not_found"
           },
@@ -16760,7 +16760,7 @@
   "usage_report": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "UsageReport",
-    "description": "One usage report: every probed identity, stamped with a single observation\ntime supplied by the caller (this module reads no clock).\n\nDeserializing is a consumer boundary — `oneharness-core` is published for\nsibling tools — so the envelope is validated on the way in rather than\ntrusted: see [`UsageReportWire`].",
+    "description": "One usage report: every probed identity, stamped with a single observation\ntime supplied by the caller (this module reads no clock).\n\nDeserializing is a consumer boundary — `oneharness-core` is published for\nsibling tools — so the envelope is validated on the way in rather than\ntrusted: see the private `UsageReportWire` shape.",
     "type": "object",
     "properties": {
       "identities": {
@@ -17057,7 +17057,7 @@
         ]
       },
       "UsageIdentity": {
-        "description": "One harness identity's headroom.\n\nDeserializing is a consumer boundary like the envelope's, so every string an\nidentity carries is flattened through [`without_control_chars`] on the way in\n— see [`UsageIdentityWire`].",
+        "description": "One harness identity's headroom.\n\nDeserializing is a consumer boundary like the envelope's, so every string an\nidentity carries is flattened through the private `without_control_chars`\nfilter on the way in — see the private `UsageIdentityWire` shape.",
         "type": "object",
         "properties": {
           "auth_mode": {

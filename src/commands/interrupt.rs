@@ -19,6 +19,7 @@ use oneharness_core::io::control;
 use oneharness_core::io::session as session_io;
 
 use crate::cli::InterruptArgs;
+use crate::commands::{print_report, printable};
 
 pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     // Validated before anything is resolved: a redirection that cannot be
@@ -64,8 +65,31 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     // stdout — and `println!` panics on that instead of reporting it. The same
     // writer every other JSON-emitting command uses, so the answer frame fails
     // the way a report does.
-    crate::commands::print_json(&response, args.compact)?;
+    print_report(&response, args.format, args.compact, render_text)?;
     Ok(i32::from(!response.is_ok()))
+}
+
+/// The answer for a person: served (by which mechanism, and whether the
+/// redirection went with it) or refused (the reason token and the run's own
+/// words).
+fn render_text(response: &ControlResponse) -> String {
+    match response {
+        ControlResponse::Served {
+            mechanism,
+            redirected,
+        } => format!(
+            "interrupt served via {} · redirection {}\n",
+            mechanism.as_str(),
+            if *redirected { "taken" } else { "none" }
+        ),
+        ControlResponse::Refused { error, reason } => {
+            format!(
+                "interrupt refused ({}): {}\n",
+                reason.as_str(),
+                printable(error)
+            )
+        }
+    }
 }
 
 /// The `unsupported` refusal, when the store says this session is bound to a
@@ -124,5 +148,36 @@ fn control_capable_ids() -> String {
         "none".to_string()
     } else {
         ids.join(", ")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oneharness_core::domain::control::ControlShape;
+
+    #[test]
+    fn text_view_says_served_or_refused_with_the_reason_and_redirection() {
+        assert_eq!(
+            render_text(&ControlResponse::Served {
+                mechanism: ControlShape::CodexAppServer,
+                redirected: true,
+            }),
+            "interrupt served via codex-app-server · redirection taken\n"
+        );
+        assert_eq!(
+            render_text(&ControlResponse::Served {
+                mechanism: ControlShape::ClaudeControlRequest,
+                redirected: false,
+            }),
+            "interrupt served via claude-control-request · redirection none\n"
+        );
+        assert_eq!(
+            render_text(&ControlResponse::refused(
+                "no run is listening\u{1b}[0m".to_string(),
+                ControlReason::NotRunning,
+            )),
+            "interrupt refused (not_running): no run is listening [0m\n"
+        );
     }
 }

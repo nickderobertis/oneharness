@@ -1,15 +1,16 @@
 //! `oneharness history` — view and manage the standardized run history that
-//! `run --history` streams to disk. `list`/`show` print JSON to stdout by default
-//! (the programmatic contract every other subcommand upholds) and offer an opt-in
-//! `--format text` human view; `clear` deletes sessions (dry-run unless `--yes`).
+//! `run --history` streams to disk. Every bounded subcommand prints JSON to
+//! stdout by default (the programmatic contract every other subcommand upholds)
+//! and offers an opt-in `--format text` human view; `clear` deletes sessions
+//! (dry-run unless `--yes`).
 
 use std::path::{Path, PathBuf};
 
 use crate::cli::{
-    HistoryClearArgs, HistoryCommand, HistoryFormat, HistoryListArgs, HistoryMigrateArgs,
-    HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat,
+    Format, HistoryClearArgs, HistoryCommand, HistoryListArgs, HistoryMigrateArgs, HistoryShowArgs,
+    HistoryWatchArgs, HistoryWatchFormat,
 };
-use crate::commands::print_json;
+use crate::commands::{print_report, printable};
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
@@ -37,7 +38,7 @@ fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
         args.no_config,
     )?;
     let report = history_io::HistoryMigrateReport::new(history_io::migrate(&dir)?);
-    print_json(&report, args.compact)?;
+    print_report(&report, args.format, args.compact, render_migrate_text)?;
     Ok(EXIT_OK)
 }
 
@@ -224,10 +225,9 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
                 .any(|harness| harness.ends_with(&suffix))
         });
     }
-    match args.format {
-        HistoryFormat::Json => print_json(&sessions, args.compact)?,
-        HistoryFormat::Text => print!("{}", render_list_text(&sessions)),
-    }
+    print_report(&sessions, args.format, args.compact, |s| {
+        render_list_text(s)
+    })?;
     Ok(EXIT_OK)
 }
 
@@ -302,32 +302,26 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
 }
 
 fn render_records(
-    format: HistoryFormat,
+    format: Format,
     compact: bool,
     records: &[HistoryRecord],
 ) -> Result<i32, OneharnessError> {
-    match format {
-        HistoryFormat::Json => print_json(&records.to_vec(), compact)?,
-        HistoryFormat::Text => {
-            let values = records
-                .iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<_>, _>>()?;
-            print!("{}", render_show_text(&values));
-        }
-    }
-    Ok(EXIT_OK)
+    // The text view reads the record's JSON shape (it is what a legacy store
+    // hands back too), so the typed records are projected onto it first: one
+    // renderer for both lookups rather than two that could drift.
+    let values = records
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    render_record_values(format, compact, &values)
 }
 
 fn render_record_values(
-    format: HistoryFormat,
+    format: Format,
     compact: bool,
     records: &[serde_json::Value],
 ) -> Result<i32, OneharnessError> {
-    match format {
-        HistoryFormat::Json => print_json(&records, compact)?,
-        HistoryFormat::Text => print!("{}", render_show_text(records)),
-    }
+    print_report(&records, format, compact, |r| render_show_text(r))?;
     Ok(EXIT_OK)
 }
 
@@ -346,8 +340,70 @@ fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
         let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
         history_io::HistoryClearReport::dry_run(sessions.iter().map(|s| s.path.clone()).collect())
     };
-    print_json(&report, args.compact)?;
+    print_report(&report, args.format, args.compact, render_clear_text)?;
     Ok(EXIT_OK)
+}
+
+/// What `history clear` removed — or, on a dry run, what it would remove, with
+/// the notice that nothing was touched and how to make it real.
+fn render_clear_text(report: &history_io::HistoryClearReport) -> String {
+    let (headline, files, footer) = match report {
+        history_io::HistoryClearReport::Removed(removed) => (
+            format!(
+                "removed {} session file{}",
+                removed.removed,
+                plural(removed.removed)
+            ),
+            &removed.files,
+            None,
+        ),
+        history_io::HistoryClearReport::DryRun(dry) => (
+            format!(
+                "dry run: would remove {} session file{}",
+                dry.would_remove,
+                plural(dry.would_remove)
+            ),
+            &dry.files,
+            Some(dry.hint),
+        ),
+    };
+    let mut out = format!("{headline}\n");
+    for file in files {
+        out.push_str(&format!("  {}\n", printable(file)));
+    }
+    if let Some(hint) = footer {
+        out.push_str(&format!("nothing was deleted; {hint}\n"));
+    }
+    out
+}
+
+/// What `history migrate` rewrote: one row per session file with its counts,
+/// and the total.
+fn render_migrate_text(report: &history_io::HistoryMigrateReport) -> String {
+    let mut out = format!(
+        "migrated {} session file{}\n",
+        report.files_processed,
+        plural(report.files_processed)
+    );
+    for file in &report.files {
+        out.push_str(&format!(
+            "  {}: {} record{} migrated, {} already current, {} skipped\n",
+            printable(&file.path),
+            file.records_migrated,
+            plural(file.records_migrated),
+            file.already_current,
+            file.skipped,
+        ));
+    }
+    out
+}
+
+fn plural(count: usize) -> &'static str {
+    if count == 1 {
+        ""
+    } else {
+        "s"
+    }
 }
 
 /// A compact human table for `history list --format text`.
@@ -357,12 +413,12 @@ fn render_list_text(sessions: &[SessionSummary]) -> String {
     }
     let mut out = String::new();
     for s in sessions {
-        out.push_str(&format!(
+        out.push_str(&printable(&format!(
             "{started}  {name}  ({records} run{plural}, {harnesses})\n  id: {id}\n  project: {project}\n",
             started = if s.started.is_empty() { "?" } else { &s.started },
             name = s.name,
             records = s.record_count,
-            plural = if s.record_count == 1 { "" } else { "s" },
+            plural = plural(s.record_count),
             harnesses = if s.harnesses.is_empty() {
                 "-".to_string()
             } else {
@@ -370,7 +426,7 @@ fn render_list_text(sessions: &[SessionSummary]) -> String {
             },
             id = s.id,
             project = s.project,
-        ));
+        )));
     }
     out
 }
@@ -384,17 +440,17 @@ fn render_show_text(records: &[serde_json::Value]) -> String {
     for r in records {
         let get = |key: &str| r.get(key).and_then(|value| value.as_str()).unwrap_or("");
         let status = get("status");
-        out.push_str(&format!(
+        out.push_str(&printable(&format!(
             "{ts}  [{harness}] {status}\n",
             ts = get("timestamp"),
             harness = get("harness"),
-        ));
+        )));
         let prompt = get("prompt");
         if !prompt.is_empty() {
-            out.push_str(&format!("  prompt: {}\n", first_line(prompt)));
+            out.push_str(&format!("  prompt: {}\n", printable(first_line(prompt))));
         }
         if let Some(text) = r.get("text").and_then(|value| value.as_str()) {
-            out.push_str(&format!("  text: {}\n", first_line(text)));
+            out.push_str(&format!("  text: {}\n", printable(first_line(text))));
         }
         out.push('\n');
     }
@@ -466,5 +522,43 @@ mod tests {
     #[test]
     fn show_text_empty_is_labeled() {
         assert_eq!(render_show_text(&[]), "no records\n");
+    }
+
+    #[test]
+    fn clear_text_distinguishes_a_dry_run_from_a_deletion() {
+        let files = vec!["/h/a.jsonl".to_string(), "/h/b.jsonl".to_string()];
+        let dry = render_clear_text(&history_io::HistoryClearReport::dry_run(files.clone()));
+        assert_eq!(
+            dry,
+            "dry run: would remove 2 session files\n  /h/a.jsonl\n  /h/b.jsonl\n\
+             nothing was deleted; re-run with --yes to delete\n"
+        );
+        let removed = render_clear_text(&history_io::HistoryClearReport::removed(files));
+        assert_eq!(
+            removed,
+            "removed 2 session files\n  /h/a.jsonl\n  /h/b.jsonl\n"
+        );
+        assert_eq!(
+            render_clear_text(&history_io::HistoryClearReport::removed(vec![])),
+            "removed 0 session files\n"
+        );
+    }
+
+    #[test]
+    fn migrate_text_counts_each_file() {
+        let report = history_io::HistoryMigrateReport::new(vec![history_io::MigrationSummary {
+            path: "/h/s.jsonl".to_string(),
+            records_migrated: 1,
+            skipped: 0,
+            already_current: 2,
+        }]);
+        assert_eq!(
+            render_migrate_text(&report),
+            "migrated 1 session file\n  /h/s.jsonl: 1 record migrated, 2 already current, 0 skipped\n"
+        );
+        assert_eq!(
+            render_migrate_text(&history_io::HistoryMigrateReport::new(vec![])),
+            "migrated 0 session files\n"
+        );
     }
 }

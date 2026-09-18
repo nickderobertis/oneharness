@@ -166,10 +166,14 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
-  Neither sees a method that was never written, so `check-sdk-coverage.sh` (in
-  `lint-workflows`) fails when a `domain::capability` entry has no method on a
-  client — derived from the manifest and each client's own source, never a
-  list — and `check-sdk-coverage-test.sh` holds that red in place, since a gate
+  A doc comment on a schema-carrying type is also both SDKs' generated
+  `description`, so rewording one (even a rustdoc link repair) needs `just
+  sdk-generate` and `just python-sdk-generate` in the same change, or the drift
+  check refuses the push. Neither sees a method that was never written, so
+  `check-sdk-coverage.sh` (in `lint-workflows`) fails when a `domain::capability`
+  entry has no method on a client — derived from the manifest and each client's
+  own source, never a list — and `check-sdk-coverage-test.sh` holds that red in
+  place, since a gate
   whose only job is to fail proves nothing unexercised. Every capability, flag
   and output field is tabulated per surface in `docs/sdk-parity.md`, which
   `just parity-audit` regenerates and `check-parity-audit.sh` pins. A binding

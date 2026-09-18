@@ -4474,17 +4474,56 @@ fn resume_with_multiple_harnesses_is_a_usage_error() {
             && stderr.contains("--run-mode parallel"),
         "{stderr}"
     );
-    let explicit = run(
-        &[&["run", "--run-mode", "fallback"][..], &args[1..]].concat(),
-        &[],
-    );
-    assert_eq!(explicit.status.code(), Some(2));
-    let stderr = String::from_utf8_lossy(&explicit.stderr);
-    assert!(
-        stderr.contains("`--run-mode fallback` is incompatible with --resume/--fork")
-            && !stderr.contains("the default run mode"),
-        "{stderr}"
-    );
+    // Selected outright — by the flag, by config, or by the environment — the
+    // refusal names the flag rather than a default the caller did not lean on.
+    let selected = ConfigFixture::new("resume-multi-selected", "run_mode = \"fallback\"\n", "");
+    let unset = ConfigFixture::new("resume-multi-env", "", "");
+    let with_cwd = |cwd: &str| -> Vec<String> {
+        args[1..]
+            .iter()
+            .map(|arg| (*arg).to_string())
+            .chain(["--cwd".to_string(), cwd.to_string()])
+            .collect()
+    };
+    let by_config = with_cwd(&selected.cwd());
+    let by_env = with_cwd(&unset.cwd());
+    for (label, output) in [
+        (
+            "--run-mode fallback",
+            run(
+                &[&["run", "--run-mode", "fallback"][..], &args[1..]].concat(),
+                &[],
+            ),
+        ),
+        (
+            "run_mode = \"fallback\"",
+            run_with_config(
+                &std::iter::once("run")
+                    .chain(by_config.iter().map(String::as_str))
+                    .collect::<Vec<_>>(),
+                &[],
+                &selected.user_config(),
+            ),
+        ),
+        (
+            "ONEHARNESS_RUN_MODE=fallback",
+            run_with_config(
+                &std::iter::once("run")
+                    .chain(by_env.iter().map(String::as_str))
+                    .collect::<Vec<_>>(),
+                &[("ONEHARNESS_RUN_MODE", "fallback")],
+                &unset.user_config(),
+            ),
+        ),
+    ] {
+        assert_eq!(output.status.code(), Some(2), "{label}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("`--run-mode fallback` is incompatible with --resume/--fork")
+                && !stderr.contains("the default run mode"),
+            "{label}: {stderr}"
+        );
+    }
     let parallel = run(
         &[&["run", "--run-mode", "parallel"][..], &args[1..]].concat(),
         &[],

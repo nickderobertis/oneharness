@@ -29956,3 +29956,1196 @@ fn control_accepts_a_server_backed_chain_of_more_than_one_candidate() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// `--format <text|json>`: one flag on every verb whose stdout is a JSON document.
+//
+// `json` is the default everywhere (the programmatic contract, unchanged), so
+// the property each journey below holds is: `--format text` is a readable view
+// of the same report — carrying what the JSON carries, never a JSON document
+// itself — produced with the same exit code and stderr as the JSON rendering,
+// while an invocation that says nothing (or says `json`) is byte-identical to
+// what it was before the flag existed.
+// ---------------------------------------------------------------------------
+
+/// The stdout of `args` under two spellings that must agree: no `--format`,
+/// and `--format json`. Byte for byte where the report is deterministic; where
+/// it carries its own clock (a run's timings, a probe's `observed_at`) those
+/// fields are the only difference allowed, and the rendering (pretty, so the
+/// same line count) must still match.
+fn assert_json_default_is_unchanged_by_the_flag(args: &[&str], envs: &[(&str, &str)]) {
+    let implicit = run(args, envs);
+    let explicit = run(&[args, &["--format", "json"]].concat(), envs);
+    assert_eq!(
+        implicit.status.code(),
+        explicit.status.code(),
+        "`{}`: exit codes differ with an explicit `--format json`",
+        args.join(" ")
+    );
+    assert_eq!(implicit.stderr, explicit.stderr);
+    if implicit.stdout == explicit.stdout {
+        json_stdout(&implicit);
+        return;
+    }
+    assert_eq!(
+        implicit.stdout.iter().filter(|b| **b == b'\n').count(),
+        explicit.stdout.iter().filter(|b| **b == b'\n').count(),
+        "`{}`: `--format json` must render exactly as the default does",
+        args.join(" ")
+    );
+    let mut theirs = json_stdout(&implicit);
+    let mut ours = json_stdout(&explicit);
+    for value in [&mut theirs, &mut ours] {
+        null_clock_fields(value);
+    }
+    assert_eq!(
+        ours,
+        theirs,
+        "`{}`: `--format json` must be the default's own report",
+        args.join(" ")
+    );
+}
+
+/// Null every field that reads a clock, so two invocations of one report can
+/// be compared for everything else.
+fn null_clock_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map.iter_mut() {
+                if matches!(
+                    key.as_str(),
+                    "duration_ms" | "telemetry" | "observed_at" | "started_at" | "finished_at"
+                ) {
+                    *child = Value::Null;
+                } else {
+                    null_clock_fields(child);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(null_clock_fields),
+        _ => {}
+    }
+}
+
+/// The text view of `args` beside its JSON rendering: same exit code, same
+/// stderr, a stdout that is not itself a JSON document. Returns both.
+fn text_view_of(args: &[&str], envs: &[(&str, &str)]) -> (Output, String) {
+    let json = run(args, envs);
+    let text = run(&[args, &["--format", "text"]].concat(), envs);
+    assert_eq!(
+        text.status.code(),
+        json.status.code(),
+        "`{}`: the format must not move the exit code\n--- text stderr ---\n{}",
+        args.join(" "),
+        String::from_utf8_lossy(&text.stderr)
+    );
+    assert_eq!(
+        text.stderr,
+        json.stderr,
+        "`{}`: the format must not change the diagnostics",
+        args.join(" ")
+    );
+    let rendered = String::from_utf8_lossy(&text.stdout).into_owned();
+    assert!(
+        serde_json::from_str::<Value>(&rendered).is_err(),
+        "`--format text` emitted a JSON document:\n{rendered}"
+    );
+    assert!(!rendered.is_empty(), "the text view is empty");
+    (json, rendered)
+}
+
+#[test]
+fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
+    // The value list lives in ONE clap type, so every verb refuses the same
+    // way — and none has quietly kept a private spelling.
+    let verbs: [&[&str]; 11] = [
+        &["run", "--prompt", "hi"],
+        &["list"],
+        &["detect"],
+        &["config"],
+        &["sync"],
+        &["usage"],
+        &["interrupt", "--session", "x"],
+        &["history", "list"],
+        &["history", "show", "--last"],
+        &["history", "clear"],
+        &["history", "migrate"],
+    ];
+    for verb in verbs {
+        let output = run(&[verb, &["--format", "yaml"]].concat(), &[]);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "`{}` must refuse `--format yaml` as a usage error: {stderr}",
+            verb.join(" ")
+        );
+        assert!(
+            stderr.contains("invalid value 'yaml' for '--format <FORMAT>'")
+                && stderr.contains("[possible values: json, text]"),
+            "`{}`: {stderr}",
+            verb.join(" ")
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "a refused invocation prints no report"
+        );
+    }
+    // `history watch` keeps its own single-valued format: text is NOT one of
+    // its answers, because a stream is not a document.
+    let watch = run(&["history", "watch", "--format", "text"], &[]);
+    assert_eq!(watch.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&watch.stderr).contains("[possible values: jsonl]"),
+        "{watch:?}"
+    );
+}
+
+#[test]
+fn every_json_verb_documents_the_format_flag_with_json_as_its_default() {
+    let verbs: [&[&str]; 11] = [
+        &["run"],
+        &["list"],
+        &["detect"],
+        &["config"],
+        &["sync"],
+        &["usage"],
+        &["interrupt"],
+        &["history", "list"],
+        &["history", "show"],
+        &["history", "clear"],
+        &["history", "migrate"],
+    ];
+    for verb in verbs {
+        let output = run(&[verb, &["--help"]].concat(), &[]);
+        let help = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            help.contains("--format <FORMAT>") && help.contains("[default: json]"),
+            "`{} --help` must document --format with json as the default:\n{help}",
+            verb.join(" ")
+        );
+        assert!(
+            help.contains("[possible values: json, text]"),
+            "`{} --help`:\n{help}",
+            verb.join(" ")
+        );
+    }
+}
+
+#[test]
+fn format_is_a_printing_choice_with_no_config_layer() {
+    // `--format` is the shell's, like `--compact`: no `oneharness.toml` key, no
+    // `ONEHARNESS_FORMAT` override, and nothing on the engine's request. A key
+    // in a config file is the same unknown-field error any typo gets, the env
+    // variable steers nothing, and `config` reports no such field.
+    let fx = ConfigFixture::new("format-layer", "format = \"text\"\n", "");
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("format"),
+        "{output:?}"
+    );
+
+    let report = json_stdout(&run(&["config"], &[("ONEHARNESS_FORMAT", "text")]));
+    assert!(
+        report.get("format").is_none(),
+        "`config` must not report a format field: {report}"
+    );
+    let listed = run(&["list", "--compact"], &[("ONEHARNESS_FORMAT", "text")]);
+    json_stdout(&listed);
+}
+
+#[test]
+fn run_text_view_reads_the_report_a_person_needs() {
+    let stdout = concat!(
+        r#"{"type":"result","result":"pong"#,
+        "\\u001b[31m\\nsecond line",
+        r#"","session_id":"sess-txt","#,
+        r#""total_cost_usd":0.0095,"usage":{"input_tokens":1200,"output_tokens":8}}"#
+    );
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("claude-code"),
+        "--model",
+        "opus",
+    ];
+    let envs = [("MOCK_STDOUT", stdout)];
+    assert_json_default_is_unchanged_by_the_flag(&args, &envs);
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    assert_eq!(json_stdout(&json)["results"][0]["status"], "ok");
+
+    assert!(
+        text.starts_with("prompt: hi\nmode: default\nmodel: opus\n"),
+        "{text}"
+    );
+    // The duration is this invocation's own, so only its shape is pinned.
+    let envelope = text
+        .lines()
+        .find(|line| line.starts_with("claude-code [model opus]: ok · exit 0 · "))
+        .unwrap_or_else(|| panic!("no envelope line in:\n{text}"));
+    assert!(envelope.ends_with(" ms"), "{envelope}");
+    assert!(
+        text.contains("  text (json:result):\n    pong [31m\n    second line\n"),
+        "the answer sits under its label with the harness's escape flattened:\n{text}"
+    );
+    assert!(text.contains("  session id: sess-txt\n"), "{text}");
+    assert!(
+        text.contains(
+            "  usage: in 1200 · out 8 · cache read null · cache write null · cost $0.0095\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        !text.chars().any(|c| c.is_control() && c != '\n'),
+        "a control character from the harness reached the text view:\n{text:?}"
+    );
+}
+
+#[test]
+fn run_text_view_says_why_text_is_null_and_names_the_failure() {
+    let args = [
+        "run",
+        "--harness",
+        "claude-code,goose",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("claude-code"),
+        "--bin",
+        &missing_bin("goose"),
+    ];
+    let envs = [
+        ("MOCK_EXIT", "1"),
+        (
+            "MOCK_STDERR",
+            "Error: 401 Unauthorized — please authenticate",
+        ),
+        ("MOCK_STDOUT", ""),
+    ];
+    let (json, text) = text_view_of(&args, &envs);
+    assert_eq!(json.status.code(), Some(1));
+    let report = json_stdout(&json);
+    assert_eq!(report["results"][1]["status"], "skipped");
+    let error = report["results"][1]["error"].as_str().unwrap();
+
+    assert!(text.contains("claude-code: nonzero · exit 1 · "), "{text}");
+    assert!(
+        text.contains("  text: null (no extraction was possible from the harness's output)\n"),
+        "{text}"
+    );
+    assert!(text.contains("  failure: auth (from stderr)\n"), "{text}");
+    assert!(
+        text.contains("goose: skipped · exit null · not run\n  text: null (not run)\n"),
+        "{text}"
+    );
+    assert!(text.contains(&format!("  error: {error}\n")), "{text}");
+}
+
+#[test]
+fn run_text_view_shows_the_structured_value_not_as_the_report() {
+    // A result whose answer IS a JSON value is shown as that value inside the
+    // readable report — the report itself is never a JSON document.
+    let schema = ScratchDir::new("format-schema").unwrap();
+    let schema_path = schema.join("person.json");
+    std::fs::write(&schema_path, PERSON_SCHEMA).unwrap();
+    let schema_arg = schema_path.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "codex",
+        "--prompt",
+        "who",
+        "--bin",
+        &bin_override("codex"),
+        "--schema",
+        &schema_arg,
+    ];
+    let envs = [(
+        "MOCK_STDOUT",
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\",\"age\":36}"}}"#,
+    )];
+    assert_json_default_is_unchanged_by_the_flag(&args, &envs);
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    let report = json_stdout(&json);
+    assert_eq!(report["results"][0]["schema_valid"], true);
+
+    assert!(text.contains("schema: applied · max retries 2\n"), "{text}");
+    assert!(
+        text.contains("  structured: valid · attempts 1\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("    {\n      \"age\": 36,\n      \"name\": \"Ada\"\n    }\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn run_text_view_carries_the_session_and_fallback_blocks() {
+    let store = session_store_dir("format-session");
+    let store_arg = store.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "goose,codex",
+        "--run-mode",
+        "fallback",
+        "--session",
+        "chat",
+        "--session-dir",
+        &store_arg,
+        "--prompt",
+        "hi",
+        "--bin",
+        &missing_bin("goose"),
+        "--bin",
+        &bin_override("codex"),
+    ];
+    let envs = [(
+        "MOCK_STDOUT",
+        concat!(
+            r#"{"type":"thread.started","thread_id":"thread-1"}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"done"}}"#,
+        ),
+    )];
+    // Two invocations of one `--session` name are a create then a continue, so
+    // the JSON rendering and the text rendering are read off separate stores.
+    let json = run(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    let report = json_stdout(&json);
+    assert_eq!(report["fallback"]["ran"], "codex");
+    assert_eq!(report["session"]["phase"], "create");
+    let detail = report["fallback"]["fell_through"][0]["detail"]
+        .as_str()
+        .unwrap();
+    let second = session_store_dir("format-session-text");
+    let second_arg = second.display().to_string();
+    let mut text_args = args.to_vec();
+    text_args[8] = &second_arg;
+    let (text_json, text) = text_view_of(&text_args, &envs);
+    assert!(text_json.status.success(), "{text_json:?}");
+    let store_file = json_stdout(&text_json)["session"]["store_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    assert!(
+        text.contains(&format!(
+            "session: chat (continue) · token thread-1 · store {store_file}\n"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("fallback: ran codex\n"), "{text}");
+    assert!(
+        text.contains(&format!("  fell through goose: not-installed — {detail}\n")),
+        "the fallen-through candidate and its reason:\n{text}"
+    );
+    assert!(
+        text.contains("\ngoose: skipped · exit null · not run\n"),
+        "{text}"
+    );
+    assert!(text.contains("\ncodex: ok · exit 0 · "), "{text}");
+    assert!(
+        text.contains("  text (json:codex-agent-message):\n    done\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn run_text_view_shows_each_command_under_print_command() {
+    let args = [
+        "run",
+        "--harness",
+        "claude-code,codex",
+        "--prompt",
+        "say hi there",
+        "--print-command",
+    ];
+    assert_json_default_is_unchanged_by_the_flag(&args, &[]);
+    let (json, text) = text_view_of(&args, &[]);
+    assert!(json.status.success(), "{json:?}");
+    assert!(text.contains("mode: default · dry run\n"), "{text}");
+    assert!(
+        text.contains(
+            "claude-code: planned · exit null · not run\n  command: claude -p 'say hi there' --permission-mode dontAsk --output-format json\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "codex: planned · exit null · not run\n  command: codex exec --json 'say hi there'\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("  text: null (dry run, nothing executed)\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_streaming_run_keeps_its_ndjson_protocol_whatever_format_says() {
+    // `--stream` is its own stdout protocol: a consumer has been reading event
+    // lines all along, so the terminal envelope is not the place to switch.
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"text","part":{"type":"text","text":"working"}}"#,
+        "\n",
+    );
+    let args = [
+        "run",
+        "--harness",
+        "opencode",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("opencode"),
+        "--stream",
+    ];
+    let envs = [("MOCK_STDOUT", stdout)];
+    let baseline = run(&args, &envs);
+    assert!(baseline.status.success(), "{baseline:?}");
+    let parse = |output: &Output| -> Vec<Value> {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
+            .map(|mut line: Value| {
+                // Equal up to the per-run timings the report carries.
+                if let Some(results) = line["report"]["results"].as_array_mut() {
+                    for r in results {
+                        r["duration_ms"] = Value::Null;
+                        r["telemetry"] = Value::Null;
+                    }
+                }
+                line
+            })
+            .collect()
+    };
+    let theirs = parse(&baseline);
+    assert_eq!(theirs.len(), 2, "{baseline:?}");
+    for format in ["json", "text"] {
+        let output = run(&[&args[..], &["--format", format]].concat(), &envs);
+        assert!(output.status.success(), "{output:?}");
+        let ours = parse(&output);
+        assert_eq!(ours[0]["type"], "event");
+        assert_eq!(ours[1]["type"], "result");
+        assert_eq!(ours, theirs, "`--format {format}` changed the stream");
+    }
+}
+
+#[test]
+fn list_text_view_names_each_harness_with_its_binary_and_flags() {
+    assert_json_default_is_unchanged_by_the_flag(&["list"], &[]);
+    let (json, text) = text_view_of(&["list"], &[]);
+    let report = json_stdout(&json);
+    for h in report["harnesses"].as_array().unwrap() {
+        let id = h["id"].as_str().unwrap();
+        let bin = h["default_bin"].as_str().unwrap();
+        let line = text
+            .lines()
+            .find(|line| line.starts_with(&format!("{id} (")))
+            .unwrap_or_else(|| panic!("no line for {id}:\n{text}"));
+        assert!(line.contains(&format!("bin {bin}")), "{line}");
+    }
+    assert!(text.contains("fork_reuses_cache yes"), "{text}");
+    assert!(text.contains("control codex-app-server"), "{text}");
+    assert!(text.contains("mock_rewrite none"), "{text}");
+}
+
+#[test]
+fn detect_text_view_says_available_or_not_with_path_and_version() {
+    let args = [
+        "detect",
+        "--harness",
+        "codex,goose",
+        "--bin",
+        &bin_override("codex"),
+        "--bin",
+        "goose=/nonexistent/oneharness-format-goose",
+    ];
+    assert_json_default_is_unchanged_by_the_flag(&args, &[]);
+    let (json, text) = text_view_of(&args, &[]);
+    let report = json_stdout(&json);
+    let codex = &report["detected"][0];
+    assert_eq!(codex["available"], true);
+    assert!(
+        text.contains(&format!(
+            "codex: available · {} · version {}\n",
+            codex["path"].as_str().unwrap(),
+            codex["version"].as_str().unwrap()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("goose: not installed (looked for `/nonexistent/oneharness-format-goose`)\n"),
+        "{text}"
+    );
+
+    // The exit mapping is the same under either format.
+    let strict = [&args[..], &["--require-available"]].concat();
+    let (json, _) = text_view_of(&strict, &[]);
+    assert_eq!(json.status.code(), Some(1));
+}
+
+#[test]
+fn config_text_view_lists_every_field_with_its_value_and_source() {
+    let fx = ConfigFixture::new(
+        "format-config",
+        "model = \"project-model\"\n[harness.claude-code]\nmodel = \"sonnet\"\n",
+        "timeout = 30\n[env]\nFOO = \"bar\"\n",
+    );
+    let json = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    let text = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--format", "text"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(text.status.success(), "{text:?}");
+    assert_eq!(text.stderr, json.stderr);
+    let report = json_stdout(&json);
+    let rendered = String::from_utf8_lossy(&text.stdout);
+    assert!(serde_json::from_str::<Value>(&rendered).is_err());
+
+    let model_src = report["model"]["source"].as_str().unwrap();
+    let timeout_src = report["timeout"]["source"].as_str().unwrap();
+    assert!(
+        rendered.contains(&format!("model: project-model ({model_src})\n")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("timeout: 30 ({timeout_src})\n")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("env.FOO: bar ({timeout_src})\n")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!(
+            "harness.claude-code.model: sonnet ({model_src})\n"
+        )),
+        "{rendered}"
+    );
+    assert!(rendered.contains("bypass: false (default)\n"), "{rendered}");
+    assert!(rendered.contains("system: unset\n"), "{rendered}");
+    // Every field the JSON carries has a row.
+    for key in report.as_object().unwrap().keys() {
+        if key == "schema_version" || key == "config_files" {
+            continue;
+        }
+        assert!(
+            rendered.lines().any(|line| line.starts_with(key.as_str())),
+            "`{key}` has no row in:\n{rendered}"
+        );
+    }
+}
+
+#[test]
+fn sync_text_view_reports_each_file_the_unmapped_settings_and_the_check_verdict() {
+    let fx = ConfigFixture::new(
+        "format-sync",
+        "allowed_tools = [\"Read\"]\n[[hooks]]\ncommand = \"oneharness gate {harness}\"\n",
+        "",
+    );
+    let check = [
+        "sync",
+        "--harness",
+        "claude-code,codex",
+        "--check",
+        "--cwd",
+        &fx.cwd(),
+    ];
+    let json = run_with_config(&check, &[], &fx.user_config());
+    let text = run_with_config(
+        &[&check[..], &["--format", "text"]].concat(),
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(json.status.code(), Some(1));
+    assert_eq!(text.status.code(), Some(1), "{text:?}");
+    assert_eq!(text.stderr, json.stderr);
+    let rendered = String::from_utf8_lossy(&text.stdout);
+    assert!(serde_json::from_str::<Value>(&rendered).is_err());
+    let report = json_stdout(&json);
+    let claude = sync_result(&report, "claude-code");
+    let file = claude["file"].as_str().unwrap();
+    assert!(
+        rendered.contains(&format!("claude-code:\n  {file}: would be created\n")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(&format!("  hook {file}: would be created\n")),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("codex:\n  settings: nothing to sync for this harness\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("  unmapped (no mapping for this harness): allowed_tools\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.ends_with("check: out of sync (run `oneharness sync`)\n"),
+        "{rendered}"
+    );
+
+    // A real sync: past tense, exit 0, and the JSON default unchanged.
+    let apply = ["sync", "--harness", "claude-code", "--cwd", &fx.cwd()];
+    let applied = run_with_config(
+        &[&apply[..], &["--format", "text"]].concat(),
+        &[],
+        &fx.user_config(),
+    );
+    assert!(applied.status.success(), "{applied:?}");
+    let rendered = String::from_utf8_lossy(&applied.stdout);
+    assert!(
+        rendered.contains(&format!("  {file}: created\n")),
+        "{rendered}"
+    );
+    assert!(!rendered.contains("check:"), "{rendered}");
+    let again = run_with_config(&apply, &[], &fx.user_config());
+    let explicit = run_with_config(
+        &[&apply[..], &["--format", "json"]].concat(),
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(again.stdout, explicit.stdout);
+    assert_eq!(
+        sync_result(&json_stdout(&again), "claude-code")["status"],
+        "unchanged"
+    );
+}
+
+#[test]
+fn usage_text_view_keeps_its_spelling_and_default() {
+    let args = [
+        "usage",
+        "--harness",
+        "cursor",
+        "--bin",
+        &bin_override("cursor"),
+    ];
+    let envs = [("MOCK_STDOUT", "{}")];
+    assert_json_default_is_unchanged_by_the_flag(&args, &envs);
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    assert!(text.starts_with("usage as of "), "{text}");
+    assert!(text.contains("cursor ["), "{text}");
+}
+
+#[test]
+fn interrupt_text_view_says_refused_with_the_reason() {
+    let store = control_store_dir("format-interrupt");
+    let store_arg = store.display().to_string();
+    let args = [
+        "interrupt",
+        "--session",
+        "ghost",
+        "--session-dir",
+        &store_arg,
+    ];
+    assert_json_default_is_unchanged_by_the_flag(&args, &[]);
+    let (json, text) = text_view_of(&args, &[]);
+    assert_eq!(json.status.code(), Some(1));
+    let frame = json_stdout(&json);
+    assert_eq!(
+        text,
+        format!(
+            "interrupt refused (not_running): {}\n",
+            frame["error"].as_str().unwrap()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn interrupt_text_view_says_served_and_whether_a_redirection_was_taken() {
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("format-served");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("format-served-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-fmt"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "steered",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working on the wrong thing",
+            "--bin",
+            &bin_override("claude-code"),
+            "--format",
+            "text",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("steered.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working on the wrong thing"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "steered",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--input",
+            "stop and do the right thing",
+            "--format",
+            "text",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&interrupt.stdout),
+        "interrupt served via claude-control-request · redirection taken\n"
+    );
+
+    // The controlled run's own text view carries the control block.
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        report.contains(&format!(
+            "control: claude-control-request · socket {} · 1 interrupt\n",
+            socket.display()
+        )),
+        "{report}"
+    );
+    assert!(
+        report.contains("session: steered (create) · token sess-fmt"),
+        "{report}"
+    );
+}
+
+#[test]
+fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
+    let dir = hist_dir("format-clear");
+    let ds = dir.display().to_string();
+    let seeded = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "whatever",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(seeded.status.success());
+    let session_file = json_stdout(&seeded)["history_file"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // list / show: the shared type kept their spelling and default.
+    let list = ["history", "list", "--all-projects", "--history-dir", &ds];
+    assert_json_default_is_unchanged_by_the_flag(&list, &[]);
+    let (_, text) = text_view_of(&list, &[]);
+    assert!(text.contains("(1 run, codex)"), "{text}");
+    let show = [
+        "history",
+        "show",
+        "--last",
+        "--all-projects",
+        "--history-dir",
+        &ds,
+    ];
+    assert_json_default_is_unchanged_by_the_flag(&show, &[]);
+    let (_, text) = text_view_of(&show, &[]);
+    assert!(text.contains("[codex] ok"), "{text}");
+
+    // clear / migrate name the session file exactly as their JSON does — under
+    // the store as `--history-dir` spelled it — while the run's `history_file`
+    // is canonicalized (`/var/…` → `/private/var/…` on macOS). The text view
+    // echoes the JSON, so the expected spelling is read from the JSON of the
+    // same invocation and proven to be the seeded file by resolving both.
+    let names_the_seeded_file = |listed: &str| {
+        assert_eq!(
+            std::fs::canonicalize(listed).expect("the listed session file exists"),
+            std::fs::canonicalize(&session_file).expect("the seeded session file exists"),
+            "the listed file is not the seeded session"
+        );
+    };
+
+    // clear: a dry run says so and removes nothing.
+    let dry = ["history", "clear", "--all-projects", "--history-dir", &ds];
+    assert_json_default_is_unchanged_by_the_flag(&dry, &[]);
+    let (json, text) = text_view_of(&dry, &[]);
+    let json = json_stdout(&json);
+    assert_eq!(json["dry_run"], true);
+    let listed = json["files"][0].as_str().unwrap().to_string();
+    names_the_seeded_file(&listed);
+    assert_eq!(
+        text,
+        format!(
+            "dry run: would remove 1 session file\n  {listed}\nnothing was deleted; re-run with --yes to delete\n"
+        )
+    );
+    assert!(Path::new(&session_file).exists());
+
+    // migrate over an already-current store: every file counted, none rewritten.
+    let migrate = ["history", "migrate", "--history-dir", &ds];
+    assert_json_default_is_unchanged_by_the_flag(&migrate, &[]);
+    let (json, text) = text_view_of(&migrate, &[]);
+    let migrated = json_stdout(&json)["files"][0]["path"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    names_the_seeded_file(&migrated);
+    assert_eq!(
+        text,
+        format!(
+            "migrated 1 session file\n  {migrated}: 0 records migrated, 1 already current, 0 skipped\n"
+        )
+    );
+
+    // clear --yes: the deletion, in the past tense, naming the same file.
+    let yes = run(&[&dry[..], &["--yes", "--format", "text"]].concat(), &[]);
+    assert!(yes.status.success(), "{yes:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&yes.stdout),
+        format!("removed 1 session file\n  {listed}\n")
+    );
+    assert!(!Path::new(&session_file).exists());
+}
+
+#[test]
+fn compact_beside_format_text_is_accepted_and_changes_nothing() {
+    // In this release `--compact` is a JSON rendering choice that text ignores,
+    // exactly as `usage` and `history list/show` have always treated it.
+    let plain = run(&["list", "--format", "text"], &[]);
+    let compact = run(&["list", "--format", "text", "--compact"], &[]);
+    assert!(compact.status.success(), "{compact:?}");
+    assert_eq!(plain.stdout, compact.stdout);
+    let one_line = run(&["list", "--format", "json", "--compact"], &[]);
+    assert_eq!(
+        String::from_utf8_lossy(&one_line.stdout).lines().count(),
+        1,
+        "`--format json --compact` is one line"
+    );
+}
+
+#[test]
+fn run_text_view_carries_the_batch_history_and_events_lines() {
+    // A batch fans one harness over N prompts: the report's `batch` block,
+    // each result's own prompt, the history file the run streamed to, and the
+    // per-result events summary all have a row.
+    let dir = hist_dir("format-batch");
+    let ds = dir.display().to_string();
+    let stdout = concat!(
+        r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
+        "\n",
+        r#"{"type":"text","part":{"type":"text","text":"working"}}"#,
+        "\n",
+    );
+    let args = [
+        "run",
+        "--harness",
+        "opencode",
+        "--prompt",
+        "first prompt",
+        "--prompt",
+        "second prompt",
+        "--bin",
+        &bin_override("opencode"),
+        "--history",
+        "--history-dir",
+        &ds,
+    ];
+    let envs = [("MOCK_STDOUT", stdout)];
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    let report = json_stdout(&json);
+    assert_eq!(report["batch"]["prompt_count"], 2);
+    assert!(report["history_file"].is_string());
+
+    assert!(
+        text.contains("batch: speed · 2 prompts · forked no\n"),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|line| line.starts_with("history: ") && line.ends_with(".jsonl")),
+        "the history file the run streamed to:\n{text}"
+    );
+    assert!(text.contains("\n  prompt: first prompt\n"), "{text}");
+    assert!(text.contains("\n  prompt: second prompt\n"), "{text}");
+    assert_eq!(
+        text.matches("  events: 1 (json:opencode-parts)\n").count(),
+        2,
+        "{text}"
+    );
+}
+
+#[test]
+fn run_text_view_carries_the_resume_and_spy_lines() {
+    let scratch = ScratchDir::new("format-spy").unwrap();
+    let spy = scratch.join("spy.jsonl");
+    let spy_arg = spy.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "claude-code",
+        "--prompt",
+        "again",
+        "--bin",
+        &bin_override("claude-code"),
+        "--resume",
+        "sess-prev",
+        "--fork",
+        "--spy-file",
+        &spy_arg,
+    ];
+    let envs = [(
+        "MOCK_STDOUT",
+        r#"{"type":"result","result":"continued","session_id":"sess-next"}"#,
+    )];
+    let (json, text) = text_view_of(&args, &envs);
+    assert!(json.status.success(), "{json:?}");
+    let report = json_stdout(&json);
+    let spy_file = report["spy_file"].as_str().unwrap();
+
+    assert!(text.contains("resume: sess-prev (forked)\n"), "{text}");
+    assert!(text.contains(&format!("spy log: {spy_file}\n")), "{text}");
+    assert!(text.contains("  session id: sess-next\n"), "{text}");
+}
+
+#[test]
+fn run_text_view_says_when_a_chain_stopped_without_work_evidence() {
+    // An unclassified failure that shows no work still stops a fallback chain
+    // (re-running a task that may have failed for real burns the next
+    // identity's quota); the text view says which candidate stopped it and
+    // that it had nothing to show.
+    let args = [
+        "run",
+        "--harness",
+        "codex,claude-code",
+        "--run-mode",
+        "fallback",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("codex"),
+        "--bin",
+        &bin_override("claude-code"),
+    ];
+    let envs = [
+        ("MOCK_EXIT", "1"),
+        ("MOCK_STDERR", "something unexpected happened"),
+        ("MOCK_STDOUT", ""),
+    ];
+    let (json, text) = text_view_of(&args, &envs);
+    assert_eq!(json.status.code(), Some(1));
+    let report = json_stdout(&json);
+    assert_eq!(report["fallback"]["stopped_without_work"], true);
+
+    assert!(
+        text.contains("fallback: ran codex (stopped without work evidence)\n"),
+        "{text}"
+    );
+    assert!(text.contains("\ncodex: nonzero · exit 1 · "), "{text}");
+    assert!(text.contains("  work evidence: none\n"), "{text}");
+    assert!(
+        !text.contains("\nclaude-code:"),
+        "the chain stopped, so the next candidate was never tried:\n{text}"
+    );
+}
+
+#[test]
+fn run_text_view_shows_a_schema_error_and_a_structured_value_that_could_not_be_extracted() {
+    let schema = ScratchDir::new("format-schema-fail").unwrap();
+    let schema_path = schema.join("person.json");
+    std::fs::write(&schema_path, PERSON_SCHEMA).unwrap();
+    let schema_arg = schema_path.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "codex",
+        "--prompt",
+        "who",
+        "--bin",
+        &bin_override("codex"),
+        "--schema",
+        &schema_arg,
+        "--schema-max-retries",
+        "0",
+    ];
+
+    // A value that does not conform: shown, with the validator's own words.
+    let invalid = [(
+        "MOCK_STDOUT",
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\"}"}}"#,
+    )];
+    let (json, text) = text_view_of(&args, &invalid);
+    assert_eq!(json.status.code(), Some(1));
+    let report = json_stdout(&json);
+    let error = report["results"][0]["schema_error"].as_str().unwrap();
+    assert!(text.contains("schema: applied · max retries 0\n"), "{text}");
+    assert!(
+        text.contains("  structured: invalid · attempts 1\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("    {\n      \"name\": \"Ada\"\n    }\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("  schema error: {error}\n")),
+        "{text}"
+    );
+
+    // No JSON at all: the value is null, and said to be.
+    let none = [(
+        "MOCK_STDOUT",
+        r#"{"type":"item.completed","item":{"type":"agent_message","text":"no json here"}}"#,
+    )];
+    let (json, text) = text_view_of(&args, &none);
+    assert_eq!(json.status.code(), Some(1));
+    assert!(json_stdout(&json)["results"][0]["structured"].is_null());
+    assert!(
+        text.contains(
+            "  structured: invalid · attempts 1\n    null (no JSON value could be extracted)\n"
+        ),
+        "{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_text_view_shows_the_model_a_server_said_it_would_run() {
+    // `observed_model` is set only by a dialogue-driven turn (codex's
+    // app-server states the model it opened the thread under), so the row is
+    // proven through a controlled run against the mock server.
+    let store = control_store_dir("format-observed");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("format-observed-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let log = store.join("app-server.log");
+    let log_arg = log.display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "codex",
+        "--control",
+        "--session",
+        "sol",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd_arg,
+        "--mode",
+        "bypass",
+        "--model",
+        "gpt-5.6-sol",
+        "--prompt",
+        "keep working",
+        "--bin",
+        &bin_override("codex"),
+        "--format",
+        "text",
+    ];
+    let output = run(
+        &args,
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", &log_arg),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("codex [model gpt-5.6-sol]: ok · exit null · "),
+        "{text}"
+    );
+    assert!(text.contains("  observed model: gpt-5.6-sol\n"), "{text}");
+    assert!(
+        text.contains("control: codex-app-server · socket "),
+        "{text}"
+    );
+}
+
+#[test]
+fn list_text_view_shows_configured_variants() {
+    let fx = ConfigFixture::new(
+        "format-list-variants",
+        "",
+        "[harness.claude-code.variant.work]\nmodel = \"opus\"\nbin = \"/opt/claude-work\"\n",
+    );
+    let output = run_with_config(&["list", "--format", "text"], &[], &fx.user_config());
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("  variant work → claude-code:work · model opus · bin /opt/claude-work\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn detect_text_view_says_unknown_when_a_binary_answers_no_version() {
+    let args = [
+        "detect",
+        "--harness",
+        "codex",
+        "--bin",
+        &bin_override("codex"),
+    ];
+    let envs = [("MOCK_STDOUT", "")];
+    let (json, text) = text_view_of(&args, &envs);
+    let codex = &json_stdout(&json)["detected"][0];
+    assert!(codex["version"].is_null());
+    assert!(
+        text.contains(&format!(
+            "codex: available · {} · version unknown\n",
+            codex["path"].as_str().unwrap()
+        )),
+        "{text}"
+    );
+}

@@ -76,10 +76,14 @@ what this CLI is for.
 Three kinds of flag are declined rather than bound, each with its reason in the
 tables below:
 
-* **`--compact`** is always sent. The SDKs parse the JSON, so the only sensible
-  rendering is the compact one and there is nothing to choose.
-* **`--format text`** is the human-readable view of data the JSON already
-  carries. An SDK consuming the contract has no use for it.
+* **`--compact`** and **`--format json`** are always sent on every capability
+  whose stdout is a JSON document. The SDKs parse the JSON, so the only sensible
+  rendering is the compact one, and the format is stated outright rather than
+  left to the CLI's default: `--format text` is the human-readable view of data
+  the JSON already carries, which an SDK consuming the contract has no use for,
+  and saying `json` on every call is what lets the CLI's own default move to
+  that view without any SDK noticing. `runStream` sends neither `--format`: a
+  stream is its own NDJSON protocol, which the flag never changes.
 * **`--bypass` / `--no-bypass`** are shorthands for `--mode`. One setting with
   two spellings is how a caller ends up passing both, which clap then refuses.
 
@@ -159,6 +163,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--no-stream` | _(always sent)_ | fixed |
 | `--prompt` | `prompt` | `--flag VALUE` |
 | `--prompt` | `batchPrompts` | `--flag VALUE` per element |
@@ -259,18 +264,21 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--bypass` | **deliberately none** | `mode: "bypass"` is the same request |
 | `--no-bypass` | **deliberately none** | `mode: "default"` is the same request |
 | `--no-stream` | **deliberately none** | this method streams by definition, so the negative half cannot apply |
+| `--format` | **deliberately none** | a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes |
 
 #### `list` — `oneharness list`
 
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 
 #### `detect` — `oneharness detect`
 
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
@@ -284,6 +292,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
@@ -293,6 +302,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--check` | `check` | `--flag` when true |
@@ -312,6 +322,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
@@ -320,7 +331,6 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
-| `--format` | **deliberately none** | the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not |
 
 #### `gate` — `oneharness gate`
 
@@ -343,6 +353,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--session` | `session` | `--flag VALUE` |
 | `--input` | `input` | `--flag VALUE` |
 | `--session-dir` | `sessionDir` | `--flag VALUE` |
@@ -353,6 +364,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | _(positional)_ | `session` | positional argument (suppressed by `last`) |
 | `--last` | `last` | `--flag` when true |
 | `--all` | `all` | `--flag` when true |
@@ -361,20 +373,19 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
-| `--format` | **deliberately none** | the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not |
 
 #### `historyList` — `oneharness history list`
 
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--variant` | `variant` | `--flag VALUE` |
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
-| `--format` | **deliberately none** | the SDKs consume the JSON contract; `--format text` is the human-readable view of the same data, carrying nothing the JSON does not |
 
 #### `historyWatch` — `oneharness history watch`
 
@@ -396,6 +407,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--yes` | `yes` | `--flag` when true |
@@ -408,6 +420,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |

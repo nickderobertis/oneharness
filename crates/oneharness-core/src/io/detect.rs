@@ -381,6 +381,36 @@ mod tests {
         assert_eq!(bin_env_keys("codex"), ["ONEHARNESS_BIN_CODEX"]);
     }
 
+    /// The README's `--bin` bullet is where a caller learns which variable
+    /// names the binary for a variant, and the names it spells are derived here
+    /// from the same function the runtime reads, in the order the runtime reads
+    /// them — so the documented keys cannot drift from the ones honoured.
+    #[test]
+    fn readme_names_the_env_keys_a_variant_selection_reads() {
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        let bullet_start = readme
+            .find("- `--bin <id>=<path>`")
+            .expect("README.md documents --bin");
+        let bullet = &readme[bullet_start..];
+        let bullet = &bullet[..bullet.find("\n- ").unwrap_or(bullet.len())];
+        let keys = bin_env_keys("claude-code:work");
+        assert_eq!(
+            keys.len(),
+            2,
+            "a variant reads its own key, then the base's"
+        );
+        let own = bullet
+            .find(&format!("`{}`", keys[0]))
+            .unwrap_or_else(|| panic!("README.md must name `{}` for `claude-code:work`", keys[0]));
+        let base = bullet
+            .find(&format!("`{}`", keys[1]))
+            .unwrap_or_else(|| panic!("README.md must name `{}` for `claude-code:work`", keys[1]));
+        assert!(
+            own < base,
+            "README.md must name the variant's own key before the base's, as the runtime reads them"
+        );
+    }
+
     #[test]
     fn base_env_var_covers_a_variant_qualified_selection() {
         // Issue #1308: the key was derived from the whole composed id and kept

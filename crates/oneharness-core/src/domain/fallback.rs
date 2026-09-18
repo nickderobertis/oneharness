@@ -672,6 +672,38 @@ mod tests {
         );
     }
 
+    /// The README's fall-through table is prose over this function, and its
+    /// "exited …" column is where a reader learns which exit codes a refusal
+    /// hands on from. Each row below is derived from what the function answers
+    /// for `Ok` and `Nonzero`, so a row cannot say "non-zero" of a kind that
+    /// also falls through from a clean exit (issue #1297 shipped with the
+    /// `rate_limit` row and the code agreeing on the narrower answer).
+    #[test]
+    fn readme_fall_through_rows_match_the_verdict() {
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        for (kind, label) in [
+            (FailureKind::Auth, "`auth`"),
+            (FailureKind::Quota, "`quota` (no credit)"),
+            (FailureKind::RateLimit, "`rate_limit`"),
+        ] {
+            let on = |status| startup_failure_reason(status, Some(kind), false, RunWork::None);
+            let reason = on(Status::Nonzero).expect("every kind here falls through non-zero");
+            let exits = if on(Status::Ok) == Some(reason) {
+                "zero or non-zero"
+            } else {
+                "non-zero"
+            };
+            let row = format!(
+                "| Ran, exited {exits}, classified {label}, no work done | ✅ fall through — `{}` |",
+                reason.as_str()
+            );
+            assert!(
+                readme.contains(&row),
+                "README.md must carry the fall-through row `{row}`"
+            );
+        }
+    }
+
     #[test]
     fn a_candidate_that_did_work_never_falls_through() {
         // Every pair below falls through without work evidence, so each one shows

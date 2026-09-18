@@ -617,10 +617,12 @@ pub fn run_supervised(
     // continuation — are refused over two or more candidates, and run on a
     // one-candidate chain as the single-harness run they are (`fallback` is
     // then `null` in the report, since no chain ran). Without that, an unset
-    // mode would refuse every bare single-harness continuation and batch.
+    // mode would refuse every bare single-harness continuation and batch. So
+    // what the rest of this function reads is the execution decision — whether
+    // THIS invocation is driven as a chain — not the selected mode alone.
     let continuation = args.resume.is_some();
     let single_harness_shape = specs.len() == 1 && (batch_run || continuation);
-    let fallback_mode = run_mode == RunMode::Fallback && !single_harness_shape;
+    let drive_fallback_chain = run_mode == RunMode::Fallback && !single_harness_shape;
     // Streaming is a CLI flag with a config/env layer, resolved once here so every
     // validator, the format selection, and the driver choice read the same
     // effective value.
@@ -650,7 +652,7 @@ pub fn run_supervised(
     // errors). It is *compatible* with fallback: the model list is exactly the
     // fallback chain there.
     if multi_model {
-        validate_multi_model(batch_run, fallback_mode, stream, args)?;
+        validate_multi_model(batch_run, drive_fallback_chain, stream, args)?;
     }
     // Selection already preserves explicit caller/config order (and uses registry
     // order for `--all`). Fallback treats that sequence as its priority chain;
@@ -678,7 +680,7 @@ pub fn run_supervised(
         args,
         &selected_ids,
         batch_run,
-        fallback_mode,
+        drive_fallback_chain,
         &project_start,
         control_shape.is_some(),
     )?;
@@ -710,7 +712,13 @@ pub fn run_supervised(
     if !anchor_control.is_some_and(ControlShape::drives_turn) {
         validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
     }
-    validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
+    validate_stream(
+        stream,
+        &specs,
+        batch_run,
+        schema.is_some(),
+        drive_fallback_chain,
+    )?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // A mode a selected harness cannot express is refused here. A prompt-capable
@@ -1219,7 +1227,7 @@ pub fn run_supervised(
     // harness CLI, so the driver submits its turn to the pooled server instead of
     // running the job — which is what lets a chain hold both kinds. Outside a
     // chain the single-turn HTTP branch below is unchanged.
-    let controlled_fallback = fallback_mode && controlled.is_some() && !args.print_command;
+    let controlled_fallback = drive_fallback_chain && controlled.is_some() && !args.print_command;
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
         || controlled_fallback
     {
@@ -1230,7 +1238,7 @@ pub fn run_supervised(
         let streamed = drive_plan_sequentially(
             plan,
             &jobs,
-            fallback_mode,
+            drive_fallback_chain,
             multi_model,
             history_writer.as_ref(),
             &unit_ids,
@@ -1352,7 +1360,7 @@ pub fn run_supervised(
             server_overloaded_backoff(attempts);
         };
         (results, None)
-    } else if fallback_mode && !args.print_command {
+    } else if drive_fallback_chain && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
         // this branch does is complete.

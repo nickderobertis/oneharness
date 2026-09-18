@@ -63,7 +63,7 @@ pub fn print_json<T: Serialize>(value: &T, compact: bool) -> Result<(), Oneharne
 /// each: the text view is a rendering of the report the JSON carries — never a
 /// second computation that could disagree with it — and `--compact` is a JSON
 /// rendering choice that has no bearing on text.
-pub fn print_report<T: Serialize>(
+pub(crate) fn print_report<T: Serialize>(
     value: &T,
     format: Format,
     compact: bool,
@@ -85,7 +85,7 @@ pub fn print_report<T: Serialize>(
 /// JSON contract carries the bytes as they were; the text view is the one that
 /// draws them, so it is the one that flattens. Newlines survive because a
 /// multi-line answer is laid out by the renderer, one row per line.
-pub fn printable(text: &str) -> String {
+pub(crate) fn printable(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
         .collect()
@@ -94,7 +94,7 @@ pub fn printable(text: &str) -> String {
 /// `text` as an indented block: every line prefixed with `indent`, each
 /// terminated, so a multi-line value sits under its label rather than beside
 /// it. Flattened through [`printable`] on the way.
-pub fn indented(text: &str, indent: &str) -> String {
+pub(crate) fn indented(text: &str, indent: &str) -> String {
     let mut out = String::new();
     for line in printable(text).lines() {
         out.push_str(indent);
@@ -105,7 +105,7 @@ pub fn indented(text: &str, indent: &str) -> String {
 }
 
 /// A display value for something the JSON reports as `null`.
-pub fn or_null(value: Option<&str>) -> String {
+pub(crate) fn or_null(value: Option<&str>) -> String {
     value.map_or_else(|| "null".to_string(), printable)
 }
 

@@ -215,21 +215,22 @@ n_list="$(count_matches "$out" '"default_bin"')"
 # 1b. A bare `list` is the human view — the same text `--format text` prints,
 #     never a JSON document — and `--format json` is the document `--compact`
 #     renders on one line.
+format_fix="check commands::resolve_format in src/commands/mod.rs and the list verb's --format field in src/cli.rs"
 LAST_CMD="$oh list"
-bare="$($oh list)" || fail "bare list exited non-zero" "$LAST_CMD"
+bare="$($oh list)" || fail "bare list exited non-zero" "$LAST_CMD" "" "$format_fix"
 case "$bare" in
-  '{'*) fail "a bare 'list' printed JSON; the default is the text view" "$LAST_CMD" "$bare" ;;
+  '{'*) fail "a bare 'list' printed JSON; the default is the text view" "$LAST_CMD" "$bare" "$format_fix" ;;
 esac
-assert_contains "$bare" 'claude-code (Claude Code)'
+assert_contains "$bare" 'claude-code (Claude Code)' "$format_fix"
 LAST_CMD="$oh list --format text"
-text="$($oh list --format text)" || fail "list --format text exited non-zero" "$LAST_CMD"
-[ "$bare" = "$text" ] || fail "a bare 'list' differs from 'list --format text'" "$LAST_CMD" "$text"
+text="$($oh list --format text)" || fail "list --format text exited non-zero" "$LAST_CMD" "" "$format_fix"
+[ "$bare" = "$text" ] || fail "a bare 'list' differs from 'list --format text'" "$LAST_CMD" "$text" "$format_fix"
 LAST_CMD="$oh list --format json"
-pretty="$($oh list --format json)" || fail "list --format json exited non-zero" "$LAST_CMD"
-assert_contains "$pretty" '"schema_version"'
+pretty="$($oh list --format json)" || fail "list --format json exited non-zero" "$LAST_CMD" "" "$format_fix"
+assert_contains "$pretty" '"schema_version"' "$format_fix"
 LAST_CMD="$oh list --format text --compact"
 if "$oh" list --format text --compact >/dev/null 2>&1; then
-  fail "'list --format text --compact' was accepted; it is a usage error" "$LAST_CMD"
+  fail "'list --format text --compact' was accepted; it is a usage error" "$LAST_CMD" "" "$format_fix"
 fi
 
 # 2. `detect --all` — probe availability without requiring any to be present.

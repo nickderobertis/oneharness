@@ -9,7 +9,7 @@
 use oneharness_core::domain::events::ActionEvent;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::{RunReport, RunResult, RunStreamEnvelope};
-use oneharness_core::errors::OneharnessError;
+use oneharness_core::errors::{JsonOnlyFlag, OneharnessError};
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::run::{EventSink, Resume, RunControls, RunRequest, SinkStep};
 
@@ -41,8 +41,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     let format = resolve_format(args.format, args.compact)?;
     if args.stream && args.format == Some(Format::Text) {
         return Err(OneharnessError::FormatConflict {
-            flag: "--stream",
-            why: "a streaming run's stdout is its NDJSON event/result protocol (drop --format text, or pass --format json)",
+            flag: JsonOnlyFlag::Stream,
         });
     }
     let request = RunRequest::from(args);

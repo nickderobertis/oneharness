@@ -6,13 +6,56 @@
 
 use thiserror::Error;
 
-/// How [`OneharnessError::FallbackConflict`] names the mode: as the caller met
-/// it — the default they never chose, or the flag they passed.
-fn fallback_mode_name(by_default: bool) -> &'static str {
-    if by_default {
-        "the default run mode `fallback`"
-    } else {
-        "`--run-mode fallback`"
+/// Where the `fallback` run mode a refusal names came from: left unset and
+/// resolved to the default, or selected outright (`--run-mode fallback`,
+/// `run_mode = "fallback"`, `ONEHARNESS_RUN_MODE=fallback`). Carried on
+/// [`OneharnessError::FallbackConflict`] so the diagnostic names the mode as
+/// the caller met it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunModeOrigin {
+    Default,
+    Selected,
+}
+
+impl std::fmt::Display for RunModeOrigin {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            RunModeOrigin::Default => "the default run mode `fallback`",
+            RunModeOrigin::Selected => "`--run-mode fallback`",
+        })
+    }
+}
+
+/// The flag an explicit `--format text` cannot sit beside: each only means
+/// anything on a JSON stdout. Closed on purpose — a
+/// [`OneharnessError::FormatConflict`] names one of these two, never an
+/// arbitrary string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonOnlyFlag {
+    Compact,
+    Stream,
+}
+
+impl JsonOnlyFlag {
+    /// The way out, said in the refusal beside the flag's name.
+    fn why(self) -> &'static str {
+        match self {
+            JsonOnlyFlag::Compact => {
+                "--compact is a JSON rendering choice (drop it, or pass --format json)"
+            }
+            JsonOnlyFlag::Stream => {
+                "a streaming run's stdout is its NDJSON event/result protocol (drop --format text, or pass --format json)"
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for JsonOnlyFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            JsonOnlyFlag::Compact => "--compact",
+            JsonOnlyFlag::Stream => "--stream",
+        })
     }
 }
 
@@ -97,15 +140,15 @@ pub enum OneharnessError {
     BatchResume,
 
     /// A fallback chain of two or more candidates carrying a shape a chain
-    /// cannot: a batch, or a `--resume`/`--fork` continuation. `by_default`
-    /// says the mode was never chosen — fallback is what an unset mode
+    /// cannot: a batch, or a `--resume`/`--fork` continuation. `origin` says
+    /// whether the mode was never chosen — fallback is what an unset mode
     /// resolves to — so the diagnostic names the way out for a caller who
     /// never asked for a chain.
-    #[error("{} is incompatible with {with} over more than one harness: {why}", fallback_mode_name(*by_default))]
+    #[error("{origin} is incompatible with {with} over more than one harness: {why}")]
     FallbackConflict {
         with: &'static str,
         why: &'static str,
-        by_default: bool,
+        origin: RunModeOrigin,
     },
 
     #[error("a multi-model run (more than one --model / config `models`) is incompatible with {with} ({why})")]
@@ -277,15 +320,12 @@ pub enum OneharnessError {
     StreamInvalid(String),
 
     /// An explicit `--format text` beside a flag that only means anything on a
-    /// JSON stdout (`--compact`, `--stream`). The CLI's stdout defaults to the
-    /// text view, so the two flags on their own are fine and a caller who asks
-    /// for both is asking for two things one stdout cannot be; the refusal
-    /// names both so the caller can drop the one they did not mean.
-    #[error("--format text cannot be combined with {flag}: {why}")]
-    FormatConflict {
-        flag: &'static str,
-        why: &'static str,
-    },
+    /// JSON stdout. The CLI's stdout defaults to the text view, so the two
+    /// flags on their own are fine and a caller who asks for both is asking
+    /// for two things one stdout cannot be; the refusal names both so the
+    /// caller can drop the one they did not mean.
+    #[error("--format text cannot be combined with {flag}: {}", flag.why())]
+    FormatConflict { flag: JsonOnlyFlag },
 
     #[error("could not read config file `{path}`: {source}")]
     ConfigRead {

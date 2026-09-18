@@ -72,20 +72,65 @@ fn run_as_typed(args: &[&str], envs: &[(&str, &str)]) -> Output {
     cmd.output().expect("failed to run oneharness")
 }
 
+/// Every verb path whose stdout is a JSON document, read off the clap tree
+/// itself: a (sub)command carrying a `--format` whose values include `json`.
+/// The one source the format journeys below and the `run` helper share, so a
+/// verb that gains or loses the flag moves every one of them at once. `history
+/// watch` is excluded by its own value list (`jsonl` only), `init`/`gate`/
+/// `mock`/`mock-harness` by having no `--format` at all.
+fn json_document_verb_paths() -> &'static [Vec<&'static str>] {
+    use clap::CommandFactory;
+    use std::sync::OnceLock;
+    static PATHS: OnceLock<Vec<Vec<&'static str>>> = OnceLock::new();
+    PATHS.get_or_init(|| {
+        fn walk(
+            command: &clap::Command,
+            prefix: &[&'static str],
+            out: &mut Vec<Vec<&'static str>>,
+        ) {
+            for sub in command.get_subcommands() {
+                let name: &'static str = Box::leak(sub.get_name().to_string().into_boxed_str());
+                let mut path = prefix.to_vec();
+                path.push(name);
+                let takes_json = sub.get_arguments().any(|arg| {
+                    arg.get_id() == "format"
+                        && arg
+                            .get_possible_values()
+                            .iter()
+                            .any(|value| value.get_name() == "json")
+                });
+                if takes_json {
+                    out.push(path.clone());
+                }
+                walk(sub, &path, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(&oneharness::Cli::command(), &[], &mut out);
+        out
+    })
+}
+
+/// The verb path `args` addresses, if it is one that prints a JSON document:
+/// the number of leading tokens that name it.
+fn json_document_verb_len(args: &[&str]) -> Option<usize> {
+    json_document_verb_paths()
+        .iter()
+        .find(|path| args.len() >= path.len() && args[..path.len()] == path[..])
+        .map(Vec::len)
+}
+
 /// `args` with `--format json` inserted after the verb (after the subcommand
 /// for `history`) when the verb prints a JSON document and the caller has not
 /// already chosen a rendering (`--format` or `--compact`). Verbs with no
-/// `--format` — `init`, `gate`, `mock`, `mock-harness`, and `history watch`,
-/// whose only format is `jsonl` — are left alone, as is a `--help`, which clap
-/// answers before it reads any other flag.
+/// JSON `--format` are left alone, as is a `--help`, which clap answers before
+/// it reads any other flag.
 fn with_format_json<'a>(args: &[&'a str]) -> Vec<&'a str> {
     let chosen = args
         .iter()
         .any(|a| *a == "--format" || *a == "--compact" || a.starts_with("--format="));
-    let after = match args {
-        ["run" | "list" | "detect" | "config" | "sync" | "usage" | "interrupt", ..] => 1,
-        ["history", "list" | "show" | "clear" | "migrate", ..] => 2,
-        _ => return args.to_vec(),
+    let Some(after) = json_document_verb_len(args) else {
+        return args.to_vec();
     };
     if chosen {
         return args.to_vec();
@@ -5194,6 +5239,45 @@ bin = "{bin}"
         !String::from_utf8_lossy(&env_overridden.stdout).contains("\"type\":\"event\""),
         "--no-stream lost to ONEHARNESS_STREAM"
     );
+
+    // An explicit `--format text` beside the `--stream` FLAG is refused before
+    // anything spawns; a stream selected by config or the environment is
+    // resolved inside the engine, so there the run still streams its NDJSON
+    // protocol and says on stderr that the text view was never printable —
+    // never a silent drop of the flag, never a report the consumer's reader
+    // cannot parse.
+    for (label, cwd, envs) in [
+        ("config", fx.cwd(), vec![("MOCK_STDOUT", stdout)]),
+        (
+            "ONEHARNESS_STREAM",
+            env_only.cwd(),
+            vec![("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
+        ),
+    ] {
+        let user_config = if label == "config" {
+            fx.user_config()
+        } else {
+            env_only.user_config()
+        };
+        let text_asked = run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &cwd, "--format", "text"],
+            &envs,
+            &user_config,
+        );
+        assert!(text_asked.status.success(), "{label}: {text_asked:?}");
+        let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&text_asked.stdout)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
+            .collect();
+        assert_eq!(envelopes.len(), 2, "{label}: the run still streamed");
+        assert!(matches!(envelopes[1], RunStreamEnvelope::Result { .. }));
+        let stderr = String::from_utf8_lossy(&text_asked.stderr);
+        assert!(
+            stderr.contains("--format text has no effect on a run that streams"),
+            "{label}: the ignored format must be said: {stderr}"
+        );
+    }
     let config = json_stdout(&run_with_config(
         &["config", "--cwd", &fx.cwd(), "--compact"],
         &[("ONEHARNESS_STREAM", "true")],
@@ -30395,22 +30479,11 @@ fn text_view_of(args: &[&str], envs: &[(&str, &str)]) -> (Output, String) {
 #[test]
 fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
     // The value list lives in ONE clap type, so every verb refuses the same
-    // way — and none has quietly kept a private spelling.
-    let verbs: [&[&str]; 11] = [
-        &["run", "--prompt", "hi"],
-        &["list"],
-        &["detect"],
-        &["config"],
-        &["sync"],
-        &["usage"],
-        &["interrupt", "--session", "x"],
-        &["history", "list"],
-        &["history", "show", "--last"],
-        &["history", "clear"],
-        &["history", "migrate"],
-    ];
-    for verb in verbs {
-        let output = run(&[verb, &["--format", "yaml"]].concat(), &[]);
+    // way — and none has quietly kept a private spelling. The verb set is read
+    // off the clap tree; clap refuses the value before it asks for anything
+    // else the verb requires.
+    for verb in json_document_verb_paths() {
+        let output = run(&[&verb[..], &["--format", "yaml"]].concat(), &[]);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(
             output.status.code(),
@@ -30443,63 +30516,74 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
 /// completes and prints its report hermetically: the run and the probe against
 /// the mock, the history verbs over a store the run itself records into (so
 /// `show --last` has a session to print), the interrupt refused (exit 1, still
-/// a printed frame).
+/// a printed frame). The verb set is [`json_document_verb_paths`]'s — read off
+/// the clap tree — and a verb it lists with no runnable spelling here fails
+/// loudly, so the flag cannot reach a verb these journeys never drive.
 fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
     let claude = bin_override("claude-code");
     let cursor = bin_override("cursor");
-    let verbs: Vec<Vec<&str>> = vec![
-        vec![
-            "run",
-            "--harness",
-            "claude-code",
-            "--prompt",
-            "hi",
-            "--bin",
-            &claude,
-            "--history",
-            "--history-dir",
-            history_dir,
-        ],
-        vec!["list"],
-        vec!["detect", "--harness", "claude-code", "--bin", &claude],
-        vec!["config"],
-        vec!["sync", "--check"],
-        vec!["usage", "--harness", "cursor", "--bin", &cursor],
-        vec![
-            "interrupt",
-            "--session",
-            "ghost",
-            "--session-dir",
-            history_dir,
-        ],
-        vec!["history", "list", "--history-dir", history_dir],
-        vec!["history", "show", "--last", "--history-dir", history_dir],
-        vec!["history", "clear", "--history-dir", history_dir],
-        vec!["history", "migrate", "--history-dir", history_dir],
-    ];
-    verbs
-        .into_iter()
-        .map(|verb| verb.into_iter().map(str::to_string).collect())
+    let spelled = |path: &[&'static str]| -> Vec<String> {
+        let extra: Vec<&str> = match path {
+            ["run"] => vec![
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--bin",
+                &claude,
+                "--history",
+                "--history-dir",
+                history_dir,
+            ],
+            ["list"] | ["config"] => vec![],
+            ["detect"] => vec!["--harness", "claude-code", "--bin", &claude],
+            ["sync"] => vec!["--check"],
+            ["usage"] => vec!["--harness", "cursor", "--bin", &cursor],
+            ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
+            ["history", "list" | "clear" | "migrate"] => vec!["--history-dir", history_dir],
+            ["history", "show"] => vec!["--last", "--history-dir", history_dir],
+            other => panic!(
+                "`{}` takes --format json but has no runnable spelling in json_document_verbs; add one",
+                other.join(" ")
+            ),
+        };
+        path.iter()
+            .copied()
+            .chain(extra)
+            .map(str::to_string)
+            .collect()
+    };
+    json_document_verb_paths()
+        .iter()
+        .map(|path| spelled(path))
         .collect()
 }
 
 #[test]
 fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
-    let verbs: [&[&str]; 11] = [
-        &["run"],
-        &["list"],
-        &["detect"],
-        &["config"],
-        &["sync"],
-        &["usage"],
-        &["interrupt"],
-        &["history", "list"],
-        &["history", "show"],
-        &["history", "clear"],
-        &["history", "migrate"],
-    ];
+    // The verb set is read off the clap tree; the eleven C1 verbs are pinned
+    // by name so a verb that lost its `--format` is noticed here too.
+    let verbs = json_document_verb_paths();
+    let named: Vec<String> = verbs.iter().map(|path| path.join(" ")).collect();
+    assert_eq!(
+        named,
+        [
+            "run",
+            "list",
+            "detect",
+            "config",
+            "sync",
+            "history list",
+            "history show",
+            "history clear",
+            "history migrate",
+            "usage",
+            "interrupt",
+        ],
+        "the JSON-document verbs read off the clap tree"
+    );
     for verb in verbs {
-        let output = run(&[verb, &["--help"]].concat(), &[]);
+        let output = run(&[&verb[..], &["--help"]].concat(), &[]);
         let help = String::from_utf8_lossy(&output.stdout);
         assert!(
             help.contains("--format <FORMAT>") && help.contains("`text` (the default"),

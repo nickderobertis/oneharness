@@ -17,7 +17,7 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use oneharness_core::errors::OneharnessError;
+use oneharness_core::errors::{JsonOnlyFlag, OneharnessError};
 
 use crate::cli::Format;
 
@@ -71,8 +71,7 @@ pub(crate) fn resolve_format(
 ) -> Result<Format, OneharnessError> {
     match (format, compact) {
         (Some(Format::Text), true) => Err(OneharnessError::FormatConflict {
-            flag: "--compact",
-            why: "--compact is a JSON rendering choice (drop it, or pass --format json)",
+            flag: JsonOnlyFlag::Compact,
         }),
         (Some(format), _) => Ok(format),
         (None, true) => Ok(Format::Json),

@@ -54,7 +54,7 @@ use crate::domain::session::{self, SessionPlan, SessionRecord};
 use crate::domain::signals::Usage;
 use crate::domain::structured::{self, Schema};
 use crate::domain::{events, normalize, signals};
-use crate::errors::OneharnessError;
+use crate::errors::{OneharnessError, RunModeOrigin};
 use crate::io::cancel::{self, CancelToken};
 use crate::io::config as config_io;
 use crate::io::control as control_io;
@@ -607,7 +607,11 @@ pub fn run_supervised(
     // fails fast even though only one harness will run (the command must be
     // valid for the whole set).
     let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Fallback);
-    let run_mode_by_default = args.run_mode.is_none() && cfg.run_mode.is_none();
+    let run_mode_origin = if args.run_mode.is_none() && cfg.run_mode.is_none() {
+        RunModeOrigin::Default
+    } else {
+        RunModeOrigin::Selected
+    };
     // A chain is a chain only with something to fall through to. The two
     // shapes a chain cannot carry — a batch, and a `--resume`/`--fork`
     // continuation — are refused over two or more candidates, and run on a
@@ -622,7 +626,7 @@ pub fn run_supervised(
     // effective value.
     let stream = resolve_stream(args, cfg);
     if run_mode == RunMode::Fallback && specs.len() > 1 {
-        validate_fallback(batch_run, args, run_mode_by_default)?;
+        validate_fallback(batch_run, args, run_mode_origin)?;
     }
     // `--control` is validated before the session is resolved so its own
     // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
@@ -3679,8 +3683,8 @@ fn run_fork_batch(
 /// usage errors here. Called only for a chain of two or more candidates: a
 /// one-candidate chain has nothing to fall through to, so it carries both
 /// shapes as the single-harness run (see the `single_harness_shape` resolution
-/// in [`run`]). `by_default` is whether the mode was left unset — fallback is
-/// the default — so the diagnostic can say which mode the caller met.
+/// in [`run`]). `origin` is whether the mode was left unset — fallback is the
+/// default — so the diagnostic can say which mode the caller met.
 /// `--stream` is *not* refused (see [`drive_plan_sequentially`]).
 /// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable
@@ -3693,15 +3697,9 @@ fn run_fork_batch(
 fn validate_fallback(
     batch_run: bool,
     args: &RunRequest,
-    by_default: bool,
+    origin: RunModeOrigin,
 ) -> Result<(), OneharnessError> {
-    let conflict = |with, why| {
-        Err(OneharnessError::FallbackConflict {
-            with,
-            why,
-            by_default,
-        })
-    };
+    let conflict = |with, why| Err(OneharnessError::FallbackConflict { with, why, origin });
     if batch_run {
         return conflict(
             "a batch run (more than one prompt)",

@@ -194,8 +194,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   own contract — and a new `run` flag is three edits, not one: the clap field,
   the `RunRequest` field, and the `From<&RunArgs>` conversion (a field dropped
   there goes silently missing from every run, which is what
-  `every_run_flag_reaches_the_engine_request` exists to catch). `--compact` is
-  deliberately NOT on `RunRequest`: it is about printing, which the shell owns.
+  `every_run_flag_reaches_the_engine_request` exists to catch). `--compact` and
+  `--format` are deliberately NOT on `RunRequest`: they are about printing,
+  which the shell owns. `--format <text|json>` is one clap type (`cli::Format`)
+  on every JSON-stdout verb, `json` the default, rendered through
+  `commands::print_report`; it has no config key and no `ONEHARNESS_FORMAT`
+  layer, and the SDKs send `--format json` outright (the manifest's `always`
+  argv) so a later flip of the CLI default cannot move what they read.
   Nor is any `--no-x` half of a clap-exclusive pair — the request carries the one
   value they resolve to (`stream`/`history` as `Option<bool>`, `--bypass` folded
   into `mode`, `--fork` inside the `Resume` it is meaningless without), because

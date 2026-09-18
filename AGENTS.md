@@ -64,8 +64,9 @@ Use the `just` recipes; do not hand-roll equivalents.
 
 - `just bootstrap` — set up from a clean clone (toolchain, llmlint, dependencies,
   and the committed pre-push hook).
-- `just check` — full gate: format check, clippy (`-D warnings`), tests, line
-  coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
+- `just check` — full gate: format check, clippy and rustdoc (both
+  `-D warnings`), tests, line coverage (hard-gated at 95%), build, smoke. Must
+  pass before any commit or PR.
 - `just gate` — pre-push superset: `check`, dependency/license audit, crate
   packaging, published-API compatibility, llmlint validation, and its merge-base
   diff judge (skipped locally without Codex/key).
@@ -84,7 +85,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   naming the key and base commit it was recorded for; anything less judges again.
 - `just test` / `just lint` / `just format` — individual gate steps. `test` runs
   the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
-  scratch space.
+  scratch space. `just lint-doc` (also in `check`) builds `oneharness-core`'s
+  public documentation with rustdoc warnings as errors: a public doc comment
+  that links to a private item or an unresolvable name fails there rather than
+  shipping as a dead link on docs.rs — link the public concept, or name the
+  private item in plain code font; never make an item public for a link.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
   `just coverage-html` writes a browsable report to find uncovered lines.

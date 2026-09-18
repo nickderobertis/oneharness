@@ -105,10 +105,10 @@ fn version_rank(version: &str) -> Option<usize> {
 /// field introduced in `minimum` may legitimately appear at.
 ///
 /// Public because the generated SDK schemas describe such a field by listing
-/// exactly these versions. Deriving the list from [`READABLE_SCHEMA_VERSIONS`]
-/// is what keeps a *new* version from silently narrowing an older field's
-/// legality: a hand-written pair like `[introduced, current]` stops covering the
-/// versions in between the moment `current` moves.
+/// exactly these versions. Deriving the list from the private
+/// `READABLE_SCHEMA_VERSIONS` list is what keeps a *new* version from silently
+/// narrowing an older field's legality: a hand-written pair like `[introduced,
+/// current]` stops covering the versions in between the moment `current` moves.
 #[must_use]
 pub fn versions_from(minimum: &str) -> Vec<&'static str> {
     READABLE_SCHEMA_VERSIONS
@@ -133,9 +133,10 @@ const PREVIOUS_SCHEMA_VERSION: &str = "0.2";
 const LEGACY_RECORD_SCHEMA_VERSION: &str = "0.3";
 
 /// The whole-record versions whose events ended at `index`, before
-/// [`LEGACY_RECORD_SCHEMA_VERSION`] (v0.3) added the lifecycle fields — see
-/// [`LegacyActionEvent`]. Exported so the generated SDK schemas describe that
-/// one legacy shape from this source rather than restating its versions.
+/// `LEGACY_RECORD_SCHEMA_VERSION` (v0.3) added the lifecycle fields — see the
+/// legacy `LegacyActionEvent` shape. Exported so the generated SDK schemas
+/// describe that one legacy shape from this source rather than restating its
+/// versions.
 pub const PRE_LIFECYCLE_RECORD_VERSIONS: [&str; 2] =
     [LEGACY_SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION];
 
@@ -457,7 +458,7 @@ pub struct HistoryIdError;
 ///
 /// Parsed text must be the canonical hyphenated spelling carrying the RFC 4122
 /// variant and a defined version — both of which every minted id (v5 and v7)
-/// satisfies, and both of which [`UUID_PATTERN`] promises consumers.
+/// satisfies, and both of which the schema's `UUID_PATTERN` promises consumers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct HistoryId(Uuid);
@@ -492,11 +493,12 @@ impl fmt::Display for HistoryId {
 impl FromStr for HistoryId {
     type Err = HistoryIdError;
 
-    /// Accept exactly what [`UUID_PATTERN`] promises. `Uuid::parse_str` is laxer
-    /// on both counts: it also takes the simple, braced, and URN spellings, and
-    /// it reads any variant or version bits — including the nil UUID. Comparing
-    /// against the parsed value's own canonical rendering is what rejects the
-    /// alternate spellings while still accepting upper-case hex.
+    /// Accept exactly what the schema's `UUID_PATTERN` promises.
+    /// `Uuid::parse_str` is laxer on both counts: it also takes the simple,
+    /// braced, and URN spellings, and it reads any variant or version bits —
+    /// including the nil UUID. Comparing against the parsed value's own
+    /// canonical rendering is what rejects the alternate spellings while still
+    /// accepting upper-case hex.
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         let uuid = Uuid::parse_str(value).map_err(|_| HistoryIdError)?;
         if uuid.hyphenated().to_string() != value.to_ascii_lowercase() {
@@ -544,7 +546,7 @@ impl JsonSchema for HistoryId {
 /// A validated, deterministically ordered label set attached to every record in
 /// one history session. Keys are portable identifier-like strings; values are
 /// non-empty strings without control characters, bounded in characters (see
-/// [`LABEL_VALUE_MAX`]).
+/// `LABEL_VALUE_MAX`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct HistoryLabels(BTreeMap<String, String>);

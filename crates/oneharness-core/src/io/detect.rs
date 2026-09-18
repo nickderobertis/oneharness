@@ -19,7 +19,7 @@ use crate::errors::OneharnessError;
 /// the way the config-file layer does: its own spelling first
 /// (`ONEHARNESS_BIN_CLAUDE_CODE_HOOKED`), then the base harness's key
 /// (`ONEHARNESS_BIN_CLAUDE_CODE`), so one base override covers every member
-/// of that harness — see [`bin_env_keys`].
+/// of that harness — see the private `bin_env_keys` derivation.
 pub struct BinOverrides {
     map: HashMap<String, String>,
     /// Config-file bins: the lowest-precedence override layer, since an

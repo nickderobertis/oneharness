@@ -58,11 +58,12 @@ pub struct BuildCtx<'a> {
     /// schema instruction to the prompt — so it is never silently dropped.
     pub schema: Option<&'a str>,
     /// Path to a temp file holding the system prompt, set by the command layer
-    /// when the system prompt is large enough to risk the argv ceiling (`E2BIG`)
-    /// AND the harness declares [`LargeInput::system_file`]. When `Some`, an
-    /// adapter delivers the system prompt through its file flag (Claude Code's
-    /// `--append-system-prompt-file`) instead of inline `--append-system-prompt`;
-    /// `system` is left unread. `None` keeps the ordinary inline path.
+    /// when the system prompt is large enough to risk the argv ceiling
+    /// (`E2BIG`) AND the harness declares [`LargeInput::system_file_flag`].
+    /// When `Some`, an adapter delivers the system prompt through its file flag
+    /// (Claude Code's `--append-system-prompt-file`) instead of inline
+    /// `--append-system-prompt`; `system` is left unread. `None` keeps the
+    /// ordinary inline path.
     pub system_file: Option<&'a str>,
     /// How the user prompt reaches the harness for this run. One value rather
     /// than a flag per route, because the routes are alternatives: a prompt
@@ -131,7 +132,7 @@ fn prompt_with_system(c: &BuildCtx) -> String {
     prompt_with_system_text(c.system, c.prompt)
 }
 
-/// The text form of [`prompt_with_system`], for the command layer to assemble the
+/// The text form of `prompt_with_system`, for the command layer to assemble the
 /// **stdin** payload for a large-prompt run (where `build_argv` omits the
 /// positional): the same system-prepended string the adapter would otherwise have
 /// inlined, so stdin delivery is byte-for-byte what the model would have seen on
@@ -381,7 +382,7 @@ pub struct HarnessSpec {
     /// harness with no server, or with no proven control mechanism at all.
     pub server: Option<ServerSpec>,
     // llmlint: ignore-end[invalid_states_unrepresentable]
-    /// Builds the full argv (argv[0] is the binary). Pure.
+    /// Builds the full argv (argv\[0\] is the binary). Pure.
     pub build_argv: fn(&BuildCtx) -> Vec<String>,
 }
 
@@ -506,14 +507,14 @@ pub struct ModeSpec {
     ///
     /// A driven turn answers the server's permission requests itself, and the
     /// answer has to be the posture the *same mode* gives without `--control` —
-    /// otherwise `--control` silently reshapes the policy, which is the class of
-    /// bug that made codex's controlled `bypass` more restricted than its
+    /// otherwise `--control` silently reshapes the policy, which is the class
+    /// of bug that made codex's controlled `bypass` more restricted than its
     /// uncontrolled one. Usually that is the normalized spectrum (`auto` and
-    /// `bypass` mean "act without asking"), which is what [`mode`] fills in; it
-    /// is stated per harness because a CLI can be unable to honor the spectrum
-    /// at all — `crush run` auto-approves the whole session, so its `default` is
-    /// unattended however it is asked, and a controlled run that gated it would
-    /// be stricter than the CLI can be.
+    /// `bypass` mean "act without asking"), which is what the `mode` mapping
+    /// fills in; it is stated per harness because a CLI can be unable to honor
+    /// the spectrum at all — `crush run` auto-approves the whole session, so
+    /// its `default` is unattended however it is asked, and a controlled run
+    /// that gated it would be stricter than the CLI can be.
     ///
     /// Cross-checked against the argv/environment the harness really builds by
     /// `domain::control`'s `control_mode_parity` grid, so this cannot drift into

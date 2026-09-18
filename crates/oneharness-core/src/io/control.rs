@@ -145,11 +145,11 @@ pub(crate) enum Binding {
 /// because candidate N has finished, so exactly one candidate is ever serving —
 /// but *which* one, and therefore which mechanism, is not knowable before the
 /// chain runs. So the handle is created unbound, each candidate binds its own
-/// mechanism as it takes the turn ([`ControlHandle::bind`]) and releases it when
-/// that turn ends ([`ControlHandle::release`]), and an interrupt is served by
-/// whatever is bound at the moment it arrives. Between candidates nothing is,
-/// which is why a fall-through answers `no_active_turn` rather than reaching a
-/// mechanism that is not the serving one.
+/// mechanism as it takes the turn (the crate-private `ControlHandle::bind`) and
+/// releases it when that turn ends (`ControlHandle::release`), and an interrupt
+/// is served by whatever is bound at the moment it arrives. Between candidates
+/// nothing is, which is why a fall-through answers `no_active_turn` rather than
+/// reaching a mechanism that is not the serving one.
 ///
 /// Every lock here recovers from poisoning (`into_inner`) rather than
 /// propagating a panic: control is a side channel, and a worker that panicked
@@ -1046,10 +1046,11 @@ mod imp {
 /// Bind the run's control socket at `path`.
 ///
 /// The address is the run's for its whole lifetime and says nothing about which
-/// harness is behind it: the mechanism is bound per candidate, as each takes the
-/// turn ([`ControlHandle::bind`]). `starts_on` is only what the report names
-/// until the first candidate binds its own — an address a supervisor can already
-/// reach, on a run that has not opened a turn yet, has no mechanism to name.
+/// harness is behind it: the mechanism is bound per candidate, as each takes
+/// the turn (the crate-private `ControlHandle::bind`). `starts_on` is only what
+/// the report names until the first candidate binds its own — an address a
+/// supervisor can already reach, on a run that has not opened a turn yet, has
+/// no mechanism to name.
 pub fn bind(path: &Path, starts_on: ControlShape) -> io::Result<ControlListener> {
     imp::bind(path, starts_on)
 }

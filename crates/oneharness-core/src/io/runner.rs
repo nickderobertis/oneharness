@@ -159,7 +159,8 @@ pub trait ProcessSupervisor: Sync {
 #[non_exhaustive]
 pub struct SpawnControls<'a> {
     /// Cancels the run: every in-flight tree is terminated through the same
-    /// [`Finish::Terminate`] path a timeout uses, and queued jobs go unspawned.
+    /// private `Finish::Terminate` path a timeout uses, and queued jobs go
+    /// unspawned.
     pub cancel: &'a CancelToken,
     /// The caller's claim on each child, or `None` for the historical behavior:
     /// oneharness alone owns every harness tree it spawns.
@@ -249,8 +250,8 @@ where
 /// [`run_jobs_with`] under a caller-owned [`CancelToken`].
 ///
 /// Cancelling tears down every in-flight job's process tree through the same
-/// [`Finish::Terminate`] path a timeout uses, and leaves still-queued jobs
-/// unspawned — each reported as [`Status::Cancelled`] so the results stay
+/// private `Finish::Terminate` path a timeout uses, and leaves still-queued
+/// jobs unspawned — each reported as [`Status::Cancelled`] so the results stay
 /// one-per-job. A host SIGINT/SIGTERM does the same thing to *every* run once
 /// [`crate::io::cancel::install_signal_cancel`] is in force, so the plain
 /// [`run_jobs_with`] entry point is cancellable too; this overload exists for a
@@ -431,9 +432,9 @@ pub fn run_job(job: &Job) -> Capture {
 }
 
 /// [`run_job`] under a caller-owned [`CancelToken`]. Cancelling terminates the
-/// harness and its descendants through the same [`Finish::Terminate`] path a
-/// timeout uses, and the run comes back as [`Status::Cancelled`] with whatever
-/// output had already been captured.
+/// harness and its descendants through the same private `Finish::Terminate`
+/// path a timeout uses, and the run comes back as [`Status::Cancelled`] with
+/// whatever output had already been captured.
 pub fn run_job_cancellable(job: &Job, cancel: &CancelToken) -> Capture {
     run_job_supervised(job, SpawnControls::new(cancel))
 }
@@ -577,11 +578,11 @@ where
 /// The cancellation check is what makes a **silent** harness stoppable. The
 /// stream loop is otherwise parked in the stdout pipe read until the deadline,
 /// and `on_line` — the only other way out — is never called for a harness that
-/// writes nothing. So the read is bounded by [`CANCEL_POLL_SLICE`] and the
-/// cancellation flag re-checked on each tick, which then tears the whole tree
-/// down through [`Finish::Terminate`]. Without it a cancelled run leaves a live
-/// harness behind, since the harness is its own process-group leader and does
-/// not die with the host.
+/// writes nothing. So the read is bounded by the private `CANCEL_POLL_SLICE`
+/// slice and the cancellation flag re-checked on each tick, which then tears
+/// the whole tree down through private `Finish::Terminate`. Without it a
+/// cancelled run leaves a live harness behind, since the harness is its own
+/// process-group leader and does not die with the host.
 pub fn run_job_streaming_cancellable<F>(job: &Job, cancel: &CancelToken, on_line: F) -> Capture
 where
     F: FnMut(&str) -> StreamStep,

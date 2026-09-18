@@ -203,9 +203,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   `--compact` alone selects it — so each verb carries `Option<Format>` and
   resolves it through `commands::resolve_format` BEFORE doing its work, which
   is where `--format text --compact` is refused (exit 2, naming both) without
-  a sync having written or an interrupt having been delivered. `--stream`
-  keeps its NDJSON protocol whatever the default is, and `--format text
-  --stream` is the same refusal in `commands::run`. Which verbs carry the
+  a sync having written or an interrupt having been delivered. A streaming
+  run keeps its NDJSON protocol whatever the default is, and `--format text`
+  beside one is the same refusal in `commands::run` — whichever layer selected
+  the stream, which is why that shell resolves `stream` (flag, else the config
+  layers) before the engine loads them again. Which verbs carry the
   flag, the default, and both refusals are pinned by the `every_json_verb_*`
   / `compact_*` journeys in `tests/cli.rs` (the suite's `run` helper passes
   `--format json` for it; `run_as_typed` is the bare invocation), the SDKs'

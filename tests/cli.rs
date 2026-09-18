@@ -5240,42 +5240,53 @@ bin = "{bin}"
         "--no-stream lost to ONEHARNESS_STREAM"
     );
 
-    // An explicit `--format text` beside the `--stream` FLAG is refused before
-    // anything spawns; a stream selected by config or the environment is
-    // resolved inside the engine, so there the run still streams its NDJSON
-    // protocol and says on stderr that the text view was never printable —
-    // never a silent drop of the flag, never a report the consumer's reader
-    // cannot parse.
-    for (label, cwd, envs) in [
-        ("config", fx.cwd(), vec![("MOCK_STDOUT", stdout)]),
+    // An explicit `--format text` beside a run that will stream is refused
+    // before anything spawns, whichever layer selected the stream — the flag
+    // (`a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is`),
+    // config, or the environment — naming both, never a silent drop of the
+    // flag and never a turn billed for a report that was never printable.
+    // `--no-stream` beside it settles the question the other way.
+    for (label, cwd, envs, user_config) in [
+        ("config", fx.cwd(), vec![], fx.user_config()),
         (
             "ONEHARNESS_STREAM",
             env_only.cwd(),
-            vec![("MOCK_STDOUT", stdout), ("ONEHARNESS_STREAM", "true")],
+            vec![("ONEHARNESS_STREAM", "true")],
+            env_only.user_config(),
         ),
     ] {
-        let user_config = if label == "config" {
-            fx.user_config()
-        } else {
-            env_only.user_config()
-        };
-        let text_asked = run_with_config(
+        let mut envs = envs;
+        envs.push(("MOCK_STDOUT", stdout));
+        let refused = run_with_config(
             &["run", "--prompt", "hi", "--cwd", &cwd, "--format", "text"],
             &envs,
             &user_config,
         );
-        assert!(text_asked.status.success(), "{label}: {text_asked:?}");
-        let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&text_asked.stdout)
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
-            .collect();
-        assert_eq!(envelopes.len(), 2, "{label}: the run still streamed");
-        assert!(matches!(envelopes[1], RunStreamEnvelope::Result { .. }));
-        let stderr = String::from_utf8_lossy(&text_asked.stderr);
+        assert_eq!(refused.status.code(), Some(2), "{label}: {refused:?}");
+        assert!(refused.stdout.is_empty(), "{label}: a refused run printed");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(
-            stderr.contains("--format text has no effect on a run that streams"),
-            "{label}: the ignored format must be said: {stderr}"
+            stderr.contains("--format text") && stderr.contains("--stream"),
+            "{label}: the refusal must name both flags: {stderr}"
+        );
+        let settled = run_with_config(
+            &[
+                "run",
+                "--prompt",
+                "hi",
+                "--cwd",
+                &cwd,
+                "--format",
+                "text",
+                "--no-stream",
+            ],
+            &envs,
+            &user_config,
+        );
+        assert!(settled.status.success(), "{label}: {settled:?}");
+        assert!(
+            String::from_utf8_lossy(&settled.stdout).starts_with("prompt: hi\n"),
+            "{label}: --no-stream must yield the text report: {settled:?}"
         );
     }
     let config = json_stdout(&run_with_config(

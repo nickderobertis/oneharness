@@ -890,9 +890,10 @@ pub struct RunArgs {
 
     /// Output format for the report: `text` (the default, a human-readable view
     /// of the report) or `json` (the programmatic contract; `--compact` alone
-    /// selects it too). A streaming run (--stream) keeps its NDJSON
-    /// event/result protocol whether or not `json` is named; an explicit
-    /// `--format text` beside --stream is a usage error.
+    /// selects it too). A streaming run keeps its NDJSON event/result protocol
+    /// whether or not `json` is named; an explicit `--format text` beside a
+    /// run that streams (--stream, or `stream` in config / ONEHARNESS_STREAM)
+    /// is a usage error.
     #[arg(long, value_parser = format_parser())]
     pub format: Option<Format>,
 

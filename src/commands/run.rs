@@ -33,13 +33,13 @@ fn toggle(yes: bool, no: bool) -> Option<bool> {
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     // Both stdout contradictions are refused before anything spawns: a run
     // that ran and then exited 2 over its flags would have billed a turn for
-    // nothing. `--stream` is the one flag `--format` cannot override — its
-    // stdout is the NDJSON protocol from the first event — so a `text` beside
-    // it is the same kind of contradiction `--compact` is, and refused the same
-    // way. A stream selected by config or ONEHARNESS_STREAM is resolved inside
-    // the engine, so that pair is said on stderr once the run reports instead.
+    // nothing. A streaming run is the one whose stdout `--format` cannot
+    // render — it is the NDJSON protocol from the first event — so a `text`
+    // beside it is the same kind of contradiction `--compact` is, and refused
+    // the same way, whether the stream came from the flag or from the
+    // `stream` config/ONEHARNESS_STREAM layer.
     let format = resolve_format(args.format, args.compact)?;
-    if args.stream && args.format == Some(Format::Text) {
+    if args.format == Some(Format::Text) && will_stream(args)? {
         return Err(OneharnessError::FormatConflict {
             flag: JsonOnlyFlag::Stream,
         });
@@ -64,16 +64,10 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 
     // A streaming run's stdout is the NDJSON protocol: its consumer has been
     // reading `event` lines all along, and the terminal `result` line is the
-    // envelope that closes them. An explicit `--format text` was refused above
-    // when `--stream` was a flag; when streaming came from config it is said
-    // here, since the report the caller asked for was never printable.
+    // envelope that closes them (an explicit `--format text` was refused
+    // above, so nothing is dropped here).
     if outcome.streamed {
         emit_stream_result(&outcome.report)?;
-        if args.format == Some(Format::Text) {
-            eprintln!(
-                "oneharness: warning: --format text has no effect on a run that streams (`stream` in config or ONEHARNESS_STREAM); stdout is the NDJSON event/result protocol"
-            );
-        }
     } else {
         print_report(&outcome.report, format, args.compact, render_text)?;
     }
@@ -81,6 +75,26 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         eprintln!("{summary}");
     }
     Ok(outcome.exit_code)
+}
+
+/// Whether this run will stream, resolved exactly as the engine resolves it —
+/// the `--stream`/`--no-stream` flag, else the `stream` value of the config
+/// layers (files and `ONEHARNESS_STREAM`) discovered from `--cwd`. Read here
+/// only to refuse `--format text` before a turn is spent: the engine loads the
+/// same layers again for the run, and a config it cannot load fails here with
+/// the error it would have raised there. Skips the load when the flag settles
+/// it, so an ordinary run reads its config once.
+fn will_stream(args: &RunArgs) -> Result<bool, OneharnessError> {
+    if let Some(explicit) = toggle(args.stream, args.no_stream) {
+        return Ok(explicit);
+    }
+    let project_start = match &args.cwd {
+        Some(dir) => dir.clone(),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+    let loaded =
+        oneharness_core::io::config::load(args.config.as_deref(), args.no_config, &project_start)?;
+    Ok(loaded.config.stream.unwrap_or(false))
 }
 
 /// The CLI's event sink: each normalized event as one NDJSON

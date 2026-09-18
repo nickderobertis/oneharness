@@ -475,10 +475,11 @@ and no `ONEHARNESS_FORMAT` override. A program that wants the JSON says
 `--compact` selects single-line JSON, and it is a JSON rendering choice: alone
 it selects `--format json` (so a consumer that already passed it stays on the
 contract), and beside an explicit `--format text` it is a usage error (exit 2)
-naming both flags. A streaming `run --stream` keeps its NDJSON event/result
-protocol whether or not `--format json` is named; an explicit `--format text`
-beside `--stream` is the same usage error. `history watch` keeps its own
-`--format jsonl`.
+naming both flags. A streaming run keeps its NDJSON event/result protocol
+whether or not `--format json` is named; an explicit `--format text` beside a
+run that streams — `--stream`, or `stream` in config / `ONEHARNESS_STREAM` —
+is the same usage error, refused before any harness runs. `history watch`
+keeps its own `--format jsonl`.
 
 ### Configuration
 

@@ -18963,6 +18963,55 @@ fn controlled_codex_server_overloaded_recovers_on_the_same_app_server_candidate(
 
 #[cfg(unix)]
 #[test]
+fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
+    // The same recovery outside a chain: `--run-mode parallel` drives the one
+    // controlled candidate itself, and a zero-work overload still repeats its
+    // turn on that candidate rather than ending the run.
+    let mock = mock_bin().display().to_string();
+    let counter = temp_counter("server-overloaded-controlled-parallel");
+    let store = control_store_dir("overload-retry-parallel");
+    let log = store.join("app-server.log");
+    let project = format!(
+        r#"
+        harnesses = ["codex"]
+        run_mode = "parallel"
+        server_overloaded_max_retries = 1
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_CODEX_APP_SERVER_LOG = '{log}', MOCK_CODEX_OVERLOAD_ATTEMPTS = "1", MOCK_CODEX_COMPLETE_TURN = "1" }}
+        "#,
+        log = log.display(),
+    );
+    let fx = ConfigFixture::new("server-overloaded-controlled-parallel", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--control",
+            "--session",
+            "overload-recovery-parallel",
+            "--session-dir",
+            &store.display().to_string(),
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert!(value["fallback"].is_null(), "{value}");
+    assert_eq!(value["results"][0]["text"], "still working");
+    assert!(value["results"][0]["failure_kind"].is_null());
+    assert_eq!(std::fs::read_to_string(counter).unwrap(), "2");
+    assert_eq!(app_server_frames(&log, "turn/start").len(), 2);
+}
+
+#[cfg(unix)]
+#[test]
 fn controlled_codex_server_overloaded_exhaustion_falls_through_to_the_alternate() {
     let mock = mock_bin().display().to_string();
     let counter = temp_counter("server-overloaded-controlled-exhausted");
@@ -28651,6 +28700,104 @@ fn control_still_refuses_multiple_harnesses_in_parallel_mode() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("parallel run mode"), "{stderr}");
     assert!(stderr.contains("--run-mode fallback"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_parallel_opt_in_still_drives_one_controlled_turn_and_serves_its_interrupt() {
+    // Under `--run-mode parallel` a single selected harness is the one live
+    // turn `--control` needs, so the channel is bound outside any chain: the
+    // socket appears, a SEPARATE `interrupt` process is served, and the report
+    // carries the control block with `fallback` null, since no chain ran. The
+    // default resolves the same selection to a one-candidate chain, so this
+    // is the opt-in's own proof that it kept its lever.
+    let mock_profile = mock_profile_redirect();
+    let store = control_store_dir("parallel-interrupt");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("parallel-interrupt-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-parallel"}"#,
+        )
+        .args([
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "opted-in",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled parallel run");
+
+    let socket = store.join("control").join("opted-in.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt = run(
+        &[
+            "interrupt",
+            "--session",
+            "opted-in",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--compact",
+        ],
+        &[],
+    );
+    assert!(interrupt.status.success(), "{interrupt:?}");
+    let frame = json_stdout(&interrupt);
+    assert_eq!(frame["ok"], true, "{frame}");
+    assert_eq!(frame["mechanism"], "claude-control-request");
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert!(report["fallback"].is_null(), "{report}");
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    assert_eq!(report["control"]["socket"], socket.display().to_string());
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1, "{report}");
+    assert_eq!(interrupts[0]["outcome"], "served");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["session"]["name"], "opted-in");
+    assert_eq!(report["session"]["token"], "sess-parallel");
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(log.contains("INTERRUPTED"), "turn log:\n{log}");
+    assert!(
+        !socket.exists(),
+        "socket must be removed when the run exits"
+    );
 }
 
 #[cfg(unix)]

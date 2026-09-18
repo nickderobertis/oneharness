@@ -813,9 +813,7 @@ pub struct RunArgs {
     pub print_command: bool,
 
     /// Override a harness binary: --bin ID=PATH (repeatable). Also via
-    /// ONEHARNESS_BIN_<ID> env vars (id upper-cased, `-`/`:` as `_`); a variant
-    /// `<id>:<name>` reads ONEHARNESS_BIN_<ID>_<NAME>, then the base's
-    /// ONEHARNESS_BIN_<ID>.
+    /// ONEHARNESS_BIN_<ID> env vars.
     #[arg(long = "bin", value_name = "ID=PATH")]
     pub bin: Vec<String>,
 

@@ -497,11 +497,7 @@ everywhere as `<id>:<name>`. `--all` selects base harnesses only; variants never
 silently join an all-run. Names match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`.
 Variants accept the same model/bin/args/env/reasoning and sync fields as their
 base section. Precedence is built-ins → top level → base harness → variant →
-CLI. A binary override reaches a variant the same way at every layer: the
-config-file `bin` falls back from the variant to its base, and so does the
-environment — `ONEHARNESS_BIN_CLAUDE_CODE_WORK` names the binary for
-`claude-code:work`, else `ONEHARNESS_BIN_CLAUDE_CODE` does (see `--bin` under
-[Usage](#usage)). Each report result retains the base `harness`, and also records `variant`
+CLI. Each report result retains the base `harness`, and also records `variant`
 and the composed `harness_id`.
 
 Credential values stay outside committed config. Within a variant child,

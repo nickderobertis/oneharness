@@ -86,10 +86,8 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just test` / `just lint` / `just format` — individual gate steps. `test` runs
   the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
   scratch space. `just lint-doc` (also in `check`) builds `oneharness-core`'s
-  public documentation with rustdoc warnings as errors: a public doc comment
-  that links to a private item or an unresolvable name fails there rather than
-  shipping as a dead link on docs.rs — link the public concept, or name the
-  private item in plain code font; never make an item public for a link.
+  public documentation with rustdoc warnings as errors; never make an item
+  public to satisfy a doc link.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
   `just coverage-html` writes a browsable report to find uncovered lines.

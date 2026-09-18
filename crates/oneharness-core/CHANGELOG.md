@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.14.1...oneharness-core-v0.15.0) - 2026-09-18
+
+### Added
+
+- *(cli)* [**breaking**] add --format <text|json> to every JSON-stdout verb, json still the default ([#1312](https://github.com/nickderobertis/oneharness/pull/1312))
+
 ## [0.14.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.14.0...oneharness-core-v0.14.1) - 2026-09-17
 
 ### Fixed

@@ -279,7 +279,8 @@ pub struct RunRequest {
     pub max_parallel: Option<usize>,
     /// How a batch run schedules its calls.
     pub batch_strategy: Option<BatchStrategy>,
-    /// Parallel (the default) or the fallback priority chain.
+    /// The fallback priority chain (the default when unset here and in every
+    /// config layer) or parallel.
     pub run_mode: Option<RunMode>,
     /// Build and report each command without executing it (dry run).
     pub print_command: bool,
@@ -3478,8 +3479,8 @@ fn control_capable_ids() -> String {
 
 /// Refuse `--stream` combined with anything it cannot serve: a batch
 /// (multi-prompt) run or structured output — each needs the whole output at
-/// once, which streaming does not provide — and, in the default `parallel` mode,
-/// more than one harness. A loud usage error before anything spawns.
+/// once, which streaming does not provide — and, in `parallel` mode, more than
+/// one harness. A loud usage error before anything spawns.
 ///
 /// A **fallback** chain may list several candidates — harnesses, and each
 /// harness's models (the multi-model half is refused in [`validate_multi_model`],

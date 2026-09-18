@@ -596,21 +596,33 @@ pub fn run_supervised(
             .cloned()
             .collect()
     };
-    // `--run-mode` (CLI beats config; default `parallel`). Fallback runs the
-    // selected harnesses in priority order, stopping at the first that runs and
-    // falling through only harnesses that cannot run at all. It is single-outcome
-    // by nature, so it refuses the multi-prompt / continuation shapes up front —
-    // but the *whole candidate set* still flows through every capability validator
-    // below, so a flag unsupported by ANY listed harness fails fast even though
-    // only one harness will run (the command must be valid for the whole set).
-    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Parallel);
-    let fallback_mode = run_mode == RunMode::Fallback;
+    // `--run-mode` (CLI beats config; default `fallback`, on every surface — a
+    // library caller, the CLI and the SDKs all resolve an unset mode here, so
+    // this is the one site that decides it; `parallel` is the opt-in). Fallback
+    // runs the selected harnesses in priority order, stopping at the first that
+    // runs and falling through only harnesses that cannot run at all. It is
+    // single-outcome by nature, so it refuses the multi-prompt / continuation
+    // shapes up front — but the *whole candidate set* still flows through every
+    // capability validator below, so a flag unsupported by ANY listed harness
+    // fails fast even though only one harness will run (the command must be
+    // valid for the whole set).
+    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Fallback);
+    let run_mode_by_default = args.run_mode.is_none() && cfg.run_mode.is_none();
+    // A chain is a chain only with something to fall through to. The two
+    // shapes a chain cannot carry — a batch, and a `--resume`/`--fork`
+    // continuation — are refused over two or more candidates, and run on a
+    // one-candidate chain as the single-harness run they are (`fallback` is
+    // then `null` in the report, since no chain ran). Without that, an unset
+    // mode would refuse every bare single-harness continuation and batch.
+    let continuation = args.resume.is_some();
+    let single_harness_shape = specs.len() == 1 && (batch_run || continuation);
+    let fallback_mode = run_mode == RunMode::Fallback && !single_harness_shape;
     // Streaming is a CLI flag with a config/env layer, resolved once here so every
     // validator, the format selection, and the driver choice read the same
     // effective value.
     let stream = resolve_stream(args, cfg);
-    if fallback_mode {
-        validate_fallback(batch_run, args)?;
+    if run_mode == RunMode::Fallback && specs.len() > 1 {
+        validate_fallback(batch_run, args, run_mode_by_default)?;
     }
     // `--control` is validated before the session is resolved so its own
     // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
@@ -3660,11 +3672,16 @@ fn run_fork_batch(
     outcomes
 }
 
-/// Refuse the run shapes fallback mode cannot express, before anything spawns.
+/// Refuse the run shapes a fallback chain cannot express, before anything spawns.
 /// Fallback drives several harnesses in priority order for one prompt, stopping
 /// at the first that runs — so a multi-prompt batch and the explicit `--resume` /
 /// `--fork` continuations (each pins one *specific* harness's native id) are loud
-/// usage errors here. `--stream` is *not* refused (see [`drive_plan_sequentially`]).
+/// usage errors here. Called only for a chain of two or more candidates: a
+/// one-candidate chain has nothing to fall through to, so it carries both
+/// shapes as the single-harness run (see the `single_harness_shape` resolution
+/// in [`run`]). `by_default` is whether the mode was left unset — fallback is
+/// the default — so the diagnostic can say which mode the caller met.
+/// `--stream` is *not* refused (see [`drive_plan_sequentially`]).
 /// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable
 /// harness in the chain), which fallback settles on under stable availability —
@@ -3673,18 +3690,28 @@ fn run_fork_batch(
 /// shared validators (`validate_modes`, `setup_mock`, …), which run over all specs
 /// regardless of mode — so a flag no candidate could honor still fails fast even
 /// though only one harness will run.
-fn validate_fallback(batch_run: bool, args: &RunRequest) -> Result<(), OneharnessError> {
-    let conflict = |with, why| Err(OneharnessError::FallbackConflict { with, why });
+fn validate_fallback(
+    batch_run: bool,
+    args: &RunRequest,
+    by_default: bool,
+) -> Result<(), OneharnessError> {
+    let conflict = |with, why| {
+        Err(OneharnessError::FallbackConflict {
+            with,
+            why,
+            by_default,
+        })
+    };
     if batch_run {
         return conflict(
             "a batch run (more than one prompt)",
-            "fallback tries harnesses in order for one prompt; a batch fans one harness over many prompts",
+            "a chain tries harnesses in order for one prompt, while a batch fans one harness over many prompts; select one harness",
         );
     }
     if args.resume.is_some() {
         return conflict(
             "--resume/--fork",
-            "a resumed session belongs to one specific harness, so it cannot fall through to another (use --session, which binds to the fallback anchor)",
+            "a resumed session belongs to one specific harness, so it cannot fall through to another; select that harness alone, use --session (which binds to the chain's anchor), or pass --run-mode parallel",
         );
     }
     Ok(())

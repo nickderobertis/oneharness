@@ -13,8 +13,8 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::run::{EventSink, Resume, RunControls, RunRequest, SinkStep};
 
-use crate::cli::RunArgs;
-use crate::commands::{indented, or_null, print_report, printable};
+use crate::cli::{Format, RunArgs};
+use crate::commands::{indented, or_null, print_report, printable, resolve_format};
 
 /// Collapse a clap-exclusive `--x` / `--no-x` pair into the single override the
 /// engine takes: `None` when neither was passed (the config layer still
@@ -31,6 +31,20 @@ fn toggle(yes: bool, no: bool) -> Option<bool> {
 }
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
+    // Both stdout contradictions are refused before anything spawns: a run
+    // that ran and then exited 2 over its flags would have billed a turn for
+    // nothing. `--stream` is the one flag `--format` cannot override — its
+    // stdout is the NDJSON protocol from the first event — so a `text` beside
+    // it is the same kind of contradiction `--compact` is, and refused the same
+    // way. A stream selected by config or ONEHARNESS_STREAM is resolved inside
+    // the engine, so that pair is said on stderr once the run reports instead.
+    let format = resolve_format(args.format, args.compact)?;
+    if args.stream && args.format == Some(Format::Text) {
+        return Err(OneharnessError::FormatConflict {
+            flag: "--stream",
+            why: "a streaming run's stdout is its NDJSON event/result protocol (drop --format text, or pass --format json)",
+        });
+    }
     let request = RunRequest::from(args);
     let mut sink = StdoutEvents;
     let outcome = oneharness_core::io::run::run(
@@ -49,13 +63,20 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         },
     )?;
 
-    // A streaming run's stdout is the NDJSON protocol whatever `--format`
-    // says: its consumer has been reading `event` lines all along, and the
-    // terminal `result` line is the envelope that closes them.
+    // A streaming run's stdout is the NDJSON protocol: its consumer has been
+    // reading `event` lines all along, and the terminal `result` line is the
+    // envelope that closes them. An explicit `--format text` was refused above
+    // when `--stream` was a flag; when streaming came from config it is said
+    // here, since the report the caller asked for was never printable.
     if outcome.streamed {
         emit_stream_result(&outcome.report)?;
+        if args.format == Some(Format::Text) {
+            eprintln!(
+                "oneharness: warning: --format text has no effect on a run that streams (`stream` in config or ONEHARNESS_STREAM); stdout is the NDJSON event/result protocol"
+            );
+        }
     } else {
-        print_report(&outcome.report, args.format, args.compact, render_text)?;
+        print_report(&outcome.report, format, args.compact, render_text)?;
     }
     if let Some(summary) = &outcome.failure_summary {
         eprintln!("{summary}");

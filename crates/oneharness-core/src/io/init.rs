@@ -24,11 +24,11 @@ pub fn starter_config() -> &'static str {
 # it sets the default harness/model selection for `oneharness run` in this repo.
 
 # run_mode: how the selected harnesses are run.
-#   \"parallel\" (default) runs them all at once and reports each.
-#   \"fallback\" tries them in priority order and stops at the first that can
-#   actually run, falling through only harnesses that cannot run at all (not
-#   installed, unspawnable, or an auth/quota rejection) — so one committed file
-#   works wherever a given harness happens to be authenticated.
+#   \"fallback\" (default) tries them in priority order and stops at the first
+#   that can actually run, falling through only harnesses that cannot run at all
+#   (not installed, unspawnable, or an auth/quota rejection) — so one committed
+#   file works wherever a given harness happens to be authenticated.
+#   \"parallel\" (opt-in) runs them all at once and reports each.
 run_mode = \"fallback\"
 
 # harnesses: the selection, in priority order (the first is preferred under

@@ -45,11 +45,14 @@ fn run_mode_parser() -> impl TypedValueParser<Value = RunMode> {
         .map(|s| RunMode::parse(&s).expect("clap restricts to valid run-mode tokens"))
 }
 
-/// How a verb whose stdout is a JSON document renders it: `json` (the
-/// programmatic contract, and the default on every verb) or `text`, a
-/// human-readable view of the same data. One type for every verb, so the value
-/// list cannot drift between them; `HistoryWatchFormat` is the deliberate
-/// exception (an unbounded stream, not a document).
+/// How a verb whose report is a JSON document renders it on stdout: `text`, a
+/// human-readable view of the data (the default on every verb, wherever stdout
+/// points — never a TTY heuristic), or `json`, the programmatic contract. One
+/// type for every verb, so the value list cannot drift between them;
+/// `HistoryWatchFormat` is the deliberate exception (an unbounded stream, not a
+/// document). Each verb carries it as `Option<Format>` and resolves it through
+/// `commands::resolve_format`, because the default is not a fixed value:
+/// `--compact` alone selects `json`.
 ///
 /// A printing choice like `--compact`, not a setting: it has no config key, no
 /// `ONEHARNESS_FORMAT` layer, and no field on the engine's request types.
@@ -71,7 +74,7 @@ fn history_watch_format_parser() -> impl TypedValueParser<Value = HistoryWatchFo
 }
 
 /// Parse `--format` into [`Format`], keeping the possible-value list in the
-/// binary (json is the default, applied on each field).
+/// binary (the default is resolved by `commands::resolve_format`, not here).
 fn format_parser() -> impl TypedValueParser<Value = Format> {
     PossibleValuesParser::new(["json", "text"]).map(|s| match s.as_str() {
         "text" => Format::Text,
@@ -79,17 +82,18 @@ fn format_parser() -> impl TypedValueParser<Value = Format> {
     })
 }
 
-const ABOUT: &str =
-    "One CLI across many agentic coding harnesses. Emits JSON for programmatic consumers.";
+const ABOUT: &str = "One CLI across many agentic coding harnesses. Readable by default; \
+--format json (or --compact) for programmatic consumers.";
 
 const LONG_ABOUT: &str = "\
 oneharness drives Claude Code, Codex, OpenCode, Goose, Qwen Code, Crush, Copilot
-CLI, and Cursor through a single non-interactive interface, running them in
-parallel and returning one stable JSON shape.
+CLI, and Cursor through a single non-interactive interface, running them as a
+fallback chain (the first that can run does; --run-mode parallel runs them all
+at once) and returning one stable JSON shape.
 
-Subcommands print JSON to stdout by default (the programmatic contract); pass
---format text for a human-readable view of the same data. Diagnostics go to
-stderr. `run` uses the
+Subcommands print a human-readable text view to stdout by default; pass
+--format json (or --compact, which implies it) for the JSON document that is
+the programmatic contract. Diagnostics go to stderr. `run` uses the
 `default` approval mode (each harness's normal posture, mapped to its cleanest
 non-interactive variant) unless told otherwise — pass --mode
 <read-only|plan|default|edit|auto|bypass> to choose another (or --bypass,
@@ -113,26 +117,27 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Run a prompt across one or more harnesses in parallel; emit a JSON report
-    /// (or a human-readable one with `--format text`).
+    /// Run a prompt across one or more harnesses — a fallback chain by default,
+    /// all at once under --run-mode parallel; print a human-readable report
+    /// (or the JSON one with `--format json` / `--compact`).
     ///
     /// Boxed because `RunArgs` is far larger than the other variants; keeping the
     /// enum small satisfies `clippy::large_enum_variant`.
     Run(Box<RunArgs>),
-    /// List the supported harnesses as JSON (`--format text` for a human view).
+    /// List the supported harnesses (`--format json` for the JSON contract).
     List(ListArgs),
-    /// Probe which harnesses are installed (binary + version) as JSON
-    /// (`--format text` for a human view).
+    /// Probe which harnesses are installed (binary + version); `--format json`
+    /// for the JSON contract.
     Detect(DetectArgs),
-    /// Show the effective layered configuration as JSON (`--format text` for a
-    /// human view): every field's value and which config file (or built-in
+    /// Show the effective layered configuration (`--format json` for the JSON
+    /// contract): every field's value and which config file (or built-in
     /// default) it came from.
     Config(ConfigArgs),
     /// Merge the unified settings (permission rules, hooks, raw settings
     /// tables) into each harness's own project config file, so the policy
     /// also applies when the tools are used directly, without oneharness.
     /// Non-destructive: unrelated keys are preserved, lists are unioned. Reports
-    /// what changed as JSON (`--format text` for a human view).
+    /// what changed (`--format json` for the JSON contract).
     Sync(SyncArgs),
     /// Scaffold a starter `oneharness.toml` (a commented fallback-mode chain) at
     /// PATH (default `oneharness.toml`). Refuses to overwrite an existing file
@@ -160,11 +165,11 @@ pub enum Command {
     /// variables. Usually selected through `run --mock-harness <ID>`.
     MockHarness,
     /// View and manage the standardized run history recorded by `run --history`.
-    /// Every bounded subcommand prints JSON to stdout by default (the
-    /// programmatic contract); pass `--format text` for a human-readable view.
+    /// Every bounded subcommand prints a human-readable view by default; pass
+    /// `--format json` for the programmatic contract.
     History(HistoryArgs),
-    /// Report how much subscription headroom each harness identity has left,
-    /// as JSON (pass `--format text` for a human-readable view).
+    /// Report how much subscription headroom each harness identity has left
+    /// (pass `--format json` for the programmatic contract).
     ///
     /// Every probe is free: no harness takes a model turn, so this is a
     /// pre-flight check you can run before launching long jobs. Each harness
@@ -179,8 +184,8 @@ pub enum Command {
     /// control is a socket rather than a flag: a supervisor watching a long turn
     /// go sideways can redirect it instead of destroying it. Pass `--input` to
     /// say what it should do instead, delivered with the stop as one operation.
-    /// Emits the control response frame as JSON on stdout (`--format text` for a
-    /// human view) and exits 0 when the interrupt was served, 1 when it was
+    /// Prints the control response frame on stdout (`--format json` for the
+    /// JSON frame) and exits 0 when the interrupt was served, 1 when it was
     /// refused (with `reason`: `unsupported`, `not_running`, or
     /// `no_active_turn`).
     Interrupt(InterruptArgs),
@@ -215,12 +220,14 @@ pub struct InterruptArgs {
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -289,12 +296,14 @@ pub struct UsageArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -317,13 +326,13 @@ pub enum HistoryCommand {
     /// emitted first (or only records after --after), then new records as they
     /// are indexed. Output is one tagged JSON envelope per line.
     Watch(HistoryWatchArgs),
-    /// Delete recorded sessions. Reports (as JSON, or `--format text`) what it
+    /// Delete recorded sessions. Reports (`--format json` for the contract) what it
     /// WOULD remove and removes nothing unless --yes is given (so it is safe to
     /// run non-interactively first).
     Clear(HistoryClearArgs),
     /// Rewrite legacy 0.1/0.2/0.3 whole-record stores into the event-sourced
     /// 1.0 line format and rebuild the history index; reports each file rewritten
-    /// as JSON (`--format text` for a human view).
+    /// (`--format json` for the contract).
     Migrate(HistoryMigrateArgs),
 }
 
@@ -342,12 +351,14 @@ pub struct HistoryMigrateArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -421,10 +432,10 @@ pub struct HistoryListArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
@@ -434,7 +445,9 @@ pub struct HistoryListArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -469,10 +482,10 @@ pub struct HistoryShowArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
@@ -482,7 +495,9 @@ pub struct HistoryShowArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -515,12 +530,14 @@ pub struct HistoryClearArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -563,15 +580,15 @@ pub struct RunArgs {
 
     /// Model passed to each harness that supports a model flag. Repeatable: pass
     /// it more than once (or set config `models`) to **fan out over models**. In
-    /// the default `parallel` run mode that runs the harness × model cross-product
-    /// (each selected harness once per model); in `--run-mode fallback` the
-    /// (harness, model) pairs are tried in priority order (harness-major,
-    /// model-minor) and a per-model rejection (unknown model / rate limit) falls
-    /// through to the next model. A CLI value overrides config `model`/`models`.
-    /// More than one model is incompatible with a batch (multi-prompt) run and
-    /// with --resume / --fork / --session; it is incompatible with --stream only
-    /// in `parallel` mode, since under --run-mode fallback the pairs are tried
-    /// one at a time and only the one that runs streams.
+    /// the default `fallback` run mode the (harness, model) pairs are tried in
+    /// priority order (harness-major, model-minor) and a per-model rejection
+    /// (unknown model / rate limit) falls through to the next model; under
+    /// --run-mode parallel that runs the harness × model cross-product (each
+    /// selected harness once per model). A CLI value overrides config
+    /// `model`/`models`. More than one model is incompatible with a batch
+    /// (multi-prompt) run and with --resume / --fork / --session; it is
+    /// incompatible with --stream only in `parallel` mode, since under fallback
+    /// the pairs are tried one at a time and only the one that runs streams.
     #[arg(long)]
     pub model: Vec<String>,
 
@@ -624,10 +641,10 @@ pub struct RunArgs {
     /// oneharness maps <NAME> to the harness's native session id in a small store,
     /// so you thread ONE name across turns instead of extracting and re-passing
     /// the id yourself: the first `--session <name>` run starts fresh and captures
-    /// the id; later runs with the same name resume it. In the default parallel
-    /// run mode it is single-harness; in `--run-mode fallback` it binds to the
-    /// first session-capable harness in the priority chain (the one fallback
-    /// settles on under stable availability). Only for harnesses that expose a
+    /// the id; later runs with the same name resume it. In the default fallback
+    /// run mode it binds to the first session-capable harness in the priority
+    /// chain (the one fallback settles on under stable availability); under
+    /// --run-mode parallel it is single-harness. Only for harnesses that expose a
     /// session id headlessly (see `session_capable` in `oneharness list`); others
     /// are a loud usage error. When no output format is pinned, oneharness selects
     /// that harness's session-id-bearing format automatically; an explicit
@@ -649,8 +666,10 @@ pub struct RunArgs {
     /// in-flight turn without killing this dispatch or losing the session.
     ///
     /// Requires --session (the socket is addressed by that caller-owned name;
-    /// oneharness never infers one) and exactly one harness, which must declare
-    /// a control mechanism (see `control` in `oneharness list`) — an unsupported
+    /// oneharness never infers one) and one live turn: a fallback chain of any
+    /// length (the default mode starts candidates one at a time), or exactly
+    /// one harness under --run-mode parallel. Every candidate must declare a
+    /// control mechanism (see `control` in `oneharness list`) — an unsupported
     /// harness is a loud usage error, never a socket that reports success while
     /// the turn keeps running. The socket lives at
     /// <session-dir>/control/<NAME>.sock, mode 0600, and is removed when the run
@@ -681,9 +700,9 @@ pub struct RunArgs {
     /// then a final result line — instead of one report at the end. Implies
     /// --events' format selection. Lets a consumer short-circuit (close stdin /
     /// signal) the moment it observes a disallowed action. Mutually exclusive with
-    /// --schema and batch prompts, and — in the default `parallel` mode — with a
+    /// --schema and batch prompts, and — under --run-mode parallel — with a
     /// multi-harness selection or a model fan-out (their streams would
-    /// interleave). Under --run-mode fallback a whole candidate chain IS allowed,
+    /// interleave). In the default fallback mode a whole candidate chain IS allowed,
     /// over harnesses and over models alike: candidates run one at a time, only
     /// the one that runs publishes, and the chain selects the same candidate a
     /// buffered run would. Also settable via `stream` in config or
@@ -809,19 +828,21 @@ pub struct RunArgs {
     pub batch_strategy: Option<BatchStrategy>,
 
     /// How the selected harnesses are run (also `run_mode` in config /
-    /// ONEHARNESS_RUN_MODE). `parallel` (the DEFAULT) runs them all at once and
-    /// reports each. `fallback` runs them in **priority order** (the --harness /
-    /// config order, else registry order under --all) and stops at the first that
-    /// actually runs the task, falling through only harnesses that cannot run at
-    /// all — not installed, unspawnable, or rejected before doing any work (auth /
-    /// no-credit quota). A real task failure or a timeout does NOT fall through
-    /// (it would mask a real failure), and neither does a candidate whose result
-    /// shows work done (a tool call, or billed tokens/cost) whatever its terminal
-    /// record says. Incompatible with a batch run and with
-    /// --resume / --fork (each pins one harness's native id); --session and
-    /// --stream are supported. Every listed harness is validated
-    /// up front, so a flag unsupported by ANY candidate is a usage error even if
-    /// that harness is never reached — keeping the command valid for the whole set.
+    /// ONEHARNESS_RUN_MODE). `fallback` (the DEFAULT) runs them in **priority
+    /// order** (the --harness / config order, else registry order under --all)
+    /// and stops at the first that actually runs the task, falling through only
+    /// harnesses that cannot run at all — not installed, unspawnable, or rejected
+    /// before doing any work (auth / no-credit quota). A real task failure or a
+    /// timeout does NOT fall through (it would mask a real failure), and neither
+    /// does a candidate whose result shows work done (a tool call, or billed
+    /// tokens/cost) whatever its terminal record says. Over two or more
+    /// candidates a chain is incompatible with a batch run and with --resume /
+    /// --fork (each pins one harness's native id); a one-candidate chain runs
+    /// them as the single-harness run. --session and --stream are supported.
+    /// Every listed harness is validated up front, so a flag unsupported by ANY
+    /// candidate is a usage error even if that harness is never reached —
+    /// keeping the command valid for the whole set. `parallel` (the opt-in) runs
+    /// them all at once and reports each.
     #[arg(long, value_parser = run_mode_parser(), value_name = "MODE")]
     pub run_mode: Option<RunMode>,
 
@@ -867,14 +888,17 @@ pub struct RunArgs {
     #[arg(long = "history-label", value_name = "KEY=VALUE")]
     pub history_label: Vec<String>,
 
-    /// Output format for the report: `json` (default, the programmatic
-    /// contract) or `text` (a human-readable view of the same report). A
-    /// streaming run (--stream) keeps its NDJSON event/result protocol
-    /// whatever this says.
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format for the report: `text` (the default, a human-readable view
+    /// of the report) or `json` (the programmatic contract; `--compact` alone
+    /// selects it too). A streaming run (--stream) keeps its NDJSON
+    /// event/result protocol whether or not `json` is named; an explicit
+    /// `--format text` beside --stream is a usage error.
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 
@@ -886,12 +910,14 @@ pub struct RunArgs {
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -911,12 +937,14 @@ pub struct ConfigArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -954,12 +982,14 @@ pub struct SyncArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }
@@ -1050,12 +1080,14 @@ pub struct DetectArgs {
     #[arg(long)]
     pub require_available: bool,
 
-    /// Output format: `json` (default, the programmatic contract) or `text`
-    /// (human-readable).
-    #[arg(long, value_parser = format_parser(), default_value = "json")]
-    pub format: Format,
+    /// Output format: `text` (the default, a human-readable view) or `json`
+    /// (the programmatic contract; `--compact` alone selects it too).
+    #[arg(long, value_parser = format_parser())]
+    pub format: Option<Format>,
 
-    /// Emit compact single-line JSON instead of pretty-printed (JSON format only).
+    /// Emit compact single-line JSON instead of pretty-printed. A JSON
+    /// rendering choice: alone it selects `--format json`; beside an explicit
+    /// `--format text` it is a usage error.
     #[arg(long)]
     pub compact: bool,
 }

@@ -10,7 +10,7 @@ use crate::cli::{
     Format, HistoryClearArgs, HistoryCommand, HistoryListArgs, HistoryMigrateArgs, HistoryShowArgs,
     HistoryWatchArgs, HistoryWatchFormat,
 };
-use crate::commands::{print_report, printable};
+use crate::commands::{print_report, printable, resolve_format};
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
@@ -32,13 +32,14 @@ pub fn run(args: &crate::cli::HistoryArgs) -> Result<i32, OneharnessError> {
 }
 
 fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
+    let format = resolve_format(args.format, args.compact)?;
     let dir = resolve_dir(
         args.history_dir.as_deref(),
         args.config.as_deref(),
         args.no_config,
     )?;
     let report = history_io::HistoryMigrateReport::new(history_io::migrate(&dir)?);
-    print_report(&report, args.format, args.compact, render_migrate_text)?;
+    print_report(&report, format, args.compact, render_migrate_text)?;
     Ok(EXIT_OK)
 }
 
@@ -209,6 +210,7 @@ fn project_slug(all_projects: bool, project: Option<&Path>) -> Option<String> {
 }
 
 fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
+    let format = resolve_format(args.format, args.compact)?;
     let dir = resolve_dir(
         args.history_dir.as_deref(),
         args.config.as_deref(),
@@ -225,13 +227,12 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
                 .any(|harness| harness.ends_with(&suffix))
         });
     }
-    print_report(&sessions, args.format, args.compact, |s| {
-        render_list_text(s)
-    })?;
+    print_report(&sessions, format, args.compact, |s| render_list_text(s))?;
     Ok(EXIT_OK)
 }
 
 fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
+    let format = resolve_format(args.format, args.compact)?;
     let dir = resolve_dir(
         args.history_dir.as_deref(),
         args.config.as_deref(),
@@ -245,7 +246,7 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
         if let Ok(id) = needle.parse::<HistoryId>() {
             match history_io::find_record_by_id(&dir, id) {
                 Ok(record) => {
-                    return render_records(args.format, args.compact, &[record]);
+                    return render_records(format, args.compact, &[record]);
                 }
                 Err(OneharnessError::HistoryNotFound { .. }) => {
                     eprintln!("oneharness: history record `{id}` was not found");
@@ -278,7 +279,7 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
         let needle = args.session.as_deref().unwrap_or_default();
         if let Some(path) = history_io::find_session_path(&dir, slug.as_deref(), needle)? {
             return render_record_values(
-                args.format,
+                format,
                 args.compact,
                 &history_io::read_session_display(&path)?,
             );
@@ -298,7 +299,7 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     for s in &chosen {
         records.extend(history_io::read_session_display(Path::new(&s.path))?);
     }
-    render_record_values(args.format, args.compact, &records)
+    render_record_values(format, args.compact, &records)
 }
 
 fn render_records(
@@ -326,6 +327,9 @@ fn render_record_values(
 }
 
 fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
+    // Settled before anything is removed: a contradictory flag pair must not
+    // cost a `--yes` its sessions.
+    let format = resolve_format(args.format, args.compact)?;
     let dir = resolve_dir(
         args.history_dir.as_deref(),
         args.config.as_deref(),
@@ -340,7 +344,7 @@ fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
         let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
         history_io::HistoryClearReport::dry_run(sessions.iter().map(|s| s.path.clone()).collect())
     };
-    print_report(&report, args.format, args.compact, render_clear_text)?;
+    print_report(&report, format, args.compact, render_clear_text)?;
     Ok(EXIT_OK)
 }
 

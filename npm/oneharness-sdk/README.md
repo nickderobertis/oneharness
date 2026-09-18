@@ -29,6 +29,8 @@ for await (const envelope of oneharness.historyWatch({
 }
 ```
 
+Every JSON-returning method passes `--format json --compact` itself, so the CLI's own default (a human-readable text view) never reaches the SDK. A `run` over several harnesses is a **fallback chain** by default — the first candidate that can run does, and the report's `fallback` block says which; pass `runMode: "parallel"` to run them all at once.
+
 Breaking or returning from either iterator terminates its oneharness subprocess. Every line is validated before it is yielded; malformed or unknown envelope variants fail the iterator. Additive fields within known output envelopes are accepted and preserved.
 
 `null` usage fields mean the harness did not report the value; zero remains a real measured zero. String-valued harness/model/event identifiers should be treated as open sets for forward compatibility. `history` and `historyWatch` raise the exported `HistoryNotFoundError` when a session, record, or watch cursor cannot be resolved.

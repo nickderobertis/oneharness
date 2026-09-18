@@ -27,7 +27,7 @@
 use std::time::Duration;
 
 use crate::cli::UsageArgs;
-use crate::commands::print_report;
+use crate::commands::{print_report, resolve_format};
 use oneharness_core::domain::usage::{
     AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
     UsageReport, UsageWindow, WindowUsage,
@@ -36,6 +36,7 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::usage::{self as usage_io, UsageRequest};
 
 pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
+    let format = resolve_format(args.format, args.compact)?;
     let report = usage_io::report(&UsageRequest {
         all: args.all,
         harness: args.harness.clone(),
@@ -47,7 +48,7 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
         no_config: args.no_config,
     })?;
 
-    print_report(&report, args.format, args.compact, render_text)?;
+    print_report(&report, format, args.compact, render_text)?;
     Ok(0)
 }
 

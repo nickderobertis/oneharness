@@ -46,7 +46,19 @@ fn mock_bin() -> PathBuf {
     path
 }
 
+/// Drive the binary as this suite's JSON consumer does: `args` verbatim, plus
+/// `--format json` on every verb whose stdout is a JSON document (see
+/// [`with_format_json`]). The suite reads stdout as JSON in hundreds of places,
+/// and the CLI's default is the text view, so the opt-in is made here, once —
+/// an invocation that wants the bare default goes through [`run_as_typed`].
 fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    let json_args = with_format_json(args);
+    run_as_typed(&json_args, envs)
+}
+
+/// Drive the binary with `args` exactly as a user typed them — no `--format`
+/// added — for the tests that pin what stdout looks like by default.
+fn run_as_typed(args: &[&str], envs: &[(&str, &str)]) -> Output {
     let mut cmd = Command::new(oneharness_bin());
     // Hermetic by default: the developer's real user/project config files must
     // never shape these assertions. Config behavior itself is tested through
@@ -58,6 +70,31 @@ fn run(args: &[&str], envs: &[(&str, &str)]) -> Output {
         cmd.env(key, value);
     }
     cmd.output().expect("failed to run oneharness")
+}
+
+/// `args` with `--format json` inserted after the verb (after the subcommand
+/// for `history`) when the verb prints a JSON document and the caller has not
+/// already chosen a rendering (`--format` or `--compact`). Verbs with no
+/// `--format` — `init`, `gate`, `mock`, `mock-harness`, and `history watch`,
+/// whose only format is `jsonl` — are left alone, as is a `--help`, which clap
+/// answers before it reads any other flag.
+fn with_format_json<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    let chosen = args
+        .iter()
+        .any(|a| *a == "--format" || *a == "--compact" || a.starts_with("--format="));
+    let after = match args {
+        ["run" | "list" | "detect" | "config" | "sync" | "usage" | "interrupt", ..] => 1,
+        ["history", "list" | "show" | "clear" | "migrate", ..] => 2,
+        _ => return args.to_vec(),
+    };
+    if chosen {
+        return args.to_vec();
+    }
+    let mut out = args[..after].to_vec();
+    out.push("--format");
+    out.push("json");
+    out.extend_from_slice(&args[after..]);
+    out
 }
 
 /// `--env` for a mock-harness child this test is going to have killed.
@@ -137,7 +174,8 @@ fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path
         cmd.env_remove(var);
     }
     let redirect = mock_profile_redirect();
-    cmd.args(with_mock_profile_redirect(args, &redirect));
+    let args = with_format_json(args);
+    cmd.args(with_mock_profile_redirect(&args, &redirect));
     for (key, value) in envs {
         cmd.env(key, value);
     }
@@ -849,6 +887,8 @@ fn omitted_timeout_safety_is_scoped_to_the_prompt_capable_parallel_job() {
     let output = run_with_config(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--prompt",
             "hi",
             "--mode",
@@ -1578,6 +1618,8 @@ fn session_needs_exactly_one_harness() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "claude-code,codex",
             "--session",
@@ -4366,20 +4408,44 @@ fn fork_maps_to_native_flag_and_is_echoed() {
 
 #[test]
 fn resume_with_multiple_harnesses_is_a_usage_error() {
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "claude-code,codex",
-            "--prompt",
-            "hi",
-            "--resume",
-            "sess-abc",
-        ],
-        &[],
-    );
+    // Under the default mode two harnesses are a chain, and a continuation
+    // pins one of them: the refusal names the mode as the caller met it — the
+    // default they never chose, or the flag they passed — and every way out.
+    // Under `--run-mode parallel` `--resume`'s own single-harness rule refuses.
+    let args = [
+        "run",
+        "--harness",
+        "claude-code,codex",
+        "--prompt",
+        "hi",
+        "--resume",
+        "sess-abc",
+    ];
+    let output = run(&args, &[]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the default run mode `fallback` is incompatible with --resume/--fork")
+            && stderr.contains("--run-mode parallel"),
+        "{stderr}"
+    );
+    let explicit = run(
+        &[&["run", "--run-mode", "fallback"][..], &args[1..]].concat(),
+        &[],
+    );
+    assert_eq!(explicit.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&explicit.stderr);
+    assert!(
+        stderr.contains("`--run-mode fallback` is incompatible with --resume/--fork")
+            && !stderr.contains("the default run mode"),
+        "{stderr}"
+    );
+    let parallel = run(
+        &[&["run", "--run-mode", "parallel"][..], &args[1..]].concat(),
+        &[],
+    );
+    assert_eq!(parallel.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&parallel.stderr);
     assert!(stderr.contains("exactly one harness"), "{stderr}");
 }
 
@@ -5201,7 +5267,15 @@ bin = "{bin}"
         "",
     );
     let output = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd()],
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+        ],
         &[],
         &fx.user_config(),
     );
@@ -5213,7 +5287,16 @@ bin = "{bin}"
     );
     // ...and `--no-stream` is how one call opts out of the inherited config.
     let allowed = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--no-stream"],
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--no-stream",
+        ],
         &[("MOCK_STDOUT", "hello")],
         &fx.user_config(),
     );
@@ -5232,7 +5315,14 @@ bin = "{bin}"
     // and a parallel model fan-out.
     let schema = std::path::Path::new(&fx.cwd()).join("schema.json");
     std::fs::write(&schema, r#"{"type":"object"}"#).unwrap();
-    let single = ["run", "--harness", "opencode", "--cwd"];
+    let single = [
+        "run",
+        "--run-mode",
+        "parallel",
+        "--harness",
+        "opencode",
+        "--cwd",
+    ];
     for (args, needle) in [
         (
             vec![
@@ -5382,6 +5472,8 @@ fn stream_with_multiple_harnesses_is_a_usage_error() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "opencode",
             "--harness",
@@ -6980,8 +7072,13 @@ fn windows_streaming_stop_terminates_native_descendant() {
 
 #[test]
 fn missing_binary_is_skipped_not_failed() {
+    // In `parallel` mode a not-installed harness is `skipped` data and the
+    // process still exits 0 (unless --require-available). Under the default
+    // mode the same selection is a one-candidate chain, which is the next test.
     let args = [
         "run",
+        "--run-mode",
+        "parallel",
         "--harness",
         "codex",
         "--prompt",
@@ -7005,6 +7102,43 @@ fn missing_binary_is_skipped_not_failed() {
 }
 
 #[test]
+fn a_missing_only_candidate_stops_the_default_chain_and_exits_1() {
+    // The default mode is a chain, and a chain whose every candidate cannot
+    // run has run nothing: the harness is still `skipped` data (never a crash),
+    // the `fallback` block says who was routed around and why, and the exit
+    // code says the task was not done — fallback's documented outcome, now met
+    // by a bare single-harness run.
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            "codex=/no/such/oneharness-binary-xyz",
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "skipped");
+    assert_eq!(value["results"][0]["available"], false);
+    assert!(value["fallback"]["ran"].is_null(), "{value}");
+    assert_eq!(value["fallback"]["fell_through"][0]["harness"], "codex");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["reason"],
+        "not-installed"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn runs_all_harnesses_in_parallel_via_env_overrides() {
     let mock = mock_bin();
     let mock = mock.display().to_string();
@@ -7018,7 +7152,18 @@ fn runs_all_harnesses_in_parallel_via_env_overrides() {
         ("ONEHARNESS_BIN_COPILOT", mock.as_str()),
         ("ONEHARNESS_BIN_CURSOR", mock.as_str()),
     ];
-    let output = run(&["run", "--all", "--prompt", "hi", "--compact"], &envs);
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--all",
+            "--prompt",
+            "hi",
+            "--compact",
+        ],
+        &envs,
+    );
     assert!(
         output.status.success(),
         "stderr: {}",
@@ -7481,6 +7626,8 @@ env_file = "variant.env"
     let output = run_with_config(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--prompt",
             "hi",
             "--history",
@@ -9169,6 +9316,8 @@ fn config_max_parallel_is_accepted_and_runs_succeed() {
     let output = run_with_config(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "claude-code,codex",
             "--prompt",
@@ -10777,6 +10926,8 @@ fn run_mock_rules_multi_harness_restores_each_config_independently() {
     let out = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "crush,codex",
             "--prompt",
@@ -12004,20 +12155,33 @@ fn batch_combines_prompt_and_prompt_file_in_order() {
 
 #[test]
 fn batch_with_multiple_harnesses_is_a_usage_error() {
-    let output = run(
-        &[
-            "run",
-            "--harness",
-            "claude-code,codex",
-            "--prompt",
-            "one",
-            "--prompt",
-            "two",
-        ],
-        &[],
-    );
+    // Under the default mode the selection is a chain of two, which cannot
+    // carry a batch: the refusal says the mode was never chosen and names the
+    // way out. Under `--run-mode parallel` the batch's own single-harness rule
+    // refuses it.
+    let args = [
+        "run",
+        "--harness",
+        "claude-code,codex",
+        "--prompt",
+        "one",
+        "--prompt",
+        "two",
+    ];
+    let output = run(&args, &[]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the default run mode `fallback` is incompatible with a batch run")
+            && stderr.contains("select one harness"),
+        "{stderr}"
+    );
+    let parallel = run(
+        &[&["run", "--run-mode", "parallel"][..], &args[1..]].concat(),
+        &[],
+    );
+    assert_eq!(parallel.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&parallel.stderr);
     assert!(stderr.contains("exactly one harness"), "{stderr}");
 }
 
@@ -12026,6 +12190,25 @@ fn batch_with_all_is_a_usage_error() {
     let output = run(&["run", "--all", "--prompt", "one", "--prompt", "two"], &[]);
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the default run mode `fallback` is incompatible with a batch run"),
+        "{stderr}"
+    );
+    let parallel = run(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--all",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+        ],
+        &[],
+    );
+    assert_eq!(parallel.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&parallel.stderr);
     assert!(stderr.contains("exactly one harness"), "{stderr}");
 }
 
@@ -13127,6 +13310,8 @@ fn history_records_every_shape_of_run_that_never_produced_output() {
         let ds = dir.display().to_string();
         let mut args = vec![
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "codex",
             "--prompt",
@@ -14261,6 +14446,8 @@ fn history_records_every_harness_in_one_session() {
     let out = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "codex,opencode",
             "--bin",
@@ -16129,6 +16316,8 @@ fn multiple_models_execute_each_pair_in_parallel() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "claude-code",
             "--prompt",
@@ -16593,6 +16782,8 @@ fn multiple_models_apply_the_schema_to_every_pair() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "crush",
             "--prompt",
@@ -16629,6 +16820,8 @@ fn multiple_models_history_records_each_pair_model() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "codex",
             "--prompt",
@@ -16678,6 +16871,8 @@ fn multiple_models_output_dir_disambiguates_the_same_harness() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "claude-code",
             "--prompt",
@@ -16703,11 +16898,14 @@ fn multiple_models_output_dir_disambiguates_the_same_harness() {
 fn a_multi_model_run_refuses_single_unit_shapes() {
     // A model fan-out multiplies the run into several units, so every single-unit
     // shape is a loud usage error before anything spawns. `--stream` is refused
-    // for the concurrency, not the count, so it is refused only in this default
-    // `parallel` mode — under fallback the pairs are a priority chain that
-    // streams (`stream_under_fallback_publishes_only_the_model_that_runs`).
+    // for the concurrency, not the count, so it is refused only in `parallel`
+    // mode (named here: the default is fallback) — under fallback the pairs are
+    // a priority chain that streams
+    // (`stream_under_fallback_publishes_only_the_model_that_runs`).
     let base = [
         "run",
+        "--run-mode",
+        "parallel",
         "--harness",
         "claude-code",
         "--model",
@@ -16978,6 +17176,238 @@ fn fallback_via_env_override_and_cli_beats_config() {
         "CLI parallel must beat config fallback"
     );
     assert_eq!(v["results"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn an_unset_run_mode_is_a_fallback_chain_and_parallel_is_the_opt_in() {
+    // The default, met through the CLI with nothing setting the mode: no flag,
+    // an empty config in both layers, no ONEHARNESS_RUN_MODE (stripped by
+    // `run_with_config`). Two harnesses run as a chain — the head alone when it
+    // can run, the next when it cannot — and each of the three opt-in
+    // spellings of `parallel` runs the cross-product instead.
+    let fx = ConfigFixture::new("default-fallback", "", "");
+    let both_installed = [
+        "run",
+        "--harness",
+        "claude-code,codex",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--bin",
+        &bin_override("claude-code"),
+        "--bin",
+        &bin_override("codex"),
+        "--compact",
+    ];
+    let output = run_with_config(&both_installed, &[], &fx.user_config());
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "claude-code", "{v}");
+    assert_eq!(v["fallback"]["fell_through"], serde_json::json!([]));
+    assert_eq!(
+        v["results"].as_array().unwrap().len(),
+        1,
+        "the head ran alone"
+    );
+
+    let head_missing = [
+        "run",
+        "--harness",
+        "claude-code,codex",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--bin",
+        &missing_bin("claude-code"),
+        "--bin",
+        &bin_override("codex"),
+        "--compact",
+    ];
+    let output = run_with_config(&head_missing, &[], &fx.user_config());
+    assert!(output.status.success(), "{output:?}");
+    let v = json_stdout(&output);
+    assert_eq!(v["fallback"]["ran"], "codex", "{v}");
+    assert_eq!(v["fallback"]["fell_through"][0]["harness"], "claude-code");
+    assert_eq!(v["fallback"]["fell_through"][0]["reason"], "not-installed");
+    assert_eq!(v["results"][0]["status"], "skipped");
+    assert_eq!(v["results"][1]["status"], "ok");
+
+    // `parallel` is the opt-in, on each of its three surfaces.
+    let flag = [&["run", "--run-mode", "parallel"][..], &both_installed[1..]].concat();
+    let config_fx = ConfigFixture::new("default-fallback-config", "run_mode = \"parallel\"\n", "");
+    let via_config: Vec<&str> = both_installed
+        .iter()
+        .map(|arg| if *arg == fx.cwd() { "" } else { arg })
+        .collect();
+    let config_cwd = config_fx.cwd();
+    let via_config: Vec<&str> = via_config
+        .into_iter()
+        .map(|arg| {
+            if arg.is_empty() {
+                config_cwd.as_str()
+            } else {
+                arg
+            }
+        })
+        .collect();
+    for (label, args, envs, user_config) in [
+        (
+            "--run-mode parallel",
+            flag.clone(),
+            vec![],
+            fx.user_config(),
+        ),
+        (
+            "run_mode = \"parallel\"",
+            via_config,
+            vec![],
+            config_fx.user_config(),
+        ),
+        (
+            "ONEHARNESS_RUN_MODE=parallel",
+            both_installed.to_vec(),
+            vec![("ONEHARNESS_RUN_MODE", "parallel")],
+            fx.user_config(),
+        ),
+    ] {
+        let output = run_with_config(&args, &envs, &user_config);
+        assert!(output.status.success(), "{label}: {output:?}");
+        let v = json_stdout(&output);
+        assert!(v["fallback"].is_null(), "{label}: a chain ran: {v}");
+        assert_eq!(
+            v["results"].as_array().unwrap().len(),
+            2,
+            "{label}: both harnesses run in parallel"
+        );
+    }
+}
+
+#[test]
+fn config_explains_an_unset_run_mode_as_the_fallback_default() {
+    // `oneharness config` says what a run would do: an unset mode reads as the
+    // built-in default, attributed to `default`, in both renderings — and a set
+    // one is attributed to its file.
+    let fx = ConfigFixture::new("config-run-mode-default", "", "");
+    let json = json_stdout(&run_with_config(
+        &["config", "--cwd", &fx.cwd()],
+        &[],
+        &fx.user_config(),
+    ));
+    assert_eq!(json["run_mode"]["value"], "fallback", "{json}");
+    assert_eq!(json["run_mode"]["source"], "default", "{json}");
+    let text = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--format", "text"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        String::from_utf8_lossy(&text.stdout).contains("run_mode: fallback (default)\n"),
+        "{text:?}"
+    );
+
+    let set = ConfigFixture::new("config-run-mode-set", "run_mode = \"parallel\"\n", "");
+    let json = json_stdout(&run_with_config(
+        &["config", "--cwd", &set.cwd()],
+        &[],
+        &set.user_config(),
+    ));
+    assert_eq!(json["run_mode"]["value"], "parallel", "{json}");
+    assert!(
+        json["run_mode"]["source"]
+            .as_str()
+            .is_some_and(|source| source.ends_with("oneharness.toml")),
+        "{json}"
+    );
+}
+
+#[test]
+fn a_one_candidate_chain_carries_a_continuation_and_a_batch_under_the_default_mode() {
+    // A chain of one has nothing to fall through to, so the two shapes a chain
+    // cannot carry — a `--resume`/`--fork` continuation and a batch — run on it
+    // as the single-harness run they are: a bare invocation keeps working
+    // under the default mode, and `fallback` is `null` because no chain ran.
+    // (`resume_with_multiple_harnesses_is_a_usage_error` and
+    // `batch_with_multiple_harnesses_is_a_usage_error` are the two-candidate
+    // refusals.)
+    let stdout =
+        r#"{"type":"result","subtype":"success","result":"continued","session_id":"sid-1"}"#;
+    let continued = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "next turn",
+            "--resume",
+            "sid-1",
+            "--fork",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(continued.status.success(), "{continued:?}");
+    let v = json_stdout(&continued);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["resume"], "sid-1");
+    assert_eq!(v["fork"], true);
+    assert_eq!(v["results"][0]["status"], "ok");
+    let argv = command_of(&v, 0);
+    assert!(
+        argv.windows(2).any(|w| w == ["--resume", "sid-1"]),
+        "{argv:?}"
+    );
+    assert!(argv.contains(&"--fork-session".to_string()), "{argv:?}");
+
+    let batch = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(batch.status.success(), "{batch:?}");
+    let v = json_stdout(&batch);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["batch"]["prompt_count"], 2);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["prompt"], "one");
+    assert_eq!(results[1]["prompt"], "two");
+    assert!(results.iter().all(|r| r["status"] == "ok"), "{v}");
+
+    // The same continuation under an explicit `--run-mode fallback` is the
+    // same one-candidate chain: accepted, whatever selected the mode.
+    let explicit = run(
+        &[
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "next turn",
+            "--resume",
+            "sid-1",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", stdout)],
+    );
+    assert!(explicit.status.success(), "{explicit:?}");
+    assert!(json_stdout(&explicit)["fallback"].is_null());
 }
 
 #[test]
@@ -18332,7 +18762,16 @@ fn codex_nonzero_server_overloaded_recovers_in_parallel_mode() {
     );
     let fx = ConfigFixture::new("server-overloaded-parallel", &project, "");
     let output = run_with_config(
-        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--prompt",
+            "hi",
+            "--cwd",
+            &fx.cwd(),
+            "--compact",
+        ],
         &[],
         &fx.user_config(),
     );
@@ -19776,10 +20215,12 @@ fn stream_under_fallback_publishes_nothing_when_no_candidate_can_run() {
 
 #[test]
 fn fallback_refuses_incompatible_run_shapes() {
-    // Fallback is single-outcome, so a batch and the low-level `--resume`
-    // continuation are loud usage errors (exit 2), each naming why. (The
-    // higher-level `--session` handle is instead *allowed* — it binds to the
-    // anchor; see `session_in_fallback_mode_anchors_to_the_first_session_capable_harness`
+    // A chain is single-outcome, so over two or more candidates a batch and the
+    // low-level `--resume` continuation are loud usage errors (exit 2), each
+    // naming why. A one-candidate chain carries both — see
+    // `a_one_candidate_chain_carries_a_continuation_and_a_batch_under_the_default_mode`.
+    // (The higher-level `--session` handle is instead *allowed* — it binds to
+    // the anchor; see `session_in_fallback_mode_anchors_to_the_first_session_capable_harness`
     // — and so is `--stream`, which publishes only the candidate that runs; see
     // `stream_under_fallback_publishes_only_the_candidate_that_runs`.)
     let cases: &[(&[&str], &str)] = &[
@@ -19787,10 +20228,17 @@ fn fallback_refuses_incompatible_run_shapes() {
         (&["--prompt", "a", "--resume", "sid"], "--resume"),
     ];
     for (extra, needle) in cases {
-        let mut args = vec!["run", "--run-mode", "fallback", "--harness", "claude-code"];
+        let mut args = vec![
+            "run",
+            "--run-mode",
+            "fallback",
+            "--harness",
+            "claude-code,codex",
+        ];
         args.extend_from_slice(extra);
-        let bin = bin_override("claude-code");
-        args.extend_from_slice(&["--bin", &bin, "--compact"]);
+        let claude = bin_override("claude-code");
+        let codex = bin_override("codex");
+        args.extend_from_slice(&["--bin", &claude, "--bin", &codex, "--compact"]);
         let output = run(&args, &[]);
         assert_eq!(
             output.status.code(),
@@ -22689,14 +23137,7 @@ fn usage_refuses_a_copilot_token_carrying_config_syntax_without_leaking_it() {
 
     for format in ["json", "text"] {
         let output = run_copilot_usage(
-            &[
-                "usage",
-                "--harness",
-                "copilot",
-                "--format",
-                format,
-                "--compact",
-            ],
+            &["usage", "--harness", "copilot", "--format", format],
             &[("GH_TOKEN", &injectable)],
         );
 
@@ -24023,8 +24464,13 @@ fn control_still_accepts_edit_mode_where_the_argv_carries_it() {
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn control_needs_exactly_one_harness() {
+fn control_over_several_harnesses_with_no_run_mode_is_a_fallback_chain() {
+    // The single-harness rule belongs to `parallel`, where every candidate
+    // starts at once. An unset mode is a chain, which starts candidates one at
+    // a time and is therefore one live turn: accepted, the channel bound to
+    // the candidate that serves.
     let store = control_store_dir("multi");
     let store_arg = store.display().to_string();
     let output = run(
@@ -24041,15 +24487,28 @@ fn control_needs_exactly_one_harness() {
             &store_arg,
             "--prompt",
             "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
         ],
-        &[],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"type":"result","subtype":"success","result":"served","session_id":"many-sid"}"#,
+        )],
     );
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("needs exactly one harness"),
-        "stderr:\n{stderr}"
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "claude-code", "{report}");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1);
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["control"]["mechanism"], "claude-control-request");
+    assert!(report["control"]["socket"].is_string());
 }
 
 #[test]
@@ -27618,6 +28077,8 @@ fn a_server_submitted_controlled_run_skips_a_harness_whose_binary_is_missing() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--harness",
             "crush",
             "--control",
@@ -28040,6 +28501,8 @@ fn control_still_refuses_multiple_harnesses_in_parallel_mode() {
     let output = run(
         &[
             "run",
+            "--run-mode",
+            "parallel",
             "--control",
             "--session",
             "parallel",
@@ -29817,61 +30280,79 @@ fn control_accepts_a_server_backed_chain_of_more_than_one_candidate() {
 // ---------------------------------------------------------------------------
 // `--format <text|json>`: one flag on every verb whose stdout is a JSON document.
 //
-// `json` is the default everywhere (the programmatic contract, unchanged), so
-// the property each journey below holds is: `--format text` is a readable view
-// of the same report — carrying what the JSON carries, never a JSON document
-// itself — produced with the same exit code and stderr as the JSON rendering,
-// while an invocation that says nothing (or says `json`) is byte-identical to
-// what it was before the flag existed.
+// `text` is the default everywhere — wherever stdout points, never a TTY
+// heuristic — and `json` (the programmatic contract) is the opt-in, which
+// `--compact` alone also selects. So the property each journey below holds
+// is: an invocation that says nothing prints the text view, byte for byte what
+// `--format text` prints; `--format json` prints the JSON document the verb
+// printed by default before the flip; the text view is a readable view of the
+// same report — carrying what the JSON carries, never a JSON document itself —
+// produced with the same exit code and stderr as the JSON rendering.
 // ---------------------------------------------------------------------------
 
-/// The stdout of `args` under two spellings that must agree: no `--format`,
-/// and `--format json`. Byte for byte where the report is deterministic; where
-/// it carries its own clock (a run's timings, a probe's `observed_at`) those
-/// fields are the only difference allowed, and the rendering (pretty, so the
-/// same line count) must still match.
-fn assert_json_default_is_unchanged_by_the_flag(args: &[&str], envs: &[(&str, &str)]) {
-    let implicit = run(args, envs);
-    let explicit = run(&[args, &["--format", "json"]].concat(), envs);
-    assert_eq!(
-        implicit.status.code(),
-        explicit.status.code(),
-        "`{}`: exit codes differ with an explicit `--format json`",
+/// The stdout of `args` under three spellings: none, `--format text`, and
+/// `--format json`. The first two must agree byte for byte where the report is
+/// deterministic; where it carries its own clock (a run's timings, a probe's
+/// `observed_at`) the digits are the only difference allowed, and the line
+/// count must still match. The third must be a JSON document, with the same
+/// exit code and stderr as the other two.
+fn assert_default_is_the_text_view(args: &[&str], envs: &[(&str, &str)]) {
+    let implicit = run_as_typed(args, envs);
+    let text = run_as_typed(&[args, &["--format", "text"]].concat(), envs);
+    let json = run_as_typed(&[args, &["--format", "json"]].concat(), envs);
+    for (spelling, output) in [("--format text", &text), ("--format json", &json)] {
+        assert_eq!(
+            implicit.status.code(),
+            output.status.code(),
+            "`{}`: exit codes differ with an explicit `{spelling}`",
+            args.join(" ")
+        );
+        assert_eq!(
+            implicit.stderr,
+            output.stderr,
+            "`{}`: stderr differs with an explicit `{spelling}`",
+            args.join(" ")
+        );
+    }
+    json_stdout(&json);
+    let implicit_stdout = String::from_utf8_lossy(&implicit.stdout).into_owned();
+    assert!(
+        serde_json::from_str::<Value>(&implicit_stdout).is_err(),
+        "`{}` printed a JSON document by default:\n{implicit_stdout}",
         args.join(" ")
     );
-    assert_eq!(implicit.stderr, explicit.stderr);
-    if implicit.stdout == explicit.stdout {
-        json_stdout(&implicit);
+    if implicit.stdout == text.stdout {
         return;
     }
+    let mask_digits = |bytes: &[u8]| -> String {
+        String::from_utf8_lossy(bytes)
+            .chars()
+            .map(|c| if c.is_ascii_digit() { '#' } else { c })
+            .collect()
+    };
     assert_eq!(
-        implicit.stdout.iter().filter(|b| **b == b'\n').count(),
-        explicit.stdout.iter().filter(|b| **b == b'\n').count(),
-        "`{}`: `--format json` must render exactly as the default does",
-        args.join(" ")
-    );
-    let mut theirs = json_stdout(&implicit);
-    let mut ours = json_stdout(&explicit);
-    for value in [&mut theirs, &mut ours] {
-        null_clock_fields(value);
-    }
-    assert_eq!(
-        ours,
-        theirs,
-        "`{}`: `--format json` must be the default's own report",
+        mask_digits(&implicit.stdout),
+        mask_digits(&text.stdout),
+        "`{}`: the default must be the text view (differences beyond the clock)",
         args.join(" ")
     );
 }
 
-/// Null every field that reads a clock, so two invocations of one report can
-/// be compared for everything else.
+/// Null every field that reads a clock (the history file is named by one, plus
+/// the pid), so two invocations of one report can be compared for everything
+/// else.
 fn null_clock_fields(value: &mut Value) {
     match value {
         Value::Object(map) => {
             for (key, child) in map.iter_mut() {
                 if matches!(
                     key.as_str(),
-                    "duration_ms" | "telemetry" | "observed_at" | "started_at" | "finished_at"
+                    "duration_ms"
+                        | "telemetry"
+                        | "observed_at"
+                        | "started_at"
+                        | "finished_at"
+                        | "history_file"
                 ) {
                     *child = Value::Null;
                 } else {
@@ -29958,8 +30439,52 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
     );
 }
 
+/// Every verb whose stdout is a JSON document, each spelled so that it
+/// completes and prints its report hermetically: the run and the probe against
+/// the mock, the history verbs over a store the run itself records into (so
+/// `show --last` has a session to print), the interrupt refused (exit 1, still
+/// a printed frame).
+fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
+    let claude = bin_override("claude-code");
+    let cursor = bin_override("cursor");
+    let verbs: Vec<Vec<&str>> = vec![
+        vec![
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &claude,
+            "--history",
+            "--history-dir",
+            history_dir,
+        ],
+        vec!["list"],
+        vec!["detect", "--harness", "claude-code", "--bin", &claude],
+        vec!["config"],
+        vec!["sync", "--check"],
+        vec!["usage", "--harness", "cursor", "--bin", &cursor],
+        vec![
+            "interrupt",
+            "--session",
+            "ghost",
+            "--session-dir",
+            history_dir,
+        ],
+        vec!["history", "list", "--history-dir", history_dir],
+        vec!["history", "show", "--last", "--history-dir", history_dir],
+        vec!["history", "clear", "--history-dir", history_dir],
+        vec!["history", "migrate", "--history-dir", history_dir],
+    ];
+    verbs
+        .into_iter()
+        .map(|verb| verb.into_iter().map(str::to_string).collect())
+        .collect()
+}
+
 #[test]
-fn every_json_verb_documents_the_format_flag_with_json_as_its_default() {
+fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
     let verbs: [&[&str]; 11] = [
         &["run"],
         &["list"],
@@ -29977,8 +30502,13 @@ fn every_json_verb_documents_the_format_flag_with_json_as_its_default() {
         let output = run(&[verb, &["--help"]].concat(), &[]);
         let help = String::from_utf8_lossy(&output.stdout);
         assert!(
-            help.contains("--format <FORMAT>") && help.contains("[default: json]"),
-            "`{} --help` must document --format with json as the default:\n{help}",
+            help.contains("--format <FORMAT>") && help.contains("`text` (the default"),
+            "`{} --help` must document --format with text as the default:\n{help}",
+            verb.join(" ")
+        );
+        assert!(
+            !help.contains("[default: json]"),
+            "`{} --help` still claims json is the default:\n{help}",
             verb.join(" ")
         );
         assert!(
@@ -29987,6 +30517,138 @@ fn every_json_verb_documents_the_format_flag_with_json_as_its_default() {
             verb.join(" ")
         );
     }
+}
+
+#[test]
+fn every_json_verb_prints_its_text_view_by_default_and_json_on_request() {
+    // The flip itself, verb by verb: a bare invocation prints the text view
+    // (what `--format text` prints), and `--format json` prints the document —
+    // pinned across every C1 verb in one place, beside each verb's own
+    // text-view journey.
+    let store = ScratchDir::new("format-default-verbs").unwrap();
+    let history_dir = store.display().to_string();
+    let envs = [("MOCK_STDOUT", r#"{"result":"pong"}"#)];
+    for verb in json_document_verbs(&history_dir) {
+        let args: Vec<&str> = verb.iter().map(String::as_str).collect();
+        assert_default_is_the_text_view(&args, &envs);
+    }
+}
+
+#[test]
+fn compact_alone_selects_one_line_json_on_every_verb() {
+    // `--compact` is a JSON rendering choice, so asking for it is asking for
+    // JSON: alone it prints the same document `--format json --compact` does —
+    // one line — which is what keeps every consumer already passing it on the
+    // contract.
+    let store = ScratchDir::new("format-compact-verbs").unwrap();
+    let history_dir = store.display().to_string();
+    let envs = [("MOCK_STDOUT", r#"{"result":"pong"}"#)];
+    for verb in json_document_verbs(&history_dir) {
+        let args: Vec<&str> = verb.iter().map(String::as_str).collect();
+        let compact = run_as_typed(&[&args[..], &["--compact"]].concat(), &envs);
+        let explicit = run_as_typed(
+            &[&args[..], &["--format", "json", "--compact"]].concat(),
+            &envs,
+        );
+        assert_eq!(
+            compact.status.code(),
+            explicit.status.code(),
+            "`{}`: exit codes differ",
+            args.join(" ")
+        );
+        assert_eq!(compact.stderr, explicit.stderr, "`{}`", args.join(" "));
+        assert_eq!(
+            String::from_utf8_lossy(&compact.stdout).lines().count(),
+            1,
+            "`{} --compact` is one line of JSON:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&compact.stdout)
+        );
+        let mut theirs = json_stdout(&compact);
+        let mut ours = json_stdout(&explicit);
+        for value in [&mut theirs, &mut ours] {
+            null_clock_fields(value);
+        }
+        assert_eq!(
+            theirs,
+            ours,
+            "`{}`: `--compact` alone must print the JSON document",
+            args.join(" ")
+        );
+    }
+}
+
+#[test]
+fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
+    // Two things one stdout cannot be. Refused before the verb does anything:
+    // `history clear --yes` must still have every session, and the interrupt
+    // must not have been delivered.
+    let store = ScratchDir::new("format-compact-text").unwrap();
+    let history_dir = store.display().to_string();
+    let session_file = store.join("kept.jsonl");
+    std::fs::write(&session_file, "").unwrap();
+    for verb in json_document_verbs(&history_dir) {
+        let mut args: Vec<&str> = verb.iter().map(String::as_str).collect();
+        if args.starts_with(&["history", "clear"]) {
+            args.push("--yes");
+        }
+        let output = run_as_typed(
+            &[&args[..], &["--format", "text", "--compact"]].concat(),
+            &[("MOCK_STDOUT", r#"{"result":"pong"}"#)],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "`{}`: {output:?}",
+            args.join(" ")
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("--format text") && stderr.contains("--compact"),
+            "`{}`: the refusal must name both flags: {stderr}",
+            args.join(" ")
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "`{}`: a refused invocation prints no report",
+            args.join(" ")
+        );
+    }
+    assert!(
+        session_file.exists(),
+        "`history clear --yes` removed a session before refusing its flags"
+    );
+    // `--format json --compact` is one-line JSON, as before.
+    let one_line = run_as_typed(&["list", "--format", "json", "--compact"], &[]);
+    assert!(one_line.status.success(), "{one_line:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&one_line.stdout).lines().count(),
+        1,
+        "`--format json --compact` is one line"
+    );
+}
+
+#[test]
+fn the_default_view_is_the_same_wherever_stdout_points() {
+    // Not a TTY heuristic: stdout into a file reads exactly as stdout into a
+    // pipe (which is what every other test here reads through).
+    let store = ScratchDir::new("format-stdout-file").unwrap();
+    let path = store.join("list.out");
+    let file = std::fs::File::create(&path).unwrap();
+    let status = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .arg("list")
+        .stdout(Stdio::from(file))
+        .status()
+        .expect("failed to run oneharness");
+    assert!(status.success(), "{status:?}");
+    let into_file = std::fs::read(&path).unwrap();
+    let into_pipe = run_as_typed(&["list", "--format", "text"], &[]);
+    assert_eq!(into_file, into_pipe.stdout);
+    assert!(
+        serde_json::from_slice::<Value>(&into_file).is_err(),
+        "a file got the JSON document"
+    );
 }
 
 #[test]
@@ -30032,7 +30694,7 @@ fn run_text_view_reads_the_report_a_person_needs() {
         "opus",
     ];
     let envs = [("MOCK_STDOUT", stdout)];
-    assert_json_default_is_unchanged_by_the_flag(&args, &envs);
+    assert_default_is_the_text_view(&args, &envs);
     let (json, text) = text_view_of(&args, &envs);
     assert!(json.status.success(), "{json:?}");
     assert_eq!(json_stdout(&json)["results"][0]["status"], "ok");
@@ -30127,7 +30789,7 @@ fn run_text_view_shows_the_structured_value_not_as_the_report() {
         "MOCK_STDOUT",
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"name\":\"Ada\",\"age\":36}"}}"#,
     )];
-    assert_json_default_is_unchanged_by_the_flag(&args, &envs);
+    assert_default_is_the_text_view(&args, &envs);
     let (json, text) = text_view_of(&args, &envs);
     assert!(json.status.success(), "{json:?}");
     let report = json_stdout(&json);
@@ -30226,7 +30888,7 @@ fn run_text_view_shows_each_command_under_print_command() {
         "say hi there",
         "--print-command",
     ];
-    assert_json_default_is_unchanged_by_the_flag(&args, &[]);
+    assert_default_is_the_text_view(&args, &[]);
     let (json, text) = text_view_of(&args, &[]);
     assert!(json.status.success(), "{json:?}");
     assert!(text.contains("mode: default · dry run\n"), "{text}");
@@ -30249,9 +30911,12 @@ fn run_text_view_shows_each_command_under_print_command() {
 }
 
 #[test]
-fn a_streaming_run_keeps_its_ndjson_protocol_whatever_format_says() {
+fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
     // `--stream` is its own stdout protocol: a consumer has been reading event
-    // lines all along, so the terminal envelope is not the place to switch.
+    // lines all along, so the terminal envelope is not the place to switch. A
+    // bare `--stream` and `--format json --stream` (and `--compact --stream`,
+    // the SDKs' spelling) are the same lines; an explicit `--format text` beside
+    // it is refused up front, naming both flags, before any harness spawns.
     let stdout = concat!(
         r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
         "\n",
@@ -30289,19 +30954,34 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_format_says() {
     };
     let theirs = parse(&baseline);
     assert_eq!(theirs.len(), 2, "{baseline:?}");
-    for format in ["json", "text"] {
-        let output = run(&[&args[..], &["--format", format]].concat(), &envs);
+    assert_eq!(theirs[0]["type"], "event");
+    assert_eq!(theirs[1]["type"], "result");
+    for extra in [&["--format", "json"][..], &["--compact"][..]] {
+        let output = run_as_typed(&[&args[..], extra].concat(), &envs);
         assert!(output.status.success(), "{output:?}");
         let ours = parse(&output);
-        assert_eq!(ours[0]["type"], "event");
-        assert_eq!(ours[1]["type"], "result");
-        assert_eq!(ours, theirs, "`--format {format}` changed the stream");
+        assert_eq!(ours, theirs, "`{}` changed the stream", extra.join(" "));
     }
+    let bare = run_as_typed(&args, &envs);
+    assert!(bare.status.success(), "{bare:?}");
+    assert_eq!(parse(&bare), theirs, "a bare --stream changed the stream");
+
+    let refused = run_as_typed(&[&args[..], &["--format", "text"]].concat(), &envs);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("--format text") && stderr.contains("--stream"),
+        "the refusal must name both flags: {stderr}"
+    );
+    assert!(
+        refused.stdout.is_empty(),
+        "a refused run printed: {refused:?}"
+    );
 }
 
 #[test]
 fn list_text_view_names_each_harness_with_its_binary_and_flags() {
-    assert_json_default_is_unchanged_by_the_flag(&["list"], &[]);
+    assert_default_is_the_text_view(&["list"], &[]);
     let (json, text) = text_view_of(&["list"], &[]);
     let report = json_stdout(&json);
     for h in report["harnesses"].as_array().unwrap() {
@@ -30329,7 +31009,7 @@ fn detect_text_view_says_available_or_not_with_path_and_version() {
         "--bin",
         "goose=/nonexistent/oneharness-format-goose",
     ];
-    assert_json_default_is_unchanged_by_the_flag(&args, &[]);
+    assert_default_is_the_text_view(&args, &[]);
     let (json, text) = text_view_of(&args, &[]);
     let report = json_stdout(&json);
     let codex = &report["detected"][0];
@@ -30493,7 +31173,7 @@ fn usage_text_view_keeps_its_spelling_and_default() {
         &bin_override("cursor"),
     ];
     let envs = [("MOCK_STDOUT", "{}")];
-    assert_json_default_is_unchanged_by_the_flag(&args, &envs);
+    assert_default_is_the_text_view(&args, &envs);
     let (json, text) = text_view_of(&args, &envs);
     assert!(json.status.success(), "{json:?}");
     assert!(text.starts_with("usage as of "), "{text}");
@@ -30511,7 +31191,7 @@ fn interrupt_text_view_says_refused_with_the_reason() {
         "--session-dir",
         &store_arg,
     ];
-    assert_json_default_is_unchanged_by_the_flag(&args, &[]);
+    assert_default_is_the_text_view(&args, &[]);
     let (json, text) = text_view_of(&args, &[]);
     assert_eq!(json.status.code(), Some(1));
     let frame = json_stdout(&json);
@@ -30644,7 +31324,7 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
 
     // list / show: the shared type kept their spelling and default.
     let list = ["history", "list", "--all-projects", "--history-dir", &ds];
-    assert_json_default_is_unchanged_by_the_flag(&list, &[]);
+    assert_default_is_the_text_view(&list, &[]);
     let (_, text) = text_view_of(&list, &[]);
     assert!(text.contains("(1 run, codex)"), "{text}");
     let show = [
@@ -30655,7 +31335,7 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
         "--history-dir",
         &ds,
     ];
-    assert_json_default_is_unchanged_by_the_flag(&show, &[]);
+    assert_default_is_the_text_view(&show, &[]);
     let (_, text) = text_view_of(&show, &[]);
     assert!(text.contains("[codex] ok"), "{text}");
 
@@ -30674,7 +31354,7 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
 
     // clear: a dry run says so and removes nothing.
     let dry = ["history", "clear", "--all-projects", "--history-dir", &ds];
-    assert_json_default_is_unchanged_by_the_flag(&dry, &[]);
+    assert_default_is_the_text_view(&dry, &[]);
     let (json, text) = text_view_of(&dry, &[]);
     let json = json_stdout(&json);
     assert_eq!(json["dry_run"], true);
@@ -30690,7 +31370,7 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
 
     // migrate over an already-current store: every file counted, none rewritten.
     let migrate = ["history", "migrate", "--history-dir", &ds];
-    assert_json_default_is_unchanged_by_the_flag(&migrate, &[]);
+    assert_default_is_the_text_view(&migrate, &[]);
     let (json, text) = text_view_of(&migrate, &[]);
     let migrated = json_stdout(&json)["files"][0]["path"]
         .as_str()
@@ -30712,22 +31392,6 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
         format!("removed 1 session file\n  {listed}\n")
     );
     assert!(!Path::new(&session_file).exists());
-}
-
-#[test]
-fn compact_beside_format_text_is_accepted_and_changes_nothing() {
-    // In this release `--compact` is a JSON rendering choice that text ignores,
-    // exactly as `usage` and `history list/show` have always treated it.
-    let plain = run(&["list", "--format", "text"], &[]);
-    let compact = run(&["list", "--format", "text", "--compact"], &[]);
-    assert!(compact.status.success(), "{compact:?}");
-    assert_eq!(plain.stdout, compact.stdout);
-    let one_line = run(&["list", "--format", "json", "--compact"], &[]);
-    assert_eq!(
-        String::from_utf8_lossy(&one_line.stdout).lines().count(),
-        1,
-        "`--format json --compact` is one line"
-    );
 }
 
 #[test]

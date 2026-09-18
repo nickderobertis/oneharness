@@ -96,12 +96,12 @@ pub struct FileConfig {
     pub server_overloaded_max_retries: Option<u32>,
     /// Concurrency cap (like `--max-parallel`).
     pub max_parallel: Option<usize>,
-    /// How the selected harnesses are run (like `--run-mode`): `parallel` (the
-    /// default) runs them all at once; `fallback` runs them in priority order,
-    /// stopping at the first that runs and falling through only harnesses that
-    /// cannot run at all. Most naturally set in a project `oneharness.toml` to
-    /// declare the harnesses a repo supports, so whichever a contributor has set
-    /// up is used.
+    /// How the selected harnesses are run (like `--run-mode`): `fallback` (the
+    /// default) runs them in priority order, stopping at the first that runs and
+    /// falling through only harnesses that cannot run at all; `parallel` (the
+    /// opt-in) runs them all at once. Most naturally set in a project
+    /// `oneharness.toml` to declare the harnesses a repo supports, so whichever a
+    /// contributor has set up is used.
     pub run_mode: Option<RunMode>,
     /// Treat a missing harness as a failure (like `--require-available`).
     pub require_available: Option<bool>,
@@ -965,8 +965,9 @@ pub struct ConfigReport {
     pub schema_max_retries: Field<u32>,
     pub server_overloaded_max_retries: Field<u32>,
     pub max_parallel: Field<usize>,
-    /// The configured run mode, if any. Unset falls back to `parallel` (the
-    /// built-in default) at run time.
+    /// The effective run mode: a configured value, else `fallback` (the
+    /// built-in default, attributed to [`DEFAULT_SOURCE`]) — the report says what
+    /// a run would do, so an unset mode is never shown as `null`.
     pub run_mode: Field<RunMode>,
     pub require_available: Field<bool>,
     pub history: Field<bool>,
@@ -1196,7 +1197,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         server_overloaded_max_retries: pick(layers, |c| c.server_overloaded_max_retries)
             .or_default(SERVER_OVERLOADED_MAX_RETRIES_DEFAULT),
         max_parallel: pick(layers, |c| c.max_parallel),
-        run_mode: pick(layers, |c| c.run_mode),
+        run_mode: pick(layers, |c| c.run_mode).or_default(RunMode::Fallback),
         require_available: pick(layers, |c| c.require_available).or_default(false),
         history: pick(layers, |c| c.history).or_default(false),
         history_dir: pick(layers, |c| c.history_dir.clone()),
@@ -1862,15 +1863,18 @@ variant = true
         );
         assert_eq!(merged.run_mode, Some(RunMode::Fallback));
 
-        // `explain` attributes it to the winning file; unset stays null (the
-        // effective mode then defaults to `parallel` at run time).
+        // `explain` attributes it to the winning file; unset reads as the
+        // built-in `fallback` default, which is what the run resolves it to.
         let report = explain(&layers(
             "run_mode = \"fallback\"",
             "run_mode = \"parallel\"",
         ));
         assert_eq!(report.run_mode.value, Some(RunMode::Parallel));
         assert_eq!(report.run_mode.source.as_deref(), Some("/project.toml"));
-        assert_eq!(explain(&[]).run_mode, Field::unset());
+        assert_eq!(
+            explain(&[]).run_mode,
+            Field::default_value(RunMode::Fallback)
+        );
 
         // The env layer parses the same tokens and rejects a bad one loudly.
         let c = from_env(env_get(&[("ONEHARNESS_RUN_MODE", "fallback")]))

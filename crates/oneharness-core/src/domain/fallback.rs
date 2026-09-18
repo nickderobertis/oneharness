@@ -30,12 +30,15 @@ use crate::domain::signals::FailureKind;
 #[serde(rename_all = "kebab-case")]
 pub enum RunMode {
     /// Run every selected harness at once, each an independent subprocess, and
-    /// report them all. The default — the historical behavior.
+    /// report them all. The opt-in (`--run-mode parallel`, `run_mode =
+    /// "parallel"`, `ONEHARNESS_RUN_MODE=parallel`); it was the default before
+    /// the fallback chain became one.
     Parallel,
     /// Run the selected harnesses in priority order (the `--harness` / config
     /// order, else registry order under `--all`), stopping at the first that
     /// actually runs the task; fall through only the candidates that cannot run
-    /// at all (see [`startup_failure_reason`]).
+    /// at all (see [`startup_failure_reason`]). The default wherever a run mode
+    /// is left unset — in the request, every config layer and the environment.
     Fallback,
 }
 

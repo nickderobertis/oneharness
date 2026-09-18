@@ -202,13 +202,35 @@ else
   echo "smoke: node not found; npm packaging e2e skipped (install Node to run it)" >&2
 fi
 
-# 1. `list` — the registry, with each adapter's example command.
+# 1. `list` — the registry, with each adapter's example command. `--compact`
+#    alone selects the JSON document (the SDKs' spelling); every JSON read below
+#    passes it, because the shipped binary's default is the text view.
 LAST_CMD="$oh list --compact"
 out="$($oh list --compact)" || fail "list exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"schema_version"'
 assert_contains "$out" '"claude-code"'
 n_list="$(count_matches "$out" '"default_bin"')"
 [ "$n_list" -ge 8 ] || fail "list reported $n_list harness(es), expected >= 8" "$LAST_CMD" "$out"
+
+# 1b. A bare `list` is the human view — the same text `--format text` prints,
+#     never a JSON document — and `--format json` is the document `--compact`
+#     renders on one line.
+LAST_CMD="$oh list"
+bare="$($oh list)" || fail "bare list exited non-zero" "$LAST_CMD"
+case "$bare" in
+  '{'*) fail "a bare 'list' printed JSON; the default is the text view" "$LAST_CMD" "$bare" ;;
+esac
+assert_contains "$bare" 'claude-code (Claude Code)'
+LAST_CMD="$oh list --format text"
+text="$($oh list --format text)" || fail "list --format text exited non-zero" "$LAST_CMD"
+[ "$bare" = "$text" ] || fail "a bare 'list' differs from 'list --format text'" "$LAST_CMD" "$text"
+LAST_CMD="$oh list --format json"
+pretty="$($oh list --format json)" || fail "list --format json exited non-zero" "$LAST_CMD"
+assert_contains "$pretty" '"schema_version"'
+LAST_CMD="$oh list --format text --compact"
+if "$oh" list --format text --compact >/dev/null 2>&1; then
+  fail "'list --format text --compact' was accepted; it is a usage error" "$LAST_CMD"
+fi
 
 # 2. `detect --all` — probe availability without requiring any to be present.
 LAST_CMD="$oh detect --all --compact"
@@ -377,8 +399,10 @@ if ! printf '%s' "$det" | grep -qF '"available":true'; then
   exit 0
 fi
 
-LAST_CMD="$oh run --all --prompt <prompt> --timeout 90 --compact"
-out="$($oh run --all --prompt "$PROMPT" --timeout 90 --compact)" || true
+# Cross-harness by intent, so `parallel` is named: the default is a fallback
+# chain, which would stop at the first harness that runs.
+LAST_CMD="$oh run --all --run-mode parallel --prompt <prompt> --timeout 90 --compact"
+out="$($oh run --all --run-mode parallel --prompt "$PROMPT" --timeout 90 --compact)" || true
 if ! printf '%s' "$out" | grep -qF '"status":"ok"'; then
   fail "no installed harness returned an ok result" "$LAST_CMD" "$out" \
     "check each harness's auth/network; run 'oneharness detect --all' to see availability"

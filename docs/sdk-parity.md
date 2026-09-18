@@ -79,11 +79,13 @@ tables below:
 * **`--compact`** and **`--format json`** are always sent on every capability
   whose stdout is a JSON document. The SDKs parse the JSON, so the only sensible
   rendering is the compact one, and the format is stated outright rather than
-  left to the CLI's default: `--format text` is the human-readable view of data
-  the JSON already carries, which an SDK consuming the contract has no use for,
-  and saying `json` on every call is what lets the CLI's own default move to
-  that view without any SDK noticing. `runStream` sends neither `--format`: a
-  stream is its own NDJSON protocol, which the flag never changes.
+  left to the CLI's default — which IS the text view: `--format text` is the
+  human-readable rendering of data the JSON already carries, which an SDK
+  consuming the contract has no use for, and saying `json` on every call is
+  what let the CLI's default move to that view without any SDK noticing
+  (`--compact` alone also selects `json`, so either flag would do; both are
+  sent). `runStream` sends neither `--format`: a stream is its own NDJSON
+  protocol, which the flag never changes.
 * **`--bypass` / `--no-bypass`** are shorthands for `--mode`. One setting with
   two spellings is how a caller ends up passing both, which clap then refuses.
 

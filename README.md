@@ -166,9 +166,10 @@ run fails with a usage error before spawning.
 The remaining unified settings — `timeout`, `env`, `bin`, per-harness `args`,
 `cwd`, selection — are enforced by oneharness itself at run time, so they work
 for **every** harness — as does `--schema` ([structured output](#structured-output),
-prompt-based where a harness has no native schema flag). `oneharness list` prints
-this registry as JSON, including each adapter's exact command, its `sync_file`,
-and `supports_resume` / `supports_fork` / `supports_native_schema` /
+prompt-based where a harness has no native schema flag).
+`oneharness list --format json` prints this registry as JSON, including each
+adapter's exact command, its `sync_file`, and `supports_resume` /
+`supports_fork` / `supports_native_schema` /
 `supports_reasoning` / `supports_allowed_tools` / `supports_denied_tools` /
 `supports_hooks` capability flags.
 

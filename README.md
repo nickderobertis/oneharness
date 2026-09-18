@@ -479,8 +479,10 @@ contract), and beside an explicit `--format text` it is a usage error (exit 2)
 naming both flags. A streaming run keeps its NDJSON event/result protocol
 whether or not `--format json` is named; an explicit `--format text` beside a
 run that streams — `--stream`, or `stream` in config / `ONEHARNESS_STREAM` —
-is the same usage error, refused before any harness runs. `history watch`
-keeps its own `--format jsonl`.
+is the same usage error, refused before any harness runs and naming where the
+stream was selected (the file that set `stream = true`, or the variable), so
+`--no-stream` is offered where it is the way out. `history watch` keeps its
+own `--format jsonl`.
 
 ### Configuration
 

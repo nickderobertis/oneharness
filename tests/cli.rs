@@ -5284,29 +5284,63 @@ bin = "{bin}"
     // (`a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is`),
     // config, or the environment — naming both, never a silent drop of the
     // flag and never a turn billed for a report that was never printable.
-    // `--no-stream` beside it settles the question the other way.
-    for (label, cwd, envs, user_config) in [
-        ("config", fx.cwd(), vec![], fx.user_config()),
+    // The stream half is named as the caller selected it (the file that set
+    // `stream = true`, or `ONEHARNESS_STREAM`), since neither is `--stream`
+    // and the way out of each is `--no-stream` — which beside it settles the
+    // question the other way.
+    let project_file = |cwd: &str| Path::new(cwd).join("oneharness.toml");
+    for (label, cwd, envs, user_config, names) in [
+        (
+            "config",
+            fx.cwd(),
+            vec![],
+            fx.user_config(),
+            vec![
+                "stream = true".to_string(),
+                project_file(&fx.cwd()).display().to_string(),
+            ],
+        ),
         (
             "ONEHARNESS_STREAM",
             env_only.cwd(),
             vec![("ONEHARNESS_STREAM", "true")],
             env_only.user_config(),
+            vec!["ONEHARNESS_STREAM".to_string()],
         ),
     ] {
         let mut envs = envs;
         envs.push(("MOCK_STDOUT", stdout));
+        // The mock appends to this log the moment it starts; a refused run
+        // must leave it unwritten.
+        let spawned = Path::new(&cwd).join("spawned.log");
+        let spawned_arg = spawned.display().to_string();
+        let mut refused_envs = envs.clone();
+        refused_envs.push(("MOCK_LOG_FILE", &spawned_arg));
         let refused = run_with_config(
             &["run", "--prompt", "hi", "--cwd", &cwd, "--format", "text"],
-            &envs,
+            &refused_envs,
             &user_config,
         );
         assert_eq!(refused.status.code(), Some(2), "{label}: {refused:?}");
         assert!(refused.stdout.is_empty(), "{label}: a refused run printed");
+        assert!(
+            !spawned.exists(),
+            "{label}: the harness was spawned before the flags were refused"
+        );
         let stderr = String::from_utf8_lossy(&refused.stderr);
         assert!(
             stderr.contains("--format text") && stderr.contains("--stream"),
             "{label}: the refusal must name both flags: {stderr}"
+        );
+        for name in &names {
+            assert!(
+                stderr.contains(name),
+                "{label}: the refusal must say where the stream was selected ({name}): {stderr}"
+            );
+        }
+        assert!(
+            stderr.contains("--no-stream"),
+            "{label}: the refusal must offer --no-stream as the way out: {stderr}"
         );
         let settled = run_with_config(
             &[
@@ -23648,6 +23682,117 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
 #[cfg(unix)]
 #[test]
+fn a_format_refusal_leaves_a_deliverable_interrupt_undelivered() {
+    let mock_profile = mock_profile_redirect();
+    // `interrupt --format text --compact` is refused for its flags BEFORE the
+    // interrupt is delivered — proven against a turn the interrupt could have
+    // reached: the run is live, its socket bound and its turn held, and after
+    // the refusal the harness has seen no control frame and is still working.
+    // A refusal against a session that does not exist would prove nothing
+    // about ordering. The same `interrupt` spelled without the contradiction
+    // then ends the turn, and the report records that one delivery only.
+    let store = control_store_dir("fmt-refusal");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("fmt-refusal-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let turn_log = store.join("turn.log");
+    let turn_log_arg = turn_log.display().to_string();
+
+    let child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_TURN_LOG", &turn_log_arg)
+        .env("MOCK_TURN_HOLD", "1")
+        .env(
+            "MOCK_STDOUT",
+            r#"{"type":"system","subtype":"init","session_id":"sess-ctl"}"#,
+        )
+        .args([
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "held",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--compact",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn the controlled run");
+
+    let socket = store.join("control").join("held.sock");
+    wait_until("the control socket to appear", || socket.exists());
+    wait_until("the turn to start", || {
+        std::fs::read_to_string(&turn_log)
+            .map(|log| log.contains("keep working"))
+            .unwrap_or(false)
+    });
+
+    let interrupt_args = [
+        "interrupt",
+        "--session",
+        "held",
+        "--session-dir",
+        &store_arg,
+        "--cwd",
+        &cwd_arg,
+    ];
+    let refused = run_as_typed(
+        &[&interrupt_args[..], &["--format", "text", "--compact"]].concat(),
+        &[],
+    );
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(refused.stdout.is_empty(), "a refused interrupt printed");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("--format text") && stderr.contains("--compact"),
+        "the refusal must name both flags: {stderr}"
+    );
+    // Undelivered, asserted at the harness: no control frame reached it, and
+    // the held turn is still in flight. A frame that HAD been delivered is
+    // logged by the mock as it reads it, a few ms after the sender is
+    // answered, so the negative read waits that out rather than racing it.
+    std::thread::sleep(std::time::Duration::from_millis(250));
+    assert!(
+        socket.exists(),
+        "the run must still be listening after a refused interrupt"
+    );
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(
+        !log.contains("control_request") && !log.contains("INTERRUPTED"),
+        "a refused interrupt reached the harness; turn log:\n{log}"
+    );
+
+    // The same interrupt, without the contradiction, is delivered.
+    let served = run(&[&interrupt_args[..], &["--compact"]].concat(), &[]);
+    assert!(served.status.success(), "{served:?}");
+    assert_eq!(json_stdout(&served)["ok"], true);
+
+    let output = child.wait_with_output().expect("run did not finish");
+    assert!(output.status.success(), "{output:?}");
+    let report: Value = serde_json::from_slice(&output.stdout).expect("run report was not JSON");
+    assert_eq!(report["results"][0]["status"], "ok");
+    // One delivery in the report: the refused invocation never reached the
+    // run, so it is not there as a refusal either.
+    let interrupts = report["control"]["interrupts"].as_array().unwrap();
+    assert_eq!(interrupts.len(), 1, "{report}");
+    assert_eq!(interrupts[0]["outcome"], "served");
+    let log = std::fs::read_to_string(&turn_log).unwrap();
+    assert!(log.contains("INTERRUPTED"), "turn log:\n{log}");
+}
+
+#[cfg(unix)]
+#[test]
 fn a_run_reports_a_request_still_in_flight_when_its_turn_ended() {
     use oneharness_core::domain::control::ControlRequest;
     use std::io::{BufRead, BufReader, Write};
@@ -30862,12 +31007,18 @@ fn compact_alone_selects_one_line_json_on_every_verb() {
 #[test]
 fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     // Two things one stdout cannot be. Refused before the verb does anything:
-    // `history clear --yes` must still have every session, and the interrupt
-    // must not have been delivered.
+    // `history clear --yes` must still have every session, no verb that would
+    // spawn the harness (`run`, `detect`, `usage`) may have started it — the
+    // mock appends to `spawned.log` the moment it starts — and an interrupt
+    // must not have been delivered
+    // (`a_format_refusal_leaves_a_deliverable_interrupt_undelivered` proves
+    // that against a live turn).
     let store = ScratchDir::new("format-compact-text").unwrap();
     let history_dir = store.display().to_string();
     let session_file = store.join("kept.jsonl");
     std::fs::write(&session_file, "").unwrap();
+    let spawned = store.join("spawned.log");
+    let spawned_arg = spawned.display().to_string();
     for verb in json_document_verbs(&history_dir) {
         let mut args: Vec<&str> = verb.iter().map(String::as_str).collect();
         if args.starts_with(&["history", "clear"]) {
@@ -30875,7 +31026,10 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
         }
         let output = run_as_typed(
             &[&args[..], &["--format", "text", "--compact"]].concat(),
-            &[("MOCK_STDOUT", r#"{"result":"pong"}"#)],
+            &[
+                ("MOCK_STDOUT", r#"{"result":"pong"}"#),
+                ("MOCK_LOG_FILE", &spawned_arg),
+            ],
         );
         assert_eq!(
             output.status.code(),
@@ -30898,6 +31052,10 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     assert!(
         session_file.exists(),
         "`history clear --yes` removed a session before refusing its flags"
+    );
+    assert!(
+        !spawned.exists(),
+        "a harness was spawned before its verb refused the flags"
     );
     // `--format json --compact` is one-line JSON, as before.
     let one_line = run_as_typed(&["list", "--format", "json", "--compact"], &[]);
@@ -31247,8 +31405,21 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
     assert!(bare.status.success(), "{bare:?}");
     assert_eq!(parse(&bare), theirs, "a bare --stream changed the stream");
 
-    let refused = run_as_typed(&[&args[..], &["--format", "text"]].concat(), &envs);
+    // Refused before anything spawns: the mock appends to this log the moment
+    // it starts, and a run that ran and then exited 2 over its flags would
+    // have billed a turn for nothing.
+    let store = ScratchDir::new("format-text-stream").unwrap();
+    let spawned = store.join("spawned.log");
+    let spawned_arg = spawned.display().to_string();
+    let refused = run_as_typed(
+        &[&args[..], &["--format", "text"]].concat(),
+        &[("MOCK_STDOUT", stdout), ("MOCK_LOG_FILE", &spawned_arg)],
+    );
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    assert!(
+        !spawned.exists(),
+        "the harness was spawned before the flags were refused"
+    );
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
         stderr.contains("--format text") && stderr.contains("--stream"),

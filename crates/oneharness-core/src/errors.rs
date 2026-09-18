@@ -26,36 +26,63 @@ impl std::fmt::Display for RunModeOrigin {
     }
 }
 
-/// The flag an explicit `--format text` cannot sit beside: each only means
-/// anything on a JSON stdout. Closed on purpose — a
-/// [`OneharnessError::FormatConflict`] names one of these two, never an
-/// arbitrary string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum JsonOnlyFlag {
-    Compact,
-    Stream,
+/// Where a run's streaming selection came from: the `--stream` flag, or the
+/// `stream` value of a config layer (`stream = true` in the named file, or
+/// `ONEHARNESS_STREAM`). Carried on [`JsonOnlySelection::Stream`] so the
+/// refusal names the selection as the caller made it: a stream a config file
+/// switched on is not `--stream`, and its way out is `--no-stream`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamOrigin {
+    Flag,
+    ConfigFile { path: std::path::PathBuf },
+    Environment,
 }
 
-impl JsonOnlyFlag {
-    /// The way out, said in the refusal beside the flag's name.
-    fn why(self) -> &'static str {
+/// What an explicit `--format text` cannot sit beside: each only means
+/// anything on a JSON stdout. Closed on purpose — a
+/// [`OneharnessError::FormatConflict`] names one of these, never an arbitrary
+/// string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsonOnlySelection {
+    /// The `--compact` flag.
+    Compact,
+    /// A run that will stream, selected where its [`StreamOrigin`] says.
+    Stream(StreamOrigin),
+}
+
+impl JsonOnlySelection {
+    /// The way out, said in the refusal beside the selection's name.
+    fn why(&self) -> &'static str {
         match self {
-            JsonOnlyFlag::Compact => {
+            JsonOnlySelection::Compact => {
                 "--compact is a JSON rendering choice (drop it, or pass --format json)"
             }
-            JsonOnlyFlag::Stream => {
+            JsonOnlySelection::Stream(StreamOrigin::Flag) => {
                 "a streaming run's stdout is its NDJSON event/result protocol (drop --format text, or pass --format json)"
+            }
+            JsonOnlySelection::Stream(_) => {
+                "a streaming run's stdout is its NDJSON event/result protocol (pass --no-stream, drop --format text, or pass --format json)"
             }
         }
     }
 }
 
-impl std::fmt::Display for JsonOnlyFlag {
+impl std::fmt::Display for JsonOnlySelection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            JsonOnlyFlag::Compact => "--compact",
-            JsonOnlyFlag::Stream => "--stream",
-        })
+        match self {
+            JsonOnlySelection::Compact => f.write_str("--compact"),
+            JsonOnlySelection::Stream(StreamOrigin::Flag) => f.write_str("--stream"),
+            JsonOnlySelection::Stream(StreamOrigin::ConfigFile { path }) => {
+                write!(
+                    f,
+                    "`stream = true` in {} (the --stream setting)",
+                    path.display()
+                )
+            }
+            JsonOnlySelection::Stream(StreamOrigin::Environment) => {
+                f.write_str("ONEHARNESS_STREAM (the --stream setting)")
+            }
+        }
     }
 }
 
@@ -319,13 +346,13 @@ pub enum OneharnessError {
     #[error("invalid --stream: {0}")]
     StreamInvalid(String),
 
-    /// An explicit `--format text` beside a flag that only means anything on a
-    /// JSON stdout. The CLI's stdout defaults to the text view, so the two
-    /// flags on their own are fine and a caller who asks for both is asking
-    /// for two things one stdout cannot be; the refusal names both so the
-    /// caller can drop the one they did not mean.
-    #[error("--format text cannot be combined with {flag}: {}", flag.why())]
-    FormatConflict { flag: JsonOnlyFlag },
+    /// An explicit `--format text` beside a selection that only means anything
+    /// on a JSON stdout. The CLI's stdout defaults to the text view, so either
+    /// on its own is fine and a caller who asks for both is asking for two
+    /// things one stdout cannot be; the refusal names both, where the other
+    /// came from, so the caller can drop the one they did not mean.
+    #[error("--format text cannot be combined with {selection}: {}", selection.why())]
+    FormatConflict { selection: JsonOnlySelection },
 
     #[error("could not read config file `{path}`: {source}")]
     ConfigRead {

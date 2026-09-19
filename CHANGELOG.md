@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.15.0](https://github.com/nickderobertis/oneharness/compare/v0.14.0...v0.15.0) - 2026-09-19
+
+### Added
+
+- [**breaking**] default run_mode to fallback and CLI stdout to text ([#1316](https://github.com/nickderobertis/oneharness/pull/1316))
+
 ## [0.14.0](https://github.com/nickderobertis/oneharness/compare/v0.13.1...v0.14.0) - 2026-09-18
 
 ### Added

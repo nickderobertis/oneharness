@@ -1133,11 +1133,24 @@ describe("OneHarness", () => {
 				})
 				.next(),
 		).rejects.toBeInstanceOf(HistoryNotFoundError);
+		// Two harnesses with no run mode are a fallback chain (the CLI's
+		// default), which refuses a continuation and says which mode it met;
+		// naming `parallel` reaches the flag's own single-harness rule.
 		await expect(
 			client.run({
 				prompt: "cannot continue two providers",
 				harnesses: ["claude-code", "codex"],
 				resume: "sdk-session-1",
+			}),
+		).rejects.toThrow(
+			"the default run mode `fallback` is incompatible with --resume/--fork",
+		);
+		await expect(
+			client.run({
+				prompt: "cannot continue two providers",
+				harnesses: ["claude-code", "codex"],
+				resume: "sdk-session-1",
+				runMode: "parallel",
 			}),
 		).rejects.toThrow("--resume needs exactly one harness");
 	});

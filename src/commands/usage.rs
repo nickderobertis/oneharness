@@ -47,7 +47,7 @@ pub fn run(args: &UsageArgs) -> Result<i32, OneharnessError> {
         no_config: args.no_config,
     })?;
 
-    print_report(&report, args.format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
     Ok(0)
 }
 

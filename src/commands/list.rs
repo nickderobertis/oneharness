@@ -17,7 +17,7 @@ pub use oneharness_core::io::registry::{HarnessInfo, ListReport, ModeInfo, Varia
 
 pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
     let report = registry::list(&ListRequest::default())?;
-    print_report(&report, args.format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
     Ok(0)
 }
 

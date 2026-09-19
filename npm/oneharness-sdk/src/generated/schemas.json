@@ -4016,12 +4016,12 @@
         "description": "How the selected harnesses are run. Accepted as a CLI value (`--run-mode`,\nparsed in the `oneharness` binary) and a config-file value (`run_mode`, via\n`Deserialize`); the CLI parsing lives in the binary so this core crate stays\nfree of `clap`.",
         "oneOf": [
           {
-            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The default — the historical behavior.",
+            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The opt-in (`--run-mode parallel`, `run_mode =\n\"parallel\"`, `ONEHARNESS_RUN_MODE=parallel`); it was the default before\nthe fallback chain became one.",
             "type": "string",
             "const": "parallel"
           },
           {
-            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]).",
+            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]). The default wherever a run mode\nis left unset — in the request, every config layer and the environment.",
             "type": "string",
             "const": "fallback"
           }
@@ -15986,7 +15986,7 @@
         "$ref": "#/$defs/Field"
       },
       "run_mode": {
-        "description": "The configured run mode, if any. Unset falls back to `parallel` (the\nbuilt-in default) at run time.",
+        "description": "The effective run mode: a configured value, else `fallback` (the\nbuilt-in default, attributed to [`DEFAULT_SOURCE`]) — the report says what\na run would do, so an unset mode is never shown as `null`.",
         "$ref": "#/$defs/Field9"
       },
       "schema_file": {
@@ -16453,12 +16453,12 @@
         "description": "How the selected harnesses are run. Accepted as a CLI value (`--run-mode`,\nparsed in the `oneharness` binary) and a config-file value (`run_mode`, via\n`Deserialize`); the CLI parsing lives in the binary so this core crate stays\nfree of `clap`.",
         "oneOf": [
           {
-            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The default — the historical behavior.",
+            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The opt-in (`--run-mode parallel`, `run_mode =\n\"parallel\"`, `ONEHARNESS_RUN_MODE=parallel`); it was the default before\nthe fallback chain became one.",
             "type": "string",
             "const": "parallel"
           },
           {
-            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]).",
+            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]). The default wherever a run mode\nis left unset — in the request, every config layer and the environment.",
             "type": "string",
             "const": "fallback"
           }

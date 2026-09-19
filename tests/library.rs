@@ -76,6 +76,61 @@ fn an_omitted_library_timeout_outlives_the_former_120_second_default() {
 }
 
 // capability: run
+#[test]
+fn an_unset_run_mode_is_a_fallback_chain_at_the_library_boundary() {
+    // The default is decided at ONE site, in the engine, so it is proven where
+    // a library caller meets it: a request that names two harnesses and no
+    // mode, over a fixture that sets none (`no_config` keeps every file and
+    // `ONEHARNESS_RUN_MODE` out), runs them as a chain — the first alone when
+    // it can run, the second when the first cannot — and `parallel` is the
+    // opt-in that runs both.
+    let mut chain = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"first"}"#)]);
+    chain.harness.push("opencode".to_string());
+    chain.bin.push(bin_override("opencode"));
+    assert_eq!(chain.run_mode, None, "the request leaves the mode unset");
+
+    let outcome = run(&chain, RunControls::default()).expect("a valid hermetic run");
+    let fallback = outcome
+        .report
+        .fallback
+        .as_ref()
+        .expect("an unset mode ran a fallback chain");
+    assert_eq!(fallback.ran.as_deref(), Some("claude-code"));
+    assert!(fallback.fell_through.is_empty(), "{fallback:?}");
+    assert_eq!(outcome.report.results.len(), 1, "the head ran alone");
+    assert_eq!(outcome.report.results[0].text.as_deref(), Some("first"));
+
+    // The head cannot run at all: it is routed around, and the chain says so.
+    let mut routed = chain.clone();
+    routed.bin[0] = "claude-code=/nonexistent/oneharness-absent-harness".to_string();
+    let outcome = run(&routed, RunControls::default()).expect("a valid hermetic run");
+    let fallback = outcome.report.fallback.as_ref().expect("a chain ran");
+    assert_eq!(fallback.ran.as_deref(), Some("opencode"));
+    assert_eq!(fallback.fell_through.len(), 1, "{fallback:?}");
+    assert_eq!(fallback.fell_through[0].harness, "claude-code");
+    assert_eq!(
+        fallback.fell_through[0].reason,
+        oneharness_core::domain::fallback::FallThroughReason::NotInstalled
+    );
+    assert_eq!(outcome.report.results[0].status, Status::Skipped);
+    assert_eq!(outcome.report.results[1].status, Status::Ok);
+
+    // `parallel` is the opt-in: the same selection runs as the cross-product.
+    let parallel = RunRequest {
+        run_mode: Some(RunMode::Parallel),
+        ..chain
+    };
+    let outcome = run(&parallel, RunControls::default()).expect("a valid hermetic run");
+    assert!(outcome.report.fallback.is_none(), "no chain ran");
+    assert_eq!(outcome.report.results.len(), 2, "both harnesses ran");
+    assert!(outcome
+        .report
+        .results
+        .iter()
+        .all(|result| result.status == Status::Ok));
+}
+
+// capability: run
 // capability: runStream
 #[test]
 fn a_streaming_caller_sees_an_event_before_the_run_finishes() {
@@ -1060,10 +1115,12 @@ fn every_execution_model_hands_its_harness_children_to_the_supervisor() {
     assert_distinct_live_children(&seen, "streaming");
 
     // A parallel wave spawns from several worker threads at once — the reason
-    // the supervisor is shared as `&dyn ProcessSupervisor + Sync`.
+    // the supervisor is shared as `&dyn ProcessSupervisor + Sync`. Named,
+    // because an unset mode is a chain.
     let mut parallel = request("claude-code", &[("MOCK_STDOUT", r#"{"result":"ok"}"#)]);
     parallel.harness.push("opencode".to_string());
     parallel.bin.push(bin_override("opencode"));
+    parallel.run_mode = Some(RunMode::Parallel);
     let (outcome, seen) = supervised_spawns(&parallel);
     assert_eq!(outcome.report.results.len(), 2);
     assert_eq!(seen.len(), 2, "two harnesses, two hand-overs");

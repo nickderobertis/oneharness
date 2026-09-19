@@ -205,9 +205,17 @@ Use the `just` recipes; do not hand-roll equivalents.
   `--format` are deliberately NOT on `RunRequest`: they are about printing,
   which the shell owns. `--format` is one clap type (`cli::Format`) rendered
   through `commands::print_report`, so a verb gains a text view by handing that
-  seam a renderer; which verbs carry it, and its default, are pinned by the
-  `every_json_verb_*` journeys in `tests/cli.rs`, and the SDKs' `--format
-  json` by the capability manifest's `always` argv (`tests/capability.rs`).
+  seam a renderer. **The CLI's stdout defaults to `text`** wherever it points
+  (never a TTY heuristic); `--format json` is the programmatic contract, and
+  `--compact` alone selects it. Each verb carries the pair as ONE
+  `cli::StdoutFormat`, parsed at the clap boundary, so `--format text
+  --compact` is refused there (exit 2, naming both) before any verb runs —
+  nothing has been synced, spawned or interrupted when it is. A streaming run
+  keeps its NDJSON protocol whatever the default is, and `--format text`
+  beside a stream is the same refusal whichever layer (flag or config)
+  selected the stream. Anything reading stdout as JSON says so: the SDKs on
+  every call, and every test or script here (the `tests/cli.rs` `run` helper
+  passes `--format json`; `run_as_typed` is the bare invocation).
   Nor is any `--no-x` half of a clap-exclusive pair — the request carries the one
   value they resolve to (`stream`/`history` as `Option<bool>`, `--bypass` folded
   into `mode`, `--fork` inside the `Resume` it is meaningless without), because
@@ -231,8 +239,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   stops the harness's own descendant — proven from outside the tree — and, for
   the supervisor, both teardown halves and a hand-over from every execution
   model.
-- `run` spawns the selected harnesses **in parallel**, each as a subprocess with
-  a timeout, and emits one JSON report. `io::process` owns each launcher's whole
+- `run` drives the selected harnesses as a **fallback chain by default** —
+  `run_mode` resolves to `fallback` at its one site (`io::run`), on every
+  surface (library, CLI, SDKs), so `parallel` is the opt-in — each as a
+  subprocess with a timeout, and emits one report. A chain of exactly one
+  candidate carries a batch or a `--resume`/`--fork` continuation as the
+  single-harness run (`fallback: null`); over two or more candidates those are
+  refused, naming the default when the mode was unset. `io::process` owns each launcher's whole
   tree (Unix process group; Windows kill-on-close Job Object assigned while the
   child is suspended), applies a brief TERM→KILL grace on Unix, reaps, and bounds
   pipe drain; both buffered and streaming runner paths must go through it so an
@@ -293,8 +306,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   value's source; `sync` merges the unified policy settings (allow/deny rules,
   hooks, raw `settings` tables) into each harness's **own** config file — project
   by default, or the user-global location under `--global` (hooks only) — so the
-  policy also applies without oneharness in the loop. Those five emit JSON to
-  stdout by design. `history` (opt-in via `run --history` / `history` config /
+  policy also applies without oneharness in the loop. Those five print a text
+  view by default and the JSON contract under `--format json`/`--compact`.
+  `history` (opt-in via `run --history` / `history` config /
   `ONEHARNESS_HISTORY`, off by default) streams a **standardized cross-harness**
   run history — one normalized record per harness run (the report's signals, no
   raw stdout/stderr) — to `<history_dir>/<project-slug>/<session>.jsonl` (one file
@@ -325,8 +339,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   the harness — headless harnesses expose only an opaque `session_id` (already
   captured per record), never a readable title; don't fabricate one. The report
   echoes the session file as `history_file` (the programmatic handle). The
-  `oneharness history list/show/watch/clear` verb views/manages the store: JSON on
-  stdout by default (the contract), `--format text` for humans; `show` resolves a
+  `oneharness history list/show/watch/clear` verb views/manages the store: a
+  text view by default, `--format json` (the contract) for programs; `show` resolves a
   record UUID exactly before its back-compatible session id/name lookup; `watch`
   emits typed JSONL envelopes with label filters and `--after` cursor resume.
   Its process-locked append-only `.index.jsonl` is reconciled once on startup

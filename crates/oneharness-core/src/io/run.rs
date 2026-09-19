@@ -54,7 +54,7 @@ use crate::domain::session::{self, SessionPlan, SessionRecord};
 use crate::domain::signals::Usage;
 use crate::domain::structured::{self, Schema};
 use crate::domain::{events, normalize, signals};
-use crate::errors::OneharnessError;
+use crate::errors::{OneharnessError, RunModeOrigin};
 use crate::io::cancel::{self, CancelToken};
 use crate::io::config as config_io;
 use crate::io::control as control_io;
@@ -279,7 +279,8 @@ pub struct RunRequest {
     pub max_parallel: Option<usize>,
     /// How a batch run schedules its calls.
     pub batch_strategy: Option<BatchStrategy>,
-    /// Parallel (the default) or the fallback priority chain.
+    /// The fallback priority chain (the default when unset here and in every
+    /// config layer) or parallel.
     pub run_mode: Option<RunMode>,
     /// Build and report each command without executing it (dry run).
     pub print_command: bool,
@@ -596,21 +597,41 @@ pub fn run_supervised(
             .cloned()
             .collect()
     };
-    // `--run-mode` (CLI beats config; default `parallel`). Fallback runs the
-    // selected harnesses in priority order, stopping at the first that runs and
-    // falling through only harnesses that cannot run at all. It is single-outcome
-    // by nature, so it refuses the multi-prompt / continuation shapes up front —
-    // but the *whole candidate set* still flows through every capability validator
-    // below, so a flag unsupported by ANY listed harness fails fast even though
-    // only one harness will run (the command must be valid for the whole set).
-    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Parallel);
-    let fallback_mode = run_mode == RunMode::Fallback;
+    // `--run-mode` (CLI beats config; an unset mode is `RunMode::default()` —
+    // the one source, which `config::explain` reports from too — on every
+    // surface: a library caller, the CLI and the SDKs; `parallel` is the
+    // opt-in). Fallback
+    // runs the selected harnesses in priority order, stopping at the first that
+    // runs and falling through only harnesses that cannot run at all. It is
+    // single-outcome by nature, so it refuses the multi-prompt / continuation
+    // shapes up front — but the *whole candidate set* still flows through every
+    // capability validator below, so a flag unsupported by ANY listed harness
+    // fails fast even though only one harness will run (the command must be
+    // valid for the whole set).
+    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or_default();
+    let run_mode_origin = if args.run_mode.is_none() && cfg.run_mode.is_none() {
+        RunModeOrigin::Default
+    } else {
+        RunModeOrigin::Selected
+    };
+    // A chain is a chain only with something to fall through to. The two
+    // shapes a chain cannot carry — a batch, and a `--resume`/`--fork`
+    // continuation — are refused over two or more candidates, and run on a
+    // one-candidate chain as the single-harness run they are (`fallback` is
+    // then `null` in the report, since no chain ran). Without that, an unset
+    // mode would refuse every bare single-harness continuation and batch. So
+    // what the rest of this function reads is the execution decision — whether
+    // THIS invocation is driven as a chain — not the selected mode alone.
+    let continuation = args.resume.is_some();
+    let single_candidate_batch_or_continuation = specs.len() == 1 && (batch_run || continuation);
+    let drive_fallback_chain =
+        run_mode == RunMode::Fallback && !single_candidate_batch_or_continuation;
     // Streaming is a CLI flag with a config/env layer, resolved once here so every
     // validator, the format selection, and the driver choice read the same
     // effective value.
     let stream = resolve_stream(args, cfg);
-    if fallback_mode {
-        validate_fallback(batch_run, args)?;
+    if run_mode == RunMode::Fallback && specs.len() > 1 {
+        validate_fallback(batch_run, args, run_mode_origin)?;
     }
     // `--control` is validated before the session is resolved so its own
     // vocabulary wins the diagnostic: a supervisor who passed `--control` needs
@@ -634,7 +655,7 @@ pub fn run_supervised(
     // errors). It is *compatible* with fallback: the model list is exactly the
     // fallback chain there.
     if multi_model {
-        validate_multi_model(batch_run, fallback_mode, stream, args)?;
+        validate_multi_model(batch_run, drive_fallback_chain, stream, args)?;
     }
     // Selection already preserves explicit caller/config order (and uses registry
     // order for `--all`). Fallback treats that sequence as its priority chain;
@@ -662,7 +683,7 @@ pub fn run_supervised(
         args,
         &selected_ids,
         batch_run,
-        fallback_mode,
+        drive_fallback_chain,
         &project_start,
         control_shape.is_some(),
     )?;
@@ -694,7 +715,13 @@ pub fn run_supervised(
     if !anchor_control.is_some_and(ControlShape::drives_turn) {
         validate_session_output_format(session_wiring.as_ref(), explicit_format)?;
     }
-    validate_stream(stream, &specs, batch_run, schema.is_some(), fallback_mode)?;
+    validate_stream(
+        stream,
+        &specs,
+        batch_run,
+        schema.is_some(),
+        drive_fallback_chain,
+    )?;
     // Resolve the approval mode (CLI --mode > --bypass/--no-bypass > config
     // `mode` > config `bypass` > the built-in default, which is `default`). A
     // A mode a selected harness cannot express is refused here. A prompt-capable
@@ -1203,7 +1230,7 @@ pub fn run_supervised(
     // harness CLI, so the driver submits its turn to the pooled server instead of
     // running the job — which is what lets a chain hold both kinds. Outside a
     // chain the single-turn HTTP branch below is unchanged.
-    let controlled_fallback = fallback_mode && controlled.is_some() && !args.print_command;
+    let controlled_fallback = drive_fallback_chain && controlled.is_some() && !args.print_command;
     let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
         || controlled_fallback
     {
@@ -1214,7 +1241,7 @@ pub fn run_supervised(
         let streamed = drive_plan_sequentially(
             plan,
             &jobs,
-            fallback_mode,
+            drive_fallback_chain,
             multi_model,
             history_writer.as_ref(),
             &unit_ids,
@@ -1336,7 +1363,7 @@ pub fn run_supervised(
             server_overloaded_backoff(attempts);
         };
         (results, None)
-    } else if fallback_mode && !args.print_command {
+    } else if drive_fallback_chain && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
         // this branch does is complete.
@@ -3454,8 +3481,8 @@ fn control_capable_ids() -> String {
 
 /// Refuse `--stream` combined with anything it cannot serve: a batch
 /// (multi-prompt) run or structured output — each needs the whole output at
-/// once, which streaming does not provide — and, in the default `parallel` mode,
-/// more than one harness. A loud usage error before anything spawns.
+/// once, which streaming does not provide — and, in `parallel` mode, more than
+/// one harness. A loud usage error before anything spawns.
 ///
 /// A **fallback** chain may list several candidates — harnesses, and each
 /// harness's models (the multi-model half is refused in [`validate_multi_model`],
@@ -3660,11 +3687,17 @@ fn run_fork_batch(
     outcomes
 }
 
-/// Refuse the run shapes fallback mode cannot express, before anything spawns.
+/// Refuse the run shapes a fallback chain cannot express, before anything spawns.
 /// Fallback drives several harnesses in priority order for one prompt, stopping
 /// at the first that runs — so a multi-prompt batch and the explicit `--resume` /
 /// `--fork` continuations (each pins one *specific* harness's native id) are loud
-/// usage errors here. `--stream` is *not* refused (see [`drive_plan_sequentially`]).
+/// usage errors here. Called only for a chain of two or more candidates: a
+/// one-candidate chain has nothing to fall through to, so it carries both
+/// shapes as the single-harness run (see the
+/// `single_candidate_batch_or_continuation` resolution in [`run`]). `origin`
+/// is whether the mode was left unset — fallback is the default — so the
+/// diagnostic can say which mode the caller met.
+/// `--stream` is *not* refused (see [`drive_plan_sequentially`]).
 /// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable
 /// harness in the chain), which fallback settles on under stable availability —
@@ -3673,18 +3706,22 @@ fn run_fork_batch(
 /// shared validators (`validate_modes`, `setup_mock`, …), which run over all specs
 /// regardless of mode — so a flag no candidate could honor still fails fast even
 /// though only one harness will run.
-fn validate_fallback(batch_run: bool, args: &RunRequest) -> Result<(), OneharnessError> {
-    let conflict = |with, why| Err(OneharnessError::FallbackConflict { with, why });
+fn validate_fallback(
+    batch_run: bool,
+    args: &RunRequest,
+    origin: RunModeOrigin,
+) -> Result<(), OneharnessError> {
+    let conflict = |with, why| Err(OneharnessError::FallbackConflict { with, why, origin });
     if batch_run {
         return conflict(
             "a batch run (more than one prompt)",
-            "fallback tries harnesses in order for one prompt; a batch fans one harness over many prompts",
+            "a chain tries harnesses in order for one prompt, while a batch fans one harness over many prompts; select one harness",
         );
     }
     if args.resume.is_some() {
         return conflict(
             "--resume/--fork",
-            "a resumed session belongs to one specific harness, so it cannot fall through to another (use --session, which binds to the fallback anchor)",
+            "a resumed session belongs to one specific harness, so it cannot fall through to another; select that harness alone, use --session (which binds to the chain's anchor), or pass --run-mode parallel",
         );
     }
     Ok(())

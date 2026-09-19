@@ -44,7 +44,9 @@ mod tests {
     fn starter_parses_as_a_valid_config() {
         // The whole point: the scaffold must be a config `config::parse` accepts.
         let cfg = config::parse(starter_config()).expect("starter must parse");
-        assert_eq!(cfg.run_mode, Some(RunMode::Fallback));
+        // The scaffold's explicit line is the mode its comment calls the
+        // default, so it is pinned against the one source of that default.
+        assert_eq!(cfg.run_mode, Some(RunMode::default()));
         assert_eq!(cfg.harnesses.as_deref().unwrap(), ["codex", "claude-code"]);
         assert_eq!(cfg.model_for("codex"), Some("gpt-5.5"));
         assert_eq!(cfg.model_for("claude-code"), Some("claude-opus-4-8"));

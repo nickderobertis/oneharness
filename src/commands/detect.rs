@@ -25,7 +25,7 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
         cwd: None,
     })?;
     let any_missing = report.any_missing();
-    print_report(&report, args.format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
 
     if args.require_available && any_missing {
         eprintln!("oneharness: one or more requested harnesses are not installed");

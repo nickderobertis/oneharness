@@ -27,7 +27,7 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 0
 fi
 
-ONEHARNESS_NO_CONFIG=1 "$bin" list >"${TMPDIR:-/tmp}/oh-control-registry.$$.json"
+ONEHARNESS_NO_CONFIG=1 "$bin" list --format json >"${TMPDIR:-/tmp}/oh-control-registry.$$.json"
 trap 'rm -f "${TMPDIR:-/tmp}/oh-control-registry.$$.json"' EXIT
 
 # Compare in Python: it can import the probe's own tables rather than re-parsing

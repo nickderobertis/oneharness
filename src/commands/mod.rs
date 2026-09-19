@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use oneharness_core::errors::OneharnessError;
 
-use crate::cli::Format;
+use crate::cli::StdoutFormat;
 
 // Selection and identity resolution live in the engine, so every entry point
 // that names harnesses — these verbs and a library caller of
@@ -56,22 +56,22 @@ pub fn print_json<T: Serialize>(value: &T, compact: bool) -> Result<(), Oneharne
 }
 
 /// Write a verb's report to stdout in the format the caller chose: the JSON
-/// document (pretty unless `compact`) or the human-readable view `render_text`
+/// document (pretty unless compact) or the human-readable view `render_text`
 /// produces from the same value.
 ///
 /// One seam for every JSON-stdout verb, so `--format` means the same thing on
 /// each: the text view is a rendering of the report the JSON carries — never a
 /// second computation that could disagree with it — and `--compact` is a JSON
-/// rendering choice that has no bearing on text.
+/// rendering choice that has no bearing on text. Takes the [`StdoutFormat`]
+/// clap settled, so a contradictory pair was refused before the verb worked.
 pub(crate) fn print_report<T: Serialize>(
     value: &T,
-    format: Format,
-    compact: bool,
+    format: StdoutFormat,
     render_text: impl FnOnce(&T) -> String,
 ) -> Result<(), OneharnessError> {
     match format {
-        Format::Json => print_json(value, compact),
-        Format::Text => print_text(&render_text(value)),
+        StdoutFormat::Json { compact } => print_json(value, compact),
+        StdoutFormat::DefaultText | StdoutFormat::Text => print_text(&render_text(value)),
     }
 }
 

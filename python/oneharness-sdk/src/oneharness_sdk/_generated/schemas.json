@@ -430,12 +430,12 @@
         "oneOf": [
           {
             "const": "parallel",
-            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The default \u2014 the historical behavior.",
+            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The opt-in (`--run-mode parallel`, `run_mode =\n\"parallel\"`, `ONEHARNESS_RUN_MODE=parallel`); it was the default before\nthe fallback chain became one.",
             "type": "string"
           },
           {
             "const": "fallback",
-            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]).",
+            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]). The default wherever a run mode\nis left unset \u2014 in the request, every config layer and the environment.",
             "type": "string"
           }
         ]
@@ -588,7 +588,7 @@
       },
       "run_mode": {
         "$ref": "#/$defs/Field9",
-        "description": "The configured run mode, if any. Unset falls back to `parallel` (the\nbuilt-in default) at run time."
+        "description": "The effective run mode: a configured value, else `fallback` (the\nbuilt-in default, attributed to [`DEFAULT_SOURCE`]) \u2014 the report says what\na run would do, so an unset mode is never shown as `null`."
       },
       "schema_file": {
         "$ref": "#/$defs/Field3"
@@ -12983,12 +12983,12 @@
         "oneOf": [
           {
             "const": "parallel",
-            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The default \u2014 the historical behavior.",
+            "description": "Run every selected harness at once, each an independent subprocess, and\nreport them all. The opt-in (`--run-mode parallel`, `run_mode =\n\"parallel\"`, `ONEHARNESS_RUN_MODE=parallel`); it was the default before\nthe fallback chain became one.",
             "type": "string"
           },
           {
             "const": "fallback",
-            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]).",
+            "description": "Run the selected harnesses in priority order (the `--harness` / config\norder, else registry order under `--all`), stopping at the first that\nactually runs the task; fall through only the candidates that cannot run\nat all (see [`startup_failure_reason`]). The default wherever a run mode\nis left unset \u2014 in the request, every config layer and the environment.",
             "type": "string"
           }
         ]

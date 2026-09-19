@@ -6,14 +6,15 @@
 //! [`RunRequest`], own stdout (the buffered report as JSON or `--format text`,
 //! or the NDJSON stream protocol), and map the outcome to a process exit code.
 
+use oneharness_core::domain::config;
 use oneharness_core::domain::events::ActionEvent;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::{RunReport, RunResult, RunStreamEnvelope};
-use oneharness_core::errors::OneharnessError;
+use oneharness_core::errors::{JsonOnlySelection, OneharnessError, StreamOrigin};
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::run::{EventSink, Resume, RunControls, RunRequest, SinkStep};
 
-use crate::cli::RunArgs;
+use crate::cli::{RunArgs, StdoutFormat};
 use crate::commands::{indented, or_null, print_report, printable};
 
 /// Collapse a clap-exclusive `--x` / `--no-x` pair into the single override the
@@ -31,6 +32,21 @@ fn toggle(yes: bool, no: bool) -> Option<bool> {
 }
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
+    // Refused before anything spawns: a run that ran and then exited 2 over
+    // its flags would have billed a turn for nothing. A streaming run is the
+    // one whose stdout `--format` cannot render — it is the NDJSON protocol
+    // from the first event — so an explicit `text` beside it is the same kind
+    // of contradiction `--compact` is (which clap refused while parsing
+    // `StdoutFormat`), and refused the same way, whether the stream came from
+    // the flag or from the `stream` config/ONEHARNESS_STREAM layer — and the
+    // refusal says which.
+    if args.stdout == StdoutFormat::Text {
+        if let Some(origin) = stream_origin(args)? {
+            return Err(OneharnessError::FormatConflict {
+                selection: JsonOnlySelection::Stream(origin),
+            });
+        }
+    }
     let request = RunRequest::from(args);
     let mut sink = StdoutEvents;
     let outcome = oneharness_core::io::run::run(
@@ -49,18 +65,55 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         },
     )?;
 
-    // A streaming run's stdout is the NDJSON protocol whatever `--format`
-    // says: its consumer has been reading `event` lines all along, and the
-    // terminal `result` line is the envelope that closes them.
+    // A streaming run's stdout is the NDJSON protocol: its consumer has been
+    // reading `event` lines all along, and the terminal `result` line is the
+    // envelope that closes them (an explicit `--format text` was refused
+    // above, so nothing is dropped here).
     if outcome.streamed {
         emit_stream_result(&outcome.report)?;
     } else {
-        print_report(&outcome.report, args.format, args.compact, render_text)?;
+        print_report(&outcome.report, args.stdout, render_text)?;
     }
     if let Some(summary) = &outcome.failure_summary {
         eprintln!("{summary}");
     }
     Ok(outcome.exit_code)
+}
+
+/// Where this run's streaming was selected, if it will stream — resolved
+/// exactly as the engine resolves it: the `--stream`/`--no-stream` flag, else
+/// the `stream` value of the config layers (files and `ONEHARNESS_STREAM`)
+/// discovered from `--cwd`, attributed to its layer by the same
+/// [`config::explain`] the `config` verb reports provenance with. Read here
+/// only to refuse `--format text` before a turn is spent: the engine loads the
+/// same layers again for the run, and a config it cannot load fails here with
+/// the error it would have raised there. Skips the load when the flag settles
+/// it, so an ordinary run reads its config once.
+fn stream_origin(args: &RunArgs) -> Result<Option<StreamOrigin>, OneharnessError> {
+    match toggle(args.stream, args.no_stream) {
+        Some(true) => return Ok(Some(StreamOrigin::Flag)),
+        Some(false) => return Ok(None),
+        None => {}
+    }
+    let project_start = match &args.cwd {
+        Some(dir) => dir.clone(),
+        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    };
+    let layers = oneharness_core::io::config::load_layers(
+        args.config.as_deref(),
+        args.no_config,
+        &project_start,
+    )?;
+    let stream = config::explain(&layers).stream;
+    Ok(match (stream.value, stream.source) {
+        (Some(true), Some(source)) if source == config::ENV_SOURCE => {
+            Some(StreamOrigin::Environment)
+        }
+        (Some(true), Some(path)) => Some(StreamOrigin::ConfigFile {
+            path: std::path::PathBuf::from(path),
+        }),
+        _ => None,
+    })
 }
 
 /// The CLI's event sink: each normalized event as one NDJSON

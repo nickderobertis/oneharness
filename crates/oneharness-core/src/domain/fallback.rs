@@ -30,13 +30,27 @@ use crate::domain::signals::FailureKind;
 #[serde(rename_all = "kebab-case")]
 pub enum RunMode {
     /// Run every selected harness at once, each an independent subprocess, and
-    /// report them all. The default — the historical behavior.
+    /// report them all. The opt-in (`--run-mode parallel`, `run_mode =
+    /// "parallel"`, `ONEHARNESS_RUN_MODE=parallel`); it was the default before
+    /// the fallback chain became one.
     Parallel,
     /// Run the selected harnesses in priority order (the `--harness` / config
     /// order, else registry order under `--all`), stopping at the first that
     /// actually runs the task; fall through only the candidates that cannot run
-    /// at all (see [`startup_failure_reason`]).
+    /// at all (see [`startup_failure_reason`]). The default wherever a run mode
+    /// is left unset — in the request, every config layer and the environment.
     Fallback,
+}
+
+/// The mode an unset selection resolves to, on every surface — a library
+/// caller whose request and config layers leave it unset, the CLI, and the
+/// SDKs. This impl is the ONE place that decides it: `io::run` resolves an
+/// unset mode from it and `config::explain` reports the same value from it,
+/// so the run and the `config` verb's explanation cannot drift apart.
+impl Default for RunMode {
+    fn default() -> Self {
+        RunMode::Fallback
+    }
 }
 
 impl RunMode {
@@ -340,6 +354,14 @@ pub fn is_startup_failure(
 mod tests {
     use super::*;
     use crate::domain::signals::Usage;
+
+    #[test]
+    fn an_unset_run_mode_resolves_to_fallback() {
+        // The user's contract: fallback is the default, parallel the opt-in.
+        // Both resolution sites read this impl, so this is the one pin.
+        assert_eq!(RunMode::default(), RunMode::Fallback);
+        assert_eq!(RunMode::default().as_str(), "fallback");
+    }
 
     #[test]
     fn mode_token_round_trips_for_every_variant() {

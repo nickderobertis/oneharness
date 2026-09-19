@@ -4,16 +4,18 @@
 
 One CLI across many agentic coding harnesses. `oneharness` drives **Claude Code,
 Codex, OpenCode, Goose, Qwen Code, Crush, GitHub Copilot CLI, and Cursor** through
-a single non-interactive interface, runs them **in parallel**, and returns **one
-stable JSON shape** built for programmatic consumers.
+a single non-interactive interface, runs them as a **fallback chain** (the first
+that can run does; `--run-mode parallel` runs them all at once), and returns
+**one stable JSON shape** built for programmatic consumers — behind a
+human-readable default view for the person at the terminal.
 
 It exists to make cross-harness automation boring: instead of hand-rolling a
 `run_agent()` for each tool — different flags, different output, different
 "don't prompt me" switch, different skip-if-not-installed dance — you call one
-command and read one JSON document.
+command and read one JSON document (`--format json`, or `--compact`).
 
 ```console
-$ oneharness run --all --prompt "Reply with the single word: pong" --model haiku
+$ oneharness run --all --run-mode parallel --prompt "Reply with the single word: pong" --model haiku --format json
 ```
 
 ```jsonc
@@ -164,9 +166,10 @@ run fails with a usage error before spawning.
 The remaining unified settings — `timeout`, `env`, `bin`, per-harness `args`,
 `cwd`, selection — are enforced by oneharness itself at run time, so they work
 for **every** harness — as does `--schema` ([structured output](#structured-output),
-prompt-based where a harness has no native schema flag). `oneharness list` prints
-this registry as JSON, including each adapter's exact command, its `sync_file`,
-and `supports_resume` / `supports_fork` / `supports_native_schema` /
+prompt-based where a harness has no native schema flag).
+`oneharness list --format json` prints this registry as JSON, including each
+adapter's exact command, its `sync_file`, and `supports_resume` /
+`supports_fork` / `supports_native_schema` /
 `supports_reasoning` / `supports_allowed_tools` / `supports_denied_tools` /
 `supports_hooks` capability flags.
 
@@ -308,11 +311,12 @@ of silently degrading installs to the checksum fallback.
 ## Usage
 
 `list`/`detect`/`config`/`sync`/`run`/`usage`/`interrupt` and the bounded
-`history` subcommands emit JSON to **stdout** by default (diagnostics go to
-**stderr**) and take `--format text` for a human-readable view of the same
-report (see *`--format` and `--compact`* below), `gate` speaks a harness's
-hook protocol on stdin/stdout, and `init` scaffolds a starter config with a
-plain confirmation line.
+`history` subcommands print a human-readable **text** view to stdout by default
+(diagnostics go to **stderr**) and take `--format json` — or `--compact`, which
+implies it — for the JSON report that is the programmatic contract (see
+*`--format` and `--compact`* below), `gate` speaks a harness's hook protocol on
+stdin/stdout, and `init` scaffolds a starter config with a plain confirmation
+line.
 
 ```console
 oneharness init                                   # scaffold a starter oneharness.toml (refuses to overwrite; --force to replace)
@@ -322,15 +326,16 @@ oneharness detect --all                           # which harnesses are installe
 oneharness config                                 # effective layered config + where each value came from
 oneharness sync                                   # merge the unified settings into each harness's own config file
 oneharness sync --global                          # install [[hooks]] into the user-global config instead of the project
-oneharness run --all --prompt "…"                 # run everywhere, in parallel
+oneharness run --all --prompt "…"                 # a fallback chain over every harness: the first that can run does
+oneharness run --all --run-mode parallel --prompt "…"  # run everywhere at once
 oneharness run --harness claude-code,codex --prompt-file task.md
 oneharness run --harness claude-code --system "$(cat ctx.md)" \
   --prompt "Q1" --prompt "Q2" --prompt "Q3" --batch-strategy min-tokens  # batch: one harness, N prompts, shared cache prefix
 oneharness run --all --print-command --prompt "…" # dry run: show commands, run nothing
 oneharness gate claude-code --deny-if-contains X  # the pre-tool gate an installed hook invokes (reads stdin)
 oneharness usage                                  # how much subscription headroom is left (costs no model turn)
-oneharness usage --format text                    # …the same, for humans
-oneharness run --harness codex --prompt "…" --format text  # any JSON verb, rendered for a person
+oneharness usage --format json                    # …the same, as the JSON contract (text is the default)
+oneharness run --harness codex --prompt "…" --compact  # one-line JSON: --compact alone selects json
 ```
 
 Useful `run` flags:
@@ -348,9 +353,9 @@ Useful `run` flags:
   scheduled to exploit the shared prefix cache (`speed`, the default, or
   `min-tokens`); see [batch runs](#batch-runs-same-prefix-prompt-caching). No
   effect on a single-prompt run.
-- `--run-mode <parallel|fallback>` — how the selected harnesses are run
-  (`parallel`, the default, or `fallback`); also `run_mode` in config /
-  `ONEHARNESS_RUN_MODE`. See [Fallback mode](#fallback-mode-first-that-runs-wins).
+- `--run-mode <fallback|parallel>` — how the selected harnesses are run
+  (`fallback`, the default, or `parallel`, the opt-in); also `run_mode` in
+  config / `ONEHARNESS_RUN_MODE`. See [Fallback mode](#fallback-mode-first-that-runs-wins).
 - `--server-overloaded-max-retries <N>` — retry a zero-work Codex
   `server_overloaded` refusal on the same identity before fallback (default 2;
   `0` disables retries). Waits use exponential backoff from 100 ms, capped at
@@ -391,9 +396,9 @@ Useful `run` flags:
   caller-owned handle: oneharness maps `<name>` to the harness's native session id
   in a small store, so you thread **one name** across turns instead of extracting
   and re-passing the id yourself. The first `--session <name>` run starts fresh and
-  captures the id; later runs with the same name resume it. **Single-harness** in
-  the default parallel mode; under `--run-mode fallback` it binds to the first
-  session-capable harness in the chain. Only for harnesses that expose a session id
+  captures the id; later runs with the same name resume it. Under the default
+  `fallback` mode it binds to the first session-capable harness in the chain;
+  under `--run-mode parallel` it is **single-harness**. Only for harnesses that expose a session id
   headlessly (`session_capable` in `oneharness list`) — others are a loud usage
   error. Without an explicit format, oneharness selects the harness's
   session-id-bearing format automatically; an explicitly pinned incompatible
@@ -445,14 +450,16 @@ Useful `run` flags:
 - `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`).
 - `--config <path>` / `--no-config` — load exactly one config file / ignore all
   config files (see below).
-- `--format <json|text>` / `--compact` — see the next section.
+- `--format <text|json>` / `--compact` — see the next section.
 
 ### `--format` and `--compact`
 
 Every verb whose stdout is a JSON document takes the same `--format
-<json|text>` flag (its `--help` names it, with the default). **`json` is the
-default**: the programmatic contract, unchanged. `--format text` renders the
-same report for a person at a terminal — for `run`, each candidate with its
+<text|json>` flag (its `--help` names it, with the default). **`text` is the
+default** — wherever stdout points, a pipe or a file the same as a terminal;
+there is no TTY heuristic — and **`--format json` is the programmatic
+contract**, the document every verb printed by default before the flip. `--format
+text` renders the same report for a person — for `run`, each candidate with its
 status, exit code, duration, the normalized `text` (or a line saying it is
 `null` and why), the failure classification and error when present, the
 structured value under `--schema`, the `session` and `fallback` blocks, and
@@ -463,12 +470,19 @@ control character a harness wrote is flattened before it is drawn. Exit codes
 and stderr are the same under either format. Any other value is a usage error.
 
 `--format` is a printing choice, not a setting: it has no `oneharness.toml` key
-and no `ONEHARNESS_FORMAT` override, and a program that wants the JSON should
-say `--format json` rather than lean on the default — the SDKs already do.
+and no `ONEHARNESS_FORMAT` override. A program that wants the JSON says
+`--format json` (or `--compact`) — the SDKs do.
 
-`--compact` selects single-line JSON. Beside `--format text` it is accepted and
-has no effect. A streaming `run --stream` keeps its NDJSON event/result protocol
-whatever `--format` says, and `history watch` keeps its own `--format jsonl`.
+`--compact` selects single-line JSON, and it is a JSON rendering choice: alone
+it selects `--format json` (so a consumer that already passed it stays on the
+contract), and beside an explicit `--format text` it is a usage error (exit 2)
+naming both flags. A streaming run keeps its NDJSON event/result protocol
+whether or not `--format json` is named; an explicit `--format text` beside a
+run that streams — `--stream`, or `stream` in config / `ONEHARNESS_STREAM` —
+is the same usage error, refused before any harness runs and naming where the
+stream was selected (the file that set `stream = true`, or the variable), so
+`--no-stream` is offered where it is the way out. `history watch` keeps its
+own `--format jsonl`.
 
 ### Configuration
 
@@ -563,7 +577,7 @@ schema_file = "person.json"     # --schema (structured output; relative to proje
 schema_max_retries = 2          # --schema-max-retries (default 2)
 server_overloaded_max_retries = 2 # --server-overloaded-max-retries (default 2)
 max_parallel = 4                # --max-parallel
-run_mode = "parallel"           # --run-mode ("parallel" or "fallback")
+run_mode = "parallel"           # --run-mode ("fallback", the default, or "parallel")
 require_available = false       # --require-available
 history = false                 # --history / --no-history (opt-in run history)
 history_dir = "~/logs/oh"       # --history-dir (default: platform state dir)
@@ -1001,9 +1015,9 @@ invalidating earlier ones):
   closing the stream — oneharness's next write fails (broken pipe) and it tears
   the harness down, so a bad turn is cut off instead of paid for in full. Stream
   runs one harness at a time (no batch, no `--schema`); `--stream` implies the
-  `--events` format selection. In the default `parallel` mode that means exactly
-  one selected harness — several would interleave their streams on one stdout —
-  but a whole [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) chain
+  `--events` format selection. In `parallel` mode that means exactly one
+  selected harness — several would interleave their streams on one stdout —
+  but a whole [fallback](#fallback-mode-first-that-runs-wins) chain (the default)
   is allowed, because only the candidate that runs ever publishes events.
   Streaming is also settable declaratively as `stream = true` in config (or
   `ONEHARNESS_STREAM`), so a consumer that always reads events does not have to
@@ -1113,8 +1127,8 @@ Either way oneharness **validates the result itself** (with the
 harness ignores is still caught. On a validation failure it re-prompts the
 harness with the prior answer and the exact errors, up to `--schema-max-retries`
 times (default 2 — so at most `1 + N` invocations per harness). The loop runs
-**per harness, in parallel**, so a `--schema` run across many harnesses is still
-concurrent.
+**per harness**, so a `--schema` run across many harnesses under `--run-mode
+parallel` is still concurrent.
 
 > Codex CLI also has a native `--output-schema`, but it takes a schema *file*
 > and is [reportedly ignored once the agent uses tools](https://github.com/openai/codex/issues/15451),
@@ -1189,9 +1203,9 @@ harness's preferred session-bearing format (notably Qwen `stream-json`; Codex no
 defaults to `--json` for every run). An explicit `--output-format` or config
 `output_format` still wins only when that format can emit the id; pairing
 `--session` with an incompatible format such as `text` is a usage error before
-the harness runs, never a warning after a lost capture. In the
-default **parallel** run mode it is single-harness; under
-[`--run-mode fallback`](#fallback-mode-first-that-runs-wins) it is allowed on a
+the harness runs, never a warning after a lost capture. Under
+`--run-mode parallel` it is single-harness; under the default
+[fallback](#fallback-mode-first-that-runs-wins) mode it is allowed on a
 multi-harness chain and binds to the **anchor** — the candidate the stored record
 already belongs to when it is still in the chain, else the first session-capable
 one in priority order. The token is applied to the anchor's argv only, so no other
@@ -1309,10 +1323,10 @@ silently is not there is worse than none:
   request is refused**, naming the mechanism. Creating one on such a mechanism
   still runs, and says on stderr that it will not continue. See
   [Session handle](#session-handle).
-- **Exactly one live turn.** In the default `parallel` run mode that means
-  exactly one harness, which must declare a control mechanism (`control` in
-  `oneharness list`). A `--run-mode fallback` chain starts its candidates one at
-  a time — it reaches candidate N+1 only because candidate N has finished — so it
+- **Exactly one live turn.** In `parallel` mode that means exactly one
+  harness, which must declare a control mechanism (`control` in `oneharness
+  list`). A fallback chain — the default mode — starts its candidates one at a
+  time — it reaches candidate N+1 only because candidate N has finished — so it
   is already one turn and is accepted whatever its length, **whatever mechanisms
   its candidates use**. Every candidate must declare one, because any of them can
   end up serving and a supervisor told the lever exists must never find the
@@ -1578,17 +1592,19 @@ Notes worth keeping, all from the probe rather than documentation:
 
 ### Fallback mode (first that runs wins)
 
-By default `run` drives every selected harness in **parallel** and reports them
-all. `--run-mode fallback` (or `run_mode = "fallback"` in config) instead runs
-them in **priority order** and stops at the **first harness that actually runs
-the task** — falling through only the candidates that *cannot run at all*. This
-is graceful degradation across a set of harnesses a repo declares it supports:
-list a few, and whichever one a given contributor (or CI runner) has installed
-and authenticated is the one that runs.
+By default `run` runs the selected harnesses in **priority order** and stops at
+the **first harness that actually runs the task** — falling through only the
+candidates that *cannot run at all*. This is graceful degradation across a set
+of harnesses a repo declares it supports: list a few, and whichever one a given
+contributor (or CI runner) has installed and authenticated is the one that runs.
+`--run-mode parallel` (or `run_mode = "parallel"` in config /
+`ONEHARNESS_RUN_MODE=parallel`) is the opt-in that instead drives every
+selected harness at once and reports them all; `--run-mode fallback` names the
+default explicitly.
 
 ```console
 # Try claude-code first; if it isn't set up, fall through to codex, then opencode.
-oneharness run --run-mode fallback --harness claude-code,codex,opencode \
+oneharness run --harness claude-code,codex,opencode \
   --prompt "Explain the failing test" --compact | jq '.fallback, .results[].status'
 ```
 
@@ -1728,13 +1744,23 @@ usage error **before anything spawns** — even for a harness that is never
 reached. This keeps people and agents writing commands that work for every
 harness the fallback config supports, not just the one that happens to run.
 
-Fallback is single-outcome by nature, so it refuses a [batch](#batch-runs-same-prefix-prompt-caching)
-run and the low-level `--resume` / `--fork` continuations (each pins one specific
-harness's native id) as loud usage errors. The higher-level
-[`--session`](#session-handle) handle **is** allowed: it binds to the anchor (the
-first session-capable harness in the chain), so a named conversation degrades
-gracefully across the same priority set. Exit code: `0` when the harness that ran
-succeeded, `1` when it ran but failed **or** when no candidate could run at all.
+A chain is single-outcome by nature, so over **two or more candidates** it
+refuses a [batch](#batch-runs-same-prefix-prompt-caching) run and the low-level
+`--resume` / `--fork` continuations (each pins one specific harness's native id)
+as loud usage errors — the diagnostic says whether the mode was the default or
+`--run-mode fallback`, and names `--run-mode parallel` and selecting one harness
+as the ways out. A chain of **exactly one** candidate has nothing to fall through
+to, so it carries both shapes as the single-harness run they are (its report's
+`fallback` block is `null`, since no chain ran): a bare
+`run --harness claude-code --resume <id>` or `--prompt a --prompt b` keeps
+working under the default. The higher-level [`--session`](#session-handle) handle
+**is** allowed on any chain: it binds to the anchor (the first session-capable
+harness in the chain), so a named conversation degrades gracefully across the
+same priority set. Exit code: `0` when the harness that ran succeeded, `1` when
+it ran but failed **or** when no candidate could run at all — so a bare
+single-harness run whose harness is not installed exits `1` (its result is
+still `skipped` data, and the `fallback` block says `not-installed`), where
+`--run-mode parallel` exits `0` unless `--require-available`.
 
 **Work evidence decides, so streaming changes nothing.** Before any of the
 reasons above are consulted, a candidate whose result carries **evidence it did
@@ -1762,8 +1788,8 @@ that *does* fall through has published nothing a consumer could act on. Its whol
 transcript is still in `results` — withheld from the live stream, not discarded.
 
 ```console
-# Watch the turn while keeping the fallback chain:
-oneharness run --run-mode fallback --harness claude-code,codex --prompt "Fix the failing test" --stream
+# Watch the turn while keeping the fallback chain (the default mode):
+oneharness run --harness claude-code,codex --prompt "Fix the failing test" --stream
 ```
 
 ### Multiple models (fan out over the model axis)
@@ -1774,29 +1800,30 @@ than once** (or set config `models = [...]` / `ONEHARNESS_MODELS`) and `run` fan
 out over the **model axis**, and it composes with the two run modes exactly as you
 would expect:
 
-- **`parallel` (the default) — the harness × model cross-product.** Every selected
+- **`fallback` (the default) — the (harness, model) priority chain.** The
+  cross-product is the fallback order (harness-major, model-minor); the run stops
+  at the first pair that actually runs. Here a **per-model rejection falls
+  through**: an unavailable model (`model_not_found` → `model-not-found`) or an
+  over-limit one (`rate_limit` → `rate-limit`) tries the next model, exactly as a
+  missing harness tries the next harness — graceful degradation across models.
+  (With a single model those still stop the chain — see the
+  [fallback table](#fallback-mode-first-that-runs-wins).)
+
+  ```console
+  # Prefer opus; if it's unavailable or rate-limited, fall through to sonnet:
+  oneharness run --harness claude-code --model opus --model sonnet \
+    --prompt "Explain this diff" --compact | jq '.fallback'
+  ```
+
+- **`--run-mode parallel` — the harness × model cross-product.** Every selected
   harness runs once per model, all concurrently, and `results` holds one entry per
   `(harness, model)` pair (harness-major, then model-minor). One harness × three
   models is three runs; `--all` × two models is every harness twice.
 
   ```console
   # Compare two models across two harnesses — 4 runs in parallel:
-  oneharness run --harness claude-code,codex --model opus --model sonnet \
+  oneharness run --run-mode parallel --harness claude-code,codex --model opus --model sonnet \
     --prompt "Explain this diff" --compact | jq '.results[] | {harness, model, status}'
-  ```
-
-- **`fallback` — the (harness, model) priority chain.** The same cross-product
-  becomes the fallback order (harness-major, model-minor); the run stops at the
-  first pair that actually runs. Here a **per-model rejection falls through**: an
-  unavailable model (`model_not_found` → `model-not-found`) or an over-limit one
-  (`rate_limit` → `rate-limit`) tries the next model, exactly as a missing harness
-  tries the next harness — graceful degradation across models. (With a single
-  model those still stop the chain — see the [fallback table](#fallback-mode-first-that-runs-wins).)
-
-  ```console
-  # Prefer opus; if it's unavailable or rate-limited, fall through to sonnet:
-  oneharness run --run-mode fallback --harness claude-code --model opus --model sonnet \
-    --prompt "Explain this diff" --compact | jq '.fallback'
   ```
 
 Each result carries its own `model` (the value put on the harness's model flag,
@@ -1808,8 +1835,9 @@ units, more than one model is a loud usage error with a [batch](#batch-runs-same
 (its cache prefix is per harness/model) and with the single-unit continuations
 `--resume` / `--fork` / `--session`. [`--stream`](#streaming-events) is refused
 only in `parallel` mode, where the fan-out really is several concurrent results
-whose event streams would interleave; under `--run-mode fallback` the pairs are a
-priority chain with one outcome, so the chain streams like a harness chain does.
+whose event streams would interleave; under the default `fallback` mode the
+pairs are a priority chain with one outcome, so the chain streams like a harness
+chain does.
 
 ### Batch runs (same-prefix prompt caching)
 
@@ -2050,9 +2078,9 @@ from the session's first prompt — or set explicitly with `--history-name <NAME
 
 **Programmatic handoff.** The run report echoes the session file as
 `history_file` (absolute), so a consumer captures it and reads the session back
-later. The `oneharness history` verb views and manages the store — JSON on stdout
-by default (the programmatic contract), `--format text` for a human view on
-every bounded subcommand:
+later. The `oneharness history` verb views and manages the store — a human
+view on stdout by default, `--format json` (or `--compact`) for the programmatic
+contract, on every bounded subcommand:
 
 ```bash
 oneharness history list [--project <dir> | --all-projects]   # sessions, newest first
@@ -2082,7 +2110,7 @@ run *before* launching a long job, rather than the thing you learn after one
 fails on quota.
 
 ```console
-$ oneharness usage --harness claude-code,copilot,goose --format text
+$ oneharness usage --harness claude-code,copilot,goose
 usage as of 2026-07-29T16:41:13Z
 
 claude-code [CLAUDE_CONFIG_DIR=/home/u/.claude] · plan max · auth subscription
@@ -2098,8 +2126,8 @@ goose [ambient] · auth unknown
   no headroom to report: no first-party plan quota exists to report
 ```
 
-JSON on stdout is the contract (`--format text` is the view above); it carries
-its own `schema_version`, independent of the run report's.
+`--format json` on stdout is the contract (the view above is the default); it
+carries its own `schema_version`, independent of the run report's.
 
 Three things it will not do:
 
@@ -2122,7 +2150,7 @@ Three things it will not do:
 Useful flags: `--all` / `--harness <id,…>` / `--exclude <id,…>` (selection,
 defaulting to every harness — `--exclude` drops ids from that sweep and is
 refused alongside `--harness`, which already names the selection),
-`--format <json|text>`, `--compact`,
+`--format <text|json>` (text is the default), `--compact`,
 `--timeout <secs>` (per probe, default 60), plus the usual `--bin`, `--cwd`,
 `--config`, and `--no-config`.
 

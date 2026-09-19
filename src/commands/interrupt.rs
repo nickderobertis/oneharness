@@ -24,7 +24,8 @@ use crate::commands::{print_report, printable};
 pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     // Validated before anything is resolved: a redirection that cannot be
     // carried is the supervisor's mistake, and it should hear about it while the
-    // turn it meant to redirect is still running.
+    // turn it meant to redirect is still running. The format pair likewise —
+    // an interrupt refused for its flags must not have been delivered.
     let request = match args.input.as_deref() {
         Some(input) => ControlRequest::redirect(
             RedirectInput::new(input)
@@ -65,7 +66,7 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
     // stdout — and `println!` panics on that instead of reporting it. The same
     // writer every other JSON-emitting command uses, so the answer frame fails
     // the way a report does.
-    print_report(&response, args.format, args.compact, render_text)?;
+    print_report(&response, args.stdout, render_text)?;
     Ok(i32::from(!response.is_ok()))
 }
 

@@ -247,8 +247,9 @@ export interface Field31 {
   [k: string]: unknown;
 }
 /**
- * The configured run mode, if any. Unset falls back to `parallel` (the
- * built-in default) at run time.
+ * The effective run mode: a configured value, else `fallback` (the
+ * built-in default, attributed to [`DEFAULT_SOURCE`]) — the report says what
+ * a run would do, so an unset mode is never shown as `null`.
  */
 export interface Field9 {
   source: string | null;

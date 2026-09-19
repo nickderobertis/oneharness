@@ -30861,6 +30861,13 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
 /// a printed frame). The verb set is [`json_document_verb_paths`]'s — read off
 /// the clap tree — and a verb it lists with no runnable spelling here fails
 /// loudly, so the flag cannot reach a verb these journeys never drive.
+///
+/// `history_dir` doubles as the interrupt's `--session-dir`, which makes it a
+/// unix-socket ADDRESS and not just a place to put files: hand it a
+/// [`control_store_dir`], never a plain [`ScratchDir`]. Under macOS's
+/// `/var/folders/…` temp dir the address overruns `sun_path`, and `interrupt`
+/// then refuses it as a usage error — exit 2, nothing on stdout — before any
+/// format is printed, which read here as the flag failing on one platform.
 fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
     let claude = bin_override("claude-code");
     let cursor = bin_override("cursor");
@@ -30951,7 +30958,7 @@ fn every_json_verb_prints_its_text_view_by_default_and_json_on_request() {
     // (what `--format text` prints), and `--format json` prints the document —
     // pinned across every C1 verb in one place, beside each verb's own
     // text-view journey.
-    let store = ScratchDir::new("format-default-verbs").unwrap();
+    let store = control_store_dir("fmt-default");
     let history_dir = store.display().to_string();
     let envs = [("MOCK_STDOUT", r#"{"result":"pong"}"#)];
     for verb in json_document_verbs(&history_dir) {
@@ -30966,7 +30973,7 @@ fn compact_alone_selects_one_line_json_on_every_verb() {
     // JSON: alone it prints the same document `--format json --compact` does —
     // one line — which is what keeps every consumer already passing it on the
     // contract.
-    let store = ScratchDir::new("format-compact-verbs").unwrap();
+    let store = control_store_dir("fmt-compact");
     let history_dir = store.display().to_string();
     let envs = [("MOCK_STDOUT", r#"{"result":"pong"}"#)];
     for verb in json_document_verbs(&history_dir) {
@@ -31013,7 +31020,7 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     // must not have been delivered
     // (`a_format_refusal_leaves_a_deliverable_interrupt_undelivered` proves
     // that against a live turn).
-    let store = ScratchDir::new("format-compact-text").unwrap();
+    let store = control_store_dir("fmt-compact-text");
     let history_dir = store.display().to_string();
     let session_file = store.join("kept.jsonl");
     std::fs::write(&session_file, "").unwrap();

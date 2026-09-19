@@ -42,6 +42,17 @@ pub enum RunMode {
     Fallback,
 }
 
+/// The mode an unset selection resolves to, on every surface — a library
+/// caller whose request and config layers leave it unset, the CLI, and the
+/// SDKs. This impl is the ONE place that decides it: `io::run` resolves an
+/// unset mode from it and `config::explain` reports the same value from it,
+/// so the run and the `config` verb's explanation cannot drift apart.
+impl Default for RunMode {
+    fn default() -> Self {
+        RunMode::Fallback
+    }
+}
+
 impl RunMode {
     /// Every mode, for the CLI's possible-value list.
     pub const ALL: [RunMode; 2] = [RunMode::Parallel, RunMode::Fallback];
@@ -343,6 +354,14 @@ pub fn is_startup_failure(
 mod tests {
     use super::*;
     use crate::domain::signals::Usage;
+
+    #[test]
+    fn an_unset_run_mode_resolves_to_fallback() {
+        // The user's contract: fallback is the default, parallel the opt-in.
+        // Both resolution sites read this impl, so this is the one pin.
+        assert_eq!(RunMode::default(), RunMode::Fallback);
+        assert_eq!(RunMode::default().as_str(), "fallback");
+    }
 
     #[test]
     fn mode_token_round_trips_for_every_variant() {

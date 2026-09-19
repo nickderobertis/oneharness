@@ -597,9 +597,10 @@ pub fn run_supervised(
             .cloned()
             .collect()
     };
-    // `--run-mode` (CLI beats config; default `fallback`, on every surface — a
-    // library caller, the CLI and the SDKs all resolve an unset mode here, so
-    // this is the one site that decides it; `parallel` is the opt-in). Fallback
+    // `--run-mode` (CLI beats config; an unset mode is `RunMode::default()` —
+    // the one source, which `config::explain` reports from too — on every
+    // surface: a library caller, the CLI and the SDKs; `parallel` is the
+    // opt-in). Fallback
     // runs the selected harnesses in priority order, stopping at the first that
     // runs and falling through only harnesses that cannot run at all. It is
     // single-outcome by nature, so it refuses the multi-prompt / continuation
@@ -607,7 +608,7 @@ pub fn run_supervised(
     // capability validator below, so a flag unsupported by ANY listed harness
     // fails fast even though only one harness will run (the command must be
     // valid for the whole set).
-    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or(RunMode::Fallback);
+    let run_mode = args.run_mode.or(cfg.run_mode).unwrap_or_default();
     let run_mode_origin = if args.run_mode.is_none() && cfg.run_mode.is_none() {
         RunModeOrigin::Default
     } else {

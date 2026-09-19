@@ -1197,7 +1197,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         server_overloaded_max_retries: pick(layers, |c| c.server_overloaded_max_retries)
             .or_default(SERVER_OVERLOADED_MAX_RETRIES_DEFAULT),
         max_parallel: pick(layers, |c| c.max_parallel),
-        run_mode: pick(layers, |c| c.run_mode).or_default(RunMode::Fallback),
+        run_mode: pick(layers, |c| c.run_mode).or_default(RunMode::default()),
         require_available: pick(layers, |c| c.require_available).or_default(false),
         history: pick(layers, |c| c.history).or_default(false),
         history_dir: pick(layers, |c| c.history_dir.clone()),

@@ -6,13 +6,12 @@
 //! resolved field.
 
 use crate::cli::ConfigArgs;
-use crate::commands::{print_report, printable, resolve_format};
+use crate::commands::{print_report, printable};
 use oneharness_core::domain::config as domain_config;
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 
 pub fn run(args: &ConfigArgs) -> Result<i32, OneharnessError> {
-    let format = resolve_format(args.format, args.compact)?;
     // Mirror `run`'s discovery exactly (--cwd, else the current directory) so
     // the report shows what a run from that directory would actually load.
     let project_start = match &args.cwd {
@@ -21,7 +20,7 @@ pub fn run(args: &ConfigArgs) -> Result<i32, OneharnessError> {
     };
     let layers = config_io::load_layers(args.config.as_deref(), args.no_config, &project_start)?;
     let report = domain_config::explain(&layers);
-    print_report(&report, format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
     Ok(0)
 }
 

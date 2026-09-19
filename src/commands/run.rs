@@ -14,8 +14,8 @@ use oneharness_core::errors::{JsonOnlySelection, OneharnessError, StreamOrigin};
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::run::{EventSink, Resume, RunControls, RunRequest, SinkStep};
 
-use crate::cli::{Format, RunArgs};
-use crate::commands::{indented, or_null, print_report, printable, resolve_format};
+use crate::cli::{RunArgs, StdoutFormat};
+use crate::commands::{indented, or_null, print_report, printable};
 
 /// Collapse a clap-exclusive `--x` / `--no-x` pair into the single override the
 /// engine takes: `None` when neither was passed (the config layer still
@@ -32,15 +32,15 @@ fn toggle(yes: bool, no: bool) -> Option<bool> {
 }
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
-    // Both stdout contradictions are refused before anything spawns: a run
-    // that ran and then exited 2 over its flags would have billed a turn for
-    // nothing. A streaming run is the one whose stdout `--format` cannot
-    // render — it is the NDJSON protocol from the first event — so a `text`
-    // beside it is the same kind of contradiction `--compact` is, and refused
-    // the same way, whether the stream came from the flag or from the
-    // `stream` config/ONEHARNESS_STREAM layer — and the refusal says which.
-    let format = resolve_format(args.format, args.compact)?;
-    if args.format == Some(Format::Text) {
+    // Refused before anything spawns: a run that ran and then exited 2 over
+    // its flags would have billed a turn for nothing. A streaming run is the
+    // one whose stdout `--format` cannot render — it is the NDJSON protocol
+    // from the first event — so an explicit `text` beside it is the same kind
+    // of contradiction `--compact` is (which clap refused while parsing
+    // `StdoutFormat`), and refused the same way, whether the stream came from
+    // the flag or from the `stream` config/ONEHARNESS_STREAM layer — and the
+    // refusal says which.
+    if args.stdout == StdoutFormat::Text {
         if let Some(origin) = stream_origin(args)? {
             return Err(OneharnessError::FormatConflict {
                 selection: JsonOnlySelection::Stream(origin),
@@ -72,7 +72,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     if outcome.streamed {
         emit_stream_result(&outcome.report)?;
     } else {
-        print_report(&outcome.report, format, args.compact, render_text)?;
+        print_report(&outcome.report, args.stdout, render_text)?;
     }
     if let Some(summary) = &outcome.failure_summary {
         eprintln!("{summary}");

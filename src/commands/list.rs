@@ -6,7 +6,7 @@
 //! this is the shell that prints it.
 
 use crate::cli::ListArgs;
-use crate::commands::{print_report, printable, resolve_format};
+use crate::commands::{print_report, printable};
 use oneharness_core::domain::mode::ModeHeadless;
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::registry::{self, ListRequest};
@@ -16,9 +16,8 @@ use oneharness_core::io::registry::{self, ListRequest};
 pub use oneharness_core::io::registry::{HarnessInfo, ListReport, ModeInfo, VariantInfo};
 
 pub fn run(args: &ListArgs) -> Result<i32, OneharnessError> {
-    let format = resolve_format(args.format, args.compact)?;
     let report = registry::list(&ListRequest::default())?;
-    print_report(&report, format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
     Ok(0)
 }
 

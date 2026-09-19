@@ -6,7 +6,7 @@
 //! text`) and maps `--require-available` to an exit code.
 
 use crate::cli::DetectArgs;
-use crate::commands::{print_report, printable, resolve_format};
+use crate::commands::{print_report, printable};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::detect::{self, DetectRequest};
 
@@ -15,7 +15,6 @@ use oneharness_core::io::detect::{self, DetectRequest};
 pub use oneharness_core::io::detect::{DetectInfo, DetectReport};
 
 pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
-    let format = resolve_format(args.format, args.compact)?;
     let report = detect::detect(&DetectRequest {
         all: args.all,
         harness: args.harness.clone(),
@@ -26,7 +25,7 @@ pub fn run(args: &DetectArgs) -> Result<i32, OneharnessError> {
         cwd: None,
     })?;
     let any_missing = report.any_missing();
-    print_report(&report, format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
 
     if args.require_available && any_missing {
         eprintln!("oneharness: one or more requested harnesses are not installed");

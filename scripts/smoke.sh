@@ -215,7 +215,7 @@ n_list="$(count_matches "$out" '"default_bin"')"
 # 1b. A bare `list` is the human view — the same text `--format text` prints,
 #     never a JSON document — and `--format json` is the document `--compact`
 #     renders on one line.
-format_fix="check commands::resolve_format in src/commands/mod.rs and the list verb's --format field in src/cli.rs"
+format_fix="check cli::StdoutFormat in src/cli.rs (the --format/--compact pair every verb flattens in) and commands::print_report in src/commands/mod.rs"
 LAST_CMD="$oh list"
 bare="$($oh list)" || fail "bare list exited non-zero" "$LAST_CMD" "" "$format_fix"
 case "$bare" in

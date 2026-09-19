@@ -17,9 +17,9 @@ use std::io::Write;
 
 use serde::Serialize;
 
-use oneharness_core::errors::{JsonOnlySelection, OneharnessError};
+use oneharness_core::errors::OneharnessError;
 
-use crate::cli::Format;
+use crate::cli::StdoutFormat;
 
 // Selection and identity resolution live in the engine, so every entry point
 // that names harnesses — these verbs and a library caller of
@@ -55,49 +55,23 @@ pub fn print_json<T: Serialize>(value: &T, compact: bool) -> Result<(), Oneharne
     print_text(&format!("{json}\n"))
 }
 
-/// The stdout format a verb's `--format` / `--compact` pair resolves to.
-///
-/// `text` is the default wherever stdout points: a person running a verb by
-/// hand gets a view they can read, and a program that wants the JSON contract
-/// says so. `--compact` is a JSON rendering choice, so alone it selects `json`
-/// (which is what keeps every consumer that already passed it on the
-/// contract), and beside an explicit `--format text` it asks for two things one
-/// stdout cannot be — refused, naming both flags. Called before a verb does
-/// its work, so the refusal never follows a sync that wrote, a probe that ran,
-/// or a turn that was interrupted.
-pub(crate) fn resolve_format(
-    format: Option<Format>,
-    compact: bool,
-) -> Result<Format, OneharnessError> {
-    match (format, compact) {
-        (Some(Format::Text), true) => Err(OneharnessError::FormatConflict {
-            selection: JsonOnlySelection::Compact,
-        }),
-        (Some(format), _) => Ok(format),
-        (None, true) => Ok(Format::Json),
-        (None, false) => Ok(Format::Text),
-    }
-}
-
 /// Write a verb's report to stdout in the format the caller chose: the JSON
-/// document (pretty unless `compact`) or the human-readable view `render_text`
+/// document (pretty unless compact) or the human-readable view `render_text`
 /// produces from the same value.
 ///
 /// One seam for every JSON-stdout verb, so `--format` means the same thing on
 /// each: the text view is a rendering of the report the JSON carries — never a
 /// second computation that could disagree with it — and `--compact` is a JSON
-/// rendering choice that has no bearing on text. Takes the format
-/// [`resolve_format`] settled, so a verb refuses a contradictory pair before
-/// it works rather than after.
+/// rendering choice that has no bearing on text. Takes the [`StdoutFormat`]
+/// clap settled, so a contradictory pair was refused before the verb worked.
 pub(crate) fn print_report<T: Serialize>(
     value: &T,
-    format: Format,
-    compact: bool,
+    format: StdoutFormat,
     render_text: impl FnOnce(&T) -> String,
 ) -> Result<(), OneharnessError> {
     match format {
-        Format::Json => print_json(value, compact),
-        Format::Text => print_text(&render_text(value)),
+        StdoutFormat::Json { compact } => print_json(value, compact),
+        StdoutFormat::DefaultText | StdoutFormat::Text => print_text(&render_text(value)),
     }
 }
 
@@ -138,31 +112,6 @@ pub(crate) fn or_null(value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_defaults_to_text_unless_compact_asks_for_json() {
-        assert_eq!(resolve_format(None, false).unwrap(), Format::Text);
-        assert_eq!(resolve_format(None, true).unwrap(), Format::Json);
-        assert_eq!(
-            resolve_format(Some(Format::Json), false).unwrap(),
-            Format::Json
-        );
-        assert_eq!(
-            resolve_format(Some(Format::Json), true).unwrap(),
-            Format::Json
-        );
-        assert_eq!(
-            resolve_format(Some(Format::Text), false).unwrap(),
-            Format::Text
-        );
-        let refused = resolve_format(Some(Format::Text), true)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            refused.contains("--format text") && refused.contains("--compact"),
-            "{refused}"
-        );
-    }
 
     #[test]
     fn printable_keeps_newlines_and_flattens_every_other_control_character() {

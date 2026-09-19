@@ -9,7 +9,7 @@
 //! and maps `--check` to an exit code.
 
 use crate::cli::SyncArgs;
-use crate::commands::{print_report, printable, resolve_format};
+use crate::commands::{print_report, printable};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::sync::{self as sync_io, FileStatus, SyncRequest, SyncStatus};
 
@@ -20,7 +20,6 @@ pub use oneharness_core::io::sync::{HookFileResult, SyncReport, SyncResult};
 pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     // Settled before the sync writes anything, so a contradictory flag pair
     // refuses a run that has not touched a harness config yet.
-    let format = resolve_format(args.format, args.compact)?;
     let report = sync_io::sync(&SyncRequest {
         cwd: args.cwd.clone(),
         harness: args.harness.clone(),
@@ -35,7 +34,7 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     // the mode is tested here, at the exit mapping, rather than folded into
     // `changes()` where a write-mode report would have to deny its own writes.
     let pending_changes = report.check && report.changes();
-    print_report(&report, format, args.compact, render_text)?;
+    print_report(&report, args.stdout, render_text)?;
 
     if pending_changes {
         eprintln!("oneharness: harness configs are out of sync (run `oneharness sync`)");

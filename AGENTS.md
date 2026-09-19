@@ -200,10 +200,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   through `commands::print_report`, so a verb gains a text view by handing that
   seam a renderer. **The CLI's stdout defaults to `text`** wherever it points
   (never a TTY heuristic); `--format json` is the programmatic contract, and
-  `--compact` alone selects it — so each verb carries `Option<Format>` and
-  resolves it through `commands::resolve_format` BEFORE doing its work, which
-  is where `--format text --compact` is refused (exit 2, naming both) without
-  a sync having written or an interrupt having been delivered. A streaming
+  `--compact` alone selects it — so each verb carries the pair as ONE
+  `cli::StdoutFormat`, parsed at the clap boundary, which is where `--format
+  text --compact` is refused (exit 2, naming both) before any verb runs: the
+  contradiction has no representation past clap, so no sync has written and
+  no interrupt has been delivered when it is refused. A streaming
   run keeps its NDJSON protocol whatever the default is, and `--format text`
   beside one is the same refusal in `commands::run` — whichever layer selected
   the stream, which is why that shell resolves `stream` (flag, else the config

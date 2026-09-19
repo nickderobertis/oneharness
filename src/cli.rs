@@ -9,6 +9,7 @@ use oneharness_core::domain::batch::BatchStrategy;
 use oneharness_core::domain::fallback::RunMode;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
+use oneharness_core::errors::{JsonOnlySelection, OneharnessError};
 
 /// Parse `--output-format` into the core [`OutputFormat`], keeping the
 /// possible-value list (and its `--help` listing + validation error) here in
@@ -45,21 +46,107 @@ fn run_mode_parser() -> impl TypedValueParser<Value = RunMode> {
         .map(|s| RunMode::parse(&s).expect("clap restricts to valid run-mode tokens"))
 }
 
-/// How a verb whose report is a JSON document renders it on stdout: `text`, a
-/// human-readable view of the data (the default on every verb, wherever stdout
-/// points — never a TTY heuristic), or `json`, the programmatic contract. One
-/// type for every verb, so the value list cannot drift between them;
-/// `HistoryWatchFormat` is the deliberate exception (an unbounded stream, not a
-/// document). Each verb carries it as `Option<Format>` and resolves it through
-/// `commands::resolve_format`, because the default is not a fixed value:
-/// `--compact` alone selects `json`.
-///
-/// A printing choice like `--compact`, not a setting: it has no config key, no
-/// `ONEHARNESS_FORMAT` layer, and no field on the engine's request types.
+/// The value of a verb's `--format` flag: `text`, a human-readable view of
+/// the report, or `json`, the programmatic contract. One type for every verb,
+/// so the value list cannot drift between them; `HistoryWatchFormat` is the
+/// deliberate exception (an unbounded stream, not a document). What a verb
+/// reads is [`StdoutFormat`], the flag resolved beside `--compact`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Format {
     Json,
     Text,
+}
+
+/// How a verb whose report is a JSON document renders it on stdout — what its
+/// `--format` / `--compact` pair asked for, parsed as ONE value at the clap
+/// boundary. `text` is the default on every verb, wherever stdout points
+/// (never a TTY heuristic), and `json` is the opt-in; `--compact` is a JSON
+/// rendering choice, so alone it selects `json` (which is what keeps every
+/// consumer that already passed it on the contract). The pair one stdout
+/// cannot be — an explicit `--format text` beside `--compact` — has no
+/// representation past this type: clap refuses it as the usage error it is
+/// (exit 2, naming both flags) before any verb has done a thing, so the
+/// refusal never follows a sync that wrote, a probe that ran, or a turn that
+/// was interrupted.
+///
+/// A printing choice, not a setting: it has no config key, no
+/// `ONEHARNESS_FORMAT` layer, and no field on the engine's request types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdoutFormat {
+    /// Neither flag: the text view, the default.
+    DefaultText,
+    /// `--format text`, said outright. Reads as the default everywhere but
+    /// where something else claims stdout — a `run` that streams refuses it,
+    /// and streams under the default.
+    Text,
+    /// `--format json`, or `--compact` alone (which implies it): the JSON
+    /// document, pretty unless `compact`.
+    Json { compact: bool },
+}
+
+impl StdoutFormat {
+    /// The rendering `--format` (`format`) and `--compact` (`compact`) resolve
+    /// to, or the refusal the contradictory pair earns.
+    fn from_flags(format: Option<Format>, compact: bool) -> Result<Self, OneharnessError> {
+        match (format, compact) {
+            (Some(Format::Text), true) => Err(OneharnessError::FormatConflict {
+                selection: JsonOnlySelection::Compact,
+            }),
+            (Some(Format::Text), false) => Ok(Self::Text),
+            (Some(Format::Json), compact) => Ok(Self::Json { compact }),
+            (None, true) => Ok(Self::Json { compact: true }),
+            (None, false) => Ok(Self::DefaultText),
+        }
+    }
+}
+
+/// `--format` and `--compact` on every JSON-document verb, flattened in, so
+/// the pair reads and refuses the same way on each.
+impl Args for StdoutFormat {
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        cmd.arg(
+            clap::Arg::new("format")
+                .long("format")
+                .value_name("FORMAT")
+                .value_parser(format_parser())
+                .help(
+                    "Output format: `text` (the default, a human-readable view) or `json` \
+                     (the programmatic contract; `--compact` alone selects it too)",
+                ),
+        )
+        .arg(
+            clap::Arg::new("compact")
+                .long("compact")
+                .action(clap::ArgAction::SetTrue)
+                .help(
+                    "Emit compact single-line JSON instead of pretty-printed. A JSON \
+                     rendering choice: alone it selects `--format json`; beside an \
+                     explicit `--format text` it is a usage error",
+                ),
+        )
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        Self::augment_args(cmd)
+    }
+}
+
+impl clap::FromArgMatches for StdoutFormat {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let format = matches.get_one::<Format>("format").copied();
+        let compact = matches.get_flag("compact");
+        Self::from_flags(format, compact).map_err(|refusal| {
+            clap::Error::raw(
+                clap::error::ErrorKind::ArgumentConflict,
+                refusal.to_string(),
+            )
+        })
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
 }
 
 /// The continuous history stream's wire format. Kept separate from list/show so
@@ -74,7 +161,7 @@ fn history_watch_format_parser() -> impl TypedValueParser<Value = HistoryWatchFo
 }
 
 /// Parse `--format` into [`Format`], keeping the possible-value list in the
-/// binary (the default is resolved by `commands::resolve_format`, not here).
+/// binary (the default is [`StdoutFormat`]'s to resolve, not this parser's).
 fn format_parser() -> impl TypedValueParser<Value = Format> {
     PossibleValuesParser::new(["json", "text"]).map(|s| match s.as_str() {
         "text" => Format::Text,
@@ -220,16 +307,9 @@ pub struct InterruptArgs {
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 /// Per-probe timeout when `--timeout` is not given. Generous next to the
@@ -296,16 +376,9 @@ pub struct UsageArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -351,16 +424,9 @@ pub struct HistoryMigrateArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -432,10 +498,9 @@ pub struct HistoryListArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
@@ -444,12 +509,6 @@ pub struct HistoryListArgs {
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
     pub no_config: bool,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
 }
 
 #[derive(Args, Debug)]
@@ -482,10 +541,9 @@ pub struct HistoryShowArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 
     /// Load configuration from this file only (skip user/project discovery).
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
@@ -494,12 +552,6 @@ pub struct HistoryShowArgs {
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
     pub no_config: bool,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
 }
 
 #[derive(Args, Debug)]
@@ -530,16 +582,9 @@ pub struct HistoryClearArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -707,7 +752,10 @@ pub struct RunArgs {
     /// the one that runs publishes, and the chain selects the same candidate a
     /// buffered run would. Also settable via `stream` in config or
     /// ONEHARNESS_STREAM — most naturally in the config of a consumer that always
-    /// reads events, so no wrapper has to inject the flag per invocation.
+    /// reads events, so no wrapper has to inject the flag per invocation. A
+    /// streaming run keeps its NDJSON protocol whether or not `--format json`
+    /// is named; an explicit `--format text` beside one (however the stream was
+    /// selected) is a usage error.
     // llmlint: ignore[invalid_states_unrepresentable] clap's `conflicts_with` makes both-true unreachable at the only boundary that constructs RunArgs, and this is the established spelling of a config-overriding toggle here (`--history`/`--no-history`); a lone Option<bool> would break that symmetry and clap's own `--no-` flag rendering.
     #[arg(long, conflicts_with = "no_stream")]
     pub stream: bool,
@@ -888,20 +936,9 @@ pub struct RunArgs {
     #[arg(long = "history-label", value_name = "KEY=VALUE")]
     pub history_label: Vec<String>,
 
-    /// Output format for the report: `text` (the default, a human-readable view
-    /// of the report) or `json` (the programmatic contract; `--compact` alone
-    /// selects it too). A streaming run keeps its NDJSON event/result protocol
-    /// whether or not `json` is named; an explicit `--format text` beside a
-    /// run that streams (--stream, or `stream` in config / ONEHARNESS_STREAM)
-    /// is a usage error.
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 
     /// Extra arguments appended verbatim to each harness command, after `--`.
     /// Intended for single-harness runs (the flags differ per harness).
@@ -911,16 +948,9 @@ pub struct RunArgs {
 
 #[derive(Args, Debug)]
 pub struct ListArgs {
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -938,16 +968,9 @@ pub struct ConfigArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -983,16 +1006,9 @@ pub struct SyncArgs {
     #[arg(long)]
     pub no_config: bool,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
-
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -1081,14 +1097,58 @@ pub struct DetectArgs {
     #[arg(long)]
     pub require_available: bool,
 
-    /// Output format: `text` (the default, a human-readable view) or `json`
-    /// (the programmatic contract; `--compact` alone selects it too).
-    #[arg(long, value_parser = format_parser())]
-    pub format: Option<Format>,
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
+}
 
-    /// Emit compact single-line JSON instead of pretty-printed. A JSON
-    /// rendering choice: alone it selects `--format json`; beside an explicit
-    /// `--format text` it is a usage error.
-    #[arg(long)]
-    pub compact: bool,
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stdout_format_defaults_to_text_unless_compact_asks_for_json() {
+        assert_eq!(
+            StdoutFormat::from_flags(None, false).unwrap(),
+            StdoutFormat::DefaultText
+        );
+        assert_eq!(
+            StdoutFormat::from_flags(None, true).unwrap(),
+            StdoutFormat::Json { compact: true }
+        );
+        assert_eq!(
+            StdoutFormat::from_flags(Some(Format::Json), false).unwrap(),
+            StdoutFormat::Json { compact: false }
+        );
+        assert_eq!(
+            StdoutFormat::from_flags(Some(Format::Json), true).unwrap(),
+            StdoutFormat::Json { compact: true }
+        );
+        assert_eq!(
+            StdoutFormat::from_flags(Some(Format::Text), false).unwrap(),
+            StdoutFormat::Text
+        );
+        let refused = StdoutFormat::from_flags(Some(Format::Text), true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            refused.contains("--format text") && refused.contains("--compact"),
+            "{refused}"
+        );
+    }
+
+    #[test]
+    fn a_contradictory_pair_never_reaches_a_verb() {
+        // The boundary is clap's: the pair is a parse error of the usage kind,
+        // so no `Args` value carrying it can be constructed.
+        let refused = Cli::try_parse_from(["oneharness", "list", "--format", "text", "--compact"])
+            .unwrap_err();
+        assert_eq!(refused.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(refused.exit_code(), 2);
+        let parsed = Cli::try_parse_from(["oneharness", "list", "--compact"]).unwrap();
+        let Command::List(list) = parsed.command else {
+            panic!("parsed a different verb");
+        };
+        assert_eq!(list.stdout, StdoutFormat::Json { compact: true });
+    }
 }

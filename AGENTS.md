@@ -200,20 +200,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   through `commands::print_report`, so a verb gains a text view by handing that
   seam a renderer. **The CLI's stdout defaults to `text`** wherever it points
   (never a TTY heuristic); `--format json` is the programmatic contract, and
-  `--compact` alone selects it — so each verb carries the pair as ONE
-  `cli::StdoutFormat`, parsed at the clap boundary, which is where `--format
-  text --compact` is refused (exit 2, naming both) before any verb runs: the
-  contradiction has no representation past clap, so no sync has written and
-  no interrupt has been delivered when it is refused. A streaming
-  run keeps its NDJSON protocol whatever the default is, and `--format text`
-  beside one is the same refusal in `commands::run` — whichever layer selected
-  the stream, which is why that shell resolves `stream` (flag, else the config
-  layers) before the engine loads them again. Which verbs carry the
-  flag, the default, and both refusals are pinned by the `every_json_verb_*`
-  / `compact_*` journeys in `tests/cli.rs` (the suite's `run` helper passes
-  `--format json` for it; `run_as_typed` is the bare invocation), the SDKs'
-  `--format json` by the capability manifest's `always` argv
-  (`tests/capability.rs`), and the shipped binary's default by `smoke.sh`.
+  `--compact` alone selects it. Each verb carries the pair as ONE
+  `cli::StdoutFormat`, parsed at the clap boundary, so `--format text
+  --compact` is refused there (exit 2, naming both) before any verb runs —
+  nothing has been synced, spawned or interrupted when it is. A streaming run
+  keeps its NDJSON protocol whatever the default is, and `--format text`
+  beside a stream is the same refusal whichever layer (flag or config)
+  selected the stream. Anything reading stdout as JSON says so: the SDKs on
+  every call, and every test or script here (the `tests/cli.rs` `run` helper
+  passes `--format json`; `run_as_typed` is the bare invocation).
   Nor is any `--no-x` half of a clap-exclusive pair — the request carries the one
   value they resolve to (`stream`/`history` as `Option<bool>`, `--bypass` folded
   into `mode`, `--fork` inside the `Resume` it is meaningless without), because

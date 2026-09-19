@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.16.0...oneharness-core-v0.16.1) - 2026-09-19
+
+### Fixed
+
+- *(core)* fall through a clean-exit rate limit, honour a base bin override for a variant, and gate rustdoc ([#1319](https://github.com/nickderobertis/oneharness/pull/1319))
+
 ## [0.16.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.15.0...oneharness-core-v0.16.0) - 2026-09-19
 
 ### Added

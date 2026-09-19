@@ -622,8 +622,9 @@ pub fn run_supervised(
     // what the rest of this function reads is the execution decision — whether
     // THIS invocation is driven as a chain — not the selected mode alone.
     let continuation = args.resume.is_some();
-    let single_harness_shape = specs.len() == 1 && (batch_run || continuation);
-    let drive_fallback_chain = run_mode == RunMode::Fallback && !single_harness_shape;
+    let single_candidate_batch_or_continuation = specs.len() == 1 && (batch_run || continuation);
+    let drive_fallback_chain =
+        run_mode == RunMode::Fallback && !single_candidate_batch_or_continuation;
     // Streaming is a CLI flag with a config/env layer, resolved once here so every
     // validator, the format selection, and the driver choice read the same
     // effective value.
@@ -3691,9 +3692,10 @@ fn run_fork_batch(
 /// `--fork` continuations (each pins one *specific* harness's native id) are loud
 /// usage errors here. Called only for a chain of two or more candidates: a
 /// one-candidate chain has nothing to fall through to, so it carries both
-/// shapes as the single-harness run (see the `single_harness_shape` resolution
-/// in [`run`]). `origin` is whether the mode was left unset — fallback is the
-/// default — so the diagnostic can say which mode the caller met.
+/// shapes as the single-harness run (see the
+/// `single_candidate_batch_or_continuation` resolution in [`run`]). `origin`
+/// is whether the mode was left unset — fallback is the default — so the
+/// diagnostic can say which mode the caller met.
 /// `--stream` is *not* refused (see [`drive_plan_sequentially`]).
 /// `--session` is *not* refused either: the
 /// higher-level named handle binds to the anchor (the first session-capable

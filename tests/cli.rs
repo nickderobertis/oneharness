@@ -30917,11 +30917,24 @@ fn assert_default_is_the_text_view(args: &[&str], envs: &[(&str, &str)]) {
     if implicit.stdout == text.stdout {
         return;
     }
+    // A clock reading is masked as ONE `#` however many digits it has: a run
+    // that took 7 ms and its `--format text` twin that took 12 ms are the same
+    // view, and a per-digit mask read that as a difference beyond the clock.
     let mask_digits = |bytes: &[u8]| -> String {
-        String::from_utf8_lossy(bytes)
-            .chars()
-            .map(|c| if c.is_ascii_digit() { '#' } else { c })
-            .collect()
+        let mut masked = String::new();
+        let mut in_number = false;
+        for c in String::from_utf8_lossy(bytes).chars() {
+            if c.is_ascii_digit() {
+                if !in_number {
+                    masked.push('#');
+                }
+                in_number = true;
+            } else {
+                masked.push(c);
+                in_number = false;
+            }
+        }
+        masked
     };
     assert_eq!(
         mask_digits(&implicit.stdout),

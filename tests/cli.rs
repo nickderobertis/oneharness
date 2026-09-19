@@ -9197,6 +9197,30 @@ fn base_env_var_bin_override_covers_a_variant_qualified_selection() {
     let value = json_stdout(&output);
     assert_eq!(value["results"][0]["status"], "ok");
     assert_eq!(value["results"][0]["text"], "variant key wins");
+
+    // An EMPTY variant key is not a choice of binary: it is skipped like an
+    // empty base key always was, and the lookup continues to the base's.
+    let output = run_with_config(
+        &args,
+        &[
+            ("ONEHARNESS_BIN_CLAUDE_CODE", mock.as_str()),
+            ("ONEHARNESS_BIN_CLAUDE_CODE_WORK", ""),
+            (
+                "MOCK_STDOUT",
+                r#"{"result":"empty variant key falls back"}"#,
+            ),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["text"], "empty variant key falls back");
 }
 
 #[test]

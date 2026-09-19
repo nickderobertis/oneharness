@@ -72,16 +72,10 @@ impl BinOverrides {
     }
 }
 
-/// The `ONEHARNESS_BIN_*` variables that may name the binary for `id`, most
-/// specific first. A base id yields its one key (`claude-code` →
-/// `ONEHARNESS_BIN_CLAUDE_CODE`); a variant-qualified id yields its own spelling
-/// and then the base's (`claude-code:hooked` →
-/// `ONEHARNESS_BIN_CLAUDE_CODE_HOOKED`, `ONEHARNESS_BIN_CLAUDE_CODE`), so a
-/// caller who sets the base key covers every member of that harness — the same
-/// fallback the config-file `[harness.<id>] bin` already makes. The key used to
-/// be derived from the whole composed id, which kept its `:` — a name no
-/// environment variable can carry, so a variant-qualified selection matched
-/// nothing and the real harness ran inside a run believed faked (issue #1308).
+/// The `ONEHARNESS_BIN_*` keys that may name the binary for `id`, in the order
+/// [`BinOverrides`] reads them: the id's own spelling, then — for a
+/// variant-qualified id — its base harness's. `-` and `:` both become `_`,
+/// since neither can appear in a variable name.
 fn bin_env_keys(id: &str) -> Vec<String> {
     let key = |name: &str| {
         format!(

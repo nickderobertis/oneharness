@@ -59,12 +59,13 @@ impl Usage {
 
     /// Whether this accounting says the provider **billed real work**: any
     /// non-zero token count (prompt-cache counts included) or a non-zero dollar
-    /// cost. Absent accounting is deliberately not work — see
-    /// [`record_work_evidence`], which reads this off a raw harness record, and
-    /// [`RunWork::from_result`], which reads it off a normalized result. Both
-    /// share this one definition — and answer in the one [`RunWork`] type — so
-    /// the quota classifier and a fallback chain's stop/fall-through verdict can
-    /// never disagree about what counts as billed.
+    /// cost. Absent accounting is deliberately not work — see the private
+    /// `record_work_evidence` reader, which reads this off a raw harness
+    /// record, and [`RunWork::from_result`], which reads it off a normalized
+    /// result. Both share this one definition — and answer in the one
+    /// [`RunWork`] type — so the quota classifier and a fallback chain's
+    /// stop/fall-through verdict can never disagree about what counts as
+    /// billed.
     pub fn reports_billed_work(&self) -> bool {
         [
             self.input_tokens,
@@ -109,11 +110,11 @@ pub enum FailureKind {
     ModelNotFound,
     /// Out of quota / credits, or a billing problem — a provisioning failure.
     Quota,
-    /// The session this run asked to continue does not exist for the identity it
-    /// ran as, so the harness refused before doing any work (see
-    /// [`unknown_session_rejection`]). Distinct from every other kind because the
-    /// task itself is fine: another identity — or a fresh session on this one —
-    /// can still run it.
+    /// The session this run asked to continue does not exist for the identity
+    /// it ran as, so the harness refused before doing any work (see the private
+    /// `unknown_session_rejection` rule). Distinct from every other kind
+    /// because the task itself is fine: another identity — or a fresh session
+    /// on this one — can still run it.
     SessionNotFound,
     /// The harness deferred a builtin tool call instead of executing it, so a
     /// clean-exit run did no useful work (Claude Code bridge deployments; issue
@@ -464,14 +465,15 @@ fn scan_failure(
 /// as exhaustion and silently re-running the task on another account.
 ///
 /// Claude Code's *login* refusal is the second adapter signal, and it is scoped
-/// the same way for the same reason — see [`harness_auth_refusal`].
+/// the same way for the same reason — see the private `harness_auth_refusal`
+/// rule.
 ///
-/// The adapter signals are checked **before** the generic vocabulary — see
-/// [`harness_quota_failure`] for why that order is load-bearing — and the
-/// precondition refusals ([`precondition_refusal`]) and the unknown-session one
-/// ([`unknown_session_rejection`]) sit between them, so a rejection that names
-/// exactly what it refused is read as that rather than falling to a coarser
-/// match.
+/// The adapter signals are checked **before** the generic vocabulary — see the
+/// private `harness_quota_failure` rule for why that order is load-bearing —
+/// and the precondition refusals (`precondition_refusal`) and the
+/// unknown-session one (`unknown_session_rejection`) sit between them, so a
+/// rejection that names exactly what it refused is read as that rather than
+/// falling to a coarser match.
 pub fn classify_harness_failure(
     dialect: FailureDialect,
     stdout: &str,
@@ -751,19 +753,20 @@ fn record_work_evidence(value: &Value) -> RunWork {
 ///
 /// Some harnesses, including Claude Code on Windows, report an API rejection in
 /// a terminal JSON record that still exits successfully. Restricting this check
-/// to records the harness itself declares as an API failure (see
-/// [`is_provider_failure_envelope`]) avoids treating incidental warning text in
-/// an otherwise successful transcript as failure.
+/// to records the harness itself declares as an API failure (see the private
+/// `is_provider_failure_envelope` gate) avoids treating incidental warning text
+/// in an otherwise successful transcript as failure.
 pub fn detect_provider_failure(stdout: &str) -> Option<FailureReading> {
     detect_harness_provider_failure(FailureDialect::Generic, stdout)
 }
 
 /// Provider-declared failure classification with adapter-specific quota
-/// surfaces. A terminal record the harness declares as an API failure (see
-/// [`is_provider_failure_envelope`]) is the machine signal; matching its
-/// complete JSON record captures provider metadata as well as result text while
-/// avoiding unstructured output outside that explicit failure record. Codex
-/// declares its failure differently, so it gets its own record shape below.
+/// surfaces. A terminal record the harness declares as an API failure (see the
+/// private `is_provider_failure_envelope` gate) is the machine signal; matching
+/// its complete JSON record captures provider metadata as well as result text
+/// while avoiding unstructured output outside that explicit failure record.
+/// Codex declares its failure differently, so it gets its own record shape
+/// below.
 pub fn detect_harness_provider_failure(
     dialect: FailureDialect,
     stdout: &str,

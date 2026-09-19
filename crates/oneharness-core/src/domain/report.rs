@@ -491,7 +491,7 @@ pub struct RunResult {
     /// history file for numbers the run itself already had.
     #[serde(default)]
     pub telemetry: Option<ExecutionTelemetry>,
-    /// The exact argv oneharness built (argv[0] is the binary).
+    /// The exact argv oneharness built; its first element is the binary.
     pub command: Vec<String>,
     pub output_format: OutputFormat,
     /// Best-effort final assistant text; `null` when extraction is impossible.

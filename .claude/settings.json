@@ -9,6 +9,7 @@
       "Bash(just coverage)",
       "Bash(just test)",
       "Bash(just lint)",
+      "Bash(just lint-doc)",
       "Bash(just lint-sh)",
       "Bash(just format)",
       "Bash(just upgrade)",

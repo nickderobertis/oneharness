@@ -58,7 +58,7 @@ pub const CURSOR_LOGIN_ENVS: &[&str] = &["CURSOR_API_KEY"];
 /// The GitHub API base for the Copilot probe. Overridable with
 /// `ONEHARNESS_COPILOT_API_BASE` for a GitHub Enterprise host (and for the
 /// hermetic tests, which point it at a local server). Must be HTTPS unless it
-/// names a loopback host — see [`COPILOT_PLAINTEXT_HOSTS`].
+/// names a loopback host — see the private `COPILOT_PLAINTEXT_HOSTS` list.
 pub const COPILOT_API_BASE_ENV: &str = "ONEHARNESS_COPILOT_API_BASE";
 const COPILOT_API_BASE_DEFAULT: &str = "https://api.github.com";
 /// The only hosts a plaintext `http://` base may name. The request carries the

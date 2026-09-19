@@ -73,7 +73,7 @@ pub const SCHEMA_VERSION: &str = "0.1";
 ///
 /// Deserializing is a consumer boundary — `oneharness-core` is published for
 /// sibling tools — so the envelope is validated on the way in rather than
-/// trusted: see [`UsageReportWire`].
+/// trusted: see the private `UsageReportWire` shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "UsageReportWire")]
 pub struct UsageReport {
@@ -100,11 +100,11 @@ impl UsageReport {
     }
 }
 
-/// The report's shape version, as a type: [`SCHEMA_VERSION`] is the only value it
-/// has. A report claiming a version this build does not implement is therefore
-/// not something a caller can build — and one arriving on the wire is refused
-/// rather than stored (see [`UsageReportWire`]), so the two boundaries agree.
-/// Serializes as the version string a consumer reads.
+/// The report's shape version, as a type: [`SCHEMA_VERSION`] is the only value
+/// it has. A report claiming a version this build does not implement is
+/// therefore not something a caller can build — and one arriving on the wire is
+/// refused rather than stored (see the private `UsageReportWire` shape), so the
+/// two boundaries agree. Serializes as the version string a consumer reads.
 ///
 /// The schema is written by hand because the derive describes the *Rust* shape
 /// — a unit struct, so `null` — while [`Serialize`] writes the version string.
@@ -202,8 +202,8 @@ impl TryFrom<UsageReportWire> for UsageReport {
 
 /// The error returned when text is not a [`UtcInstant`]. Carries the offending
 /// text, flattened like every other external string this module quotes back
-/// ([`without_control_chars`]), so a bad value cannot smuggle escapes into
-/// whatever prints the refusal.
+/// (the private `without_control_chars` filter), so a bad value cannot smuggle
+/// escapes into whatever prints the refusal.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[error("must be an RFC 3339 UTC instant (`2026-07-29T12:00:00Z`), got `{0}`")]
 pub struct UtcInstantError(String);
@@ -304,8 +304,8 @@ impl<'de> Deserialize<'de> for UtcInstant {
 /// One harness identity's headroom.
 ///
 /// Deserializing is a consumer boundary like the envelope's, so every string an
-/// identity carries is flattened through [`without_control_chars`] on the way in
-/// — see [`UsageIdentityWire`].
+/// identity carries is flattened through the private `without_control_chars`
+/// filter on the way in — see the private `UsageIdentityWire` shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "UsageIdentityWire")]
 pub struct UsageIdentity {
@@ -358,11 +358,11 @@ impl UsageIdentity {
     /// The type of the argument is the enforcement, as it is for
     /// [`UsageReport::new`]: a caller reaches a variant only through
     /// [`VariantName`], whose [`FromStr`] is the very validator
-    /// [`UsageIdentityWire`] runs — so an attribution this crate would refuse to
-    /// read back is not one a caller of the published crate can build. It stays
-    /// infallible because the probe path that calls it is: a probe records an
-    /// outcome for every identity, including a crashed one, and has nowhere to
-    /// report a second kind of failure.
+    /// the private `UsageIdentityWire` shape runs — so an attribution this
+    /// crate would refuse to read back is not one a caller of the published
+    /// crate can build. It stays infallible because the probe path that calls
+    /// it is: a probe records an outcome for every identity, including a
+    /// crashed one, and has nowhere to report a second kind of failure.
     #[must_use]
     pub fn with_variant(mut self, variant: Option<VariantName>) -> Self {
         self.variant = variant;
@@ -630,7 +630,7 @@ impl UnknownReason {
     /// The name comes from `--bin` or a config file, and `usage --format text`
     /// prints it verbatim, so it is flattened here — at the one point it becomes
     /// a display string — for the same reason every other external string this
-    /// module bounds is (see [`without_control_chars`]).
+    /// module bounds is (see the private `without_control_chars` filter).
     #[must_use]
     pub fn binary_missing(bin: &str) -> Self {
         Self::BinaryMissing {
@@ -1201,8 +1201,8 @@ fn claude_usage_drift(payload: &Value) -> Option<String> {
 /// expired or refreshing and which had no cached snapshot; forty minutes later
 /// the same identity answered normally, and three sibling identities answered
 /// normally throughout on the same binary. So it is not drift — nothing moved —
-/// and [`claude_usage_drift`] lets it through, while [`parse_claude_get_usage`]
-/// reads it as [`UnknownReason::ProbeFailed`] with
+/// and the private `claude_usage_drift` guard lets it through, while
+/// [`parse_claude_get_usage`] reads it as [`UnknownReason::ProbeFailed`] with
 /// [`CLAUDE_SNAPSHOT_MISSING_MESSAGE`]. It is public because the probe decides
 /// whether to ask again from this predicate, never from that message. Any other
 /// non-object `rate_limits` (an array, a string, a number, a boolean) is still
@@ -1253,12 +1253,13 @@ fn is_known_claude_limit_kind(kind: &str) -> bool {
 /// key of its own).
 ///
 /// Every affirmative state below rests on a field's absence, so the payload is
-/// checked for contract drift first ([`claude_usage_drift`]) and a drifted one
-/// degrades to [`UsageAvailability::Unknown`]. That check is not a step a caller
-/// can skip: there is no unguarded way in. The one non-object `rate_limits` that
-/// is not drift is the transient no-snapshot answer
-/// ([`claude_usage_snapshot_missing`]), which degrades to the same state under
-/// a message that says what the payload means rather than that its shape moved.
+/// checked for contract drift first (the private `claude_usage_drift` guard)
+/// and a drifted one degrades to [`UsageAvailability::Unknown`]. That check is
+/// not a step a caller can skip: there is no unguarded way in. The one
+/// non-object `rate_limits` that is not drift is the transient no-snapshot
+/// answer ([`claude_usage_snapshot_missing`]), which degrades to the same state
+/// under a message that says what the payload means rather than that its shape
+/// moved.
 #[must_use]
 pub fn parse_claude_get_usage(payload: &Value) -> ParsedUsage {
     if let Some(reason) = claude_usage_drift(payload) {

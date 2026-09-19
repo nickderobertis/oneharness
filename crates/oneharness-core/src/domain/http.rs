@@ -7,7 +7,7 @@
 //! itself. Everything decidable without a socket lives here: the response
 //! framing a reader must get right, the exact route and body of each request,
 //! and what one line of an event stream means. The socket work is
-//! [`crate::io::http`].
+//! the crate-private `io::http` module.
 //!
 //! Three facts here cost real time to find and are what the unit tests pin:
 //!

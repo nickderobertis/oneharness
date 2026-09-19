@@ -34,11 +34,12 @@ bootstrap:
     ./scripts/setup-llmlint.sh
     git config core.hooksPath .githooks
 
-# Full quality gate: format check, lint (Rust + shell), tests *with enforced
-# coverage*, build, artifact smoke. Fails on any issue. `coverage` re-runs the
-# workspace suite under instrumentation and fails below {{COVERAGE_MIN}}% lines;
-# `test` stays in the gate as the fast, un-instrumented pass/fail signal.
-check: fmt-check lint lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
+# Full quality gate: format check, lint (Rust + shell + rustdoc), tests *with
+# enforced coverage*, build, artifact smoke. Fails on any issue. `coverage`
+# re-runs the workspace suite under instrumentation and fails below
+# {{COVERAGE_MIN}}% lines; `test` stays in the gate as the fast, un-instrumented
+# pass/fail signal.
+check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
     @echo "check: ok"
 
 # Complete pre-push gate: deterministic product/dependency/API checks, followed
@@ -61,6 +62,13 @@ lint:
 
 # Alias for `lint`.
 clippy: lint
+
+# The published API documentation of `oneharness-core`, with every rustdoc
+# warning an error: a public doc comment that links to a private item or to a
+# name that does not resolve fails here instead of shipping as a dead link on
+# docs.rs. `--no-deps` because only this crate's own docs are the contract.
+lint-doc:
+    @RUSTDOCFLAGS="-D warnings" cargo doc -p oneharness-core --no-deps --quiet --locked || { echo "rustdoc failed; fix the doc-comment diagnostics above (link the public concept, or name a private item in plain code font) and rerun 'just lint-doc'" >&2; exit 1; }
 
 # Package the reusable crate and the binary exactly as Cargo will verify them at
 # publish time. It guards a release from the PR that precedes it — `just gate`

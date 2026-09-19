@@ -362,7 +362,7 @@ impl LaunchPlan {
             && render(&self.template, &record.address) == record.argv.as_slice()
     }
 
-    /// The full argv the server is spawned with (argv[0] is the program).
+    /// The full argv the server is spawned with (argv\[0\] is the program).
     #[must_use]
     pub fn argv(&self) -> &LaunchArgv {
         &self.argv

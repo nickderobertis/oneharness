@@ -422,6 +422,20 @@ test("generator check reports a missing generated contract as stale", () => {
 		resolve(checkout, sdkDirectory, "node_modules"),
 		process.platform === "win32" ? "junction" : "dir",
 	);
+	// The generator pins its own target directory under its checkout's root and
+	// ignores `CARGO_TARGET_DIR` (the isolation test above holds that), so the
+	// copy's is linked to the root's — already warm from `generate:check` — and
+	// only the workspace crates, whose source path differs, rebuild here. Left
+	// empty, every run was a cold compile of the whole dependency graph, which
+	// overran this test's budget on a loaded host.
+	const generatorTarget = resolve(root, "target/sdk-schema-generator");
+	mkdirSync(generatorTarget, { recursive: true });
+	mkdirSync(resolve(checkout, "target"));
+	symlinkSync(
+		generatorTarget,
+		resolve(checkout, "target/sdk-schema-generator"),
+		process.platform === "win32" ? "junction" : "dir",
+	);
 
 	const missing = resolve(checkout, generatedDirectory, "zod.ts");
 	copyFileSync(resolve(root, generatedDirectory, "zod.ts"), missing);
@@ -429,11 +443,7 @@ test("generator check reports a missing generated contract as stale", () => {
 	const result = spawnSync(
 		"node",
 		[`${sdkDirectory}/scripts/generate.mjs`, "--check"],
-		{
-			cwd: checkout,
-			encoding: "utf8",
-			env: { ...process.env, CARGO_TARGET_DIR: resolve(root, "target") },
-		},
+		{ cwd: checkout, encoding: "utf8" },
 	);
 
 	expect(result.status).toBe(1);
@@ -441,9 +451,8 @@ test("generator check reports a missing generated contract as stale", () => {
 		"generated SDK contracts are stale; run just sdk-generate",
 	);
 	expect(existsSync(missing)).toBe(false);
-	// The copied checkout has a different source path, so Cargo must rebuild the
-	// workspace crates even though it shares the root target directory. Keep this
-	// as a real generator invocation and allow for a cold compile on busy CI hosts.
+	// Still a real generator invocation, so it builds the workspace crates; the
+	// budget covers that on a busy CI host, not a cold compile of everything.
 }, 120_000);
 
 test("SDK packing reports a missing Cargo version without a stack trace", () => {

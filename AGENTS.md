@@ -64,8 +64,9 @@ Use the `just` recipes; do not hand-roll equivalents.
 
 - `just bootstrap` — set up from a clean clone (toolchain, llmlint, dependencies,
   and the committed pre-push hook).
-- `just check` — full gate: format check, clippy (`-D warnings`), tests, line
-  coverage (hard-gated at 95%), build, smoke. Must pass before any commit or PR.
+- `just check` — full gate: format check, clippy and rustdoc (both
+  `-D warnings`), tests, line coverage (hard-gated at 95%), build, smoke. Must
+  pass before any commit or PR.
 - `just gate` — pre-push superset: `check`, dependency/license audit, crate
   packaging, published-API compatibility, llmlint validation, and its merge-base
   diff judge (skipped locally without Codex/key).
@@ -84,7 +85,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   naming the key and base commit it was recorded for; anything less judges again.
 - `just test` / `just lint` / `just format` — individual gate steps. `test` runs
   the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
-  scratch space.
+  scratch space. `just lint-doc` (also in `check`) builds `oneharness-core`'s
+  public documentation with rustdoc warnings as errors; never make an item
+  public to satisfy a doc link.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
   `just coverage-html` writes a browsable report to find uncovered lines.
@@ -163,10 +166,14 @@ Use the `just` recipes; do not hand-roll equivalents.
 - `just sdk-check` / `just python-sdk-check` — generated-contract drift, strict
   language lint/type/test coverage, and packed-artifact subprocess e2e for the
   Node and Python SDKs. The Python gate runs on the oldest supported Python 3.9.
-  Neither sees a method that was never written, so `check-sdk-coverage.sh` (in
-  `lint-workflows`) fails when a `domain::capability` entry has no method on a
-  client — derived from the manifest and each client's own source, never a
-  list — and `check-sdk-coverage-test.sh` holds that red in place, since a gate
+  A doc comment on a schema-carrying type is also both SDKs' generated
+  `description`, so rewording one (even a rustdoc link repair) needs `just
+  sdk-generate` and `just python-sdk-generate` in the same change, or the drift
+  check refuses the push. Neither sees a method that was never written, so
+  `check-sdk-coverage.sh` (in `lint-workflows`) fails when a `domain::capability`
+  entry has no method on a client — derived from the manifest and each client's
+  own source, never a list — and `check-sdk-coverage-test.sh` holds that red in
+  place, since a gate
   whose only job is to fail proves nothing unexercised. Every capability, flag
   and output field is tabulated per surface in `docs/sdk-parity.md`, which
   `just parity-audit` regenerates and `check-parity-audit.sh` pins. A binding

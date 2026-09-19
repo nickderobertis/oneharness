@@ -14,6 +14,12 @@ use crate::errors::OneharnessError;
 /// Per-harness binary overrides, resolved from `--bin ID=PATH`, then the
 /// `ONEHARNESS_BIN_<ID>` environment variable, then a config-file
 /// `[harness.<id>] bin`, falling back to the spec default.
+///
+/// The environment layer reads a variant-qualified id (`claude-code:hooked`)
+/// the way the config-file layer does: its own spelling first
+/// (`ONEHARNESS_BIN_CLAUDE_CODE_HOOKED`), then the base harness's key
+/// (`ONEHARNESS_BIN_CLAUDE_CODE`), so one base override covers every member
+/// of that harness — see the private `bin_env_keys` derivation.
 pub struct BinOverrides {
     map: HashMap<String, String>,
     /// Config-file bins: the lowest-precedence override layer, since an
@@ -52,16 +58,34 @@ impl BinOverrides {
         if let Some(path) = self.map.get(id) {
             return path.clone();
         }
-        let env_key = format!("ONEHARNESS_BIN_{}", id.to_uppercase().replace('-', "_"));
-        if let Ok(value) = std::env::var(&env_key) {
-            if !value.is_empty() {
-                return value;
+        for env_key in bin_env_keys(id) {
+            if let Ok(value) = std::env::var(&env_key) {
+                if !value.is_empty() {
+                    return value;
+                }
             }
         }
         if let Some(path) = self.config.get(id) {
             return path.clone();
         }
         default_bin.to_string()
+    }
+}
+
+/// The `ONEHARNESS_BIN_*` keys that may name the binary for `id`, in the order
+/// [`BinOverrides`] reads them: the id's own spelling, then — for a
+/// variant-qualified id — its base harness's. `-` and `:` both become `_`,
+/// since neither can appear in a variable name.
+fn bin_env_keys(id: &str) -> Vec<String> {
+    let key = |name: &str| {
+        format!(
+            "ONEHARNESS_BIN_{}",
+            name.to_uppercase().replace(['-', ':'], "_")
+        )
+    };
+    match id.split_once(':') {
+        Some((base, _)) => vec![key(id), key(base)],
+        None => vec![key(id)],
     }
 }
 
@@ -336,6 +360,92 @@ mod tests {
         match prev {
             Some(v) => std::env::set_var(key, v),
             None => std::env::remove_var(key),
+        }
+    }
+
+    #[test]
+    fn a_variant_selection_reads_its_own_env_key_then_the_base_harness_s() {
+        assert_eq!(
+            bin_env_keys("claude-code:hooked"),
+            [
+                "ONEHARNESS_BIN_CLAUDE_CODE_HOOKED",
+                "ONEHARNESS_BIN_CLAUDE_CODE"
+            ]
+        );
+        assert_eq!(bin_env_keys("codex"), ["ONEHARNESS_BIN_CODEX"]);
+    }
+
+    /// The README's `--bin` bullet is where a caller learns which variable
+    /// names the binary for a variant, and the names it spells are derived here
+    /// from the same function the runtime reads, in the order the runtime reads
+    /// them — so the documented keys cannot drift from the ones honoured.
+    #[test]
+    fn readme_names_the_env_keys_a_variant_selection_reads() {
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        let bullet_start = readme
+            .find("- `--bin <id>=<path>`")
+            .expect("README.md documents --bin");
+        let bullet = &readme[bullet_start..];
+        let bullet = &bullet[..bullet.find("\n- ").unwrap_or(bullet.len())];
+        let keys = bin_env_keys("claude-code:work");
+        assert_eq!(
+            keys.len(),
+            2,
+            "a variant reads its own key, then the base's"
+        );
+        let own = bullet
+            .find(&format!("`{}`", keys[0]))
+            .unwrap_or_else(|| panic!("README.md must name `{}` for `claude-code:work`", keys[0]));
+        let base = bullet
+            .find(&format!("`{}`", keys[1]))
+            .unwrap_or_else(|| panic!("README.md must name `{}` for `claude-code:work`", keys[1]));
+        assert!(
+            own < base,
+            "README.md must name the variant's own key before the base's, as the runtime reads them"
+        );
+    }
+
+    #[test]
+    fn base_env_var_covers_a_variant_qualified_selection() {
+        // Issue #1308: the key was derived from the whole composed id and kept
+        // its `:`, which no environment variable can carry, so
+        // `ONEHARNESS_BIN_CLAUDE_CODE` covered `claude-code` and silently not
+        // `claude-code:hooked` — the config-file `bin` already fell back from
+        // the variant to its base, and the env layer now does the same.
+        let _guard = ENV_LOCK.lock().unwrap();
+        let base_key = "ONEHARNESS_BIN_CLAUDE_CODE";
+        let variant_key = "ONEHARNESS_BIN_CLAUDE_CODE_HOOKED";
+        let prev = (
+            std::env::var(base_key).ok(),
+            std::env::var(variant_key).ok(),
+        );
+        std::env::remove_var(variant_key);
+
+        std::env::set_var(base_key, "/env/claude");
+        // Above the config layer for the variant too, as for a base id: the
+        // config map already carries the variant's own fallback-resolved bin.
+        let bins = HashMap::from([("claude-code:hooked".to_string(), "/cfg/claude".to_string())]);
+        let ov = BinOverrides::parse(&[]).unwrap().with_config_bins(bins);
+        assert_eq!(ov.binary_for("claude-code:hooked", "claude"), "/env/claude");
+
+        // A variant-specific spelling is the more deliberate one, so it wins
+        // over the base key when both are set...
+        std::env::set_var(variant_key, "/env/hooked-claude");
+        assert_eq!(
+            ov.binary_for("claude-code:hooked", "claude"),
+            "/env/hooked-claude"
+        );
+        // ...and never reaches a sibling variant or the base itself.
+        assert_eq!(ov.binary_for("claude-code:other", "claude"), "/env/claude");
+        assert_eq!(ov.binary_for("claude-code", "claude"), "/env/claude");
+
+        std::env::remove_var(variant_key);
+        match prev.0 {
+            Some(v) => std::env::set_var(base_key, v),
+            None => std::env::remove_var(base_key),
+        }
+        if let Some(v) = prev.1 {
+            std::env::set_var(variant_key, v);
         }
     }
 

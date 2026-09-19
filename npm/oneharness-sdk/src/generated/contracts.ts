@@ -413,7 +413,7 @@ export interface RunResult {
    */
   bin: string;
   /**
-   * The exact argv oneharness built (argv[0] is the binary).
+   * The exact argv oneharness built; its first element is the binary.
    */
   command: string[];
   /**

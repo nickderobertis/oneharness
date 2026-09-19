@@ -1170,7 +1170,8 @@ impl std::error::Error for SocketAddressTooLong {}
 
 /// The socket file name backing session `name` (`<sanitized name>.sock`), or a
 /// digest-suffixed abbreviation of it when the full name would not fit in
-/// `budget` bytes. `None` when even [`MIN_FILE_NAME`] exceeds the budget.
+/// `budget` bytes. `None` when even the shortest abbreviation (the private
+/// `MIN_FILE_NAME`) exceeds the budget.
 ///
 /// The abbreviation keeps as much of the readable name as fits and ends in a
 /// digest of the whole sanitized name, so two long names that share a prefix

@@ -2599,6 +2599,69 @@ fn a_rate_limited_identity_hands_the_turn_to_the_next_one() {
 }
 
 #[test]
+fn a_rate_limited_identity_that_exited_clean_still_hands_the_turn_on() {
+    // Issue #1297. The same refusal as the journey above, reported the way a
+    // harness that recovers its own exit code reports it: a terminal error
+    // record naming the provider's 429 in a run that exited 0. `quota` and
+    // `auth` records already handed on from a clean exit; `rate_limit` did not,
+    // so this record — no tokens spent, no tool called — ended a chain on an
+    // identity whose neighbour had quota, and an operator had to restart it.
+    let mock = mock_bin().display().to_string();
+    let refused = serde_json::to_string(concat!(
+        "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,",
+        "\"result\":\"API Error: 429 rate limit exceeded\",",
+        "\"usage\":{\"input_tokens\":0,\"output_tokens\":0}}\n",
+    ))
+    .expect("a string always serializes");
+    let served = serde_json::to_string(concat!(
+        "{\"type\":\"turn.started\"}\n",
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",",
+        "\"text\":\"served-by-codex\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ))
+    .expect("a string always serializes");
+    let project = format!(
+        r#"
+        harnesses = ["claude-code", "codex"]
+        run_mode = "fallback"
+
+        [harness.claude-code]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {refused} }}
+
+        [harness.codex]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("rate-limit-clean-exit-chain", &project, "");
+    let output = run_with_config(
+        &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    // The clean exit is what this journey is about: the refusal is read off the
+    // record, not the exit code, so the first result is `ok` AND `rate_limit`.
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["exit_code"], 0);
+    assert_eq!(value["results"][0]["failure_kind"], "rate_limit");
+    assert_eq!(value["fallback"]["fell_through"][0]["reason"], "rate-limit");
+    assert_eq!(
+        value["fallback"]["fell_through"][0]["harness"],
+        "claude-code"
+    );
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(value["results"][1]["text"], "served-by-codex");
+}
+
+#[test]
 fn a_rate_limited_candidate_that_was_billed_still_stops_the_chain() {
     // The other half of the rule, and the one that keeps the change from paying a
     // second identity to redo work somebody was already charged for: a 429 that
@@ -9369,6 +9432,110 @@ fn env_var_bin_override_beats_config_bin() {
     assert!(output.status.success());
     let value = json_stdout(&output);
     assert_eq!(value["results"][0]["text"], "env wins");
+}
+
+#[test]
+fn base_env_var_bin_override_covers_a_variant_qualified_selection() {
+    // Issue #1308. `ONEHARNESS_BIN_CLAUDE_CODE` was derived from the whole
+    // composed id — `ONEHARNESS_BIN_CLAUDE_CODE:WORK`, a name no environment can
+    // carry — so a caller who faked every member of a harness with the base key
+    // got the real binary for `claude-code:work`, and a real, billed Claude turn
+    // ran inside a test believed fully faked. The config-file `bin` already fell
+    // back from a variant to its base; the env layer must cover it the same way.
+    //
+    // The base's config bin points at nothing on purpose: before the fix that is
+    // what the variant resolved to, so the run below read `skipped` rather than
+    // reaching for whatever `claude` this host carries.
+    let fx = ConfigFixture::new(
+        "bin-env-variant",
+        concat!(
+            "[harness.claude-code]\n",
+            "bin = \"/no/such/oneharness-binary-xyz\"\n",
+            "[harness.claude-code.variant.work]\n",
+            "model = \"sonnet\"\n",
+        ),
+        "",
+    );
+    let mock = mock_bin().display().to_string();
+    let args = [
+        "run",
+        "--harness",
+        "claude-code:work",
+        "--prompt",
+        "hi",
+        "--cwd",
+        &fx.cwd(),
+        "--compact",
+    ];
+    let output = run_with_config(
+        &args,
+        &[
+            ("ONEHARNESS_BIN_CLAUDE_CODE", mock.as_str()),
+            (
+                "MOCK_STDOUT",
+                r#"{"result":"base env key covers the variant"}"#,
+            ),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["harness_id"], "claude-code:work");
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(
+        value["results"][0]["text"],
+        "base env key covers the variant"
+    );
+
+    // The variant's own spelling is checked first, so when both are set the
+    // more specific one names the binary.
+    let output = run_with_config(
+        &args,
+        &[
+            ("ONEHARNESS_BIN_CLAUDE_CODE", "/no/such/oneharness-base-xyz"),
+            ("ONEHARNESS_BIN_CLAUDE_CODE_WORK", mock.as_str()),
+            ("MOCK_STDOUT", r#"{"result":"variant key wins"}"#),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["text"], "variant key wins");
+
+    // An EMPTY variant key is not a choice of binary: it is skipped like an
+    // empty base key always was, and the lookup continues to the base's.
+    let output = run_with_config(
+        &args,
+        &[
+            ("ONEHARNESS_BIN_CLAUDE_CODE", mock.as_str()),
+            ("ONEHARNESS_BIN_CLAUDE_CODE_WORK", ""),
+            (
+                "MOCK_STDOUT",
+                r#"{"result":"empty variant key falls back"}"#,
+            ),
+        ],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "exit {:?}, stderr {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["text"], "empty variant key falls back");
 }
 
 #[test]
@@ -30750,11 +30917,24 @@ fn assert_default_is_the_text_view(args: &[&str], envs: &[(&str, &str)]) {
     if implicit.stdout == text.stdout {
         return;
     }
+    // A clock reading is masked as ONE `#` however many digits it has: a run
+    // that took 7 ms and its `--format text` twin that took 12 ms are the same
+    // view, and a per-digit mask read that as a difference beyond the clock.
     let mask_digits = |bytes: &[u8]| -> String {
-        String::from_utf8_lossy(bytes)
-            .chars()
-            .map(|c| if c.is_ascii_digit() { '#' } else { c })
-            .collect()
+        let mut masked = String::new();
+        let mut in_number = false;
+        for c in String::from_utf8_lossy(bytes).chars() {
+            if c.is_ascii_digit() {
+                if !in_number {
+                    masked.push('#');
+                }
+                in_number = true;
+            } else {
+                masked.push(c);
+                in_number = false;
+            }
+        }
+        masked
     };
     assert_eq!(
         mask_digits(&implicit.stdout),

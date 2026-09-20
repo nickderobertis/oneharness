@@ -3837,8 +3837,9 @@
         "type": "string"
       },
       "historyPointerFile": {
-        "description": "The run's pointer file: with history on, every harness run this run\nbegins appends one `HistoryPointer` line here saying where its session\nwent (see `historyPointers()`), the store itself staying where\n`historyDir` puts it.",
-        "type": "string"
+        "description": "The run's pointer file: with history on, every harness run this run\nbegins appends one `HistoryPointer` line here saying where its session\nwent (see `historyPointers()`), the store itself staying where\n`historyDir` puts it. An empty path is refused rather than read as\nunset — leave the option out to name no file.",
+        "type": "string",
+        "minLength": 1
       },
       "maxParallel": {
         "description": "Maximum harnesses (or, in a batch, prompts) to run concurrently.",

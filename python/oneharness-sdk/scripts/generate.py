@@ -283,7 +283,6 @@ def _schema_bundle() -> dict[str, Any]:
             f"       See it in full with: {' '.join(argv)}"
         ) from None
     try:
-        # The parsed JSON document, typed as the open mapping the docstring says.
         bundle: dict[str, Any] = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise SystemExit(

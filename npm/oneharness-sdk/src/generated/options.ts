@@ -76,7 +76,8 @@ export interface RunOptions {
    * The run's pointer file: with history on, every harness run this run
    * begins appends one `HistoryPointer` line here saying where its session
    * went (see `historyPointers()`), the store itself staying where
-   * `historyDir` puts it.
+   * `historyDir` puts it. An empty path is refused rather than read as
+   * unset — leave the option out to name no file.
    */
   historyPointerFile?: string | undefined;
   /**

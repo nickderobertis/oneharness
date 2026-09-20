@@ -771,6 +771,12 @@
       "value": { "prompt": "hi", "historyPointerFile": 42 }
     },
     {
+      "name": "run history pointer file must not be empty",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "hi", "historyPointerFile": "" }
+    },
+    {
       "name": "run empty prompt",
       "root": "run_options",
       "accepted": false,

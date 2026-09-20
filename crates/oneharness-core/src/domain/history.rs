@@ -1671,7 +1671,14 @@ pub struct HistoryPointerError(String);
 /// three identity spellings compose into one id, the version is one this
 /// reader knows — so a line that parses IS a pointer, and a foreign object that
 /// happens to carry these keys is counted as skipped rather than read as one.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+// `remote = "Self"` is how the derived deserializer becomes the inherent
+// `HistoryPointer::deserialize` the checking `Deserialize` impl below wraps,
+// with one field list rather than a mirror of it; the derived serializer is
+// wrapped the same way, unchanged. A plain comment, because a doc comment here
+// is also the SDKs' generated description.
+// llmlint: ignore[invalid_states_unrepresentable] The fields are the published wire contract a Rust consumer reads by name, like `HistoryRecord`'s; the only two ways in — `new` and the checking `Deserialize` — establish every invariant, and hiding the fields behind getters would turn each read into a method call for no gain on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(remote = "Self")]
 pub struct HistoryPointer {
     /// [`POINTER_SCHEMA_VERSION`]; a reader accepts any `1.<minor>`.
     pub schema_version: String,
@@ -1859,26 +1866,10 @@ impl HistoryPointer {
     }
 }
 
-/// The wire shape a line is parsed into before [`HistoryPointer::checked`]
-/// admits it; the same fields, so the schema derived from [`HistoryPointer`]
-/// describes exactly what is accepted.
-#[derive(Deserialize)]
-struct HistoryPointerWire {
-    schema_version: String,
-    history_id: HistoryId,
-    history_dir: String,
-    history_project: String,
-    history_session: String,
-    history_file: String,
-    name: String,
-    project: String,
-    harness: String,
-    #[serde(default)]
-    variant: Option<String>,
-    harness_id: String,
-    started: UtcInstant,
-    #[serde(default)]
-    labels: HistoryLabels,
+impl Serialize for HistoryPointer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        HistoryPointer::serialize(self, serializer)
+    }
 }
 
 impl<'de> Deserialize<'de> for HistoryPointer {
@@ -1886,24 +1877,9 @@ impl<'de> Deserialize<'de> for HistoryPointer {
     where
         D: Deserializer<'de>,
     {
-        let wire = HistoryPointerWire::deserialize(deserializer)?;
-        HistoryPointer {
-            schema_version: wire.schema_version,
-            history_id: wire.history_id,
-            history_dir: wire.history_dir,
-            history_project: wire.history_project,
-            history_session: wire.history_session,
-            history_file: wire.history_file,
-            name: wire.name,
-            project: wire.project,
-            harness: wire.harness,
-            variant: wire.variant,
-            harness_id: wire.harness_id,
-            started: wire.started,
-            labels: wire.labels,
-        }
-        .checked()
-        .map_err(serde::de::Error::custom)
+        HistoryPointer::deserialize(deserializer)?
+            .checked()
+            .map_err(serde::de::Error::custom)
     }
 }
 

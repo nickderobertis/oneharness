@@ -13214,7 +13214,8 @@
         "type": "string"
       },
       "history_pointer_file": {
-        "description": "The run's pointer file: with history on, every harness run this run\nbegins appends one `HistoryPointer` line here saying where its session\nwent (see `historyPointers()`), the store itself staying where\n`historyDir` puts it.",
+        "description": "The run's pointer file: with history on, every harness run this run\nbegins appends one `HistoryPointer` line here saying where its session\nwent (see `historyPointers()`), the store itself staying where\n`historyDir` puts it. An empty path is refused rather than read as\nunset \u2014 leave the option out to name no file.",
+        "minLength": 1,
         "type": "string"
       },
       "max_parallel": {

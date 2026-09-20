@@ -2744,7 +2744,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   historyDir: z.string().optional(),
   historyLabels: z.lazy(() => HistoryLabelsSchema).optional(),
   historyName: z.string().optional(),
-  historyPointerFile: z.string().optional(),
+  historyPointerFile: z.string().min(1).optional(),
   maxParallel: z.int().gte(0).optional(),
   mockHarnesses: z.array(z.string()).optional(),
   mockRules: z.string().optional(),

@@ -125,25 +125,19 @@ impl HistoryWriter {
     /// line to it — one write, before the harness is spawned. Best-effort like
     /// the store itself: a pointer file that cannot be opened or written warns
     /// on stderr once per run and the line is skipped, never the run.
-    pub fn begin_harness_run(&self, harness_id: &str) -> HistoryId {
+    pub fn begin_harness_run(&self, harness_id: &HarnessIdentity) -> HistoryId {
         let run_id = self.begin_run();
         if let Some(pointer_file) = &self.pointer_file {
-            let invalid = |error: &dyn std::fmt::Display| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-            };
             let written = self.pointer_session().and_then(|session| {
-                // The selected id is a registry id with a configured variant,
-                // so this parses; a text that does not is not an id a run
-                // could have selected, and is said rather than written.
-                let harness_id: HarnessIdentity =
-                    harness_id.parse().map_err(|error| invalid(&error))?;
                 let pointer = HistoryPointer::new(
                     &session,
                     run_id,
-                    &harness_id,
+                    harness_id,
                     UtcInstant::from_epoch(now_epoch_secs()),
                 )
-                .map_err(|error| invalid(&error))?;
+                .map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                })?;
                 append_pointer_line(pointer_file, &pointer)
             });
             if let Err(err) = written {
@@ -2141,8 +2135,8 @@ mod tests {
             .with_pointer_file(Some(pointer_file.clone()));
         assert_eq!(writer.pointer_file(), Some(pointer_file.as_path()));
 
-        let first = writer.begin_harness_run("claude-code:primary");
-        let second = writer.begin_harness_run("codex");
+        let first = writer.begin_harness_run(&"claude-code:primary".parse().unwrap());
+        let second = writer.begin_harness_run(&"codex".parse().unwrap());
         writer
             .append_streamed(
                 second,
@@ -2253,14 +2247,14 @@ mod tests {
         let writer = HistoryWriter::open(&dir, &project, "torn", HistoryLabels::default())
             .unwrap()
             .with_pointer_file(Some(pointer_file.clone()));
-        let first = writer.begin_harness_run("codex");
+        let first = writer.begin_harness_run(&"codex".parse().unwrap());
         fs::OpenOptions::new()
             .append(true)
             .open(&pointer_file)
             .unwrap()
             .write_all(b"{\"not\": \"a pointer\"}\n")
             .unwrap();
-        let second = writer.begin_harness_run("goose");
+        let second = writer.begin_harness_run(&"goose".parse().unwrap());
         fs::OpenOptions::new()
             .append(true)
             .open(&pointer_file)
@@ -2361,8 +2355,8 @@ mod tests {
         let writer = HistoryWriter::open(&dir, &project, "blocked", HistoryLabels::default())
             .unwrap()
             .with_pointer_file(Some(pointer_file.clone()));
-        let run_id = writer.begin_harness_run("codex");
-        let _ = writer.begin_harness_run("codex");
+        let run_id = writer.begin_harness_run(&"codex".parse().unwrap());
+        let _ = writer.begin_harness_run(&"codex".parse().unwrap());
         assert!(writer.pointer_warned.load(Ordering::Relaxed));
         writer
             .append_streamed(

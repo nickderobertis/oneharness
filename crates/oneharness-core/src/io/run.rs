@@ -879,6 +879,16 @@ pub fn run_supervised(
             })
             .collect()
     };
+    // The same units as the typed identity a history record binds to and a
+    // pointer line names. Selection already rejected an unknown harness or a
+    // malformed variant, so every composed id here parses.
+    let unit_identities: Vec<HarnessIdentity> = units
+        .iter()
+        .map(|(_, id, _, _)| {
+            id.parse()
+                .expect("harness selection validated every composed id")
+        })
+        .collect();
 
     // Build a plan entry for every unit; queue jobs only for the ones that are
     // available and actually being executed. `job_plans` parallels `jobs` and
@@ -1246,14 +1256,13 @@ pub fn run_supervised(
         // One id per plan entry, not per selected harness: a model fan-out
         // repeats a harness once per model, so `selected_ids` is the wrong axis
         // to attribute a streamed event to.
-        let unit_ids: Vec<&str> = units.iter().map(|(_, id, _, _)| id.as_str()).collect();
         let streamed = drive_plan_sequentially(
             plan,
             &jobs,
             drive_fallback_chain,
             multi_model,
             history_writer.as_ref(),
-            &unit_ids,
+            &unit_identities,
             controlled.as_ref(),
             &mut event_sink,
             spawn,
@@ -1282,7 +1291,7 @@ pub fn run_supervised(
         // whose binary is missing never reaches the branch that assembles one,
         // and its plan holds a `skipped` row already. Falling through publishes
         // that row — an absent CLI is data in the report, never a panic.
-        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &units);
+        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
         let results = run_http_controlled(
             shape,
             listener.handle_ref(),
@@ -1315,7 +1324,7 @@ pub fn run_supervised(
             handle: chain.handle,
             prompt,
         };
-        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &units);
+        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
         let mut attempts = 0;
         let results = loop {
             attempts += 1;
@@ -1377,7 +1386,6 @@ pub fn run_supervised(
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
         // this branch does is complete.
-        let unit_ids: Vec<&str> = units.iter().map(|(_, id, _, _)| id.as_str()).collect();
         let (results, fb, begun) = run_fallback(
             plan,
             &jobs,
@@ -1389,7 +1397,7 @@ pub fn run_supervised(
             },
             multi_model,
             history_writer.as_ref(),
-            &unit_ids,
+            &unit_identities,
             spawn,
         );
         (results, Some(fb), begun)
@@ -1434,7 +1442,7 @@ pub fn run_supervised(
         // Nothing falls through on this branch, so every plan entry is begun
         // now, before the first wave spawns. Under `--print-command` the
         // writer is `None`, so nothing is minted.
-        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &units);
+        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
         let outcomes = if fork_batch {
             let o = run_fork_batch(
                 &mut jobs,
@@ -2469,16 +2477,16 @@ struct BegunHistory {
 /// spawns. Every entry, not only the pending ones: a row the plan already
 /// resolved (a harness whose binary is missing) closes as its own `skipped`
 /// record exactly as it did before pointers existed, and a record no pointer
-/// line names cannot be found from the file. `units` is index-aligned with the
-/// plan, so entry `i`'s harness id is `units[i]`'s.
+/// line names cannot be found from the file. `unit_ids` is index-aligned with
+/// the plan, so entry `i`'s identity is `unit_ids[i]`.
 fn begin_each_plan_entry(
     writer: Option<&HistoryWriter>,
     plan_len: usize,
-    units: &[(&'static HarnessSpec, String, Option<String>, &str)],
+    unit_ids: &[HarnessIdentity],
 ) -> Vec<BegunHistory> {
     (0..plan_len)
         .map(|index| BegunHistory {
-            run_id: writer.map(|writer| writer.begin_harness_run(&units[index].1)),
+            run_id: writer.map(|writer| writer.begin_harness_run(&unit_ids[index])),
             persisted_event_indexes: BTreeSet::new(),
         })
         .collect()
@@ -2653,7 +2661,7 @@ fn drive_plan_sequentially(
     fallback_mode: bool,
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
-    unit_ids: &[&str],
+    unit_ids: &[HarnessIdentity],
     controlled: Option<&ControlledRun<'_>>,
     sink: &mut Option<&mut dyn EventSink>,
     spawn: SpawnControls<'_>,
@@ -2669,7 +2677,7 @@ fn drive_plan_sequentially(
     for (index, entry) in plan.into_iter().enumerate() {
         // Begun as the chain reaches it — an already-resolved row too, since
         // it closes as its own record (see `begin_each_plan_entry`).
-        let run_id = history_writer.map(|writer| writer.begin_harness_run(unit_ids[index]));
+        let run_id = history_writer.map(|writer| writer.begin_harness_run(&unit_ids[index]));
         let streamed = match entry {
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
@@ -2690,7 +2698,7 @@ fn drive_plan_sequentially(
                     output_format,
                     prompt,
                     model,
-                    harness_id: unit_ids[index],
+                    harness_id: unit_ids[index].as_str(),
                 };
                 let mut run_candidate = || match controlled {
                     // Every candidate, not just one chosen up front: the channel
@@ -3866,7 +3874,7 @@ fn run_fallback(
     retry_limits: RetryLimits,
     multi_model: bool,
     history_writer: Option<&HistoryWriter>,
-    unit_ids: &[&str],
+    unit_ids: &[HarnessIdentity],
     spawn: SpawnControls<'_>,
 ) -> (Vec<RunResult>, FallbackReport, Vec<BegunHistory>) {
     let mut results: Vec<RunResult> = Vec::new();
@@ -3879,7 +3887,7 @@ fn run_fallback(
     for (index, entry) in plan.into_iter().enumerate() {
         // Begun as the chain reaches it — a candidate after the one that ran is
         // never begun, so it gets no id and no pointer line.
-        let run_id = history_writer.map(|writer| writer.begin_harness_run(unit_ids[index]));
+        let run_id = history_writer.map(|writer| writer.begin_harness_run(&unit_ids[index]));
         let result = match entry {
             Plan::Ready(result) => *result,
             Plan::Pending {

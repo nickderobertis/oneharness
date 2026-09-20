@@ -684,8 +684,8 @@ fn a_consumer_reads_a_runs_pointer_file_through_the_crate() {
     let writer = HistoryWriter::open(&dir, &project, "pointed", HistoryLabels::default())
         .expect("the store opens")
         .with_pointer_file(Some(pointer_file.clone()));
-    let first = writer.begin_harness_run("claude-code:primary");
-    let second = writer.begin_harness_run("codex");
+    let first = writer.begin_harness_run(&"claude-code:primary".parse().unwrap());
+    let second = writer.begin_harness_run(&"codex".parse().unwrap());
     // A writer interrupted mid-line leaves a torn tail.
     use std::io::Write;
     std::fs::OpenOptions::new()

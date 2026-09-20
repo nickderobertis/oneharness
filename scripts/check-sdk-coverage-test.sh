@@ -58,12 +58,17 @@ grep -q "Python has no .sync. for" "$work/out" ||
 # capability against a file that was never the client.
 # Both are exit 2 — a usage error, distinct from the gate's own red (exit 1) —
 # and both print how the script is called.
+# The path is matched from the scratch directory's name down, not from its root:
+# under Git Bash MSYS rewrites `/tmp/tmp.XXXX/absent.ts` into
+# `C:/Users/.../Temp/tmp.XXXX/absent.ts` before node sees it, and the gate names
+# the argument it was handed.
 usage_line='usage: node scripts/sdk-coverage.mjs \[<typescript client>\] \[<python client>\]'
+scratch="${work##*/}"
 status=0
 node scripts/sdk-coverage.mjs "$work/absent.ts" "$python" >"$work/out" 2>&1 || status=$?
 [ "$status" -eq 2 ] ||
   fail "a client path that does not exist should be a usage error (exit 2), got exit $status"
-grep -q "cannot read the client at $work/absent.ts (ENOENT)" "$work/out" ||
+grep -q "cannot read the client at .*/$scratch/absent\.ts (ENOENT)" "$work/out" ||
   fail "the gate did not name the client path it could not read"
 grep -q "$usage_line" "$work/out" ||
   fail "the unreadable-client refusal did not say how the gate is called"
@@ -71,7 +76,7 @@ status=0
 node scripts/sdk-coverage.mjs "$typescript" "$work/out" >"$work/out.2" 2>&1 || status=$?
 [ "$status" -eq 2 ] ||
   fail "a file that declares no client class should be a usage error (exit 2), got exit $status"
-grep -q "$work/out does not declare .class OneHarness., so it is not a client this gate reads" "$work/out.2" ||
+grep -q "/$scratch/out does not declare .class OneHarness., so it is not a client this gate reads" "$work/out.2" ||
   fail "the gate did not say which file declares no client class"
 grep -q "$usage_line" "$work/out.2" ||
   fail "the no-client refusal did not say how the gate is called"

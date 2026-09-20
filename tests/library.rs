@@ -148,9 +148,11 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
     // its line there BEFORE the harness is spawned — proven from inside the
     // harness, which copies the pointer file to its stdout as it starts.
     use oneharness_core::io::history::{read_pointers, read_session};
+    use oneharness_core::io::scratch::ScratchDir;
 
-    let store = control_store("pointer-store");
-    let cwd = control_store("pointer-cwd");
+    // Owned scratch: given back whether the journey passes or panics.
+    let store = ScratchDir::new("library-pointer-store").expect("a scratch store");
+    let cwd = ScratchDir::new("library-pointer-cwd").expect("a scratch cwd");
     let pointer_file = store.join("run").join("pointers.jsonl");
     let history_dir = store.join("history");
     let pointed = |env: &[(&str, &str)]| RunRequest {
@@ -158,7 +160,7 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
         history_dir: Some(history_dir.clone()),
         history_pointer_file: Some(pointer_file.clone()),
         history_name: Some("library pointer".to_string()),
-        cwd: Some(cwd.clone()),
+        cwd: Some(cwd.to_path_buf()),
         ..request("codex", env)
     };
 
@@ -219,7 +221,7 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
     assert_eq!(pointer.project, record.project);
     assert_eq!(
         pointer.project,
-        std::fs::canonicalize(&cwd).unwrap().display().to_string()
+        std::fs::canonicalize(&*cwd).unwrap().display().to_string()
     );
     assert_eq!(pointer.harness, "codex");
     assert_eq!(pointer.variant, None);
@@ -244,9 +246,6 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
     .expect("a valid hermetic run");
     assert!(outcome.report.history_file.is_none());
     assert_eq!(read_pointers(&pointer_file).unwrap().pointers.len(), 2);
-
-    let _ = std::fs::remove_dir_all(&store);
-    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 // capability: run

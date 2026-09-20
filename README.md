@@ -446,7 +446,8 @@ Useful `run` flags:
   `--bypass` forces bypass on over a config's `mode` / `bypass`.
 - `--permit-prompts` — silence the "may block on a prompt" warning for the chosen
   mode (use once allow-rules are synced so the prompt never fires).
-- `--require-available` — treat a not-installed harness as a failure.
+- `--require-available` — treat a not-installed harness as a failure under
+  `--run-mode parallel` (see [Exit codes](#exit-codes)).
 - `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`,
   the id upper-cased with `-` and `:` as `_`). A variant-qualified selection
   (`claude-code:work`) reads its own key first (`ONEHARNESS_BIN_CLAUDE_CODE_WORK`)
@@ -853,17 +854,34 @@ Which settings can reach which harness is the support table above: `model`,
 
 ### Exit codes
 
-- `0` — every selected harness was `ok` or `skipped` (or it was a dry run).
-- `1` — at least one harness `nonzero`/`timeout`/`spawn-error`ed or was
-  `cancelled` (or, under `--require-available`, was missing; or, under
-  `--schema`, never produced a schema-conforming answer).
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This section is the one place the documentation states `run`'s exit-code rule (the `--require-available` and chain passages link here rather than restating it); its drift gate is the behavior, pinned per shape through the real binary (`a_missing_only_candidate_stops_the_default_chain_and_exits_1`, `a_missing_only_candidate_exits_1_under_a_batch_and_a_continuation_too`, `missing_binary_is_skipped_not_failed`). -->
+One invariant holds whatever the run's shape: **the process exits `1` whenever
+no selected harness could do the requested work.** A missing harness is still
+`skipped` data in its result (never a crash), but `skipped` is never a
+successful process outcome on its own.
+
+- `0` — the harness that ran succeeded (or it was a dry run).
+- `1` — the harness that ran `nonzero`/`timeout`/`spawn-error`ed or was
+  `cancelled`, never produced a schema-conforming answer under `--schema`, or
+  **no selected harness could run at all** (not installed, or unable to
+  start).
 - `2` — usage/configuration error (bad args, unknown harness, no prompt, an
   unreadable or invalid `--schema` file).
 
-Under [`--run-mode fallback`](#fallback-mode-first-that-runs-wins) the rule is
-different: `0` when the harness that ran succeeded, `1` when it ran but failed
-**or** when no candidate could run at all — the fallen-through candidates never
-count against the run.
+Under the default [`fallback`](#fallback-mode-first-that-runs-wins) mode that
+is the whole rule: `0` when the harness that ran succeeded, `1` when it ran but
+failed **or** when no candidate could run — the fallen-through candidates never
+count against the run. A chain of exactly one candidate follows it too, whether
+it carries a plain prompt, a [batch](#batch-runs-same-prefix-prompt-caching) or
+a `--resume`/`--fork` continuation: a missing only harness exits `1` on every
+one of those.
+
+[`--run-mode parallel`](#fallback-mode-first-that-runs-wins) is the one
+explicit opt-out: every selected harness runs, `0` means every one was `ok` or
+`skipped`, and `1` means at least one failed — a missing harness is tolerated
+there unless `--require-available` makes it a failure.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 ### Cancelling a run (Ctrl-C, SIGINT/SIGTERM)
 
@@ -1766,11 +1784,8 @@ to, so it carries both shapes as the single-harness run they are (its report's
 working under the default. The higher-level [`--session`](#session-handle) handle
 **is** allowed on any chain: it binds to the anchor (the first session-capable
 harness in the chain), so a named conversation degrades gracefully across the
-same priority set. Exit code: `0` when the harness that ran succeeded, `1` when
-it ran but failed **or** when no candidate could run at all — so a bare
-single-harness run whose harness is not installed exits `1` (its result is
-still `skipped` data, and the `fallback` block says `not-installed`), where
-`--run-mode parallel` exits `0` unless `--require-available`.
+same priority set. The exit code follows the one [exit-code rule](#exit-codes)
+whatever the chain carries.
 
 **Work evidence decides, so streaming changes nothing.** Before any of the
 reasons above are consulted, a candidate whose result carries **evidence it did

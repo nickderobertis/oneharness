@@ -7331,6 +7331,13 @@ fn missing_binary_is_skipped_not_failed() {
     strict.push("--require-available");
     let output = run(&strict, &[]);
     assert_eq!(output.status.code(), Some(1));
+    // And its summary names what was missing, in the chain's own words.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .contains("no selected harness could be run — not installed: codex; nothing executed"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -7339,7 +7346,9 @@ fn a_missing_only_candidate_stops_the_default_chain_and_exits_1() {
     // run has run nothing: the harness is still `skipped` data (never a crash),
     // the `fallback` block says who was routed around and why, and the exit
     // code says the task was not done — fallback's documented outcome, now met
-    // by a bare single-harness run.
+    // by a bare single-harness run. The same selection carrying a batch or a
+    // continuation exits 1 too (issue #1324) — see
+    // `a_missing_only_candidate_exits_1_under_a_batch_and_a_continuation_too`.
     let output = run(
         &[
             "run",
@@ -12680,7 +12689,9 @@ fn batch_applies_the_schema_to_every_prompt() {
 #[test]
 fn batch_with_an_unavailable_harness_skips_every_prompt() {
     // A missing binary in batch mode skips each prompt (one skipped result per
-    // prompt), exits 0 by default, and still reports the batch block.
+    // prompt) and still reports the batch block — and, since no selected
+    // harness could run, exits 1 like every other one-candidate chain
+    // (issue #1324; it used to exit 0 on this shape alone).
     let output = run(
         &[
             "run",
@@ -12696,7 +12707,7 @@ fn batch_with_an_unavailable_harness_skips_every_prompt() {
         ],
         &[],
     );
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json_stdout(&output);
     assert_eq!(value["batch"]["prompt_count"], 2);
     let results = value["results"].as_array().unwrap();
@@ -18832,6 +18843,101 @@ fn a_one_candidate_chain_carries_a_continuation_and_a_batch_under_the_default_mo
     );
     assert!(explicit.status.success(), "{explicit:?}");
     assert!(json_stdout(&explicit)["fallback"].is_null());
+}
+
+#[test]
+fn a_missing_only_candidate_exits_1_under_a_batch_and_a_continuation_too() {
+    // Issue #1324: the exit code follows whether the only selected harness
+    // could run, never the shape of the invocation. A plain prompt on a
+    // missing only candidate exits 1 (`a_missing_only_candidate_stops_the_
+    // default_chain_and_exits_1`); a batch and a `--resume`/`--fork`
+    // continuation on the same selection used to exit 0 with `skipped`
+    // results because they run on the single-harness path. Each keeps that
+    // path's report shape — `skipped` results, a null `fallback` block — but
+    // the process says the task was not done, in the chain's own words.
+    let missing = missing_bin("codex");
+    let batch = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &missing,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(batch.status.code(), Some(1), "{batch:?}");
+    let v = json_stdout(&batch);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["batch"]["prompt_count"], 2);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|r| r["status"] == "skipped" && r["available"] == false),
+        "{v}"
+    );
+    let stderr = String::from_utf8_lossy(&batch.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run — not installed: codex"),
+        "{stderr}"
+    );
+
+    let continued = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "next turn",
+            "--resume",
+            "thread-1",
+            "--bin",
+            &missing,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(continued.status.code(), Some(1), "{continued:?}");
+    let v = json_stdout(&continued);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["resume"], "thread-1");
+    assert_eq!(v["results"][0]["status"], "skipped");
+    assert_eq!(v["results"][0]["available"], false);
+    let stderr = String::from_utf8_lossy(&continued.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run — not installed: codex"),
+        "{stderr}"
+    );
+
+    // The explicit opt-out keeps its own documented rule: under
+    // `--run-mode parallel` a missing harness is tolerated unless
+    // `--require-available`, whatever the shape.
+    let parallel = run(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "codex",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &missing,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(parallel.status.code(), Some(0), "{parallel:?}");
+    assert!(json_stdout(&parallel)["fallback"].is_null());
 }
 
 #[test]

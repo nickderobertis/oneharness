@@ -16379,6 +16379,24 @@ fn history_pointer_file_by_flag_names_the_session_the_store_wrote() {
         serde_json::json!({"pointers": [], "skipped": 0})
     );
 
+    // A foreign line skips even when its bytes are not text, and a blank line
+    // is neither read nor skipped: the run's own line still comes back, on
+    // both surfaces, with one skip.
+    let mut foreign = std::fs::read(&pointer_file).unwrap();
+    foreign.extend_from_slice(b"\n\xff\xfe not even text\n   \n");
+    std::fs::write(&pointer_file, &foreign).unwrap();
+    let read = read_pointers(&pointer_file).expect("a non-UTF-8 line is skipped, not refused");
+    assert_eq!(read.skipped, 1);
+    assert_eq!(
+        serde_json::to_value(&read.pointers).unwrap(),
+        serde_json::json!([pointer])
+    );
+    let listed = run(&["history", "pointers", &pf], &[]);
+    assert!(listed.status.success());
+    let listed = json_stdout(&listed);
+    assert_eq!(listed["skipped"], 1);
+    assert_eq!(listed["pointers"], serde_json::json!([pointer]));
+
     // A path that exists but is not a readable file (the store directory
     // itself) is a loud usage error naming the path, never an empty read.
     let unreadable = run(&["history", "pointers", &dir.display().to_string()], &[]);

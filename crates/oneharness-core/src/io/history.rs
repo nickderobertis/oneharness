@@ -458,11 +458,12 @@ pub type Pointers = HistoryPointers;
 /// A line is complete only once its newline has landed: the writer sends the
 /// object and its terminator as one write, so bytes at the end of the file
 /// with no newline after them are a torn tail even when they happen to parse,
-/// and are skipped rather than read as a record. Only a file that exists and
-/// cannot be read is an error.
+/// and are skipped rather than read as a record. A blank line is neither a
+/// record nor a skipped one. Only a file that exists and cannot be read is an
+/// error.
 pub fn read_pointers(path: &Path) -> Result<HistoryPointers, OneharnessError> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
             return Ok(HistoryPointers::default());
         }
@@ -474,19 +475,22 @@ pub fn read_pointers(path: &Path) -> Result<HistoryPointers, OneharnessError> {
         }
     };
     let mut read = HistoryPointers::default();
-    for line in text.split_inclusive('\n') {
-        let Some(line) = line.strip_suffix('\n') else {
+    // Decoded per line, not per file: a foreign line's bytes, or a tail torn
+    // inside a multi-byte character, are that one line's to skip, never the
+    // whole file's to refuse.
+    for line in bytes.split_inclusive(|byte| *byte == b'\n') {
+        let Some(line) = line.strip_suffix(b"\n") else {
             // The file's last bytes, unterminated: a write still in flight or
             // one that ended short, never a record.
             read.skipped += 1;
             break;
         };
-        if line.trim().is_empty() {
+        if line.iter().all(u8::is_ascii_whitespace) {
             continue;
         }
-        match serde_json::from_str::<HistoryPointer>(line) {
-            Ok(pointer) => read.pointers.push(pointer),
-            Err(_) => read.skipped += 1,
+        match std::str::from_utf8(line).map(serde_json::from_str::<HistoryPointer>) {
+            Ok(Ok(pointer)) => read.pointers.push(pointer),
+            Ok(Err(_)) | Err(_) => read.skipped += 1,
         }
     }
     Ok(read)
@@ -2296,6 +2300,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first, second],
             "a record without its newline is not read"
+        );
+
+        // A line that is not UTF-8 — a foreign line's bytes, or a tail torn
+        // inside a multi-byte character — is that line's to skip, never the
+        // whole file's to refuse; a blank line is neither read nor skipped.
+        let mut whole = fs::read(&pointer_file).unwrap();
+        whole.push(b'\n');
+        whole.extend_from_slice(b"\n");
+        whole.extend_from_slice(b"\xff\xfe not text\n");
+        whole.extend_from_slice(b"   \n");
+        whole.extend_from_slice(b"{\"schema_version\": \"1.0\", \"name\": \"caf\xc3");
+        fs::write(&pointer_file, &whole).unwrap();
+        let read = read_pointers(&pointer_file).unwrap();
+        assert_eq!(
+            read.pointers
+                .iter()
+                .map(|pointer| pointer.history_id())
+                .collect::<Vec<_>>(),
+            vec![first, second, first],
+            "the copied record is complete now that its newline has landed"
+        );
+        assert_eq!(
+            read.skipped, 3,
+            "the foreign object, the non-UTF-8 line and the torn tail; not the blank lines"
         );
     }
 

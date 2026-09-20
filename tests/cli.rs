@@ -16201,24 +16201,21 @@ fn assert_pointer_names_the_session(pointer: &Value, report: &Value, record: &Va
     );
 }
 
-/// The README's pointer table is where a consumer learns the line's fields, and
-/// it is prose the generators never touch — so it is held to the type itself:
-/// every field the wire carries has a row, no row names a field that is gone,
-/// and the version the prose states is the one the writer stamps.
-#[test]
-fn documented_history_pointer_line_tracks_the_wire_contract() {
-    use oneharness_core::domain::history::{
-        HistoryPointer, PointerSession, POINTER_SCHEMA_VERSION,
-    };
-    let readme = include_str!("../README.md");
-    let table = readme
+/// The field names the README's pointer table documents: every `` `name` ``
+/// in the first column, one row possibly naming several. The table ends at the
+/// first line that is not a row. `lines` strips a CRLF checkout's `\r` too,
+/// where a blank-line split would never match and the "table" would run on
+/// into every other table in the README — which is how the Windows leg read 22
+/// rows from a 7-row table.
+fn documented_pointer_fields(readme: &str) -> std::collections::BTreeSet<String> {
+    readme
         .split("**Pointer file.**")
         .nth(1)
         .and_then(|rest| rest.split("| field | meaning |").nth(1))
-        .and_then(|rest| rest.split("\n\n").next())
-        .expect("README.md documents the pointer line's fields in a table");
-    let documented: std::collections::BTreeSet<String> = table
+        .expect("README.md documents the pointer line's fields in a table")
         .lines()
+        .skip(1)
+        .take_while(|line| line.starts_with('|'))
         .filter(|line| line.starts_with("| `"))
         .flat_map(|line| {
             line.trim_start_matches("| ")
@@ -16229,7 +16226,25 @@ fn documented_history_pointer_line_tracks_the_wire_contract() {
                 .map(|cell| cell.trim().trim_matches('`').to_string())
                 .collect::<Vec<_>>()
         })
-        .collect();
+        .collect()
+}
+
+/// The README's pointer table is where a consumer learns the line's fields, and
+/// it is prose the generators never touch — so it is held to the type itself:
+/// every field the wire carries has a row, no row names a field that is gone,
+/// and the version the prose states is the one the writer stamps.
+#[test]
+fn documented_history_pointer_line_tracks_the_wire_contract() {
+    use oneharness_core::domain::history::{
+        HistoryPointer, PointerSession, POINTER_SCHEMA_VERSION,
+    };
+    let readme = include_str!("../README.md");
+    let documented = documented_pointer_fields(readme);
+    assert_eq!(
+        documented_pointer_fields(&readme.replace('\n', "\r\n")),
+        documented,
+        "the table must read the same from a CRLF checkout"
+    );
     // A fully populated line, so every optional field is on the wire.
     let session = PointerSession::new(
         &std::env::temp_dir().join("store"),

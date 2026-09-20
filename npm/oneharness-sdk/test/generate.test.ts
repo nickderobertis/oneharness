@@ -82,18 +82,13 @@ test("a missing generated contract is reported as stale", () => {
 });
 
 test("schema generation builds into the clone-root target directory", () => {
-	// No entry point names a target directory of its own: each builds wherever
-	// `.cargo/config.toml` sends every cargo invocation in this clone, so its
-	// example lands under `<clone>/target` and not under the sub-directory they
-	// all once pinned. Every caller is driven, since each reaches cargo on its
-	// own — the four `schemaBundle` callers (this SDK's generator, the parity
-	// audit, the SDK coverage gate) and `scripts/check-capability-surface.sh`,
-	// which runs the core example through its own `cargo run`. The example a
-	// caller drives is removed before it runs, from both locations, so that
-	// what is present afterwards is this run's doing, not a prior one's: a
-	// restored CI cache or an older checkout's build can leave the legacy
-	// sub-directory standing, so its existence says nothing about where this
-	// run wrote.
+	// No entry point names a target directory of its own any more, so each
+	// builds wherever `.cargo/config.toml` sends every cargo invocation in this
+	// clone. Every one below is driven rather than a representative, because
+	// each reaches cargo independently and so can regress on its own. Both
+	// locations are cleared first because residue lies: a restored CI cache or
+	// an older checkout's build can leave the legacy sub-directory standing, so
+	// what is found there afterwards must be this run's doing to mean anything.
 	const suffix = process.platform === "win32" ? ".exe" : "";
 	const example = (name: string) => ({
 		built: resolve(root, "target/debug/examples", `${name}${suffix}`),

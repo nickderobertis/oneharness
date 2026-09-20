@@ -16394,17 +16394,18 @@ fn history_pointer_file_by_flag_names_the_session_the_store_wrote() {
         serde_json::json!({"pointers": [], "skipped": 0})
     );
 
-    // An empty FILE never reaches the reader: clap refuses an empty value on
-    // the required positional as one not supplied (exit 2, nothing on stdout),
-    // as the SDKs refuse an empty `file` — never a path that does not exist
+    // An empty FILE never reaches the reader: it is refused at the CLI
+    // boundary by name (exit 2, nothing on stdout), under the same non-empty
+    // rule the SDKs hold their `file` to — never a path that does not exist
     // reported as an empty pointer file.
     let refused = run(&["history", "pointers", ""], &[]);
     assert_eq!(refused.status.code(), Some(2));
     assert!(refused.stdout.is_empty(), "nothing is reported on stdout");
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(
-        stderr.contains("a value is required for '<FILE>'"),
-        "the refusal names the missing argument: {stderr}"
+        stderr.contains("invalid value '' for '<FILE>'")
+            && stderr.contains("must be a non-empty string"),
+        "the refusal names the operand and the rule: {stderr}"
     );
 
     // A foreign line skips even when its bytes are not text, and a blank line

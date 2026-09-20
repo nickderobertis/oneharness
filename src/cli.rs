@@ -2,13 +2,14 @@
 
 use std::path::PathBuf;
 
-use clap::builder::{PossibleValuesParser, TypedValueParser};
+use clap::builder::{PossibleValuesParser, StringValueParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
 use oneharness_core::domain::batch::BatchStrategy;
 use oneharness_core::domain::fallback::RunMode;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
+use oneharness_core::domain::sdk::NonEmptyString;
 use oneharness_core::errors::{JsonOnlySelection, OneharnessError};
 
 /// Parse `--output-format` into the core [`OutputFormat`], keeping the
@@ -167,6 +168,16 @@ fn format_parser() -> impl TypedValueParser<Value = Format> {
         "text" => Format::Text,
         _ => Format::Json,
     })
+}
+
+/// A `FILE` operand that must name a file, held to the same boundary the SDKs'
+/// [`NonEmptyString`] holds their `file` to — one rule, so an empty operand is
+/// refused here by name (`invalid value '' for '<FILE>': must be a non-empty
+/// string`) rather than reaching a reader as a path that merely does not exist.
+fn non_empty_path_parser() -> impl TypedValueParser<Value = PathBuf> {
+    StringValueParser::new()
+        .try_map(NonEmptyString::try_from)
+        .map(|text| PathBuf::from(text.into_string()))
 }
 
 const ABOUT: &str = "One CLI across many agentic coding harnesses. Readable by default; \
@@ -418,7 +429,7 @@ pub enum HistoryCommand {
 #[derive(Args, Debug)]
 pub struct HistoryPointersArgs {
     /// The pointer file to read.
-    #[arg(value_name = "FILE")]
+    #[arg(value_name = "FILE", value_parser = non_empty_path_parser())]
     pub file: PathBuf,
 
     /// `--format <text|json>` and `--compact`: how the report reaches stdout.

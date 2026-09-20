@@ -19,9 +19,6 @@ import { fileURLToPath } from "node:url";
 import { schemaBundle } from "./sdk-generator.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// Shared with `just sdk-generate` and the parity audit, so this reuses that
-// build rather than racing the workspace target directory.
-const generatorTarget = resolve(root, "target/sdk-schema-generator");
 
 // The clients to read. Overridable by argument so the gate can be pointed at a
 // candidate client — which is how `check-sdk-coverage-test.sh` proves it still
@@ -38,7 +35,6 @@ function capabilities() {
 		crate: "oneharness-core",
 		example: "generate_core_sdk_schema",
 		cwd: root,
-		target: generatorTarget,
 		rerun: "just lint-workflows",
 	}).capabilities;
 }

@@ -81,27 +81,30 @@ test("a missing generated contract is reported as stale", () => {
 	expect(generatedFileMatches(missing, Buffer.from("expected"))).toBe(false);
 });
 
-test("schema generation is isolated from shared Cargo artifacts", () => {
-	const sharedTarget = resolve(
-		tmpdir(),
-		`oneharness-shared-target-${crypto.randomUUID()}`,
+test("schema generation builds into the clone-root target directory", () => {
+	// The generator names no target directory of its own: it builds wherever
+	// `.cargo/config.toml` sends every cargo invocation in this clone, so the
+	// example lands under `<clone>/target` and nothing under a sub-directory the
+	// generator once pinned. The uplifted example is removed first so that its
+	// presence afterwards is this run's doing, not a prior one's.
+	const example = resolve(
+		root,
+		"target/debug/examples",
+		process.platform === "win32"
+			? "generate_sdk_schema.exe"
+			: "generate_sdk_schema",
 	);
-	try {
-		const generated = spawnSync(
-			process.execPath,
-			["scripts/generate.mjs", "--check"],
-			{
-				cwd: resolve(root, sdkDirectory),
-				env: { ...process.env, CARGO_TARGET_DIR: sharedTarget },
-				encoding: "utf8",
-			},
-		);
-		expect(generated.status).toBe(0);
-		expect(generated.stderr).toBe("");
-		expect(existsSync(sharedTarget)).toBe(false);
-	} finally {
-		rmSync(sharedTarget, { recursive: true, force: true });
-	}
+	rmSync(example, { force: true });
+	const { CARGO_TARGET_DIR: _unset, ...env } = process.env;
+	const generated = spawnSync(
+		process.execPath,
+		["scripts/generate.mjs", "--check"],
+		{ cwd: resolve(root, sdkDirectory), env, encoding: "utf8" },
+	);
+	expect(generated.status).toBe(0);
+	expect(generated.stderr).toBe("");
+	expect(existsSync(example)).toBe(true);
+	expect(existsSync(resolve(root, "target/sdk-schema-generator"))).toBe(false);
 	// A real generator invocation, so it compiles the workspace crates like the
 	// stale-contract test below and needs the same budget: what it asserts is
 	// where Cargo wrote, never how fast. bun's 5s default is under a cold
@@ -422,28 +425,23 @@ test("generator check reports a missing generated contract as stale", () => {
 		resolve(checkout, sdkDirectory, "node_modules"),
 		process.platform === "win32" ? "junction" : "dir",
 	);
-	// The generator pins its own target directory under its checkout's root and
-	// ignores `CARGO_TARGET_DIR` (the isolation test above holds that), so the
-	// copy's is linked to the root's — already warm from `generate:check` — and
-	// only the workspace crates, whose source path differs, rebuild here. Left
-	// empty, every run was a cold compile of the whole dependency graph, which
-	// overran this test's budget on a loaded host.
-	const generatorTarget = resolve(root, "target/sdk-schema-generator");
-	mkdirSync(generatorTarget, { recursive: true });
-	mkdirSync(resolve(checkout, "target"));
-	symlinkSync(
-		generatorTarget,
-		resolve(checkout, "target/sdk-schema-generator"),
-		process.platform === "win32" ? "junction" : "dir",
-	);
-
+	// The copy's own `.cargo/config.toml` would build it into `<checkout>/target`
+	// from cold — every run a full compile of the dependency graph, which overran
+	// this test's budget on a loaded host. So the run is pointed at this clone's
+	// own target directory, already warm from `generate:check` (the Python SDK's
+	// test does the same); only the workspace crates, whose source path differs,
+	// rebuild here.
 	const missing = resolve(checkout, generatedDirectory, "zod.ts");
 	copyFileSync(resolve(root, generatedDirectory, "zod.ts"), missing);
 	rmSync(missing);
 	const result = spawnSync(
 		"node",
 		[`${sdkDirectory}/scripts/generate.mjs`, "--check"],
-		{ cwd: checkout, encoding: "utf8" },
+		{
+			cwd: checkout,
+			env: { ...process.env, CARGO_TARGET_DIR: resolve(root, "target") },
+			encoding: "utf8",
+		},
 	);
 
 	expect(result.status).toBe(1);

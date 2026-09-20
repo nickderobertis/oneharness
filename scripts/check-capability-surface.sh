@@ -17,7 +17,6 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-target="${CARGO_TARGET_DIR:-target/sdk-schema-generator}"
 generator=(cargo run -q -p oneharness-core --features sdk-schema
   --example generate_core_sdk_schema)
 # `set -e` would abort here with cargo's raw output and no statement of which
@@ -25,7 +24,7 @@ generator=(cargo run -q -p oneharness-core --features sdk-schema
 # cause to the tail — a cargo failure runs long, and the error is at the end.
 generator_err="$(mktemp)"
 trap 'rm -f "$generator_err"' EXIT
-if ! bundle="$(CARGO_TARGET_DIR="$target" "${generator[@]}" 2>"$generator_err")"; then
+if ! bundle="$("${generator[@]}" 2>"$generator_err")"; then
   echo "check-capability-surface: the Rust schema generator failed, so there is no capability manifest to check against." >&2
   if [ -s "$generator_err" ]; then
     echo "  cargo said:" >&2

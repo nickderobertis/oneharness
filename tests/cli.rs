@@ -16246,12 +16246,15 @@ fn documented_history_pointer_line_tracks_the_wire_contract() {
         .unwrap(),
     )
     .unwrap();
-    let line = serde_json::to_value(HistoryPointer::new(
-        &session,
-        "0192b2a0-0000-7000-8000-000000000001".parse().unwrap(),
-        "claude-code:primary",
-        "2026-01-01T00:00:00Z".parse().unwrap(),
-    ))
+    let line = serde_json::to_value(
+        HistoryPointer::new(
+            &session,
+            "0192b2a0-0000-7000-8000-000000000001".parse().unwrap(),
+            "claude-code:primary",
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+        )
+        .unwrap(),
+    )
     .unwrap();
     let carried: std::collections::BTreeSet<String> = line
         .as_object()

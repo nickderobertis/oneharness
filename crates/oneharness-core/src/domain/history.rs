@@ -1780,14 +1780,15 @@ impl PointerSession {
 impl HistoryPointer {
     /// One pointer line for the harness run `history_id`, begun at `started`,
     /// under a session. The composed `harness_id` is split into its base and
-    /// variant exactly as a history record splits it.
-    #[must_use]
+    /// variant exactly as a history record splits it, and refused when it is
+    /// not one — an empty base, or a `:` with nothing after it — so a line
+    /// this constructs is one the reader admits.
     pub fn new(
         session: &PointerSession,
         history_id: HistoryId,
         harness_id: &str,
         started: UtcInstant,
-    ) -> Self {
+    ) -> Result<Self, HistoryPointerError> {
         let (harness, variant) = harness_id
             .split_once(':')
             .map_or((harness_id, None), |(base, variant)| (base, Some(variant)));
@@ -1806,12 +1807,13 @@ impl HistoryPointer {
             started,
             labels: session.labels.clone(),
         }
+        .checked()
     }
 
-    /// Re-establish every invariant [`new`](Self::new) holds by construction,
-    /// for a line read back off disk: the version is one this reader knows,
-    /// the identity spellings compose, and the four session spellings name one
-    /// session file. This is what makes a parsed line a pointer.
+    /// Every invariant a line must hold to be a pointer — the version is one
+    /// this reader knows, the identity spellings compose, the four session
+    /// spellings name one session file — applied to what [`new`](Self::new)
+    /// assembled and to a line read back off disk alike.
     fn checked(self) -> Result<Self, HistoryPointerError> {
         let refuse = |what: String| HistoryPointerError(what);
         let (major, minor) = self
@@ -3154,7 +3156,8 @@ mod tests {
             pointer_id(),
             "claude-code",
             pointer_started(),
-        );
+        )
+        .unwrap();
         assert_eq!(bare.schema_version, POINTER_SCHEMA_VERSION);
         assert_eq!(bare.harness, "claude-code");
         assert_eq!(bare.variant, None);
@@ -3184,7 +3187,8 @@ mod tests {
             pointer_id(),
             "claude-code:primary",
             pointer_started(),
-        );
+        )
+        .unwrap();
         assert_eq!(variant.harness, "claude-code");
         assert_eq!(variant.variant.as_deref(), Some("primary"));
         assert_eq!(variant.harness_id, "claude-code:primary");
@@ -3193,17 +3197,26 @@ mod tests {
         assert_eq!(wire["labels"]["graph"], "release");
         let back: HistoryPointer = serde_json::from_value(wire).unwrap();
         assert_eq!(back, variant);
+        for bad in ["", "codex:", ":primary"] {
+            assert!(
+                HistoryPointer::new(&session, pointer_id(), bad, pointer_started()).is_err(),
+                "`{bad}` is not a harness id"
+            );
+        }
     }
 
     #[cfg(unix)]
     #[test]
     fn a_line_whose_spellings_disagree_is_not_a_pointer() {
-        let good = serde_json::to_value(HistoryPointer::new(
-            &pointer_session(),
-            pointer_id(),
-            "claude-code:primary",
-            pointer_started(),
-        ))
+        let good = serde_json::to_value(
+            HistoryPointer::new(
+                &pointer_session(),
+                pointer_id(),
+                "claude-code:primary",
+                pointer_started(),
+            )
+            .unwrap(),
+        )
         .unwrap();
         assert!(serde_json::from_value::<HistoryPointer>(good.clone()).is_ok());
         // A later minor still reads; a foreign major does not.

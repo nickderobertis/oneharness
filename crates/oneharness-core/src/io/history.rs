@@ -133,7 +133,8 @@ impl HistoryWriter {
                     run_id,
                     harness_id,
                     UtcInstant::from_epoch(now_epoch_secs()),
-                );
+                )
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
                 append_pointer_line(pointer_file, &pointer)
             });
             if let Err(err) = written {

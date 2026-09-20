@@ -591,7 +591,8 @@ mod tests {
                 id,
                 "claude-code:primary",
                 "2026-01-01T00:00:00Z".parse().unwrap(),
-            )],
+            )
+            .unwrap()],
             skipped: 1,
         };
         assert_eq!(

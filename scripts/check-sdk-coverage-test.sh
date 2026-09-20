@@ -72,13 +72,16 @@ grep -q "cannot read the client at .*/$scratch/absent\.ts (ENOENT)" "$work/out" 
   fail "the gate did not name the client path it could not read"
 grep -q "$usage_line" "$work/out" ||
   fail "the unreadable-client refusal did not say how the gate is called"
+# A readable file that is not a client, so the run's diagnostic can land in
+# `$work/out` — the one file `fail` shows — rather than in the file under test.
+printf 'export const notAClient = 1;\n' >"$work/not-a-client.ts"
 status=0
-node scripts/sdk-coverage.mjs "$typescript" "$work/out" >"$work/out.2" 2>&1 || status=$?
+node scripts/sdk-coverage.mjs "$typescript" "$work/not-a-client.ts" >"$work/out" 2>&1 || status=$?
 [ "$status" -eq 2 ] ||
   fail "a file that declares no client class should be a usage error (exit 2), got exit $status"
-grep -q "/$scratch/out does not declare .class OneHarness., so it is not a client this gate reads" "$work/out.2" ||
+grep -q "/$scratch/not-a-client\.ts does not declare .class OneHarness., so it is not a client this gate reads" "$work/out" ||
   fail "the gate did not say which file declares no client class"
-grep -q "$usage_line" "$work/out.2" ||
+grep -q "$usage_line" "$work/out" ||
   fail "the no-client refusal did not say how the gate is called"
 
 echo "check-sdk-coverage-test: the coverage gate goes red for a missing method in each SDK and refuses a file that is not a client"

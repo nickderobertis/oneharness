@@ -436,7 +436,8 @@ test("generator check reports a missing generated contract as stale", () => {
 	// this test's budget on a loaded host. So the run is pointed at this clone's
 	// own target directory, already warm from `generate:check` (the Python SDK's
 	// test does the same); only the workspace crates, whose source path differs,
-	// rebuild here.
+	// rebuild here. That the copy's own `target` never appears is what proves
+	// the generator honoured the inherited directory rather than its config.
 	const missing = resolve(checkout, generatedDirectory, "zod.ts");
 	copyFileSync(resolve(root, generatedDirectory, "zod.ts"), missing);
 	rmSync(missing);
@@ -451,6 +452,7 @@ test("generator check reports a missing generated contract as stale", () => {
 	);
 
 	expect(result.status).toBe(1);
+	expect(existsSync(resolve(checkout, "target"))).toBe(false);
 	expect(result.stderr.trim()).toBe(
 		"generated SDK contracts are stale; run just sdk-generate",
 	);

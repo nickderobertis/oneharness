@@ -294,6 +294,12 @@ pub struct RunRequest {
     pub history: Option<bool>,
     /// Directory history is written to.
     pub history_dir: Option<PathBuf>,
+    /// The run's pointer file: with history on, every harness run this run
+    /// begins appends one [`crate::domain::history::HistoryPointer`] line here
+    /// saying where its session went. `None` defers to config
+    /// `history_pointer_file` / `ONEHARNESS_HISTORY_POINTER_FILE`; unset
+    /// everywhere writes none.
+    pub history_pointer_file: Option<PathBuf>,
     /// Human-meaningful name for this history session.
     pub history_name: Option<String>,
     /// Validated `KEY=VALUE` labels attached to every history record.
@@ -1176,9 +1182,6 @@ pub fn run_supervised(
         event_sink = None;
     }
     let mut forked = false;
-    // Empty off the sequential driver (which a controlled fallback chain takes
-    // without `--stream` too), where history is written once at the end.
-    let mut streamed_history: Vec<StreamedHistory> = Vec::new();
     // Open the control socket before anything spawns, so a supervisor that races
     // the dispatch finds an address rather than a gap. The ADDRESS is all that is
     // opened here: which mechanism sits behind it is the serving candidate's, and
@@ -1231,9 +1234,15 @@ pub fn run_supervised(
     // running the job — which is what lets a chain hold both kinds. Outside a
     // chain the single-turn HTTP branch below is unchanged.
     let controlled_fallback = drive_fallback_chain && controlled.is_some() && !args.print_command;
-    let (mut results, mut fallback_report): (Vec<RunResult>, Option<FallbackReport>) = if stream_run
-        || controlled_fallback
-    {
+    // The third element is one entry per result, minted BEFORE its harness
+    // spawns so the pointer file (if any) names the run as it begins: the
+    // sequential driver mints per candidate as the chain reaches it, and each
+    // buffered branch mints per plan entry it is about to run.
+    let (mut results, mut fallback_report, begun_history): (
+        Vec<RunResult>,
+        Option<FallbackReport>,
+        Vec<BegunHistory>,
+    ) = if stream_run || controlled_fallback {
         // One id per plan entry, not per selected harness: a model fan-out
         // repeats a harness once per model, so `selected_ids` is the wrong axis
         // to attribute a streamed event to.
@@ -1250,11 +1259,10 @@ pub fn run_supervised(
             spawn,
             server_overloaded_max_retries,
         );
-        streamed_history = streamed.history;
         // A driven turn's signals are applied per candidate, inside the driver:
         // they come off that candidate's own protocol conversation, and the next
         // candidate's binding replaces it.
-        (streamed.results, streamed.fallback)
+        (streamed.results, streamed.fallback, streamed.history)
     } else if let Some((shape, listener)) = control_shape
         .and_then(HttpShape::of)
         .filter(|_| !args.print_command)
@@ -1274,6 +1282,7 @@ pub fn run_supervised(
         // whose binary is missing never reaches the branch that assembles one,
         // and its plan holds a `skipped` row already. Falling through publishes
         // that row — an absent CLI is data in the report, never a panic.
+        let begun = begin_plan_history(history_writer.as_ref(), plan.len(), &units);
         let results = run_http_controlled(
             shape,
             listener.handle_ref(),
@@ -1287,7 +1296,7 @@ pub fn run_supervised(
             mode,
             effective_timeout(requested_timeout, timeout_policy(specs[0], mode))?,
         );
-        (results, None)
+        (results, None, begun)
     } else if let Some(chain) = controlled.as_ref().filter(|_| !jobs.is_empty()) {
         // `--schema` is refused alongside `--control` up front. Parallel
         // selection is one harness under `--control`, so the single candidate
@@ -1306,6 +1315,7 @@ pub fn run_supervised(
             handle: chain.handle,
             prompt,
         };
+        let begun = begin_plan_history(history_writer.as_ref(), plan.len(), &units);
         let mut attempts = 0;
         let results = loop {
             attempts += 1;
@@ -1362,12 +1372,13 @@ pub fn run_supervised(
             }
             server_overloaded_backoff(attempts);
         };
-        (results, None)
+        (results, None, begun)
     } else if drive_fallback_chain && !args.print_command {
         // Sequential fallback: run the priority chain until one harness runs.
         // The workspace-restoring mock finish happens below, after every spawn
         // this branch does is complete.
-        let (results, fb) = run_fallback(
+        let unit_ids: Vec<&str> = units.iter().map(|(_, id, _, _)| id.as_str()).collect();
+        let (results, fb, begun) = run_fallback(
             plan,
             &jobs,
             &job_plans,
@@ -1377,9 +1388,11 @@ pub fn run_supervised(
                 server_overloaded: server_overloaded_max_retries,
             },
             multi_model,
+            history_writer.as_ref(),
+            &unit_ids,
             spawn,
         );
-        (results, Some(fb))
+        (results, Some(fb), begun)
     } else {
         let max_parallel = args
             .max_parallel
@@ -1418,6 +1431,10 @@ pub fn run_supervised(
                     specs[0].id
                 );
         }
+        // Every plan entry runs on this branch (nothing falls through), so
+        // each is begun now, before the first wave spawns. Under
+        // `--print-command` the writer is `None`, so nothing is minted.
+        let begun = begin_plan_history(history_writer.as_ref(), plan.len(), &units);
         let outcomes = if fork_batch {
             let o = run_fork_batch(
                 &mut jobs,
@@ -1483,7 +1500,7 @@ pub fn run_supervised(
                 }
             })
             .collect();
-        (results, None)
+        (results, None, begun)
     };
     for (result, (_, selected_id, _, _)) in results.iter_mut().zip(&units) {
         apply_result_identity(result, selected_id);
@@ -1503,17 +1520,7 @@ pub fn run_supervised(
     // asked for mock wiring (which the CLI's own flags refuse) still restores.
     let mock_report = mock_wiring.map(MockWiring::finish);
 
-    if stream_run || controlled_fallback {
-        record_streamed_history(
-            &history_writer,
-            mode,
-            &prompts[0],
-            &results,
-            &streamed_history,
-        );
-    } else {
-        record_history(&history_writer, mode, &prompts[0], &results);
-    }
+    record_begun_history(&history_writer, mode, &prompts[0], &results, &begun_history);
     // Persist the captured session token (if `--session` was in play) and build
     // its report block, binding it to the candidate that actually did the turn:
     // the one the fallback chain stopped at, or — in parallel, which `--session`
@@ -2428,8 +2435,16 @@ fn open_history_writer(
     let name = args.history_name.clone().unwrap_or_else(|| {
         crate::domain::history::session_name(prompts.first().map(String::as_str).unwrap_or(""))
     });
+    // The pointer file layers like the directory: --history-pointer-file, else
+    // config `history_pointer_file` (which `from_env` already fed from
+    // ONEHARNESS_HISTORY_POINTER_FILE); an empty value is unset.
+    let pointer_file = args
+        .history_pointer_file
+        .clone()
+        .or_else(|| cfg.history_pointer_file.as_deref().map(PathBuf::from))
+        .filter(|path| !path.as_os_str().is_empty());
     match HistoryWriter::open(&dir, project_start, &name, labels) {
-        Ok(writer) => Ok(Some(writer)),
+        Ok(writer) => Ok(Some(writer.with_pointer_file(pointer_file))),
         Err(err) => {
             eprintln!(
                 "oneharness: warning: could not open a history file under `{}`: {err}; \
@@ -2441,46 +2456,52 @@ fn open_history_writer(
     }
 }
 
-/// Append each finished result to the session's history file, if history is on.
-/// Best-effort per record: a write failure warns and moves on (the run's stdout
-/// report is authoritative; history is a side channel). Each record carries the
-/// result's own `model`, so a model fan-out records the model each harness ran.
-fn record_history(
-    writer: &Option<HistoryWriter>,
-    mode: PermissionMode,
-    run_prompt: &str,
-    results: &[RunResult],
-) {
-    let Some(writer) = writer else { return };
-    for r in results {
-        if let Err(err) = writer.append(mode, r.model.as_deref(), run_prompt, r) {
-            eprintln!(
-                "oneharness: warning: could not write history record for `{}`: {err}",
-                r.harness
-            );
-        }
-    }
-}
-
-/// A streamed result's already-written history: `run_id` is `None` when history
-/// is off, and the indexes are the events the closing record must not write again.
-struct StreamedHistory {
+/// One result's begun history: `run_id` is `None` when history is off, and the
+/// indexes are the events a streamed run already appended live, which the
+/// closing record must not write again (empty on the buffered path).
+struct BegunHistory {
     run_id: Option<crate::domain::history::HistoryId>,
     persisted_event_indexes: BTreeSet<usize>,
 }
 
-/// Close each streamed result's history record under the run id its events were
-/// already appended to. Best-effort per record, exactly like [`record_history`].
-fn record_streamed_history(
+/// Begin every entry of a plan the buffered path is about to run in full: one
+/// id per plan entry, minted now — and its pointer line written now — before
+/// any of them spawns. `units` is index-aligned with the plan, so entry `i`'s
+/// harness id is `units[i]`'s.
+fn begin_plan_history(
+    writer: Option<&HistoryWriter>,
+    plan_len: usize,
+    units: &[(&'static HarnessSpec, String, Option<String>, &str)],
+) -> Vec<BegunHistory> {
+    (0..plan_len)
+        .map(|index| BegunHistory {
+            run_id: writer.map(|writer| writer.begin_harness_run(&units[index].1)),
+            persisted_event_indexes: BTreeSet::new(),
+        })
+        .collect()
+}
+
+/// Close each result's history record under the id its run was begun with, if
+/// history is on. Best-effort per record: a write failure warns and moves on
+/// (the run's stdout report is authoritative; history is a side channel). Each
+/// record carries the result's own `model`, so a model fan-out records the
+/// model each harness ran. A result with no begun id (a branch that minted
+/// none) is not recorded — there is no id a pointer line could have named.
+fn record_begun_history(
     writer: &Option<HistoryWriter>,
     mode: PermissionMode,
     run_prompt: &str,
     results: &[RunResult],
-    streamed: &[StreamedHistory],
+    begun: &[BegunHistory],
 ) {
     let Some(writer) = writer else { return };
-    for (result, streamed) in results.iter().zip(streamed) {
-        let Some(run_id) = streamed.run_id else {
+    debug_assert_eq!(
+        results.len(),
+        begun.len(),
+        "every result was begun before it ran"
+    );
+    for (result, begun) in results.iter().zip(begun) {
+        let Some(run_id) = begun.run_id else {
             continue;
         };
         if let Err(err) = writer.append_streamed(
@@ -2489,7 +2510,7 @@ fn record_streamed_history(
             result.model.as_deref(),
             run_prompt,
             result,
-            &streamed.persisted_event_indexes,
+            &begun.persisted_event_indexes,
         ) {
             eprintln!(
                 "oneharness: warning: could not write history record for `{}`: {err}",
@@ -2603,7 +2624,7 @@ impl ControlledRun<'_> {
 struct StreamedPlan {
     results: Vec<RunResult>,
     fallback: Option<FallbackReport>,
-    history: Vec<StreamedHistory>,
+    history: Vec<BegunHistory>,
 }
 
 /// Drive the plan one candidate at a time, publishing each one's normalized
@@ -2636,14 +2657,14 @@ fn drive_plan_sequentially(
     server_overloaded_max_retries: u32,
 ) -> StreamedPlan {
     let mut results: Vec<RunResult> = Vec::new();
-    let mut history: Vec<StreamedHistory> = Vec::new();
+    let mut history: Vec<BegunHistory> = Vec::new();
     let mut fallback_report = FallbackReport {
         ran: None,
         fell_through: Vec::new(),
         stopped_without_work: false,
     };
     for (index, entry) in plan.into_iter().enumerate() {
-        let run_id = history_writer.map(HistoryWriter::begin_run);
+        let run_id = history_writer.map(|writer| writer.begin_harness_run(unit_ids[index]));
         let streamed = match entry {
             Plan::Ready(result) => StreamedHarness {
                 result: *result,
@@ -2707,7 +2728,7 @@ fn drive_plan_sequentially(
         } = streamed;
         let keep_going = fallback_step(&result, multi_model, &mut fallback_report);
         results.push(result);
-        history.push(StreamedHistory {
+        history.push(BegunHistory {
             run_id,
             persisted_event_indexes,
         });
@@ -3830,6 +3851,8 @@ fn run_one_job(
 /// not appear. `plan`/`jobs`/`job_plans` are the same structures the parallel
 /// path builds — a `Ready` entry is an already-resolved (here, always `Skipped`)
 /// row, a `Pending` entry carries a job to spawn.
+// llmlint: ignore[suppressions_justified] Like `drive_plan_sequentially`, every parameter is one already-resolved input of the chain the single caller assembles from different places; the two history parameters are the per-candidate begin the pointer file needs, which cannot be minted before the chain reaches a candidate.
+#[allow(clippy::too_many_arguments)]
 fn run_fallback(
     plan: Vec<Plan>,
     jobs: &[Job],
@@ -3837,15 +3860,21 @@ fn run_fallback(
     schema: Option<&Schema>,
     retry_limits: RetryLimits,
     multi_model: bool,
+    history_writer: Option<&HistoryWriter>,
+    unit_ids: &[&str],
     spawn: SpawnControls<'_>,
-) -> (Vec<RunResult>, FallbackReport) {
+) -> (Vec<RunResult>, FallbackReport, Vec<BegunHistory>) {
     let mut results: Vec<RunResult> = Vec::new();
+    let mut history: Vec<BegunHistory> = Vec::new();
     let mut fallback_report = FallbackReport {
         ran: None,
         fell_through: Vec::new(),
         stopped_without_work: false,
     };
-    for entry in plan {
+    for (index, entry) in plan.into_iter().enumerate() {
+        // Begun as the chain reaches it — a candidate after the one that ran is
+        // never begun, so it gets no id and no pointer line.
+        let run_id = history_writer.map(|writer| writer.begin_harness_run(unit_ids[index]));
         let result = match entry {
             Plan::Ready(result) => *result,
             Plan::Pending {
@@ -3879,11 +3908,15 @@ fn run_fallback(
         };
         let keep_going = fallback_step(&result, multi_model, &mut fallback_report);
         results.push(result);
+        history.push(BegunHistory {
+            run_id,
+            persisted_event_indexes: BTreeSet::new(),
+        });
         if !keep_going {
             break;
         }
     }
-    (results, fallback_report)
+    (results, fallback_report, history)
 }
 
 /// Apply the fallback verdict to one finished candidate: record why it fell

@@ -121,6 +121,16 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		type: "HistoryMigrateReport",
 		module: "history-migrate-report",
 	},
+	{
+		key: "history_pointers_options",
+		type: "HistoryPointersOptions",
+		module: "history-pointers-options",
+	},
+	{
+		key: "history_pointers",
+		type: "HistoryPointers",
+		module: "history-pointers",
+	},
 ]);
 
 /**

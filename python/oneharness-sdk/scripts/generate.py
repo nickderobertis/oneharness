@@ -33,6 +33,7 @@ INPUT_ROOTS = (
     "interrupt_options",
     "history_clear_options",
     "history_migrate_options",
+    "history_pointers_options",
 )
 
 # The input roots that become a public TypedDict, and its name. `history_lookup`
@@ -53,6 +54,7 @@ TYPED_DICTS = (
     ("InterruptOptions", "interrupt_options"),
     ("HistoryClearOptions", "history_clear_options"),
     ("HistoryMigrateOptions", "history_migrate_options"),
+    ("HistoryPointersOptions", "history_pointers_options"),
 )
 
 # Output contracts the client returns. Each is a validated JSON document rather
@@ -74,6 +76,7 @@ OUTPUT_ALIASES = (
     "InterruptResponse",
     "HistoryClearReport",
     "HistoryMigrateReport",
+    "HistoryPointers",
 )
 
 

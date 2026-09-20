@@ -359,6 +359,32 @@
     "stdout": "json",
     "uncovered": []
   },
+  "historyPointers": {
+    "always": [
+      "--compact",
+      "--format",
+      "json"
+    ],
+    "argv": [
+      "history",
+      "pointers"
+    ],
+    "bindings": [
+      {
+        "flag": "",
+        "kind": "positional",
+        "option": "file",
+        "unless": null
+      }
+    ],
+    "method": "historyPointers",
+    "options": "history_pointers_options",
+    "output": "history_pointers",
+    "rust": "oneharness_core::io::history::read_pointers",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
   "historyWatch": {
     "always": [
       "--format",
@@ -811,6 +837,12 @@
         "unless": null
       },
       {
+        "flag": "--history-pointer-file",
+        "kind": "value",
+        "option": "historyPointerFile",
+        "unless": null
+      },
+      {
         "flag": "--history-name",
         "kind": "value",
         "option": "historyName",
@@ -1101,6 +1133,12 @@
         "flag": "--history-dir",
         "kind": "value",
         "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--history-pointer-file",
+        "kind": "value",
+        "option": "historyPointerFile",
         "unless": null
       },
       {

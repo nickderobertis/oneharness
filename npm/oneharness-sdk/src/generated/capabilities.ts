@@ -299,6 +299,12 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "historyPointerFile",
+				flag: "--history-pointer-file",
+				kind: "value",
+				unless: null,
+			},
+			{
 				option: "historyName",
 				flag: "--history-name",
 				kind: "value",
@@ -584,6 +590,12 @@ export const CAPABILITIES = {
 			{
 				option: "historyDir",
 				flag: "--history-dir",
+				kind: "value",
+				unless: null,
+			},
+			{
+				option: "historyPointerFile",
+				flag: "--history-pointer-file",
 				kind: "value",
 				unless: null,
 			},
@@ -1227,6 +1239,25 @@ export const CAPABILITIES = {
 				option: "noConfig",
 				flag: "--no-config",
 				kind: "switch",
+				unless: null,
+			},
+		],
+		uncovered: [],
+	},
+	historyPointers: {
+		method: "historyPointers",
+		argv: ["history", "pointers"],
+		options: "history_pointers_options",
+		output: "history_pointers",
+		stdout: "json",
+		stdin: false,
+		rust: "oneharness_core::io::history::read_pointers",
+		always: ["--compact", "--format", "json"],
+		bindings: [
+			{
+				option: "file",
+				flag: "",
+				kind: "positional",
 				unless: null,
 			},
 		],

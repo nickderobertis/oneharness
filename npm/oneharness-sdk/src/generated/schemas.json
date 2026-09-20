@@ -262,6 +262,12 @@
           "unless": null
         },
         {
+          "option": "historyPointerFile",
+          "flag": "--history-pointer-file",
+          "kind": "value",
+          "unless": null
+        },
+        {
           "option": "historyName",
           "flag": "--history-name",
           "kind": "value",
@@ -551,6 +557,12 @@
         {
           "option": "historyDir",
           "flag": "--history-dir",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "historyPointerFile",
+          "flag": "--history-pointer-file",
           "kind": "value",
           "unless": null
         },
@@ -1268,6 +1280,32 @@
           "option": "noConfig",
           "flag": "--no-config",
           "kind": "switch",
+          "unless": null
+        }
+      ],
+      "uncovered": []
+    },
+    {
+      "method": "historyPointers",
+      "argv": [
+        "history",
+        "pointers"
+      ],
+      "options": "history_pointers_options",
+      "output": "history_pointers",
+      "stdout": "json",
+      "stdin": false,
+      "rust": "oneharness_core::io::history::read_pointers",
+      "always": [
+        "--compact",
+        "--format",
+        "json"
+      ],
+      "bindings": [
+        {
+          "option": "file",
+          "flag": "",
+          "kind": "positional",
           "unless": null
         }
       ],
@@ -3796,6 +3834,10 @@
         "$ref": "#/$defs/HistoryLabels"
       },
       "historyName": {
+        "type": "string"
+      },
+      "historyPointerFile": {
+        "description": "The run's pointer file: with history on, every harness run this run\nbegins appends one `HistoryPointer` line here saying where its session\nwent (see `historyPointers()`), the store itself staying where\n`historyDir` puts it.",
         "type": "string"
       },
       "maxParallel": {
@@ -15958,6 +16000,9 @@
           "$ref": "#/$defs/Field3"
         }
       },
+      "history_pointer_file": {
+        "$ref": "#/$defs/Field3"
+      },
       "hooks": {
         "$ref": "#/$defs/Field10"
       },
@@ -16035,6 +16080,7 @@
       "require_available",
       "history",
       "history_dir",
+      "history_pointer_file",
       "history_labels",
       "allowed_tools",
       "denied_tools",
@@ -17631,6 +17677,146 @@
           "records_migrated",
           "skipped",
           "already_current"
+        ]
+      }
+    }
+  },
+  "history_pointers_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryPointersOptions",
+    "description": "Options accepted by the language SDKs' `historyPointers()`: the pointer\nfile a run was given as `historyPointerFile`.",
+    "type": "object",
+    "properties": {
+      "file": {
+        "description": "The pointer file to read. A file that does not exist reads as empty.",
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "file"
+    ]
+  },
+  "history_pointers": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryPointers",
+    "description": "What [`read_pointers`] read: every well-formed [`HistoryPointer`] line in\nfile order, and how many lines were not one.",
+    "type": "object",
+    "properties": {
+      "pointers": {
+        "description": "The pointer lines, in the order they were appended.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/HistoryPointer"
+        }
+      },
+      "skipped": {
+        "description": "Lines that were not one complete pointer object — a torn tail left by\nan interrupted writer, or a foreign line — counted rather than failing\nthe read.",
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0
+      }
+    },
+    "required": [
+      "pointers",
+      "skipped"
+    ],
+    "$defs": {
+      "HistoryLabels": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "maxLength": 256,
+          "minLength": 1,
+          "not": {
+            "pattern": "[\\u0000-\\u001f\\u007f-\\u009f]"
+          }
+        },
+        "propertyNames": {
+          "type": "string",
+          "maxLength": 64,
+          "not": {
+            "pattern": "[^A-Za-z0-9._-]"
+          },
+          "pattern": "^[A-Za-z0-9]"
+        }
+      },
+      "HistoryPointer": {
+        "description": "One line of a run's **pointer file**: where one harness run's history went.\n\nA consumer that starts many `oneharness` processes (or in-process runs) names\none file, and every run with history on appends one of these per harness run\nit begins — so \"which sessions did this run launch, and where are they\" is a\nread of that one small file rather than a scan of the whole store, wherever\nthe store lives. `history_dir` / `history_project` / `history_session` are\nspelled as the `oneharness-session` artifact `oneagentgraph` publishes, so a\nreader already resolving that through `io::history::find_session_path`\nresolves these unchanged. Pure: the I/O layer fills the timestamp.",
+        "type": "object",
+        "properties": {
+          "harness": {
+            "description": "The harness id's base, e.g. `claude-code`.",
+            "type": "string"
+          },
+          "harness_id": {
+            "description": "The whole configured id, e.g. `claude-code:primary`.",
+            "type": "string"
+          },
+          "history_dir": {
+            "description": "The store the session is under, absolute.",
+            "type": "string"
+          },
+          "history_file": {
+            "description": "The session file, absolute; the same path the run report echoes.",
+            "type": "string"
+          },
+          "history_id": {
+            "description": "The history id of the record this harness run will close with — the\nexact id `history show <history-id>` resolves.",
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          },
+          "history_project": {
+            "description": "The project slug — the session file's parent directory name.",
+            "type": "string"
+          },
+          "history_session": {
+            "description": "The session id — the session file's stem.",
+            "type": "string"
+          },
+          "labels": {
+            "description": "The session's validated labels, omitted when empty.",
+            "$ref": "#/$defs/HistoryLabels"
+          },
+          "name": {
+            "description": "The session's human-meaningful name (see [`session_name`]).",
+            "type": "string"
+          },
+          "project": {
+            "description": "The project directory the run operates in, canonical.",
+            "type": "string"
+          },
+          "schema_version": {
+            "description": "[`POINTER_SCHEMA_VERSION`].",
+            "type": "string"
+          },
+          "started": {
+            "description": "RFC3339 UTC instant this harness run began.",
+            "type": "string"
+          },
+          "variant": {
+            "description": "The variant, omitted for a bare harness.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "schema_version",
+          "history_id",
+          "history_dir",
+          "history_project",
+          "history_session",
+          "history_file",
+          "name",
+          "project",
+          "harness",
+          "harness_id",
+          "started"
         ]
       }
     }

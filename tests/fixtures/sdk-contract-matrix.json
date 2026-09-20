@@ -758,10 +758,17 @@
         "history": true,
         "historyName": "release-check",
         "historyDir": ".history",
+        "historyPointerFile": "run/pointers.jsonl",
         "historyLabels": { "graph": "release", "task.id": "42" },
         "env": { "EXAMPLE": "value" },
         "bins": { "claude-code": "/bin/claude" }
       }
+    },
+    {
+      "name": "run history pointer file must be a string",
+      "root": "run_options",
+      "accepted": false,
+      "value": { "prompt": "hi", "historyPointerFile": 42 }
     },
     {
       "name": "run empty prompt",

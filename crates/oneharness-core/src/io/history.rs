@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
@@ -22,7 +23,8 @@ use serde_json::Value;
 use fs2::FileExt;
 
 use crate::domain::history::{
-    self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryRecord, HistoryRunRecord,
+    self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
+    HistoryRunRecord, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
@@ -83,6 +85,12 @@ pub struct HistoryWriter {
     name: String,
     labels: HistoryLabels,
     project: String,
+    /// The run's pointer file, when one was named: every harness run this
+    /// writer begins appends one [`HistoryPointer`] line to it.
+    pointer_file: Option<PathBuf>,
+    /// Whether a pointer append has already failed and warned this run — the
+    /// pointer is best-effort, and a file that refuses once is said once.
+    pointer_warned: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -94,6 +102,65 @@ impl HistoryWriter {
     /// Mint the id shared by a live run's incremental event lines and closing run line.
     pub fn begin_run(&self) -> HistoryId {
         HistoryId::from_uuid(uuid::Uuid::now_v7())
+    }
+
+    /// Name the pointer file every harness run this writer begins appends its
+    /// [`HistoryPointer`] line to. `None` (the default) writes no pointer.
+    #[must_use]
+    pub fn with_pointer_file(mut self, pointer_file: Option<PathBuf>) -> Self {
+        self.pointer_file = pointer_file;
+        self
+    }
+
+    /// The pointer file this writer appends to, if one was named.
+    pub fn pointer_file(&self) -> Option<&Path> {
+        self.pointer_file.as_deref()
+    }
+
+    /// Begin one harness run: mint its id as [`begin_run`](Self::begin_run) does
+    /// and, when a pointer file is named, append the run's [`HistoryPointer`]
+    /// line to it — one write, before the harness is spawned. Best-effort like
+    /// the store itself: a pointer file that cannot be opened or written warns
+    /// on stderr once per run and the line is skipped, never the run.
+    pub fn begin_harness_run(&self, harness_id: &str) -> HistoryId {
+        let run_id = self.begin_run();
+        if let Some(pointer_file) = &self.pointer_file {
+            let pointer = HistoryPointer::new(
+                &self.pointer_session(),
+                run_id,
+                harness_id,
+                history::format_rfc3339(now_epoch_secs()),
+            );
+            if let Err(err) = append_pointer_line(pointer_file, &pointer) {
+                if !self.pointer_warned.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "oneharness: warning: could not append to history pointer file `{}`: \
+                         {err}; skipping pointer lines for this run",
+                        pointer_file.display()
+                    );
+                }
+            }
+        }
+        run_id
+    }
+
+    /// What every pointer line of this session repeats. `dir` and `path` are
+    /// canonical since [`open`](Self::open), so both spellings are absolute.
+    fn pointer_session(&self) -> PointerSession {
+        PointerSession {
+            history_dir: self.dir.display().to_string(),
+            history_project: self
+                .path
+                .parent()
+                .and_then(Path::file_name)
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            history_session: self.session.clone(),
+            history_file: self.path.display().to_string(),
+            name: self.name.clone(),
+            project: self.project.clone(),
+            labels: self.labels.clone(),
+        }
     }
 
     /// Durably append one live event and make it visible to event-mode watchers.
@@ -190,6 +257,8 @@ impl HistoryWriter {
             name,
             labels,
             project: project_display,
+            pointer_file: None,
+            pointer_warned: AtomicBool::new(false),
         })
     }
 
@@ -306,6 +375,68 @@ fn open_session_for_append(path: &Path) -> std::io::Result<File> {
     recover_partial_tail_io(&mut file)?;
     file.seek(SeekFrom::End(0))?;
     Ok(file)
+}
+
+/// Append one pointer line as ONE write: the file is opened for append (so the
+/// OS positions every write at the end, whoever else holds it open) and the
+/// serialized line plus its newline go out in a single `write_all`, so two
+/// concurrent runs pointing at the same file never interleave inside a line.
+/// The file is created on first append, with its parent directory made if
+/// missing. No lock and no index: the pointer file is a plain shared log.
+fn append_pointer_line(path: &Path, pointer: &HistoryPointer) -> std::io::Result<()> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    let mut bytes = serde_json::to_vec(pointer)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    file.write_all(&bytes)
+}
+
+/// What [`read_pointers`] read: every well-formed [`HistoryPointer`] line in
+/// file order, and how many lines were not one.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, JsonSchema)]
+#[schemars(rename = "HistoryPointers")]
+pub struct Pointers {
+    /// The pointer lines, in the order they were appended.
+    pub pointers: Vec<HistoryPointer>,
+    /// Lines that were not one complete pointer object — a torn tail left by
+    /// an interrupted writer, or a foreign line — counted rather than failing
+    /// the read.
+    pub skipped: usize,
+}
+
+/// Read a run's pointer file: the lines every harness run with history on
+/// appended (see [`HistoryWriter::begin_harness_run`]). A missing file reads as
+/// empty with nothing skipped; a line that does not parse as one complete
+/// [`HistoryPointer`] is counted in `skipped` and never fails the read, so a
+/// consumer reads a file that is still being appended to. Only a file that
+/// exists and cannot be read is an error.
+pub fn read_pointers(path: &Path) -> Result<Pointers, OneharnessError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Pointers::default());
+        }
+        Err(source) => {
+            return Err(OneharnessError::HistoryIo {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    let mut read = Pointers::default();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        match serde_json::from_str::<HistoryPointer>(line) {
+            Ok(pointer) => read.pointers.push(pointer),
+            Err(_) => read.skipped += 1,
+        }
+    }
+    Ok(read)
 }
 
 /// One append-only index entry. The session JSONL remains authoritative; the
@@ -1934,5 +2065,144 @@ mod tests {
             OneharnessError::HistoryNotFound { id } if id == missing.to_string()
         ));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_begun_harness_run_appends_one_pointer_line_the_reader_gives_back() {
+        let dir = temp_dir("pointer-store");
+        let project = temp_dir("pointer-project");
+        let pointers = temp_dir("pointer-file");
+        // A parent directory that does not exist yet is made on first append.
+        let pointer_file = pointers.path().join("nested").join("pointers.jsonl");
+        let labels = HistoryLabels::new(BTreeMap::from([(
+            "graph".to_string(),
+            "release".to_string(),
+        )]))
+        .unwrap();
+        let writer = HistoryWriter::open(&dir, &project, "point at me", labels.clone())
+            .unwrap()
+            .with_pointer_file(Some(pointer_file.clone()));
+        assert_eq!(writer.pointer_file(), Some(pointer_file.as_path()));
+
+        let first = writer.begin_harness_run("claude-code:primary");
+        let second = writer.begin_harness_run("codex");
+        writer
+            .append_streamed(
+                second,
+                PermissionMode::Default,
+                None,
+                "prompt",
+                &result("codex"),
+                &BTreeSet::new(),
+            )
+            .unwrap();
+
+        let read = read_pointers(&pointer_file).unwrap();
+        assert_eq!(read.skipped, 0);
+        assert_eq!(read.pointers.len(), 2, "one line per begun harness run");
+        let [a, b] = read.pointers.as_slice() else {
+            unreachable!()
+        };
+        assert_eq!(a.history_id, first);
+        assert_eq!(b.history_id, second);
+        assert_eq!(a.harness, "claude-code");
+        assert_eq!(a.variant.as_deref(), Some("primary"));
+        assert_eq!(a.harness_id, "claude-code:primary");
+        assert_eq!(b.harness, "codex");
+        assert_eq!(b.variant, None);
+        for pointer in [a, b] {
+            assert_eq!(pointer.schema_version, history::POINTER_SCHEMA_VERSION);
+            assert_eq!(pointer.history_file, writer.path().display().to_string());
+            assert_eq!(pointer.history_dir, writer.dir.display().to_string());
+            assert_eq!(pointer.history_session, writer.session);
+            assert_eq!(
+                pointer.history_project,
+                writer.relative_path.split(['/', '\\']).next().unwrap()
+            );
+            assert_eq!(
+                Path::new(&pointer.history_dir)
+                    .join(&pointer.history_project)
+                    .join(format!("{}.{SESSION_EXT}", pointer.history_session)),
+                writer.path()
+            );
+            assert_eq!(pointer.name, "point-at-me");
+            assert_eq!(pointer.project, writer.project);
+            assert_eq!(pointer.labels, labels);
+            assert!(pointer.started.ends_with('Z'));
+        }
+        // The line's id is the record's id: the store's closing record for the
+        // second run is what `history show <history-id>` resolves.
+        let record = find_record_by_id(&dir, second).unwrap();
+        assert_eq!(record.history_id, second);
+    }
+
+    #[test]
+    fn read_pointers_tolerates_a_missing_file_a_torn_tail_and_a_foreign_line() {
+        let scratch = temp_dir("pointer-read");
+        let missing = scratch.path().join("never-written.jsonl");
+        assert_eq!(read_pointers(&missing).unwrap(), Pointers::default());
+
+        let dir = temp_dir("pointer-read-store");
+        let project = temp_dir("pointer-read-project");
+        let pointer_file = scratch.path().join("pointers.jsonl");
+        let writer = HistoryWriter::open(&dir, &project, "torn", HistoryLabels::default())
+            .unwrap()
+            .with_pointer_file(Some(pointer_file.clone()));
+        let first = writer.begin_harness_run("codex");
+        // A foreign line between two good ones, and a torn tail after them.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&pointer_file)
+            .unwrap()
+            .write_all(b"{\"not\": \"a pointer\"}\n")
+            .unwrap();
+        let second = writer.begin_harness_run("goose");
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&pointer_file)
+            .unwrap()
+            .write_all(b"{\"schema_version\": \"1.0\", \"history_id\": \"0192")
+            .unwrap();
+
+        let read = read_pointers(&pointer_file).unwrap();
+        assert_eq!(read.skipped, 2);
+        assert_eq!(
+            read.pointers
+                .iter()
+                .map(|pointer| pointer.history_id)
+                .collect::<Vec<_>>(),
+            vec![first, second],
+            "lines come back in file order"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unwritable_pointer_file_skips_the_line_and_keeps_the_run() {
+        let dir = temp_dir("pointer-unwritable-store");
+        let project = temp_dir("pointer-unwritable-project");
+        let scratch = temp_dir("pointer-unwritable");
+        // A path under a regular file cannot be created.
+        let blocker = scratch.path().join("blocker");
+        fs::write(&blocker, b"").unwrap();
+        let pointer_file = blocker.join("pointers.jsonl");
+        let writer = HistoryWriter::open(&dir, &project, "blocked", HistoryLabels::default())
+            .unwrap()
+            .with_pointer_file(Some(pointer_file.clone()));
+        let run_id = writer.begin_harness_run("codex");
+        let _ = writer.begin_harness_run("codex");
+        assert!(writer.pointer_warned.load(Ordering::Relaxed));
+        writer
+            .append_streamed(
+                run_id,
+                PermissionMode::Default,
+                None,
+                "prompt",
+                &result("codex"),
+                &BTreeSet::new(),
+            )
+            .unwrap();
+        assert_eq!(find_record_by_id(&dir, run_id).unwrap().history_id, run_id);
+        assert!(!pointer_file.exists());
     }
 }

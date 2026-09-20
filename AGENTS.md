@@ -346,7 +346,24 @@ Use the `just` recipes; do not hand-roll equivalents.
   Its process-locked append-only `.index.jsonl` is reconciled once on startup
   (including partial-tail recovery), then followed by byte offset without repeated
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
-  before writing so `cwd=..` remains discoverable.
+  before writing so `cwd=..` remains discoverable. The **pointer file**
+  (`--history-pointer-file` / `history_pointer_file` /
+  `ONEHARNESS_HISTORY_POINTER_FILE`, layered like `history_dir`) is how a
+  consumer that starts many runs finds their sessions without scanning the
+  store: with history on, every harness run the pipeline begins appends one
+  `domain::history::HistoryPointer` line (its own `1.0` contract, declared once;
+  the SDK types are generated from it) naming the run's `history_id` and its
+  session's `history_dir`/`history_project`/`history_session`/`history_file`.
+  The line is written by `HistoryWriter::begin_harness_run` at the moment the id
+  is minted, BEFORE the harness spawns — every branch of `io::run` mints per
+  plan entry it is about to run (`begin_plan_history`), the chain drivers per
+  candidate as they reach it — so an in-process library run writes it exactly
+  as a spawned `oneharness run` does, and a fallback chain writes one per
+  candidate begun. One `O_APPEND` write per line and no lock, so concurrent
+  processes never interleave; best-effort, warning once per run. Read it only
+  through `io::history::read_pointers` (`history pointers <FILE>` on the CLI,
+  `historyPointers` in the SDKs): a missing file is empty, a torn or foreign
+  line is `skipped`, never an error.
   <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] Stating these load-bearing constraints here and deferring them to `docs/harness-usage.md` are the only two arrangements, and one rule in this list forbids each; they stay stated, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).

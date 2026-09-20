@@ -27,6 +27,7 @@ use oneharness_core::io::run::{
     run, run_supervised, EventSink, RunControls, RunOutcome, RunRequest, SinkStep,
 };
 use oneharness_core::io::runner::ProcessSupervisor;
+use serde_json::Value;
 
 #[path = "support/library_fixture.rs"]
 mod fixture;
@@ -128,6 +129,124 @@ fn an_unset_run_mode_is_a_fallback_chain_at_the_library_boundary() {
         .results
         .iter()
         .all(|result| result.status == Status::Ok));
+}
+
+/// Codex telemetry the history writer accepts as a complete record.
+const CODEX_TELEMETRY: &str = concat!(
+    "{\"type\":\"turn.started\"}\n",
+    "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"pointed\"}}\n",
+    "{\"type\":\"turn.completed\"}\n",
+);
+
+// capability: run
+// capability: historyPointers
+#[test]
+fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
+    // An `oneagentgraph` member's turn spawns no `oneharness` process, so the
+    // pointer line has to come from the engine itself: a library caller names
+    // the file on the request, and every harness run the engine begins appends
+    // its line there BEFORE the harness is spawned — proven from inside the
+    // harness, which copies the pointer file to its stdout as it starts.
+    use oneharness_core::io::history::{read_pointers, read_session};
+
+    let store = control_store("pointer-store");
+    let cwd = control_store("pointer-cwd");
+    let pointer_file = store.join("run").join("pointers.jsonl");
+    let history_dir = store.join("history");
+    let pointed = |env: &[(&str, &str)]| RunRequest {
+        history: Some(true),
+        history_dir: Some(history_dir.clone()),
+        history_pointer_file: Some(pointer_file.clone()),
+        history_name: Some("library pointer".to_string()),
+        cwd: Some(cwd.clone()),
+        ..request("codex", env)
+    };
+
+    // Buffered path: the mock's stdout is what the pointer file held when the
+    // harness started.
+    let outcome = run(
+        &pointed(&[("MOCK_CAT_FILE", &pointer_file.display().to_string())]),
+        RunControls::default(),
+    )
+    .expect("a valid hermetic run");
+    assert_eq!(outcome.report.results[0].status, Status::Ok);
+    let seen_at_spawn: Vec<Value> = outcome.report.results[0]
+        .stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("a whole pointer line"))
+        .collect();
+    assert_eq!(
+        seen_at_spawn.len(),
+        1,
+        "the line was on disk before the harness ran: {seen_at_spawn:?}"
+    );
+    assert_eq!(seen_at_spawn[0]["harness_id"], "codex");
+    let read = read_pointers(&pointer_file).expect("the pointer file reads");
+    assert_eq!(read.skipped, 0);
+    assert_eq!(
+        serde_json::to_value(&read.pointers).unwrap(),
+        Value::Array(seen_at_spawn)
+    );
+
+    // Streamed path: the second line, holding every field to the record that
+    // run then closed.
+    let outcome = run(
+        &RunRequest {
+            stream: Some(true),
+            ..pointed(&[("MOCK_STDOUT", CODEX_TELEMETRY)])
+        },
+        RunControls::default(),
+    )
+    .expect("a valid hermetic run");
+    assert!(outcome.streamed);
+    assert_eq!(outcome.report.results[0].status, Status::Ok);
+    let history_file = outcome.report.history_file.clone().expect("history was on");
+    let record = read_session(std::path::Path::new(&history_file))
+        .expect("the session reads")
+        .into_iter()
+        .next()
+        .expect("the streamed run closed a record");
+
+    let read = read_pointers(&pointer_file).expect("the pointer file reads");
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per run begun, in order");
+    let pointer = &read.pointers[1];
+    assert_eq!(pointer.history_id, record.history_id);
+    assert_eq!(pointer.history_file, history_file);
+    assert_eq!(pointer.history_session, record.session);
+    assert_eq!(pointer.name, record.name);
+    assert_eq!(pointer.name, "library-pointer");
+    assert_eq!(pointer.project, record.project);
+    assert_eq!(
+        pointer.project,
+        std::fs::canonicalize(&cwd).unwrap().display().to_string()
+    );
+    assert_eq!(pointer.harness, "codex");
+    assert_eq!(pointer.variant, None);
+    assert_eq!(pointer.harness_id, "codex");
+    assert_eq!(
+        std::path::Path::new(&pointer.history_dir)
+            .join(&pointer.history_project)
+            .join(format!("{}.jsonl", pointer.history_session))
+            .display()
+            .to_string(),
+        history_file
+    );
+
+    // A request that names the file with history off writes nothing.
+    let outcome = run(
+        &RunRequest {
+            history: Some(false),
+            ..pointed(&[("MOCK_STDOUT", CODEX_TELEMETRY)])
+        },
+        RunControls::default(),
+    )
+    .expect("a valid hermetic run");
+    assert!(outcome.report.history_file.is_none());
+    assert_eq!(read_pointers(&pointer_file).unwrap().pointers.len(), 2);
+
+    let _ = std::fs::remove_dir_all(&store);
+    let _ = std::fs::remove_dir_all(&cwd);
 }
 
 // capability: run

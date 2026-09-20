@@ -112,6 +112,12 @@ pub struct FileConfig {
     /// Directory the history is written to and read from (like `--history-dir`).
     /// Defaults to `<platform state dir>/oneharness/history` when unset.
     pub history_dir: Option<String>,
+    /// A run's **pointer file** (like `--history-pointer-file`): every harness
+    /// run begun with history on appends one line there saying where its
+    /// history session went, so a consumer that starts many runs finds their
+    /// sessions by reading one small file rather than scanning the store. The
+    /// store itself stays wherever `history_dir` puts it. Unset writes none.
+    pub history_pointer_file: Option<String>,
     /// Labels attached to every history record from a run. Layers merge by key;
     /// higher-precedence values replace only the same key.
     pub history_labels: Option<HistoryLabels>,
@@ -537,6 +543,7 @@ pub fn from_env(get: impl Fn(&str) -> Option<String>) -> Result<Option<FileConfi
         require_available: env_bool(&read, "ONEHARNESS_REQUIRE_AVAILABLE")?,
         history: env_bool(&read, "ONEHARNESS_HISTORY")?,
         history_dir: read("ONEHARNESS_HISTORY_DIR"),
+        history_pointer_file: read("ONEHARNESS_HISTORY_POINTER_FILE"),
         history_labels: read("ONEHARNESS_HISTORY_LABELS")
             .map(|value| history::parse_labels(value.split(',').map(str::trim)))
             .transpose()?,
@@ -701,6 +708,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
         require_available: over.require_available.or(base.require_available),
         history: over.history.or(base.history),
         history_dir: over.history_dir.or(base.history_dir),
+        history_pointer_file: over.history_pointer_file.or(base.history_pointer_file),
         history_labels,
         allowed_tools: over.allowed_tools.or(base.allowed_tools),
         denied_tools: over.denied_tools.or(base.denied_tools),
@@ -972,6 +980,7 @@ pub struct ConfigReport {
     pub require_available: Field<bool>,
     pub history: Field<bool>,
     pub history_dir: Field<String>,
+    pub history_pointer_file: Field<String>,
     /// Per-key provenance for history labels.
     pub history_labels: BTreeMap<String, Field<String>>,
     pub allowed_tools: Field<Vec<String>>,
@@ -1201,6 +1210,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         require_available: pick(layers, |c| c.require_available).or_default(false),
         history: pick(layers, |c| c.history).or_default(false),
         history_dir: pick(layers, |c| c.history_dir.clone()),
+        history_pointer_file: pick(layers, |c| c.history_pointer_file.clone()),
         history_labels,
         allowed_tools: pick(layers, |c| c.allowed_tools.clone()),
         denied_tools: pick(layers, |c| c.denied_tools.clone()),
@@ -1382,6 +1392,7 @@ variant = true
             require_available = true
             history = true
             history_dir = "/var/hist"
+            history_pointer_file = "/run/pointers.jsonl"
 
             [env]
             FOO = "bar"
@@ -1407,6 +1418,10 @@ variant = true
         assert_eq!(c.require_available, Some(true));
         assert_eq!(c.history, Some(true));
         assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
+        assert_eq!(
+            c.history_pointer_file.as_deref(),
+            Some("/run/pointers.jsonl")
+        );
         assert_eq!(c.env["FOO"], "bar");
         assert_eq!(c.model_for("claude-code"), Some("sonnet"));
         assert_eq!(c.model_for("codex"), Some("haiku"));
@@ -1824,6 +1839,7 @@ variant = true
             ("ONEHARNESS_REQUIRE_AVAILABLE", "1"),
             ("ONEHARNESS_HISTORY", "true"),
             ("ONEHARNESS_HISTORY_DIR", "/var/hist"),
+            ("ONEHARNESS_HISTORY_POINTER_FILE", "/run/pointers.jsonl"),
             ("ONEHARNESS_HISTORY_LABELS", "graph=release,task=test"),
         ]))
         .unwrap()
@@ -1845,6 +1861,10 @@ variant = true
         assert_eq!(c.require_available, Some(true));
         assert_eq!(c.history, Some(true));
         assert_eq!(c.history_dir.as_deref(), Some("/var/hist"));
+        assert_eq!(
+            c.history_pointer_file.as_deref(),
+            Some("/run/pointers.jsonl")
+        );
         assert_eq!(
             c.history_labels.unwrap().as_map(),
             &BTreeMap::from([
@@ -1938,6 +1958,45 @@ variant = true
         let report = explain(&[]);
         assert_eq!(report.history, Field::default_value(false));
         assert_eq!(report.history_dir, Field::unset());
+        assert_eq!(report.history_pointer_file, Field::unset());
+    }
+
+    #[test]
+    fn history_pointer_file_layers_like_history_dir_and_an_empty_env_value_is_unset() {
+        let merged = merge(
+            parsed("history_pointer_file = \"/user/p.jsonl\""),
+            parsed("history_pointer_file = \"/proj/p.jsonl\""),
+        );
+        assert_eq!(
+            merged.history_pointer_file.as_deref(),
+            Some("/proj/p.jsonl")
+        );
+        let report = explain(&layers(
+            "history_pointer_file = \"/user/p.jsonl\"",
+            "history = true",
+        ));
+        assert_eq!(
+            report.history_pointer_file.value.as_deref(),
+            Some("/user/p.jsonl")
+        );
+        assert_eq!(
+            report.history_pointer_file.source.as_deref(),
+            Some("/user.toml")
+        );
+        // The environment layer reads it like every other `ONEHARNESS_*` value,
+        // and an empty value contributes nothing (no layer at all when it is
+        // the only override).
+        let env = from_env(env_get(&[(
+            "ONEHARNESS_HISTORY_POINTER_FILE",
+            "/env/p.jsonl",
+        )]))
+        .unwrap()
+        .unwrap();
+        assert_eq!(env.history_pointer_file.as_deref(), Some("/env/p.jsonl"));
+        assert_eq!(
+            from_env(env_get(&[("ONEHARNESS_HISTORY_POINTER_FILE", "")])).unwrap(),
+            None
+        );
     }
 
     #[test]

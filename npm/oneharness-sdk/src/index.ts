@@ -22,6 +22,8 @@ import type { HistoryListOptions } from "./generated/history-list-options.js";
 import type { HistoryLookup } from "./generated/history-lookup.js";
 import type { HistoryMigrateOptions } from "./generated/history-migrate-options.js";
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
+import type { HistoryPointers } from "./generated/history-pointers.js";
+import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { InitOptions } from "./generated/init-options.js";
@@ -48,6 +50,8 @@ import {
 	HistoryLookupSchema,
 	HistoryMigrateOptionsSchema,
 	HistoryMigrateReportSchema,
+	HistoryPointersOptionsSchema,
+	HistoryPointersSchema,
 	HistoryRecordsSchema,
 	HistoryStreamEnvelopeSchema,
 	HistoryWatchOptionsSchema,
@@ -112,6 +116,11 @@ export type {
 } from "./generated/history-lookup.js";
 export type { HistoryMigrateOptions } from "./generated/history-migrate-options.js";
 export type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
+export type {
+	HistoryPointer,
+	HistoryPointers,
+} from "./generated/history-pointers.js";
+export type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
 export type { HistoryRecords } from "./generated/history-records.js";
 export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 export type { HistoryWatchOptions } from "./generated/history-watch-options.js";
@@ -804,6 +813,24 @@ export class OneHarness {
 			options,
 			HistoryMigrateOptionsSchema,
 			HistoryMigrateReportSchema,
+		);
+	}
+
+	/**
+	 * Read a run's pointer file (`historyPointerFile` on `run()`): one line per
+	 * harness run begun with history on, naming where its session went.
+	 *
+	 * A missing file reads as empty; a torn or foreign line is counted in
+	 * `skipped` rather than failing the read.
+	 */
+	async historyPointers(
+		options: HistoryPointersOptions,
+	): Promise<HistoryPointers> {
+		return await this.call(
+			"historyPointers",
+			options,
+			HistoryPointersOptionsSchema,
+			HistoryPointersSchema,
 		);
 	}
 

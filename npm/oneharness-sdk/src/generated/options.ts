@@ -73,6 +73,13 @@ export interface RunOptions {
   historyLabels?: HistoryLabels | undefined;
   historyName?: string | undefined;
   /**
+   * The run's pointer file: with history on, every harness run this run
+   * begins appends one `HistoryPointer` line here saying where its session
+   * went (see `historyPointers()`), the store itself staying where
+   * `historyDir` puts it.
+   */
+  historyPointerFile?: string | undefined;
+  /**
    * Maximum harnesses (or, in a batch, prompts) to run concurrently.
    */
   maxParallel?: number | undefined;

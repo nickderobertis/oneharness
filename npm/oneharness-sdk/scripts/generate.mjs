@@ -200,6 +200,17 @@ const CONTRACT_MODULES = Object.freeze([
 		type: "HistoryMigrateReport",
 		output: true,
 	},
+	{
+		module: "history-pointers-options",
+		key: "history_pointers_options",
+		type: "HistoryPointersOptions",
+	},
+	{
+		module: "history-pointers",
+		key: "history_pointers",
+		type: "HistoryPointers",
+		output: true,
+	},
 ]);
 
 // The two lists above map a schema root to a module and a type name; the

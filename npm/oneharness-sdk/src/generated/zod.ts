@@ -52,6 +52,8 @@ import type { HistoryListOptions } from "./history-list-options.js";
 import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
 import type { HistoryMigrateOptions } from "./history-migrate-options.js";
 import type { HistoryMigrateReport, MigrationSummary } from "./history-migrate-report.js";
+import type { HistoryPointer, HistoryPointers } from "./history-pointers.js";
+import type { HistoryPointersOptions } from "./history-pointers-options.js";
 import type { HistoryRecords } from "./history-records.js";
 import type { HistoryEventLine, HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./history-watch-options.js";
@@ -160,6 +162,7 @@ export const ConfigReportSchema: z.ZodType<ConfigReport> = z.looseObject({
       z.lazy(() => Field3Schema),
     )
     .refine((value) => value !== undefined, { message: "Required" }),
+  history_pointer_file: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   hooks: z.lazy(() => Field10Schema).refine((value) => value !== undefined, { message: "Required" }),
   max_parallel: z.lazy(() => Field8Schema).refine((value) => value !== undefined, { message: "Required" }),
   mode: z.lazy(() => Field4Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -1366,6 +1369,44 @@ export const HistoryMigrateReportSchema: z.ZodType<HistoryMigrateReport> = z.loo
   files_processed: z
     .int()
     .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const HistoryPointerSchema: z.ZodType<HistoryPointer> = z.looseObject({
+  harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  harness_id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  history_dir: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  history_file: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  history_id: z
+    .string()
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+    .refine((value) => value !== undefined, { message: "Required" }),
+  history_project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  history_session: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  labels: z.lazy(() => HistoryLabelsSchema).optional(),
+  name: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  project: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  started: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  variant: z.union([z.string(), z.null()]).optional(),
+});
+
+export const HistoryPointersSchema: z.ZodType<HistoryPointers> = z.looseObject({
+  pointers: z.array(z.lazy(() => HistoryPointerSchema)).refine((value) => value !== undefined, { message: "Required" }),
+  skipped: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const HistoryPointersOptionsSchema: z.ZodType<HistoryPointersOptions> = z.strictObject({
+  file: z
+    .string()
+    .min(1)
     .refine((value) => value !== undefined, { message: "Required" }),
 });
 
@@ -2703,6 +2744,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   historyDir: z.string().optional(),
   historyLabels: z.lazy(() => HistoryLabelsSchema).optional(),
   historyName: z.string().optional(),
+  historyPointerFile: z.string().optional(),
   maxParallel: z.int().gte(0).optional(),
   mockHarnesses: z.array(z.string()).optional(),
   mockRules: z.string().optional(),

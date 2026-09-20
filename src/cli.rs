@@ -407,6 +407,23 @@ pub enum HistoryCommand {
     /// 1.0 line format and rebuild the history index; reports each file rewritten
     /// (`--format json` for the contract).
     Migrate(HistoryMigrateArgs),
+    /// Read a run's pointer file (`run --history-pointer-file`): one line per
+    /// harness run begun with history on, naming its session's store, project,
+    /// session id and file. Open one with `oneharness history show <history-id>`.
+    /// A missing file reads as empty; a torn or foreign line is counted as
+    /// skipped, never an error.
+    Pointers(HistoryPointersArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryPointersArgs {
+    /// The pointer file to read.
+    #[arg(value_name = "FILE")]
+    pub file: PathBuf,
+
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -923,6 +940,14 @@ pub struct RunArgs {
     /// history; also `history_dir` in config or ONEHARNESS_HISTORY_DIR).
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
+
+    /// Append one line per harness run this run begins (with history on) to
+    /// this file, saying where its history session went — so a consumer that
+    /// starts many runs finds their sessions by reading one small file. Also
+    /// `history_pointer_file` in config or ONEHARNESS_HISTORY_POINTER_FILE.
+    /// Read it back with `oneharness history pointers <FILE>`.
+    #[arg(long, value_name = "FILE")]
+    pub history_pointer_file: Option<PathBuf>,
 
     /// Human-meaningful label for this session, shown by `oneharness history list`
     /// and resolvable by `oneharness history show`. Defaults to a slug of the

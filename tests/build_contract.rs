@@ -1,3 +1,4 @@
+// llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file and `cargo test` is what runs it.
 //! Proof that `.cargo/config.toml` does what its comment says, answered by cargo
 //! itself rather than by a parser of the file.
 //!

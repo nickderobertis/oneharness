@@ -56,15 +56,24 @@ grep -q "Python has no .sync. for" "$work/out" ||
 # A client argument the gate cannot read is refused as a usage error naming it
 # — not a stack trace, and not a client with no methods, which would fail every
 # capability against a file that was never the client.
-if node scripts/sdk-coverage.mjs "$work/absent.ts" "$python" >"$work/out" 2>&1; then
-  fail "a client path that does not exist should have been refused"
-fi
-grep -q "cannot read the client at $work/absent.ts" "$work/out" ||
+# Both are exit 2 — a usage error, distinct from the gate's own red (exit 1) —
+# and both print how the script is called.
+usage_line='usage: node scripts/sdk-coverage.mjs \[<typescript client>\] \[<python client>\]'
+status=0
+node scripts/sdk-coverage.mjs "$work/absent.ts" "$python" >"$work/out" 2>&1 || status=$?
+[ "$status" -eq 2 ] ||
+  fail "a client path that does not exist should be a usage error (exit 2), got exit $status"
+grep -q "cannot read the client at $work/absent.ts (ENOENT)" "$work/out" ||
   fail "the gate did not name the client path it could not read"
-if node scripts/sdk-coverage.mjs "$typescript" "$work/out" >"$work/out.2" 2>&1; then
-  fail "a file that declares no client class should have been refused"
-fi
-grep -q "does not declare .class OneHarness." "$work/out.2" ||
-  fail "the gate did not say the file declares no client class"
+grep -q "$usage_line" "$work/out" ||
+  fail "the unreadable-client refusal did not say how the gate is called"
+status=0
+node scripts/sdk-coverage.mjs "$typescript" "$work/out" >"$work/out.2" 2>&1 || status=$?
+[ "$status" -eq 2 ] ||
+  fail "a file that declares no client class should be a usage error (exit 2), got exit $status"
+grep -q "$work/out does not declare .class OneHarness., so it is not a client this gate reads" "$work/out.2" ||
+  fail "the gate did not say which file declares no client class"
+grep -q "$usage_line" "$work/out.2" ||
+  fail "the no-client refusal did not say how the gate is called"
 
 echo "check-sdk-coverage-test: the coverage gate goes red for a missing method in each SDK and refuses a file that is not a client"

@@ -117,6 +117,14 @@ pub struct FileConfig {
     /// history session went, so a consumer that starts many runs finds their
     /// sessions by reading one small file rather than scanning the store. The
     /// store itself stays wherever `history_dir` puts it. Unset writes none.
+    /// A raw string like `history_dir`, deliberately: this is the layer as the
+    /// file or environment spelled it, where an empty value is a legal spelling
+    /// of *unset* rather than an invalid path — `from_env` reads
+    /// `ONEHARNESS_HISTORY_POINTER_FILE=` as no value at all, and a file's `""`
+    /// reaches `io::run` as one it treats as unset — so a type refusing it
+    /// would refuse a state the layering means. The resolved path is checked
+    /// where it is used: `io::run` reads the layered value beside
+    /// `history_dir`, and the writer's append refuses a path it cannot open.
     pub history_pointer_file: Option<String>,
     /// Labels attached to every history record from a run. Layers merge by key;
     /// higher-precedence values replace only the same key.

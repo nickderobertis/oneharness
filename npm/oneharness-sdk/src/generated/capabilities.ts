@@ -43,6 +43,12 @@ export type Capability = {
 	}[];
 };
 
+/**
+ * Every capability the CLI declares, keyed by method. `as const` keeps each
+ * key a literal so `CapabilityMethod` is the union of method names rather
+ * than `string`, and `satisfies` holds every entry to `Capability` without
+ * widening the literals an annotation would.
+ */
 export const CAPABILITIES = {
 	run: {
 		method: "run",

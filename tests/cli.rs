@@ -31567,6 +31567,8 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
 fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
     let claude = bin_override("claude-code");
     let cursor = bin_override("cursor");
+    // A pointer file nobody wrote: `history pointers` reads it as empty.
+    let pointer_file = format!("{history_dir}/pointers.jsonl");
     let spelled = |path: &[&'static str]| -> Vec<String> {
         let extra: Vec<&str> = match path {
             ["run"] => vec![
@@ -31587,6 +31589,7 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
             ["history", "list" | "clear" | "migrate"] => vec!["--history-dir", history_dir],
             ["history", "show"] => vec!["--last", "--history-dir", history_dir],
+            ["history", "pointers"] => vec![&pointer_file],
             other => panic!(
                 "`{}` takes --format json but has no runnable spelling in json_document_verbs; add one",
                 other.join(" ")
@@ -31622,6 +31625,7 @@ fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
             "history show",
             "history clear",
             "history migrate",
+            "history pointers",
             "usage",
             "interrupt",
         ],

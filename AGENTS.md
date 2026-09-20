@@ -244,7 +244,10 @@ Use the `just` recipes; do not hand-roll equivalents.
   surface (library, CLI, SDKs), so `parallel` is the opt-in — each as a
   subprocess with a timeout, and emits one report. A chain of exactly one
   candidate carries a batch or a `--resume`/`--fork` continuation as the
-  single-harness run (`fallback: null`); over two or more candidates those are
+  single-harness run (`fallback: null`) but keeps the chain's exit rule, since
+  the driver is an implementation detail and the exit code is not
+  (`undriven_chain_of_one` folds into `require_available` at its one site);
+  over two or more candidates those are
   refused, naming the default when the mode was unset. `io::process` owns each launcher's whole
   tree (Unix process group; Windows kill-on-close Job Object assigned while the
   child is suspended), applies a brief TERM→KILL grace on Unix, reaps, and bounds

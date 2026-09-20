@@ -416,11 +416,11 @@ fn render_pointers_text(read: &history_io::HistoryPointers) -> String {
     for pointer in &read.pointers {
         out.push_str(&printable(&format!(
             "{started}  [{harness_id}] {name}\n  history_id: {id}\n  file: {file}\n",
-            started = pointer.started,
-            harness_id = pointer.harness_id,
-            name = pointer.name,
-            id = pointer.history_id,
-            file = pointer.history_file,
+            started = pointer.started(),
+            harness_id = pointer.harness_id(),
+            name = pointer.name(),
+            id = pointer.history_id(),
+            file = pointer.history_file(),
         )));
     }
     if read.skipped > 0 {

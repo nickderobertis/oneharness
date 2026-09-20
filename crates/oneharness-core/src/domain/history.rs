@@ -1671,46 +1671,47 @@ pub struct HistoryPointerError(String);
 /// three identity spellings compose into one id, the version is one this
 /// reader knows — so a line that parses IS a pointer, and a foreign object that
 /// happens to carry these keys is counted as skipped rather than read as one.
+/// The fields are read through accessors for the same reason: a Rust caller
+/// gets a line from one of those two doors, never assembles or edits one.
 // `remote = "Self"` is how the derived deserializer becomes the inherent
 // `HistoryPointer::deserialize` the checking `Deserialize` impl below wraps,
 // with one field list rather than a mirror of it; the derived serializer is
 // wrapped the same way, unchanged. A plain comment, because a doc comment here
 // is also the SDKs' generated description.
-// llmlint: ignore[invalid_states_unrepresentable] The fields are the published wire contract a Rust consumer reads by name, like `HistoryRecord`'s; the only two ways in — `new` and the checking `Deserialize` — establish every invariant, and hiding the fields behind getters would turn each read into a method call for no gain on the wire.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(remote = "Self")]
 pub struct HistoryPointer {
     /// [`POINTER_SCHEMA_VERSION`]; a reader accepts any `1.<minor>`.
-    pub schema_version: String,
+    schema_version: String,
     /// The history id of the record this harness run will close with — the
     /// exact id `history show <history-id>` resolves.
-    pub history_id: HistoryId,
+    history_id: HistoryId,
     /// The store the session is under, absolute.
-    pub history_dir: String,
+    history_dir: String,
     /// The project slug — the session file's parent directory name.
-    pub history_project: String,
+    history_project: String,
     /// The session id — the session file's stem.
-    pub history_session: String,
+    history_session: String,
     /// The session file, absolute; the same path the run report echoes, and
     /// always `<history_dir>/<history_project>/<history_session>.jsonl`.
-    pub history_file: String,
+    history_file: String,
     /// The session's human-meaningful name (see [`session_name`]).
-    pub name: String,
+    name: String,
     /// The project directory the run operates in, canonical.
-    pub project: String,
+    project: String,
     /// The harness id's base, e.g. `claude-code`.
-    pub harness: String,
+    harness: String,
     /// The variant, omitted for a bare harness.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variant: Option<String>,
+    variant: Option<String>,
     /// The whole configured id, e.g. `claude-code:primary` — always `harness`
     /// with `:variant` when there is one.
-    pub harness_id: String,
+    harness_id: String,
     /// RFC 3339 UTC, when this harness run began.
-    pub started: UtcInstant,
+    started: UtcInstant,
     /// The session's validated labels, omitted when empty.
     #[serde(default, skip_serializing_if = "HistoryLabels::is_empty")]
-    pub labels: HistoryLabels,
+    labels: HistoryLabels,
 }
 
 /// Everything a session knows about itself that every pointer line repeats,
@@ -1785,6 +1786,84 @@ impl PointerSession {
 }
 
 impl HistoryPointer {
+    /// [`POINTER_SCHEMA_VERSION`] as written; a `1.<minor>` this reader knows.
+    #[must_use]
+    pub fn schema_version(&self) -> &str {
+        &self.schema_version
+    }
+
+    /// The history id of the record this harness run closes with.
+    #[must_use]
+    pub fn history_id(&self) -> HistoryId {
+        self.history_id
+    }
+
+    /// The store the session is under, absolute.
+    #[must_use]
+    pub fn history_dir(&self) -> &str {
+        &self.history_dir
+    }
+
+    /// The project slug — the session file's parent directory name.
+    #[must_use]
+    pub fn history_project(&self) -> &str {
+        &self.history_project
+    }
+
+    /// The session id — the session file's stem.
+    #[must_use]
+    pub fn history_session(&self) -> &str {
+        &self.history_session
+    }
+
+    /// The session file, absolute; the same path the run report echoes.
+    #[must_use]
+    pub fn history_file(&self) -> &str {
+        &self.history_file
+    }
+
+    /// The session's human-meaningful name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The project directory the run operates in, canonical.
+    #[must_use]
+    pub fn project(&self) -> &str {
+        &self.project
+    }
+
+    /// The harness id's base, e.g. `claude-code`.
+    #[must_use]
+    pub fn harness(&self) -> &str {
+        &self.harness
+    }
+
+    /// The variant, `None` for a bare harness.
+    #[must_use]
+    pub fn variant(&self) -> Option<&str> {
+        self.variant.as_deref()
+    }
+
+    /// The whole configured id, e.g. `claude-code:primary`.
+    #[must_use]
+    pub fn harness_id(&self) -> &str {
+        &self.harness_id
+    }
+
+    /// When this harness run began.
+    #[must_use]
+    pub fn started(&self) -> &UtcInstant {
+        &self.started
+    }
+
+    /// The session's validated labels (empty when none).
+    #[must_use]
+    pub fn labels(&self) -> &HistoryLabels {
+        &self.labels
+    }
+
     /// One pointer line for the harness run `history_id`, begun at `started`,
     /// under a session. The composed `harness_id` is split into its base and
     /// variant exactly as a history record splits it, and refused when it is
@@ -3134,10 +3213,10 @@ mod tests {
             pointer_started(),
         )
         .unwrap();
-        assert_eq!(bare.schema_version, POINTER_SCHEMA_VERSION);
-        assert_eq!(bare.harness, "claude-code");
-        assert_eq!(bare.variant, None);
-        assert_eq!(bare.harness_id, "claude-code");
+        assert_eq!(bare.schema_version(), POINTER_SCHEMA_VERSION);
+        assert_eq!(bare.harness(), "claude-code");
+        assert_eq!(bare.variant(), None);
+        assert_eq!(bare.harness_id(), "claude-code");
         let wire = serde_json::to_value(&bare).unwrap();
         assert_eq!(wire["history_id"], "0192b2a0-0000-7000-8000-000000000001");
         assert_eq!(wire["history_project"], "home-me-proj");
@@ -3165,9 +3244,9 @@ mod tests {
             pointer_started(),
         )
         .unwrap();
-        assert_eq!(variant.harness, "claude-code");
-        assert_eq!(variant.variant.as_deref(), Some("primary"));
-        assert_eq!(variant.harness_id, "claude-code:primary");
+        assert_eq!(variant.harness(), "claude-code");
+        assert_eq!(variant.variant(), Some("primary"));
+        assert_eq!(variant.harness_id(), "claude-code:primary");
         let wire = serde_json::to_value(&variant).unwrap();
         assert_eq!(wire["variant"], "primary");
         assert_eq!(wire["labels"]["graph"], "release");

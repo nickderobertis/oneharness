@@ -2109,32 +2109,32 @@ mod tests {
         let [a, b] = read.pointers.as_slice() else {
             unreachable!()
         };
-        assert_eq!(a.history_id, first);
-        assert_eq!(b.history_id, second);
-        assert_eq!(a.harness, "claude-code");
-        assert_eq!(a.variant.as_deref(), Some("primary"));
-        assert_eq!(a.harness_id, "claude-code:primary");
-        assert_eq!(b.harness, "codex");
-        assert_eq!(b.variant, None);
+        assert_eq!(a.history_id(), first);
+        assert_eq!(b.history_id(), second);
+        assert_eq!(a.harness(), "claude-code");
+        assert_eq!(a.variant(), Some("primary"));
+        assert_eq!(a.harness_id(), "claude-code:primary");
+        assert_eq!(b.harness(), "codex");
+        assert_eq!(b.variant(), None);
         for pointer in [a, b] {
-            assert_eq!(pointer.schema_version, history::POINTER_SCHEMA_VERSION);
-            assert_eq!(pointer.history_file, writer.path().display().to_string());
-            assert_eq!(pointer.history_dir, writer.dir.display().to_string());
-            assert_eq!(pointer.history_session, writer.session);
+            assert_eq!(pointer.schema_version(), history::POINTER_SCHEMA_VERSION);
+            assert_eq!(pointer.history_file(), writer.path().display().to_string());
+            assert_eq!(pointer.history_dir(), writer.dir.display().to_string());
+            assert_eq!(pointer.history_session(), writer.session);
             assert_eq!(
-                pointer.history_project,
+                pointer.history_project(),
                 writer.relative_path.split(['/', '\\']).next().unwrap()
             );
             assert_eq!(
-                Path::new(&pointer.history_dir)
-                    .join(&pointer.history_project)
-                    .join(format!("{}.{SESSION_EXT}", pointer.history_session)),
+                Path::new(&pointer.history_dir())
+                    .join(pointer.history_project())
+                    .join(format!("{}.{SESSION_EXT}", pointer.history_session())),
                 writer.path()
             );
-            assert_eq!(pointer.name, "point-at-me");
-            assert_eq!(pointer.project, writer.project);
-            assert_eq!(pointer.labels, labels);
-            assert!(pointer.started.as_str().ends_with('Z'));
+            assert_eq!(pointer.name(), "point-at-me");
+            assert_eq!(pointer.project(), writer.project);
+            assert_eq!(pointer.labels(), &labels);
+            assert!(pointer.started().as_str().ends_with('Z'));
         }
         // The line's id is the record's id: the store's closing record for the
         // second run is what `history show <history-id>` resolves.
@@ -2174,7 +2174,7 @@ mod tests {
         assert_eq!(
             read.pointers
                 .iter()
-                .map(|pointer| pointer.history_id)
+                .map(|pointer| pointer.history_id())
                 .collect::<Vec<_>>(),
             vec![first, second],
             "lines come back in file order"

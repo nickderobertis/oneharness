@@ -16560,15 +16560,15 @@ fn a_fallback_chain_writes_one_pointer_line_per_candidate_begun() {
         let pointer = serde_json::to_value(pointer).unwrap();
         assert_pointer_names_the_session(&pointer, &report, record);
     }
-    assert_eq!(read.pointers[0].harness_id, "codex:primary");
-    assert_eq!(read.pointers[0].variant.as_deref(), Some("primary"));
-    assert_eq!(read.pointers[1].harness_id, "codex:alternate");
-    assert_eq!(read.pointers[0].harness, "codex");
+    assert_eq!(read.pointers[0].harness_id(), "codex:primary");
+    assert_eq!(read.pointers[0].variant(), Some("primary"));
+    assert_eq!(read.pointers[1].harness_id(), "codex:alternate");
+    assert_eq!(read.pointers[0].harness(), "codex");
     assert_eq!(
-        read.pointers[0].history_session,
-        read.pointers[1].history_session
+        read.pointers[0].history_session(),
+        read.pointers[1].history_session()
     );
-    assert_ne!(read.pointers[0].history_id, read.pointers[1].history_id);
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
 }
 
 #[test]
@@ -16624,14 +16624,11 @@ fn concurrent_runs_append_intact_pointer_lines_to_one_file() {
     let ids: std::collections::BTreeSet<String> = read
         .pointers
         .iter()
-        .map(|pointer| pointer.history_id.to_string())
+        .map(|pointer| pointer.history_id().to_string())
         .collect();
     assert_eq!(ids.len(), 8);
-    let names: std::collections::BTreeSet<&str> = read
-        .pointers
-        .iter()
-        .map(|pointer| pointer.name.as_str())
-        .collect();
+    let names: std::collections::BTreeSet<&str> =
+        read.pointers.iter().map(|pointer| pointer.name()).collect();
     assert_eq!(names.len(), 8, "every run's own session: {names:?}");
 }
 
@@ -16716,6 +16713,61 @@ fn an_unwritable_pointer_path_warns_and_the_run_still_records() {
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["status"], "ok");
+    assert!(!pointer_file.exists());
+
+    // Once per run, however many appends fail: a chain whose first candidate
+    // refuses begins two harness runs, so two appends fail against the same
+    // unwritable path — and the diagnostic is still one line.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(HISTORY_CODEX_TELEMETRY).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex:primary", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex.variant.primary]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "API Error: 429 rate limit exceeded" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("pointer-unwritable-chain", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "blocked pointer twice",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "codex:alternate", "{report}");
+    assert_eq!(
+        materialized_history(Path::new(report["history_file"].as_str().unwrap())).len(),
+        2,
+        "both candidates were begun and recorded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr
+            .matches("could not append to history pointer file")
+            .count(),
+        1,
+        "two failed appends, one warning:\n{stderr}"
+    );
     assert!(!pointer_file.exists());
 }
 

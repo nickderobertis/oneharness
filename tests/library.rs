@@ -213,23 +213,23 @@ fn an_in_process_run_points_at_its_history_session_before_the_harness_spawns() {
     assert_eq!(read.skipped, 0);
     assert_eq!(read.pointers.len(), 2, "one line per run begun, in order");
     let pointer = &read.pointers[1];
-    assert_eq!(pointer.history_id, record.history_id);
-    assert_eq!(pointer.history_file, history_file);
-    assert_eq!(pointer.history_session, record.session);
-    assert_eq!(pointer.name, record.name);
-    assert_eq!(pointer.name, "library-pointer");
-    assert_eq!(pointer.project, record.project);
+    assert_eq!(pointer.history_id(), record.history_id);
+    assert_eq!(pointer.history_file(), history_file);
+    assert_eq!(pointer.history_session(), record.session);
+    assert_eq!(pointer.name(), record.name);
+    assert_eq!(pointer.name(), "library-pointer");
+    assert_eq!(pointer.project(), record.project);
     assert_eq!(
-        pointer.project,
+        pointer.project(),
         std::fs::canonicalize(&*cwd).unwrap().display().to_string()
     );
-    assert_eq!(pointer.harness, "codex");
-    assert_eq!(pointer.variant, None);
-    assert_eq!(pointer.harness_id, "codex");
+    assert_eq!(pointer.harness(), "codex");
+    assert_eq!(pointer.variant(), None);
+    assert_eq!(pointer.harness_id(), "codex");
     assert_eq!(
-        std::path::Path::new(&pointer.history_dir)
-            .join(&pointer.history_project)
-            .join(format!("{}.jsonl", pointer.history_session))
+        std::path::Path::new(&pointer.history_dir())
+            .join(pointer.history_project())
+            .join(format!("{}.jsonl", pointer.history_session()))
             .display()
             .to_string(),
         history_file

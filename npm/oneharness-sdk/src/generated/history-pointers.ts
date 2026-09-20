@@ -35,6 +35,8 @@ export interface HistoryPointers {
  * three identity spellings compose into one id, the version is one this
  * reader knows — so a line that parses IS a pointer, and a foreign object that
  * happens to carry these keys is counted as skipped rather than read as one.
+ * The fields are read through accessors for the same reason: a Rust caller
+ * gets a line from one of those two doors, never assembles or edits one.
  */
 export interface HistoryPointer {
   /**

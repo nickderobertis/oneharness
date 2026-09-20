@@ -700,16 +700,16 @@ fn a_consumer_reads_a_runs_pointer_file_through_the_crate() {
     assert_eq!(
         read.pointers
             .iter()
-            .map(|pointer| pointer.history_id)
+            .map(|pointer| pointer.history_id())
             .collect::<Vec<_>>(),
         vec![first, second]
     );
-    assert_eq!(read.pointers[0].harness_id, "claude-code:primary");
-    assert_eq!(read.pointers[0].variant.as_deref(), Some("primary"));
-    assert_eq!(read.pointers[1].harness_id, "codex");
-    assert_eq!(read.pointers[1].variant, None);
+    assert_eq!(read.pointers[0].harness_id(), "claude-code:primary");
+    assert_eq!(read.pointers[0].variant(), Some("primary"));
+    assert_eq!(read.pointers[1].harness_id(), "codex");
+    assert_eq!(read.pointers[1].variant(), None);
     assert_eq!(
-        read.pointers[0].history_file,
+        read.pointers[0].history_file(),
         writer.path().display().to_string()
     );
     let _ = std::fs::remove_dir_all(&dir);

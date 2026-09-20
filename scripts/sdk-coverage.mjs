@@ -65,9 +65,15 @@ function methods(relative, className, pattern) {
 	} catch (error) {
 		usage(`cannot read the client at ${relative} (${error.code ?? error.message})`);
 	}
-	const start = source.indexOf(className);
+	// The declaration itself — the `class` keyword and the name as a whole word,
+	// at a line start — never the name's first mention: a comment or a string can
+	// hold that, and so can a longer name (`OneHarnessProcessError` precedes the
+	// client in index.ts).
+	const start = source.search(
+		new RegExp(String.raw`^(?:export )?class ${className}\b`, "mu"),
+	);
 	if (start < 0)
-		usage(`${relative} does not declare \`${className}\`, so it is not a client this gate reads`);
+		usage(`${relative} does not declare \`class ${className}\`, so it is not a client this gate reads`);
 	const body = source.slice(start);
 	return new Set(
 		[...body.matchAll(pattern)]
@@ -85,7 +91,7 @@ const surfaces = [
 		file: TYPESCRIPT,
 		defined: methods(
 			TYPESCRIPT,
-			"export class OneHarness",
+			"OneHarness",
 			/^\t(?:async )?\*?([A-Za-z][A-Za-z0-9]*)\s*[(<]/gmu,
 		),
 		name: (method) => method,
@@ -95,7 +101,7 @@ const surfaces = [
 		file: PYTHON,
 		defined: methods(
 			PYTHON,
-			"class OneHarness",
+			"OneHarness",
 			/^ {4}(?:async )?def ([a-z][a-z0-9_]*)\s*\(/gmu,
 		),
 		name: pythonName,

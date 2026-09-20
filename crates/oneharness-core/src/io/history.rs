@@ -391,10 +391,11 @@ fn open_session_for_append(path: &Path) -> std::io::Result<File> {
 
 /// Append one pointer line as ONE write: the file is opened for append (so the
 /// OS positions every write at the end, whoever else holds it open) and the
-/// serialized line plus its newline go out in a single `write_all`, so two
-/// concurrent runs pointing at the same file never interleave inside a line.
-/// The file is created on first append, with its parent directory made if
-/// missing. No lock and no index: the pointer file is a plain shared log.
+/// serialized line plus its newline go out in a single `write` call (see
+/// [`write_whole_line`]), so two concurrent runs pointing at the same file
+/// never interleave inside a line. The file is created on first append, with
+/// its parent directory made if missing. No lock and no index: the pointer
+/// file is a plain shared log.
 fn append_pointer_line(path: &Path, pointer: &HistoryPointer) -> std::io::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent)?;
@@ -403,7 +404,34 @@ fn append_pointer_line(path: &Path, pointer: &HistoryPointer) -> std::io::Result
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     bytes.push(b'\n');
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(&bytes)
+    write_whole_line(&mut file, &bytes)
+}
+
+/// Write `line` in exactly one `write` call, never a loop. `write_all` would
+/// answer a short write with a second call, and between the two another
+/// process's line can land on the shared file — splitting this one around it
+/// into two torn pieces. A short write is instead reported as the failure it
+/// is: what it left behind is one torn tail, which the reader already counts as
+/// skipped, and the caller warns rather than pretending the line went out. An
+/// `Interrupted` write wrote nothing, so asking again is the same one write.
+fn write_whole_line(sink: &mut impl Write, line: &[u8]) -> std::io::Result<()> {
+    let written = loop {
+        match sink.write(line) {
+            Ok(written) => break written,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    };
+    if written != line.len() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::WriteZero,
+            format!(
+                "short write: {written} of {} bytes of the pointer line",
+                line.len()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 /// What [`read_pointers`] read: every well-formed [`HistoryPointer`] line in
@@ -2149,6 +2177,54 @@ mod tests {
         // second run is what `history show <history-id>` resolves.
         let record = find_record_by_id(&dir, second).unwrap();
         assert_eq!(record.history_id, second);
+    }
+
+    #[test]
+    fn a_pointer_line_goes_out_in_one_write_or_is_reported_short() {
+        // A sink that takes only part of what it is offered: `write_all` would
+        // come back for the rest, and the line's two halves could land around
+        // another process's line. One write, and the short one is an error.
+        struct Short(Vec<u8>);
+        impl Write for Short {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                let half = buf.len() / 2;
+                self.0.extend_from_slice(&buf[..half]);
+                Ok(half)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut short = Short(Vec::new());
+        let error = write_whole_line(&mut short, b"{\"a\":1}\n").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
+        assert_eq!(
+            error.to_string(),
+            "short write: 4 of 8 bytes of the pointer line"
+        );
+        assert_eq!(
+            short.0, b"{\"a\"",
+            "only the one write's bytes, never a second"
+        );
+
+        // An interrupted write wrote nothing, so the retry is still one write.
+        struct InterruptedOnce(bool, Vec<u8>);
+        impl Write for InterruptedOnce {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                if !self.0 {
+                    self.0 = true;
+                    return Err(std::io::Error::from(std::io::ErrorKind::Interrupted));
+                }
+                self.1.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut interrupted = InterruptedOnce(false, Vec::new());
+        write_whole_line(&mut interrupted, b"{\"a\":1}\n").unwrap();
+        assert_eq!(interrupted.1, b"{\"a\":1}\n");
     }
 
     #[test]

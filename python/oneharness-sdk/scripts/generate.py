@@ -235,7 +235,7 @@ def _tail(text: str) -> list[str]:
     ]
 
 
-def _schema_bundle() -> dict:
+def _schema_bundle() -> dict[str, Any]:
     """Return the Rust contract bundle, or exit with a bounded diagnostic.
 
     `check_output` raises on a failed build, and an uncaught `CalledProcessError`
@@ -279,7 +279,7 @@ def _schema_bundle() -> dict:
             f"       See it in full with: {' '.join(argv)}"
         ) from None
     try:
-        bundle = json.loads(completed.stdout)
+        bundle: dict[str, Any] = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise SystemExit(
             "python-sdk-generate: the schema generator succeeded but did not emit JSON "

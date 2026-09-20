@@ -82,54 +82,70 @@ test("a missing generated contract is reported as stale", () => {
 });
 
 test("schema generation builds into the clone-root target directory", () => {
-	// Neither generator names a target directory of its own: each builds
-	// wherever `.cargo/config.toml` sends every cargo invocation in this clone,
-	// so its example lands under `<clone>/target` and not under the sub-directory
-	// both once pinned. That holds for this SDK's generator and, separately, for
-	// `scripts/check-capability-surface.sh`, which runs the core example through
-	// its own `cargo run`. Every example is removed first so that what is
-	// present afterwards is this run's doing, not a prior one's: a restored CI
-	// cache or an older checkout's build can leave the legacy sub-directory
-	// standing, so its existence says nothing about where this run wrote.
+	// No entry point names a target directory of its own: each builds wherever
+	// `.cargo/config.toml` sends every cargo invocation in this clone, so its
+	// example lands under `<clone>/target` and not under the sub-directory they
+	// all once pinned. Every caller is driven, since each reaches cargo on its
+	// own — the four `schemaBundle` callers (this SDK's generator, the parity
+	// audit, the SDK coverage gate) and `scripts/check-capability-surface.sh`,
+	// which runs the core example through its own `cargo run`. The example a
+	// caller drives is removed before it runs, from both locations, so that
+	// what is present afterwards is this run's doing, not a prior one's: a
+	// restored CI cache or an older checkout's build can leave the legacy
+	// sub-directory standing, so its existence says nothing about where this
+	// run wrote.
 	const suffix = process.platform === "win32" ? ".exe" : "";
-	const examples = ["generate_sdk_schema", "generate_core_sdk_schema"].map(
-		(name) => ({
-			built: resolve(root, "target/debug/examples", `${name}${suffix}`),
-			legacy: resolve(
-				root,
-				"target/sdk-schema-generator/debug/examples",
-				`${name}${suffix}`,
-			),
-		}),
-	);
-	for (const { built, legacy } of examples) {
-		rmSync(built, { force: true });
-		rmSync(legacy, { force: true });
-	}
-	const { CARGO_TARGET_DIR: _unset, ...env } = process.env;
-	const generated = spawnSync(
-		process.execPath,
-		["scripts/generate.mjs", "--check"],
-		{ cwd: resolve(root, sdkDirectory), env, encoding: "utf8" },
-	);
-	expect(generated.status).toBe(0);
-	expect(generated.stderr).toBe("");
-	const surface = spawnSync("bash", ["scripts/check-capability-surface.sh"], {
-		cwd: root,
-		env,
-		encoding: "utf8",
+	const example = (name: string) => ({
+		built: resolve(root, "target/debug/examples", `${name}${suffix}`),
+		legacy: resolve(
+			root,
+			"target/sdk-schema-generator/debug/examples",
+			`${name}${suffix}`,
+		),
 	});
-	expect(surface.status).toBe(0);
-	expect(surface.stderr).toBe("");
-	for (const { built, legacy } of examples) {
-		expect(existsSync(built)).toBe(true);
-		expect(existsSync(legacy)).toBe(false);
+	const sdkExample = example("generate_sdk_schema");
+	const coreExample = example("generate_core_sdk_schema");
+	const callers = [
+		{
+			command: "node",
+			args: ["scripts/generate.mjs", "--check"],
+			cwd: resolve(root, sdkDirectory),
+			builds: sdkExample,
+		},
+		{
+			command: "bash",
+			args: ["scripts/check-capability-surface.sh"],
+			cwd: root,
+			builds: coreExample,
+		},
+		{
+			command: "node",
+			args: ["scripts/sdk-coverage.mjs"],
+			cwd: root,
+			builds: coreExample,
+		},
+		{
+			command: "node",
+			args: ["scripts/parity-audit.mjs", "--check"],
+			cwd: root,
+			builds: coreExample,
+		},
+	];
+	const { CARGO_TARGET_DIR: _unset, ...env } = process.env;
+	for (const { command, args, cwd, builds } of callers) {
+		rmSync(builds.built, { force: true });
+		rmSync(builds.legacy, { force: true });
+		const run = spawnSync(command, args, { cwd, env, encoding: "utf8" });
+		expect(run.status).toBe(0);
+		expect(run.stderr).toBe("");
+		expect(existsSync(builds.built)).toBe(true);
+		expect(existsSync(builds.legacy)).toBe(false);
 	}
-	// Two real generator invocations, so they compile the workspace crates like
+	// Four real generator invocations, so they compile the workspace crates like
 	// the stale-contract test below and need the same budget: what they assert
 	// is where Cargo wrote, never how fast. bun's 5s default is under a cold
 	// compile on a busy host.
-}, 120_000);
+}, 240_000);
 
 test("generated optional properties remain exact-optional compatible", () => {
 	expect(

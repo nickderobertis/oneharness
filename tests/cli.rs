@@ -16587,6 +16587,246 @@ fn a_fallback_chain_writes_one_pointer_line_per_candidate_begun() {
 }
 
 #[test]
+fn a_streamed_fallback_chain_writes_one_pointer_line_per_candidate_begun() {
+    // The same chain under `--stream`: the sequential driver mints per
+    // candidate as it reaches it, so the streamed report's session holds the
+    // same two records and the file the same two lines — the loser's first.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(HISTORY_CODEX_TELEMETRY).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex:primary", "codex:alternate", "codex:spare"]
+        run_mode = "fallback"
+
+        [harness.codex.variant.primary]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "API Error: 429 rate limit exceeded" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+
+        [harness.codex.variant.spare]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("pointer-stream-chain", &project, "");
+    let dir = hist_dir("pointer-stream-chain");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "streamed chain pointer",
+            "--cwd",
+            &fx.cwd(),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    let report = envelopes.last().expect("a terminal envelope");
+    assert_eq!(report["type"], "result");
+    let report = &report["report"];
+    assert_eq!(report["fallback"]["ran"], "codex:alternate");
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per candidate begun");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, report, record);
+    }
+    assert_eq!(read.pointers[0].harness_id(), "codex:primary");
+    assert_eq!(read.pointers[1].harness_id(), "codex:alternate");
+    assert_eq!(
+        read.pointers[0].history_session(),
+        read.pointers[1].history_session()
+    );
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+}
+
+#[test]
+fn a_parallel_plan_writes_one_pointer_line_per_entry_including_a_skipped_row() {
+    // Two harnesses in `parallel`, one of them not installed: the plan holds
+    // that one as a `skipped` row before anything spawns, and it still closes
+    // as its own record — so it gets its line too, and the file names every
+    // record the session holds, in plan order.
+    let dir = hist_dir("pointer-parallel");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "codex",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "parallel pointer",
+            "--bin",
+            &bin_override("codex"),
+            "--bin",
+            "claude-code=/no/such/oneharness-binary-xyz",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["results"][1]["status"], "skipped");
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1]["status"], "skipped");
+
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per plan entry");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+    }
+    assert_eq!(read.pointers[0].harness_id(), "codex");
+    assert_eq!(read.pointers[1].harness_id(), "claude-code");
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+}
+
+#[test]
+fn a_batch_writes_one_pointer_line_per_prompt_on_both_strategies() {
+    // A same-prefix batch fans one harness over N prompts: N harness runs, N
+    // records, N lines sharing the session — on the `speed` wave and on the
+    // fork path, where the warm-up's line goes out before its session id
+    // exists and the fan-out's lines before the forks spawn.
+    let dir = hist_dir("pointer-batch");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--batch-strategy",
+            "speed",
+            "--prompt",
+            "batch one",
+            "--prompt",
+            "batch two",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["batch"]["prompt_count"], 2);
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per prompt");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+    }
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+
+    // The fork path: claude-code's `min-tokens` batch warms prompt[0] and forks
+    // the rest, and the session name (from the warm-up prompt) is shared by
+    // every line, as is the session file.
+    let forked_file = dir.with_extension("forked.jsonl");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--batch-strategy",
+            "min-tokens",
+            "--prompt",
+            "warm the prefix",
+            "--prompt",
+            "q1",
+            "--prompt",
+            "q2",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &forked_file.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"ok","session_id":"SID-XYZ"}"#)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["batch"]["forked"], true);
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 3);
+    let read = read_pointers(&forked_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 3, "the warm-up and both forks");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+        assert_eq!(pointer["name"], "warm-the-prefix");
+    }
+    let ids: std::collections::BTreeSet<String> = read
+        .pointers
+        .iter()
+        .map(|pointer| pointer.history_id().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3);
+}
+
+#[test]
 fn concurrent_runs_append_intact_pointer_lines_to_one_file() {
     // The file is shared by every process a consumer's run starts at once, so
     // each line goes out as one append: eight runs, eight whole lines.

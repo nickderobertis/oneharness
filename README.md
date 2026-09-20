@@ -2146,7 +2146,10 @@ spawned** — on the CLI and on the library path alike:
 
 One line per harness run the pipeline begins: an ordinary session writes one; a
 fallback chain writes one per candidate it tries, each sharing the session's
-fields; a candidate the chain never reaches gets none. The file is append-only
+fields, and a candidate the chain never reaches gets none; a parallel run or a
+batch writes one per entry — a harness whose binary is missing is `skipped` in
+the store and gets its line too, so the file names every record the session
+holds. The file is append-only
 and shared by every process a consumer starts concurrently — each line goes out
 as **one write** on a file opened for append, so lines never interleave, and a
 reader tolerates a torn final line from an interrupted writer: a line counts only

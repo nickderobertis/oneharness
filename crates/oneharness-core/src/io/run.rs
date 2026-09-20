@@ -1237,7 +1237,7 @@ pub fn run_supervised(
     // The third element is one entry per result, minted BEFORE its harness
     // spawns so the pointer file (if any) names the run as it begins: the
     // sequential driver mints per candidate as the chain reaches it, and each
-    // buffered branch mints per plan entry it is about to run.
+    // buffered branch mints per plan entry before its first spawn.
     let (mut results, mut fallback_report, begun_history): (
         Vec<RunResult>,
         Option<FallbackReport>,
@@ -1282,7 +1282,7 @@ pub fn run_supervised(
         // whose binary is missing never reaches the branch that assembles one,
         // and its plan holds a `skipped` row already. Falling through publishes
         // that row — an absent CLI is data in the report, never a panic.
-        let begun = begin_plan_history(history_writer.as_ref(), plan.len(), &units);
+        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &units);
         let results = run_http_controlled(
             shape,
             listener.handle_ref(),
@@ -1315,7 +1315,7 @@ pub fn run_supervised(
             handle: chain.handle,
             prompt,
         };
-        let begun = begin_plan_history(history_writer.as_ref(), plan.len(), &units);
+        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &units);
         let mut attempts = 0;
         let results = loop {
             attempts += 1;
@@ -1431,10 +1431,10 @@ pub fn run_supervised(
                     specs[0].id
                 );
         }
-        // Every plan entry runs on this branch (nothing falls through), so
-        // each is begun now, before the first wave spawns. Under
-        // `--print-command` the writer is `None`, so nothing is minted.
-        let begun = begin_plan_history(history_writer.as_ref(), plan.len(), &units);
+        // Nothing falls through on this branch, so every plan entry is begun
+        // now, before the first wave spawns. Under `--print-command` the
+        // writer is `None`, so nothing is minted.
+        let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &units);
         let outcomes = if fork_batch {
             let o = run_fork_batch(
                 &mut jobs,
@@ -2464,11 +2464,14 @@ struct BegunHistory {
     persisted_event_indexes: BTreeSet<usize>,
 }
 
-/// Begin every entry of a plan the buffered path is about to run in full: one
-/// id per plan entry, minted now — and its pointer line written now — before
-/// any of them spawns. `units` is index-aligned with the plan, so entry `i`'s
-/// harness id is `units[i]`'s.
-fn begin_plan_history(
+/// Begin every entry of a plan a buffered branch runs in full: one id per plan
+/// entry, minted now — and its pointer line written now — before any of them
+/// spawns. Every entry, not only the pending ones: a row the plan already
+/// resolved (a harness whose binary is missing) closes as its own `skipped`
+/// record exactly as it did before pointers existed, and a record no pointer
+/// line names cannot be found from the file. `units` is index-aligned with the
+/// plan, so entry `i`'s harness id is `units[i]`'s.
+fn begin_each_plan_entry(
     writer: Option<&HistoryWriter>,
     plan_len: usize,
     units: &[(&'static HarnessSpec, String, Option<String>, &str)],
@@ -2664,6 +2667,8 @@ fn drive_plan_sequentially(
         stopped_without_work: false,
     };
     for (index, entry) in plan.into_iter().enumerate() {
+        // Begun as the chain reaches it — an already-resolved row too, since
+        // it closes as its own record (see `begin_each_plan_entry`).
         let run_id = history_writer.map(|writer| writer.begin_harness_run(unit_ids[index]));
         let streamed = match entry {
             Plan::Ready(result) => StreamedHarness {

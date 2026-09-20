@@ -347,23 +347,18 @@ Use the `just` recipes; do not hand-roll equivalents.
   (including partial-tail recovery), then followed by byte offset without repeated
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
   before writing so `cwd=..` remains discoverable. The **pointer file**
-  (`--history-pointer-file` / `history_pointer_file` /
-  `ONEHARNESS_HISTORY_POINTER_FILE`, layered like `history_dir`) is how a
-  consumer that starts many runs finds their sessions without scanning the
-  store: with history on, every harness run the pipeline begins appends one
-  `domain::history::HistoryPointer` line — the one declaration of that line,
-  its fields, its version and its invariants; the SDK types are generated from
-  it and the README table is test-pinned to it. `HistoryWriter::begin_harness_run`
-  writes it as it mints the id, BEFORE the harness spawns: every branch of
-  `io::run` mints per plan entry it is about to run (`begin_plan_history`),
-  the chain drivers per candidate as they reach it, so an in-process library
-  run writes it exactly as a spawned `oneharness run` does and a fallback chain
-  writes one per candidate begun. One `O_APPEND` write per line and no lock, so
-  concurrent processes never interleave; best-effort, warning once per run.
-  Read it only through `io::history::read_pointers` (`history pointers <FILE>`
-  on the CLI, `historyPointers` in the SDKs), which counts a torn, foreign or
-  inconsistent line as `skipped` rather than failing — and a line is complete
-  only with its newline, so an unterminated tail that parses is still torn.
+  (`--history-pointer-file`, layered like `history_dir`) is how a consumer finds
+  a run's sessions without scanning the store. Three constraints are
+  load-bearing. `domain::history::HistoryPointer` is the line's ONE declaration
+  (the SDK types generate from it; the README table is test-pinned to it). The
+  line is written as the run's id is minted, BEFORE anything spawns, once per
+  plan entry the writer is handed — a chain candidate as it is reached, an
+  already-`skipped` row too, since every entry closes as its own record — so
+  the library path writes it exactly as the CLI does. Each line is one
+  `O_APPEND` write with no lock, so concurrent processes never interleave; read
+  it only through `io::history::read_pointers`, which skips a torn or foreign
+  line rather than failing, and a line without its newline is torn even when it
+  parses.
   <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] Stating these load-bearing constraints here and deferring them to `docs/harness-usage.md` are the only two arrangements, and one rule in this list forbids each; they stay stated, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).

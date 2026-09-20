@@ -362,7 +362,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   concurrent processes never interleave; best-effort, warning once per run.
   Read it only through `io::history::read_pointers` (`history pointers <FILE>`
   on the CLI, `historyPointers` in the SDKs), which counts a torn, foreign or
-  inconsistent line as `skipped` rather than failing.
+  inconsistent line as `skipped` rather than failing — and a line is complete
+  only with its newline, so an unterminated tail that parses is still torn.
   <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] Stating these load-bearing constraints here and deferring them to `docs/harness-usage.md` are the only two arrangements, and one rule in this list forbids each; they stay stated, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).

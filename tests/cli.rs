@@ -16378,6 +16378,21 @@ fn history_pointer_file_by_flag_names_the_session_the_store_wrote() {
         json_stdout(&empty),
         serde_json::json!({"pointers": [], "skipped": 0})
     );
+
+    // A path that exists but is not a readable file (the store directory
+    // itself) is a loud usage error naming the path, never an empty read.
+    let unreadable = run(&["history", "pointers", &dir.display().to_string()], &[]);
+    assert_eq!(unreadable.status.code(), Some(2));
+    assert!(
+        unreadable.stdout.is_empty(),
+        "nothing is reported on stdout"
+    );
+    let stderr = String::from_utf8_lossy(&unreadable.stderr);
+    assert!(
+        stderr.contains("could not access history under")
+            && stderr.contains(&dir.display().to_string()),
+        "{stderr}"
+    );
 }
 
 #[test]

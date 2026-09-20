@@ -704,6 +704,27 @@ fn a_consumer_reads_a_runs_pointer_file_through_the_crate() {
             .collect::<Vec<_>>(),
         vec![first, second]
     );
+
+    // A tail that parses on its own is still torn while its newline is
+    // missing: a line is a record once its terminator has landed.
+    let partial = b"{\"schema_version\":\"1.0\",\"history_id\":\"0192";
+    let mut whole = std::fs::read(&pointer_file).expect("the pointer file reads");
+    whole.truncate(whole.len() - partial.len());
+    whole.extend_from_slice(&serde_json::to_vec(&read.pointers[1]).expect("a pointer serializes"));
+    std::fs::write(&pointer_file, &whole).expect("the tail is rewritten");
+    let read =
+        history::read_pointers(&pointer_file).expect("an unterminated tail does not fail the read");
+    assert_eq!(
+        read.skipped, 1,
+        "the whole-object tail is skipped for want of its newline"
+    );
+    assert_eq!(
+        read.pointers
+            .iter()
+            .map(|pointer| pointer.history_id())
+            .collect::<Vec<_>>(),
+        vec![first, second]
+    );
     assert_eq!(read.pointers[0].harness_id(), "claude-code:primary");
     assert_eq!(read.pointers[0].variant(), Some("primary"));
     assert_eq!(read.pointers[1].harness_id(), "codex");
@@ -714,6 +735,23 @@ fn a_consumer_reads_a_runs_pointer_file_through_the_crate() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&project);
+}
+
+// capability: historyPointers
+#[test]
+fn a_pointer_path_that_exists_but_cannot_be_read_is_an_error_not_an_empty_read() {
+    // Only a missing file reads as empty. A path that is there and is not a
+    // readable file — here a directory — is the one thing `read_pointers`
+    // refuses, naming the path, so a consumer never mistakes it for "no runs".
+    use oneharness_core::io::history;
+
+    let dir = scratch("history-pointers-unreadable");
+    let error = history::read_pointers(&dir).expect_err("a directory is not a pointer file");
+    match &error {
+        OneharnessError::HistoryIo { path, .. } => assert_eq!(path, &dir.display().to_string()),
+        other => panic!("expected HistoryIo, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 // capability: historyWatch

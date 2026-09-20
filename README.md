@@ -2149,7 +2149,9 @@ fallback chain writes one per candidate it tries, each sharing the session's
 fields; a candidate the chain never reaches gets none. The file is append-only
 and shared by every process a consumer starts concurrently — each line goes out
 as **one write** on a file opened for append, so lines never interleave, and a
-reader tolerates a torn final line from an interrupted writer. It is best-effort
+reader tolerates a torn final line from an interrupted writer: a line counts only
+once its newline has landed, so unterminated final bytes are skipped even when
+they parse. It is best-effort
 like the store: a pointer file that cannot be opened or written warns on stderr
 once and skips the line, never failing the run. `--no-history` (or `history =
 false` in a nearer layer) writes no line, `--print-command` writes nothing, a run

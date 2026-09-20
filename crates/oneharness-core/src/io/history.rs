@@ -455,7 +455,11 @@ pub type Pointers = HistoryPointers;
 /// [`HistoryPointer`] — a torn tail, a foreign object, a line whose spellings
 /// do not compose (see [`HistoryPointer`]) — is counted in `skipped` and never
 /// fails the read, so a consumer reads a file that is still being appended to.
-/// Only a file that exists and cannot be read is an error.
+/// A line is complete only once its newline has landed: the writer sends the
+/// object and its terminator as one write, so bytes at the end of the file
+/// with no newline after them are a torn tail even when they happen to parse,
+/// and are skipped rather than read as a record. Only a file that exists and
+/// cannot be read is an error.
 pub fn read_pointers(path: &Path) -> Result<HistoryPointers, OneharnessError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -470,7 +474,13 @@ pub fn read_pointers(path: &Path) -> Result<HistoryPointers, OneharnessError> {
         }
     };
     let mut read = HistoryPointers::default();
-    for line in text.lines() {
+    for line in text.split_inclusive('\n') {
+        let Some(line) = line.strip_suffix('\n') else {
+            // The file's last bytes, unterminated: a write still in flight or
+            // one that ended short, never a record.
+            read.skipped += 1;
+            break;
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -2263,6 +2273,50 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first, second],
             "lines come back in file order"
+        );
+
+        // A write that ended one byte short leaves a whole object with no
+        // newline after it: still a torn tail, never a third record. Replace
+        // the partial tail with the first pointer's own bytes, unterminated.
+        let partial = b"{\"schema_version\": \"1.0\", \"history_id\": \"0192";
+        let mut whole = fs::read(&pointer_file).unwrap();
+        whole.truncate(whole.len() - partial.len());
+        whole.extend_from_slice(&serde_json::to_vec(&read.pointers[0]).unwrap());
+        fs::write(&pointer_file, &whole).unwrap();
+
+        let read = read_pointers(&pointer_file).unwrap();
+        assert_eq!(
+            read.skipped, 2,
+            "the unterminated tail replaces the partial one as the torn line"
+        );
+        assert_eq!(
+            read.pointers
+                .iter()
+                .map(|pointer| pointer.history_id())
+                .collect::<Vec<_>>(),
+            vec![first, second],
+            "a record without its newline is not read"
+        );
+    }
+
+    #[test]
+    fn read_pointers_reports_a_path_that_exists_but_cannot_be_read() {
+        // A directory where the file should be exists, so this is not the
+        // missing-file case; it cannot be read as a file, and the read says so
+        // rather than answering empty.
+        let scratch = temp_dir("pointer-read-dir");
+        let error = read_pointers(scratch.path()).unwrap_err();
+        match &error {
+            OneharnessError::HistoryIo { path, .. } => {
+                assert_eq!(path, &scratch.path().display().to_string());
+            }
+            other => panic!("expected HistoryIo, got {other:?}"),
+        }
+        assert!(
+            error
+                .to_string()
+                .starts_with("could not access history under "),
+            "{error}"
         );
     }
 

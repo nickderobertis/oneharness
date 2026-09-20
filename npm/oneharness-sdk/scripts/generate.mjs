@@ -19,11 +19,6 @@ import {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 const out = resolve(root, "npm/oneharness-sdk/src/generated");
-// Keep the contract generator out of the workspace's shared target directory.
-// `sdk-check` builds the same crates with the mock-harness feature first, and
-// historically the core and CLI schema examples also shared an output filename.
-// A dedicated target makes the drift gate independent of either prior artifact.
-const generatorTarget = resolve(root, "target/sdk-schema-generator");
 mkdirSync(out, { recursive: true });
 
 const normalizeNewlines = (value) => value.replace(/\r\n?/gu, "\n");
@@ -49,7 +44,6 @@ const bundle = schemaBundle({
 	crate: "oneharness",
 	example: "generate_sdk_schema",
 	cwd: root,
-	target: generatorTarget,
 	rerun: "just sdk-generate",
 	reviver: (_key, value) =>
 		typeof value === "string" ? normalizeNewlines(value) : value,
@@ -325,6 +319,12 @@ export type Capability = {
 	readonly uncovered: readonly { readonly flag: string; readonly reason: string }[];
 };
 
+/**
+ * Every capability the CLI declares, keyed by method. \`as const\` keeps each
+ * key a literal so \`CapabilityMethod\` is the union of method names rather
+ * than \`string\`, and \`satisfies\` holds every entry to \`Capability\` without
+ * widening the literals an annotation would.
+ */
 export const CAPABILITIES = ${JSON.stringify(
 		Object.fromEntries(
 			bundle.capabilities.map((capability) => [capability.method, capability]),

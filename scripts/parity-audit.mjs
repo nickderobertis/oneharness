@@ -22,9 +22,6 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const doc = resolve(root, "docs/sdk-parity.md");
 const BEGIN = "<!-- BEGIN GENERATED: capability-tables -->";
 const END = "<!-- END GENERATED: capability-tables -->";
-// Shared with `just sdk-generate`, so an audit run reuses that build rather than
-// racing the workspace target directory.
-const generatorTarget = resolve(root, "target/sdk-schema-generator");
 
 /**
  * The method names the TypeScript client defines.
@@ -320,7 +317,6 @@ const bundle = schemaBundle({
 	crate: "oneharness-core",
 	example: "generate_core_sdk_schema",
 	cwd: root,
-	target: generatorTarget,
 	rerun: "just parity-audit",
 });
 const declared = bundle.capabilities;

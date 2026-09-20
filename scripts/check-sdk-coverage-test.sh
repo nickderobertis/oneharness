@@ -53,4 +53,38 @@ fi
 grep -q "Python has no .sync. for" "$work/out" ||
   fail "the gate failed but did not name the missing Python method"
 
-echo "check-sdk-coverage-test: the coverage gate goes red for a missing method in each SDK"
+# A client argument the gate cannot read is refused as a usage error naming it
+# — not a stack trace, and not a client with no methods, which would fail every
+# capability against a file that was never the client.
+# Both are exit 2 — a usage error, distinct from the gate's own red (exit 1) —
+# and both print how the script is called.
+# The path is matched by its basename alone, never by the spelling mktemp gave
+# the shell: under Git Bash MSYS rewrites `/tmp/tmp.XXXX/absent.ts` into
+# `C:/Users/RUNNER~1/AppData/Local/Temp/tmp.XXXX/absent.ts` before node sees it,
+# and the gate names the argument it was handed. The basename is what both
+# spellings share — the directory part is respelled and partly 8.3-shortened,
+# so anchoring anywhere above the file asserts on the host, not on the gate.
+# What gives each assertion its teeth is the half beside the name: the ENOENT
+# code for the unreadable client, the class it looked for for the non-client.
+usage_line='usage: node scripts/sdk-coverage.mjs \[<typescript client>\] \[<python client>\]'
+status=0
+node scripts/sdk-coverage.mjs "$work/absent.ts" "$python" >"$work/out" 2>&1 || status=$?
+[ "$status" -eq 2 ] ||
+  fail "a client path that does not exist should be a usage error (exit 2), got exit $status; route the readFileSync failure in methods() through usage()"
+grep -q "cannot read the client at .*absent\.ts (ENOENT)" "$work/out" ||
+  fail "the gate did not name the client path it could not read; keep 'cannot read the client at <path> (<code>)' in methods()"
+grep -q "$usage_line" "$work/out" ||
+  fail "the unreadable-client refusal did not say how the gate is called; keep the usage line in usage()"
+# A readable file that is not a client, so the run's diagnostic can land in
+# `$work/out` — the one file `fail` shows — rather than in the file under test.
+printf 'export const notAClient = 1;\n' >"$work/not-a-client.ts"
+status=0
+node scripts/sdk-coverage.mjs "$typescript" "$work/not-a-client.ts" >"$work/out" 2>&1 || status=$?
+[ "$status" -eq 2 ] ||
+  fail "a file that declares no client class should be a usage error (exit 2), got exit $status; route a missing class declaration in methods() through usage()"
+grep -q "not-a-client\.ts does not declare .class OneHarness., so it is not a client this gate reads" "$work/out" ||
+  fail "the gate did not say which file declares no client class; keep '<path> does not declare \`class OneHarness\`' in methods()"
+grep -q "$usage_line" "$work/out" ||
+  fail "the no-client refusal did not say how the gate is called; keep the usage line in usage()"
+
+echo "check-sdk-coverage-test: the coverage gate goes red for a missing method in each SDK and refuses a file that is not a client"

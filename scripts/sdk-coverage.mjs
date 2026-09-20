@@ -19,9 +19,6 @@ import { fileURLToPath } from "node:url";
 import { schemaBundle } from "./sdk-generator.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-// Shared with `just sdk-generate` and the parity audit, so this reuses that
-// build rather than racing the workspace target directory.
-const generatorTarget = resolve(root, "target/sdk-schema-generator");
 
 // The clients to read. Overridable by argument so the gate can be pointed at a
 // candidate client — which is how `check-sdk-coverage-test.sh` proves it still
@@ -38,9 +35,17 @@ function capabilities() {
 		crate: "oneharness-core",
 		example: "generate_core_sdk_schema",
 		cwd: root,
-		target: generatorTarget,
 		rerun: "just lint-workflows",
 	}).capabilities;
+}
+
+/** A client argument this gate cannot read as one: say which, and how it is called. */
+function usage(message) {
+	console.error(`sdk-coverage: ${message}`);
+	console.error(
+		"  usage: node scripts/sdk-coverage.mjs [<typescript client>] [<python client>]",
+	);
+	process.exit(2);
 }
 
 /**
@@ -48,11 +53,28 @@ function capabilities() {
  *
  * Read rather than imported, so the gate does not depend on a build having
  * happened — and so a method that exists only as a type is not mistaken for one
- * a caller can invoke.
+ * a caller can invoke. The path is validated as it is read: a file that cannot
+ * be opened, or that declares no client class, is a usage error naming it —
+ * not a raw stack, and not a client with no methods, which would report every
+ * capability missing from a file that was never the client at all.
  */
 function methods(relative, className, pattern) {
-	const source = readFileSync(resolve(root, relative), "utf8");
-	const body = source.slice(source.indexOf(className));
+	let source;
+	try {
+		source = readFileSync(resolve(root, relative), "utf8");
+	} catch (error) {
+		usage(`cannot read the client at ${relative} (${error.code ?? error.message})`);
+	}
+	// The declaration itself — the `class` keyword and the name as a whole word,
+	// at a line start — never the name's first mention: a comment or a string can
+	// hold that, and so can a longer name (`OneHarnessProcessError` precedes the
+	// client in index.ts).
+	const start = source.search(
+		new RegExp(String.raw`^(?:export )?class ${className}\b`, "mu"),
+	);
+	if (start < 0)
+		usage(`${relative} does not declare \`class ${className}\`, so it is not a client this gate reads`);
+	const body = source.slice(start);
 	return new Set(
 		[...body.matchAll(pattern)]
 			.map((match) => match[1])
@@ -69,7 +91,7 @@ const surfaces = [
 		file: TYPESCRIPT,
 		defined: methods(
 			TYPESCRIPT,
-			"export class OneHarness",
+			"OneHarness",
 			/^\t(?:async )?\*?([A-Za-z][A-Za-z0-9]*)\s*[(<]/gmu,
 		),
 		name: (method) => method,
@@ -79,7 +101,7 @@ const surfaces = [
 		file: PYTHON,
 		defined: methods(
 			PYTHON,
-			"class OneHarness",
+			"OneHarness",
 			/^ {4}(?:async )?def ([a-z][a-z0-9_]*)\s*\(/gmu,
 		),
 		name: pythonName,

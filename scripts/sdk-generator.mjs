@@ -40,7 +40,6 @@ function tail(text) {
  * @param {string} spec.crate   `-p` package holding the example
  * @param {string} spec.example the schema-emitting example
  * @param {string} spec.cwd     repository root to run in
- * @param {string} spec.target  CARGO_TARGET_DIR, shared between the generators
  * @param {string} spec.rerun   the command that re-runs the caller once fixed
  * @param {(key: string, value: unknown) => unknown} [spec.reviver] JSON.parse reviver
  */
@@ -49,7 +48,6 @@ export function schemaBundle({
 	crate,
 	example,
 	cwd,
-	target,
 	rerun,
 	reviver,
 }) {
@@ -68,7 +66,6 @@ export function schemaBundle({
 		json = execFileSync("cargo", args, {
 			cwd,
 			encoding: "utf8",
-			env: { ...process.env, CARGO_TARGET_DIR: target },
 		});
 	} catch (error) {
 		const cause = tail(error.stderr);

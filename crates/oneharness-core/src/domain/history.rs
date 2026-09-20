@@ -3163,6 +3163,10 @@ mod tests {
         assert!(serde_json::from_value::<HistoryRecord>(value).is_ok());
     }
 
+    // The pointer tests are unix-only because they spell absolute paths as
+    // `/state/…`, which Windows does not read as absolute; their helpers are
+    // gated beside them so the Windows build carries no dead code.
+    #[cfg(unix)]
     fn pointer_session() -> PointerSession {
         PointerSession::new(
             Path::new("/state/history"),
@@ -3174,14 +3178,17 @@ mod tests {
         .unwrap()
     }
 
+    #[cfg(unix)]
     fn pointer_id() -> HistoryId {
         "0192b2a0-0000-7000-8000-000000000001".parse().unwrap()
     }
 
+    #[cfg(unix)]
     fn pointer_started() -> UtcInstant {
         "2026-01-01T00:00:00Z".parse().unwrap()
     }
 
+    #[cfg(unix)]
     fn identity(text: &str) -> HarnessIdentity {
         text.parse().unwrap()
     }

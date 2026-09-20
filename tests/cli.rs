@@ -16774,6 +16774,9 @@ fn an_unwritable_pointer_path_warns_and_the_run_still_records() {
 /// Hold a controlled run's pointer file to its report: the one line names the
 /// candidate that served, and the session file the report echoes. The store's
 /// own record is compared too when the mechanism's transcript closed one.
+/// Unix-only beside the two controlled-turn journeys that use it, like every
+/// other control test here: the control channel is a Unix socket.
+#[cfg(unix)]
 fn assert_controlled_run_pointed(pointer_file: &Path, report: &Value, harness_id: &str) {
     let read = read_pointers(pointer_file).expect("the pointer file reads");
     assert_eq!(read.skipped, 0);

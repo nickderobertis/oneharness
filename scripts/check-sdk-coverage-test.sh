@@ -53,4 +53,18 @@ fi
 grep -q "Python has no .sync. for" "$work/out" ||
   fail "the gate failed but did not name the missing Python method"
 
-echo "check-sdk-coverage-test: the coverage gate goes red for a missing method in each SDK"
+# A client argument the gate cannot read is refused as a usage error naming it
+# — not a stack trace, and not a client with no methods, which would fail every
+# capability against a file that was never the client.
+if node scripts/sdk-coverage.mjs "$work/absent.ts" "$python" >"$work/out" 2>&1; then
+  fail "a client path that does not exist should have been refused"
+fi
+grep -q "cannot read the client at $work/absent.ts" "$work/out" ||
+  fail "the gate did not name the client path it could not read"
+if node scripts/sdk-coverage.mjs "$typescript" "$work/out" >"$work/out.2" 2>&1; then
+  fail "a file that declares no client class should have been refused"
+fi
+grep -q "does not declare .class OneHarness." "$work/out.2" ||
+  fail "the gate did not say the file declares no client class"
+
+echo "check-sdk-coverage-test: the coverage gate goes red for a missing method in each SDK and refuses a file that is not a client"

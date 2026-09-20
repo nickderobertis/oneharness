@@ -39,16 +39,36 @@ function capabilities() {
 	}).capabilities;
 }
 
+/** A client argument this gate cannot read as one: say which, and how it is called. */
+function usage(message) {
+	console.error(`sdk-coverage: ${message}`);
+	console.error(
+		"  usage: node scripts/sdk-coverage.mjs [<typescript client>] [<python client>]",
+	);
+	process.exit(2);
+}
+
 /**
  * The method names a client defines, read from its source.
  *
  * Read rather than imported, so the gate does not depend on a build having
  * happened — and so a method that exists only as a type is not mistaken for one
- * a caller can invoke.
+ * a caller can invoke. The path is validated as it is read: a file that cannot
+ * be opened, or that declares no client class, is a usage error naming it —
+ * not a raw stack, and not a client with no methods, which would report every
+ * capability missing from a file that was never the client at all.
  */
 function methods(relative, className, pattern) {
-	const source = readFileSync(resolve(root, relative), "utf8");
-	const body = source.slice(source.indexOf(className));
+	let source;
+	try {
+		source = readFileSync(resolve(root, relative), "utf8");
+	} catch (error) {
+		usage(`cannot read the client at ${relative} (${error.code ?? error.message})`);
+	}
+	const start = source.indexOf(className);
+	if (start < 0)
+		usage(`${relative} does not declare \`${className}\`, so it is not a client this gate reads`);
+	const body = source.slice(start);
 	return new Set(
 		[...body.matchAll(pattern)]
 			.map((match) => match[1])

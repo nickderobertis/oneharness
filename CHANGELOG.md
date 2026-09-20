@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.0](https://github.com/nickderobertis/oneharness/compare/v0.15.1...v0.16.0) - 2026-09-20
+
+### Added
+
+- *(history)* [**breaking**] write a per-run pointer line for every harness run and read it back typed ([#1326](https://github.com/nickderobertis/oneharness/pull/1326))
+
 ## [0.15.1](https://github.com/nickderobertis/oneharness/compare/v0.15.0...v0.15.1) - 2026-09-19
 
 ### Fixed

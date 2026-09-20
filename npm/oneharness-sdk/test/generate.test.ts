@@ -84,17 +84,23 @@ test("a missing generated contract is reported as stale", () => {
 test("schema generation builds into the clone-root target directory", () => {
 	// The generator names no target directory of its own: it builds wherever
 	// `.cargo/config.toml` sends every cargo invocation in this clone, so the
-	// example lands under `<clone>/target` and nothing under a sub-directory the
-	// generator once pinned. The uplifted example is removed first so that its
-	// presence afterwards is this run's doing, not a prior one's.
-	const example = resolve(
-		root,
-		"target/debug/examples",
+	// example lands under `<clone>/target` and not under the sub-directory the
+	// generator once pinned. Both examples are removed first so that what is
+	// present afterwards is this run's doing, not a prior one's: a restored CI
+	// cache or an older checkout's build can leave the legacy sub-directory
+	// standing, so its existence says nothing about where this run wrote.
+	const exampleName =
 		process.platform === "win32"
 			? "generate_sdk_schema.exe"
-			: "generate_sdk_schema",
+			: "generate_sdk_schema";
+	const example = resolve(root, "target/debug/examples", exampleName);
+	const legacy = resolve(
+		root,
+		"target/sdk-schema-generator/debug/examples",
+		exampleName,
 	);
 	rmSync(example, { force: true });
+	rmSync(legacy, { force: true });
 	const { CARGO_TARGET_DIR: _unset, ...env } = process.env;
 	const generated = spawnSync(
 		process.execPath,
@@ -104,7 +110,7 @@ test("schema generation builds into the clone-root target directory", () => {
 	expect(generated.status).toBe(0);
 	expect(generated.stderr).toBe("");
 	expect(existsSync(example)).toBe(true);
-	expect(existsSync(resolve(root, "target/sdk-schema-generator"))).toBe(false);
+	expect(existsSync(legacy)).toBe(false);
 	// A real generator invocation, so it compiles the workspace crates like the
 	// stale-contract test below and needs the same budget: what it asserts is
 	// where Cargo wrote, never how fast. bun's 5s default is under a cold

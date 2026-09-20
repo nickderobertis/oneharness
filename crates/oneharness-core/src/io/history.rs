@@ -29,10 +29,12 @@ use crate::domain::history::{
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
 use crate::domain::sdk::{LiteralFalse, LiteralTrue};
+use crate::domain::usage::UtcInstant;
 use crate::errors::OneharnessError;
 
-/// The file extension for every session log (line-delimited JSON).
-const SESSION_EXT: &str = "jsonl";
+/// The file extension for every session log (line-delimited JSON) — the one
+/// the pointer line's `history_file` is checked against.
+const SESSION_EXT: &str = history::SESSION_FILE_EXT;
 const INDEX_FILE: &str = ".index.jsonl";
 const INDEX_LOCK_FILE: &str = ".index.lock";
 const EVENT_INDEX_FILE: &str = ".event-index.jsonl";
@@ -125,13 +127,16 @@ impl HistoryWriter {
     pub fn begin_harness_run(&self, harness_id: &str) -> HistoryId {
         let run_id = self.begin_run();
         if let Some(pointer_file) = &self.pointer_file {
-            let pointer = HistoryPointer::new(
-                &self.pointer_session(),
-                run_id,
-                harness_id,
-                history::format_rfc3339(now_epoch_secs()),
-            );
-            if let Err(err) = append_pointer_line(pointer_file, &pointer) {
+            let written = self.pointer_session().and_then(|session| {
+                let pointer = HistoryPointer::new(
+                    &session,
+                    run_id,
+                    harness_id,
+                    UtcInstant::from_epoch(now_epoch_secs()),
+                );
+                append_pointer_line(pointer_file, &pointer)
+            });
+            if let Err(err) = written {
                 if !self.pointer_warned.swap(true, Ordering::Relaxed) {
                     eprintln!(
                         "oneharness: warning: could not append to history pointer file `{}`: \
@@ -145,22 +150,19 @@ impl HistoryWriter {
     }
 
     /// What every pointer line of this session repeats. `dir` and `path` are
-    /// canonical since [`open`](Self::open), so both spellings are absolute.
-    fn pointer_session(&self) -> PointerSession {
-        PointerSession {
-            history_dir: self.dir.display().to_string(),
-            history_project: self
-                .path
-                .parent()
-                .and_then(Path::file_name)
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-            history_session: self.session.clone(),
-            history_file: self.path.display().to_string(),
-            name: self.name.clone(),
-            project: self.project.clone(),
-            labels: self.labels.clone(),
-        }
+    /// canonical since [`open`](Self::open) and `path` sits one project
+    /// directory under `dir`, so this is the constructor's own layout; a
+    /// refusal here would mean the writer's paths and the pointer's rule have
+    /// drifted apart, which is worth a loud warning rather than a bad line.
+    fn pointer_session(&self) -> std::io::Result<PointerSession> {
+        PointerSession::new(
+            &self.dir,
+            &self.path,
+            &self.name,
+            &self.project,
+            self.labels.clone(),
+        )
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
     }
 
     /// Durably append one live event and make it visible to event-mode watchers.
@@ -397,8 +399,7 @@ fn append_pointer_line(path: &Path, pointer: &HistoryPointer) -> std::io::Result
 /// What [`read_pointers`] read: every well-formed [`HistoryPointer`] line in
 /// file order, and how many lines were not one.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, JsonSchema)]
-#[schemars(rename = "HistoryPointers")]
-pub struct Pointers {
+pub struct HistoryPointers {
     /// The pointer lines, in the order they were appended.
     pub pointers: Vec<HistoryPointer>,
     /// Lines that were not one complete pointer object — a torn tail left by
@@ -407,17 +408,21 @@ pub struct Pointers {
     pub skipped: usize,
 }
 
+/// The reader's result under the name the shared pointer contract gives it.
+pub type Pointers = HistoryPointers;
+
 /// Read a run's pointer file: the lines every harness run with history on
 /// appended (see [`HistoryWriter::begin_harness_run`]). A missing file reads as
 /// empty with nothing skipped; a line that does not parse as one complete
-/// [`HistoryPointer`] is counted in `skipped` and never fails the read, so a
-/// consumer reads a file that is still being appended to. Only a file that
-/// exists and cannot be read is an error.
-pub fn read_pointers(path: &Path) -> Result<Pointers, OneharnessError> {
+/// [`HistoryPointer`] — a torn tail, a foreign object, a line whose spellings
+/// do not compose (see [`HistoryPointer`]) — is counted in `skipped` and never
+/// fails the read, so a consumer reads a file that is still being appended to.
+/// Only a file that exists and cannot be read is an error.
+pub fn read_pointers(path: &Path) -> Result<HistoryPointers, OneharnessError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Pointers::default());
+            return Ok(HistoryPointers::default());
         }
         Err(source) => {
             return Err(OneharnessError::HistoryIo {
@@ -426,7 +431,7 @@ pub fn read_pointers(path: &Path) -> Result<Pointers, OneharnessError> {
             });
         }
     };
-    let mut read = Pointers::default();
+    let mut read = HistoryPointers::default();
     for line in text.lines() {
         if line.trim().is_empty() {
             continue;
@@ -2128,7 +2133,7 @@ mod tests {
             assert_eq!(pointer.name, "point-at-me");
             assert_eq!(pointer.project, writer.project);
             assert_eq!(pointer.labels, labels);
-            assert!(pointer.started.ends_with('Z'));
+            assert!(pointer.started.as_str().ends_with('Z'));
         }
         // The line's id is the record's id: the store's closing record for the
         // second run is what `history show <history-id>` resolves.
@@ -2140,7 +2145,7 @@ mod tests {
     fn read_pointers_tolerates_a_missing_file_a_torn_tail_and_a_foreign_line() {
         let scratch = temp_dir("pointer-read");
         let missing = scratch.path().join("never-written.jsonl");
-        assert_eq!(read_pointers(&missing).unwrap(), Pointers::default());
+        assert_eq!(read_pointers(&missing).unwrap(), HistoryPointers::default());
 
         let dir = temp_dir("pointer-read-store");
         let project = temp_dir("pointer-read-project");
@@ -2149,7 +2154,6 @@ mod tests {
             .unwrap()
             .with_pointer_file(Some(pointer_file.clone()));
         let first = writer.begin_harness_run("codex");
-        // A foreign line between two good ones, and a torn tail after them.
         fs::OpenOptions::new()
             .append(true)
             .open(&pointer_file)

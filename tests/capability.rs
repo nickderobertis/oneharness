@@ -338,3 +338,34 @@ fn method_names_are_unique_and_translate_to_python() {
         .expect("historyList is a capability");
     assert_eq!(history_list.python_method(), "history_list");
 }
+
+/// Each SDK's README lists the client's methods in one sentence, by hand — the
+/// one inventory the generators do not write. Hold it to the manifest, in each
+/// language's own spelling, so a capability added here reaches the sentence a
+/// reader meets first.
+#[test]
+fn every_capability_is_named_in_each_sdk_readme() {
+    let node = include_str!("../npm/oneharness-sdk/README.md");
+    let python = include_str!("../python/oneharness-sdk/README.md");
+    for capability in CAPABILITIES {
+        let camel = format!("`{}`", capability.method);
+        assert!(
+            node.contains(&camel),
+            "npm/oneharness-sdk/README.md must list {camel} in its method inventory"
+        );
+        let mut snake = String::new();
+        for c in capability.method.chars() {
+            if c.is_ascii_uppercase() {
+                snake.push('_');
+                snake.push(c.to_ascii_lowercase());
+            } else {
+                snake.push(c);
+            }
+        }
+        let snake = format!("`{snake}`");
+        assert!(
+            python.contains(&snake),
+            "python/oneharness-sdk/README.md must list {snake} in its method inventory"
+        );
+    }
+}

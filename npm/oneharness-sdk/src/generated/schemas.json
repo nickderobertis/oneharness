@@ -17743,7 +17743,7 @@
         }
       },
       "HistoryPointer": {
-        "description": "One line of a run's **pointer file**: where one harness run's history went.\n\nA consumer that starts many `oneharness` processes (or in-process runs) names\none file, and every run with history on appends one of these per harness run\nit begins — so \"which sessions did this run launch, and where are they\" is a\nread of that one small file rather than a scan of the whole store, wherever\nthe store lives. `history_dir` / `history_project` / `history_session` are\nspelled as the `oneharness-session` artifact `oneagentgraph` publishes, so a\nreader already resolving that through `io::history::find_session_path`\nresolves these unchanged. Pure: the I/O layer fills the timestamp.",
+        "description": "One line of a run's **pointer file**: where one harness run's history went.\n\nA consumer that starts many `oneharness` processes (or in-process runs) names\none file, and every run with history on appends one of these per harness run\nit begins — so \"which sessions did this run launch, and where are they\" is a\nread of that one small file rather than a scan of the whole store, wherever\nthe store lives. `history_dir` / `history_project` / `history_session` are\nspelled as the `oneharness-session` artifact `oneagentgraph` publishes, so a\nreader already resolving that through `io::history::find_session_path`\nresolves these unchanged.\n\nBuilt only through [`HistoryPointer::new`] over a [`PointerSession`], and\nread back only through a deserialization that re-checks every invariant\n`new` establishes — the four session spellings compose into one file, the\nthree identity spellings compose into one id, the version is one this\nreader knows — so a line that parses IS a pointer, and a foreign object that\nhappens to carry these keys is counted as skipped rather than read as one.",
         "type": "object",
         "properties": {
           "harness": {
@@ -17751,7 +17751,7 @@
             "type": "string"
           },
           "harness_id": {
-            "description": "The whole configured id, e.g. `claude-code:primary`.",
+            "description": "The whole configured id, e.g. `claude-code:primary` — always `harness`\nwith `:variant` when there is one.",
             "type": "string"
           },
           "history_dir": {
@@ -17759,7 +17759,7 @@
             "type": "string"
           },
           "history_file": {
-            "description": "The session file, absolute; the same path the run report echoes.",
+            "description": "The session file, absolute; the same path the run report echoes, and\nalways `<history_dir>/<history_project>/<history_session>.jsonl`.",
             "type": "string"
           },
           "history_id": {
@@ -17790,12 +17790,12 @@
             "type": "string"
           },
           "schema_version": {
-            "description": "[`POINTER_SCHEMA_VERSION`].",
+            "description": "[`POINTER_SCHEMA_VERSION`]; a reader accepts any `1.<minor>`.",
             "type": "string"
           },
           "started": {
-            "description": "RFC3339 UTC instant this harness run began.",
-            "type": "string"
+            "description": "RFC 3339 UTC, when this harness run began.",
+            "$ref": "#/$defs/UtcInstant"
           },
           "variant": {
             "description": "The variant, omitted for a bare harness.",
@@ -17818,6 +17818,10 @@
           "harness_id",
           "started"
         ]
+      },
+      "UtcInstant": {
+        "description": "An RFC 3339 timestamp in UTC (`Z`), in oneharness's canonical spelling.",
+        "type": "string"
       }
     }
   }

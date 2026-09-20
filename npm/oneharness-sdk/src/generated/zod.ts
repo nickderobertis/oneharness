@@ -1391,7 +1391,7 @@ export const HistoryPointerSchema: z.ZodType<HistoryPointer> = z.looseObject({
   name: z.string().refine((value) => value !== undefined, { message: "Required" }),
   project: z.string().refine((value) => value !== undefined, { message: "Required" }),
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
-  started: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  started: z.lazy(() => UtcInstantSchema).refine((value) => value !== undefined, { message: "Required" }),
   variant: z.union([z.string(), z.null()]).optional(),
 });
 

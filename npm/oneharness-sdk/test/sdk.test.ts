@@ -1624,7 +1624,6 @@ describe("OneHarness", () => {
 		const historyDir = resolve(directory, "history");
 		const pointerFile = resolve(directory, "run", "pointers.jsonl");
 		const client = sdk();
-		// A file nobody wrote reads as empty.
 		expect(await client.historyPointers({ file: pointerFile })).toEqual({
 			pointers: [],
 			skipped: 0,
@@ -1668,14 +1667,12 @@ describe("OneHarness", () => {
 				`${pointer?.history_session}.jsonl`,
 			),
 		).toBe(report.history_file ?? "");
-		// The id the line carries opens the record.
 		const exact = await client.history({
 			session: pointer?.history_id ?? "",
 			historyDir,
 		});
 		expect(exact[0]?.history_id).toBe(record?.history_id);
 
-		// A torn tail is counted, never thrown.
 		await writeFile(pointerFile, '{"schema_version":"1.0","history_id":"0192', {
 			flag: "a",
 		});

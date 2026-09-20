@@ -108,7 +108,7 @@ pub fn bundle() -> SdkSchemaBundle {
         history_migrate_options: schema_for!(HistoryMigrateOptions),
         history_migrate_report: schema_for_serialize::<crate::io::history::HistoryMigrateReport>(),
         history_pointers_options: schema_for!(HistoryPointersOptions),
-        history_pointers: schema_for_serialize::<crate::io::history::Pointers>(),
+        history_pointers: schema_for_serialize::<crate::io::history::HistoryPointers>(),
     }
 }
 

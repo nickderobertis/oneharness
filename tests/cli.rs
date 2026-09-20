@@ -16201,6 +16201,76 @@ fn assert_pointer_names_the_session(pointer: &Value, report: &Value, record: &Va
     );
 }
 
+/// The README's pointer table is where a consumer learns the line's fields, and
+/// it is prose the generators never touch — so it is held to the type itself:
+/// every field the wire carries has a row, no row names a field that is gone,
+/// and the version the prose states is the one the writer stamps.
+#[test]
+fn documented_history_pointer_line_tracks_the_wire_contract() {
+    use oneharness_core::domain::history::{
+        HistoryPointer, PointerSession, POINTER_SCHEMA_VERSION,
+    };
+    let readme = include_str!("../README.md");
+    let table = readme
+        .split("**Pointer file.**")
+        .nth(1)
+        .and_then(|rest| rest.split("| field | meaning |").nth(1))
+        .and_then(|rest| rest.split("\n\n").next())
+        .expect("README.md documents the pointer line's fields in a table");
+    let documented: std::collections::BTreeSet<String> = table
+        .lines()
+        .filter(|line| line.starts_with("| `"))
+        .flat_map(|line| {
+            line.trim_start_matches("| ")
+                .split(" |")
+                .next()
+                .unwrap_or_default()
+                .split(['/', ','])
+                .map(|cell| cell.trim().trim_matches('`').to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    // A fully populated line, so every optional field is on the wire.
+    let session = PointerSession::new(
+        &std::env::temp_dir().join("store"),
+        &std::env::temp_dir()
+            .join("store")
+            .join("proj")
+            .join("s.jsonl"),
+        "s",
+        &std::env::temp_dir().display().to_string(),
+        HistoryLabels::new(std::collections::BTreeMap::from([(
+            "k".to_string(),
+            "v".to_string(),
+        )]))
+        .unwrap(),
+    )
+    .unwrap();
+    let line = serde_json::to_value(HistoryPointer::new(
+        &session,
+        "0192b2a0-0000-7000-8000-000000000001".parse().unwrap(),
+        "claude-code:primary",
+        "2026-01-01T00:00:00Z".parse().unwrap(),
+    ))
+    .unwrap();
+    let carried: std::collections::BTreeSet<String> = line
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|key| key.as_str() != "schema_version")
+        .cloned()
+        .collect();
+    assert_eq!(
+        documented, carried,
+        "README.md's pointer table must name exactly the line's fields"
+    );
+    let version = format!("(`schema_version` `{POINTER_SCHEMA_VERSION}`");
+    assert!(
+        readme.contains(&version),
+        "README.md must state the pointer version as `{version}`"
+    );
+}
+
 #[test]
 fn history_pointer_file_by_flag_names_the_session_the_store_wrote() {
     // The consumer's question — "which sessions did this run launch, and where
@@ -16644,6 +16714,149 @@ fn an_unwritable_pointer_path_warns_and_the_run_still_records() {
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["status"], "ok");
     assert!(!pointer_file.exists());
+}
+
+/// Hold a controlled run's pointer file to its report: the one line names the
+/// candidate that served, and the session file the report echoes. The store's
+/// own record is compared too when the mechanism's transcript closed one.
+fn assert_controlled_run_pointed(pointer_file: &Path, report: &Value, harness_id: &str) {
+    let read = read_pointers(pointer_file).expect("the pointer file reads");
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 1, "one controlled turn, one line");
+    let pointer = serde_json::to_value(&read.pointers[0]).unwrap();
+    assert_eq!(pointer["harness_id"], harness_id);
+    let history_file = report["history_file"].as_str().expect("history was on");
+    assert_eq!(pointer["history_file"], history_file);
+    // The line is written before the turn, so it exists whether or not the
+    // mechanism's transcript then closed a record (the mock's may not).
+    if Path::new(history_file).exists() {
+        if let Some(record) = materialized_history(Path::new(history_file)).first() {
+            assert_pointer_names_the_session(&pointer, report, record);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dialogue_controlled_turn_writes_its_pointer_line_before_the_harness_answers() {
+    // The single-candidate dialogue branch drives the harness over its protocol
+    // rather than through the parallel runner, so it mints the id on its own
+    // path — and the line has to be there before the turn is driven: the mock
+    // copies the pointer file into its transcript as the turn starts.
+    let store = control_store_dir("pointer-dialogue");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("pointer-dialogue-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let history = hist_dir("pointer-dialogue");
+    let history_arg = history.display().to_string();
+    let pointer_file = store.join("pointers.jsonl");
+    let pointer_arg = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "pointed",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--history-pointer-file",
+            &pointer_arg,
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_TURN_LOG",
+                store.join("turn.log").display().to_string().as_str(),
+            ),
+            ("MOCK_CAT_FILE", &pointer_arg),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_controlled_run_pointed(&pointer_file, &report, "claude-code");
+    // The transcript the harness produced as it started already held the line.
+    let seen: Vec<Value> = report["results"][0]["stdout"]
+        .as_str()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|line: &Value| line.get("history_id").is_some())
+        .collect();
+    assert_eq!(
+        seen.len(),
+        1,
+        "the line was written before the turn: {report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_http_controlled_turn_writes_its_pointer_line() {
+    // The server-submitted branch never spawns the harness CLI at all, so its
+    // pointer comes from the id it mints before submitting the turn.
+    let store = control_store_dir("pointer-http");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("pointer-http-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let history = hist_dir("pointer-http");
+    let history_arg = history.display().to_string();
+    let pointer_file = store.join("pointers.jsonl");
+    let pointer_arg = pointer_file.display().to_string();
+    let pool = store.join("pool");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "pointed-http",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--history-pointer-file",
+            &pointer_arg,
+            "--timeout",
+            "30",
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_HTTP_CONTROL_LOG",
+                store.join("server.log").display().to_string().as_str(),
+            ),
+            // A turn the server finishes on its own, so no interrupt is needed.
+            ("MOCK_HTTP_CONTROL_FAULT", "slow-turn"),
+            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+        ],
+    );
+    let report = json_stdout(&output);
+    wait_for_pooled_server_to_exit(&pool);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_controlled_run_pointed(&pointer_file, &report, "opencode");
 }
 
 #[test]

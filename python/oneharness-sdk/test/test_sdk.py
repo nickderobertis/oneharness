@@ -861,7 +861,6 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         history_dir = str(directory / "history")
         pointer_file = str(directory / "run" / "pointers.jsonl")
         client = self.client()
-        # A file nobody wrote reads as empty.
         self.assertEqual(
             await client.history_pointers({"file": pointer_file}),
             {"pointers": [], "skipped": 0},
@@ -902,12 +901,10 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             ),
             report["history_file"],
         )
-        # The id the line carries opens the record.
         [exact] = await client.history(
             {"session": pointer["history_id"], "history_dir": history_dir}
         )
         self.assertEqual(exact["history_id"], record["history_id"])
-        # A torn tail is counted, never raised.
         torn = Path(pointer_file).read_text(encoding="utf-8")
         Path(pointer_file).write_text(
             torn + '{"schema_version":"1.0","history_id":"0192', encoding="utf-8"

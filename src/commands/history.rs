@@ -408,7 +408,7 @@ fn plural(count: usize) -> &'static str {
 
 /// A human view of a pointer file: one block per begun harness run, with the
 /// id `history show` takes and the file the session is in.
-fn render_pointers_text(read: &history_io::Pointers) -> String {
+fn render_pointers_text(read: &history_io::HistoryPointers) -> String {
     let mut out = String::new();
     if read.pointers.is_empty() {
         out.push_str("no pointers\n");
@@ -572,25 +572,25 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn pointers_text_lists_each_run_and_counts_the_skipped() {
         use oneharness_core::domain::history::{HistoryLabels, HistoryPointer, PointerSession};
-        let session = PointerSession {
-            history_dir: "/h".to_string(),
-            history_project: "p".to_string(),
-            history_session: "fix-20260101T000000Z-1".to_string(),
-            history_file: "/h/p/fix-20260101T000000Z-1.jsonl".to_string(),
-            name: "fix".to_string(),
-            project: "/proj".to_string(),
-            labels: HistoryLabels::default(),
-        };
+        let session = PointerSession::new(
+            Path::new("/h"),
+            Path::new("/h/p/fix-20260101T000000Z-1.jsonl"),
+            "fix",
+            "/proj",
+            HistoryLabels::default(),
+        )
+        .unwrap();
         let id: HistoryId = "0192b2a0-0000-7000-8000-000000000001".parse().unwrap();
-        let read = history_io::Pointers {
+        let read = history_io::HistoryPointers {
             pointers: vec![HistoryPointer::new(
                 &session,
                 id,
                 "claude-code:primary",
-                "2026-01-01T00:00:00Z".to_string(),
+                "2026-01-01T00:00:00Z".parse().unwrap(),
             )],
             skipped: 1,
         };
@@ -601,7 +601,7 @@ mod tests {
              skipped 1 line that was not a pointer\n"
         );
         assert_eq!(
-            render_pointers_text(&history_io::Pointers::default()),
+            render_pointers_text(&history_io::HistoryPointers::default()),
             "no pointers\n"
         );
     }

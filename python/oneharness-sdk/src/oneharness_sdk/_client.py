@@ -648,6 +648,8 @@ class OneHarness:
         session went. A missing file reads as empty; a torn or foreign line is
         counted in ``skipped`` rather than failing the read.
         """
+        # `_call` validated the document against `history_pointers`, so the
+        # cast names what the schema already established.
         return cast(
             "HistoryPointers",
             await self._call(

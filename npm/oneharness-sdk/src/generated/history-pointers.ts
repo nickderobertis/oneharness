@@ -27,7 +27,14 @@ export interface HistoryPointers {
  * the store lives. `history_dir` / `history_project` / `history_session` are
  * spelled as the `oneharness-session` artifact `oneagentgraph` publishes, so a
  * reader already resolving that through `io::history::find_session_path`
- * resolves these unchanged. Pure: the I/O layer fills the timestamp.
+ * resolves these unchanged.
+ *
+ * Built only through [`HistoryPointer::new`] over a [`PointerSession`], and
+ * read back only through a deserialization that re-checks every invariant
+ * `new` establishes — the four session spellings compose into one file, the
+ * three identity spellings compose into one id, the version is one this
+ * reader knows — so a line that parses IS a pointer, and a foreign object that
+ * happens to carry these keys is counted as skipped rather than read as one.
  */
 export interface HistoryPointer {
   /**
@@ -35,7 +42,8 @@ export interface HistoryPointer {
    */
   harness: string;
   /**
-   * The whole configured id, e.g. `claude-code:primary`.
+   * The whole configured id, e.g. `claude-code:primary` — always `harness`
+   * with `:variant` when there is one.
    */
   harness_id: string;
   /**
@@ -43,7 +51,8 @@ export interface HistoryPointer {
    */
   history_dir: string;
   /**
-   * The session file, absolute; the same path the run report echoes.
+   * The session file, absolute; the same path the run report echoes, and
+   * always `<history_dir>/<history_project>/<history_session>.jsonl`.
    */
   history_file: string;
   /**
@@ -69,11 +78,11 @@ export interface HistoryPointer {
    */
   project: string;
   /**
-   * [`POINTER_SCHEMA_VERSION`].
+   * [`POINTER_SCHEMA_VERSION`]; a reader accepts any `1.<minor>`.
    */
   schema_version: string;
   /**
-   * RFC3339 UTC instant this harness run began.
+   * RFC 3339 UTC, when this harness run began.
    */
   started: string;
   /**

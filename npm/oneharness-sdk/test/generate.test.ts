@@ -82,25 +82,30 @@ test("a missing generated contract is reported as stale", () => {
 });
 
 test("schema generation builds into the clone-root target directory", () => {
-	// The generator names no target directory of its own: it builds wherever
-	// `.cargo/config.toml` sends every cargo invocation in this clone, so the
-	// example lands under `<clone>/target` and not under the sub-directory the
-	// generator once pinned. Both examples are removed first so that what is
+	// Neither generator names a target directory of its own: each builds
+	// wherever `.cargo/config.toml` sends every cargo invocation in this clone,
+	// so its example lands under `<clone>/target` and not under the sub-directory
+	// both once pinned. That holds for this SDK's generator and, separately, for
+	// `scripts/check-capability-surface.sh`, which runs the core example through
+	// its own `cargo run`. Every example is removed first so that what is
 	// present afterwards is this run's doing, not a prior one's: a restored CI
 	// cache or an older checkout's build can leave the legacy sub-directory
 	// standing, so its existence says nothing about where this run wrote.
-	const exampleName =
-		process.platform === "win32"
-			? "generate_sdk_schema.exe"
-			: "generate_sdk_schema";
-	const example = resolve(root, "target/debug/examples", exampleName);
-	const legacy = resolve(
-		root,
-		"target/sdk-schema-generator/debug/examples",
-		exampleName,
+	const suffix = process.platform === "win32" ? ".exe" : "";
+	const examples = ["generate_sdk_schema", "generate_core_sdk_schema"].map(
+		(name) => ({
+			built: resolve(root, "target/debug/examples", `${name}${suffix}`),
+			legacy: resolve(
+				root,
+				"target/sdk-schema-generator/debug/examples",
+				`${name}${suffix}`,
+			),
+		}),
 	);
-	rmSync(example, { force: true });
-	rmSync(legacy, { force: true });
+	for (const { built, legacy } of examples) {
+		rmSync(built, { force: true });
+		rmSync(legacy, { force: true });
+	}
 	const { CARGO_TARGET_DIR: _unset, ...env } = process.env;
 	const generated = spawnSync(
 		process.execPath,
@@ -109,11 +114,20 @@ test("schema generation builds into the clone-root target directory", () => {
 	);
 	expect(generated.status).toBe(0);
 	expect(generated.stderr).toBe("");
-	expect(existsSync(example)).toBe(true);
-	expect(existsSync(legacy)).toBe(false);
-	// A real generator invocation, so it compiles the workspace crates like the
-	// stale-contract test below and needs the same budget: what it asserts is
-	// where Cargo wrote, never how fast. bun's 5s default is under a cold
+	const surface = spawnSync("bash", ["scripts/check-capability-surface.sh"], {
+		cwd: root,
+		env,
+		encoding: "utf8",
+	});
+	expect(surface.status).toBe(0);
+	expect(surface.stderr).toBe("");
+	for (const { built, legacy } of examples) {
+		expect(existsSync(built)).toBe(true);
+		expect(existsSync(legacy)).toBe(false);
+	}
+	// Two real generator invocations, so they compile the workspace crates like
+	// the stale-contract test below and need the same budget: what they assert
+	// is where Cargo wrote, never how fast. bun's 5s default is under a cold
 	// compile on a busy host.
 }, 120_000);
 

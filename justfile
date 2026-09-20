@@ -94,7 +94,6 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-e2e-matrix.sh >/dev/null
     @bash scripts/check-e2e-matrix-test.sh >/dev/null
     @bash scripts/check-capability-surface.sh >/dev/null
-    @bash scripts/check-capability-surface-test.sh >/dev/null
     @bash scripts/check-sdk-coverage.sh >/dev/null
     @bash scripts/check-sdk-coverage-test.sh >/dev/null
     @bash scripts/check-lf-contracts.sh >/dev/null

@@ -25,6 +25,7 @@ use uuid::{Uuid, Variant};
 
 use crate::domain::events::{ActionEvent, ToolCallStatus};
 use crate::domain::fallback::RunWork;
+use crate::domain::harness::HarnessIdentity;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{attempted_failure, unclassified_failure, RunResult, Status};
 use crate::domain::signals::{FailureKind, Usage};
@@ -1668,9 +1669,10 @@ pub struct HistoryPointerError(String);
 /// Built only through [`HistoryPointer::new`] over a [`PointerSession`], and
 /// read back only through a deserialization that re-checks every invariant
 /// `new` establishes — the four session spellings compose into one file, the
-/// three identity spellings compose into one id, the version is one this
-/// reader knows — so a line that parses IS a pointer, and a foreign object that
-/// happens to carry these keys is counted as skipped rather than read as one.
+/// two identity spellings are the parsed [`HarnessIdentity`]'s own, the version
+/// is one this reader knows — so a line that parses IS a pointer, and a foreign
+/// object that happens to carry these keys is counted as skipped rather than
+/// read as one.
 /// The fields are read through accessors for the same reason: a Rust caller
 /// gets a line from one of those two doors, never assembles or edits one.
 // `remote = "Self"` is how the derived deserializer becomes the inherent
@@ -1706,7 +1708,14 @@ pub struct HistoryPointer {
     variant: Option<String>,
     /// The whole configured id, e.g. `claude-code:primary` — always `harness`
     /// with `:variant` when there is one.
-    harness_id: String,
+    // The identity value type, not its text: parsing is its only constructor,
+    // so a base that names no harness or a variant outside
+    // `VARIANT_NAME_PATTERN` (a `:` inside it, which would re-split on the next
+    // read) cannot be held here at all. `harness` and `variant` above are the
+    // contract's two spellings of the same value, held equal to it by
+    // `checked`. Its schema is the string the SDKs already read it as.
+    #[schemars(with = "String")]
+    harness_id: HarnessIdentity,
     /// RFC 3339 UTC, when this harness run began.
     started: UtcInstant,
     /// The session's validated labels, omitted when empty.
@@ -1849,7 +1858,7 @@ impl HistoryPointer {
     /// The whole configured id, e.g. `claude-code:primary`.
     #[must_use]
     pub fn harness_id(&self) -> &str {
-        &self.harness_id
+        self.harness_id.as_str()
     }
 
     /// When this harness run began.
@@ -1865,19 +1874,16 @@ impl HistoryPointer {
     }
 
     /// One pointer line for the harness run `history_id`, begun at `started`,
-    /// under a session. The composed `harness_id` is split into its base and
-    /// variant exactly as a history record splits it, and refused when it is
-    /// not one — an empty base, or a `:` with nothing after it — so a line
-    /// this constructs is one the reader admits.
+    /// under a session. The identity's base and variant are the ones
+    /// [`HarnessIdentity`] parsed — the same grammar every other identity in
+    /// the crate is held to — so a line this constructs is one the reader
+    /// admits.
     pub fn new(
         session: &PointerSession,
         history_id: HistoryId,
-        harness_id: &str,
+        harness_id: &HarnessIdentity,
         started: UtcInstant,
     ) -> Result<Self, HistoryPointerError> {
-        let (harness, variant) = harness_id
-            .split_once(':')
-            .map_or((harness_id, None), |(base, variant)| (base, Some(variant)));
         HistoryPointer {
             schema_version: POINTER_SCHEMA_VERSION.to_string(),
             history_id,
@@ -1887,9 +1893,9 @@ impl HistoryPointer {
             history_file: session.history_file.clone(),
             name: session.name.clone(),
             project: session.project.clone(),
-            harness: harness.to_string(),
-            variant: variant.map(str::to_string),
-            harness_id: harness_id.to_string(),
+            harness: harness_id.base().to_string(),
+            variant: harness_id.variant().map(str::to_string),
+            harness_id: harness_id.clone(),
             started,
             labels: session.labels.clone(),
         }
@@ -1912,17 +1918,15 @@ impl HistoryPointer {
                 self.schema_version
             )));
         }
-        if self.harness.is_empty() || self.harness.contains(':') {
-            return Err(refuse(format!("harness `{}`", self.harness)));
-        }
-        let composed = match &self.variant {
-            Some(variant) if !variant.is_empty() => format!("{}:{variant}", self.harness),
-            Some(_) => return Err(refuse("an empty variant".to_string())),
-            None => self.harness.clone(),
-        };
-        if self.harness_id != composed {
+        // `harness_id` is already a parsed identity; the two spellings beside
+        // it must be exactly its base and its variant.
+        if self.harness != self.harness_id.base()
+            || self.variant.as_deref() != self.harness_id.variant()
+        {
             return Err(refuse(format!(
-                "harness_id `{}` is not `{composed}`",
+                "harness `{}` / variant `{}` do not spell harness_id `{}`",
+                self.harness,
+                self.variant.as_deref().unwrap_or(""),
                 self.harness_id
             )));
         }
@@ -3178,6 +3182,10 @@ mod tests {
         "2026-01-01T00:00:00Z".parse().unwrap()
     }
 
+    fn identity(text: &str) -> HarnessIdentity {
+        text.parse().unwrap()
+    }
+
     #[cfg(unix)]
     #[test]
     fn pointer_session_reads_the_slug_and_stem_off_the_file_and_refuses_a_stray_path() {
@@ -3209,7 +3217,7 @@ mod tests {
         let bare = HistoryPointer::new(
             &pointer_session(),
             pointer_id(),
-            "claude-code",
+            &identity("claude-code"),
             pointer_started(),
         )
         .unwrap();
@@ -3240,7 +3248,7 @@ mod tests {
         let variant = HistoryPointer::new(
             &session,
             pointer_id(),
-            "claude-code:primary",
+            &identity("claude-code:primary"),
             pointer_started(),
         )
         .unwrap();
@@ -3252,9 +3260,18 @@ mod tests {
         assert_eq!(wire["labels"]["graph"], "release");
         let back: HistoryPointer = serde_json::from_value(wire).unwrap();
         assert_eq!(back, variant);
-        for bad in ["", "codex:", ":primary"] {
+        // The identity the constructor takes is already parsed, so what a
+        // pointer can name is exactly what `HarnessIdentity` admits — no
+        // separator inside a variant, no unknown base.
+        for bad in [
+            "",
+            "codex:",
+            ":primary",
+            "claude-code:primary:extra",
+            "not-a-harness",
+        ] {
             assert!(
-                HistoryPointer::new(&session, pointer_id(), bad, pointer_started()).is_err(),
+                bad.parse::<HarnessIdentity>().is_err(),
                 "`{bad}` is not a harness id"
             );
         }
@@ -3267,7 +3284,7 @@ mod tests {
             HistoryPointer::new(
                 &pointer_session(),
                 pointer_id(),
-                "claude-code:primary",
+                &identity("claude-code:primary"),
                 pointer_started(),
             )
             .unwrap(),
@@ -3282,9 +3299,12 @@ mod tests {
             ("schema_version", serde_json::json!("2.0")),
             ("schema_version", serde_json::json!("1")),
             ("harness_id", serde_json::json!("claude-code")),
+            ("harness_id", serde_json::json!("claude-code:primary:extra")),
+            ("harness_id", serde_json::json!("not-a-harness:primary")),
             ("harness", serde_json::json!("codex")),
             ("harness", serde_json::json!("")),
             ("variant", serde_json::json!("")),
+            ("variant", serde_json::json!("primary:extra")),
             ("history_project", serde_json::json!("other-proj")),
             ("history_session", serde_json::json!("other-session")),
             ("history_dir", serde_json::json!("/elsewhere")),

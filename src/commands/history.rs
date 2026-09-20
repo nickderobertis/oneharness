@@ -589,7 +589,7 @@ mod tests {
             pointers: vec![HistoryPointer::new(
                 &session,
                 id,
-                "claude-code:primary",
+                &"claude-code:primary".parse().unwrap(),
                 "2026-01-01T00:00:00Z".parse().unwrap(),
             )
             .unwrap()],

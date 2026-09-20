@@ -16250,7 +16250,7 @@ fn documented_history_pointer_line_tracks_the_wire_contract() {
         HistoryPointer::new(
             &session,
             "0192b2a0-0000-7000-8000-000000000001".parse().unwrap(),
-            "claude-code:primary",
+            &"claude-code:primary".parse().unwrap(),
             "2026-01-01T00:00:00Z".parse().unwrap(),
         )
         .unwrap(),

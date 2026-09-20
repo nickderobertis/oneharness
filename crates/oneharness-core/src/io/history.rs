@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use fs2::FileExt;
 
+use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
     HistoryRunRecord, PointerSession,
@@ -127,14 +128,22 @@ impl HistoryWriter {
     pub fn begin_harness_run(&self, harness_id: &str) -> HistoryId {
         let run_id = self.begin_run();
         if let Some(pointer_file) = &self.pointer_file {
+            let invalid = |error: &dyn std::fmt::Display| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+            };
             let written = self.pointer_session().and_then(|session| {
+                // The selected id is a registry id with a configured variant,
+                // so this parses; a text that does not is not an id a run
+                // could have selected, and is said rather than written.
+                let harness_id: HarnessIdentity =
+                    harness_id.parse().map_err(|error| invalid(&error))?;
                 let pointer = HistoryPointer::new(
                     &session,
                     run_id,
-                    harness_id,
+                    &harness_id,
                     UtcInstant::from_epoch(now_epoch_secs()),
                 )
-                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+                .map_err(|error| invalid(&error))?;
                 append_pointer_line(pointer_file, &pointer)
             });
             if let Err(err) = written {

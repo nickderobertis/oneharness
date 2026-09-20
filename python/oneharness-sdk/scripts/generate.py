@@ -33,6 +33,7 @@ INPUT_ROOTS = (
     "interrupt_options",
     "history_clear_options",
     "history_migrate_options",
+    "history_pointers_options",
 )
 
 # The input roots that become a public TypedDict, and its name. `history_lookup`
@@ -53,6 +54,7 @@ TYPED_DICTS = (
     ("InterruptOptions", "interrupt_options"),
     ("HistoryClearOptions", "history_clear_options"),
     ("HistoryMigrateOptions", "history_migrate_options"),
+    ("HistoryPointersOptions", "history_pointers_options"),
 )
 
 # Output contracts the client returns. Each is a validated JSON document rather
@@ -74,6 +76,7 @@ OUTPUT_ALIASES = (
     "InterruptResponse",
     "HistoryClearReport",
     "HistoryMigrateReport",
+    "HistoryPointers",
 )
 
 
@@ -232,8 +235,12 @@ def _tail(text: str) -> list[str]:
     ]
 
 
-def _schema_bundle() -> dict:
+def _schema_bundle() -> dict[str, Any]:
     """Return the Rust contract bundle, or exit with a bounded diagnostic.
+
+    `Any` because the bundle is JSON Schema: an open, recursive shape whose
+    roots are whatever Rust declares, which is exactly what this script exists
+    to learn rather than to type ahead of time.
 
     `check_output` raises on a failed build, and an uncaught `CalledProcessError`
     prints a Python traceback through this script's own frames — a stack trace
@@ -276,7 +283,7 @@ def _schema_bundle() -> dict:
             f"       See it in full with: {' '.join(argv)}"
         ) from None
     try:
-        bundle = json.loads(completed.stdout)
+        bundle: dict[str, Any] = json.loads(completed.stdout)
     except json.JSONDecodeError as error:
         raise SystemExit(
             "python-sdk-generate: the schema generator succeeded but did not emit JSON "

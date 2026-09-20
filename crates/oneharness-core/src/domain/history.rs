@@ -14,6 +14,7 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -24,9 +25,11 @@ use uuid::{Uuid, Variant};
 
 use crate::domain::events::{ActionEvent, ToolCallStatus};
 use crate::domain::fallback::RunWork;
+use crate::domain::harness::HarnessIdentity;
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::{attempted_failure, unclassified_failure, RunResult, Status};
 use crate::domain::signals::{FailureKind, Usage};
+use crate::domain::usage::UtcInstant;
 
 /// Bumped when the history record shape changes in a way a consumer must notice.
 /// Independent of [`crate::domain::report::SCHEMA_VERSION`] — the history file and
@@ -1636,6 +1639,333 @@ pub enum HistoryStreamEnvelope {
     Event { line: HistoryEventLine },
 }
 
+/// The version of the [`HistoryPointer`] line. Its own contract, on its own
+/// cadence: the pointer names a session, and says nothing about the record
+/// shape inside it, so a record bump never moves this. A reader accepts any
+/// `1.<minor>` line, since a minor only ever adds a field.
+pub const POINTER_SCHEMA_VERSION: &str = "1.0";
+
+/// The file extension of every session log, which a pointer's `history_file`
+/// ends in. The I/O layer names the file with it; the pointer checks it.
+pub const SESSION_FILE_EXT: &str = "jsonl";
+
+/// Why a line is not a [`HistoryPointer`]: the text names the invariant that
+/// failed, flattened like every other external string this module quotes back.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+#[error("not a history pointer: {0}")]
+pub struct HistoryPointerError(String);
+
+/// One line of a run's **pointer file**: where one harness run's history went.
+///
+/// A consumer that starts many `oneharness` processes (or in-process runs) names
+/// one file, and every run with history on appends one of these per harness run
+/// it begins — so "which sessions did this run launch, and where are they" is a
+/// read of that one small file rather than a scan of the whole store, wherever
+/// the store lives. `history_dir` / `history_project` / `history_session` are
+/// spelled as the `oneharness-session` artifact `oneagentgraph` publishes, so a
+/// reader already resolving that through `io::history::find_session_path`
+/// resolves these unchanged.
+///
+/// Built only through [`HistoryPointer::new`] over a [`PointerSession`], and
+/// read back only through a deserialization that re-checks every invariant
+/// `new` establishes — the four session spellings compose into one file, the
+/// two identity spellings are the parsed [`HarnessIdentity`]'s own, the version
+/// is one this reader knows — so a line that parses IS a pointer, and a foreign
+/// object that happens to carry these keys is counted as skipped rather than
+/// read as one.
+/// The fields are read through accessors for the same reason: a Rust caller
+/// gets a line from one of those two doors, never assembles or edits one.
+// `remote = "Self"` is how the derived deserializer becomes the inherent
+// `HistoryPointer::deserialize` the checking `Deserialize` impl below wraps,
+// with one field list rather than a mirror of it; the derived serializer is
+// wrapped the same way, unchanged. A plain comment, because a doc comment here
+// is also the SDKs' generated description.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(remote = "Self")]
+pub struct HistoryPointer {
+    /// [`POINTER_SCHEMA_VERSION`]; a reader accepts any `1.<minor>`.
+    schema_version: String,
+    /// The history id of the record this harness run will close with — the
+    /// exact id `history show <history-id>` resolves.
+    history_id: HistoryId,
+    /// The store the session is under, absolute.
+    history_dir: String,
+    /// The project slug — the session file's parent directory name.
+    history_project: String,
+    /// The session id — the session file's stem.
+    history_session: String,
+    /// The session file, absolute; the same path the run report echoes, and
+    /// always `<history_dir>/<history_project>/<history_session>.jsonl`.
+    history_file: String,
+    /// The session's human-meaningful name (see [`session_name`]).
+    name: String,
+    /// The project directory the run operates in, canonical.
+    project: String,
+    /// The harness id's base, e.g. `claude-code`.
+    harness: String,
+    /// The variant, omitted for a bare harness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    variant: Option<String>,
+    /// The whole configured id, e.g. `claude-code:primary` — always `harness`
+    /// with `:variant` when there is one.
+    // The identity value type, not its text: parsing is its only constructor,
+    // so a base that names no harness or a variant outside
+    // `VARIANT_NAME_PATTERN` (a `:` inside it, which would re-split on the next
+    // read) cannot be held here at all. `harness` and `variant` above are the
+    // contract's two spellings of the same value, held equal to it by
+    // `checked`. Its schema is the string the SDKs already read it as.
+    #[schemars(with = "String")]
+    harness_id: HarnessIdentity,
+    /// RFC 3339 UTC, when this harness run began.
+    started: UtcInstant,
+    /// The session's validated labels, omitted when empty.
+    #[serde(default, skip_serializing_if = "HistoryLabels::is_empty")]
+    labels: HistoryLabels,
+}
+
+/// Everything a session knows about itself that every pointer line repeats,
+/// built once per session by the writer and stamped per harness run. The
+/// project slug and session id are read off the session file rather than
+/// supplied beside it, so the four spellings cannot disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointerSession {
+    history_dir: String,
+    history_project: String,
+    history_session: String,
+    history_file: String,
+    name: String,
+    project: String,
+    labels: HistoryLabels,
+}
+
+impl PointerSession {
+    /// A session whose file is `history_file`, under the store `history_dir`.
+    /// Both must be absolute, and the file must sit exactly one project
+    /// directory below the store with the session-log extension — which is
+    /// where the writer always puts it, so this refuses only a caller that
+    /// hands in a path it did not get from the writer.
+    pub fn new(
+        history_dir: &Path,
+        history_file: &Path,
+        name: &str,
+        project: &str,
+        labels: HistoryLabels,
+    ) -> Result<Self, HistoryPointerError> {
+        let refuse = |what: &str| HistoryPointerError(what.to_string());
+        if !history_dir.is_absolute() || !history_file.is_absolute() {
+            return Err(refuse("the store and the session file must be absolute"));
+        }
+        if !Path::new(project).is_absolute() {
+            return Err(refuse("the project directory must be absolute"));
+        }
+        if name.is_empty() {
+            return Err(refuse("the session name is empty"));
+        }
+        let session = history_file
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .ok_or_else(|| refuse("the session file has no stem"))?;
+        if history_file.extension().and_then(|ext| ext.to_str()) != Some(SESSION_FILE_EXT) {
+            return Err(refuse("the session file is not a session log"));
+        }
+        let project_dir = history_file
+            .parent()
+            .ok_or_else(|| refuse("the session file has no project directory"))?;
+        let slug = project_dir
+            .file_name()
+            .and_then(|slug| slug.to_str())
+            .filter(|slug| !slug.is_empty())
+            .ok_or_else(|| refuse("the session file's project directory has no name"))?;
+        if project_dir.parent() != Some(history_dir) {
+            return Err(refuse(
+                "the session file is not one project directory below the store",
+            ));
+        }
+        Ok(PointerSession {
+            history_dir: history_dir.display().to_string(),
+            history_project: slug.to_string(),
+            history_session: session.to_string(),
+            history_file: history_file.display().to_string(),
+            name: name.to_string(),
+            project: project.to_string(),
+            labels,
+        })
+    }
+}
+
+impl HistoryPointer {
+    /// [`POINTER_SCHEMA_VERSION`] as written; a `1.<minor>` this reader knows.
+    #[must_use]
+    pub fn schema_version(&self) -> &str {
+        &self.schema_version
+    }
+
+    /// The history id of the record this harness run closes with.
+    #[must_use]
+    pub fn history_id(&self) -> HistoryId {
+        self.history_id
+    }
+
+    /// The store the session is under, absolute.
+    #[must_use]
+    pub fn history_dir(&self) -> &str {
+        &self.history_dir
+    }
+
+    /// The project slug — the session file's parent directory name.
+    #[must_use]
+    pub fn history_project(&self) -> &str {
+        &self.history_project
+    }
+
+    /// The session id — the session file's stem.
+    #[must_use]
+    pub fn history_session(&self) -> &str {
+        &self.history_session
+    }
+
+    /// The session file, absolute; the same path the run report echoes.
+    #[must_use]
+    pub fn history_file(&self) -> &str {
+        &self.history_file
+    }
+
+    /// The session's human-meaningful name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The project directory the run operates in, canonical.
+    #[must_use]
+    pub fn project(&self) -> &str {
+        &self.project
+    }
+
+    /// The harness id's base, e.g. `claude-code`.
+    #[must_use]
+    pub fn harness(&self) -> &str {
+        &self.harness
+    }
+
+    /// The variant, `None` for a bare harness.
+    #[must_use]
+    pub fn variant(&self) -> Option<&str> {
+        self.variant.as_deref()
+    }
+
+    /// The whole configured id, e.g. `claude-code:primary`.
+    #[must_use]
+    pub fn harness_id(&self) -> &str {
+        self.harness_id.as_str()
+    }
+
+    /// When this harness run began.
+    #[must_use]
+    pub fn started(&self) -> &UtcInstant {
+        &self.started
+    }
+
+    /// The session's validated labels (empty when none).
+    #[must_use]
+    pub fn labels(&self) -> &HistoryLabels {
+        &self.labels
+    }
+
+    /// One pointer line for the harness run `history_id`, begun at `started`,
+    /// under a session. The identity's base and variant are the ones
+    /// [`HarnessIdentity`] parsed — the same grammar every other identity in
+    /// the crate is held to — so a line this constructs is one the reader
+    /// admits.
+    pub fn new(
+        session: &PointerSession,
+        history_id: HistoryId,
+        harness_id: &HarnessIdentity,
+        started: UtcInstant,
+    ) -> Result<Self, HistoryPointerError> {
+        HistoryPointer {
+            schema_version: POINTER_SCHEMA_VERSION.to_string(),
+            history_id,
+            history_dir: session.history_dir.clone(),
+            history_project: session.history_project.clone(),
+            history_session: session.history_session.clone(),
+            history_file: session.history_file.clone(),
+            name: session.name.clone(),
+            project: session.project.clone(),
+            harness: harness_id.base().to_string(),
+            variant: harness_id.variant().map(str::to_string),
+            harness_id: harness_id.clone(),
+            started,
+            labels: session.labels.clone(),
+        }
+        .checked()
+    }
+
+    /// Every invariant a line must hold to be a pointer — the version is one
+    /// this reader knows, the identity spellings compose, the four session
+    /// spellings name one session file — applied to what [`new`](Self::new)
+    /// assembled and to a line read back off disk alike.
+    fn checked(self) -> Result<Self, HistoryPointerError> {
+        let refuse = |what: String| HistoryPointerError(what);
+        let (major, minor) = self
+            .schema_version
+            .split_once('.')
+            .ok_or_else(|| refuse(format!("schema_version `{}`", self.schema_version)))?;
+        if major != "1" || minor.is_empty() || !minor.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(refuse(format!(
+                "schema_version `{}` is not a 1.x pointer",
+                self.schema_version
+            )));
+        }
+        // `harness_id` is already a parsed identity; the two spellings beside
+        // it must be exactly its base and its variant.
+        if self.harness != self.harness_id.base()
+            || self.variant.as_deref() != self.harness_id.variant()
+        {
+            return Err(refuse(format!(
+                "harness `{}` / variant `{}` do not spell harness_id `{}`",
+                self.harness,
+                self.variant.as_deref().unwrap_or(""),
+                self.harness_id
+            )));
+        }
+        let session = PointerSession::new(
+            Path::new(&self.history_dir),
+            Path::new(&self.history_file),
+            &self.name,
+            &self.project,
+            self.labels.clone(),
+        )?;
+        if session.history_project != self.history_project
+            || session.history_session != self.history_session
+        {
+            return Err(refuse(format!(
+                "history_project `{}` / history_session `{}` do not name `{}`",
+                self.history_project, self.history_session, self.history_file
+            )));
+        }
+        Ok(self)
+    }
+}
+
+impl Serialize for HistoryPointer {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        HistoryPointer::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HistoryPointer {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        HistoryPointer::deserialize(deserializer)?
+            .checked()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// A filesystem-safe slug for a project directory, so history is partitioned by
 /// project. Every character outside `[A-Za-z0-9._-]` becomes `-`, runs of `-`
 /// collapse, and leading/trailing `-` are trimmed. An empty result falls back to
@@ -2831,5 +3161,180 @@ mod tests {
         assert!(serde_json::from_value::<HistoryRecord>(value.clone()).is_err());
         value["schema_version"] = Value::String(SCHEMA_VERSION.to_string());
         assert!(serde_json::from_value::<HistoryRecord>(value).is_ok());
+    }
+
+    // The pointer tests are unix-only because they spell absolute paths as
+    // `/state/…`, which Windows does not read as absolute; their helpers are
+    // gated beside them so the Windows build carries no dead code.
+    #[cfg(unix)]
+    fn pointer_session() -> PointerSession {
+        PointerSession::new(
+            Path::new("/state/history"),
+            Path::new("/state/history/home-me-proj/fix-it-20260101T000000Z-42.jsonl"),
+            "fix-it",
+            "/home/me/proj",
+            HistoryLabels::default(),
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn pointer_id() -> HistoryId {
+        "0192b2a0-0000-7000-8000-000000000001".parse().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn pointer_started() -> UtcInstant {
+        "2026-01-01T00:00:00Z".parse().unwrap()
+    }
+
+    #[cfg(unix)]
+    fn identity(text: &str) -> HarnessIdentity {
+        text.parse().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pointer_session_reads_the_slug_and_stem_off_the_file_and_refuses_a_stray_path() {
+        let session = pointer_session();
+        assert_eq!(session.history_project, "home-me-proj");
+        assert_eq!(session.history_session, "fix-it-20260101T000000Z-42");
+        let refused = |dir: &str, file: &str, name: &str, project: &str| {
+            PointerSession::new(
+                Path::new(dir),
+                Path::new(file),
+                name,
+                project,
+                HistoryLabels::default(),
+            )
+            .unwrap_err()
+            .to_string()
+        };
+        assert!(refused("state", "/state/p/s.jsonl", "n", "/p").contains("absolute"));
+        assert!(refused("/state", "/state/p/s.jsonl", "n", "p").contains("project directory"));
+        assert!(refused("/state", "/state/p/s.jsonl", "", "/p").contains("name"));
+        assert!(refused("/state", "/state/p/s.log", "n", "/p").contains("session log"));
+        assert!(refused("/state", "/elsewhere/p/s.jsonl", "n", "/p").contains("below the store"));
+        assert!(refused("/state", "/state/p/q/s.jsonl", "n", "/p").contains("below the store"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pointer_splits_the_harness_id_and_omits_what_is_empty() {
+        let bare = HistoryPointer::new(
+            &pointer_session(),
+            pointer_id(),
+            &identity("claude-code"),
+            pointer_started(),
+        )
+        .unwrap();
+        assert_eq!(bare.schema_version(), POINTER_SCHEMA_VERSION);
+        assert_eq!(bare.harness(), "claude-code");
+        assert_eq!(bare.variant(), None);
+        assert_eq!(bare.harness_id(), "claude-code");
+        let wire = serde_json::to_value(&bare).unwrap();
+        assert_eq!(wire["history_id"], "0192b2a0-0000-7000-8000-000000000001");
+        assert_eq!(wire["history_project"], "home-me-proj");
+        assert_eq!(wire["history_session"], "fix-it-20260101T000000Z-42");
+        assert_eq!(wire["started"], "2026-01-01T00:00:00Z");
+        assert!(
+            wire.get("variant").is_none(),
+            "a bare harness has no variant key"
+        );
+        assert!(
+            wire.get("labels").is_none(),
+            "empty labels stay off the wire"
+        );
+
+        let mut session = pointer_session();
+        session.labels = HistoryLabels::new(BTreeMap::from([(
+            "graph".to_string(),
+            "release".to_string(),
+        )]))
+        .unwrap();
+        let variant = HistoryPointer::new(
+            &session,
+            pointer_id(),
+            &identity("claude-code:primary"),
+            pointer_started(),
+        )
+        .unwrap();
+        assert_eq!(variant.harness(), "claude-code");
+        assert_eq!(variant.variant(), Some("primary"));
+        assert_eq!(variant.harness_id(), "claude-code:primary");
+        let wire = serde_json::to_value(&variant).unwrap();
+        assert_eq!(wire["variant"], "primary");
+        assert_eq!(wire["labels"]["graph"], "release");
+        let back: HistoryPointer = serde_json::from_value(wire).unwrap();
+        assert_eq!(back, variant);
+        // The identity the constructor takes is already parsed, so what a
+        // pointer can name is exactly what `HarnessIdentity` admits — no
+        // separator inside a variant, no unknown base.
+        for bad in [
+            "",
+            "codex:",
+            ":primary",
+            "claude-code:primary:extra",
+            "not-a-harness",
+        ] {
+            assert!(
+                bad.parse::<HarnessIdentity>().is_err(),
+                "`{bad}` is not a harness id"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_line_whose_spellings_disagree_is_not_a_pointer() {
+        let good = serde_json::to_value(
+            HistoryPointer::new(
+                &pointer_session(),
+                pointer_id(),
+                &identity("claude-code:primary"),
+                pointer_started(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(serde_json::from_value::<HistoryPointer>(good.clone()).is_ok());
+        // A later minor still reads; a foreign major does not.
+        let mut minor = good.clone();
+        minor["schema_version"] = Value::String("1.7".to_string());
+        assert!(serde_json::from_value::<HistoryPointer>(minor).is_ok());
+        for (key, value) in [
+            ("schema_version", serde_json::json!("2.0")),
+            ("schema_version", serde_json::json!("1")),
+            ("harness_id", serde_json::json!("claude-code")),
+            ("harness_id", serde_json::json!("claude-code:primary:extra")),
+            ("harness_id", serde_json::json!("not-a-harness:primary")),
+            ("harness", serde_json::json!("codex")),
+            ("harness", serde_json::json!("")),
+            ("variant", serde_json::json!("")),
+            ("variant", serde_json::json!("primary:extra")),
+            ("history_project", serde_json::json!("other-proj")),
+            ("history_session", serde_json::json!("other-session")),
+            ("history_dir", serde_json::json!("/elsewhere")),
+            (
+                "history_file",
+                serde_json::json!("/state/history/home-me-proj/fix.txt"),
+            ),
+            ("project", serde_json::json!("relative/proj")),
+            ("name", serde_json::json!("")),
+            ("started", serde_json::json!("2026-01-01T00:00:00-04:00")),
+            ("history_id", serde_json::json!("not-a-uuid")),
+        ] {
+            let mut bad = good.clone();
+            bad[key] = value.clone();
+            assert!(
+                serde_json::from_value::<HistoryPointer>(bad).is_err(),
+                "{key} = {value} should not read as a pointer"
+            );
+        }
+        // Dropping the variant alone leaves `harness_id` naming one, and the
+        // two must agree.
+        let mut dropped = good;
+        dropped.as_object_mut().unwrap().remove("variant");
+        assert!(serde_json::from_value::<HistoryPointer>(dropped).is_err());
     }
 }

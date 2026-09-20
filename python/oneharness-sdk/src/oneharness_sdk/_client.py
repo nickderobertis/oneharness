@@ -29,6 +29,8 @@ from ._generated_types import (
     HistoryLookup,
     HistoryMigrateOptions,
     HistoryMigrateReport,
+    HistoryPointers,
+    HistoryPointersOptions,
     HistoryRecord,
     HistoryStreamEnvelope,
     HistoryWatchOptions,
@@ -200,9 +202,11 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
             # recoverable half, because a refusal the manifest meant to resolve
             # is a message the caller can act on and the reverse is not.
             resolution = binding.get("unless_resolution", "refuse")
-            if resolution != "prefer" and _states_a_choice(
-                binding, options.get(binding["option"])
-            ) and _states_a_choice(bound[unless], options.get(unless)):
+            if (
+                resolution != "prefer"
+                and _states_a_choice(binding, options.get(binding["option"]))
+                and _states_a_choice(bound[unless], options.get(unless))
+            ):
                 raise _refuse_contradiction(method, binding["option"], unless)
             continue
         value = options.get(binding["option"])
@@ -634,6 +638,25 @@ class OneHarness:
                 options or {},
                 "history_migrate_options",
                 "history_migrate_report",
+            ),
+        )
+
+    async def history_pointers(self, options: HistoryPointersOptions) -> HistoryPointers:
+        """Read a run's pointer file (``history_pointer_file`` on ``run``).
+
+        One line per harness run begun with history on, naming where its
+        session went. A missing file reads as empty; a torn or foreign line is
+        counted in ``skipped`` rather than failing the read.
+        """
+        # `_call` validated the document against `history_pointers`, so the
+        # cast names what the schema already established.
+        return cast(
+            "HistoryPointers",
+            await self._call(
+                "historyPointers",
+                options,
+                "history_pointers_options",
+                "history_pointers",
             ),
         )
 

@@ -270,6 +270,14 @@ pub struct RunOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// The run's pointer file: with history on, every harness run this run
+    /// begins appends one `HistoryPointer` line here saying where its session
+    /// went (see `historyPointers()`), the store itself staying where
+    /// `historyDir` puts it. An empty path is refused rather than read as
+    /// unset — leave the option out to name no file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "NonEmptyString")]
+    pub history_pointer_file: Option<NonEmptyString>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "HistoryLabels")]
     pub history_labels: Option<HistoryLabels>,
@@ -765,6 +773,16 @@ pub struct HistoryClearOptions {
     pub no_config: Option<bool>,
 }
 
+/// Options accepted by the language SDKs' `historyPointers()`: the pointer
+/// file a run was given as `historyPointerFile`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryPointersOptions")]
+pub struct HistoryPointersOptions {
+    /// The pointer file to read. A file that does not exist reads as empty.
+    pub file: NonEmptyString,
+}
+
 /// Options accepted by the language SDKs' `historyMigrate()`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -934,6 +952,7 @@ mod tests {
             history: None,
             history_name: None,
             history_dir: None,
+            history_pointer_file: None,
             history_labels: None,
             env: None,
             bins: None,

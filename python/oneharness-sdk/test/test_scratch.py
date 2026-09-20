@@ -22,7 +22,7 @@ class ScratchTests(unittest.TestCase):
         taken: list[Path] = []
 
         class Failing(unittest.TestCase):
-            def runTest(self) -> None:  # noqa: N802 - unittest's own spelling
+            def runTest(self) -> None:  # unittest's own spelling
                 taken.append(scratch(self, "cleanup-probe"))
                 self.fail("the failing test this stands in for")
 

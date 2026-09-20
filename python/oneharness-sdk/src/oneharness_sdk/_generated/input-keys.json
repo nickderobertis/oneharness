@@ -50,6 +50,9 @@
     "history_dir": "historyDir",
     "no_config": "noConfig"
   },
+  "history_pointers_options": {
+    "file": "file"
+  },
   "history_watch_options": {
     "after": "after",
     "all_projects": "allProjects",
@@ -94,6 +97,7 @@
     "history_dir": "historyDir",
     "history_labels": "historyLabels",
     "history_name": "historyName",
+    "history_pointer_file": "historyPointerFile",
     "max_parallel": "maxParallel",
     "mock_harnesses": "mockHarnesses",
     "mock_rules": "mockRules",

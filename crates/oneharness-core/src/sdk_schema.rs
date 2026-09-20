@@ -19,8 +19,9 @@ use crate::domain::history::{requires_provider_finish, run_failed, versions_from
 use crate::domain::report::{attempted_failure, RunReport, RunStreamEnvelope, Status};
 use crate::domain::sdk::{
     schema_for_serialize, ConfigOptions, DetectOptions, GateOptions, HistoryClearOptions,
-    HistoryListOptions, HistoryLookup, HistoryMigrateOptions, HistoryWatchOptions, InitOptions,
-    InterruptOptions, MockOptions, RunOptions, SyncOptions, UsageOptions,
+    HistoryListOptions, HistoryLookup, HistoryMigrateOptions, HistoryPointersOptions,
+    HistoryWatchOptions, InitOptions, InterruptOptions, MockOptions, RunOptions, SyncOptions,
+    UsageOptions,
 };
 use crate::domain::signals::FailureKind;
 use crate::io::history::SessionSummary;
@@ -66,6 +67,11 @@ pub struct SdkSchemaBundle {
     pub history_clear_report: Schema,
     pub history_migrate_options: Schema,
     pub history_migrate_report: Schema,
+    pub history_pointers_options: Schema,
+    /// What `history pointers` reads back: the run's pointer lines, each a
+    /// `HistoryPointer` — the one declaration of that line, so the SDK types
+    /// and the CLI's output are generated from the same source.
+    pub history_pointers: Schema,
 }
 
 /// Generate the shared SDK schema roots from their Rust contract types.
@@ -101,6 +107,8 @@ pub fn bundle() -> SdkSchemaBundle {
         history_clear_report: schema_for_serialize::<crate::io::history::HistoryClearReport>(),
         history_migrate_options: schema_for!(HistoryMigrateOptions),
         history_migrate_report: schema_for_serialize::<crate::io::history::HistoryMigrateReport>(),
+        history_pointers_options: schema_for!(HistoryPointersOptions),
+        history_pointers: schema_for_serialize::<crate::io::history::HistoryPointers>(),
     }
 }
 

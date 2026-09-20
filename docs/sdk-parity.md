@@ -151,6 +151,7 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `historyWatch` | `oneharness history watch` | `oneharness_core::io::history::HistoryWatcher` | yes | yes | `history_stream_envelope` (one per line) |
 | `historyClear` | `oneharness history clear` | `oneharness_core::io::history::remove_sessions` | yes | yes | `history_clear_report` |
 | `historyMigrate` | `oneharness history migrate` | `oneharness_core::io::history::migrate` | yes | yes | `history_migrate_report` |
+| `historyPointers` | `oneharness history pointers` | `oneharness_core::io::history::read_pointers` | yes | yes | `history_pointers` |
 
 ### Flags, per capability
 
@@ -207,6 +208,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--history` | `history` | `--flag` when true (refused beside `noHistory`) |
 | `--no-history` | `noHistory` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
+| `--history-pointer-file` | `historyPointerFile` | `--flag VALUE` |
 | `--history-name` | `historyName` | `--flag VALUE` |
 | `--history-label` | `historyLabels` | `--flag KEY=VALUE` per entry |
 | _(after `--`)_ | `passthrough` | appended verbatim |
@@ -260,6 +262,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--history` | `history` | `--flag` when true (refused beside `noHistory`) |
 | `--no-history` | `noHistory` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
+| `--history-pointer-file` | `historyPointerFile` | `--flag VALUE` |
 | `--history-name` | `historyName` | `--flag VALUE` |
 | `--history-label` | `historyLabels` | `--flag KEY=VALUE` per entry |
 | _(after `--`)_ | `passthrough` | appended verbatim |
@@ -427,6 +430,14 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
+#### `historyPointers` — `oneharness history pointers`
+
+| CLI flag | SDK option | How it is sent |
+| --- | --- | --- |
+| `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
+| _(positional)_ | `file` | positional argument |
+
 ### Output contracts, field by field
 
 One row per document the CLI prints. **Fields** are the ones on the document
@@ -447,7 +458,7 @@ caller rather than being dropped.
 | `run_stream_envelope` | `event`, `report`, `type` | 89 | yes | yes | yes |
 | `list_report` | `harnesses`, `schema_version` | 36 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
-| `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `system`, `timeout` | 40 | yes | yes | yes |
+| `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `system`, `timeout` | 41 | yes | yes | yes |
 | `sync_report` | `check`, `config_files`, `results`, `schema_version` | 9 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 33 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |
@@ -456,5 +467,6 @@ caller rather than being dropped.
 | `history_stream_envelope` | `line`, `record`, `type` | 47 | yes | yes | yes |
 | `history_clear_report` | `dry_run`, `files`, `hint`, `removed`, `would_remove` | 5 | yes | yes | yes |
 | `history_migrate_report` | `files`, `files_processed` | 6 | yes | yes | yes |
+| `history_pointers` | `pointers`, `skipped` | 15 | yes | yes | yes |
 
 <!-- END GENERATED: capability-tables -->

@@ -59,6 +59,7 @@ export interface ConfigReport {
   history_labels: {
     [k: string]: Field3;
   };
+  history_pointer_file: Field3;
   hooks: Field10;
   max_parallel: Field8;
   mode: Field4;

@@ -16,7 +16,7 @@ use oneharness_core::domain::report::{RunStreamEnvelope, Status};
 use oneharness_core::domain::session;
 use oneharness_core::domain::signals::FailureKind;
 use oneharness_core::domain::usage::{UsageProbe, UsageSupport};
-use oneharness_core::io::history::HistoryWriter;
+use oneharness_core::io::history::{read_pointers, HistoryWriter};
 use oneharness_core::io::scratch::ScratchDir;
 use serde_json::Value;
 
@@ -204,6 +204,7 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
     "ONEHARNESS_REQUIRE_AVAILABLE",
     "ONEHARNESS_HISTORY",
     "ONEHARNESS_HISTORY_DIR",
+    "ONEHARNESS_HISTORY_POINTER_FILE",
     "ONEHARNESS_HISTORY_LABELS",
     "ONEHARNESS_STREAM",
 ];
@@ -16130,6 +16131,1094 @@ fn concurrent_processes_append_complete_history_index_lines() {
     assert_eq!(ids.len(), 8);
 }
 
+/// Hold one pointer line to the session the store actually wrote: every
+/// field the line carries is read back off the record and the store layout.
+fn assert_pointer_names_the_session(pointer: &Value, report: &Value, record: &Value) {
+    let history_file = report["history_file"].as_str().expect("history_file");
+    assert_eq!(pointer["schema_version"], "1.0");
+    assert_eq!(pointer["history_id"], record["history_id"]);
+    assert_eq!(pointer["history_file"], history_file);
+    let file = Path::new(history_file);
+    assert_eq!(
+        pointer["history_session"],
+        file.file_stem().unwrap().to_string_lossy().as_ref()
+    );
+    assert_eq!(pointer["history_session"], record["session"]);
+    assert_eq!(
+        pointer["history_project"],
+        file.parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        pointer["history_dir"],
+        file.parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .display()
+            .to_string()
+    );
+    // The three spellings resolve the session file the way the
+    // `oneharness-session` artifact is resolved.
+    assert_eq!(
+        oneharness_core::io::history::find_session_path(
+            Path::new(pointer["history_dir"].as_str().unwrap()),
+            Some(pointer["history_project"].as_str().unwrap()),
+            pointer["history_session"].as_str().unwrap(),
+        )
+        .expect("the store reads")
+        .expect("the pointer resolves the session file")
+        .display()
+        .to_string(),
+        history_file
+    );
+    assert_eq!(pointer["name"], record["name"]);
+    assert_eq!(pointer["project"], record["project"]);
+    assert_eq!(pointer["harness"], record["harness"]);
+    assert_eq!(pointer["harness_id"], record["harness_id"]);
+    assert_eq!(
+        pointer.get("variant").cloned(),
+        record.get("variant").cloned().filter(|v| !v.is_null())
+    );
+    // Both omit an empty label set on the wire.
+    let labels_of = |value: &Value| {
+        value
+            .get("labels")
+            .cloned()
+            .filter(|labels| !labels.is_null())
+            .unwrap_or_else(|| serde_json::json!({}))
+    };
+    assert_eq!(labels_of(pointer), labels_of(record));
+    let started = pointer["started"].as_str().expect("started");
+    assert!(
+        started <= record["timestamp"].as_str().unwrap(),
+        "the pointer is written before the record closes: {started} vs {}",
+        record["timestamp"]
+    );
+}
+
+/// The field names the README's pointer table documents: every `` `name` ``
+/// in the first column, one row possibly naming several. The table ends at the
+/// first line that is not a row. `lines` strips a CRLF checkout's `\r` too,
+/// where a blank-line split would never match and the "table" would run on
+/// into every other table in the README — which is how the Windows leg read 22
+/// rows from a 7-row table.
+fn documented_pointer_fields(readme: &str) -> std::collections::BTreeSet<String> {
+    readme
+        .split("**Pointer file.**")
+        .nth(1)
+        .and_then(|rest| rest.split("| field | meaning |").nth(1))
+        .expect("README.md documents the pointer line's fields in a table")
+        .lines()
+        .skip(1)
+        .take_while(|line| line.starts_with('|'))
+        .filter(|line| line.starts_with("| `"))
+        .flat_map(|line| {
+            line.trim_start_matches("| ")
+                .split(" |")
+                .next()
+                .unwrap_or_default()
+                .split(['/', ','])
+                .map(|cell| cell.trim().trim_matches('`').to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The README's pointer table is where a consumer learns the line's fields, and
+/// it is prose the generators never touch — so it is held to the type itself:
+/// every field the wire carries has a row, no row names a field that is gone,
+/// and the version the prose states is the one the writer stamps.
+#[test]
+fn documented_history_pointer_line_tracks_the_wire_contract() {
+    use oneharness_core::domain::history::{
+        HistoryPointer, PointerSession, POINTER_SCHEMA_VERSION,
+    };
+    let readme = include_str!("../README.md");
+    let documented = documented_pointer_fields(readme);
+    assert_eq!(
+        documented_pointer_fields(&readme.replace('\n', "\r\n")),
+        documented,
+        "the table must read the same from a CRLF checkout"
+    );
+    // A fully populated line, so every optional field is on the wire.
+    let session = PointerSession::new(
+        &std::env::temp_dir().join("store"),
+        &std::env::temp_dir()
+            .join("store")
+            .join("proj")
+            .join("s.jsonl"),
+        "s",
+        &std::env::temp_dir().display().to_string(),
+        HistoryLabels::new(std::collections::BTreeMap::from([(
+            "k".to_string(),
+            "v".to_string(),
+        )]))
+        .unwrap(),
+    )
+    .unwrap();
+    let line = serde_json::to_value(
+        HistoryPointer::new(
+            &session,
+            "0192b2a0-0000-7000-8000-000000000001".parse().unwrap(),
+            &"claude-code:primary".parse().unwrap(),
+            "2026-01-01T00:00:00Z".parse().unwrap(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let carried: std::collections::BTreeSet<String> = line
+        .as_object()
+        .unwrap()
+        .keys()
+        .filter(|key| key.as_str() != "schema_version")
+        .cloned()
+        .collect();
+    assert_eq!(
+        documented, carried,
+        "README.md's pointer table must name exactly the line's fields"
+    );
+    let version = format!("(`schema_version` `{POINTER_SCHEMA_VERSION}`");
+    assert!(
+        readme.contains(&version),
+        "README.md must state the pointer version as `{version}`"
+    );
+}
+
+#[test]
+fn history_pointer_file_by_flag_names_the_session_the_store_wrote() {
+    // The consumer's question — "which sessions did this run launch, and where
+    // are they?" — answered by one small file the run appends to, read back
+    // through the library reader and through `history pointers`, and opened
+    // with `history show <history-id>`.
+    let dir = hist_dir("pointer-flag");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "Point at this run",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--history-label",
+            "graph=release",
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+
+    let read = read_pointers(&pointer_file).expect("the pointer file reads");
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 1, "one harness run, one line");
+    let pointer = serde_json::to_value(&read.pointers[0]).unwrap();
+    assert_pointer_names_the_session(&pointer, &report, &record);
+    assert_eq!(pointer["labels"]["graph"], "release");
+    assert_eq!(pointer["name"], "point-at-this-run");
+
+    // `history pointers` is the same read, as the JSON contract and as text.
+    let json = run(&["history", "pointers", &pf], &[]);
+    assert!(json.status.success());
+    let listed = json_stdout(&json);
+    assert_eq!(listed["skipped"], 0);
+    assert_eq!(listed["pointers"], serde_json::json!([pointer]));
+    let text = run_as_typed(&["history", "pointers", &pf], &[]);
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("[codex] point-at-this-run\n"), "{text}");
+    assert!(
+        text.contains(&format!(
+            "history_id: {}\n",
+            record["history_id"].as_str().unwrap()
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "file: {}\n",
+            report["history_file"].as_str().unwrap()
+        )),
+        "{text}"
+    );
+
+    // The id the line carries opens the record in the store.
+    let shown = run(
+        &[
+            "history",
+            "show",
+            record["history_id"].as_str().unwrap(),
+            "--history-dir",
+            &ds,
+            "--all-projects",
+        ],
+        &[],
+    );
+    assert!(
+        shown.status.success(),
+        "{}",
+        String::from_utf8_lossy(&shown.stderr)
+    );
+    assert_eq!(json_stdout(&shown)[0]["history_id"], record["history_id"]);
+
+    // A file nobody wrote reads as empty, on both surfaces.
+    let missing = dir.with_extension("never.jsonl");
+    let empty = read_pointers(&missing).unwrap();
+    assert!(empty.pointers.is_empty() && empty.skipped == 0);
+    let empty = run(
+        &["history", "pointers", &missing.display().to_string()],
+        &[],
+    );
+    assert!(empty.status.success());
+    assert_eq!(
+        json_stdout(&empty),
+        serde_json::json!({"pointers": [], "skipped": 0})
+    );
+
+    // An empty FILE never reaches the reader: it is refused at the CLI
+    // boundary by name (exit 2, nothing on stdout), under the same non-empty
+    // rule the SDKs hold their `file` to — never a path that does not exist
+    // reported as an empty pointer file.
+    let refused = run(&["history", "pointers", ""], &[]);
+    assert_eq!(refused.status.code(), Some(2));
+    assert!(refused.stdout.is_empty(), "nothing is reported on stdout");
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains("invalid value '' for '<FILE>'")
+            && stderr.contains("must be a non-empty string"),
+        "the refusal names the operand and the rule: {stderr}"
+    );
+
+    // A foreign line skips even when its bytes are not text, and a blank line
+    // is neither read nor skipped: the run's own line still comes back, on
+    // both surfaces, with one skip.
+    let mut foreign = std::fs::read(&pointer_file).unwrap();
+    foreign.extend_from_slice(b"\n\xff\xfe not even text\n   \n");
+    std::fs::write(&pointer_file, &foreign).unwrap();
+    let read = read_pointers(&pointer_file).expect("a non-UTF-8 line is skipped, not refused");
+    assert_eq!(read.skipped, 1);
+    assert_eq!(
+        serde_json::to_value(&read.pointers).unwrap(),
+        serde_json::json!([pointer])
+    );
+    let listed = run(&["history", "pointers", &pf], &[]);
+    assert!(listed.status.success());
+    let listed = json_stdout(&listed);
+    assert_eq!(listed["skipped"], 1);
+    assert_eq!(listed["pointers"], serde_json::json!([pointer]));
+
+    // A path that exists but is not a readable file (the store directory
+    // itself) is a loud usage error naming the path, never an empty read.
+    let unreadable = run(&["history", "pointers", &dir.display().to_string()], &[]);
+    assert_eq!(unreadable.status.code(), Some(2));
+    assert!(
+        unreadable.stdout.is_empty(),
+        "nothing is reported on stdout"
+    );
+    let stderr = String::from_utf8_lossy(&unreadable.stderr);
+    assert!(
+        stderr.contains("could not access history under")
+            && stderr.contains(&dir.display().to_string()),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn history_pointer_file_layers_flag_over_environment_over_config_and_empty_is_unset() {
+    // The setting resolves like every other: CLI > ONEHARNESS_HISTORY_POINTER_FILE
+    // > project file > user file, with an empty environment value unset.
+    let dir = hist_dir("pointer-layers");
+    let ds = dir.display().to_string();
+    let user_pf = dir.with_extension("user.jsonl");
+    let project_pf = dir.with_extension("project.jsonl");
+    let env_pf = dir.with_extension("env.jsonl");
+    let flag_pf = dir.with_extension("flag.jsonl");
+    let fixture = ConfigFixture::new(
+        "history-pointer-layers",
+        &format!(
+            "history_pointer_file = \"{}\"\n",
+            project_pf.display().to_string().replace('\\', "\\\\")
+        ),
+        &format!(
+            "history = true\nhistory_dir = \"{}\"\nhistory_pointer_file = \"{}\"\n",
+            ds.replace('\\', "\\\\"),
+            user_pf.display().to_string().replace('\\', "\\\\")
+        ),
+    );
+    let base_args = [
+        "run",
+        "--cwd",
+        &fixture.cwd(),
+        "--harness",
+        "codex",
+        "--bin",
+        &bin_override("codex"),
+        "--prompt",
+        "layered pointer",
+        "--bypass",
+        "--compact",
+    ];
+    let count = |path: &Path| read_pointers(path).unwrap().pointers.len();
+
+    // Project beats user.
+    let out = run_with_config(
+        &base_args,
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+        &fixture.user_config(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!((count(&project_pf), count(&user_pf)), (1, 0));
+    let report = json_stdout(&out);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    let pointer = serde_json::to_value(&read_pointers(&project_pf).unwrap().pointers[0]).unwrap();
+    assert_pointer_names_the_session(&pointer, &report, &record);
+    assert!(pointer.get("labels").is_none(), "no labels, no key");
+
+    // Environment beats the files.
+    let out = run_with_config(
+        &base_args,
+        &[
+            ("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY),
+            (
+                "ONEHARNESS_HISTORY_POINTER_FILE",
+                &env_pf.display().to_string(),
+            ),
+        ],
+        &fixture.user_config(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!((count(&env_pf), count(&project_pf)), (1, 1));
+
+    // The flag beats the environment.
+    let mut flagged = base_args.to_vec();
+    let flag_arg = flag_pf.display().to_string();
+    flagged.extend(["--history-pointer-file", &flag_arg]);
+    let out = run_with_config(
+        &flagged,
+        &[
+            ("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY),
+            (
+                "ONEHARNESS_HISTORY_POINTER_FILE",
+                &env_pf.display().to_string(),
+            ),
+        ],
+        &fixture.user_config(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        (count(&flag_pf), count(&env_pf), count(&project_pf)),
+        (1, 1, 1)
+    );
+
+    // An empty environment value is unset, so the project file's value stands.
+    let out = run_with_config(
+        &base_args,
+        &[
+            ("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY),
+            ("ONEHARNESS_HISTORY_POINTER_FILE", ""),
+        ],
+        &fixture.user_config(),
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!((count(&project_pf), count(&env_pf)), (2, 1));
+}
+
+#[test]
+fn a_fallback_chain_writes_one_pointer_line_per_candidate_begun() {
+    // A chain of three identities: the first refuses (rate limit), the second
+    // serves, the third is never begun. Two lines, sharing the session, each
+    // naming its own candidate; nothing for the candidate the chain never reached.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(HISTORY_CODEX_TELEMETRY).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex:primary", "codex:alternate", "codex:spare"]
+        run_mode = "fallback"
+
+        [harness.codex.variant.primary]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "API Error: 429 rate limit exceeded" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+
+        [harness.codex.variant.spare]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("pointer-chain", &project, "");
+    let dir = hist_dir("pointer-chain");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "chain pointer",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "codex:alternate");
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per candidate begun");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+    }
+    assert_eq!(read.pointers[0].harness_id(), "codex:primary");
+    assert_eq!(read.pointers[0].variant(), Some("primary"));
+    assert_eq!(read.pointers[1].harness_id(), "codex:alternate");
+    assert_eq!(read.pointers[0].harness(), "codex");
+    assert_eq!(
+        read.pointers[0].history_session(),
+        read.pointers[1].history_session()
+    );
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+}
+
+#[test]
+fn a_streamed_fallback_chain_writes_one_pointer_line_per_candidate_begun() {
+    // The same chain under `--stream`: the sequential driver mints per
+    // candidate as it reaches it, so the streamed report's session holds the
+    // same two records and the file the same two lines — the loser's first.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(HISTORY_CODEX_TELEMETRY).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex:primary", "codex:alternate", "codex:spare"]
+        run_mode = "fallback"
+
+        [harness.codex.variant.primary]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "API Error: 429 rate limit exceeded" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+
+        [harness.codex.variant.spare]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("pointer-stream-chain", &project, "");
+    let dir = hist_dir("pointer-stream-chain");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "streamed chain pointer",
+            "--cwd",
+            &fx.cwd(),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let envelopes = stream_envelopes(&output);
+    let report = envelopes.last().expect("a terminal envelope");
+    assert_eq!(report["type"], "result");
+    let report = &report["report"];
+    assert_eq!(report["fallback"]["ran"], "codex:alternate");
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per candidate begun");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, report, record);
+    }
+    assert_eq!(read.pointers[0].harness_id(), "codex:primary");
+    assert_eq!(read.pointers[1].harness_id(), "codex:alternate");
+    assert_eq!(
+        read.pointers[0].history_session(),
+        read.pointers[1].history_session()
+    );
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+}
+
+#[test]
+fn a_parallel_plan_writes_one_pointer_line_per_entry_including_a_skipped_row() {
+    // Two harnesses in `parallel`, one of them not installed: the plan holds
+    // that one as a `skipped` row before anything spawns, and it still closes
+    // as its own record — so it gets its line too, and the file names every
+    // record the session holds, in plan order.
+    let dir = hist_dir("pointer-parallel");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "codex",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "parallel pointer",
+            "--bin",
+            &bin_override("codex"),
+            "--bin",
+            "claude-code=/no/such/oneharness-binary-xyz",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "ok");
+    assert_eq!(report["results"][1]["status"], "skipped");
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1]["status"], "skipped");
+
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per plan entry");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+    }
+    assert_eq!(read.pointers[0].harness_id(), "codex");
+    assert_eq!(read.pointers[1].harness_id(), "claude-code");
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+}
+
+#[test]
+fn a_batch_writes_one_pointer_line_per_prompt_on_both_strategies() {
+    // A same-prefix batch fans one harness over N prompts: N harness runs, N
+    // records, N lines sharing the session — on the `speed` wave and on the
+    // fork path, where the warm-up's line goes out before its session id
+    // exists and the fan-out's lines before the forks spawn.
+    let dir = hist_dir("pointer-batch");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--batch-strategy",
+            "speed",
+            "--prompt",
+            "batch one",
+            "--prompt",
+            "batch two",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["batch"]["prompt_count"], 2);
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 2);
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 2, "one line per prompt");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+    }
+    assert_ne!(read.pointers[0].history_id(), read.pointers[1].history_id());
+
+    // The fork path: claude-code's `min-tokens` batch warms prompt[0] and forks
+    // the rest, and the session name (from the warm-up prompt) is shared by
+    // every line, as is the session file.
+    let forked_file = dir.with_extension("forked.jsonl");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--batch-strategy",
+            "min-tokens",
+            "--prompt",
+            "warm the prefix",
+            "--prompt",
+            "q1",
+            "--prompt",
+            "q2",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &forked_file.display().to_string(),
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"ok","session_id":"SID-XYZ"}"#)],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    assert_eq!(report["batch"]["forked"], true);
+    let records = materialized_history(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(records.len(), 3);
+    let read = read_pointers(&forked_file).unwrap();
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 3, "the warm-up and both forks");
+    for (pointer, record) in read.pointers.iter().zip(&records) {
+        let pointer = serde_json::to_value(pointer).unwrap();
+        assert_pointer_names_the_session(&pointer, &report, record);
+        assert_eq!(pointer["name"], "warm-the-prefix");
+    }
+    let ids: std::collections::BTreeSet<String> = read
+        .pointers
+        .iter()
+        .map(|pointer| pointer.history_id().to_string())
+        .collect();
+    assert_eq!(ids.len(), 3);
+}
+
+#[test]
+fn concurrent_runs_append_intact_pointer_lines_to_one_file() {
+    // The file is shared by every process a consumer's run starts at once, so
+    // each line goes out as one append: eight runs, eight whole lines.
+    let mock_profile = mock_profile_redirect();
+    let dir = hist_dir("pointer-concurrent");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let mut children = Vec::new();
+    for index in 0..8 {
+        children.push(
+            Command::new(oneharness_bin())
+                .env("ONEHARNESS_NO_CONFIG", "1")
+                .env("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)
+                .args([
+                    "run",
+                    "--harness",
+                    "codex",
+                    "--bin",
+                    &bin_override("codex"),
+                    "--prompt",
+                    &format!("process-{index}"),
+                    "--history",
+                    "--history-dir",
+                    &ds,
+                    "--history-pointer-file",
+                    &pf,
+                    "--bypass",
+                    "--compact",
+                    "--env",
+                    mock_profile.as_str(),
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let read = read_pointers(&pointer_file).unwrap();
+    assert_eq!(read.skipped, 0, "no line was torn or interleaved");
+    assert_eq!(read.pointers.len(), 8);
+    let ids: std::collections::BTreeSet<String> = read
+        .pointers
+        .iter()
+        .map(|pointer| pointer.history_id().to_string())
+        .collect();
+    assert_eq!(ids.len(), 8);
+    let names: std::collections::BTreeSet<&str> =
+        read.pointers.iter().map(|pointer| pointer.name()).collect();
+    assert_eq!(names.len(), 8, "every run's own session: {names:?}");
+}
+
+#[test]
+fn a_run_with_history_off_or_printing_its_command_writes_no_pointer_line() {
+    let dir = hist_dir("pointer-off");
+    let ds = dir.display().to_string();
+    let pointer_file = dir.with_extension("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let base = [
+        "run",
+        "--harness",
+        "codex",
+        "--prompt",
+        "quiet",
+        "--bin",
+        &bin_override("codex"),
+        "--history-dir",
+        &ds,
+        "--history-pointer-file",
+        &pf,
+        "--bypass",
+        "--compact",
+    ];
+    // History off (the default): the pointer file is named but nothing is
+    // recorded, so nothing is pointed at — and that is not an error.
+    let mut off = base.to_vec();
+    off.push("--no-history");
+    let output = run(&off, &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)]);
+    assert!(output.status.success());
+    assert!(json_stdout(&output)["history_file"].is_null());
+    assert!(!pointer_file.exists(), "no history, no pointer");
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("pointer"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // A dry run records nothing either.
+    let mut dry = base.to_vec();
+    dry.extend(["--history", "--print-command"]);
+    let output = run(&dry, &[]);
+    assert!(output.status.success());
+    assert!(!pointer_file.exists(), "a dry run points at nothing");
+}
+
+#[test]
+fn an_unwritable_pointer_path_warns_and_the_run_still_records() {
+    // Best-effort like the store: a pointer file that cannot be created is one
+    // warning on stderr, and the run completes with its report and its record.
+    let dir = hist_dir("pointer-unwritable");
+    let ds = dir.display().to_string();
+    // A path under a regular file cannot be created.
+    let blocker = dir.with_extension("blocker");
+    std::fs::write(&blocker, b"").unwrap();
+    let pointer_file = blocker.join("pointers.jsonl");
+    let pf = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "blocked pointer",
+            "--bin",
+            &bin_override("codex"),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--bypass",
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+    );
+    assert!(output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("could not append to history pointer file") && stderr.contains(&pf),
+        "{stderr}"
+    );
+    let report = json_stdout(&output);
+    let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
+    assert_eq!(record["status"], "ok");
+    assert!(!pointer_file.exists());
+
+    // Once per run, however many appends fail: a chain whose first candidate
+    // refuses begins two harness runs, so two appends fail against the same
+    // unwritable path — and the diagnostic is still one line.
+    let mock = mock_bin().display().to_string();
+    let served = serde_json::to_string(HISTORY_CODEX_TELEMETRY).unwrap();
+    let project = format!(
+        r#"
+        harnesses = ["codex:primary", "codex:alternate"]
+        run_mode = "fallback"
+
+        [harness.codex.variant.primary]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "1", MOCK_STDERR = "API Error: 429 rate limit exceeded" }}
+
+        [harness.codex.variant.alternate]
+        bin = '{mock}'
+        env = {{ MOCK_EXIT = "0", MOCK_STDOUT = {served} }}
+        "#
+    );
+    let fx = ConfigFixture::new("pointer-unwritable-chain", &project, "");
+    let output = run_with_config(
+        &[
+            "run",
+            "--prompt",
+            "blocked pointer twice",
+            "--cwd",
+            &fx.cwd(),
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-pointer-file",
+            &pf,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["fallback"]["ran"], "codex:alternate", "{report}");
+    assert_eq!(
+        materialized_history(Path::new(report["history_file"].as_str().unwrap())).len(),
+        2,
+        "both candidates were begun and recorded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr
+            .matches("could not append to history pointer file")
+            .count(),
+        1,
+        "two failed appends, one warning:\n{stderr}"
+    );
+    assert!(!pointer_file.exists());
+}
+
+/// Hold a controlled run's pointer file to its report: the one line names the
+/// candidate that served, and the session file the report echoes. The store's
+/// own record is compared too when the mechanism's transcript closed one.
+/// Unix-only beside the two controlled-turn journeys that use it, like every
+/// other control test here: the control channel is a Unix socket.
+#[cfg(unix)]
+fn assert_controlled_run_pointed(pointer_file: &Path, report: &Value, harness_id: &str) {
+    let read = read_pointers(pointer_file).expect("the pointer file reads");
+    assert_eq!(read.skipped, 0);
+    assert_eq!(read.pointers.len(), 1, "one controlled turn, one line");
+    let pointer = serde_json::to_value(&read.pointers[0]).unwrap();
+    assert_eq!(pointer["harness_id"], harness_id);
+    let history_file = report["history_file"].as_str().expect("history was on");
+    assert_eq!(pointer["history_file"], history_file);
+    // The line is written before the turn, so it exists whether or not the
+    // mechanism's transcript then closed a record (the mock's may not).
+    if Path::new(history_file).exists() {
+        if let Some(record) = materialized_history(Path::new(history_file)).first() {
+            assert_pointer_names_the_session(&pointer, report, record);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_dialogue_controlled_turn_writes_its_pointer_line_before_the_harness_answers() {
+    // The single-candidate dialogue branch drives the harness over its protocol
+    // rather than through the parallel runner, so it mints the id on its own
+    // path — and the line has to be there before the turn is driven: the mock
+    // copies the pointer file into its transcript as the turn starts.
+    let store = control_store_dir("pointer-dialogue");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("pointer-dialogue-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let history = hist_dir("pointer-dialogue");
+    let history_arg = history.display().to_string();
+    let pointer_file = store.join("pointers.jsonl");
+    let pointer_arg = pointer_file.display().to_string();
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--control",
+            "--session",
+            "pointed",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("claude-code"),
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--history-pointer-file",
+            &pointer_arg,
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_TURN_LOG",
+                store.join("turn.log").display().to_string().as_str(),
+            ),
+            ("MOCK_CAT_FILE", &pointer_arg),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_controlled_run_pointed(&pointer_file, &report, "claude-code");
+    // The transcript the harness produced as it started already held the line.
+    let seen: Vec<Value> = report["results"][0]["stdout"]
+        .as_str()
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|line: &Value| line.get("history_id").is_some())
+        .collect();
+    assert_eq!(
+        seen.len(),
+        1,
+        "the line was written before the turn: {report}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_http_controlled_turn_writes_its_pointer_line() {
+    // The server-submitted branch never spawns the harness CLI at all, so its
+    // pointer comes from the id it mints before submitting the turn.
+    let store = control_store_dir("pointer-http");
+    let store_arg = store.display().to_string();
+    let cwd = control_store_dir("pointer-http-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let history = hist_dir("pointer-http");
+    let history_arg = history.display().to_string();
+    let pointer_file = store.join("pointers.jsonl");
+    let pointer_arg = pointer_file.display().to_string();
+    let pool = store.join("pool");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "opencode",
+            "--control",
+            "--session",
+            "pointed-http",
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--mode",
+            "bypass",
+            "--prompt",
+            "keep working",
+            "--bin",
+            &bin_override("opencode"),
+            "--history",
+            "--history-dir",
+            &history_arg,
+            "--history-pointer-file",
+            &pointer_arg,
+            "--timeout",
+            "30",
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_HTTP_CONTROL_LOG",
+                store.join("server.log").display().to_string().as_str(),
+            ),
+            // A turn the server finishes on its own, so no interrupt is needed.
+            ("MOCK_HTTP_CONTROL_FAULT", "slow-turn"),
+            ("XDG_STATE_HOME", pool.display().to_string().as_str()),
+        ],
+    );
+    let report = json_stdout(&output);
+    wait_for_pooled_server_to_exit(&pool);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(report["results"][0]["status"], "ok", "{report}");
+    assert_controlled_run_pointed(&pointer_file, &report, "opencode");
+}
+
 #[test]
 fn history_records_a_failed_run_and_shows_by_id() {
     let dir = hist_dir("failed");
@@ -31051,6 +32140,8 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
 fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
     let claude = bin_override("claude-code");
     let cursor = bin_override("cursor");
+    // A pointer file nobody wrote: `history pointers` reads it as empty.
+    let pointer_file = format!("{history_dir}/pointers.jsonl");
     let spelled = |path: &[&'static str]| -> Vec<String> {
         let extra: Vec<&str> = match path {
             ["run"] => vec![
@@ -31071,6 +32162,7 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
             ["history", "list" | "clear" | "migrate"] => vec!["--history-dir", history_dir],
             ["history", "show"] => vec!["--last", "--history-dir", history_dir],
+            ["history", "pointers"] => vec![&pointer_file],
             other => panic!(
                 "`{}` takes --format json but has no runnable spelling in json_document_verbs; add one",
                 other.join(" ")
@@ -31106,6 +32198,7 @@ fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
             "history show",
             "history clear",
             "history migrate",
+            "history pointers",
             "usage",
             "interrupt",
         ],

@@ -7,8 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::cli::{
-    HistoryClearArgs, HistoryCommand, HistoryListArgs, HistoryMigrateArgs, HistoryShowArgs,
-    HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
+    HistoryClearArgs, HistoryCommand, HistoryListArgs, HistoryMigrateArgs, HistoryPointersArgs,
+    HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
 };
 use crate::commands::{print_report, printable};
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
@@ -28,7 +28,16 @@ pub fn run(args: &crate::cli::HistoryArgs) -> Result<i32, OneharnessError> {
         HistoryCommand::Watch(a) => watch(a),
         HistoryCommand::Clear(a) => clear(a),
         HistoryCommand::Migrate(a) => migrate(a),
+        HistoryCommand::Pointers(a) => pointers(a),
     }
+}
+
+/// `history pointers <FILE>`: the typed read of a run's pointer file, the
+/// same one `io::history::read_pointers` gives a library consumer.
+fn pointers(args: &HistoryPointersArgs) -> Result<i32, OneharnessError> {
+    let read = history_io::read_pointers(&args.file)?;
+    print_report(&read, args.stdout, render_pointers_text)?;
+    Ok(EXIT_OK)
 }
 
 fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
@@ -397,6 +406,34 @@ fn plural(count: usize) -> &'static str {
     }
 }
 
+/// A human view of a pointer file: one block per begun harness run, with the
+/// id `history show` takes and the file the session is in.
+fn render_pointers_text(read: &history_io::HistoryPointers) -> String {
+    let mut out = String::new();
+    if read.pointers.is_empty() {
+        out.push_str("no pointers\n");
+    }
+    for pointer in &read.pointers {
+        out.push_str(&printable(&format!(
+            "{started}  [{harness_id}] {name}\n  history_id: {id}\n  file: {file}\n",
+            started = pointer.started(),
+            harness_id = pointer.harness_id(),
+            name = pointer.name(),
+            id = pointer.history_id(),
+            file = pointer.history_file(),
+        )));
+    }
+    if read.skipped > 0 {
+        out.push_str(&format!(
+            "skipped {} line{} that {} not a pointer\n",
+            read.skipped,
+            plural(read.skipped),
+            if read.skipped == 1 { "was" } else { "were" }
+        ));
+    }
+    out
+}
+
 /// A compact human table for `history list --format text`.
 fn render_list_text(sessions: &[SessionSummary]) -> String {
     if sessions.is_empty() {
@@ -532,6 +569,41 @@ mod tests {
         assert_eq!(
             render_clear_text(&history_io::HistoryClearReport::removed(vec![])),
             "removed 0 session files\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pointers_text_lists_each_run_and_counts_the_skipped() {
+        use oneharness_core::domain::history::{HistoryLabels, HistoryPointer, PointerSession};
+        let session = PointerSession::new(
+            Path::new("/h"),
+            Path::new("/h/p/fix-20260101T000000Z-1.jsonl"),
+            "fix",
+            "/proj",
+            HistoryLabels::default(),
+        )
+        .unwrap();
+        let id: HistoryId = "0192b2a0-0000-7000-8000-000000000001".parse().unwrap();
+        let read = history_io::HistoryPointers {
+            pointers: vec![HistoryPointer::new(
+                &session,
+                id,
+                &"claude-code:primary".parse().unwrap(),
+                "2026-01-01T00:00:00Z".parse().unwrap(),
+            )
+            .unwrap()],
+            skipped: 1,
+        };
+        assert_eq!(
+            render_pointers_text(&read),
+            "2026-01-01T00:00:00Z  [claude-code:primary] fix\n  history_id: \
+             0192b2a0-0000-7000-8000-000000000001\n  file: /h/p/fix-20260101T000000Z-1.jsonl\n\
+             skipped 1 line that was not a pointer\n"
+        );
+        assert_eq!(
+            render_pointers_text(&history_io::HistoryPointers::default()),
+            "no pointers\n"
         );
     }
 

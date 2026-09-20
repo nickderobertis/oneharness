@@ -23,6 +23,7 @@ class _RunOptionsOptional(TypedDict, total=False):
     history_dir: str
     history_labels: dict[str, str]
     history_name: str
+    history_pointer_file: str
     max_parallel: int
     mock_harnesses: Sequence[str]
     mock_rules: str
@@ -198,6 +199,14 @@ class HistoryMigrateOptions(_HistoryMigrateOptionsOptional):
     pass
 
 
+class _HistoryPointersOptionsOptional(TypedDict, total=False):
+    pass
+
+
+class HistoryPointersOptions(_HistoryPointersOptionsOptional):
+    file: str
+
+
 HistoryLookup = dict[str, Any]
 RunReport = dict[str, Any]
 RunStreamEnvelope = dict[str, Any]
@@ -212,3 +221,4 @@ UsageReport = dict[str, Any]
 InterruptResponse = dict[str, Any]
 HistoryClearReport = dict[str, Any]
 HistoryMigrateReport = dict[str, Any]
+HistoryPointers = dict[str, Any]

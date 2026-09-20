@@ -29,6 +29,8 @@ import {
 	HistoryLookupSchema,
 	HistoryMigrateOptionsSchema,
 	HistoryNotFoundError,
+	HistoryPointersOptionsSchema,
+	HistoryPointersSchema,
 	type HistoryRecord,
 	HistoryRecordSchema,
 	type HistoryRecords,
@@ -1614,6 +1616,74 @@ describe("OneHarness", () => {
 		expect(await client.historyList({ historyDir })).toHaveLength(0);
 	}, 60_000);
 
+	test("points at the history session a run wrote and reads the pointer file back", async () => {
+		// The consumer's question — which sessions did this run launch, and
+		// where — answered by one small file the run appends to, typed on both
+		// ends: `historyPointerFile` on `run()`, `historyPointers()` to read it.
+		const directory = await scratch("pointers");
+		const historyDir = resolve(directory, "history");
+		const pointerFile = resolve(directory, "run", "pointers.jsonl");
+		const client = sdk();
+		expect(await client.historyPointers({ file: pointerFile })).toEqual({
+			pointers: [],
+			skipped: 0,
+		});
+		const report = await client.run({
+			prompt: "pointer sdk",
+			harnesses: ["codex"],
+			mode: "bypass",
+			history: true,
+			historyName: "node-pointer",
+			historyDir,
+			historyPointerFile: pointerFile,
+			historyLabels: { graph: "sdk" },
+			env: { MOCK_STDOUT: historyTrace },
+			bins: { codex: mock },
+		});
+		// HistoryRecord's version-gated union is too large for TypeScript to
+		// narrow; the JSON view keeps the runtime comparison below.
+		const [record] = (await client.history({
+			session: "node-pointer",
+			historyDir,
+		})) as unknown as Array<{ history_id: string; session: string }>;
+		const read = await client.historyPointers({ file: pointerFile });
+		expect(HistoryPointersSchema.safeParse(read).success).toBe(true);
+		expect(read.skipped).toBe(0);
+		expect(read.pointers).toHaveLength(1);
+		const [pointer] = read.pointers;
+		expect(pointer?.schema_version).toBe("1.0");
+		expect(pointer?.history_id).toBe(record?.history_id);
+		expect(pointer?.history_file).toBe(report.history_file ?? "");
+		expect(pointer?.history_session).toBe(record?.session);
+		expect(pointer?.name).toBe("node-pointer");
+		expect(pointer?.harness).toBe("codex");
+		expect(pointer?.harness_id).toBe("codex");
+		expect(pointer).not.toHaveProperty("variant");
+		expect(pointer?.labels).toEqual({ graph: "sdk" });
+		expect(
+			resolve(
+				pointer?.history_dir ?? "",
+				pointer?.history_project ?? "",
+				`${pointer?.history_session}.jsonl`,
+			),
+		).toBe(report.history_file ?? "");
+		const exact = await client.history({
+			session: pointer?.history_id ?? "",
+			historyDir,
+		});
+		expect(exact[0]?.history_id).toBe(record?.history_id);
+
+		await writeFile(pointerFile, '{"schema_version":"1.0","history_id":"0192', {
+			flag: "a",
+		});
+		expect(await client.historyPointers({ file: pointerFile })).toMatchObject({
+			skipped: 1,
+		});
+		expect(HistoryPointersOptionsSchema.safeParse({ file: "" }).success).toBe(
+			false,
+		);
+	}, 30_000);
+
 	test("every option contract accepts a fully populated value", () => {
 		// One populated value per contract, so each generated validator is walked
 		// over every field it declares rather than only the handful a happy-path
@@ -1721,6 +1791,11 @@ describe("OneHarness", () => {
 					config: "/tmp/oneharness.toml",
 					noConfig: false,
 				},
+			],
+			[
+				"HistoryPointersOptions",
+				HistoryPointersOptionsSchema,
+				{ file: "/tmp/run/pointers.jsonl" },
 			],
 			[
 				"HistoryListOptions",

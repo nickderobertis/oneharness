@@ -468,6 +468,7 @@ impl From<&RunArgs> for RunRequest {
             require_available: args.require_available,
             history: toggle(args.history, args.no_history),
             history_dir: args.history_dir.clone(),
+            history_pointer_file: args.history_pointer_file.clone(),
             history_name: args.history_name.clone(),
             history_label: args.history_label.clone(),
             passthrough: args.passthrough.clone(),
@@ -782,6 +783,8 @@ mod tests {
             "--history",
             "--history-dir",
             "/tmp/hist",
+            "--history-pointer-file",
+            "/tmp/run/pointers.jsonl",
             "--history-name",
             "run-name",
             "--history-label",
@@ -856,6 +859,10 @@ mod tests {
         assert_eq!(
             request.history_dir.as_deref(),
             Some(std::path::Path::new("/tmp/hist"))
+        );
+        assert_eq!(
+            request.history_pointer_file.as_deref(),
+            Some(std::path::Path::new("/tmp/run/pointers.jsonl"))
         );
         assert_eq!(request.history_name.as_deref(), Some("run-name"));
         assert_eq!(request.history_label, ["k=v"]);

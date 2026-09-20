@@ -102,6 +102,7 @@ POPULATED: dict[str, Any] = {
     "event": "{}",
     "events": True,
     "exclude": ["goose"],
+    "file": "/nowhere/pointers.jsonl",
     "force": True,
     "fork": True,
     "global": False,
@@ -111,6 +112,7 @@ POPULATED: dict[str, Any] = {
     "historyDir": "/nowhere/history",
     "historyLabels": {"run": "sdk"},
     "historyName": "session",
+    "historyPointerFile": "/nowhere/pointers.jsonl",
     "input": "do this instead",
     "labels": {"run": "sdk"},
     "last": False,
@@ -852,6 +854,64 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(cleared["dry_run"], False)
         self.assertEqual(cleared["removed"], 1)
         self.assertEqual(await client.history_list({"history_dir": history_dir}), [])
+
+    async def test_history_pointer_file_names_the_session_a_run_wrote(self) -> None:
+        """Point a run at a file, then read the pointer back through the SDK."""
+        directory = scratch(self, "pointers")
+        history_dir = str(directory / "history")
+        pointer_file = str(directory / "run" / "pointers.jsonl")
+        client = self.client()
+        self.assertEqual(
+            await client.history_pointers({"file": pointer_file}),
+            {"pointers": [], "skipped": 0},
+        )
+        report = await client.run(
+            {
+                "prompt": "pointer from python",
+                "harnesses": ["codex"],
+                "mode": "bypass",
+                "history": True,
+                "history_name": "python-pointer",
+                "history_dir": history_dir,
+                "history_pointer_file": pointer_file,
+                "history_labels": {"graph": "sdk"},
+                "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                "bins": {"codex": str(MOCK)},
+            }
+        )
+        [record] = await client.history({"session": "python-pointer", "history_dir": history_dir})
+        read = await client.history_pointers({"file": pointer_file})
+        self.assertEqual(read["skipped"], 0)
+        self.assertEqual(len(read["pointers"]), 1)
+        [pointer] = read["pointers"]
+        self.assertEqual(pointer["schema_version"], "1.0")
+        self.assertEqual(pointer["history_id"], record["history_id"])
+        self.assertEqual(pointer["history_file"], report["history_file"])
+        self.assertEqual(pointer["history_session"], record["session"])
+        self.assertEqual(pointer["name"], "python-pointer")
+        self.assertEqual(pointer["harness"], "codex")
+        self.assertEqual(pointer["harness_id"], "codex")
+        self.assertNotIn("variant", pointer)
+        self.assertEqual(pointer["labels"], {"graph": "sdk"})
+        self.assertEqual(
+            str(
+                Path(pointer["history_dir"])
+                / pointer["history_project"]
+                / f"{pointer['history_session']}.jsonl"
+            ),
+            report["history_file"],
+        )
+        [exact] = await client.history(
+            {"session": pointer["history_id"], "history_dir": history_dir}
+        )
+        self.assertEqual(exact["history_id"], record["history_id"])
+        torn = Path(pointer_file).read_text(encoding="utf-8")
+        Path(pointer_file).write_text(
+            torn + '{"schema_version":"1.0","history_id":"0192', encoding="utf-8"
+        )
+        self.assertEqual((await client.history_pointers({"file": pointer_file}))["skipped"], 1)
+        with self.assertRaises(ContractError):
+            await client.history_pointers({"file": ""})
 
     async def test_detect_accepts_the_whole_verb_not_only_a_harness_list(self) -> None:
         """Reach the rest of `detect`'s flags through the options mapping."""

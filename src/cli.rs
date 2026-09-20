@@ -2,13 +2,14 @@
 
 use std::path::PathBuf;
 
-use clap::builder::{PossibleValuesParser, TypedValueParser};
+use clap::builder::{PossibleValuesParser, StringValueParser, TypedValueParser};
 use clap::{Args, Parser, Subcommand};
 
 use oneharness_core::domain::batch::BatchStrategy;
 use oneharness_core::domain::fallback::RunMode;
 use oneharness_core::domain::mode::PermissionMode;
 use oneharness_core::domain::report::OutputFormat;
+use oneharness_core::domain::sdk::NonEmptyString;
 use oneharness_core::errors::{JsonOnlySelection, OneharnessError};
 
 /// Parse `--output-format` into the core [`OutputFormat`], keeping the
@@ -167,6 +168,16 @@ fn format_parser() -> impl TypedValueParser<Value = Format> {
         "text" => Format::Text,
         _ => Format::Json,
     })
+}
+
+/// A `FILE` operand that must name a file, held to the same boundary the SDKs'
+/// [`NonEmptyString`] holds their `file` to — one rule, so an empty operand is
+/// refused here by name (`invalid value '' for '<FILE>': must be a non-empty
+/// string`) rather than reaching a reader as a path that merely does not exist.
+fn non_empty_path_parser() -> impl TypedValueParser<Value = PathBuf> {
+    StringValueParser::new()
+        .try_map(NonEmptyString::try_from)
+        .map(|text| PathBuf::from(text.into_string()))
 }
 
 const ABOUT: &str = "One CLI across many agentic coding harnesses. Readable by default; \
@@ -407,6 +418,23 @@ pub enum HistoryCommand {
     /// 1.0 line format and rebuild the history index; reports each file rewritten
     /// (`--format json` for the contract).
     Migrate(HistoryMigrateArgs),
+    /// Read a run's pointer file (`run --history-pointer-file`): one line per
+    /// harness run begun with history on, naming its session's store, project,
+    /// session id and file. Open one with `oneharness history show <history-id>`.
+    /// A missing file reads as empty; a torn or foreign line is counted as
+    /// skipped, never an error.
+    Pointers(HistoryPointersArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct HistoryPointersArgs {
+    /// The pointer file to read.
+    #[arg(value_name = "FILE", value_parser = non_empty_path_parser())]
+    pub file: PathBuf,
+
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
 }
 
 #[derive(Args, Debug)]
@@ -923,6 +951,14 @@ pub struct RunArgs {
     /// history; also `history_dir` in config or ONEHARNESS_HISTORY_DIR).
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
+
+    /// Append one line per harness run this run begins (with history on) to
+    /// this file, saying where its history session went — so a consumer that
+    /// starts many runs finds their sessions by reading one small file. Also
+    /// `history_pointer_file` in config or ONEHARNESS_HISTORY_POINTER_FILE.
+    /// Read it back with `oneharness history pointers <FILE>`.
+    #[arg(long, value_name = "FILE")]
+    pub history_pointer_file: Option<PathBuf>,
 
     /// Human-meaningful label for this session, shown by `oneharness history list`
     /// and resolvable by `oneharness history show`. Defaults to a slug of the

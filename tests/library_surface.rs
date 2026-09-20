@@ -666,6 +666,94 @@ fn a_legacy_history_store_migrates_in_process() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// capability: historyPointers
+#[test]
+fn a_consumer_reads_a_runs_pointer_file_through_the_crate() {
+    // The reader `onepipeline` takes instead of parsing JSONL of its own: a
+    // missing file is empty, a torn tail is counted and never fails the read,
+    // and the lines come back in the order the runs were begun.
+    use oneharness_core::domain::history::HistoryLabels;
+    use oneharness_core::io::history::{self, HistoryWriter};
+
+    let dir = scratch("history-pointers");
+    let project = scratch("history-pointers-project");
+    let pointer_file = dir.join("pointers.jsonl");
+    let empty = history::read_pointers(&pointer_file).expect("a missing file reads");
+    assert!(empty.pointers.is_empty() && empty.skipped == 0);
+
+    let writer = HistoryWriter::open(&dir, &project, "pointed", HistoryLabels::default())
+        .expect("the store opens")
+        .with_pointer_file(Some(pointer_file.clone()));
+    let first = writer.begin_harness_run(&"claude-code:primary".parse().unwrap());
+    let second = writer.begin_harness_run(&"codex".parse().unwrap());
+    // A writer interrupted mid-line leaves a torn tail.
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&pointer_file)
+        .expect("the pointer file exists")
+        .write_all(b"{\"schema_version\":\"1.0\",\"history_id\":\"0192")
+        .expect("the tail is written");
+
+    let read = history::read_pointers(&pointer_file).expect("a torn tail does not fail the read");
+    assert_eq!(read.skipped, 1);
+    assert_eq!(
+        read.pointers
+            .iter()
+            .map(|pointer| pointer.history_id())
+            .collect::<Vec<_>>(),
+        vec![first, second]
+    );
+
+    // A tail that parses on its own is still torn while its newline is
+    // missing: a line is a record once its terminator has landed.
+    let partial = b"{\"schema_version\":\"1.0\",\"history_id\":\"0192";
+    let mut whole = std::fs::read(&pointer_file).expect("the pointer file reads");
+    whole.truncate(whole.len() - partial.len());
+    whole.extend_from_slice(&serde_json::to_vec(&read.pointers[1]).expect("a pointer serializes"));
+    std::fs::write(&pointer_file, &whole).expect("the tail is rewritten");
+    let read =
+        history::read_pointers(&pointer_file).expect("an unterminated tail does not fail the read");
+    assert_eq!(
+        read.skipped, 1,
+        "the whole-object tail is skipped for want of its newline"
+    );
+    assert_eq!(
+        read.pointers
+            .iter()
+            .map(|pointer| pointer.history_id())
+            .collect::<Vec<_>>(),
+        vec![first, second]
+    );
+    assert_eq!(read.pointers[0].harness_id(), "claude-code:primary");
+    assert_eq!(read.pointers[0].variant(), Some("primary"));
+    assert_eq!(read.pointers[1].harness_id(), "codex");
+    assert_eq!(read.pointers[1].variant(), None);
+    assert_eq!(
+        read.pointers[0].history_file(),
+        writer.path().display().to_string()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&project);
+}
+
+// capability: historyPointers
+#[test]
+fn a_pointer_path_that_exists_but_cannot_be_read_is_an_error_not_an_empty_read() {
+    // Only a missing file reads as empty. A path that is there and is not a
+    // readable file — here a directory — is the one thing `read_pointers`
+    // refuses, naming the path, so a consumer never mistakes it for "no runs".
+    use oneharness_core::io::history;
+
+    let dir = scratch("history-pointers-unreadable");
+    let error = history::read_pointers(&dir).expect_err("a directory is not a pointer file");
+    match &error {
+        OneharnessError::HistoryIo { path, .. } => assert_eq!(path, &dir.display().to_string()),
+        other => panic!("expected HistoryIo, got {other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // capability: historyWatch
 #[test]
 fn a_consumer_follows_the_history_store_as_records_land() {

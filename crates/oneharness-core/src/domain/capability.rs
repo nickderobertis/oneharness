@@ -449,6 +449,10 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind_refuse("history", FlagKind::Switch("--history"), "noHistory"),
     bind("noHistory", FlagKind::Switch("--no-history")),
     bind("historyDir", FlagKind::Value("--history-dir")),
+    bind(
+        "historyPointerFile",
+        FlagKind::Value("--history-pointer-file"),
+    ),
     bind("historyName", FlagKind::Value("--history-name")),
     bind("historyLabels", FlagKind::KeyValue("--history-label")),
     bind("passthrough", FlagKind::Trailing),
@@ -745,6 +749,19 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
+        uncovered: &[],
+    },
+    Capability {
+        method: "historyPointers",
+        argv: &["history", "pointers"],
+        options: Some("history_pointers_options"),
+        stdout: StdoutShape::Json("history_pointers"),
+        stdin: false,
+        rust: "oneharness_core::io::history::read_pointers",
+        always: JSON_DOCUMENT,
+        // The file is the verb's one positional; it reads no config, since the
+        // pointer file is the caller's own artifact, not the store's.
+        bindings: &[bind("file", FlagKind::Positional)],
         uncovered: &[],
     },
 ];

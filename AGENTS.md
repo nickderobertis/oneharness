@@ -346,7 +346,19 @@ Use the `just` recipes; do not hand-roll equivalents.
   Its process-locked append-only `.index.jsonl` is reconciled once on startup
   (including partial-tail recovery), then followed by byte offset without repeated
   tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
-  before writing so `cwd=..` remains discoverable.
+  before writing so `cwd=..` remains discoverable. The **pointer file**
+  (`--history-pointer-file`, layered like `history_dir`) is how a consumer finds
+  a run's sessions without scanning the store. Three constraints are
+  load-bearing. `domain::history::HistoryPointer` is the line's ONE declaration
+  (the SDK types generate from it; the README table is test-pinned to it). The
+  line is written as the run's id is minted, BEFORE anything spawns, once per
+  plan entry the writer is handed — a chain candidate as it is reached, an
+  already-`skipped` row too, since every entry closes as its own record — so
+  the library path writes it exactly as the CLI does. Each line is one
+  `O_APPEND` write with no lock, so concurrent processes never interleave; read
+  it only through `io::history::read_pointers`, which skips a torn or foreign
+  line rather than failing, and a line without its newline is torn even when it
+  parses.
   <!-- llmlint: ignore-block[agents_md_durable_and_terse, no_redundant_instruction_pointers, comments_earn_their_place] Stating these load-bearing constraints here and deferring them to `docs/harness-usage.md` are the only two arrangements, and one rule in this list forbids each; they stay stated, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
   `usage` is the pre-flight verb: subscription headroom per identity, on its own
   output contract, parsers pure (`domain::usage`) and probes I/O (`io::usage`).

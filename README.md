@@ -586,6 +586,7 @@ run_mode = "parallel"           # --run-mode ("fallback", the default, or "paral
 require_available = false       # --require-available
 history = false                 # --history / --no-history (opt-in run history)
 history_dir = "~/logs/oh"       # --history-dir (default: platform state dir)
+history_pointer_file = "run/pointers.jsonl"  # --history-pointer-file (see Run history)
 allowed_tools = ["Bash(git log:*)"]  # synced into each harness's config file
 denied_tools = ["Bash(rm:*)"]        # (see `oneharness sync` below)
 
@@ -2110,6 +2111,68 @@ emitted `history_id` with `--after` resumes without duplication; repeated
 `--label` filters are ANDed. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
 non-interactively first.
+
+**Pointer file.** `history_file` reaches only the process that ran that one
+turn. A consumer that starts many runs — an orchestrator fanning out agents,
+some of them in-process library calls that spawn no `oneharness` at all — names
+one **pointer file** instead, and every harness run begun with history on
+appends one line there saying where its session went, so "which sessions did
+this run launch, and where" is a read of one small file, wherever the store
+lives. The store itself stays exactly where `history_dir` puts it. The setting
+is layered like every other one (CLI > env > project file > user file; an empty
+value is unset, as `ONEHARNESS_HISTORY_DIR` is):
+
+```bash
+oneharness run … --history --history-pointer-file run/pointers.jsonl
+ONEHARNESS_HISTORY=1 ONEHARNESS_HISTORY_POINTER_FILE=run/pointers.jsonl oneharness run …
+```
+```toml
+history_pointer_file = "run/pointers.jsonl"
+```
+
+Each line is one JSON object (`schema_version` `1.0`, its own contract) written
+at the moment the run's `history_id` is minted, **before the harness is
+spawned** — on the CLI and on the library path alike:
+
+| field | meaning |
+| --- | --- |
+| `history_id` | the run's history id — what `history show <history-id>` resolves |
+| `history_dir` / `history_project` / `history_session` | the store (absolute), the project slug, the session id — the session file's parent directory name and stem, spelled as the `oneharness-session` artifact spells them, so `<history_dir>/<history_project>/<history_session>.jsonl` is the file |
+| `history_file` | that session file, absolute — the same path the report echoes |
+| `name`, `project` | the session's name and the canonical project directory |
+| `harness`, `variant`, `harness_id` | the harness id's base, its variant (omitted for a bare harness), and the whole id |
+| `started` | RFC3339 UTC, when this harness run began |
+| `labels` | the session's validated labels, omitted when empty |
+
+One line per harness run the pipeline begins: an ordinary session writes one; a
+fallback chain writes one per candidate it tries, each sharing the session's
+fields, and a candidate the chain never reaches gets none; a parallel run or a
+batch writes one per entry — a harness whose binary is missing is `skipped` in
+the store and gets its line too, so the file names every record the session
+holds. The file is append-only
+and shared by every process a consumer starts concurrently — each line goes out
+as **one write** on a file opened for append, so lines never interleave, and a
+reader tolerates a torn final line from an interrupted writer: a line counts only
+once its newline has landed, so unterminated final bytes are skipped even when
+they parse. It is best-effort
+like the store: a pointer file that cannot be opened or written warns on stderr
+once and skips the line, never failing the run. `--no-history` (or `history =
+false` in a nearer layer) writes no line, `--print-command` writes nothing, a run
+with history on and no pointer file named writes nothing new, and a hermetic run
+(`--no-config` / `ONEHARNESS_NO_CONFIG=1`) loads no environment overrides, so it
+sees no `ONEHARNESS_HISTORY_POINTER_FILE` — the rule every `ONEHARNESS_*`
+setting already follows. Read it back typed, never by parsing the JSONL:
+
+```bash
+oneharness history pointers run/pointers.jsonl [--format json]
+oneharness history show <history-id>            # open a session from a line
+```
+
+`oneharness_core::io::history::read_pointers(path)` is the same read for a Rust
+consumer (`historyPointers()` / `history_pointers()` in the SDKs): the lines in
+file order, a missing file as empty, and a torn or foreign line counted in
+`skipped` rather than failing the read. `history watch --label key=value` on the
+store is unchanged and still the way to follow the store by label.
 
 ### Subscription headroom (`oneharness usage`)
 

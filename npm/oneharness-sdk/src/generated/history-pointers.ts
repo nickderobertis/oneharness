@@ -1,0 +1,102 @@
+/* Generated from oneharness-core. Do not edit. */
+
+/**
+ * What [`read_pointers`] read: every well-formed [`HistoryPointer`] line in
+ * file order, and how many lines were not one.
+ */
+export interface HistoryPointers {
+  /**
+   * The pointer lines, in the order they were appended.
+   */
+  pointers: HistoryPointer[];
+  /**
+   * Lines that were not one complete pointer object — a torn tail left by
+   * an interrupted writer, or a foreign line — counted rather than failing
+   * the read.
+   */
+  skipped: number;
+  [k: string]: unknown;
+}
+/**
+ * One line of a run's **pointer file**: where one harness run's history went.
+ *
+ * A consumer that starts many `oneharness` processes (or in-process runs) names
+ * one file, and every run with history on appends one of these per harness run
+ * it begins — so "which sessions did this run launch, and where are they" is a
+ * read of that one small file rather than a scan of the whole store, wherever
+ * the store lives. `history_dir` / `history_project` / `history_session` are
+ * spelled as the `oneharness-session` artifact `oneagentgraph` publishes, so a
+ * reader already resolving that through `io::history::find_session_path`
+ * resolves these unchanged.
+ *
+ * Built only through [`HistoryPointer::new`] over a [`PointerSession`], and
+ * read back only through a deserialization that re-checks every invariant
+ * `new` establishes — the four session spellings compose into one file, the
+ * two identity spellings are the parsed [`HarnessIdentity`]'s own, the version
+ * is one this reader knows — so a line that parses IS a pointer, and a foreign
+ * object that happens to carry these keys is counted as skipped rather than
+ * read as one.
+ * The fields are read through accessors for the same reason: a Rust caller
+ * gets a line from one of those two doors, never assembles or edits one.
+ */
+export interface HistoryPointer {
+  /**
+   * The harness id's base, e.g. `claude-code`.
+   */
+  harness: string;
+  /**
+   * The whole configured id, e.g. `claude-code:primary` — always `harness`
+   * with `:variant` when there is one.
+   */
+  harness_id: string;
+  /**
+   * The store the session is under, absolute.
+   */
+  history_dir: string;
+  /**
+   * The session file, absolute; the same path the run report echoes, and
+   * always `<history_dir>/<history_project>/<history_session>.jsonl`.
+   */
+  history_file: string;
+  /**
+   * The history id of the record this harness run will close with — the
+   * exact id `history show <history-id>` resolves.
+   */
+  history_id: string;
+  /**
+   * The project slug — the session file's parent directory name.
+   */
+  history_project: string;
+  /**
+   * The session id — the session file's stem.
+   */
+  history_session: string;
+  labels?: HistoryLabels | undefined;
+  /**
+   * The session's human-meaningful name (see [`session_name`]).
+   */
+  name: string;
+  /**
+   * The project directory the run operates in, canonical.
+   */
+  project: string;
+  /**
+   * [`POINTER_SCHEMA_VERSION`]; a reader accepts any `1.<minor>`.
+   */
+  schema_version: string;
+  /**
+   * RFC 3339 UTC, when this harness run began.
+   */
+  started: string;
+  /**
+   * The variant, omitted for a bare harness.
+   */
+  variant?: string | null | undefined;
+  [k: string]: unknown;
+}
+/**
+ * The session's validated labels, omitted when empty.
+ */
+export interface HistoryLabels {
+  [k: string]: string;
+}

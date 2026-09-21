@@ -32599,6 +32599,89 @@ fn compact_alone_selects_one_line_json_on_every_verb() {
     }
 }
 
+/// Whether a `Usage:` line in `stderr` names `oneharness` followed by exactly
+/// the words `usage` (`history list`, or the root's `<COMMAND>`) and then only
+/// options or arguments — never a deeper subcommand's name. clap renders
+/// the program from the invoked binary's file name, so the program is
+/// `oneharness` or, on Windows, `oneharness.exe` — both are this CLI.
+fn shows_usage(stderr: &str, usage: &str) -> bool {
+    stderr.lines().any(|line| {
+        let Some((program, tail)) = line
+            .trim_start()
+            .strip_prefix("Usage: ")
+            .and_then(|rest| rest.split_once(' '))
+        else {
+            return false;
+        };
+        let program = program.strip_suffix(".exe").unwrap_or(program);
+        program == "oneharness"
+            && tail
+                .strip_prefix(usage)
+                .and_then(|after| after.strip_prefix(' ').or(after.is_empty().then_some("")))
+                .is_some_and(|after| after.is_empty() || after.starts_with(['[', '<', '-']))
+    })
+}
+
+/// Issue #1333: a `--format text --compact` refusal is about flags the verb
+/// takes, so it shows the verb's own usage — `oneharness history list
+/// [OPTIONS]`, the page that lists them — and never the root's `oneharness
+/// <COMMAND>`, which was all a raw clap error could carry.
+fn assert_shows_verb_usage(stderr: &str, verb: &str, invocation: &str) {
+    assert!(
+        shows_usage(stderr, verb),
+        "`{invocation}`: the refusal must show the invoked verb's usage (`oneharness {verb}`): {stderr}"
+    );
+    assert!(
+        !shows_usage(stderr, "<COMMAND>"),
+        "`{invocation}`: the refusal sent its reader to the root usage: {stderr}"
+    );
+}
+
+#[test]
+fn usage_line_matching_accepts_either_executable_name_and_never_the_root() {
+    for program in ["oneharness", "oneharness.exe"] {
+        let verb = format!("error: ...\n\nUsage: {program} history list [OPTIONS]\n");
+        assert!(shows_usage(&verb, "history list"), "{verb}");
+        assert!(!shows_usage(&verb, "history"), "{verb}");
+        assert!(!shows_usage(&verb, "<COMMAND>"), "{verb}");
+        let root = format!("Usage: {program} <COMMAND>\n");
+        assert!(shows_usage(&root, "<COMMAND>"), "{root}");
+        assert!(!shows_usage(&root, "history list"), "{root}");
+    }
+    assert!(!shows_usage("Usage: other list [OPTIONS]", "list"));
+}
+
+/// The refusal names the program by the binary's file name, which carries
+/// `.exe` on Windows. Driven through a copy of the real binary under that name,
+/// so every platform proves the journey below holds a suffixed program to the
+/// verb's usage as it does a bare one.
+#[test]
+fn format_conflict_through_a_suffixed_executable_shows_the_verb_usage() {
+    let dir = ScratchDir::new("fmt-compact-exe").unwrap();
+    let exe = dir.join("oneharness.exe");
+    std::fs::copy(oneharness_bin(), &exe).unwrap();
+    let output = Command::new(&exe)
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args(["list", "--format", "text", "--compact"])
+        .output()
+        .expect("failed to run the suffixed oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--format text") && stderr.contains("--compact"),
+        "the refusal must name both flags: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: oneharness.exe list"),
+        "the refusal did not name the suffixed program: {stderr}"
+    );
+    assert_shows_verb_usage(
+        &stderr,
+        "list",
+        "oneharness.exe list --format text --compact",
+    );
+}
+
 #[test]
 fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     // Two things one stdout cannot be. Refused before the verb does anything:
@@ -32614,7 +32697,12 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     std::fs::write(&session_file, "").unwrap();
     let spawned = store.join("spawned.log");
     let spawned_arg = spawned.display().to_string();
-    for verb in json_document_verbs(&history_dir) {
+    // Zipped with the paths the spellings were built from, so each refusal can
+    // be held to the usage of the verb that was actually invoked.
+    for (path, verb) in json_document_verb_paths()
+        .iter()
+        .zip(json_document_verbs(&history_dir))
+    {
         let mut args: Vec<&str> = verb.iter().map(String::as_str).collect();
         if args.starts_with(&["history", "clear"]) {
             args.push("--yes");
@@ -32643,6 +32731,7 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
             "`{}`: a refused invocation prints no report",
             args.join(" ")
         );
+        assert_shows_verb_usage(&stderr, &path.join(" "), &args.join(" "));
     }
     assert!(
         session_file.exists(),

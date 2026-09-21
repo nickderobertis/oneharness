@@ -213,6 +213,52 @@ pub struct Cli {
     pub command: Command,
 }
 
+impl Cli {
+    /// Parse argv, exiting the way [`clap::Parser::parse`] does — except that a
+    /// refusal clap could only raise once it had the *values*
+    /// ([`StdoutFormat`]'s `--format text --compact`) is rendered against the
+    /// verb that was invoked, not the root command (issue #1333). The derive's
+    /// own error path formats every such error against the root, so
+    /// `oneharness list --format text --compact` sent its reader to
+    /// `Usage: oneharness <COMMAND>` — the one page that says nothing about
+    /// the flags it just named. Exit code and message are unchanged: this
+    /// decides which command's usage and `--help` hint the refusal carries.
+    pub fn parse_or_exit() -> Self {
+        use clap::{CommandFactory, FromArgMatches};
+
+        let mut command = Self::command();
+        // Parsed through `&mut command` so clap builds each matched subcommand
+        // in place, giving it the usage name of the whole invocation
+        // (`oneharness history list`) rather than its bare name.
+        let matches = command.get_matches_mut();
+        match Self::from_arg_matches(&matches) {
+            Ok(cli) => cli,
+            Err(refusal) => refusal
+                .format(matched_command(&mut command, &matches))
+                .exit(),
+        }
+    }
+}
+
+/// The deepest subcommand `matches` selected, or `command` itself when the
+/// invocation named none — the command object whose usage a refusal about
+/// those matches should carry.
+fn matched_command<'a>(
+    command: &'a mut clap::Command,
+    matches: &clap::ArgMatches,
+) -> &'a mut clap::Command {
+    let Some((name, sub_matches)) = matches.subcommand() else {
+        return command;
+    };
+    if command.find_subcommand(name).is_none() {
+        return command;
+    }
+    let sub = command
+        .find_subcommand_mut(name)
+        .expect("the subcommand found immediately above");
+    matched_command(sub, sub_matches)
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Run a prompt across one or more harnesses — a fallback chain by default,

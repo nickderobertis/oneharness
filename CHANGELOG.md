@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.1](https://github.com/nickderobertis/oneharness/compare/v0.16.0...v0.16.1) - 2026-09-21
+
+### Fixed
+
+- *(cli)* exit 1 when a one-candidate selection cannot run, fall a bin override back to its base ([#1344](https://github.com/nickderobertis/oneharness/pull/1344))
+
 ## [0.16.0](https://github.com/nickderobertis/oneharness/compare/v0.15.1...v0.16.0) - 2026-09-20
 
 ### Added

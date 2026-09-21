@@ -676,33 +676,10 @@ oh_usage_cwd_enforce() {
     report_plain="$OH_USAGE_REPORT"
     t_plain=$((SECONDS - t0))
 
-    if [ "$t_probe" -ge $((t_control - OH_USAGE_HOOK_MARGIN)) ]; then
-        note "  hooked report: $report_hooked"
-        note "  The probe waited out the directory's session-start work. Next, in order:"
-        note "    1. Check the probe still passes \`--setting-sources user\`:"
-        note "         grep -n setting-sources crates/oneharness-core/src/io/usage.rs"
-        note "    2. If it does, the CLI stopped honoring the flag. Re-measure by hand at a"
-        note "       directory whose .claude/settings.json registers a slow SessionStart hook,"
-        note "       with the flag and without it, then record the new mechanism in"
-        note "       docs/harness-usage.md and change claude_argv to match."
-        rm -rf "$root"
-        fail "$id: the usage probe took ${t_probe}s at a directory whose session start costs ${t_control}s — its answer still depends on its working directory (#1279)"
-    fi
-    if [ "$t_probe" -gt $((t_plain + OH_USAGE_HOOK_MARGIN)) ]; then
-        note "  The probe is paying SOMETHING for the hooked directory, short of the whole"
-        note "  session start. Next, in order:"
-        note "    1. Time the two by hand and confirm the gap is real rather than a loaded"
-        note "       machine — a margin of ${OH_USAGE_HOOK_MARGIN}s is meant to absorb noise:"
-        note "         time $bin usage --harness $id --cwd $hooked --compact"
-        note "         time $bin usage --harness $id --cwd $plain --compact"
-        note "    2. If it is real, the CLI is honoring \`--setting-sources user\` only in"
-        note "       part: read what it still loads from the directory (\`$harness_bin --help\`"
-        note "       on --setting-sources), record it in docs/harness-usage.md, and narrow"
-        note "       claude_argv in crates/oneharness-core/src/io/usage.rs to match."
-        rm -rf "$root"
-        fail "$id: the usage probe took ${t_probe}s at the hooked directory against ${t_plain}s at one registering nothing — the two must be about the same"
-    fi
-
+    # The readings are judged before their durations: a report this phase cannot
+    # compare, or two that disagree, is a failure however fast it arrived, and
+    # judging it first keeps that verdict from depending on how loaded the host
+    # is when the timing comparison below runs.
     local key_hooked key_plain
     if ! key_hooked="$(_oh_usage_identity_key "$report_hooked")" ||
         ! key_plain="$(_oh_usage_identity_key "$report_plain")"; then
@@ -738,6 +715,33 @@ oh_usage_cwd_enforce() {
         note "       docs/harness-usage.md, and find another way to skip the session hooks."
         rm -rf "$root"
         fail "$id: the probe reported a different identity from the hooked directory than from the plain one — dropping project settings must not change the ANSWER, only what it waits on"
+    fi
+
+    if [ "$t_probe" -ge $((t_control - OH_USAGE_HOOK_MARGIN)) ]; then
+        note "  hooked report: $report_hooked"
+        note "  The probe waited out the directory's session-start work. Next, in order:"
+        note "    1. Check the probe still passes \`--setting-sources user\`:"
+        note "         grep -n setting-sources crates/oneharness-core/src/io/usage.rs"
+        note "    2. If it does, the CLI stopped honoring the flag. Re-measure by hand at a"
+        note "       directory whose .claude/settings.json registers a slow SessionStart hook,"
+        note "       with the flag and without it, then record the new mechanism in"
+        note "       docs/harness-usage.md and change claude_argv to match."
+        rm -rf "$root"
+        fail "$id: the usage probe took ${t_probe}s at a directory whose session start costs ${t_control}s — its answer still depends on its working directory (#1279)"
+    fi
+    if [ "$t_probe" -gt $((t_plain + OH_USAGE_HOOK_MARGIN)) ]; then
+        note "  The probe is paying SOMETHING for the hooked directory, short of the whole"
+        note "  session start. Next, in order:"
+        note "    1. Time the two by hand and confirm the gap is real rather than a loaded"
+        note "       machine — a margin of ${OH_USAGE_HOOK_MARGIN}s is meant to absorb noise:"
+        note "         time $bin usage --harness $id --cwd $hooked --compact"
+        note "         time $bin usage --harness $id --cwd $plain --compact"
+        note "    2. If it is real, the CLI is honoring \`--setting-sources user\` only in"
+        note "       part: read what it still loads from the directory (\`$harness_bin --help\`"
+        note "       on --setting-sources), record it in docs/harness-usage.md, and narrow"
+        note "       claude_argv in crates/oneharness-core/src/io/usage.rs to match."
+        rm -rf "$root"
+        fail "$id: the usage probe took ${t_probe}s at the hooked directory against ${t_plain}s at one registering nothing — the two must be about the same"
     fi
 
     rm -rf "$root"

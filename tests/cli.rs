@@ -7331,6 +7331,13 @@ fn missing_binary_is_skipped_not_failed() {
     strict.push("--require-available");
     let output = run(&strict, &[]);
     assert_eq!(output.status.code(), Some(1));
+    // And its summary names what was missing, in the chain's own words.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr
+            .contains("no selected harness could be run — not installed: codex; nothing executed"),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -7339,7 +7346,9 @@ fn a_missing_only_candidate_stops_the_default_chain_and_exits_1() {
     // run has run nothing: the harness is still `skipped` data (never a crash),
     // the `fallback` block says who was routed around and why, and the exit
     // code says the task was not done — fallback's documented outcome, now met
-    // by a bare single-harness run.
+    // by a bare single-harness run. The same selection carrying a batch or a
+    // continuation exits 1 too (issue #1324) — see
+    // `a_missing_only_candidate_exits_1_under_a_batch_and_a_continuation_too`.
     let output = run(
         &[
             "run",
@@ -9537,6 +9546,185 @@ fn base_env_var_bin_override_covers_a_variant_qualified_selection() {
     let value = json_stdout(&output);
     assert_eq!(value["results"][0]["status"], "ok");
     assert_eq!(value["results"][0]["text"], "empty variant key falls back");
+}
+
+#[test]
+fn base_bin_flag_covers_a_variant_qualified_selection_and_outranks_the_other_layers() {
+    // Issue #1329. `--bin claude-code=<path>` was read for the exact composed
+    // id only, while the env and config-file layers already fell back from a
+    // variant to its base — so a caller who swapped the harness at the flag
+    // (or with `--mock-harness claude-code`, which is the same map) got the
+    // real binary for `claude-code:work`. Every identity a chain on this host
+    // runs is spelled as a variant, so that was a paid turn where a stand-in
+    // was meant.
+    //
+    // The base's config bin points at nothing on purpose: before the fix that
+    // is what the variant resolved to, so a run below read `skipped` rather
+    // than reaching for whatever `claude` this host carries.
+    let fx = ConfigFixture::new(
+        "bin-flag-variant",
+        concat!(
+            "[harness.claude-code]\n",
+            "bin = \"/no/such/oneharness-binary-xyz\"\n",
+            "[harness.claude-code.variant.work]\n",
+            "model = \"sonnet\"\n",
+        ),
+        "",
+    );
+    let mock = mock_bin().display().to_string();
+    let base_flag = format!("claude-code={mock}");
+    let cwd = fx.cwd();
+    fn with<'a>(extra: &[&'a str], cwd: &'a str) -> Vec<&'a str> {
+        let mut args = vec!["run", "--harness", "claude-code:work", "--prompt", "hi"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["--cwd", cwd, "--compact"]);
+        args
+    }
+    let ok_text = |output: &Output| -> String {
+        assert!(
+            output.status.success(),
+            "exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(output);
+        assert_eq!(value["results"][0]["harness_id"], "claude-code:work");
+        assert_eq!(value["results"][0]["status"], "ok");
+        value["results"][0]["text"].as_str().unwrap().to_string()
+    };
+
+    // A base flag covers the variant.
+    let output = run_with_config(
+        &with(&["--bin", &base_flag], &cwd),
+        &[(
+            "MOCK_STDOUT",
+            r#"{"result":"base flag covers the variant"}"#,
+        )],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "base flag covers the variant");
+
+    // An exact variant entry is the more deliberate one and beats the base's.
+    let variant_flag = format!("claude-code:work={mock}");
+    let output = run_with_config(
+        &with(
+            &[
+                "--bin",
+                "claude-code=/no/such/oneharness-base-xyz",
+                "--bin",
+                &variant_flag,
+            ],
+            &cwd,
+        ),
+        &[("MOCK_STDOUT", r#"{"result":"variant flag wins"}"#)],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "variant flag wins");
+
+    // The flag's base entry outranks BOTH environment spellings — the variant's
+    // own included — and a config-file bin declared on the variant itself: the
+    // map is one layer, exhausted before the next is read.
+    let output = run_with_config(
+        &with(&["--bin", &base_flag], &cwd),
+        &[
+            (
+                "ONEHARNESS_BIN_CLAUDE_CODE_WORK",
+                "/no/such/oneharness-env-xyz",
+            ),
+            ("ONEHARNESS_BIN_CLAUDE_CODE", "/no/such/oneharness-env-xyz"),
+            ("MOCK_STDOUT", r#"{"result":"flag beats env"}"#),
+        ],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "flag beats env");
+    let variant_cfg = ConfigFixture::new(
+        "bin-flag-variant-cfg",
+        concat!(
+            "[harness.claude-code]\n",
+            "bin = \"/no/such/oneharness-binary-xyz\"\n",
+            "[harness.claude-code.variant.work]\n",
+            "bin = \"/no/such/oneharness-variant-xyz\"\n",
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code:work",
+            "--prompt",
+            "hi",
+            "--bin",
+            &base_flag,
+            "--cwd",
+            &variant_cfg.cwd(),
+            "--compact",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"result":"flag beats the variant's config bin"}"#,
+        )],
+        &variant_cfg.user_config(),
+    );
+    assert_eq!(ok_text(&output), "flag beats the variant's config bin");
+
+    // `--mock-harness <base>` is the same map, so it now swaps the variant too.
+    let output = run_with_config(
+        &with(&["--mock-harness", "claude-code"], &cwd),
+        &[
+            (
+                "MOCK_STDOUT",
+                r#"{"result":"mock flag covers the variant"}"#,
+            ),
+            ("MOCK_EXIT", "0"),
+        ],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "mock flag covers the variant");
+
+    // A base flag never reaches a sibling harness: `codex` keeps its own
+    // resolution, so the fallback is by base id, not a blanket swap.
+    let output = run_with_config(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &base_flag,
+            "--bin",
+            "codex=/no/such/oneharness-codex-xyz",
+            "--cwd",
+            &cwd,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(json_stdout(&output)["results"][0]["status"], "skipped");
+
+    // `detect` resolves through the same lookup, so it reports the binary the
+    // variant would actually run — the flag's, not the base's config bin.
+    let detected = json_stdout(&run_with_config(
+        &[
+            "detect",
+            "--harness",
+            "claude-code:work",
+            "--bin",
+            &base_flag,
+            "--compact",
+        ],
+        &[("ONEHARNESS_BIN_CLAUDE_CODE", "/no/such/oneharness-env-xyz")],
+        // `detect` takes no `--cwd`, so the project file (which declares the
+        // variant and the base's config bin) is loaded as the config.
+        &std::path::Path::new(&cwd).join("oneharness.toml"),
+    ));
+    assert_eq!(detected["detected"][0]["id"], "claude-code:work");
+    assert_eq!(detected["detected"][0]["bin"], mock.as_str());
+    assert_eq!(detected["detected"][0]["available"], true);
 }
 
 #[test]
@@ -12680,7 +12868,9 @@ fn batch_applies_the_schema_to_every_prompt() {
 #[test]
 fn batch_with_an_unavailable_harness_skips_every_prompt() {
     // A missing binary in batch mode skips each prompt (one skipped result per
-    // prompt), exits 0 by default, and still reports the batch block.
+    // prompt) and still reports the batch block — and, since no selected
+    // harness could run, exits 1 like every other one-candidate chain
+    // (issue #1324; it used to exit 0 on this shape alone).
     let output = run(
         &[
             "run",
@@ -12696,7 +12886,7 @@ fn batch_with_an_unavailable_harness_skips_every_prompt() {
         ],
         &[],
     );
-    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     let value = json_stdout(&output);
     assert_eq!(value["batch"]["prompt_count"], 2);
     let results = value["results"].as_array().unwrap();
@@ -18832,6 +19022,131 @@ fn a_one_candidate_chain_carries_a_continuation_and_a_batch_under_the_default_mo
     );
     assert!(explicit.status.success(), "{explicit:?}");
     assert!(json_stdout(&explicit)["fallback"].is_null());
+}
+
+#[test]
+fn a_missing_only_candidate_exits_1_under_a_batch_and_a_continuation_too() {
+    // Issue #1324: the exit code follows whether the only selected harness
+    // could run, never the shape of the invocation. A plain prompt on a
+    // missing only candidate exits 1 (`a_missing_only_candidate_stops_the_
+    // default_chain_and_exits_1`); a batch and a `--resume`/`--fork`
+    // continuation on the same selection used to exit 0 with `skipped`
+    // results because they run on the single-harness path. Each keeps that
+    // path's report shape — `skipped` results, a null `fallback` block — but
+    // the process says the task was not done, in the chain's own words.
+    let missing = missing_bin("codex");
+    let batch = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &missing,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(batch.status.code(), Some(1), "{batch:?}");
+    let v = json_stdout(&batch);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["batch"]["prompt_count"], 2);
+    let results = v["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert!(
+        results
+            .iter()
+            .all(|r| r["status"] == "skipped" && r["available"] == false),
+        "{v}"
+    );
+    let stderr = String::from_utf8_lossy(&batch.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run — not installed: codex"),
+        "{stderr}"
+    );
+
+    let continued = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "next turn",
+            "--resume",
+            "thread-1",
+            "--bin",
+            &missing,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(continued.status.code(), Some(1), "{continued:?}");
+    let v = json_stdout(&continued);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["resume"], "thread-1");
+    assert_eq!(v["results"][0]["status"], "skipped");
+    assert_eq!(v["results"][0]["available"], false);
+    let stderr = String::from_utf8_lossy(&continued.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run — not installed: codex"),
+        "{stderr}"
+    );
+
+    // A `--fork` continuation is the same shape on a harness that can fork.
+    let forked = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "branch here",
+            "--resume",
+            "sid-1",
+            "--fork",
+            "--bin",
+            &missing_bin("claude-code"),
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(forked.status.code(), Some(1), "{forked:?}");
+    let v = json_stdout(&forked);
+    assert!(v["fallback"].is_null(), "{v}");
+    assert_eq!(v["resume"], "sid-1");
+    assert_eq!(v["fork"], true);
+    assert_eq!(v["results"][0]["status"], "skipped");
+    assert_eq!(v["results"][0]["available"], false);
+    let stderr = String::from_utf8_lossy(&forked.stderr);
+    assert!(
+        stderr.contains("no selected harness could be run — not installed: claude-code"),
+        "{stderr}"
+    );
+
+    // The explicit opt-out keeps its own documented rule: under
+    // `--run-mode parallel` a missing harness is tolerated unless
+    // `--require-available`, whatever the shape.
+    let parallel = run(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "codex",
+            "--prompt",
+            "one",
+            "--prompt",
+            "two",
+            "--bin",
+            &missing,
+            "--compact",
+        ],
+        &[],
+    );
+    assert_eq!(parallel.status.code(), Some(0), "{parallel:?}");
+    assert!(json_stdout(&parallel)["fallback"].is_null());
 }
 
 #[test]
@@ -32284,6 +32599,89 @@ fn compact_alone_selects_one_line_json_on_every_verb() {
     }
 }
 
+/// Whether a `Usage:` line in `stderr` names `oneharness` followed by exactly
+/// the words `usage` (`history list`, or the root's `<COMMAND>`) and then only
+/// options or arguments — never a deeper subcommand's name. clap renders
+/// the program from the invoked binary's file name, so the program is
+/// `oneharness` or, on Windows, `oneharness.exe` — both are this CLI.
+fn shows_usage(stderr: &str, usage: &str) -> bool {
+    stderr.lines().any(|line| {
+        let Some((program, tail)) = line
+            .trim_start()
+            .strip_prefix("Usage: ")
+            .and_then(|rest| rest.split_once(' '))
+        else {
+            return false;
+        };
+        let program = program.strip_suffix(".exe").unwrap_or(program);
+        program == "oneharness"
+            && tail
+                .strip_prefix(usage)
+                .and_then(|after| after.strip_prefix(' ').or(after.is_empty().then_some("")))
+                .is_some_and(|after| after.is_empty() || after.starts_with(['[', '<', '-']))
+    })
+}
+
+/// Issue #1333: a `--format text --compact` refusal is about flags the verb
+/// takes, so it shows the verb's own usage — `oneharness history list
+/// [OPTIONS]`, the page that lists them — and never the root's `oneharness
+/// <COMMAND>`, which was all a raw clap error could carry.
+fn assert_shows_verb_usage(stderr: &str, verb: &str, invocation: &str) {
+    assert!(
+        shows_usage(stderr, verb),
+        "`{invocation}`: the refusal must show the invoked verb's usage (`oneharness {verb}`): {stderr}"
+    );
+    assert!(
+        !shows_usage(stderr, "<COMMAND>"),
+        "`{invocation}`: the refusal sent its reader to the root usage: {stderr}"
+    );
+}
+
+#[test]
+fn usage_line_matching_accepts_either_executable_name_and_never_the_root() {
+    for program in ["oneharness", "oneharness.exe"] {
+        let verb = format!("error: ...\n\nUsage: {program} history list [OPTIONS]\n");
+        assert!(shows_usage(&verb, "history list"), "{verb}");
+        assert!(!shows_usage(&verb, "history"), "{verb}");
+        assert!(!shows_usage(&verb, "<COMMAND>"), "{verb}");
+        let root = format!("Usage: {program} <COMMAND>\n");
+        assert!(shows_usage(&root, "<COMMAND>"), "{root}");
+        assert!(!shows_usage(&root, "history list"), "{root}");
+    }
+    assert!(!shows_usage("Usage: other list [OPTIONS]", "list"));
+}
+
+/// The refusal names the program by the binary's file name, which carries
+/// `.exe` on Windows. Driven through a copy of the real binary under that name,
+/// so every platform proves the journey below holds a suffixed program to the
+/// verb's usage as it does a bare one.
+#[test]
+fn format_conflict_through_a_suffixed_executable_shows_the_verb_usage() {
+    let dir = ScratchDir::new("fmt-compact-exe").unwrap();
+    let exe = dir.join("oneharness.exe");
+    std::fs::copy(oneharness_bin(), &exe).unwrap();
+    let output = Command::new(&exe)
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args(["list", "--format", "text", "--compact"])
+        .output()
+        .expect("failed to run the suffixed oneharness");
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--format text") && stderr.contains("--compact"),
+        "the refusal must name both flags: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage: oneharness.exe list"),
+        "the refusal did not name the suffixed program: {stderr}"
+    );
+    assert_shows_verb_usage(
+        &stderr,
+        "list",
+        "oneharness.exe list --format text --compact",
+    );
+}
+
 #[test]
 fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     // Two things one stdout cannot be. Refused before the verb does anything:
@@ -32299,7 +32697,12 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     std::fs::write(&session_file, "").unwrap();
     let spawned = store.join("spawned.log");
     let spawned_arg = spawned.display().to_string();
-    for verb in json_document_verbs(&history_dir) {
+    // Zipped with the paths the spellings were built from, so each refusal can
+    // be held to the usage of the verb that was actually invoked.
+    for (path, verb) in json_document_verb_paths()
+        .iter()
+        .zip(json_document_verbs(&history_dir))
+    {
         let mut args: Vec<&str> = verb.iter().map(String::as_str).collect();
         if args.starts_with(&["history", "clear"]) {
             args.push("--yes");
@@ -32328,6 +32731,7 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
             "`{}`: a refused invocation prints no report",
             args.join(" ")
         );
+        assert_shows_verb_usage(&stderr, &path.join(" "), &args.join(" "));
     }
     assert!(
         session_file.exists(),

@@ -632,6 +632,15 @@ pub fn run_supervised(
     let single_candidate_batch_or_continuation = specs.len() == 1 && (batch_run || continuation);
     let drive_fallback_chain =
         run_mode == RunMode::Fallback && !single_candidate_batch_or_continuation;
+    // The driver is an implementation detail; the exit code is not. A chain of
+    // one that carries a batch or continuation keeps fallback's outcome rule
+    // (issue #1324): when its only candidate cannot run, nothing did the task,
+    // and the process says so with exit 1 exactly as the plain-prompt chain
+    // does — `skipped` stays the result's own status, never a successful
+    // process outcome. Only `--run-mode parallel` keeps its documented
+    // tolerance of a missing harness.
+    let undriven_chain_of_one =
+        run_mode == RunMode::Fallback && single_candidate_batch_or_continuation;
     // Streaming is a CLI flag with a config/env layer, resolved once here so every
     // validator, the format selection, and the driver choice read the same
     // effective value.
@@ -817,7 +826,8 @@ pub fn run_supervised(
     // argv-limit escape hatch, mirroring `--prompt-file`), then config `system`.
     let system_text: Option<String> = resolve_system(args)?.or_else(|| cfg.system.clone());
     let system = system_text.as_deref();
-    let require_available = args.require_available || cfg.require_available.unwrap_or(false);
+    let require_available =
+        args.require_available || cfg.require_available.unwrap_or(false) || undriven_chain_of_one;
 
     // History (opt-in): --history/--no-history beats config `history`; the
     // directory is --history-dir, else config `history_dir`, else the platform
@@ -1674,6 +1684,28 @@ fn failure_summary(report: &RunReport, require_available: bool) -> String {
             format!(
                 "oneharness: fallback harness `{ran}` {ending} ({envelope}) — so the chain \
                  stopped there and tried no candidate after it; it said: {account}"
+            )
+        }
+        // Nothing executed because no selected harness is installed: the same
+        // sentence the chain above says, since to the supervisor quoting it a
+        // one-candidate batch or continuation IS that chain (issue #1324).
+        None if require_available
+            && !report.results.is_empty()
+            && report
+                .results
+                .iter()
+                .all(|r| r.status == Status::Skipped && !r.available) =>
+        {
+            let mut missing: Vec<&str> = Vec::new();
+            for result in &report.results {
+                if !missing.contains(&result.harness_id.as_str()) {
+                    missing.push(&result.harness_id);
+                }
+            }
+            format!(
+                "oneharness: no selected harness could be run — not installed: {}; nothing \
+                 executed",
+                missing.join(", ")
             )
         }
         None => {

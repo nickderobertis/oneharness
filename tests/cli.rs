@@ -32584,7 +32584,12 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
     std::fs::write(&session_file, "").unwrap();
     let spawned = store.join("spawned.log");
     let spawned_arg = spawned.display().to_string();
-    for verb in json_document_verbs(&history_dir) {
+    // Zipped with the paths the spellings were built from, so each refusal can
+    // be held to the usage of the verb that was actually invoked.
+    for (path, verb) in json_document_verb_paths()
+        .iter()
+        .zip(json_document_verbs(&history_dir))
+    {
         let mut args: Vec<&str> = verb.iter().map(String::as_str).collect();
         if args.starts_with(&["history", "clear"]) {
             args.push("--yes");
@@ -32611,6 +32616,21 @@ fn compact_beside_format_text_is_a_usage_error_naming_both_flags() {
         assert!(
             output.stdout.is_empty(),
             "`{}`: a refused invocation prints no report",
+            args.join(" ")
+        );
+        // Issue #1333: the refusal is about flags this verb takes, so it shows
+        // the verb's own usage — `oneharness history list [OPTIONS]`, the page
+        // that lists them — and never the root's `oneharness <COMMAND>`, which
+        // was all a raw clap error could carry.
+        let usage = format!("Usage: oneharness {}", path.join(" "));
+        assert!(
+            stderr.contains(&usage),
+            "`{}`: the refusal must show the invoked verb's usage (`{usage}`): {stderr}",
+            args.join(" ")
+        );
+        assert!(
+            !stderr.contains("Usage: oneharness <COMMAND>"),
+            "`{}`: the refusal sent its reader to the root usage: {stderr}",
             args.join(" ")
         );
     }

@@ -15,11 +15,16 @@ use crate::errors::OneharnessError;
 /// `ONEHARNESS_BIN_<ID>` environment variable, then a config-file
 /// `[harness.<id>] bin`, falling back to the spec default.
 ///
-/// The environment layer reads a variant-qualified id (`claude-code:hooked`)
-/// the way the config-file layer does: its own spelling first
-/// (`ONEHARNESS_BIN_CLAUDE_CODE_HOOKED`), then the base harness's key
-/// (`ONEHARNESS_BIN_CLAUDE_CODE`), so one base override covers every member
-/// of that harness — see the private `bin_env_keys` derivation.
+/// Every layer reads a variant-qualified id (`claude-code:hooked`) the same
+/// way, and each layer is exhausted before the next is consulted: the id's own
+/// spelling first, then its base harness's, so one base override covers every
+/// member of that harness while an entry for the exact variant is the more
+/// deliberate one and wins. So `--bin claude-code=/path` covers
+/// `claude-code:hooked` (as does a `--mock-harness claude-code` swap), and it
+/// still beats `ONEHARNESS_BIN_CLAUDE_CODE_HOOKED` and a config-file `bin` —
+/// a flag is the most deliberate layer, whichever spelling it used (issue
+/// #1329). The environment reads `ONEHARNESS_BIN_CLAUDE_CODE_HOOKED` then
+/// `ONEHARNESS_BIN_CLAUDE_CODE` — see the private `bin_env_keys` derivation.
 pub struct BinOverrides {
     map: HashMap<String, String>,
     /// Config-file bins: the lowest-precedence override layer, since an
@@ -53,10 +58,15 @@ impl BinOverrides {
     }
 
     /// The binary to invoke for `id`: explicit override, then env var, then the
-    /// config-file bin, then default.
+    /// config-file bin, then default. The explicit map is read for the exact
+    /// id and then, for a variant, its base — the whole layer before the
+    /// environment, so a base flag covers the variant and still outranks the
+    /// variant's own env key.
     fn binary_for(&self, id: &str, default_bin: &str) -> String {
-        if let Some(path) = self.map.get(id) {
-            return path.clone();
+        for key in override_ids(id) {
+            if let Some(path) = self.map.get(key) {
+                return path.clone();
+            }
         }
         for env_key in bin_env_keys(id) {
             if let Ok(value) = std::env::var(&env_key) {
@@ -69,6 +79,16 @@ impl BinOverrides {
             return path.clone();
         }
         default_bin.to_string()
+    }
+}
+
+/// The ids an explicit `--bin` map may name the binary for `id` under, in the
+/// order [`BinOverrides`] reads them: the id's own spelling, then — for a
+/// variant-qualified id — its base harness's.
+fn override_ids(id: &str) -> Vec<&str> {
+    match id.split_once(':') {
+        Some((base, _)) => vec![id, base],
+        None => vec![id],
     }
 }
 
@@ -290,11 +310,18 @@ pub fn detect(request: &DetectRequest) -> Result<DetectReport, OneharnessError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
 
     // Serializes the env-mutating tests: the process environment is global, so
     // concurrent set/remove from two tests in the same binary would race.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Takes [`ENV_LOCK`], recovering it from a poisoning: the guarded data is
+    /// `()`, so a sibling test that failed while holding it left nothing torn,
+    /// and its failure must not cascade into every later env test.
+    fn env_lock() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 
     #[test]
     fn override_takes_precedence_over_default() {
@@ -304,12 +331,15 @@ mod tests {
 
     #[test]
     fn default_used_when_no_override() {
+        // A miss reads `ONEHARNESS_BIN_CODEX`, which a sibling test sets.
+        let _guard = env_lock();
         let ov = BinOverrides::parse(&[]).unwrap();
         assert_eq!(ov.binary_for("codex", "codex"), "codex");
     }
 
     #[test]
     fn config_bin_is_used_but_loses_to_an_explicit_flag() {
+        let _guard = env_lock();
         let bins = HashMap::from([("codex".to_string(), "/cfg/codex".to_string())]);
         let ov = BinOverrides::parse(&[]).unwrap().with_config_bins(bins);
         assert_eq!(ov.binary_for("codex", "codex"), "/cfg/codex");
@@ -319,6 +349,57 @@ mod tests {
             .unwrap()
             .with_config_bins(bins);
         assert_eq!(ov.binary_for("codex", "codex"), "/flag/codex");
+    }
+
+    #[test]
+    fn a_base_flag_covers_a_variant_and_an_exact_variant_flag_wins() {
+        // Issue #1329: the map is read for the exact id, then the base. A
+        // miss reads the environment, so the lock keeps a sibling test's key
+        // out of the answer.
+        let _guard = env_lock();
+        let ov = BinOverrides::parse(&["claude-code=/flag/claude".to_string()]).unwrap();
+        assert_eq!(ov.binary_for("claude-code:work", "claude"), "/flag/claude");
+        assert_eq!(ov.binary_for("claude-code", "claude"), "/flag/claude");
+        assert_eq!(ov.binary_for("codex:work", "codex"), "codex");
+
+        let ov = BinOverrides::parse(&[
+            "claude-code=/flag/claude".to_string(),
+            "claude-code:work=/flag/work-claude".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            ov.binary_for("claude-code:work", "claude"),
+            "/flag/work-claude"
+        );
+        assert_eq!(ov.binary_for("claude-code:other", "claude"), "/flag/claude");
+        assert_eq!(ov.binary_for("claude-code", "claude"), "/flag/claude");
+        assert_eq!(
+            override_ids("claude-code:work"),
+            ["claude-code:work", "claude-code"]
+        );
+        assert_eq!(override_ids("codex"), ["codex"]);
+    }
+
+    #[test]
+    fn a_base_flag_outranks_the_variant_s_own_env_key_and_config_bin() {
+        // The map is one layer, exhausted before the environment is read: a
+        // flag is the most deliberate override whichever spelling it used.
+        let _guard = env_lock();
+        let variant_key = "ONEHARNESS_BIN_CLAUDE_CODE_WORK";
+        let prev = std::env::var(variant_key).ok();
+        std::env::set_var(variant_key, "/env/work-claude");
+        let bins = HashMap::from([(
+            "claude-code:work".to_string(),
+            "/cfg/work-claude".to_string(),
+        )]);
+        let ov = BinOverrides::parse(&["claude-code=/flag/claude".to_string()])
+            .unwrap()
+            .with_config_bins(bins);
+        assert_eq!(ov.binary_for("claude-code:work", "claude"), "/flag/claude");
+        match prev {
+            Some(v) => std::env::set_var(variant_key, v),
+            None => std::env::remove_var(variant_key),
+        }
     }
 
     #[test]
@@ -343,7 +424,7 @@ mod tests {
         // (id upper-cased, `-`→`_`) selects the binary, ahead of any config-file
         // bin and the spec default. A unique key keeps this independent of the
         // ambient environment.
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_lock();
         let key = "ONEHARNESS_BIN_CLAUDE_CODE";
         let prev = std::env::var(key).ok();
 
@@ -412,7 +493,7 @@ mod tests {
         // `ONEHARNESS_BIN_CLAUDE_CODE` covered `claude-code` and silently not
         // `claude-code:hooked` — the config-file `bin` already fell back from
         // the variant to its base, and the env layer now does the same.
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_lock();
         let base_key = "ONEHARNESS_BIN_CLAUDE_CODE";
         let variant_key = "ONEHARNESS_BIN_CLAUDE_CODE_HOOKED";
         let prev = (
@@ -452,7 +533,7 @@ mod tests {
     #[test]
     fn explicit_flag_beats_env_var() {
         // A `--bin` flag takes precedence over the env var for the same id.
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = env_lock();
         let key = "ONEHARNESS_BIN_CODEX";
         let prev = std::env::var(key).ok();
         std::env::set_var(key, "/env/codex");

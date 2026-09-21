@@ -448,12 +448,19 @@ Useful `run` flags:
   mode (use once allow-rules are synced so the prompt never fires).
 - `--require-available` — treat a not-installed harness as a failure under
   `--run-mode parallel` (see [Exit codes](#exit-codes)).
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of the resolution order the task requires here; its drift gate is the behavior, pinned claim by claim through the real binary (`base_bin_flag_covers_a_variant_qualified_selection_and_outranks_the_other_layers`, `base_env_var_bin_override_covers_a_variant_qualified_selection`) and in `io::detect`'s unit tests. -->
 - `--bin <id>=<path>` — override a harness binary (also via `ONEHARNESS_BIN_<ID>`,
-  the id upper-cased with `-` and `:` as `_`). A variant-qualified selection
-  (`claude-code:work`) reads its own key first (`ONEHARNESS_BIN_CLAUDE_CODE_WORK`)
-  and then its base harness's (`ONEHARNESS_BIN_CLAUDE_CODE`), so one base key
-  covers every member of that harness — the same fallback a config-file `bin`
-  makes from a variant to its base.
+  the id upper-cased with `-` and `:` as `_`). Every layer falls back the same
+  way for a variant-qualified selection (`claude-code:work`): the id's own
+  spelling first, then its base harness's, so one base override covers every
+  member of that harness, and an entry naming the exact variant is the more
+  deliberate one and wins. The layers are read in order — the flag (and
+  `--mock-harness`, which is the same map), then `ONEHARNESS_BIN_*`
+  (`ONEHARNESS_BIN_CLAUDE_CODE_WORK`, then `ONEHARNESS_BIN_CLAUDE_CODE`), then a
+  config-file `bin` — and each layer is exhausted before the next is consulted,
+  so `--bin claude-code=<path>` covers `claude-code:work` and still beats that
+  variant's own env key and config-file `bin`.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 - `--config <path>` / `--no-config` — load exactly one config file / ignore all
   config files (see below).
 - `--format <text|json>` / `--compact` — see the next section.

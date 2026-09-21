@@ -9549,6 +9549,185 @@ fn base_env_var_bin_override_covers_a_variant_qualified_selection() {
 }
 
 #[test]
+fn base_bin_flag_covers_a_variant_qualified_selection_and_outranks_the_other_layers() {
+    // Issue #1329. `--bin claude-code=<path>` was read for the exact composed
+    // id only, while the env and config-file layers already fell back from a
+    // variant to its base — so a caller who swapped the harness at the flag
+    // (or with `--mock-harness claude-code`, which is the same map) got the
+    // real binary for `claude-code:work`. Every identity a chain on this host
+    // runs is spelled as a variant, so that was a paid turn where a stand-in
+    // was meant.
+    //
+    // The base's config bin points at nothing on purpose: before the fix that
+    // is what the variant resolved to, so a run below read `skipped` rather
+    // than reaching for whatever `claude` this host carries.
+    let fx = ConfigFixture::new(
+        "bin-flag-variant",
+        concat!(
+            "[harness.claude-code]\n",
+            "bin = \"/no/such/oneharness-binary-xyz\"\n",
+            "[harness.claude-code.variant.work]\n",
+            "model = \"sonnet\"\n",
+        ),
+        "",
+    );
+    let mock = mock_bin().display().to_string();
+    let base_flag = format!("claude-code={mock}");
+    let cwd = fx.cwd();
+    fn with<'a>(extra: &[&'a str], cwd: &'a str) -> Vec<&'a str> {
+        let mut args = vec!["run", "--harness", "claude-code:work", "--prompt", "hi"];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["--cwd", cwd, "--compact"]);
+        args
+    }
+    let ok_text = |output: &Output| -> String {
+        assert!(
+            output.status.success(),
+            "exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(output);
+        assert_eq!(value["results"][0]["harness_id"], "claude-code:work");
+        assert_eq!(value["results"][0]["status"], "ok");
+        value["results"][0]["text"].as_str().unwrap().to_string()
+    };
+
+    // A base flag covers the variant.
+    let output = run_with_config(
+        &with(&["--bin", &base_flag], &cwd),
+        &[(
+            "MOCK_STDOUT",
+            r#"{"result":"base flag covers the variant"}"#,
+        )],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "base flag covers the variant");
+
+    // An exact variant entry is the more deliberate one and beats the base's.
+    let variant_flag = format!("claude-code:work={mock}");
+    let output = run_with_config(
+        &with(
+            &[
+                "--bin",
+                "claude-code=/no/such/oneharness-base-xyz",
+                "--bin",
+                &variant_flag,
+            ],
+            &cwd,
+        ),
+        &[("MOCK_STDOUT", r#"{"result":"variant flag wins"}"#)],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "variant flag wins");
+
+    // The flag's base entry outranks BOTH environment spellings — the variant's
+    // own included — and a config-file bin declared on the variant itself: the
+    // map is one layer, exhausted before the next is read.
+    let output = run_with_config(
+        &with(&["--bin", &base_flag], &cwd),
+        &[
+            (
+                "ONEHARNESS_BIN_CLAUDE_CODE_WORK",
+                "/no/such/oneharness-env-xyz",
+            ),
+            ("ONEHARNESS_BIN_CLAUDE_CODE", "/no/such/oneharness-env-xyz"),
+            ("MOCK_STDOUT", r#"{"result":"flag beats env"}"#),
+        ],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "flag beats env");
+    let variant_cfg = ConfigFixture::new(
+        "bin-flag-variant-cfg",
+        concat!(
+            "[harness.claude-code]\n",
+            "bin = \"/no/such/oneharness-binary-xyz\"\n",
+            "[harness.claude-code.variant.work]\n",
+            "bin = \"/no/such/oneharness-variant-xyz\"\n",
+        ),
+        "",
+    );
+    let output = run_with_config(
+        &[
+            "run",
+            "--harness",
+            "claude-code:work",
+            "--prompt",
+            "hi",
+            "--bin",
+            &base_flag,
+            "--cwd",
+            &variant_cfg.cwd(),
+            "--compact",
+        ],
+        &[(
+            "MOCK_STDOUT",
+            r#"{"result":"flag beats the variant's config bin"}"#,
+        )],
+        &variant_cfg.user_config(),
+    );
+    assert_eq!(ok_text(&output), "flag beats the variant's config bin");
+
+    // `--mock-harness <base>` is the same map, so it now swaps the variant too.
+    let output = run_with_config(
+        &with(&["--mock-harness", "claude-code"], &cwd),
+        &[
+            (
+                "MOCK_STDOUT",
+                r#"{"result":"mock flag covers the variant"}"#,
+            ),
+            ("MOCK_EXIT", "0"),
+        ],
+        &fx.user_config(),
+    );
+    assert_eq!(ok_text(&output), "mock flag covers the variant");
+
+    // A base flag never reaches a sibling harness: `codex` keeps its own
+    // resolution, so the fallback is by base id, not a blanket swap.
+    let output = run_with_config(
+        &[
+            "run",
+            "--run-mode",
+            "parallel",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &base_flag,
+            "--bin",
+            "codex=/no/such/oneharness-codex-xyz",
+            "--cwd",
+            &cwd,
+            "--compact",
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(json_stdout(&output)["results"][0]["status"], "skipped");
+
+    // `detect` resolves through the same lookup, so it reports the binary the
+    // variant would actually run — the flag's, not the base's config bin.
+    let detected = json_stdout(&run_with_config(
+        &[
+            "detect",
+            "--harness",
+            "claude-code:work",
+            "--bin",
+            &base_flag,
+            "--compact",
+        ],
+        &[("ONEHARNESS_BIN_CLAUDE_CODE", "/no/such/oneharness-env-xyz")],
+        // `detect` takes no `--cwd`, so the project file (which declares the
+        // variant and the base's config bin) is loaded as the config.
+        &std::path::Path::new(&cwd).join("oneharness.toml"),
+    ));
+    assert_eq!(detected["detected"][0]["id"], "claude-code:work");
+    assert_eq!(detected["detected"][0]["bin"], mock.as_str());
+    assert_eq!(detected["detected"][0]["available"], true);
+}
+
+#[test]
 fn project_config_is_discovered_walking_up_and_dotted_name_works() {
     let fx = ConfigFixture::new("discovery", "model = \"outer\"\n", "");
     // A nested dir with no config of its own walks up to the fixture root...

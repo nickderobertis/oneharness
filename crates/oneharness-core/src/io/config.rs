@@ -352,8 +352,10 @@ mod tests {
         );
         let child = dir.join("roles/child.toml");
         let loaded = load(Some(&child), false, &dir).unwrap();
-        let root = dir.join("roles/../shared/mid/../root.toml");
-        let mid = dir.join("roles/../shared/mid/mid.toml");
+        // Each parent resolves against its declaring file's own directory, joined
+        // the way the platform joins it (`roles\../shared/mid/mid.toml` on Windows).
+        let mid = dir.join("roles").join("../shared/mid/mid.toml");
+        let root = mid.parent().unwrap().join("../root.toml");
         assert_eq!(
             loaded.files[..3],
             [

@@ -276,5 +276,6 @@ expect_usage_error "no version to verify" pypi-cli
 expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9; rm -rf /"
 expect_usage_error "is not an x.y.z version" pypi-cli "1..2"
 expect_usage_error "is not an x.y.z version" pypi-cli "-"
+expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9+a+b"
 
 echo "check-verify-published: ok"

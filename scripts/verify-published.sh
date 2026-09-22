@@ -39,9 +39,11 @@ case "$target" in
   *) usage "'$target' is not a target this script knows how to install" ;;
 esac
 # The version is composed into a pip requirement and an npm package spec, so it
-# is matched against the shape release-plz actually publishes rather than merely
-# swept for dangerous characters: `1..2`, `-` and `.` all pass an allowlist.
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z]+)*$ ]] ||
+# is matched against the shape release-plz actually publishes — semver's
+# major.minor.patch, then at most one prerelease and one build part — rather
+# than merely swept for dangerous characters: `1..2`, `-` and `.` all pass an
+# allowlist.
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]] ||
   usage "'$version' is not an x.y.z version this release could have published"
 case "$attempts" in
   "" | *[!0-9]*) usage "VERIFY_ATTEMPTS='$attempts' is not a whole number of attempts" ;;
@@ -171,7 +173,8 @@ last="$work/attempt.log"
 : >"$last"
 for i in $(seq 1 "$attempts"); do
   if run_attempt >"$last" 2>&1; then
-    cat "$last"
+    # One line on success: the package managers' own chatter is captured, and
+    # replayed only when the bound runs out and somebody needs the cause.
     printf 'verify-published: installed and smoke-tested %s on attempt %s of %s.\n' "$what" "$i" "$attempts"
     exit 0
   fi

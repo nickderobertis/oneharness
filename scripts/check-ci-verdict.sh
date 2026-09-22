@@ -230,6 +230,16 @@ expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "CI run 99 concluded success"
 
+# ...and a start time that is a string but not an instant is no better: it
+# sorts above any digit, so unchecked it would be the newest run.
+run_case '{"workflow_runs":[
+  {"id":110,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"failure","run_started_at":"not-a-timestamp","html_url":"https://example.invalid/run/110"},
+  {"id":109,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"2026-05-01T00:00:00Z","html_url":"https://example.invalid/run/109"}]}' \
+  "a run whose start time is a string but not an instant"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 109 concluded success"
+
 # A rerun in flight beside an older finished run: CI is deciding this commit
 # again, so the older verdict is not the answer — the rerun's is.
 run_polling_case "a rerun in flight beside an older success" \

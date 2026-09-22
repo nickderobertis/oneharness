@@ -10024,7 +10024,7 @@ fn config_command_attributes_an_inherited_value_to_the_parent_file() {
 
 #[test]
 fn a_run_uses_a_harness_only_the_parent_config_names() {
-    let (fx, child, _) = extends_fixture(
+    let (fx, child, parent) = extends_fixture(
         "extends-run",
         &format!(
             "harnesses = [\"claude-code\"]\n[harness.claude-code]\nbin = '{}'\n",
@@ -10056,6 +10056,12 @@ fn a_run_uses_a_harness_only_the_parent_config_names() {
     assert_eq!(results[0]["harness"], "claude-code");
     assert_eq!(results[0]["status"], "ok");
     assert_eq!(results[0]["text"], "via the parent's harness");
+    // The run report names every file of the chain that shaped it, parent
+    // first, and not the project file `--config` never discovers.
+    assert_eq!(
+        value["config_files"],
+        serde_json::json!([parent.display().to_string(), child.display().to_string()])
+    );
 }
 
 #[test]

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.17.1...oneharness-core-v0.18.0) - 2026-09-22
+
+### Added
+
+- *(config)* let one config extend another, resolved against its own directory ([#1349](https://github.com/nickderobertis/oneharness/pull/1349))
+
 ## [0.17.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.17.0...oneharness-core-v0.17.1) - 2026-09-21
 
 ### Fixed

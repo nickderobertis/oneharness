@@ -214,7 +214,21 @@ const ENV_OVERRIDE_VARS: &[&str] = &[
 /// never read), ambient `ONEHARNESS_*` overrides are stripped, and project
 /// discovery is steered with `--cwd` by the caller.
 fn run_with_config(args: &[&str], envs: &[(&str, &str)], user_config: &std::path::Path) -> Output {
+    run_with_config_in(None, args, envs, user_config)
+}
+
+/// [`run_with_config`] with the process started in `process_cwd`, for the
+/// tests that pin a property of where the binary itself is run from.
+fn run_with_config_in(
+    process_cwd: Option<&std::path::Path>,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    user_config: &std::path::Path,
+) -> Output {
     let mut cmd = Command::new(oneharness_bin());
+    if let Some(dir) = process_cwd {
+        cmd.current_dir(dir);
+    }
     cmd.env("ONEHARNESS_CONFIG", user_config);
     for var in ENV_OVERRIDE_VARS {
         cmd.env_remove(var);
@@ -9912,6 +9926,251 @@ fn config_command_shows_values_with_sources() {
     assert!(value["system"]["source"].is_null());
     // ...and per-harness overrides are attributed too.
     assert_eq!(value["harness"]["claude-code"]["model"]["value"], "sonnet");
+}
+
+/// A parent config under `shared/` and a child under `roles/` extending it,
+/// inside a fixture whose own directory also holds a project `oneharness.toml`
+/// (`model = "project"`) that an explicit `--config` must never discover.
+fn extends_fixture(tag: &str, parent: &str, child: &str) -> (ConfigFixture, PathBuf, PathBuf) {
+    let fx = ConfigFixture::new(tag, "model = \"project\"\n", "");
+    std::fs::create_dir_all(fx.dir.join("shared")).unwrap();
+    std::fs::create_dir_all(fx.dir.join("roles")).unwrap();
+    std::fs::create_dir_all(fx.dir.join("elsewhere")).unwrap();
+    std::fs::write(fx.dir.join("shared").join("base.toml"), parent).unwrap();
+    let child_path = fx.dir.join("roles").join("child.toml");
+    std::fs::write(
+        &child_path,
+        format!("extends = \"../shared/base.toml\"\n{child}"),
+    )
+    .unwrap();
+    // The parent as the loader names it: the child's directory joined with
+    // the `extends` value exactly as written.
+    let parent_path = fx.dir.join("roles").join("../shared/base.toml");
+    (fx, child_path, parent_path)
+}
+
+#[test]
+fn config_command_attributes_an_inherited_value_to_the_parent_file() {
+    let (fx, child, parent) = extends_fixture(
+        "extends-explain",
+        "timeout = 30\nmodel = \"parent-model\"\n[env]\nSHARED = \"parent\"\nPARENT_ONLY = \"parent\"\n",
+        "model = \"child-model\"\n[env]\nSHARED = \"child\"\n",
+    );
+    let (child_s, parent_s) = (child.display().to_string(), parent.display().to_string());
+    // Run from two unrelated working directories — the fixture root (which
+    // holds a project file `--config` must not read) and a sibling holding
+    // nothing — and get the same chain and values from both.
+    let reports: Vec<Value> = [fx.dir.to_path_buf(), fx.dir.join("elsewhere")]
+        .iter()
+        .map(|cwd| {
+            let output = run_with_config_in(
+                Some(cwd),
+                &["config", "--config", &child_s],
+                &[],
+                &fx.user_config(),
+            );
+            assert!(
+                output.status.success(),
+                "stderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            json_stdout(&output)
+        })
+        .collect();
+    assert_eq!(reports[0], reports[1], "the process cwd changed the chain");
+    let value = &reports[0];
+    assert_eq!(
+        value["config_files"],
+        serde_json::json!([parent_s, child_s]),
+        "every file of the chain, parent first, and nothing discovered"
+    );
+    assert_eq!(value["timeout"]["value"], 30);
+    assert_eq!(value["timeout"]["source"], parent_s.as_str());
+    assert_eq!(value["model"]["value"], "child-model");
+    assert_eq!(value["model"]["source"], child_s.as_str());
+    assert_eq!(value["env"]["SHARED"]["value"], "child");
+    assert_eq!(value["env"]["SHARED"]["source"], child_s.as_str());
+    assert_eq!(value["env"]["PARENT_ONLY"]["source"], parent_s.as_str());
+
+    // The text view renders the inherited value against the parent's path
+    // without having learned anything about `extends`.
+    let output = run_with_config_in(
+        Some(&fx.dir.join("elsewhere")),
+        &["config", "--config", &child_s, "--format", "text"],
+        &[],
+        &fx.user_config(),
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains(&format!("timeout: 30 ({parent_s})\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("model: child-model ({child_s})\n")),
+        "{text}"
+    );
+
+    // A relative `--config` from the fixture root resolves the same parent.
+    let output = run_with_config_in(
+        Some(&fx.dir),
+        &["config", "--config", "roles/child.toml"],
+        &[],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["timeout"]["value"], 30);
+    assert_eq!(value["model"]["value"], "child-model");
+}
+
+#[test]
+fn a_run_uses_a_harness_only_the_parent_config_names() {
+    let (fx, child, _) = extends_fixture(
+        "extends-run",
+        &format!(
+            "harnesses = [\"claude-code\"]\n[harness.claude-code]\nbin = '{}'\n",
+            mock_bin().display()
+        ),
+        "timeout = 60\n",
+    );
+    let output = run_with_config_in(
+        Some(&fx.dir.join("elsewhere")),
+        &[
+            "run",
+            "--prompt",
+            "hi",
+            "--config",
+            &child.display().to_string(),
+            "--compact",
+        ],
+        &[("MOCK_STDOUT", r#"{"result":"via the parent's harness"}"#)],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let results = value["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "{results:?}");
+    assert_eq!(results[0]["harness"], "claude-code");
+    assert_eq!(results[0]["status"], "ok");
+    assert_eq!(results[0]["text"], "via the parent's harness");
+}
+
+#[test]
+fn env_and_cli_beat_a_value_the_parent_config_states() {
+    let (fx, child, _) = extends_fixture(
+        "extends-precedence",
+        "timeout = 30\nmodel = \"parent-model\"\nharnesses = [\"claude-code\"]\n",
+        "",
+    );
+    let child = child.display().to_string();
+    // The environment layer beats the parent's value.
+    let output = run_with_config(
+        &["config", "--config", &child],
+        &[("ONEHARNESS_TIMEOUT", "5")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["timeout"]["value"], 5);
+    assert_eq!(value["timeout"]["source"], "environment");
+    let run_args = [
+        "run",
+        "--prompt",
+        "hi",
+        "--config",
+        &child,
+        "--print-command",
+        "--compact",
+    ];
+    let output = run_with_config(
+        &run_args,
+        &[("ONEHARNESS_MODEL", "env-model")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert!(
+        command_of(&value, 0)
+            .windows(2)
+            .any(|w| w == ["--model", "env-model"]),
+        "{:?}",
+        command_of(&value, 0)
+    );
+    // And a CLI flag beats both.
+    let mut with_flag = run_args.to_vec();
+    with_flag.extend(["--model", "cli-model"]);
+    let output = run_with_config(
+        &with_flag,
+        &[("ONEHARNESS_MODEL", "env-model")],
+        &fx.user_config(),
+    );
+    let value = json_stdout(&output);
+    assert!(
+        command_of(&value, 0)
+            .windows(2)
+            .any(|w| w == ["--model", "cli-model"]),
+        "{:?}",
+        command_of(&value, 0)
+    );
+}
+
+#[test]
+fn discovered_user_and_project_configs_each_resolve_their_own_chain() {
+    let fx = ConfigFixture::new(
+        "extends-discovered",
+        "extends = \"conf/team.toml\"\nmodel = \"project\"\n",
+        "extends = \"user-base.toml\"\n",
+    );
+    std::fs::create_dir_all(fx.dir.join("conf")).unwrap();
+    std::fs::write(fx.dir.join("conf").join("team.toml"), "timeout = 45\n").unwrap();
+    std::fs::write(
+        fx.dir.join("user-base.toml"),
+        "system = \"from user base\"\n",
+    )
+    .unwrap();
+    let nested = fx.dir.join("deep").join("er");
+    std::fs::create_dir_all(&nested).unwrap();
+    let output = run_with_config(
+        &["config", "--cwd", &nested.display().to_string()],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    let files: Vec<String> = value["config_files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f.as_str().unwrap().to_string())
+        .collect();
+    let team = fx.dir.join("conf/team.toml").display().to_string();
+    let project = fx.dir.join("oneharness.toml").display().to_string();
+    let user_base = fx.dir.join("user-base.toml").display().to_string();
+    let user = fx.user_config().display().to_string();
+    assert_eq!(
+        files,
+        [user_base.clone(), user, team.clone(), project.clone()]
+    );
+    assert_eq!(value["timeout"]["source"], team.as_str());
+    assert_eq!(value["system"]["source"], user_base.as_str());
+    assert_eq!(value["model"]["source"], project.as_str());
+}
+
+#[test]
+fn a_missing_parent_config_is_a_usage_error_naming_both_files() {
+    let fx = ConfigFixture::new("extends-missing", "extends = \"gone.toml\"\n", "");
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let project = fx.dir.join("oneharness.toml").display().to_string();
+    let parent = fx.dir.join("gone.toml").display().to_string();
+    assert!(stderr.contains(&project), "{stderr}");
+    assert!(stderr.contains(&parent), "{stderr}");
 }
 
 #[test]

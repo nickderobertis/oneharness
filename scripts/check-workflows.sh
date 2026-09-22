@@ -19,15 +19,20 @@ require_line() {
 # Like require_line, but for a line that may only run behind a condition: the
 # guard must be the line immediately above it. A `run:` on its own is the shape
 # this repository is moving away from — a check re-run on every release — so
-# presence alone is not the contract.
+# presence alone is not the contract. EVERY occurrence is checked, because one
+# guarded copy says nothing about a second that runs unconditionally.
 require_guarded() {
-  local file="$1" line="$2" guard="$3" description="$4" previous
-  if ! grep -Fq -- "$line" "$file"; then
+  local file="$1" line="$2" guard="$3" description="$4" numbers number previous
+  numbers="$(grep -Fn -- "$line" "$file" | cut -d: -f1)"
+  if [ -z "$numbers" ]; then
     fail "$file must $description"
     return
   fi
-  previous="$(grep -B1 -F -- "$line" "$file" | head -1 | sed 's/^[[:space:]]*//')"
-  [ "$previous" = "$guard" ] || fail "$file must $description"
+  for number in $numbers; do
+    previous=
+    [ "$number" -gt 1 ] && previous="$(sed -n "$((number - 1))p" "$file" | sed 's/^[[:space:]]*//')"
+    [ "$previous" = "$guard" ] || fail "$file must $description"
+  done
 }
 
 # rust-toolchain.toml is canonical. Cargo requires an MSRV in each publishable

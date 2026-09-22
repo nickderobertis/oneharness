@@ -161,4 +161,10 @@ expect_gate_refusal "must not wait on a registry's metadata API"
 printf '        run: just sdk-check\n' >>"$workflow"
 expect_gate_refusal "must not run an SDK gate"
 
+# A SECOND copy of the gate, this one unconditioned. The guard requirement is
+# about every occurrence: one guarded copy says nothing about a sibling that
+# runs on every release.
+printf '        run: just check\n' >>"$workflow"
+expect_gate_refusal "run the complete repository gate only when CI did not answer for the tagged commit"
+
 echo 'check-workflows-e2e: ok'

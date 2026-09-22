@@ -85,15 +85,16 @@ decide() {
   exit 0
 }
 
-# One read of CI's answer for this commit: sets $conclusion (the newest FINISHED
-# run's, or `none`), $for_sha (how many runs exist for the commit at all),
-# $run_id and $run_url. An answer that cannot be read is decided on the spot —
-# there is nothing to poll for when the API itself is unreachable.
+# Read CI's answer for this commit, or decide the whole thing here: it sets
+# $conclusion (the newest FINISHED run's, or `none`), $for_sha (how many runs
+# exist for the commit at all), $run_id and $run_url — but an answer that cannot
+# be read at all is decided and exited from inside, because there is nothing to
+# poll for when the API itself is unreachable.
 conclusion=none
 for_sha=0
 run_id=
 run_url=
-read_verdict() {
+read_verdict_or_decide() {
   local runs summary
   if ! runs="$(gh api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" 2>"$work/gh-error")"; then
     sed 's/^/    gh: /' "$work/gh-error" >&2
@@ -127,7 +128,7 @@ read_verdict() {
 # this script exists to avoid. Silent while it waits — the decision below says
 # how long it took.
 for poll in $(seq 1 "$wait_attempts"); do
-  read_verdict
+  read_verdict_or_decide
   if [ "$conclusion" != none ] || [ "$for_sha" -eq 0 ]; then
     break
   fi

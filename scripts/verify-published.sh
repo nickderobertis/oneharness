@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# Prove a just-published artifact is installable by doing what its consumer
+# does, retried until the registry catches up.
+#
+# A registry answers its metadata API before the thing a consumer actually
+# reaches for is resolvable: PyPI's JSON API before the simple index a `pip
+# install` reads, and npm's `view` before the per-platform
+# `@oneharness/cli-<platform>-<arch>` package the launcher needs — which npm
+# installs as an OPTIONAL dependency, so a `npm install -g` that resolved
+# nothing still exits 0 and only the binary's absence says so. A metadata probe
+# followed by one install therefore reddens a release that published perfectly,
+# and a person then has to work out whether it is a false negative or a broken
+# release.
+#
+# So the thing that is waited on here IS the consumer's operation — the install
+# and the smoke that proves the install usable — retried to a bound, with the
+# last attempt's output surfaced when the bound runs out.
+#
+# Usage: scripts/verify-published.sh <pypi-cli|pypi-sdk|npm-cli|npm-sdk> <version>
+# Reads: VERIFY_ATTEMPTS (default 30), VERIFY_DELAY seconds (default 10).
+set -euo pipefail
+
+target="${1:-}"
+version="${2:-}"
+attempts="${VERIFY_ATTEMPTS:-30}"
+delay="${VERIFY_DELAY:-10}"
+
+usage() {
+  printf 'verify-published: %s\n' "$1" >&2
+  printf '  Next: scripts/verify-published.sh <pypi-cli|pypi-sdk|npm-cli|npm-sdk> <version>, e.g. scripts/verify-published.sh pypi-cli 0.7.1\n' >&2
+  exit 2
+}
+
+[ -n "$target" ] || usage "no target to verify"
+[ -n "$version" ] || usage "no version to verify"
+case "$target" in
+  pypi-cli | pypi-sdk | npm-cli | npm-sdk) ;;
+  *) usage "'$target' is not a target this script knows how to install" ;;
+esac
+case "$version" in
+  *[!0-9A-Za-z.+-]* | "") usage "'$version' is not a version string" ;;
+esac
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# Every attempt ends in this: an install nothing was run against proves only
+# that a registry answered.
+smoke_cli() {
+  local installed
+  installed="$(oneharness --version)" || return 1
+  case "$installed" in
+    *"$version"*) ;;
+    *)
+      printf 'the installed oneharness reports %s, not %s\n' "$installed" "$version" >&2
+      return 1
+      ;;
+  esac
+  oneharness --help >/dev/null || return 1
+  oneharness list >/dev/null || return 1
+}
+
+# `--no-cache-dir` / `--prefer-online`: a retry that re-reads a cached index
+# answer from the attempt that failed would never see the release land.
+attempt_pypi_cli() {
+  pip install --no-cache-dir "oneharness-cli==$version" || return 1
+  smoke_cli || return 1
+}
+
+attempt_pypi_sdk() {
+  pip install --no-cache-dir "oneharness-sdk==$version" || return 1
+  python - "$version" <<'PY' || return 1
+import asyncio
+import sys
+from importlib.metadata import version
+from oneharness_sdk import OneHarness, __version__
+
+expected = sys.argv[1]
+assert __version__ == expected, f"oneharness_sdk.__version__ is {__version__}, not {expected}"
+assert version("oneharness-sdk") == expected
+assert version("oneharness-cli") == expected
+
+
+async def verify():
+    harnesses = await OneHarness().list()
+    assert any(item["id"] == "codex" for item in harnesses)
+
+
+asyncio.run(verify())
+PY
+}
+
+attempt_npm_cli() {
+  npm install -g --prefer-online "oneharness-cli@$version" || return 1
+  smoke_cli || return 1
+}
+
+attempt_npm_sdk() {
+  local project="$work/sdk-project"
+  rm -rf "$project"
+  mkdir -p "$project"
+  (
+    cd "$project" || exit 1
+    npm init -y >/dev/null || exit 1
+    npm install --prefer-online "@oneharness/sdk@$version" || exit 1
+    node --input-type=module - "$version" <<'NODE' || exit 1
+import { readFileSync } from "node:fs";
+import { OneHarness } from "@oneharness/sdk";
+
+const expected = process.argv[2];
+const manifest = JSON.parse(readFileSync("node_modules/@oneharness/sdk/package.json", "utf8"));
+if (manifest.version !== expected) {
+  throw new Error(`installed SDK version ${manifest.version} does not match ${expected}`);
+}
+const harnesses = await new OneHarness().list();
+if (!harnesses.some(({ id }) => id === "codex")) {
+  throw new Error("installed SDK did not return the packaged CLI registry");
+}
+NODE
+  ) || return 1
+}
+
+# One attempt at being the consumer of $target, called directly so each branch
+# is reachable to a reader (and to shellcheck) from here.
+run_attempt() {
+  case "$target" in
+    pypi-cli) attempt_pypi_cli ;;
+    pypi-sdk) attempt_pypi_sdk ;;
+    npm-cli) attempt_npm_cli ;;
+    npm-sdk) attempt_npm_sdk ;;
+  esac
+}
+
+case "$target" in
+  pypi-cli) what="oneharness-cli $version from PyPI" ;;
+  pypi-sdk) what="oneharness-sdk $version from PyPI" ;;
+  npm-cli) what="oneharness-cli@$version from npm" ;;
+  npm-sdk) what="@oneharness/sdk@$version from npm" ;;
+esac
+
+last="$work/attempt.log"
+: >"$last"
+for i in $(seq 1 "$attempts"); do
+  if run_attempt >"$last" 2>&1; then
+    cat "$last"
+    printf 'verify-published: installed and smoke-tested %s on attempt %s of %s.\n' "$what" "$i" "$attempts"
+    exit 0
+  fi
+  if [ "$i" -lt "$attempts" ]; then
+    printf 'verify-published: attempt %s of %s could not yet install %s; retrying in %ss.\n' "$i" "$attempts" "$what" "$delay"
+    sleep "$delay"
+  fi
+done
+
+printf -- '--- what the last attempt said ---\n' >&2
+cat "$last" >&2
+printf -- '--- end of the last attempt ---\n' >&2
+printf '::error::%s was still not installable after %s attempts over ~%s seconds. The last attempt output is above.\n' \
+  "$what" "$attempts" "$((attempts * delay))" >&2
+printf '  Next: the publish itself already happened, so this is either a registry still propagating (re-run this job) or a genuinely broken artifact — the last attempt above says which.\n' >&2
+exit 1

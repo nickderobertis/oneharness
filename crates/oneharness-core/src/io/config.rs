@@ -458,18 +458,18 @@ mod tests {
         let dir = temp_dir("missing-parent");
         plant(&dir, &[("sub/child.toml", "extends = \"../gone.toml\"")]);
         let child = dir.join("sub/child.toml");
+        // The parent resolves against the declaring file's own directory, joined
+        // the way the platform joins it (`sub\../gone.toml` on Windows).
+        let parent = dir.join("sub").join("../gone.toml").display().to_string();
         let (path, message) = invalid(load(Some(&child), false, &dir).unwrap_err());
         assert_eq!(path, child.display().to_string());
-        assert!(
-            message.contains(&dir.join("sub/../gone.toml").display().to_string()),
-            "{message}"
-        );
+        assert!(message.contains(&parent), "{message}");
         assert!(message.contains("could not be read"), "{message}");
 
         // A parent that exists but does not parse names the parent itself.
         plant(&dir, &[("gone.toml", "modle = 1")]);
         let (path, _) = invalid(load(Some(&child), false, &dir).unwrap_err());
-        assert_eq!(path, dir.join("sub/../gone.toml").display().to_string());
+        assert_eq!(path, parent);
     }
 
     #[test]

@@ -22,17 +22,18 @@ import { removeScratchAsync } from "./scratch.mjs";
 export const SCRATCH_CLEANUP_TIMEOUT_MS = 60_000;
 
 /**
- * The delay the cleanup fixtures put in front of a removal.
+ * How long the cleanup fixtures make a teardown take.
  *
  * It has to outlast bun's own default hook budget, which is the whole reason a
  * cleanup that finishes is attributable to `SCRATCH_CLEANUP_TIMEOUT_MS` rather
  * than to bun having been patient enough on its own. Bun owns that default and
  * can raise it, so the relationship is asserted instead of assumed:
- * `scratch.test.ts` runs this same delay under an unguarded hook and requires
- * bun to cut it off, which turns a raised default into a red suite rather than
- * a fixture quietly proving nothing.
+ * `bun-hook-budget.fixture.ts` waits this same span under a hook registered
+ * without the shared timeout, and `scratch.test.ts` requires bun to cut it off.
+ * A raised default therefore turns this suite red rather than leaving a fixture
+ * quietly proving nothing.
  */
-export const SLOW_REMOVAL_MS = 6_000;
+export const SLOW_CLEANUP_MS = 6_000;
 
 /**
  * Register the shared scratch teardown for the calling suite.

@@ -510,10 +510,11 @@ precedence first:
 1. **Built-in defaults.**
 2. **User-level** — `~/.config/oneharness/config.toml` (honoring
    `$XDG_CONFIG_HOME`; `%APPDATA%\oneharness\config.toml` on Windows), or the
-   file named by `$ONEHARNESS_CONFIG`.
+   file named by `$ONEHARNESS_CONFIG`, with its [`extends`](#inheriting-a-parent-config-extends)
+   chain.
 3. **Project-level** — the nearest `oneharness.toml` (or `.oneharness.toml`),
    discovered by walking up from the directory the harnesses run in (`--cwd`,
-   else the current directory).
+   else the current directory), with its `extends` chain.
 4. **Environment overrides** — `ONEHARNESS_<FIELD>` variables (see below); beat
    every config file.
 5. **CLI flags** — always win.
@@ -539,6 +540,56 @@ Within one file, a `[harness.<id>]` value beats the top-level value for that
 harness. Every field is optional, and an unknown field or harness id is a loud
 usage error (exit 2), never silently ignored. The run report's `config_files`
 array records exactly which files shaped a run.
+
+#### Inheriting a parent config (`extends`)
+
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of the `extends` contract the task requires here; its drift gate is the behavior, pinned claim by claim in `io::config`'s chain tests (the 32-file bound against this text), `domain::config`'s `extends` and merge tests, and the `extends` journeys through the real binary in `tests/cli.rs`. -->
+A config file may name one parent with a top-level `extends = "<path>"` and
+state only what differs from it:
+
+```toml
+# roles/reviewer.toml
+extends = "../shared/identities.toml"
+harnesses = ["codex", "claude-code"]   # replaces the parent's order whole
+[harness.claude-code]
+model = "claude-opus-4-8"
+```
+
+- **Resolution.** A relative path resolves against the directory of the file
+  that declares it — never the process's working directory — so the same file
+  resolves the same parent however it is reached (`--config`, discovery,
+  `$ONEHARNESS_CONFIG`). An absolute path is used as written.
+- **Merge.** The parent is a layer immediately below the declaring file,
+  folded by the same rule that layers a project file over the user file:
+  scalars take the child's value and fall through to the parent's when the
+  child omits them; `[env]`, `[harness.<id>].env`, a variant's `env` and
+  `env_from`, and `history_labels` merge key-wise with the child winning per
+  key (a key the parent sets can be overridden but not removed); a variant's
+  non-empty `unset_env` replaces the parent's list whole, and an empty one
+  inherits it; `harnesses` and `all` move as a unit, so a child that states
+  either replaces the parent's selection entirely; `[harness.<id>]` and its
+  variants merge per id, per name and then per field.
+- **Chains.** A parent may extend another; the chain is layered deepest
+  ancestor first. A cycle is a usage error naming the file that closes it and
+  the chain that reached it, as is a chain longer than 32 files. A parent that
+  is missing or cannot be read is a usage error naming the declaring file and
+  the resolved parent path — unlike a discovered file, which is simply absent,
+  a file that names its parent has asserted it exists.
+- **Scope.** `extends` is top-level only: inside `[harness.<id>]` or a variant
+  it is an unknown field and refused. Precedence is otherwise unchanged — the
+  environment overrides and CLI flags beat every file, parents included — and
+  `--config <file>` loads that file and its chain with no discovery.
+- **Provenance.** Each file of a chain is its own layer, so `oneharness config`
+  attributes an inherited value to the parent file it was written in, and
+  `config_files` (in `config` and in the run report) lists every file of the
+  chain in layering order, parent first.
+- **Library.** The chain is followed only by `oneharness_core::io::config::load`
+  / `load_layers`, which hold the declaring file's path.
+  `domain::config::parse` reads one document, follows nothing, and returns its
+  `extends` unresolved on `FileConfig::extends` — so a caller holding config
+  text with no filesystem location (fetched over a URL, say) can see that the
+  document asked for a parent it cannot reach and decide what to do about it.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 A `[harness.<id>.variant.<name>]` section is an opt-in named preset selected
 everywhere as `<id>:<name>`. `--all` selects base harnesses only; variants never

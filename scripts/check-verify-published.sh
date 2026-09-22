@@ -146,6 +146,18 @@ expect_calls() {
   }
 }
 
+# Every target the script accepts must have both an attempt and a label: the
+# allowlist is read out of the script itself, so a target added there without
+# either arm fails here rather than quietly verifying nothing.
+accepted_targets="$(sed -n 's/^  \([a-z| -]*\)) ;;$/\1/p' "$root/scripts/verify-published.sh" | head -1 | tr -d ' ' | tr '|' ' ')"
+[ -n "$accepted_targets" ] || fail "verify-published.sh no longer declares its accepted targets in one 'case' allowlist"
+for accepted in $accepted_targets; do
+  run_case "$accepted" "the accepted target $accepted"
+  expect_status 0
+  expect_said "$tmp/out" "installed and smoke-tested"
+  expect_said "$tmp/out" "$VERSION_UNDER_TEST"
+done
+
 # Every target's consumer operation, against registries that answer at once.
 run_case pypi-cli "a PyPI CLI install that resolves immediately"
 expect_status 0

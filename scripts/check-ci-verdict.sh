@@ -124,13 +124,15 @@ expect_said() {
   }
 }
 
-run() { printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s,"run_started_at":"%s","html_url":"https://example.invalid/run/%s"}' "$1" "$2" "$3" "$4" "$5" "$1"; }
+# One workflow-run object as the API returns it: id, commit, status,
+# conclusion, start time.
+workflow_run_json() { printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s,"run_started_at":"%s","html_url":"https://example.invalid/run/%s"}' "$1" "$2" "$3" "$4" "$5" "$1"; }
 
 # The tagged commit passed; a LATER run of a different commit failed in the same
 # answer. The selection is the whole point: CI on `main` runs per commit, so a
 # foreign run must never answer for this one — and being the newest must not
 # make it the answer either.
-run_case "{\"workflow_runs\":[$(run 10 "$OTHER_SHA" completed '"failure"' 2026-01-05T00:00:00Z),$(run 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 10 "$OTHER_SHA" completed '"failure"' 2026-01-05T00:00:00Z),$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
   "a success for the tagged commit beside a newer foreign failure"
 expect_status 0
 expect_needs_check false
@@ -141,14 +143,14 @@ grep -Fq "head_sha=$SHA_UNDER_TEST" "$tmp/calls" || {
 }
 
 # Only a foreign commit's run: this commit has no verdict, whatever that run says.
-run_case "{\"workflow_runs\":[$(run 15 "$OTHER_SHA" completed '"success"' 2026-01-05T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 15 "$OTHER_SHA" completed '"success"' 2026-01-05T00:00:00Z)]}" \
   "a run for a different commit only"
 expect_status 0
 expect_needs_check true
 expect_said "$tmp/out" "no run for $SHA_UNDER_TEST"
 
 # A re-run after a failure: the newest finished run for the commit is CI's word.
-run_case "{\"workflow_runs\":[$(run 20 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-01T00:00:00Z),$(run 21 "$SHA_UNDER_TEST" completed '"success"' 2026-01-03T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 20 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-01T00:00:00Z),$(workflow_run_json 21 "$SHA_UNDER_TEST" completed '"success"' 2026-01-03T00:00:00Z)]}" \
   "a re-run that succeeded after a failure"
 expect_status 0
 expect_needs_check false
@@ -157,7 +159,7 @@ expect_needs_check false
 # name the run, so the reader goes to it rather than to this workflow. A run
 # that timed out or failed to start refused it exactly as a failing one did.
 for refusal in failure timed_out startup_failure; do
-  run_case "{\"workflow_runs\":[$(run 30 "$SHA_UNDER_TEST" completed "\"$refusal\"" 2026-01-01T00:00:00Z)]}" \
+  run_case "{\"workflow_runs\":[$(workflow_run_json 30 "$SHA_UNDER_TEST" completed "\"$refusal\"" 2026-01-01T00:00:00Z)]}" \
     "a CI run that concluded $refusal for the tagged commit"
   expect_status 1
   expect_said "$tmp/err" "CI run 30 concluded $refusal"
@@ -169,7 +171,7 @@ for refusal in failure timed_out startup_failure; do
 done
 
 # Cancelled: CI answered nothing about this commit, so the release proves it.
-run_case "{\"workflow_runs\":[$(run 40 "$SHA_UNDER_TEST" completed '"cancelled"' 2026-01-01T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 40 "$SHA_UNDER_TEST" completed '"cancelled"' 2026-01-01T00:00:00Z)]}" \
   "a cancelled CI run"
 expect_status 0
 expect_needs_check true
@@ -185,8 +187,8 @@ expect_said "$tmp/out" "no run for $SHA_UNDER_TEST"
 # that arrives is CI's. Running the whole gate beside the run already running it
 # is the second sweep of one commit this script exists to avoid.
 run_polling_case "a CI run that finishes while the release waits" \
-  "{\"workflow_runs\":[$(run 50 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
-  "{\"workflow_runs\":[$(run 50 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}"
+  "{\"workflow_runs\":[$(workflow_run_json 50 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
+  "{\"workflow_runs\":[$(workflow_run_json 50 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}"
 expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "concluded success"
@@ -197,7 +199,7 @@ expect_said "$tmp/out" "concluded success"
 
 # A run that never finishes inside the bound: the release stops waiting and
 # proves the commit itself rather than publishing on no verdict at all.
-run_case "{\"workflow_runs\":[$(run 51 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 51 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
   "a CI run that does not finish inside the bound"
 expect_status 0
 expect_needs_check true
@@ -205,7 +207,7 @@ expect_said "$tmp/out" "still had 1 unfinished run(s)"
 
 # Two finished runs that started at the same instant: the tie is broken by run
 # id, so the later run is CI's word and a coin flip never decides a release.
-run_case "{\"workflow_runs\":[$(run 81 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z),$(run 80 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-02T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 81 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z),$(workflow_run_json 80 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-02T00:00:00Z)]}" \
   "two finished runs that started at the same instant"
 expect_status 0
 expect_needs_check false
@@ -222,8 +224,8 @@ expect_said "$tmp/out" "reported no usable conclusion"
 # A rerun in flight beside an older finished run: CI is deciding this commit
 # again, so the older verdict is not the answer — the rerun's is.
 run_polling_case "a rerun in flight beside an older success" \
-  "{\"workflow_runs\":[$(run 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(run 71 "$SHA_UNDER_TEST" in_progress null 2026-01-04T00:00:00Z)]}" \
-  "{\"workflow_runs\":[$(run 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(run 71 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-04T00:00:00Z)]}"
+  "{\"workflow_runs\":[$(workflow_run_json 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(workflow_run_json 71 "$SHA_UNDER_TEST" in_progress null 2026-01-04T00:00:00Z)]}" \
+  "{\"workflow_runs\":[$(workflow_run_json 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(workflow_run_json 71 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-04T00:00:00Z)]}"
 expect_status 1
 expect_said "$tmp/err" "CI run 71 concluded failure"
 if [ -s "$tmp/github-output" ]; then
@@ -233,7 +235,7 @@ fi
 
 # A conclusion nobody enumerated — GitHub has several, and a new one must not
 # read as a pass.
-run_case "{\"workflow_runs\":[$(run 60 "$SHA_UNDER_TEST" completed '"neutral"' 2026-01-01T00:00:00Z)]}" \
+run_case "{\"workflow_runs\":[$(workflow_run_json 60 "$SHA_UNDER_TEST" completed '"neutral"' 2026-01-01T00:00:00Z)]}" \
   "a CI run with a conclusion this script does not enumerate"
 expect_status 0
 expect_needs_check true

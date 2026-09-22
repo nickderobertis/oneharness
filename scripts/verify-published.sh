@@ -57,15 +57,15 @@ trap 'rm -rf "$work"' EXIT
 # Every attempt ends in this: an install nothing was run against proves only
 # that a registry answered.
 smoke_cli() {
-  local installed name reported
+  local installed name reported extra
   installed="$(oneharness --version)" || return 1
-  # The shape AND the value, from process output that is external like any other
-  # input: clap prints `<bin> <version>`, so the name must be this binary and the
-  # version field must EQUAL the asked-for one. A substring would accept
-  # `oneharness 9.9.99` for 9.9.9, which is a release that shipped the wrong
-  # artifact — the thing this is here to catch.
-  read -r name reported _ <<<"$installed"
-  if [ "$name" != oneharness ] || [ "$reported" != "$version" ]; then
+  # The whole shape AND the value, from process output that is external like any
+  # other input: clap prints exactly `<bin> <version>`, so the name must be this
+  # binary, the version field must EQUAL the asked-for one, and nothing may
+  # follow. A substring would accept `oneharness 9.9.99` for 9.9.9, which is a
+  # release that shipped the wrong artifact — the thing this is here to catch.
+  read -r name reported extra <<<"$installed"
+  if [ "$name" != oneharness ] || [ "$reported" != "$version" ] || [ -n "$extra" ]; then
     printf 'the installed oneharness reports %s, not oneharness %s\n' "$installed" "$version" >&2
     return 1
   fi
@@ -142,7 +142,10 @@ NODE
 }
 
 # One attempt at being the consumer of $target, called directly so each branch
-# is reachable to a reader (and to shellcheck) from here.
+# is reachable to a reader (and to shellcheck) from here. This and the label
+# below enumerate the targets a second and third time; check-verify-published.sh
+# is their drift gate — it reads the allowlist above and drives every target in
+# it, so one added without an arm here fails there.
 run_attempt() {
   case "$target" in
     pypi-cli) attempt_pypi_cli ;;

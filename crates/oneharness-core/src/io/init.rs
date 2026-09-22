@@ -23,6 +23,10 @@ pub fn starter_config() -> &'static str {
 # Starter oneharness config. Keep it at your project root as `oneharness.toml`;
 # it sets the default harness/model selection for `oneharness run` in this repo.
 
+# extends: inherit a shared parent config and state only what differs here. A
+# relative path resolves against this file's directory.
+# extends = \"../shared/oneharness.toml\"
+
 # run_mode: how the selected harnesses are run.
 #   \"fallback\" (default) tries them in priority order and stops at the first
 #   that can actually run, falling through only harnesses that cannot run at all

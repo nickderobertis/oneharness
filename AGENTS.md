@@ -765,7 +765,12 @@ aren't re-litigated each session:
   `[env]`, and `[harness.<id>]` deliberately have none). Unknown fields, bad
   values, or unknown harness ids are usage errors (exit 2), never ignored.
   Parsing/merging is pure (`crates/oneharness-core/src/domain/config.rs`);
-  discovery/reading is I/O (`crates/oneharness-core/src/io/config.rs`). Anything
+  discovery/reading is I/O (`crates/oneharness-core/src/io/config.rs`). A
+  file's `extends` chain is followed there and nowhere else — `load_layers`
+  expands it into one layer per file, parent first, each under its own path —
+  because only a path says which directory the parent is relative to; `parse`
+  stays one document so a caller holding bare text sees the unresolved
+  `extends` and decides for itself. Anything
   that must be hermetic (tests, `smoke.sh`, the e2e scripts) sets
   `ONEHARNESS_NO_CONFIG=1`, which disables the env overrides too, so the
   machine's real config — files *or* `ONEHARNESS_*` — can never reshape an

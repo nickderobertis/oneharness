@@ -186,6 +186,11 @@ STUB_CLI_VERSION=8.8.8 run_case pypi-cli "an install that resolves the wrong ver
 expect_status 1
 expect_said "$tmp/err" "the installed oneharness reports oneharness 8.8.8, not $VERSION_UNDER_TEST"
 
+# A version that merely CONTAINS the one asked for is a different version.
+STUB_CLI_VERSION=9.9.99 run_case pypi-cli "an install that resolves a version containing the asked-for one"
+expect_status 1
+expect_said "$tmp/err" "the installed oneharness reports oneharness 9.9.99, not $VERSION_UNDER_TEST"
+
 # A smoke step AFTER the version check failing is still a failed install: the
 # package resolved, and the thing it installed does not work.
 STUB_CLI_BROKEN_SUBCOMMAND=list run_case npm-cli "an installed CLI whose list subcommand fails"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's `test` job, and scripts/check-ci-verdict.sh covers it from `just lint-workflows`.
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's `gate` job, and scripts/check-ci-verdict.sh covers it from `just lint-workflows`.
 # Read CI's verdict for the exact commit a release was tagged at, so the release
 # consumes the gate CI already ran instead of running it a second time.
 #

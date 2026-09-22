@@ -346,24 +346,19 @@ jobs:
   # Cargo.toml at packaging time. Its wheel and sdist depend on the exact same
   # oneharness-cli version, so the language client and subprocess protocol cannot
   # drift independently.
+  # No `python-sdk-check` here either, for the same reason: `just check` contains
+  # it, so the gate job has already run it on this commit. The packer is node and
+  # the backend is pure Python, so neither Rust nor `just` is needed to build the
+  # distributions.
   build-python-sdk:
     needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - uses: astral-sh/setup-uv@v6
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: just
-      # Same verdict as the gate above: CI already ran this for this commit
-      # unless its run was cancelled or absent.
-      - name: Run the Python SDK gate CI did not answer for
-        if: needs.gate.outputs.needs_check == 'true'
-        run: just python-sdk-check
       - name: Build the version-synchronized SDK distributions
         run: |
           pkgdir="$(node scripts/python-sdk-pack.mjs)"
@@ -459,23 +454,19 @@ jobs:
           name: npm-${{ matrix.target }}
           path: npm-artifacts/*.tgz
 
+  # No `sdk-check` here: `just check` contains it, so the gate job has already
+  # run it on this commit — either as CI's own run or as its fallback — and
+  # running it again is a second sweep of one commit. Only the build the pack
+  # needs happens here, because `npm/oneharness-sdk/dist` is gitignored.
   build-node-sdk:
     needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: oven-sh/setup-bun@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - if: needs.gate.outputs.needs_check == 'true'
-        run: just bootstrap
-      - name: Run the Node SDK gate CI did not answer for
-        if: needs.gate.outputs.needs_check == 'true'
-        run: just sdk-check
-      # `npm/oneharness-sdk/dist` is gitignored, so the pack below needs it built
-      # here whether or not the gate that also builds it ran.
       - name: Build the SDK's publishable sources
         run: just sdk-build
       - name: Pack the version-synchronized SDK

@@ -156,4 +156,9 @@ expect_gate_refusal "run the complete repository gate only when CI did not answe
 printf '          npm view "oneharness-cli@1.2.3" version\n' >>"$workflow"
 expect_gate_refusal "must not wait on a registry's metadata API"
 
+# The other forbidden pattern: a gate `just check` already contains, run again
+# here against the same commit.
+printf '        run: just sdk-check\n' >>"$workflow"
+expect_gate_refusal "must not run an SDK gate"
+
 echo 'check-workflows-e2e: ok'

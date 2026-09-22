@@ -72,9 +72,10 @@ require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use
 # A release publishes a commit CI has already gated. Re-running that gate spends
 # a runner to learn what is known and puts an approved commit at the mercy of an
 # unrelated transient failure DURING publication, where red reads as a broken
-# release. So the verdict for the exact tagged commit is read, and each check
-# runs here only when CI did not answer for that commit — the same check,
-# invoked the one way named below, never a restatement of its stages.
+# release. So the verdict for the exact tagged commit is read, and the gate runs
+# here only when CI did not answer for that commit — ONE check, `just check`,
+# invoked the one way named below: never a restatement of its stages, and never
+# a second run of something it already contains.
 require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
   "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
 require_line .github/workflows/release.yml 'actions: read' \
@@ -86,12 +87,12 @@ require_line .github/workflows/release.yml 'needs_check: ${{ steps.verdict.outpu
 require_guarded .github/workflows/release.yml 'run: just check' \
   "if: steps.verdict.outputs.needs_check == 'true'" \
   "run the complete repository gate only when CI did not answer for the tagged commit"
-require_guarded .github/workflows/release.yml 'run: just sdk-check' \
-  "if: needs.gate.outputs.needs_check == 'true'" \
-  "run the Node SDK command surface only when CI did not answer for the tagged commit"
-require_guarded .github/workflows/release.yml 'run: just python-sdk-check' \
-  "if: needs.gate.outputs.needs_check == 'true'" \
-  "run the Python SDK command surface only when CI did not answer for the tagged commit"
+# `just check` contains both SDK gates, so the fallback above has already run
+# them on this commit. A release job running either again is the same commit
+# swept twice, and neither belongs here any more.
+if grep -qE '^[[:space:]]*run: just (sdk-check|python-sdk-check)$' .github/workflows/release.yml; then
+  fail "release.yml must not run an SDK gate; 'just check' in the gate job contains both, so running one here sweeps the same commit twice"
+fi
 # The gate builds the gitignored SDK dist on its way past; skipping the gate must
 # not leave the pack with nothing to pack.
 require_line .github/workflows/release.yml 'run: just sdk-build' \

@@ -1,23 +1,41 @@
 [workspace]
 members = ["crates/oneharness-core"]
 
-# The single source for the one dependency both crates take. The binary crate's
+# The metadata both publishable crates must agree on, stated once. The root is
+# still the `oneharness` package — cargo permits a package to carry these tables
+# too — so what changes is only where the values live: each crate inherits with
+# `.workspace = true` and restates none, and a license or MSRV move edits one
+# line instead of two that drift a release apart. `version` stays per-crate on
+# purpose (the binary and the engine release on their own tags), as does
+# `description`, which says a different thing about each.
+[workspace.package]
+edition = "2021"
+rust-version = "1.86"
+license = "MIT"
+repository = "https://github.com/nickderobertis/oneharness"
+
+# The single source for every requirement both crates take. The binary crate's
 # `windows-sys` dev-dependency rides for free on the engine's own Windows
 # dependency only while the two resolve to one version, and cargo answers a
 # divergence with a second copy rather than a complaint. Inheriting is what keeps
-# that from rotting: the requirement lives here alone — a member restating it is
-# ignored — so a bump moves both. Each still names only the features it uses.
+# that from rotting: each requirement lives here alone — a member restating it is
+# ignored — so a bump moves both. `windows-sys` names only the features each
+# crate uses at the member; `serde`'s `derive` is common to both, so it is stated
+# here with the requirement.
 [workspace.dependencies]
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 windows-sys = "0.61"
 
 [package]
 name = "oneharness"
 version = "0.16.2"
-edition = "2021"
-rust-version = "1.86"
+edition.workspace = true
+rust-version.workspace = true
 description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."
-license = "MIT"
-repository = "https://github.com/nickderobertis/oneharness"
+license.workspace = true
+repository.workspace = true
 readme = "README.md"
 keywords = ["cli", "agent", "claude", "codex", "harness"]
 categories = ["command-line-utilities", "development-tools"]
@@ -50,8 +68,8 @@ sdk-schema = ["oneharness-core/sdk-schema"]
 [dependencies]
 oneharness-core = { path = "crates/oneharness-core", version = "0.18.0" }
 clap = { version = "4.5", features = ["derive"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),
@@ -60,7 +78,7 @@ serde_json = "1"
 # (`tests/library.rs`), which needs `dup`/`dup2`. Already in the tree via
 # `oneharness-core`, so it costs no extra download.
 [target.'cfg(unix)'.dev-dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 # The other half of the same proof: a `RunControls::supervisor` puts each harness
 # child into the caller's own process group on Unix and its own Job Object here,

@@ -101,6 +101,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-parity-audit.sh >/dev/null
     @bash scripts/report-scheduled-failure-test.sh >/dev/null
     @bash scripts/check-workflows.sh >/dev/null
+    @bash scripts/check-workflows-test.sh >/dev/null
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-setup-just.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null

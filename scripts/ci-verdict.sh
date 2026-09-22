@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's `test` job, and scripts/check-ci-verdict.sh covers it from `just lint-workflows`.
 # Read CI's verdict for the exact commit a release was tagged at, so the release
 # consumes the gate CI already ran instead of running it a second time.
 #
@@ -63,9 +64,7 @@ decide() {
 
 if ! runs="$(gh api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" 2>"$work/gh-error")"; then
   sed 's/^/    gh: /' "$work/gh-error" >&2
-  printf 'ci-verdict: could not read %s runs for %s (gh failed above); treating the verdict as unread.\n' "$workflow" "$sha" >&2
-  printf '  Next: the release runs the gate itself, so nothing is blocked. To restore the fast path, give the job the actions:read permission and a GH_TOKEN, and check that %s exists in %s.\n' "$workflow" "$repo" >&2
-  decide true "CI's verdict for $sha could not be read; running the gate here instead."
+  decide true "could not read $workflow runs for $sha (gh said why above), so CI's verdict is unknown; running the gate here instead. To restore the fast path give this job the actions:read permission and a GH_TOKEN, and check that $workflow exists in $repo."
 fi
 
 # The API's own `head_sha` filter is not trusted to be the whole answer: this
@@ -84,8 +83,7 @@ if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
     end
 ' 2>"$work/jq-error")"; then
   sed 's/^/    jq: /' "$work/jq-error" >&2
-  printf 'ci-verdict: %s runs for %s did not parse as workflow-run JSON; treating the verdict as unread.\n' "$workflow" "$sha" >&2
-  decide true "CI's verdict for $sha could not be read; running the gate here instead."
+  decide true "the $workflow runs for $sha did not parse as workflow-run JSON (jq said why above), so CI's verdict is unknown; running the gate here instead."
 fi
 
 IFS=$'\t' read -r conclusion for_sha run_id run_url <<<"$summary"

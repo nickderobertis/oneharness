@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
 # Hermetic behavioral test for scripts/ci-verdict.sh, against a stand-in GitHub
 # API.
 #
@@ -51,7 +52,7 @@ run_case() {
   set +e
   GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_FAIL="${GH_FAIL:-}" \
     PATH="$tmp/bin:$PATH" \
-    REPO="owner/repo" SHA="${SHA_OVERRIDE:-$SHA_UNDER_TEST}" \
+    REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
     GITHUB_OUTPUT="$tmp/github-output" \
     bash "$root/scripts/ci-verdict.sh" >"$tmp/out" 2>"$tmp/err"
   status=$?
@@ -116,17 +117,20 @@ run_case "{\"workflow_runs\":[$(run 20 "$SHA_UNDER_TEST" completed '"failure"' 2
 expect_status 0
 expect_needs_check false
 
-# A refusal must stop the release and name the run, so the reader goes to it
-# rather than to this workflow.
-run_case "{\"workflow_runs\":[$(run 30 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-01T00:00:00Z)]}" \
-  "a failed CI run for the tagged commit"
-expect_status 1
-expect_said "$tmp/err" "CI run 30 concluded failure"
-expect_said "$tmp/err" "https://example.invalid/run/30"
-if [ -s "$tmp/github-output" ]; then
-  cat "$tmp/github-output" >&2
-  fail "$description: a refusal must decide nothing for the workflow to act on"
-fi
+# Every conclusion that means CI refused this commit must stop the release and
+# name the run, so the reader goes to it rather than to this workflow. A run
+# that timed out or failed to start refused it exactly as a failing one did.
+for refusal in failure timed_out startup_failure; do
+  run_case "{\"workflow_runs\":[$(run 30 "$SHA_UNDER_TEST" completed "\"$refusal\"" 2026-01-01T00:00:00Z)]}" \
+    "a CI run that concluded $refusal for the tagged commit"
+  expect_status 1
+  expect_said "$tmp/err" "CI run 30 concluded $refusal"
+  expect_said "$tmp/err" "https://example.invalid/run/30"
+  if [ -s "$tmp/github-output" ]; then
+    cat "$tmp/github-output" >&2
+    fail "$description: a refusal must decide nothing for the workflow to act on"
+  fi
+done
 
 # Cancelled: CI answered nothing about this commit, so the release proves it.
 run_case "{\"workflow_runs\":[$(run 40 "$SHA_UNDER_TEST" completed '"cancelled"' 2026-01-01T00:00:00Z)]}" \
@@ -154,19 +158,35 @@ GH_FAIL=1 run_case '{"workflow_runs":[]}' "an API that refuses the query"
 unset GH_FAIL
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/err" "could not read ci.yml runs"
+expect_said "$tmp/out" "could not read ci.yml runs"
 expect_said "$tmp/err" "HTTP 403"
 
 # Unparseable JSON is the same kind of unread answer.
 run_case 'not json at all' "an API answering with something that is not JSON"
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/err" "did not parse"
+expect_said "$tmp/out" "did not parse as workflow-run JSON"
 
-# A commit sha the runs API cannot select on is a wiring bug, not a verdict.
+# An input the runs API cannot be asked about is a wiring bug, not a verdict:
+# each must refuse loudly rather than decide the release is unverified.
 SHA_OVERRIDE=1111111 run_case '{"workflow_runs":[]}' "an abbreviated commit sha"
 unset SHA_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "not a full 40-character commit sha"
+
+SHA_OVERRIDE="zzzz111111111111111111111111111111111111" run_case '{"workflow_runs":[]}' "a sha that is not hexadecimal"
+unset SHA_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "is not a commit sha"
+
+SHA_OVERRIDE="" run_case '{"workflow_runs":[]}' "no commit to ask about"
+unset SHA_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "no commit to ask about"
+
+REPO_OVERRIDE="" run_case '{"workflow_runs":[]}' "no repository to query"
+unset REPO_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "no repository to query"
 
 echo "check-ci-verdict: ok"

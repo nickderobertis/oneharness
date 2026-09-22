@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's verify jobs, and scripts/check-verify-published.sh covers it from `just lint-workflows`.
 # Prove a just-published artifact is installable by doing what its consumer
 # does, retried until the registry catches up.
 #
@@ -39,6 +40,13 @@ case "$target" in
 esac
 case "$version" in
   *[!0-9A-Za-z.+-]* | "") usage "'$version' is not a version string" ;;
+esac
+case "$attempts" in
+  "" | *[!0-9]*) usage "VERIFY_ATTEMPTS='$attempts' is not a whole number of attempts" ;;
+esac
+[ "$attempts" -ge 1 ] || usage "VERIFY_ATTEMPTS='$attempts' verifies nothing; the bound must allow at least one attempt"
+case "$delay" in
+  "" | *[!0-9]*) usage "VERIFY_DELAY='$delay' is not a whole number of seconds" ;;
 esac
 
 work="$(mktemp -d)"
@@ -147,7 +155,6 @@ for i in $(seq 1 "$attempts"); do
     exit 0
   fi
   if [ "$i" -lt "$attempts" ]; then
-    printf 'verify-published: attempt %s of %s could not yet install %s; retrying in %ss.\n' "$i" "$attempts" "$what" "$delay"
     sleep "$delay"
   fi
 done

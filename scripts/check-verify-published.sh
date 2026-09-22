@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
 # Hermetic behavioral test for scripts/verify-published.sh, against stand-in
 # registries.
 #
@@ -58,6 +59,10 @@ STUB
 cat >"$tmp/bin/oneharness" <<'STUB'
 #!/usr/bin/env bash
 printf 'oneharness %s\n' "$*" >>"$CALL_LOG"
+if [ -n "${STUB_CLI_BROKEN_SUBCOMMAND:-}" ] && [ "${1:-}" = "$STUB_CLI_BROKEN_SUBCOMMAND" ]; then
+  echo "oneharness: $1 failed against a half-installed package" >&2
+  exit 1
+fi
 if [ "${1:-}" = "--version" ]; then
   count="$STUB_STATE/oneharness.count"
   n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
@@ -75,6 +80,10 @@ for interpreter in python node; do
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >>"$CALL_LOG"
 cat >/dev/null
+if [ -n "${STUB_SMOKE_FAILS:-}" ]; then
+  echo "$(basename "$0"): AssertionError from the SDK smoke program" >&2
+  exit 1
+fi
 STUB
   chmod +x "$tmp/bin/$interpreter"
 done
@@ -90,11 +99,25 @@ run_case() {
   set +e
   CALL_LOG="$tmp/calls" STUB_STATE="$tmp/state" \
     STUB_CLI_VERSION="${STUB_CLI_VERSION:-$VERSION_UNDER_TEST}" \
-    PATH="$tmp/bin:$PATH" VERIFY_ATTEMPTS=3 VERIFY_DELAY=0 \
-    bash "$root/scripts/verify-published.sh" "$1" "$VERSION_UNDER_TEST" \
+    PATH="$tmp/bin:$PATH" VERIFY_ATTEMPTS="${ATTEMPTS_OVERRIDE-3}" VERIFY_DELAY="${DELAY_OVERRIDE-0}" \
+    bash "$root/scripts/verify-published.sh" "$1" "${VERSION_OVERRIDE-$VERSION_UNDER_TEST}" \
     >"$tmp/out" 2>"$tmp/err"
   status=$?
   set -e
+}
+
+# The arguments a caller can get wrong, driven as a caller gets them wrong.
+expect_usage_error() {
+  local expected="$1"
+  shift
+  description="$expected"
+  set +e
+  PATH="$tmp/bin:$PATH" CALL_LOG="$tmp/calls" STUB_STATE="$tmp/state" \
+    bash "$root/scripts/verify-published.sh" "$@" >"$tmp/out" 2>"$tmp/err"
+  status=$?
+  set -e
+  expect_status 2
+  expect_said "$tmp/err" "$expected"
 }
 
 expect_status() {
@@ -163,9 +186,50 @@ STUB_CLI_VERSION=8.8.8 run_case pypi-cli "an install that resolves the wrong ver
 expect_status 1
 expect_said "$tmp/err" "the installed oneharness reports oneharness 8.8.8, not $VERSION_UNDER_TEST"
 
-# A target nobody implemented is a wiring bug, not a lagging registry.
+# A smoke step AFTER the version check failing is still a failed install: the
+# package resolved, and the thing it installed does not work.
+STUB_CLI_BROKEN_SUBCOMMAND=list run_case npm-cli "an installed CLI whose list subcommand fails"
+unset STUB_CLI_BROKEN_SUBCOMMAND
+expect_status 1
+expect_said "$tmp/err" "oneharness: list failed against a half-installed package"
+
+# The two SDK targets prove themselves through a program, and that program
+# failing is what a wrong version or an unusable packaged CLI looks like.
+STUB_SMOKE_FAILS=1 run_case pypi-sdk "a Python SDK smoke program that refuses"
+unset STUB_SMOKE_FAILS
+expect_status 1
+expect_said "$tmp/err" "python: AssertionError from the SDK smoke program"
+
+STUB_SMOKE_FAILS=1 run_case npm-sdk "a Node SDK smoke program that refuses"
+unset STUB_SMOKE_FAILS
+expect_status 1
+expect_said "$tmp/err" "node: AssertionError from the SDK smoke program"
+
+# A bound read from the environment is an external input like any other: a
+# wait of no attempts, or one that is not a number, verifies nothing.
+ATTEMPTS_OVERRIDE=0 run_case pypi-cli "a bound of zero attempts"
+unset ATTEMPTS_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "verifies nothing"
+
+ATTEMPTS_OVERRIDE=soon run_case pypi-cli "a bound that is not a number"
+unset ATTEMPTS_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "is not a whole number of attempts"
+
+DELAY_OVERRIDE=later run_case pypi-cli "a delay that is not a number of seconds"
+unset DELAY_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "is not a whole number of seconds"
+
+# A target nobody implemented, and arguments a caller can omit or mangle, are
+# all wiring bugs rather than lagging registries.
 run_case pypi-nothing "an unknown target"
 expect_status 2
 expect_said "$tmp/err" "is not a target this script knows how to install"
+
+expect_usage_error "no target to verify"
+expect_usage_error "no version to verify" pypi-cli
+expect_usage_error "is not a version string" pypi-cli "9.9.9; rm -rf /"
 
 echo "check-verify-published: ok"

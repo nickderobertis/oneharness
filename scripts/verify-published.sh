@@ -69,8 +69,16 @@ smoke_cli() {
     printf 'the installed oneharness reports %s, not oneharness %s\n' "$installed" "$version" >&2
     return 1
   fi
-  oneharness --help >/dev/null || return 1
-  oneharness list >/dev/null || return 1
+  # Each smoke step says which one it was: a CLI that exits nonzero silently
+  # would otherwise leave the exhausted bound reporting no cause at all.
+  if ! oneharness --help >/dev/null; then
+    printf 'the installed oneharness could not run --help\n' >&2
+    return 1
+  fi
+  if ! oneharness list >/dev/null; then
+    printf 'the installed oneharness could not run list\n' >&2
+    return 1
+  fi
 }
 
 # `--no-cache-dir` / `--prefer-online`: a retry that re-reads a cached index

@@ -206,6 +206,12 @@ STUB_CLI_BROKEN_SUBCOMMAND=list run_case npm-cli "an installed CLI whose list su
 unset STUB_CLI_BROKEN_SUBCOMMAND
 expect_status 1
 expect_said "$tmp/err" "oneharness: list failed against a half-installed package"
+expect_said "$tmp/err" "the installed oneharness could not run list"
+
+STUB_CLI_BROKEN_SUBCOMMAND=--help run_case npm-cli "an installed CLI whose help fails"
+unset STUB_CLI_BROKEN_SUBCOMMAND
+expect_status 1
+expect_said "$tmp/err" "the installed oneharness could not run --help"
 
 # The two SDK targets prove themselves through a program, and that program
 # failing is what a wrong version or an unusable packaged CLI looks like.

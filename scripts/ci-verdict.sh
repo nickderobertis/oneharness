@@ -108,10 +108,17 @@ read_verdict_or_decide() {
   # newest last by start time with the run id breaking a tie — and the unfinished
   # ones are counted, because a rerun in flight is CI still deciding, whatever an
   # older run of the same commit concluded.
+  #
+  # A parseable answer is not yet a trustworthy one, so the fields this acts on
+  # are type-checked here: a run whose id or conclusion is missing or of the
+  # wrong type cannot become the verdict that publishes a release.
   if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
-    [ .workflow_runs[]? | select(.head_sha == $sha) ] as $mine
+    [ .workflow_runs[]?
+      | select((.head_sha | type) == "string" and .head_sha == $sha)
+      | select((.status | type) == "string") ] as $mine
     | ([ $mine[] | select(.status != "completed") ] | length) as $pending
-    | ([ $mine[] | select(.status == "completed") ]
+    | ([ $mine[] | select(.status == "completed")
+         | select((.id | type) == "number" and (.conclusion | type) == "string") ]
        | sort_by(.run_started_at // .created_at, .id) | last) as $newest
     | if $newest == null then
         "none\t\($mine | length)\t\($pending)\t\t"
@@ -157,7 +164,7 @@ case "$conclusion" in
     ;;
   none)
     if [ "$for_sha" -gt 0 ]; then
-      decide true "CI's newest finished run for $sha reported no conclusion at all; running the gate here instead."
+      decide true "CI's $for_sha run(s) for $sha reported no usable conclusion; running the gate here instead."
     fi
     decide true "CI has no run for $sha; running the gate here instead."
     ;;

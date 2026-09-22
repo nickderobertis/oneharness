@@ -107,7 +107,14 @@ require_line .github/workflows/release.yml 'run: just sdk-build' \
 # PyPI's JSON before the simple index, `npm view` before the per-platform package
 # an optional dependency resolves — so a metadata probe standing in for the
 # install reddens a release that published perfectly.
-for verify_target in pypi-cli pypi-sdk npm-cli npm-sdk; do
+# The target list is verify-published.sh's own, read out of the allowlist it
+# validates against rather than restated here — a target added there and not
+# called from the workflow is exactly the drift this catches.
+verify_targets="$(sed -n 's/^  \([a-z| -]*\)) ;;$/\1/p' scripts/verify-published.sh | head -1 | tr -d ' ' | tr '|' ' ')"
+if [ -z "$verify_targets" ]; then
+  fail "scripts/verify-published.sh must keep its accepted targets in one 'case' allowlist ending in ') ;;', which is what names the workflow calls this gate requires"
+fi
+for verify_target in $verify_targets; do
   require_line .github/workflows/release.yml \
     "run: scripts/verify-published.sh $verify_target \"\${GITHUB_REF_NAME#v}\"" \
     "verify the published $verify_target with the consumer's own install"

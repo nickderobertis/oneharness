@@ -203,6 +203,22 @@ expect_status 0
 expect_needs_check true
 expect_said "$tmp/out" "still had 1 unfinished run(s)"
 
+# Two finished runs that started at the same instant: the tie is broken by run
+# id, so the later run is CI's word and a coin flip never decides a release.
+run_case "{\"workflow_runs\":[$(run 81 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z),$(run 80 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-02T00:00:00Z)]}" \
+  "two finished runs that started at the same instant"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 81 concluded success"
+
+# A finished run whose conclusion is absent — or of a type this cannot act on —
+# is not a verdict, however parseable the answer was.
+run_case '{"workflow_runs":[{"id":90,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":null,"run_started_at":"2026-01-01T00:00:00Z","html_url":"https://example.invalid/run/90"}]}' \
+  "a finished run with no conclusion"
+expect_status 0
+expect_needs_check true
+expect_said "$tmp/out" "reported no usable conclusion"
+
 # A rerun in flight beside an older finished run: CI is deciding this commit
 # again, so the older verdict is not the answer — the rerun's is.
 run_polling_case "a rerun in flight beside an older success" \

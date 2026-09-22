@@ -43,7 +43,7 @@ esac
 # major.minor.patch, then at most one prerelease and one build part — rather
 # than merely swept for dangerous characters: `1..2`, `-` and `.` all pass an
 # allowlist.
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?(\+[0-9A-Za-z.]+)?$ ]] ||
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] ||
   usage "'$version' is not an x.y.z version this release could have published"
 case "$attempts" in
   "" | *[!0-9]*) usage "VERIFY_ATTEMPTS='$attempts' is not a whole number of attempts" ;;

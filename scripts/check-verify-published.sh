@@ -55,6 +55,22 @@ if [ "$n" -le "${STUB_NPM_FAILS:-0}" ]; then
   echo "npm error code E404 (attempt $n)" >&2
   exit 1
 fi
+# A successful install leaves the package behind, because the Node smoke
+# program this test exists to exercise imports it and reads its manifest.
+case "$*" in
+  *@oneharness/sdk@*)
+    mkdir -p node_modules/@oneharness/sdk
+    printf '{"name":"@oneharness/sdk","version":"%s","type":"module","main":"index.js"}\n' \
+      "$STUB_SDK_VERSION" >node_modules/@oneharness/sdk/package.json
+    cat >node_modules/@oneharness/sdk/index.js <<'PKG'
+export class OneHarness {
+  async list() {
+    return [{ id: "codex" }];
+  }
+}
+PKG
+    ;;
+esac
 STUB
 
 # The installed CLI. It fails while the per-platform package it execs is still
@@ -78,30 +94,63 @@ if [ "${1:-}" = "--version" ]; then
 fi
 STUB
 
+# The two SDK targets prove themselves through a program the script embeds, and
+# those programs are real logic — a version assertion and a registry call. So
+# the interpreters are REAL, behind wrappers that only record the call, and what
+# stands in is the package each program imports. `python` is a wrapper because
+# a host may only ship `python3`.
 for interpreter in python node; do
-  cat >"$tmp/bin/$interpreter" <<'STUB'
+  real="$(command -v "${interpreter}3" || command -v "$interpreter")" || {
+    echo "check-verify-published: skipped; no $interpreter on PATH to run the SDK smoke programs with" >&2
+    exit 0
+  }
+  cat >"$tmp/bin/$interpreter" <<STUB
 #!/usr/bin/env bash
-printf '%s %s\n' "$(basename "$0")" "$*" >>"$CALL_LOG"
-cat >/dev/null
-if [ -n "${STUB_SMOKE_FAILS:-}" ]; then
-  echo "$(basename "$0"): AssertionError from the SDK smoke program" >&2
-  exit 1
-fi
+printf '$interpreter %s\n' "\$*" >>"\$CALL_LOG"
+exec "$real" "\$@"
 STUB
   chmod +x "$tmp/bin/$interpreter"
 done
 chmod +x "$tmp/bin/pip" "$tmp/bin/npm" "$tmp/bin/oneharness"
+
+# The oneharness_sdk a `pip install` would have put on the path: the version the
+# case says it resolved, plus the dist metadata importlib.metadata reads.
+make_python_sdk() {
+  local version="$1" root="$tmp/pyfake" dist
+  rm -rf "$root"
+  mkdir -p "$root/oneharness_sdk"
+  cat >"$root/oneharness_sdk/__init__.py" <<PYPKG
+__version__ = "$version"
+
+
+class OneHarness:
+    async def list(self):
+        return [{"id": "codex"}]
+PYPKG
+  # importlib.metadata reads these, and reads the hyphenated Name it was asked
+  # for, so the two distributions the program checks are both declared here.
+  for dist in oneharness-sdk oneharness-cli; do
+    mkdir -p "$root/${dist//-/_}-$version.dist-info"
+    cat >"$root/${dist//-/_}-$version.dist-info/METADATA" <<META
+Metadata-Version: 2.1
+Name: $dist
+Version: $version
+META
+  done
+}
 
 # $1 target, $2 description; the STUB_* variables in the environment pick how
 # the stand-in registries behave. Leaves $status, $tmp/out and $tmp/err.
 run_case() {
   rm -rf "$tmp/state"
   mkdir -p "$tmp/state"
+  make_python_sdk "${STUB_SDK_VERSION:-$VERSION_UNDER_TEST}"
   : >"$tmp/calls"
   description="$2"
   set +e
   CALL_LOG="$tmp/calls" STUB_STATE="$tmp/state" \
     STUB_CLI_VERSION="${STUB_CLI_VERSION:-$VERSION_UNDER_TEST}" STUB_CLI_NAME="${STUB_CLI_NAME:-oneharness}" \
+    STUB_SDK_VERSION="${STUB_SDK_VERSION:-$VERSION_UNDER_TEST}" PYTHONPATH="$tmp/pyfake" \
     PATH="$tmp/bin:$PATH" VERIFY_ATTEMPTS="${ATTEMPTS_OVERRIDE-3}" VERIFY_DELAY="${DELAY_OVERRIDE-0}" \
     bash "$root/scripts/verify-published.sh" "$1" "${VERSION_OVERRIDE-$VERSION_UNDER_TEST}" \
     >"$tmp/out" 2>"$tmp/err"
@@ -226,15 +275,15 @@ expect_said "$tmp/err" "the installed oneharness could not run --help"
 
 # The two SDK targets prove themselves through a program, and that program
 # failing is what a wrong version or an unusable packaged CLI looks like.
-STUB_SMOKE_FAILS=1 run_case pypi-sdk "a Python SDK smoke program that refuses"
-unset STUB_SMOKE_FAILS
+STUB_SDK_VERSION=1.1.1 run_case pypi-sdk "a Python SDK that installed a different version"
+unset STUB_SDK_VERSION
 expect_status 1
-expect_said "$tmp/err" "python: AssertionError from the SDK smoke program"
+expect_said "$tmp/err" "oneharness_sdk.__version__ is 1.1.1, not $VERSION_UNDER_TEST"
 
-STUB_SMOKE_FAILS=1 run_case npm-sdk "a Node SDK smoke program that refuses"
-unset STUB_SMOKE_FAILS
+STUB_SDK_VERSION=1.1.1 run_case npm-sdk "a Node SDK that installed a different version"
+unset STUB_SDK_VERSION
 expect_status 1
-expect_said "$tmp/err" "node: AssertionError from the SDK smoke program"
+expect_said "$tmp/err" "installed SDK version 1.1.1 does not match $VERSION_UNDER_TEST"
 
 # Both SDK targets lag exactly as the CLI ones do: one recovers inside the
 # bound, one never does and must surface its last error.
@@ -277,5 +326,6 @@ expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9; rm -rf /"
 expect_usage_error "is not an x.y.z version" pypi-cli "1..2"
 expect_usage_error "is not an x.y.z version" pypi-cli "-"
 expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9+a+b"
+expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9-a..b"
 
 echo "check-verify-published: ok"

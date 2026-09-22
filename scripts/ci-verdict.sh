@@ -114,7 +114,9 @@ read_verdict_or_decide() {
   # wrong type cannot become the verdict that publishes a release, and a start
   # time that is not an ISO-8601 instant sorts as the oldest rather than as the
   # newest — jq orders objects above strings, and `not-a-timestamp` above any
-  # digit, so either would win the selection outright unchecked.
+  # digit, so either would win the selection outright unchecked. The URL is only
+  # ever printed, but it arrives on a tab-delimited line this script then splits,
+  # so anything unprintable is dropped from it here.
   if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
     [ .workflow_runs[]?
       | select((.head_sha | type) == "string" and .head_sha == $sha)
@@ -123,12 +125,12 @@ read_verdict_or_decide() {
     | ([ $mine[] | select(.status == "completed")
          | select((.id | type) == "number" and (.conclusion | type) == "string") ]
        | sort_by((((.run_started_at // .created_at) | strings
-                    | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"))) // ""),
+                    | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$"))) // ""),
                   .id) | last) as $newest
     | if $newest == null then
         "none\t\($mine | length)\t\($pending)\t\t"
       else
-        "\($newest.conclusion // "none")\t\($mine | length)\t\($pending)\t\($newest.id)\t\($newest.html_url // "")"
+        "\($newest.conclusion // "none")\t\($mine | length)\t\($pending)\t\($newest.id)\t\((($newest.html_url | strings) // "") | gsub("[^!-~]"; ""))"
       end
   ' 2>"$work/jq-error")"; then
     sed 's/^/    jq: /' "$work/jq-error" >&2

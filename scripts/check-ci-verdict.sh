@@ -240,6 +240,15 @@ expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "CI run 109 concluded success"
 
+# The same malformed start time on the ONLY run for the commit: ordering is all
+# that field decides, so the run is still CI's word on this commit.
+run_case '{"workflow_runs":[
+  {"id":111,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"whenever","html_url":"https://example.invalid/run/111"}]}' \
+  "a sole run whose start time is not an instant"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 111 concluded success"
+
 # A rerun in flight beside an older finished run: CI is deciding this commit
 # again, so the older verdict is not the answer — the rerun's is.
 run_polling_case "a rerun in flight beside an older success" \

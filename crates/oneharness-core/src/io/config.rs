@@ -119,7 +119,7 @@ fn with_parents(
 ) -> Result<Vec<(String, FileConfig)>, OneharnessError> {
     // Identity for cycle detection is the canonical path, so `./a.toml` and a
     // symlink to it are one file; the display name stays the path as resolved.
-    let mut seen = vec![canonical(&path)];
+    let mut seen = vec![canonical_or_original(&path)];
     let mut chain = vec![(path, config)];
     loop {
         let (declaring, current) = chain.last().expect("chain starts non-empty");
@@ -138,7 +138,7 @@ fn with_parents(
                 .collect::<Vec<_>>()
                 .join(" -> ")
         };
-        if seen.contains(&canonical(&parent)) {
+        if seen.contains(&canonical_or_original(&parent)) {
             return Err(OneharnessError::ConfigInvalid {
                 path: declaring.display().to_string(),
                 message: format!(
@@ -165,7 +165,7 @@ fn with_parents(
                 ),
             })?;
         let config = parse_at(&parent, &text)?;
-        seen.push(canonical(&parent));
+        seen.push(canonical_or_original(&parent));
         chain.push((parent, config));
     }
     Ok(chain
@@ -177,7 +177,7 @@ fn with_parents(
 
 /// A path's canonical form, or the path itself where it cannot be resolved
 /// (a missing parent is then reported by the read that follows).
-fn canonical(path: &Path) -> PathBuf {
+fn canonical_or_original(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 

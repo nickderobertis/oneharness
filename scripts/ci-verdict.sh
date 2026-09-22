@@ -111,7 +111,10 @@ read_verdict_or_decide() {
   #
   # A parseable answer is not yet a trustworthy one, so the fields this acts on
   # are type-checked here: a run whose id or conclusion is missing or of the
-  # wrong type cannot become the verdict that publishes a release.
+  # wrong type cannot become the verdict that publishes a release, and a start
+  # time that is not a string sorts as the oldest rather than as the newest —
+  # jq orders objects ABOVE strings, so an unchecked one would win the selection
+  # outright.
   if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
     [ .workflow_runs[]?
       | select((.head_sha | type) == "string" and .head_sha == $sha)
@@ -119,7 +122,7 @@ read_verdict_or_decide() {
     | ([ $mine[] | select(.status != "completed") ] | length) as $pending
     | ([ $mine[] | select(.status == "completed")
          | select((.id | type) == "number" and (.conclusion | type) == "string") ]
-       | sort_by(.run_started_at // .created_at, .id) | last) as $newest
+       | sort_by((((.run_started_at // .created_at) | strings) // ""), .id) | last) as $newest
     | if $newest == null then
         "none\t\($mine | length)\t\($pending)\t\t"
       else

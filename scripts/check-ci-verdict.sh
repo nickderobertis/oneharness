@@ -124,8 +124,6 @@ expect_said() {
   }
 }
 
-# One workflow-run object as the API returns it: id, commit, status,
-# conclusion, start time.
 workflow_run_json() { printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s,"run_started_at":"%s","html_url":"https://example.invalid/run/%s"}' "$1" "$2" "$3" "$4" "$5" "$1"; }
 
 # The tagged commit passed; a LATER run of a different commit failed in the same
@@ -220,6 +218,17 @@ run_case '{"workflow_runs":[{"id":90,"head_sha":"'"$SHA_UNDER_TEST"'","status":"
 expect_status 0
 expect_needs_check true
 expect_said "$tmp/out" "reported no usable conclusion"
+
+# A start time of the wrong type must not select the run: jq sorts objects above
+# strings, so an unchecked key would make this malformed run the newest and
+# refuse a release CI passed.
+run_case '{"workflow_runs":[
+  {"id":100,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"failure","run_started_at":{},"html_url":"https://example.invalid/run/100"},
+  {"id":99,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"2026-05-01T00:00:00Z","html_url":"https://example.invalid/run/99"}]}' \
+  "a run whose start time is not a timestamp"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 99 concluded success"
 
 # A rerun in flight beside an older finished run: CI is deciding this commit
 # again, so the older verdict is not the answer — the rerun's is.

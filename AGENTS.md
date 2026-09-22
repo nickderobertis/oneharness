@@ -1163,12 +1163,11 @@ shape. When you add one:
   generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
   `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
   the required checks are green, then `release-plz release` tags `vX.Y.Z` and
-  cuts the GitHub Release. That Release fires `release.yml`, which reads CI's
-  verdict for the exact tagged commit — publishing on a success, refusing and
-  naming the run on a failure, waiting out a run still in flight rather than
-  sweeping the commit twice, and running `just check` itself for every other
-  answer (cancelled, absent, unreadable, or still unfinished when the bounded
-  wait runs out) — idempotently publishes both crates in dependency order
+  cuts the GitHub Release. That Release fires `release.yml`, which reuses CI's
+  verdict for the exact tagged commit instead of re-running the gate on it: a
+  pass publishes, a refusal stops the release, a run still in flight is waited
+  out rather than swept twice, and any other answer runs `just check` here. It
+  idempotently publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:

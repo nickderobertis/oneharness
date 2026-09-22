@@ -152,6 +152,10 @@ run_attempt() {
     pypi-sdk) attempt_pypi_sdk ;;
     npm-cli) attempt_npm_cli ;;
     npm-sdk) attempt_npm_sdk ;;
+    *)
+      printf 'verify-published: no install is implemented for the accepted target %s\n' "$target" >&2
+      return 1
+      ;;
   esac
 }
 
@@ -160,6 +164,7 @@ case "$target" in
   pypi-sdk) what="oneharness-sdk $version from PyPI" ;;
   npm-cli) what="oneharness-cli@$version from npm" ;;
   npm-sdk) what="@oneharness/sdk@$version from npm" ;;
+  *) usage "no description is implemented for the accepted target '$target'" ;;
 esac
 
 last="$work/attempt.log"

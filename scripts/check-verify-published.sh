@@ -158,7 +158,6 @@ for accepted in $accepted_targets; do
   expect_said "$tmp/out" "$VERSION_UNDER_TEST"
 done
 
-# Every target's consumer operation, against registries that answer at once.
 run_case pypi-cli "a PyPI CLI install that resolves immediately"
 expect_status 0
 expect_said "$tmp/out" "on attempt 1 of 3"

@@ -314,7 +314,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// `load(Some(child))` over files planted in `dir`, as `(path, text)`.
+    /// Write each `(relative path, text)` under `dir`, creating its parents.
     fn plant(dir: &Path, files: &[(&str, &str)]) {
         for (name, text) in files {
             let path = dir.join(name);

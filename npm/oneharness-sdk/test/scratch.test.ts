@@ -1,26 +1,23 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PREFIX, removeScratch, scratch, scratchSync } from "./scratch.mjs";
-import {
-	BUN_DEFAULT_HOOK_TIMEOUT_MS,
-	registerScratchCleanup,
-} from "./scratch-hook.mjs";
+import { registerScratchCleanup, SLOW_REMOVAL_MS } from "./scratch-hook.mjs";
 
 registerScratchCleanup();
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 /**
- * What the case below may spend driving the slow fixture.
+ * What either case below may spend driving a cleanup fixture.
  *
- * A test timeout rather than a cleanup one: this case pays the fixture's
- * deliberate delay plus a whole `bun test` startup, so bun's own five-second
- * default would cut it off long before the fixture had a verdict to report.
+ * A test timeout rather than a cleanup one: each pays a deliberate removal
+ * delay plus a whole `bun test` startup, so bun's own default test budget would
+ * cut it off long before its fixture had a verdict to report.
  */
-const SLOW_FIXTURE_CASE_TIMEOUT_MS = 60_000;
+const CLEANUP_FIXTURE_CASE_TIMEOUT_MS = 60_000;
 
 /**
  * Everything one fixture said while failing as its own `bun test` subprocess.
@@ -39,31 +36,34 @@ function runFixture(name: string): string {
 }
 
 /**
- * Everything the slow-cleanup fixture said, and how long saying it took.
+ * Everything a cleanup fixture said, how long it took, and how it ended.
  *
  * Its own `bun test` subprocess, for the same reason the failing fixture gets
- * one: a suite cannot watch its own teardown be waited out. A non-zero status
- * is quoted rather than asserted away, because the message bun prints when it
- * cuts a hook off at five seconds is the whole diagnosis.
+ * one: a suite cannot watch its own teardown be waited out. The status comes
+ * back rather than being asserted here, because the two callers want opposite
+ * verdicts from it and each quotes the output when it does not get one — the
+ * message bun prints on a hook it cut short is the whole diagnosis.
  *
  * Run from this directory rather than the package root, so the package
  * `bunfig.toml`'s coverage threshold — a property of the whole suite — is not
- * what decides a subprocess that loads one file on purpose. The fixtures above
- * can ignore that because a non-zero status is what they assert.
+ * what decides a subprocess that loads one file on purpose. `runFixture` above
+ * can ignore that, because a non-zero status is all its callers ever want.
  */
-function runSlowFixture(): { elapsed: number; output: string } {
+function runCleanupFixture(name: string): {
+	elapsed: number;
+	output: string;
+	status: number | null;
+} {
 	const started = Date.now();
-	const run = spawnSync(
-		"bun",
-		["test", resolve(here, "scratch-slow.fixture.ts")],
-		{ cwd: here, encoding: "utf8" },
-	);
-	const elapsed = Date.now() - started;
-	const output = `${run.stdout}${run.stderr}`;
-	if (run.status !== 0) {
-		throw new Error(`the slow-cleanup fixture did not pass:\n${output}`);
-	}
-	return { elapsed, output };
+	const run = spawnSync("bun", ["test", resolve(here, name)], {
+		cwd: here,
+		encoding: "utf8",
+	});
+	return {
+		elapsed: Date.now() - started,
+		output: `${run.stdout}${run.stderr}`,
+		status: run.status,
+	};
 }
 
 /**
@@ -133,12 +133,38 @@ test(
 		// in its teardown whenever the disk was contended. The fixture registers
 		// this suite's own `registerScratchCleanup` over a removal that takes
 		// longer than bun would wait unasked, so one run says three things: it
-		// passed, so the shared timeout really replaced the five-second default;
-		// it took that long, so the runner awaited the removal rather than moving
-		// on; and the directory is gone, so what it awaited ran to completion.
-		const { elapsed, output } = runSlowFixture();
-		expect(elapsed).toBeGreaterThan(BUN_DEFAULT_HOOK_TIMEOUT_MS);
+		// passed, so the shared timeout really replaced bun's default; it took
+		// that long, so the runner awaited the removal rather than moving on; and
+		// the directory is gone, so what it awaited ran to completion.
+		const { elapsed, output, status } = runCleanupFixture(
+			"scratch-slow.fixture.ts",
+		);
+		if (status !== 0) {
+			throw new Error(`the guarded cleanup fixture did not pass:\n${output}`);
+		}
+		expect(elapsed).toBeGreaterThanOrEqual(SLOW_REMOVAL_MS);
 		expect(existsSync(scratchDirectoryFrom(output))).toBe(false);
 	},
-	SLOW_FIXTURE_CASE_TIMEOUT_MS,
+	CLEANUP_FIXTURE_CASE_TIMEOUT_MS,
+);
+
+test(
+	"the same removal under bun's own default budget is cut short",
+	() => {
+		// The drift gate under `SLOW_REMOVAL_MS`. Bun owns its default and can
+		// raise it; if it rose past that delay, the case above would still pass
+		// while attributing to the shared timeout a cleanup bun would have waited
+		// out anyway. So the same delay is run under the bare registration this
+		// suite stopped using, and bun has to cut it off.
+		const { output, status } = runCleanupFixture(
+			"scratch-unguarded.fixture.ts",
+		);
+		// Given back first: this fixture is abandoned mid-removal on purpose, and
+		// a failing assertion below must not also leave the directory behind for
+		// `scripts/check-temp-leaks.sh` to find.
+		rmSync(scratchDirectoryFrom(output), { force: true, recursive: true });
+		expect(status).not.toBe(0);
+		expect(output).toContain("hook timed out");
+	},
+	CLEANUP_FIXTURE_CASE_TIMEOUT_MS,
 );

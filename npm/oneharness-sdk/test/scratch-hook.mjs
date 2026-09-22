@@ -9,25 +9,30 @@ import { afterEach } from "bun:test";
 import { removeScratchAsync } from "./scratch.mjs";
 
 /**
- * Bun's own default budget for a hook, which this suite's cleanup must outlive.
- *
- * Named here because it is the number every constant below is measured against:
- * the shared timeout is what raises the cleanup past it, and the fixture that
- * proves the raise works delays a removal past it on purpose.
- */
-export const BUN_DEFAULT_HOOK_TIMEOUT_MS = 5_000;
-
-/**
  * How long a scratch removal may take before bun calls the teardown failed.
  *
- * Sized for a contended disk, not for the removal itself: five seconds is a
- * removal's time when nothing else is using the volume, and a parallel build, a
- * container sharing it, or another suite running against the same temp
- * directory has taken a removal past that and failed an otherwise-passing test
- * in its cleanup. Nothing waits this long when the disk is free — the hook ends
- * as soon as the removal does — so the budget costs an uncontended run nothing.
+ * Sized for a contended disk rather than for the removal itself. Bun's own
+ * default hook budget — five seconds — is a removal's time when nothing else is
+ * using the volume; a parallel build, a container sharing it, or another suite
+ * against the same temp directory has taken a removal past that and failed an
+ * otherwise-passing test in its cleanup. Nothing waits this long when the disk
+ * is free, because the hook ends as soon as the removal does, so the budget
+ * costs an uncontended run nothing.
  */
 export const SCRATCH_CLEANUP_TIMEOUT_MS = 60_000;
+
+/**
+ * The delay the cleanup fixtures put in front of a removal.
+ *
+ * It has to outlast bun's own default hook budget, which is the whole reason a
+ * cleanup that finishes is attributable to `SCRATCH_CLEANUP_TIMEOUT_MS` rather
+ * than to bun having been patient enough on its own. Bun owns that default and
+ * can raise it, so the relationship is asserted instead of assumed:
+ * `scratch.test.ts` runs this same delay under an unguarded hook and requires
+ * bun to cut it off, which turns a raised default into a red suite rather than
+ * a fixture quietly proving nothing.
+ */
+export const SLOW_REMOVAL_MS = 6_000;
 
 /**
  * Register the shared scratch teardown for the calling suite.

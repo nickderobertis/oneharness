@@ -242,6 +242,19 @@ fn run_with_config_in(
     cmd.output().expect("failed to run oneharness")
 }
 
+/// A `oneharness` command with the [`ENV_OVERRIDE_VARS`] cleared, for a test
+/// that spawns the binary itself (to hold the child open) with config loading
+/// on. Without it the host's own `ONEHARNESS_HISTORY=1` points the run at the
+/// real history store, whose startup reconcile can outlast a test's wait for
+/// the control socket.
+fn oneharness_without_env_overrides() -> Command {
+    let mut cmd = Command::new(oneharness_bin());
+    for var in ENV_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 /// A unique temp dir holding a project `oneharness.toml` plus an (empty unless
 /// stated) user-level config to pin ONEHARNESS_CONFIG to.
 struct ConfigFixture {
@@ -30957,7 +30970,7 @@ fn a_redirection_its_candidate_never_delivered_is_said_and_dropped_at_the_fall_t
     let fx = ConfigFixture::new("control-redirect-fallthrough", &project, "");
     let cwd_arg = fx.cwd();
 
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
             "run",
@@ -31607,7 +31620,7 @@ fn a_controlled_fallback_chain_of_one_still_submits_its_turn_to_a_pooled_server(
     let log = store.join("server.log");
     let pool = store.join("pool");
 
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
         // A pool root inside the test's own temp tree, so it can never reuse or
@@ -31726,7 +31739,7 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
     let fx = ConfigFixture::new("control-http-fallthrough", &project, "");
     let cwd_arg = fx.cwd();
 
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
         .env("XDG_STATE_HOME", pool.display().to_string())
@@ -31968,7 +31981,7 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
     );
     let fx = ConfigFixture::new("control-per-candidate-prompt", &project, "");
     let cwd_arg = fx.cwd();
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
             "run",
@@ -32079,7 +32092,7 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
     let fx = ConfigFixture::new("control-dialogue-drop", &project, "");
     let cwd_arg = fx.cwd();
 
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
             "run",
@@ -32182,7 +32195,7 @@ fn a_chain_of_two_pooled_server_candidates_leases_them_one_at_a_time() {
     let fx = ConfigFixture::new("control-pooled-chain", &project, "");
     let cwd_arg = fx.cwd();
 
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .env("MOCK_HTTP_CONTROL_LOG", log.display().to_string())
         .env("MOCK_HTTP_CONTROL_FAULT", "first-candidate-dies")
@@ -32418,7 +32431,7 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
     let fx = ConfigFixture::new("control-mixed-chain", &project, "");
     let cwd_arg = fx.cwd();
 
-    let child = Command::new(oneharness_bin())
+    let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
         .args([
             "run",

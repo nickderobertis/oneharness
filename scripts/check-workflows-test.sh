@@ -25,12 +25,23 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# The staged checkouts are what a failure is diagnosed from, and they are gone
+# by the time anyone reads the diagnostic. KEEP_FIXTURES leaves them, so the
+# `fix:` line below can name a checkout that will still be there.
+if [ -n "${KEEP_FIXTURES:-}" ]; then
+  trap 'echo "check-workflows-test: staged checkouts kept under $work" >&2' EXIT
+else
+  trap 'rm -rf "$work"' EXIT
+fi
 
 fail_showing() {
   echo "check-workflows-test: $1" >&2
   echo "  what the gate said:" >&2
-  cat "$work/out" >&2
+  sed 's/^/    /' "$work/out" >&2
+  echo "  fix: what decides every case here is the MSRV block in scripts/check-workflows.sh — package_rust_version, which reads the [package] table alone, and the loop below it that resolves an 'inherit' through [workspace.package]. To see this case by hand, rerun as" >&2
+  echo "         KEEP_FIXTURES=1 bash scripts/check-workflows-test.sh" >&2
+  echo "       which leaves the staged checkout at ${root:-$work}, then drive the gate against it directly with" >&2
+  echo "         bash ${root:-$work}/scripts/check-workflows.sh" >&2
   exit 1
 }
 

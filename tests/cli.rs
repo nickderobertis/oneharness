@@ -298,6 +298,30 @@ fn json_stdout(output: &Output) -> Value {
     })
 }
 
+/// A path resolved the way oneharness resolves the ones it prints.
+///
+/// **Both sides of a printed-path assertion go through this.** A path the
+/// product echoes back has usually been canonicalized (a history store, a
+/// history project, a bound socket address), while the one the test spelled is
+/// whatever the caller wrote — and on macOS those two differ for every temp
+/// path, because `/tmp` is a symlink to `/private/tmp`. Comparing them raw
+/// passes on Linux and then cancels a macOS job 20 minutes later.
+/// `just test-symlinked-tmp` replays these journeys under that spelling on
+/// Linux, and resolving both sides is what satisfies it.
+///
+/// Both sides, not just the expected one: canonicalizing only the path the test
+/// spelled still pins the product's own spelling, so the assertion is about
+/// where the path points only when the actual side is resolved too.
+fn resolved(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
+    std::fs::canonicalize(path).unwrap_or_else(|err| {
+        panic!(
+            "a path compared against another must exist to be resolved: {} ({err})",
+            path.display()
+        )
+    })
+}
+
 fn bin_override(id: &str) -> String {
     format!("{id}={}", mock_bin().display())
 }
@@ -16105,9 +16129,8 @@ fn history_enabled_and_dir_via_environment() {
         .as_str()
         .map(str::to_string);
     let hf = hf.expect("env should enable history");
-    let canonical_dir = std::fs::canonicalize(&dir).expect("history directory should exist");
     assert!(
-        Path::new(&hf).starts_with(&canonical_dir),
+        resolved(&hf).starts_with(resolved(&dir)),
         "ONEHARNESS_HISTORY_DIR should place the store: {hf}"
     );
 }
@@ -16231,11 +16254,8 @@ fn history_canonicalizes_relative_cwd_for_project_lookup() {
     ));
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(
-        listed[0]["project"],
-        std::fs::canonicalize(&project)
-            .unwrap()
-            .display()
-            .to_string()
+        resolved(listed[0]["project"].as_str().unwrap()),
+        resolved(&project)
     );
 }
 
@@ -17867,8 +17887,8 @@ fn history_list_scopes_by_project() {
     ));
     assert_eq!(just_a.as_array().unwrap().len(), 1);
     assert_eq!(
-        just_a[0]["project"],
-        std::fs::canonicalize(&pa).unwrap().display().to_string()
+        resolved(just_a[0]["project"].as_str().unwrap()),
+        resolved(&pa)
     );
 }
 
@@ -33800,8 +33820,8 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
     // same invocation and proven to be the seeded file by resolving both.
     let names_the_seeded_file = |listed: &str| {
         assert_eq!(
-            std::fs::canonicalize(listed).expect("the listed session file exists"),
-            std::fs::canonicalize(&session_file).expect("the seeded session file exists"),
+            resolved(listed),
+            resolved(&session_file),
             "the listed file is not the seeded session"
         );
     };

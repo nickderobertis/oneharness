@@ -38,8 +38,9 @@ bootstrap:
 # enforced coverage*, build, artifact smoke. Fails on any issue. `coverage`
 # re-runs the workspace suite under instrumentation and fails below
 # {{COVERAGE_MIN}}% lines; `test` stays in the gate as the fast, un-instrumented
-# pass/fail signal.
-check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
+# pass/fail signal, and `test-symlinked-tmp` replays the CLI journeys under the
+# temp-path spelling only macOS would otherwise produce.
+check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check test test-symlinked-tmp coverage build smoke
     @echo "check: ok"
 
 # Complete pre-push gate: deterministic product/dependency/API checks, followed
@@ -138,6 +139,29 @@ lint-workflows: build build-mock-harness
 # minutes-long step still says what it is running before it goes quiet.
 test:
     bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
+
+# Replay the CLI journeys with the host temp directory reached through a symlink
+# — the spelling macOS gives every temp path and Linux never does. Linux only,
+# skipped elsewhere: macOS runs every journey that way already, Windows has no
+# such root.
+#
+# `--test cli` is where the path-sensitive journeys live. `$TMPDIR` alone points
+# at the symlink — nothing sets `OH_SCRATCH_ROOTS` — so the leak gate's own
+# default roots are what have to keep watching the scratch space behind it, the
+# arrangement `check-temp-leaks-test.sh` holds in place.
+test-symlinked-tmp:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$(uname -s)" != "Linux" ]]; then
+        echo "test-symlinked-tmp: skipped off Linux (macOS spells every temp path through /tmp -> /private/tmp already; Windows has no such root)"
+        exit 0
+    fi
+    root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX")
+    trap 'rm -rf "$root"' EXIT
+    mkdir "$root/real"
+    ln -s "$root/real" "$root/link"
+    export TMPDIR="$root/link"
+    bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --test cli --locked --status-level fail --final-status-level fail; else cargo test --features {{FEATURES}} --test cli --locked --quiet; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and

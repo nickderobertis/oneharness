@@ -85,9 +85,12 @@ Use the `just` recipes; do not hand-roll equivalents.
   naming the key and base commit it was recorded for; anything less judges again.
 - `just test` / `just lint` / `just format` — individual gate steps. `test` runs
   the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
-  scratch space. `just lint-doc` (also in `check`) builds `oneharness-core`'s
-  public documentation with rustdoc warnings as errors; never make an item
-  public to satisfy a doc link.
+  scratch space. `test-symlinked-tmp` (Linux, in `check`) replays the CLI
+  journeys with `$TMPDIR` reached through a symlink, the spelling macOS gives
+  every temp path; the leak gate resolves its roots before sweeping, so it still
+  watches the scratch space behind one. `just lint-doc` (also in `check`) builds
+  `oneharness-core`'s public documentation with rustdoc warnings as errors; never
+  make an item public to satisfy a doc link.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below
   95% line coverage (the `COVERAGE_MIN` gate, also part of `just check` and CI).
   `just coverage-html` writes a browsable report to find uncovered lines.

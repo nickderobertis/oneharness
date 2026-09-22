@@ -79,6 +79,21 @@ if ! bash "$gate" true >"$work/out" 2>&1; then
 fi
 rm -rf "$work/oneharness-pre-existing"
 
+# A root reached through a symlink still watches the directory the scratch space
+# really lands in. `find` does not follow a symlinked starting point, so a gate
+# that swept the root as spelled would call every run clean — and that spelling
+# is what macOS gives every run for free and what `just test-symlinked-tmp`
+# reproduces on Linux.
+mkdir -p "$work/behind-a-symlink"
+ln -s "$work/behind-a-symlink" "$work/through-a-symlink"
+if OH_SCRATCH_ROOTS="$work/through-a-symlink" \
+  bash "$gate" bash -c "mkdir -p '$work/behind-a-symlink/oneharness-under-a-symlink'" >"$work/out" 2>&1; then
+  fail "a leak under a symlinked root should have been reported"
+fi
+grep -q "oneharness-under-a-symlink" "$work/out" ||
+  fail "the gate went red under a symlinked root without naming the directory left behind"
+rm -rf "$work/through-a-symlink" "$work/behind-a-symlink"
+
 # A temp *file* is not a leak: the temp directory is shared with real
 # `oneharness` runs, which write and clean up files of their own.
 if ! bash "$gate" bash -c "touch '$work/oneharness-left.txt'" >"$work/out" 2>&1; then

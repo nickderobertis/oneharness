@@ -41,11 +41,18 @@ if [ -z "$prefix" ]; then
   exit 2
 fi
 
+# Each root is resolved before it is swept: `find` does not follow a symlinked
+# starting point, so a root spelled through one would match nothing and report
+# every leak as a clean run. That is not a hypothetical spelling — macOS hands
+# it to every run for free (`/tmp` is a symlink to `/private/tmp`) and
+# `just test-symlinked-tmp` reproduces it on Linux, where `$TMPDIR` is the
+# symlink and the scratch space lands in the directory behind it.
 snapshot() {
-  local dir
+  local dir real
   for dir in "${scratch_roots[@]}"; do
-    if [ -z "$dir" ] || [ ! -d "$dir" ]; then continue; fi
-    find "$dir" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
+    if [ -z "$dir" ]; then continue; fi
+    real=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || continue
+    find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
   done | sort -u
 }
 

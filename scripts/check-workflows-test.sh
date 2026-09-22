@@ -27,14 +27,21 @@ cd "$repo_root"
 work="$(mktemp -d)"
 # The staged checkouts are what a failure is diagnosed from, and they are gone
 # by the time anyone reads the diagnostic. KEEP_FIXTURES leaves them, so the
-# `fix:` line below can name a checkout that will still be there.
-if [ -n "${KEEP_FIXTURES:-}" ]; then
-  trap 'echo "check-workflows-test: staged checkouts kept under $work" >&2' EXIT
-else
-  trap 'rm -rf "$work"' EXIT
-fi
+# `fix:` line below can name a checkout that will still be there — but only on
+# the failure it was asked for. A passing run has nothing to diagnose, so it
+# takes the checkouts back and says its one line either way.
+keep=0
+cleanup() {
+  if [ "$keep" = 1 ]; then
+    echo "check-workflows-test: staged checkouts kept under $work" >&2
+  else
+    rm -rf "$work"
+  fi
+}
+trap cleanup EXIT
 
 fail_showing() {
+  [ -z "${KEEP_FIXTURES:-}" ] || keep=1
   echo "check-workflows-test: $1" >&2
   echo "  what the gate said:" >&2
   sed 's/^/    /' "$work/out" >&2

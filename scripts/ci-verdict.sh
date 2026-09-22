@@ -92,6 +92,7 @@ decide() {
 # poll for when the API itself is unreachable.
 conclusion=none
 for_sha=0
+pending=0
 run_id=
 run_url=
 read_verdict_or_decide() {
@@ -104,23 +105,25 @@ read_verdict_or_decide() {
   # The API's own `head_sha` filter is not trusted to be the whole answer: this
   # decides whether a gate runs, so the sha is matched again here. Runs that
   # have not finished say nothing yet, so only completed ones are selected,
-  # newest last by start time with the run id breaking a tie.
+  # newest last by start time with the run id breaking a tie — and the unfinished
+  # ones are counted, because a rerun in flight is CI still deciding, whatever an
+  # older run of the same commit concluded.
   if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
     [ .workflow_runs[]? | select(.head_sha == $sha) ] as $mine
-    | [ $mine[] | select(.status == "completed") ]
-    | sort_by(.run_started_at // .created_at, .id)
-    | last
-    | if . == null then
-        "none\t\($mine | length)\t\t"
+    | ([ $mine[] | select(.status != "completed") ] | length) as $pending
+    | ([ $mine[] | select(.status == "completed") ]
+       | sort_by(.run_started_at // .created_at, .id) | last) as $newest
+    | if $newest == null then
+        "none\t\($mine | length)\t\($pending)\t\t"
       else
-        "\(.conclusion // "none")\t\($mine | length)\t\(.id)\t\(.html_url // "")"
+        "\($newest.conclusion // "none")\t\($mine | length)\t\($pending)\t\($newest.id)\t\($newest.html_url // "")"
       end
   ' 2>"$work/jq-error")"; then
     sed 's/^/    jq: /' "$work/jq-error" >&2
     decide true "the $workflow runs for $sha did not parse as workflow-run JSON (jq said why above), so CI's verdict is unknown; running the gate here instead."
   fi
 
-  IFS=$'\t' read -r conclusion for_sha run_id run_url <<<"$summary"
+  IFS=$'\t' read -r conclusion for_sha pending run_id run_url <<<"$summary"
 }
 
 # A run that is still going is WAITED for, never duplicated: running the whole
@@ -129,13 +132,17 @@ read_verdict_or_decide() {
 # how long it took.
 for poll in $(seq 1 "$wait_attempts"); do
   read_verdict_or_decide
-  if [ "$conclusion" != none ] || [ "$for_sha" -eq 0 ]; then
+  if [ "$pending" -eq 0 ]; then
     break
   fi
   if [ "$poll" -lt "$wait_attempts" ]; then
     sleep "$wait_delay"
   fi
 done
+
+if [ "$pending" -gt 0 ]; then
+  decide true "CI still had $pending unfinished run(s) for $sha after $wait_attempts polls over ~$((wait_attempts * wait_delay))s; running the gate here instead."
+fi
 
 case "$conclusion" in
   success)
@@ -150,7 +157,7 @@ case "$conclusion" in
     ;;
   none)
     if [ "$for_sha" -gt 0 ]; then
-      decide true "CI's $for_sha run(s) for $sha had still not finished after $wait_attempts polls over ~$((wait_attempts * wait_delay))s; running the gate here instead."
+      decide true "CI's newest finished run for $sha reported no conclusion at all; running the gate here instead."
     fi
     decide true "CI has no run for $sha; running the gate here instead."
     ;;

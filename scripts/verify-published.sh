@@ -57,16 +57,16 @@ trap 'rm -rf "$work"' EXIT
 # Every attempt ends in this: an install nothing was run against proves only
 # that a registry answered.
 smoke_cli() {
-  local installed field matched=
+  local installed name reported
   installed="$(oneharness --version)" || return 1
-  # Whole-token equality, not a substring: `oneharness 9.9.99` contains `9.9.9`,
-  # and a release that shipped the wrong version is exactly what this is here to
-  # catch.
-  for field in $installed; do
-    [ "$field" = "$version" ] && matched=1
-  done
-  if [ -z "$matched" ]; then
-    printf 'the installed oneharness reports %s, not %s\n' "$installed" "$version" >&2
+  # The shape AND the value, from process output that is external like any other
+  # input: clap prints `<bin> <version>`, so the name must be this binary and the
+  # version field must EQUAL the asked-for one. A substring would accept
+  # `oneharness 9.9.99` for 9.9.9, which is a release that shipped the wrong
+  # artifact — the thing this is here to catch.
+  read -r name reported _ <<<"$installed"
+  if [ "$name" != oneharness ] || [ "$reported" != "$version" ]; then
+    printf 'the installed oneharness reports %s, not oneharness %s\n' "$installed" "$version" >&2
     return 1
   fi
   oneharness --help >/dev/null || return 1

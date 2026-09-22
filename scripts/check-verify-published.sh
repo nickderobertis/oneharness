@@ -45,6 +45,9 @@ STUB
 cat >"$tmp/bin/npm" <<'STUB'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >>"$CALL_LOG"
+# Only `npm install` lags: `npm init` in a fresh directory is local and always
+# works, so a case that makes it fail would be proving the wrong thing.
+[ "${1:-}" = install ] || exit 0
 count="$STUB_STATE/npm.count"
 n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "$n" >"$count"
@@ -71,7 +74,7 @@ if [ "${1:-}" = "--version" ]; then
     echo "oneharness: no binary package found for this platform (attempt $n)" >&2
     exit 1
   fi
-  printf 'oneharness %s\n' "${STUB_CLI_VERSION:?}"
+  printf '%s %s\n' "${STUB_CLI_NAME:-oneharness}" "${STUB_CLI_VERSION:?}"
 fi
 STUB
 
@@ -98,7 +101,7 @@ run_case() {
   description="$2"
   set +e
   CALL_LOG="$tmp/calls" STUB_STATE="$tmp/state" \
-    STUB_CLI_VERSION="${STUB_CLI_VERSION:-$VERSION_UNDER_TEST}" \
+    STUB_CLI_VERSION="${STUB_CLI_VERSION:-$VERSION_UNDER_TEST}" STUB_CLI_NAME="${STUB_CLI_NAME:-oneharness}" \
     PATH="$tmp/bin:$PATH" VERIFY_ATTEMPTS="${ATTEMPTS_OVERRIDE-3}" VERIFY_DELAY="${DELAY_OVERRIDE-0}" \
     bash "$root/scripts/verify-published.sh" "$1" "${VERSION_OVERRIDE-$VERSION_UNDER_TEST}" \
     >"$tmp/out" 2>"$tmp/err"
@@ -184,12 +187,18 @@ expect_calls 3 "pip install --no-cache-dir oneharness-cli==$VERSION_UNDER_TEST"
 # and it must not pass because the install exited 0.
 STUB_CLI_VERSION=8.8.8 run_case pypi-cli "an install that resolves the wrong version"
 expect_status 1
-expect_said "$tmp/err" "the installed oneharness reports oneharness 8.8.8, not $VERSION_UNDER_TEST"
+expect_said "$tmp/err" "the installed oneharness reports oneharness 8.8.8, not oneharness $VERSION_UNDER_TEST"
 
 # A version that merely CONTAINS the one asked for is a different version.
 STUB_CLI_VERSION=9.9.99 run_case pypi-cli "an install that resolves a version containing the asked-for one"
 expect_status 1
-expect_said "$tmp/err" "the installed oneharness reports oneharness 9.9.99, not $VERSION_UNDER_TEST"
+expect_said "$tmp/err" "the installed oneharness reports oneharness 9.9.99, not oneharness $VERSION_UNDER_TEST"
+
+# ...and a right-looking version printed by something else is not this binary.
+STUB_CLI_NAME=oneharness-mock run_case pypi-cli "a version line printed by another program"
+unset STUB_CLI_NAME
+expect_status 1
+expect_said "$tmp/err" "the installed oneharness reports oneharness-mock $VERSION_UNDER_TEST"
 
 # A smoke step AFTER the version check failing is still a failed install: the
 # package resolved, and the thing it installed does not work.
@@ -209,6 +218,18 @@ STUB_SMOKE_FAILS=1 run_case npm-sdk "a Node SDK smoke program that refuses"
 unset STUB_SMOKE_FAILS
 expect_status 1
 expect_said "$tmp/err" "node: AssertionError from the SDK smoke program"
+
+# Both SDK targets lag exactly as the CLI ones do: one recovers inside the
+# bound, one never does and must surface its last error.
+STUB_PIP_FAILS=2 run_case pypi-sdk "a PyPI SDK install that resolves on the third try"
+expect_status 0
+expect_said "$tmp/out" "on attempt 3 of 3"
+expect_calls 3 "pip install --no-cache-dir oneharness-sdk==$VERSION_UNDER_TEST"
+
+STUB_NPM_FAILS=99 run_case npm-sdk "an npm SDK install that never resolves"
+expect_status 1
+expect_said "$tmp/err" "npm error code E404 (attempt 3)"
+expect_said "$tmp/err" "@oneharness/sdk@$VERSION_UNDER_TEST from npm was still not installable after 3 attempts"
 
 # A bound read from the environment is an external input like any other: a
 # wait of no attempts, or one that is not a number, verifies nothing.

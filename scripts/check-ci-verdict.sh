@@ -82,7 +82,10 @@ run_case() {
 # $1 case description, then one answer per successive poll; the last one repeats
 # for any poll beyond them.
 run_polling_case() {
-  local description="$1" answer n=0
+  # `label` rather than `description`: bash scoping would make a local of that
+  # name shadow the global invoke() sets, and every later failure would then be
+  # reported under the previous case's name.
+  local label="$1" answer n=0
   shift
   rm -f "$tmp"/runs.*
   for answer in "$@"; do
@@ -90,7 +93,7 @@ run_polling_case() {
     printf '%s' "$answer" >"$tmp/runs.$n"
   done
   printf '%s' "$answer" >"$tmp/runs"
-  invoke "$description"
+  invoke "$label"
 }
 
 expect_status() {
@@ -198,7 +201,19 @@ run_case "{\"workflow_runs\":[$(run 51 "$SHA_UNDER_TEST" in_progress null 2026-0
   "a CI run that does not finish inside the bound"
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/out" "had still not finished after 3 polls"
+expect_said "$tmp/out" "still had 1 unfinished run(s)"
+
+# A rerun in flight beside an older finished run: CI is deciding this commit
+# again, so the older verdict is not the answer — the rerun's is.
+run_polling_case "a rerun in flight beside an older success" \
+  "{\"workflow_runs\":[$(run 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(run 71 "$SHA_UNDER_TEST" in_progress null 2026-01-04T00:00:00Z)]}" \
+  "{\"workflow_runs\":[$(run 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(run 71 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-04T00:00:00Z)]}"
+expect_status 1
+expect_said "$tmp/err" "CI run 71 concluded failure"
+if [ -s "$tmp/github-output" ]; then
+  cat "$tmp/github-output" >&2
+  fail "$description: an older success must not publish while CI is deciding again"
+fi
 
 # A conclusion nobody enumerated — GitHub has several, and a new one must not
 # read as a pass.

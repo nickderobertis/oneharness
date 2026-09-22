@@ -246,7 +246,8 @@ fn run_with_config_in(
 /// that spawns the binary itself (to hold the child open) with config loading
 /// on. Without it the host's own `ONEHARNESS_HISTORY=1` points the run at the
 /// real history store, whose startup reconcile can outlast a test's wait for
-/// the control socket.
+/// the control socket. Unix-only, like every control test that spawns one.
+#[cfg(unix)]
 fn oneharness_without_env_overrides() -> Command {
     let mut cmd = Command::new(oneharness_bin());
     for var in ENV_OVERRIDE_VARS {

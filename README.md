@@ -543,6 +543,7 @@ array records exactly which files shaped a run.
 
 #### Inheriting a parent config (`extends`)
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of the `extends` contract the task requires here; its drift gate is the behavior, pinned claim by claim. Resolution against the declaring file's directory and the absolute form: `io::config`'s `a_three_file_chain_folds_deepest_ancestor_first_from_each_files_own_dir` and `an_absolute_extends_is_used_as_written`, and through the real binary from two unrelated working directories, `config_command_attributes_an_inherited_value_to_the_parent_file`. Every merge rule listed (scalars, `[env]`, `[harness.<id>].env`, a variant's `env`/`env_from`/`unset_env`, `history_labels`, `harnesses` and `all` as a unit, per-id/per-name merging): `domain::config`'s `merge_under_a_parent_follows_the_contract_and_drops_extends`. Chains, the cycle, the bound and the missing parent: `a_cycle_is_refused_naming_the_file_closing_it_and_the_chain`, `a_chain_past_the_depth_bound_is_refused_with_the_chain_named`, `the_readme_states_the_chain_bound_the_loader_enforces`, `a_missing_parent_is_refused_naming_the_declaring_file_and_resolved_path`, and `a_missing_parent_config_is_a_usage_error_naming_both_files`. Scope and precedence: `extends_is_a_top_level_key_only`, `env_and_cli_beat_a_value_the_parent_config_states`, and `discovered_user_and_project_configs_each_resolve_their_own_chain` (discovery and `$ONEHARNESS_CONFIG`). Provenance: `config_command_attributes_an_inherited_value_to_the_parent_file` and `a_run_uses_a_harness_only_the_parent_config_names`. Library: `parse_reads_extends_and_follows_nothing`. -->
 A config file may name one parent with a top-level `extends = "<path>"` and
 state only what differs from it:
 
@@ -557,9 +558,7 @@ model = "claude-opus-4-8"
 - **Resolution.** A relative path resolves against the directory of the file
   that declares it — never the process's working directory — so the same file
   resolves the same parent however it is reached (`--config`, discovery,
-  `$ONEHARNESS_CONFIG`). An absolute path is used as written. Only `extends`
-  is resolved this way; every other path-valued field keeps the meaning it has
-  in any config file.
+  `$ONEHARNESS_CONFIG`). An absolute path is used as written.
 - **Merge.** The parent is a layer immediately below the declaring file,
   folded by the same rule that layers a project file over the user file:
   scalars take the child's value and fall through to the parent's when the
@@ -590,6 +589,7 @@ model = "claude-opus-4-8"
   `extends` unresolved on `FileConfig::extends` — so a caller holding config
   text with no filesystem location (fetched over a URL, say) can see that the
   document asked for a parent it cannot reach and decide what to do about it.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 A `[harness.<id>.variant.<name>]` section is an opt-in named preset selected
 everywhere as `<id>:<name>`. `--all` selects base harnesses only; variants never

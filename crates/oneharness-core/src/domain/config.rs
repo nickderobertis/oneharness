@@ -1617,12 +1617,19 @@ variant = true
 harnesses = ["codex", "claude-code"]
 timeout = 30
 stream = true
+history_labels = { team = "parent", owner = "parent" }
 [env]
 SHARED = "parent"
 PARENT_ONLY = "parent"
+[harness.codex]
+model = "parent-codex"
+[harness.codex.env]
+CODEX_SHARED = "parent"
+CODEX_PARENT = "parent"
 [harness.claude-code.variant.work]
 model = "parent-model"
 unset_env = ["A", "B"]
+env = { WORK_SHARED = "parent", WORK_PARENT = "parent" }
 [harness.claude-code.variant.work.env_from]
 ANTHROPIC_API_KEY = "KEY_WORK"
 [harness.claude-code.variant.home]
@@ -1634,10 +1641,14 @@ unset_env = ["C"]
 extends = "parent.toml"
 harnesses = ["claude-code"]
 timeout = 60
+history_labels = { owner = "child" }
 [env]
 SHARED = "child"
+[harness.codex.env]
+CODEX_SHARED = "child"
 [harness.claude-code.variant.work]
 unset_env = ["Z"]
+env = { WORK_SHARED = "child" }
 [harness.claude-code.variant.work.env_from]
 CLAUDE_CONFIG_DIR = "CLAUDE_DIR_WORK"
 [harness.claude-code.variant.home]
@@ -1651,14 +1662,33 @@ model = "child-home"
         assert_eq!(merged.stream, Some(true));
         assert_eq!(merged.env["SHARED"], "child");
         assert_eq!(merged.env["PARENT_ONLY"], "parent");
+        let labels = merged.history_labels.clone().unwrap();
+        let labels = labels.as_map();
+        assert_eq!(labels["team"], "parent");
+        assert_eq!(labels["owner"], "child");
+        let codex = &merged.harness["codex"];
+        assert_eq!(codex.model.as_deref(), Some("parent-codex"));
+        assert_eq!(codex.env["CODEX_SHARED"], "child");
+        assert_eq!(codex.env["CODEX_PARENT"], "parent");
         let work = merged.variant_for("claude-code:work").unwrap();
         assert_eq!(work.model.as_deref(), Some("parent-model"));
         assert_eq!(work.unset_env, ["Z"]);
+        assert_eq!(work.env["WORK_SHARED"], "child");
+        assert_eq!(work.env["WORK_PARENT"], "parent");
         assert_eq!(work.env_from["ANTHROPIC_API_KEY"], "KEY_WORK");
         assert_eq!(work.env_from["CLAUDE_CONFIG_DIR"], "CLAUDE_DIR_WORK");
         let home = merged.variant_for("claude-code:home").unwrap();
         assert_eq!(home.unset_env, ["C"]);
         assert_eq!(home.model.as_deref(), Some("child-home"));
+
+        // `all` moves with `harnesses`: a child stating either replaces the
+        // parent's whole selection, so the two never combine.
+        let merged = merge(
+            parsed("harnesses = [\"codex\"]"),
+            parsed("extends = \"parent.toml\"\nall = true"),
+        );
+        assert_eq!(merged.all, Some(true));
+        assert_eq!(merged.harnesses, None);
     }
 
     #[test]

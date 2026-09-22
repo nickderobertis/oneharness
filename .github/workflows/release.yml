@@ -11,7 +11,7 @@ name: Release
 # fallback — it triggers the same validated path, and gets the gate run here
 # because CI never saw that commit.
 #
-#   * test               — CI's verdict for the exact tagged commit: publish on
+#   * gate               — CI's verdict for the exact tagged commit: publish on
 #                           a success, refuse on a failure, and run the same
 #                           gate here when CI's run was cancelled or absent.
 #   * upload             — build each target on a native runner, attach the
@@ -76,13 +76,14 @@ jobs:
   #
   # The gate still runs here whenever CI did not answer for this commit: CI on
   # `main` cancels in progress per ref, so a later push can cancel the tagged
-  # commit's run, and a hand-made Release may have no run at all. A CI failure
-  # refuses the release outright, naming the run to read.
+  # commit's run, and a hand-made Release may have no run at all. A run that is
+  # still going is waited for rather than duplicated. A CI failure refuses the
+  # release outright, naming the run to read.
   #
   # The decision is scripts/ci-verdict.sh, driven against a stand-in GitHub API
   # by scripts/check-ci-verdict.sh; the fallback is `just check` itself, so it
   # cannot drift from what CI runs.
-  test:
+  gate:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -120,7 +121,7 @@ jobs:
         run: just check
 
   publish-crates:
-    needs: test
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -132,7 +133,7 @@ jobs:
 
   upload:
     name: upload (${{ matrix.target }})
-    needs: test
+    needs: gate
     permissions:
       contents: write      # attach the archive + checksum to the Release
       id-token: write      # mint the keyless OIDC token for Sigstore (no secret)
@@ -265,7 +266,7 @@ jobs:
   # version comes from Cargo.toml, so release-plz stays the single version driver.
   build-wheels:
     name: build-wheels (${{ matrix.target }})
-    needs: test
+    needs: gate
     strategy:
       fail-fast: false
       matrix:
@@ -346,7 +347,7 @@ jobs:
   # oneharness-cli version, so the language client and subprocess protocol cannot
   # drift independently.
   build-python-sdk:
-    needs: test
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -361,7 +362,7 @@ jobs:
       # Same verdict as the gate above: CI already ran this for this commit
       # unless its run was cancelled or absent.
       - name: Run the Python SDK gate CI did not answer for
-        if: needs.test.outputs.needs_check == 'true'
+        if: needs.gate.outputs.needs_check == 'true'
         run: just python-sdk-check
       - name: Build the version-synchronized SDK distributions
         run: |
@@ -417,7 +418,7 @@ jobs:
   # stays the single version driver.
   build-npm:
     name: build-npm (${{ matrix.target }})
-    needs: test
+    needs: gate
     strategy:
       fail-fast: false
       matrix:
@@ -459,7 +460,7 @@ jobs:
           path: npm-artifacts/*.tgz
 
   build-node-sdk:
-    needs: test
+    needs: gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -468,10 +469,10 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - if: needs.test.outputs.needs_check == 'true'
+      - if: needs.gate.outputs.needs_check == 'true'
         run: just bootstrap
       - name: Run the Node SDK gate CI did not answer for
-        if: needs.test.outputs.needs_check == 'true'
+        if: needs.gate.outputs.needs_check == 'true'
         run: just sdk-check
       # `npm/oneharness-sdk/dist` is gitignored, so the pack below needs it built
       # here whether or not the gate that also builds it ran.

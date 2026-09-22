@@ -14,10 +14,15 @@
 #   success                    -> needs_check=false, publish without re-checking.
 #   failure/timed out/startup  -> exit 1 naming the run, because a commit CI
 #                                 refused must not publish.
-#   cancelled, absent, or not  -> needs_check=true, run the gate here. CI on
-#   finished                      `main` cancels in progress per ref, so a later
+#   cancelled or absent        -> needs_check=true, run the gate here. CI on
+#                                 `main` cancels in progress per ref, so a later
 #                                 push can cancel the tagged commit's run, and a
 #                                 hand-made Release may have no CI run at all.
+#
+# A run that is still RUNNING is waited for rather than duplicated: a second full
+# sweep of the same commit, alongside the one already sweeping it, is the cost
+# this exists to avoid. The wait is bounded, and a bound that runs out falls back
+# to running the gate here.
 #
 # An answer that cannot be READ (no `gh`, no credential, an API error) is the
 # same as an absent one: the release proves the commit itself rather than
@@ -27,6 +32,9 @@
 #   REPO         owner/name to query (default $GITHUB_REPOSITORY)
 #   SHA          the tagged commit, full 40-hex (default $GITHUB_SHA)
 #   CI_WORKFLOW  the workflow file whose verdict counts (default ci.yml)
+#   CI_WAIT_ATTEMPTS / CI_WAIT_DELAY
+#                how long to wait on a run that has not finished (default 60
+#                polls, 30s apart)
 # Writes `needs_check=true|false` to $GITHUB_OUTPUT when set, and says on stdout
 # what it decided and why. `gh` must be authenticated with `actions: read`.
 set -euo pipefail
@@ -34,6 +42,8 @@ set -euo pipefail
 repo="${REPO:-${GITHUB_REPOSITORY:-}}"
 sha="${SHA:-${GITHUB_SHA:-}}"
 workflow="${CI_WORKFLOW:-ci.yml}"
+wait_attempts="${CI_WAIT_ATTEMPTS:-60}"
+wait_delay="${CI_WAIT_DELAY:-30}"
 
 usage() {
   printf 'ci-verdict: %s\n' "$1" >&2
@@ -47,6 +57,19 @@ case "$sha" in
   *[!0-9a-f]* | "") usage "\$SHA '$sha' is not a commit sha" ;;
 esac
 [ "${#sha}" -eq 40 ] || usage "\$SHA '$sha' is not a full 40-character commit sha; an abbreviated sha selects nothing through the runs API"
+# Each of the three below is interpolated into a GitHub API path or handed to
+# `sleep`, so none is taken on trust.
+[[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] ||
+  usage "\$REPO '$repo' is not an owner/name repository"
+[[ "$workflow" =~ ^[A-Za-z0-9._-]+\.ya?ml$ ]] ||
+  usage "\$CI_WORKFLOW '$workflow' is not a workflow file name"
+case "$wait_attempts" in
+  "" | *[!0-9]*) usage "\$CI_WAIT_ATTEMPTS '$wait_attempts' is not a whole number of polls" ;;
+esac
+[ "$wait_attempts" -ge 1 ] || usage "\$CI_WAIT_ATTEMPTS '$wait_attempts' never asks; the bound must allow at least one poll"
+case "$wait_delay" in
+  "" | *[!0-9]*) usage "\$CI_WAIT_DELAY '$wait_delay' is not a whole number of seconds" ;;
+esac
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -62,31 +85,56 @@ decide() {
   exit 0
 }
 
-if ! runs="$(gh api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" 2>"$work/gh-error")"; then
-  sed 's/^/    gh: /' "$work/gh-error" >&2
-  decide true "could not read $workflow runs for $sha (gh said why above), so CI's verdict is unknown; running the gate here instead. To restore the fast path give this job the actions:read permission and a GH_TOKEN, and check that $workflow exists in $repo."
-fi
+# One read of CI's answer for this commit: sets $conclusion (the newest FINISHED
+# run's, or `none`), $for_sha (how many runs exist for the commit at all),
+# $run_id and $run_url. An answer that cannot be read is decided on the spot —
+# there is nothing to poll for when the API itself is unreachable.
+conclusion=none
+for_sha=0
+run_id=
+run_url=
+read_verdict() {
+  local runs summary
+  if ! runs="$(gh api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" 2>"$work/gh-error")"; then
+    sed 's/^/    gh: /' "$work/gh-error" >&2
+    decide true "could not read $workflow runs for $sha (gh said why above), so CI's verdict is unknown; running the gate here instead. To restore the fast path give this job the actions:read permission and a GH_TOKEN, and check that $workflow exists in $repo."
+  fi
 
-# The API's own `head_sha` filter is not trusted to be the whole answer: this
-# decides whether a gate runs, so the sha is matched again here. Runs that have
-# not finished say nothing yet, so only completed ones are selected, newest
-# first by start time with the run id breaking a tie.
-if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
-  [ .workflow_runs[]? | select(.head_sha == $sha) ] as $mine
-  | [ $mine[] | select(.status == "completed") ]
-  | sort_by(.run_started_at // .created_at, .id)
-  | last
-  | if . == null then
-      "none\t\($mine | length)\t\t"
-    else
-      "\(.conclusion // "none")\t\($mine | length)\t\(.id)\t\(.html_url // "")"
-    end
-' 2>"$work/jq-error")"; then
-  sed 's/^/    jq: /' "$work/jq-error" >&2
-  decide true "the $workflow runs for $sha did not parse as workflow-run JSON (jq said why above), so CI's verdict is unknown; running the gate here instead."
-fi
+  # The API's own `head_sha` filter is not trusted to be the whole answer: this
+  # decides whether a gate runs, so the sha is matched again here. Runs that
+  # have not finished say nothing yet, so only completed ones are selected,
+  # newest last by start time with the run id breaking a tie.
+  if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
+    [ .workflow_runs[]? | select(.head_sha == $sha) ] as $mine
+    | [ $mine[] | select(.status == "completed") ]
+    | sort_by(.run_started_at // .created_at, .id)
+    | last
+    | if . == null then
+        "none\t\($mine | length)\t\t"
+      else
+        "\(.conclusion // "none")\t\($mine | length)\t\(.id)\t\(.html_url // "")"
+      end
+  ' 2>"$work/jq-error")"; then
+    sed 's/^/    jq: /' "$work/jq-error" >&2
+    decide true "the $workflow runs for $sha did not parse as workflow-run JSON (jq said why above), so CI's verdict is unknown; running the gate here instead."
+  fi
 
-IFS=$'\t' read -r conclusion for_sha run_id run_url <<<"$summary"
+  IFS=$'\t' read -r conclusion for_sha run_id run_url <<<"$summary"
+}
+
+# A run that is still going is WAITED for, never duplicated: running the whole
+# gate here beside the one already running it is the second sweep of one commit
+# this script exists to avoid. Silent while it waits — the decision below says
+# how long it took.
+for poll in $(seq 1 "$wait_attempts"); do
+  read_verdict
+  if [ "$conclusion" != none ] || [ "$for_sha" -eq 0 ]; then
+    break
+  fi
+  if [ "$poll" -lt "$wait_attempts" ]; then
+    sleep "$wait_delay"
+  fi
+done
 
 case "$conclusion" in
   success)
@@ -101,7 +149,7 @@ case "$conclusion" in
     ;;
   none)
     if [ "$for_sha" -gt 0 ]; then
-      decide true "CI has $for_sha run(s) for $sha but none has finished; running the gate here instead."
+      decide true "CI's $for_sha run(s) for $sha had still not finished after $wait_attempts polls over ~$((wait_attempts * wait_delay))s; running the gate here instead."
     fi
     decide true "CI has no run for $sha; running the gate here instead."
     ;;

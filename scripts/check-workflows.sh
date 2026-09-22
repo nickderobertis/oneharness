@@ -87,10 +87,10 @@ require_guarded .github/workflows/release.yml 'run: just check' \
   "if: steps.verdict.outputs.needs_check == 'true'" \
   "run the complete repository gate only when CI did not answer for the tagged commit"
 require_guarded .github/workflows/release.yml 'run: just sdk-check' \
-  "if: needs.test.outputs.needs_check == 'true'" \
+  "if: needs.gate.outputs.needs_check == 'true'" \
   "run the Node SDK command surface only when CI did not answer for the tagged commit"
 require_guarded .github/workflows/release.yml 'run: just python-sdk-check' \
-  "if: needs.test.outputs.needs_check == 'true'" \
+  "if: needs.gate.outputs.needs_check == 'true'" \
   "run the Python SDK command surface only when CI did not answer for the tagged commit"
 # The gate builds the gitignored SDK dist on its way past; skipping the gate must
 # not leave the pack with nothing to pack.

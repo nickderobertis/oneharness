@@ -24,7 +24,9 @@ SHA_UNDER_TEST=1111111111111111111111111111111111111111
 OTHER_SHA=2222222222222222222222222222222222222222
 
 # A `gh` that records the endpoint it was asked for and answers `api` from a
-# fixture file — or fails like an unauthenticated one when GH_FAIL is set.
+# fixture file — the Nth call from "$GH_RUNS.N" when that exists, so a case can
+# make CI finish between two polls — or fails like an unauthenticated one when
+# GH_FAIL is set.
 cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_CALLS"
@@ -32,7 +34,14 @@ if [ -n "${GH_FAIL:-}" ]; then
   echo 'gh: Resource not accessible by integration (HTTP 403)' >&2
   exit 1
 fi
-cat "$GH_RUNS"
+count="$GH_STATE/calls"
+n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
+printf '%s' "$n" >"$count"
+if [ -f "$GH_RUNS.$n" ]; then
+  cat "$GH_RUNS.$n"
+else
+  cat "$GH_RUNS"
+fi
 STUB
 chmod +x "$tmp/bin/gh"
 
@@ -42,22 +51,46 @@ fail() {
   exit 1
 }
 
-# $1 the runs JSON the stubbed API answers with, $2 case description; leaves the
-# exit status in $status, stdout in $tmp/out, stderr in $tmp/err, and the
-# workflow output file in $tmp/github-output.
-run_case() {
-  printf '%s' "$1" >"$tmp/runs"
+# Leaves the exit status in $status, stdout in $tmp/out, stderr in $tmp/err, and
+# the workflow output file in $tmp/github-output. The wait is three polls with no
+# delay, so a case that polls costs nothing.
+invoke() {
   : >"$tmp/calls"
   : >"$tmp/github-output"
+  rm -rf "$tmp/state"
+  mkdir -p "$tmp/state"
   set +e
-  GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_FAIL="${GH_FAIL:-}" \
+  GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" \
     PATH="$tmp/bin:$PATH" \
     REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
+    CI_WORKFLOW="${WORKFLOW_OVERRIDE-ci.yml}" \
+    CI_WAIT_ATTEMPTS="${WAIT_ATTEMPTS_OVERRIDE-3}" CI_WAIT_DELAY="${WAIT_DELAY_OVERRIDE-0}" \
     GITHUB_OUTPUT="$tmp/github-output" \
     bash "$root/scripts/ci-verdict.sh" >"$tmp/out" 2>"$tmp/err"
   status=$?
   set -e
-  description="$2"
+  description="$1"
+}
+
+# $1 the runs JSON the stubbed API answers with every time, $2 case description.
+run_case() {
+  rm -f "$tmp"/runs.*
+  printf '%s' "$1" >"$tmp/runs"
+  invoke "$2"
+}
+
+# $1 case description, then one answer per successive poll; the last one repeats
+# for any poll beyond them.
+run_polling_case() {
+  local description="$1" answer n=0
+  shift
+  rm -f "$tmp"/runs.*
+  for answer in "$@"; do
+    n=$((n + 1))
+    printf '%s' "$answer" >"$tmp/runs.$n"
+  done
+  printf '%s' "$answer" >"$tmp/runs"
+  invoke "$description"
 }
 
 expect_status() {
@@ -145,12 +178,36 @@ expect_status 0
 expect_needs_check true
 expect_said "$tmp/out" "no run for $SHA_UNDER_TEST"
 
-# Still running: a verdict that has not been reached is not a pass.
-run_case "{\"workflow_runs\":[$(run 50 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
-  "an unfinished CI run"
+# Still running: the run is WAITED for rather than duplicated, and the verdict
+# that arrives is CI's. Running the whole gate beside the run already running it
+# is the second sweep of one commit this script exists to avoid.
+run_polling_case "a CI run that finishes while the release waits" \
+  "{\"workflow_runs\":[$(run 50 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
+  "{\"workflow_runs\":[$(run 50 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "concluded success"
+[ "$(grep -c 'head_sha' "$tmp/calls")" -eq 2 ] || {
+  cat "$tmp/calls" >&2
+  fail "$description: expected the verdict to be asked for twice, once per poll"
+}
+
+# A run that never finishes inside the bound: the release stops waiting and
+# proves the commit itself rather than publishing on no verdict at all.
+run_case "{\"workflow_runs\":[$(run 51 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
+  "a CI run that does not finish inside the bound"
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/out" "none has finished"
+expect_said "$tmp/out" "had still not finished after 3 polls"
+
+# A conclusion nobody enumerated — GitHub has several, and a new one must not
+# read as a pass.
+run_case "{\"workflow_runs\":[$(run 60 "$SHA_UNDER_TEST" completed '"neutral"' 2026-01-01T00:00:00Z)]}" \
+  "a CI run with a conclusion this script does not enumerate"
+expect_status 0
+expect_needs_check true
+expect_said "$tmp/out" "concluded neutral"
+expect_said "$tmp/out" "which is not a pass"
 
 # An unread answer is an absent one: the release proves the commit itself rather
 # than publishing on a verdict nobody saw.
@@ -188,5 +245,26 @@ REPO_OVERRIDE="" run_case '{"workflow_runs":[]}' "no repository to query"
 unset REPO_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "no repository to query"
+
+# The rest of what is interpolated into the API path, or handed to sleep.
+REPO_OVERRIDE="owner/repo?ref=main" run_case '{"workflow_runs":[]}' "a repository that is not owner/name"
+unset REPO_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "is not an owner/name repository"
+
+WORKFLOW_OVERRIDE="../ci.yml/runs" run_case '{"workflow_runs":[]}' "a workflow that is not a file name"
+unset WORKFLOW_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "is not a workflow file name"
+
+WAIT_ATTEMPTS_OVERRIDE=0 run_case '{"workflow_runs":[]}' "a wait that never asks"
+unset WAIT_ATTEMPTS_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "never asks"
+
+WAIT_DELAY_OVERRIDE=soon run_case '{"workflow_runs":[]}' "a delay that is not a number of seconds"
+unset WAIT_DELAY_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "is not a whole number of seconds"
 
 echo "check-ci-verdict: ok"

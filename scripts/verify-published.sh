@@ -38,9 +38,11 @@ case "$target" in
   pypi-cli | pypi-sdk | npm-cli | npm-sdk) ;;
   *) usage "'$target' is not a target this script knows how to install" ;;
 esac
-case "$version" in
-  *[!0-9A-Za-z.+-]* | "") usage "'$version' is not a version string" ;;
-esac
+# The version is composed into a pip requirement and an npm package spec, so it
+# is matched against the shape release-plz actually publishes rather than merely
+# swept for dangerous characters: `1..2`, `-` and `.` all pass an allowlist.
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][0-9A-Za-z]+)*$ ]] ||
+  usage "'$version' is not an x.y.z version this release could have published"
 case "$attempts" in
   "" | *[!0-9]*) usage "VERIFY_ATTEMPTS='$attempts' is not a whole number of attempts" ;;
 esac

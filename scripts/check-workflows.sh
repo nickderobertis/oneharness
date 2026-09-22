@@ -16,6 +16,20 @@ require_line() {
   grep -Fq -- "$line" "$file" || fail "$file must $description"
 }
 
+# Like require_line, but for a line that may only run behind a condition: the
+# guard must be the line immediately above it. A `run:` on its own is the shape
+# this repository is moving away from — a check re-run on every release — so
+# presence alone is not the contract.
+require_guarded() {
+  local file="$1" line="$2" guard="$3" description="$4" previous
+  if ! grep -Fq -- "$line" "$file"; then
+    fail "$file must $description"
+    return
+  fi
+  previous="$(grep -B1 -F -- "$line" "$file" | head -1 | sed 's/^[[:space:]]*//')"
+  [ "$previous" = "$guard" ] || fail "$file must $description"
+}
+
 # rust-toolchain.toml is canonical. Cargo requires an MSRV in each publishable
 # manifest, while actions-rust-lang/setup-rust-toolchain reads the committed
 # toolchain file directly.
@@ -54,10 +68,49 @@ if [ -n "$tag_line" ] && [ -n "$pr_line" ] && [ "$tag_line" -ge "$pr_line" ]; th
 fi
 
 require_line .github/workflows/release.yml 'types: [published]' "start distribution from a published GitHub Release"
-require_line .github/workflows/release.yml 'run: just check' "run the complete repository gate before publishing"
 require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use the validated crates.io publisher"
-require_line .github/workflows/release.yml 'run: just sdk-check' "use the Node SDK command surface"
-require_line .github/workflows/release.yml 'run: just python-sdk-check' "use the Python SDK command surface"
+# A release publishes a commit CI has already gated. Re-running that gate spends
+# a runner to learn what is known and puts an approved commit at the mercy of an
+# unrelated transient failure DURING publication, where red reads as a broken
+# release. So the verdict for the exact tagged commit is read, and each check
+# runs here only when CI did not answer for that commit — the same check,
+# invoked the one way named below, never a restatement of its stages.
+require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
+  "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
+require_line .github/workflows/release.yml 'actions: read' \
+  "hold the permission that lets it read CI's own result"
+# This is a literal GitHub expression in YAML.
+# shellcheck disable=SC2016
+require_line .github/workflows/release.yml 'needs_check: ${{ steps.verdict.outputs.needs_check }}' \
+  "publish that verdict to the jobs that would otherwise re-run a check"
+require_guarded .github/workflows/release.yml 'run: just check' \
+  "if: steps.verdict.outputs.needs_check == 'true'" \
+  "run the complete repository gate only when CI did not answer for the tagged commit"
+require_guarded .github/workflows/release.yml 'run: just sdk-check' \
+  "if: needs.test.outputs.needs_check == 'true'" \
+  "run the Node SDK command surface only when CI did not answer for the tagged commit"
+require_guarded .github/workflows/release.yml 'run: just python-sdk-check' \
+  "if: needs.test.outputs.needs_check == 'true'" \
+  "run the Python SDK command surface only when CI did not answer for the tagged commit"
+# The gate builds the gitignored SDK dist on its way past; skipping the gate must
+# not leave the pack with nothing to pack.
+require_line .github/workflows/release.yml 'run: just sdk-build' \
+  "build the Node SDK's publishable sources even on the release that skips the gate"
+# Every post-publication wait is the consumer's own operation, retried to a
+# bound. A registry answers its metadata API before the index a consumer reads —
+# PyPI's JSON before the simple index, `npm view` before the per-platform package
+# an optional dependency resolves — so a metadata probe standing in for the
+# install reddens a release that published perfectly.
+for verify_target in pypi-cli pypi-sdk npm-cli npm-sdk; do
+  require_line .github/workflows/release.yml \
+    "run: scripts/verify-published.sh $verify_target \"\${GITHUB_REF_NAME#v}\"" \
+    "verify the published $verify_target with the consumer's own install"
+done
+# Comment lines are exempt: the rule is about what the release RUNS, and the
+# job comments have to be able to say what they replaced.
+if grep -vE '^[[:space:]]*#' .github/workflows/release.yml | grep -qE 'pypi\.org/pypi/|npm view'; then
+  fail "release.yml must not wait on a registry's metadata API; retry the consumer's own install through scripts/verify-published.sh instead"
+fi
 require_line .github/workflows/release.yml 'needs: [publish-pypi, build-python-sdk]' "publish the Python SDK only after its exact CLI dependency"
 require_line .github/workflows/release.yml 'name: python-sdk' "retain the Python SDK release artifact"
 require_line .github/workflows/release.yml 'packages-dir: python-sdk-artifact' "publish the Python SDK through PyPI Trusted Publishing"

@@ -5,13 +5,15 @@ name: Release
 #
 # The Release itself is created by release-plz (see release-plz.yml) when a
 # version-bump PR merges. Because release-plz uses a PAT, that Release fires the
-# `release: published` event below; this workflow then re-gates on the complete
-# project gate, publishes the crates idempotently, and uploads the archives +
+# `release: published` event below; this workflow then reads CI's verdict for the
+# tagged commit, publishes the crates idempotently, and uploads the archives +
 # checksums. Creating a Release by hand in the GitHub UI is the supported manual
-# fallback — it triggers the same validated path.
+# fallback — it triggers the same validated path, and gets the gate run here
+# because CI never saw that commit.
 #
-#   * test               — the complete deterministic project gate,
-#                           so untested artifacts never publish.
+#   * test               — CI's verdict for the exact tagged commit: publish on
+#                           a success, refuse on a failure, and run the same
+#                           gate here when CI's run was cancelled or absent.
 #   * upload             — build each target on a native runner, attach the
 #                           archive + sha256 checksum, sign a keyless Sigstore
 #                           build-provenance attestation (OIDC → the public Rekor
@@ -29,12 +31,14 @@ name: Release
 #                           packaging break is caught even while publishing is off.
 #   * publish-pypi       — Trusted Publishing (keyless OIDC) to oneharness-cli,
 #                           dormant until the PYPI_PUBLISH repo variable is set.
-#   * verify-pypi        — prove the just-published version is pip-installable.
+#   * verify-pypi        — install the just-published version the way a consumer
+#                           does, retried until the index serves it.
 #   * build-python-sdk   — build oneharness-sdk at the Cargo release version,
 #                           with an exact dependency on oneharness-cli.
 #   * publish-python-sdk — Trusted Publishing (keyless OIDC) to the registered
 #                           oneharness-sdk PyPI project after the CLI lands.
-#   * verify-python-sdk  — prove the SDK and its exact CLI are installable.
+#   * verify-python-sdk  — install the SDK and its exact CLI the way a consumer
+#                           does, retried until the index serves them.
 #   * build-npm          — wrap the same prebuilt binary in per-platform npm
 #                           packages (@oneharness/cli-<platform>-<arch>) via
 #                           scripts/npm-build.mjs; always runs, same rationale as
@@ -44,7 +48,10 @@ name: Release
 #   * publish-npm        — Trusted Publishing (keyless OIDC) + provenance to npm,
 #                           dormant until the NPM_PUBLISH repo variable is set;
 #                           platform packages first, then the launcher.
-#   * verify-npm         — prove the just-published version is npm-installable.
+#   * verify-npm         — install the just-published packages the way a consumer
+#                           does — smoke included, since an unresolvable
+#                           per-platform package is not an install failure —
+#                           retried until the registry serves them.
 #
 on:
   release:
@@ -61,24 +68,56 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Gate the release on a passing run of the same checks CI enforces, so a tag
-  # can never publish an artifact that would not pass the gate.
+  # Consume CI's verdict for the exact commit this release tags instead of
+  # re-running the gate CI already ran on it. A second run of that gate spends
+  # twenty minutes learning what is already known, and exposes an approved commit
+  # to an unrelated transient failure DURING publication — where a red run reads
+  # as a broken release rather than as the flake it is.
+  #
+  # The gate still runs here whenever CI did not answer for this commit: CI on
+  # `main` cancels in progress per ref, so a later push can cancel the tagged
+  # commit's run, and a hand-made Release may have no run at all. A CI failure
+  # refuses the release outright, naming the run to read.
+  #
+  # The decision is scripts/ci-verdict.sh, driven against a stand-in GitHub API
+  # by scripts/check-ci-verdict.sh; the fallback is `just check` itself, so it
+  # cannot drift from what CI runs.
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read  # read CI's own result for the tagged commit
+    outputs:
+      needs_check: ${{ steps.verdict.outputs.needs_check }}
     steps:
       - uses: actions/checkout@v5
+      - name: Read CI's verdict for the tagged commit
+        id: verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: scripts/ci-verdict.sh
       # Reads the pinned channel + components from rust-toolchain.toml.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        if: steps.verdict.outputs.needs_check == 'true'
       - uses: actions/setup-node@v4
+        if: steps.verdict.outputs.needs_check == 'true'
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
+        if: steps.verdict.outputs.needs_check == 'true'
       - uses: astral-sh/setup-uv@v6
+        if: steps.verdict.outputs.needs_check == 'true'
       - uses: taiki-e/install-action@v2
+        if: steps.verdict.outputs.needs_check == 'true'
         with:
           tool: just,nextest,cargo-llvm-cov,shellcheck
-      - run: just bootstrap
-      - run: just check
+      - if: steps.verdict.outputs.needs_check == 'true'
+        run: just bootstrap
+      - name: Run the gate CI did not answer for
+        if: steps.verdict.outputs.needs_check == 'true'
+        run: just check
 
   publish-crates:
     needs: test
@@ -284,46 +323,23 @@ jobs:
           # red-fail because these wheels already exist on PyPI.
           skip-existing: true
 
-  # Post-publish gate: prove the just-published version is pip-installable. PyPI
-  # propagation is not instant, so poll the JSON API until the version is
-  # queryable, then install the real wheel and smoke-test it. A failure here means
-  # a broken release, not a blocked publish (the wheel is already public).
+  # Post-publish gate: prove the just-published version is pip-installable by
+  # installing it. PyPI's JSON API answers before the simple index a `pip
+  # install` reads, so waiting on the metadata and installing once reddens a
+  # release that published perfectly; the thing retried here is the install
+  # itself. A failure means a broken release, not a blocked publish (the wheel
+  # is already public).
   verify-pypi:
     needs: publish-pypi
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Wait for the version to land on PyPI
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          url="https://pypi.org/pypi/oneharness-cli/${ver}/json"
-          echo "Waiting for oneharness-cli $ver on PyPI..."
-          for i in $(seq 1 30); do
-            if curl -fsSL -o /dev/null "$url" 2>/dev/null; then
-              echo "oneharness-cli $ver is available on PyPI."
-              exit 0
-            fi
-            echo "  attempt $i: not indexed yet; sleeping 10s..."
-            sleep 10
-          done
-          echo "::error::oneharness-cli $ver did not appear on PyPI within ~5 minutes"
-          exit 1
-      - name: Install from PyPI and smoke-test
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          pip install "oneharness-cli==${ver}"
-          installed="$(oneharness --version)"
-          echo "installed: $installed"
-          case "$installed" in
-            *"$ver"*) ;;
-            *) echo "::error::installed version mismatch: '$installed' does not contain '$ver'"; exit 1 ;;
-          esac
-          oneharness --help >/dev/null
-          oneharness list >/dev/null
-          echo "PyPI install + smoke test passed for oneharness-cli $ver"
+      - name: Install oneharness-cli from PyPI and smoke-test it
+        run: scripts/verify-published.sh pypi-cli "${GITHUB_REF_NAME#v}"
 
   # The pure-Python SDK is generated from Rust-owned contracts and stamped from
   # Cargo.toml at packaging time. Its wheel and sdist depend on the exact same
@@ -342,7 +358,11 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - run: just python-sdk-check
+      # Same verdict as the gate above: CI already ran this for this commit
+      # unless its run was cancelled or absent.
+      - name: Run the Python SDK gate CI did not answer for
+        if: needs.test.outputs.needs_check == 'true'
+        run: just python-sdk-check
       - name: Build the version-synchronized SDK distributions
         run: |
           pkgdir="$(node scripts/python-sdk-pack.mjs)"
@@ -372,54 +392,21 @@ jobs:
           packages-dir: python-sdk-artifact
           skip-existing: true
 
-  # Registry propagation is asynchronous. Install the real release from PyPI,
-  # verify both synchronized versions, then exercise the SDK's packaged CLI
-  # dependency through the public subprocess boundary.
+  # Registry propagation is asynchronous, so the install is what is retried:
+  # install the real release from PyPI, verify both synchronized versions, then
+  # exercise the SDK's packaged CLI dependency through the public subprocess
+  # boundary — on the oldest supported interpreter.
   verify-python-sdk:
     needs: publish-python-sdk
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: "3.9"
-      - name: Wait for the SDK version to land on PyPI
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          url="https://pypi.org/pypi/oneharness-sdk/${ver}/json"
-          echo "Waiting for oneharness-sdk $ver on PyPI..."
-          for i in $(seq 1 30); do
-            if curl -fsSL -o /dev/null "$url" 2>/dev/null; then
-              echo "oneharness-sdk $ver is available on PyPI."
-              exit 0
-            fi
-            echo "  attempt $i: not indexed yet; sleeping 10s..."
-            sleep 10
-          done
-          echo "::error::oneharness-sdk $ver did not appear on PyPI within ~5 minutes"
-          exit 1
-      - name: Install the SDK and exercise its exact CLI dependency
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          pip install "oneharness-sdk==${ver}"
-          python - "$ver" <<'PY'
-          import asyncio
-          import sys
-          from importlib.metadata import version
-          from oneharness_sdk import OneHarness, __version__
-
-          expected = sys.argv[1]
-          assert __version__ == expected
-          assert version("oneharness-sdk") == expected
-          assert version("oneharness-cli") == expected
-
-          async def verify():
-              harnesses = await OneHarness().list()
-              assert any(item["id"] == "codex" for item in harnesses)
-
-          asyncio.run(verify())
-          PY
-          echo "PyPI install + packaged-CLI smoke test passed for oneharness-sdk $ver"
+      - name: Install the SDK from PyPI and exercise its exact CLI dependency
+        run: scripts/verify-published.sh pypi-sdk "${GITHUB_REF_NAME#v}"
 
   # npm packages: scripts/npm-build.mjs wraps the prebuilt binary in a
   # per-platform package (@oneharness/cli-<platform>-<arch>), the direct analogue
@@ -481,8 +468,15 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - run: just bootstrap
-      - run: just sdk-check
+      - if: needs.test.outputs.needs_check == 'true'
+        run: just bootstrap
+      - name: Run the Node SDK gate CI did not answer for
+        if: needs.test.outputs.needs_check == 'true'
+        run: just sdk-check
+      # `npm/oneharness-sdk/dist` is gitignored, so the pack below needs it built
+      # here whether or not the gate that also builds it ran.
+      - name: Build the SDK's publishable sources
+        run: just sdk-build
       - name: Pack the version-synchronized SDK
         run: |
           pkgdir="$(node scripts/sdk-pack.mjs)"
@@ -540,62 +534,22 @@ jobs:
           scripts/publish-npm.sh "$launcher" "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz
 
   # Post-publish gate: prove the just-published CLI and SDK are installable from
-  # npm. Registry propagation is not instant, so poll until both resolve, then
-  # exercise each artifact through its public entry point.
+  # npm by installing them. `npm view` answering says nothing about the
+  # per-platform @oneharness/cli-<platform>-<arch> package the launcher needs —
+  # and because npm installs that as an OPTIONAL dependency, an install that
+  # resolved none of it still exits 0. So the retried unit is the install
+  # TOGETHER with the smoke that runs the binary, which is the only thing that
+  # notices.
   verify-npm:
     needs: publish-npm
     if: ${{ vars.NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Wait for the CLI and SDK versions to land on npm
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          echo "Waiting for oneharness-cli@$ver and @oneharness/sdk@$ver on npm..."
-          for i in $(seq 1 30); do
-            if npm view "oneharness-cli@${ver}" version >/dev/null 2>&1 && \
-               npm view "@oneharness/sdk@${ver}" version >/dev/null 2>&1; then
-              echo "oneharness-cli@$ver and @oneharness/sdk@$ver are available on npm."
-              exit 0
-            fi
-            echo "  attempt $i: not indexed yet; sleeping 10s..."
-            sleep 10
-          done
-          echo "::error::oneharness-cli@$ver and/or @oneharness/sdk@$ver did not appear on npm within ~5 minutes"
-          exit 1
-      - name: Install from npm and smoke-test
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          npm install -g "oneharness-cli@${ver}"
-          installed="$(oneharness --version)"
-          echo "installed: $installed"
-          case "$installed" in
-            *"$ver"*) ;;
-            *) echo "::error::installed version mismatch: '$installed' does not contain '$ver'"; exit 1 ;;
-          esac
-          oneharness --help >/dev/null
-          oneharness list >/dev/null
-          echo "npm install + smoke test passed for oneharness-cli $ver"
+      - name: Install oneharness-cli from npm and smoke-test it
+        run: scripts/verify-published.sh npm-cli "${GITHUB_REF_NAME#v}"
       - name: Install the SDK from npm and exercise its packaged CLI dependency
-        run: |
-          ver="${GITHUB_REF_NAME#v}"
-          work="$(mktemp -d)"
-          cd "$work"
-          npm init -y >/dev/null
-          npm install "@oneharness/sdk@${ver}"
-          node --input-type=module - <<'NODE'
-          import { OneHarness } from "@oneharness/sdk";
-          const harnesses = await new OneHarness().list();
-          if (!harnesses.some(({ id }) => id === "codex")) {
-            throw new Error("installed SDK did not return the packaged CLI registry");
-          }
-          NODE
-          installed="$(npm ls @oneharness/sdk --json | node -e \
-            'let s=""; process.stdin.on("data", c => s += c).on("end", () => process.stdout.write(JSON.parse(s).dependencies["@oneharness/sdk"].version))')"
-          [ "$installed" = "$ver" ] || {
-            echo "::error::installed SDK version '$installed' does not match '$ver'"
-            exit 1
-          }
-          echo "npm install + packaged-CLI smoke test passed for @oneharness/sdk $ver"
+        run: scripts/verify-published.sh npm-sdk "${GITHUB_REF_NAME#v}"

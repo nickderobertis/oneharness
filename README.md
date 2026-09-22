@@ -2676,8 +2676,11 @@ release-plz opens a `release vX.Y.Z` PR that bumps `Cargo.toml`/`Cargo.lock` and
 writes the changelog. That PR auto-merges once the gate is green, then:
 
 1. release-plz tags `vX.Y.Z` and cuts the GitHub Release;
-2. that Release fires `.github/workflows/release.yml`, which re-runs the complete
-   gate, publishes both Cargo crates idempotently in dependency order
+2. that Release fires `.github/workflows/release.yml`, which reads CI's verdict
+   for the exact tagged commit instead of re-running the gate CI already ran on
+   it (a failure refuses the release; a cancelled or absent run makes the release
+   run `just check` itself), publishes both Cargo crates idempotently in
+   dependency order
    (`oneharness-core` first, then the `oneharness` binary that depends on it),
    attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows,
    signs each archive with a keyless Sigstore build-provenance attestation and

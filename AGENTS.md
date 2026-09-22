@@ -1163,8 +1163,11 @@ shape. When you add one:
   generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
   `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
   the required checks are green, then `release-plz release` tags `vX.Y.Z` and
-  cuts the GitHub Release. That Release fires `release.yml`, which re-runs the
-  complete gate, idempotently publishes both crates in dependency order
+  cuts the GitHub Release. That Release fires `release.yml`, which reads CI's
+  verdict for the exact tagged commit — publishing on a success, refusing and
+  naming the run on a failure, and running `just check` itself only when CI's run
+  for that commit was cancelled or absent — idempotently publishes both crates in
+  dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:

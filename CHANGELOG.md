@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.16.2](https://github.com/nickderobertis/oneharness/compare/v0.16.1...v0.16.2) - 2026-09-22
+
+### Added
+
+- *(config)* let one config extend another, resolved against its own directory ([#1349](https://github.com/nickderobertis/oneharness/pull/1349))
+
 ## [0.16.1](https://github.com/nickderobertis/oneharness/compare/v0.16.0...v0.16.1) - 2026-09-21
 
 ### Fixed

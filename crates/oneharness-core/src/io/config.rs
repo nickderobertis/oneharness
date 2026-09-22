@@ -19,13 +19,20 @@ const NO_CONFIG_ENV: &str = "ONEHARNESS_NO_CONFIG";
 /// instead of the platform default `<config dir>/oneharness/config.toml`.
 const USER_CONFIG_ENV: &str = "ONEHARNESS_CONFIG";
 
+/// The most files one `extends` chain may span, the declaring file included.
+/// Far past any real hierarchy; it exists so a pathological chain is refused
+/// with the chain named rather than by exhausting memory or file handles.
+const MAX_EXTENDS_CHAIN: usize = 32;
+
 /// The fully layered configuration plus the files it actually came from.
 #[derive(Debug, Default)]
 pub struct LoadedConfig {
     /// User and project files merged (project wins per field).
     pub config: FileConfig,
-    /// Paths loaded, in layering order (user first, project last). Surfaced in
-    /// the run report so a consumer can see which files shaped a run.
+    /// Paths loaded, in layering order (user first, project last; each file's
+    /// `extends` parents immediately before it, deepest ancestor first).
+    /// Surfaced in the run report so a consumer can see which files shaped a
+    /// run.
     pub files: Vec<String>,
 }
 
@@ -47,6 +54,16 @@ pub fn load(
 /// Locate and parse the config layers for an invocation, in layering order
 /// (user first, project last). `oneharness config` consumes the layers
 /// directly to attribute each value to its file; `run`/`detect` use [`load`].
+///
+/// Every file loaded here — explicit, user or project — has its `extends`
+/// chain followed: each parent becomes its own layer immediately below the
+/// file declaring it, named by its own path, so the chain folds through the
+/// same [`config::merge`] as the user/project pair and `oneharness config`
+/// attributes an inherited value to the file it was written in. A relative
+/// `extends` resolves against the declaring file's directory; an absolute one
+/// is used as written. A parent that cannot be read, a cycle, or a chain past
+/// its depth bound is an error: a file that names its parent has asserted it
+/// exists.
 ///
 /// - `no_config` (or `ONEHARNESS_NO_CONFIG=1`) loads nothing — neither files
 ///   nor the `ONEHARNESS_*` environment overrides — so a hermetic run sees only
@@ -73,16 +90,16 @@ pub fn load_layers(
 
     let mut layers = Vec::new();
     if let Some(path) = explicit {
-        layers.push((path.display().to_string(), read_required(path)?));
+        layers.extend(with_parents(path.to_path_buf(), read_required(path)?)?);
     } else {
         if let Some(path) = user_config_path()? {
             if let Some(user) = read_optional(&path)? {
-                layers.push((path.display().to_string(), user));
+                layers.extend(with_parents(path, user)?);
             }
         }
         if let Some(path) = find_project_file(project_start) {
             if let Some(project) = read_optional(&path)? {
-                layers.push((path.display().to_string(), project));
+                layers.extend(with_parents(path, project)?);
             }
         }
     }
@@ -92,6 +109,76 @@ pub fn load_layers(
         layers.push((config::ENV_SOURCE.to_string(), env));
     }
     Ok(layers)
+}
+
+/// One loaded file and every `extends` ancestor it names, deepest ancestor
+/// first, each paired with the path it was read from.
+fn with_parents(
+    path: PathBuf,
+    config: FileConfig,
+) -> Result<Vec<(String, FileConfig)>, OneharnessError> {
+    // Identity for cycle detection is the canonical path, so `./a.toml` and a
+    // symlink to it are one file; the display name stays the path as resolved.
+    let mut seen = vec![canonical(&path)];
+    let mut chain = vec![(path, config)];
+    loop {
+        let (declaring, current) = chain.last().expect("chain starts non-empty");
+        let Some(extends) = current.extends.as_deref() else {
+            break;
+        };
+        let parent = declaring
+            .parent()
+            .unwrap_or_else(|| Path::new(""))
+            .join(extends);
+        let names = |chain: &[(PathBuf, FileConfig)]| {
+            chain
+                .iter()
+                .map(|(p, _)| p.display().to_string())
+                .chain(std::iter::once(parent.display().to_string()))
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        };
+        if seen.contains(&canonical(&parent)) {
+            return Err(OneharnessError::ConfigInvalid {
+                path: declaring.display().to_string(),
+                message: format!(
+                    "`extends = \"{extends}\"` closes a cycle: {}",
+                    names(&chain)
+                ),
+            });
+        }
+        if chain.len() >= MAX_EXTENDS_CHAIN {
+            return Err(OneharnessError::ConfigInvalid {
+                path: chain[0].0.display().to_string(),
+                message: format!(
+                    "`extends` chain is longer than {MAX_EXTENDS_CHAIN} files: {}",
+                    names(&chain)
+                ),
+            });
+        }
+        let text =
+            std::fs::read_to_string(&parent).map_err(|e| OneharnessError::ConfigInvalid {
+                path: declaring.display().to_string(),
+                message: format!(
+                    "`extends = \"{extends}\"` names `{}`, which could not be read: {e}",
+                    parent.display()
+                ),
+            })?;
+        let config = parse_at(&parent, &text)?;
+        seen.push(canonical(&parent));
+        chain.push((parent, config));
+    }
+    Ok(chain
+        .into_iter()
+        .rev()
+        .map(|(p, c)| (p.display().to_string(), c))
+        .collect())
+}
+
+/// A path's canonical form, or the path itself where it cannot be resolved
+/// (a missing parent is then reported by the read that follows).
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 /// Truthy env flag: set and not `""`/`0`/`false`.
@@ -225,5 +312,189 @@ mod tests {
         let err = read_optional(&path).unwrap_err();
         assert!(err.to_string().contains("oneharness.toml"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `load(Some(child))` over files planted in `dir`, as `(path, text)`.
+    fn plant(dir: &Path, files: &[(&str, &str)]) {
+        for (name, text) in files {
+            let path = dir.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+    }
+
+    fn invalid(err: OneharnessError) -> (String, String) {
+        match err {
+            OneharnessError::ConfigInvalid { path, message } => (path, message),
+            other => panic!("expected ConfigInvalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_three_file_chain_folds_deepest_ancestor_first_from_each_files_own_dir() {
+        let dir = temp_dir("chain");
+        plant(
+            &dir,
+            &[
+                (
+                    "shared/root.toml",
+                    "timeout = 10\nmodel = \"root\"\nsystem = \"root\"\n[env]\nA = \"root\"",
+                ),
+                (
+                    "shared/mid/mid.toml",
+                    "extends = \"../root.toml\"\nmodel = \"mid\"\n[env]\nB = \"mid\"",
+                ),
+                (
+                    "roles/child.toml",
+                    "extends = \"../shared/mid/mid.toml\"\nsystem = \"child\"",
+                ),
+            ],
+        );
+        let child = dir.join("roles/child.toml");
+        let loaded = load(Some(&child), false, &dir).unwrap();
+        let root = dir.join("roles/../shared/mid/../root.toml");
+        let mid = dir.join("roles/../shared/mid/mid.toml");
+        assert_eq!(
+            loaded.files[..3],
+            [
+                root.display().to_string(),
+                mid.display().to_string(),
+                child.display().to_string()
+            ]
+        );
+        assert_eq!(loaded.config.timeout, Some(10));
+        assert_eq!(loaded.config.model.as_deref(), Some("mid"));
+        assert_eq!(loaded.config.system.as_deref(), Some("child"));
+        assert_eq!(loaded.config.env["A"], "root");
+        assert_eq!(loaded.config.env["B"], "mid");
+        assert_eq!(loaded.config.extends, None);
+    }
+
+    #[test]
+    fn an_absolute_extends_is_used_as_written() {
+        let dir = temp_dir("absolute");
+        plant(&dir, &[("elsewhere/base.toml", "model = \"base\"")]);
+        let base = dir.join("elsewhere/base.toml");
+        let child = dir.join("child.toml");
+        std::fs::write(
+            &child,
+            format!("extends = {:?}", base.display().to_string()),
+        )
+        .unwrap();
+        let loaded = load(Some(&child), false, &dir).unwrap();
+        assert_eq!(loaded.config.model.as_deref(), Some("base"));
+        assert_eq!(loaded.files[0], base.display().to_string());
+    }
+
+    #[test]
+    fn a_cycle_is_refused_naming_the_file_closing_it_and_the_chain() {
+        let dir = temp_dir("cycle");
+        plant(
+            &dir,
+            &[
+                ("a.toml", "extends = \"b.toml\""),
+                ("b.toml", "extends = \"./a.toml\""),
+            ],
+        );
+        let a = dir.join("a.toml");
+        let (path, message) = invalid(load(Some(&a), false, &dir).unwrap_err());
+        assert_eq!(path, dir.join("b.toml").display().to_string());
+        let chain = format!(
+            "{} -> {} -> {}",
+            a.display(),
+            dir.join("b.toml").display(),
+            dir.join("./a.toml").display()
+        );
+        assert!(message.contains("closes a cycle"), "{message}");
+        assert!(message.contains(&chain), "{message}");
+
+        // A file naming itself is the shortest cycle.
+        plant(&dir, &[("self.toml", "extends = \"self.toml\"")]);
+        let (_, message) = invalid(load(Some(&dir.join("self.toml")), false, &dir).unwrap_err());
+        assert!(message.contains("closes a cycle"), "{message}");
+    }
+
+    #[test]
+    fn a_chain_past_the_depth_bound_is_refused_with_the_chain_named() {
+        let dir = temp_dir("deep");
+        for i in 0..=MAX_EXTENDS_CHAIN {
+            std::fs::write(
+                dir.join(format!("{i}.toml")),
+                format!("extends = \"{}.toml\"", i + 1),
+            )
+            .unwrap();
+        }
+        let first = dir.join("0.toml");
+        let (path, message) = invalid(load(Some(&first), false, &dir).unwrap_err());
+        assert_eq!(path, first.display().to_string());
+        assert!(
+            message.contains(&format!("longer than {MAX_EXTENDS_CHAIN} files")),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("{}", first.display())),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "{}",
+                dir.join(format!("{MAX_EXTENDS_CHAIN}.toml")).display()
+            )),
+            "{message}"
+        );
+
+        // One file shorter than the bound is a legal chain.
+        std::fs::write(
+            dir.join(format!("{}.toml", MAX_EXTENDS_CHAIN - 1)),
+            "model = \"last\"",
+        )
+        .unwrap();
+        let loaded = load(Some(&first), false, &dir).unwrap();
+        assert_eq!(loaded.config.model.as_deref(), Some("last"));
+    }
+
+    #[test]
+    fn a_missing_parent_is_refused_naming_the_declaring_file_and_resolved_path() {
+        let dir = temp_dir("missing-parent");
+        plant(&dir, &[("sub/child.toml", "extends = \"../gone.toml\"")]);
+        let child = dir.join("sub/child.toml");
+        let (path, message) = invalid(load(Some(&child), false, &dir).unwrap_err());
+        assert_eq!(path, child.display().to_string());
+        assert!(
+            message.contains(&dir.join("sub/../gone.toml").display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("could not be read"), "{message}");
+
+        // A parent that exists but does not parse names the parent itself.
+        plant(&dir, &[("gone.toml", "modle = 1")]);
+        let (path, _) = invalid(load(Some(&child), false, &dir).unwrap_err());
+        assert_eq!(path, dir.join("sub/../gone.toml").display().to_string());
+    }
+
+    #[test]
+    fn a_discovered_project_file_resolves_its_own_chain() {
+        let dir = temp_dir("project-chain");
+        plant(
+            &dir,
+            &[
+                (
+                    "oneharness.toml",
+                    "extends = \"conf/base.toml\"\nmodel = \"proj\"",
+                ),
+                ("conf/base.toml", "timeout = 7"),
+            ],
+        );
+        let nested = dir.join("x");
+        std::fs::create_dir_all(&nested).unwrap();
+        let layers = load_layers(None, false, &nested).unwrap();
+        let names: Vec<&str> = layers.iter().map(|(p, _)| p.as_str()).collect();
+        let base = dir.join("conf/base.toml").display().to_string();
+        let project = dir.join("oneharness.toml").display().to_string();
+        let at = names
+            .iter()
+            .position(|n| *n == base)
+            .expect("parent layered");
+        assert_eq!(names[at + 1], project);
     }
 }

@@ -29,6 +29,17 @@ pub const SERVER_OVERLOADED_MAX_RETRIES_DEFAULT: u32 = 2;
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
+    /// A parent config this file inherits from (`extends = "base.toml"`),
+    /// exactly as this document spelled it. The parent is a layer immediately
+    /// below the declaring file, folded with [`merge`], and may itself extend
+    /// another. [`parse`] reads one document and follows nothing, so this is
+    /// the unresolved path: the chain is followed only by
+    /// `io::config::load` / `load_layers`, which resolve a relative path
+    /// against the declaring file's own directory (never the process's
+    /// working directory). A caller holding text with no filesystem location
+    /// reads this to learn that the document asked for a parent it cannot
+    /// reach, and decides for itself what that means.
+    pub extends: Option<String>,
     /// Default selection: run every harness (like `--all`). Mutually exclusive
     /// with `harnesses`. Used only when the CLI passes no selection.
     pub all: Option<bool>,
@@ -315,6 +326,10 @@ pub struct HookEntry {
 /// Parse one config file's text. Pure: the caller supplies the text and
 /// attaches the path to any error. Rejects unknown fields, unknown harness
 /// ids, and a selection that sets both `all` and `harnesses`.
+///
+/// One document only: an `extends` is read into [`FileConfig::extends`] and
+/// not followed, and nothing is merged. Following a chain needs the declaring
+/// file's directory, which only `io::config::load` / `load_layers` hold.
 pub fn parse(text: &str) -> Result<FileConfig, String> {
     let config: FileConfig = toml::from_str(text).map_err(|e| e.to_string())?;
     validate(&config)?;
@@ -322,6 +337,13 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
 }
 
 fn validate(config: &FileConfig) -> Result<(), String> {
+    if config
+        .extends
+        .as_ref()
+        .is_some_and(|path| path.is_empty() || path.contains('\0'))
+    {
+        return Err("`extends` must be a non-empty path without NUL".to_string());
+    }
     for harness in config.harness.values() {
         for variant in harness.variant.values() {
             if variant
@@ -653,6 +675,10 @@ fn env_output_format<F: Fn(&str) -> Option<String>>(
 /// tables merge key-wise (`over` wins per key); the per-harness tables merge
 /// per id and then per field. The selection (`all` + `harnesses`) moves as a
 /// unit so the layers can never combine into a contradictory selection.
+///
+/// This is also how an `extends` parent sits under the file declaring it
+/// (`merge(parent, child)`). The result carries no `extends`: a folded config
+/// has already had its parents layered in, so there is nothing left to follow.
 pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
     let (all, harnesses) = if over.all.is_some() || over.harnesses.is_some() {
         (over.all, over.harnesses)
@@ -694,6 +720,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
     }
 
     FileConfig {
+        extends: None,
         all,
         harnesses,
         exclude: over.exclude.or(base.exclude),
@@ -1500,6 +1527,101 @@ variant = true
     fn unknown_top_level_field_is_rejected() {
         let err = parse("modle = \"typo\"").unwrap_err();
         assert!(err.contains("modle"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_top_level_key_is_still_refused_now_that_extends_exists() {
+        // Every consumer of `extends` is sequenced behind this: a reader that
+        // predates a key must fail naming it, never ignore it — an ignored
+        // `extends` would resolve to a file with none of its parent's
+        // harnesses in it and run as if that were the configuration.
+        let err = parse("extends = \"base.toml\"\nextend = \"typo.toml\"").expect_err(
+            "an unknown top-level key must stay a loud error beside `extends`, or an \
+             older reader silently drops a parent it cannot follow",
+        );
+        assert!(err.contains("extend"), "{err}");
+    }
+
+    #[test]
+    fn parse_reads_extends_and_follows_nothing() {
+        let c = parsed("extends = \"../shared/base.toml\"\nmodel = \"child\"");
+        assert_eq!(c.extends.as_deref(), Some("../shared/base.toml"));
+        // The document's own fields only: nothing was read from the parent.
+        assert_eq!(
+            c,
+            FileConfig {
+                extends: Some("../shared/base.toml".to_string()),
+                model: Some("child".to_string()),
+                ..FileConfig::default()
+            }
+        );
+        assert_eq!(parsed("model = \"x\"").extends, None);
+    }
+
+    #[test]
+    fn extends_is_a_top_level_key_only() {
+        for text in [
+            "[harness.claude-code]\nextends = \"base.toml\"",
+            "[harness.claude-code.variant.work]\nextends = \"base.toml\"",
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains("unknown field `extends`"), "{text}: {err}");
+        }
+        for text in ["extends = \"\"", "extends = \"a\\u0000b\""] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains("non-empty path without NUL"), "{text}: {err}");
+        }
+    }
+
+    #[test]
+    fn merge_under_a_parent_follows_the_contract_and_drops_extends() {
+        let parent = parsed(
+            r#"
+harnesses = ["codex", "claude-code"]
+timeout = 30
+stream = true
+[env]
+SHARED = "parent"
+PARENT_ONLY = "parent"
+[harness.claude-code.variant.work]
+model = "parent-model"
+unset_env = ["A", "B"]
+[harness.claude-code.variant.work.env_from]
+ANTHROPIC_API_KEY = "KEY_WORK"
+[harness.claude-code.variant.home]
+unset_env = ["C"]
+"#,
+        );
+        let child = parsed(
+            r#"
+extends = "parent.toml"
+harnesses = ["claude-code"]
+timeout = 60
+[env]
+SHARED = "child"
+[harness.claude-code.variant.work]
+unset_env = ["Z"]
+[harness.claude-code.variant.work.env_from]
+CLAUDE_CONFIG_DIR = "CLAUDE_DIR_WORK"
+[harness.claude-code.variant.home]
+model = "child-home"
+"#,
+        );
+        let merged = merge(parent, child);
+        assert_eq!(merged.extends, None);
+        assert_eq!(merged.harnesses.as_deref().unwrap(), ["claude-code"]);
+        assert_eq!(merged.timeout, Some(60));
+        assert_eq!(merged.stream, Some(true));
+        assert_eq!(merged.env["SHARED"], "child");
+        assert_eq!(merged.env["PARENT_ONLY"], "parent");
+        let work = merged.variant_for("claude-code:work").unwrap();
+        assert_eq!(work.model.as_deref(), Some("parent-model"));
+        assert_eq!(work.unset_env, ["Z"]);
+        assert_eq!(work.env_from["ANTHROPIC_API_KEY"], "KEY_WORK");
+        assert_eq!(work.env_from["CLAUDE_CONFIG_DIR"], "CLAUDE_DIR_WORK");
+        let home = merged.variant_for("claude-code:home").unwrap();
+        assert_eq!(home.unset_env, ["C"]);
+        assert_eq!(home.model.as_deref(), Some("child-home"));
     }
 
     #[test]

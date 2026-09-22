@@ -39,7 +39,7 @@ pub struct FileConfig {
     /// working directory). A caller holding text with no filesystem location
     /// reads this to learn that the document asked for a parent it cannot
     /// reach, and decides for itself what that means.
-    pub extends: Option<String>,
+    pub extends: Option<ExtendsPath>,
     /// Default selection: run every harness (like `--all`). Mutually exclusive
     /// with `harnesses`. Used only when the CLI passes no selection.
     pub all: Option<bool>,
@@ -274,6 +274,47 @@ impl std::str::FromStr for VariantName {
     }
 }
 
+/// The parent path a config file's `extends` names, exactly as written: a
+/// non-empty path without NUL. Unresolved — what it is relative to is the
+/// declaring file's directory, which only the loader knows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendsPath(String);
+
+impl ExtendsPath {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn as_path(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+impl std::fmt::Display for ExtendsPath {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl std::str::FromStr for ExtendsPath {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() || value.contains('\0') {
+            return Err("`extends` must be a non-empty path without NUL".to_string());
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for ExtendsPath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VariantConfig {
@@ -337,13 +378,6 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
 }
 
 fn validate(config: &FileConfig) -> Result<(), String> {
-    if config
-        .extends
-        .as_ref()
-        .is_some_and(|path| path.is_empty() || path.contains('\0'))
-    {
-        return Err("`extends` must be a non-empty path without NUL".to_string());
-    }
     for harness in config.harness.values() {
         for variant in harness.variant.values() {
             if variant
@@ -1545,12 +1579,15 @@ variant = true
     #[test]
     fn parse_reads_extends_and_follows_nothing() {
         let c = parsed("extends = \"../shared/base.toml\"\nmodel = \"child\"");
-        assert_eq!(c.extends.as_deref(), Some("../shared/base.toml"));
+        assert_eq!(
+            c.extends.as_ref().map(ExtendsPath::as_str),
+            Some("../shared/base.toml")
+        );
         // The document's own fields only: nothing was read from the parent.
         assert_eq!(
             c,
             FileConfig {
-                extends: Some("../shared/base.toml".to_string()),
+                extends: Some("../shared/base.toml".parse().unwrap()),
                 model: Some("child".to_string()),
                 ..FileConfig::default()
             }

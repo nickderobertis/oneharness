@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::config::{self, FileConfig};
+use crate::domain::config::{self, ExtendsPath, FileConfig};
 use crate::errors::OneharnessError;
 
 /// Project-level file names, checked in this order in each directory.
@@ -123,7 +123,7 @@ fn with_parents(
     let mut chain = vec![(path, config)];
     loop {
         let (declaring, current) = chain.last().expect("chain starts non-empty");
-        let Some(extends) = current.extends.as_deref() else {
+        let Some(extends) = current.extends.as_ref().map(ExtendsPath::as_str) else {
             break;
         };
         let parent = declaring
@@ -443,7 +443,7 @@ mod tests {
             "{message}"
         );
 
-        // One file shorter than the bound is a legal chain.
+        // Ending the chain at exactly the bound's length is legal.
         std::fs::write(
             dir.join(format!("{}.toml", MAX_EXTENDS_CHAIN - 1)),
             "model = \"last\"",
@@ -496,5 +496,14 @@ mod tests {
             .position(|n| *n == base)
             .expect("parent layered");
         assert_eq!(names[at + 1], project);
+    }
+
+    #[test]
+    fn the_readme_states_the_chain_bound_the_loader_enforces() {
+        let readme = include_str!("../../../../README.md");
+        assert!(
+            readme.contains(&format!("a chain longer than {MAX_EXTENDS_CHAIN} files")),
+            "README's `extends` section must state the bound `MAX_EXTENDS_CHAIN` enforces"
+        );
     }
 }

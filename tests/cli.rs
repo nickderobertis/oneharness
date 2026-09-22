@@ -11080,6 +11080,45 @@ fn init_scaffolds_and_refuses_overwrite() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+#[test]
+fn init_scaffold_extends_example_resolves_as_written() {
+    // The starter advertises `extends` as a commented example; uncommented,
+    // that exact line must resolve a parent beside the project directory.
+    let dir = ScratchDir::new("init-extends").unwrap();
+    std::fs::create_dir_all(dir.join("project")).unwrap();
+    std::fs::create_dir_all(dir.join("shared")).unwrap();
+    let path = dir.join("project").join("oneharness.toml");
+    let out = run(&["init", &path.display().to_string()], &[]);
+    assert_eq!(out.status.code(), Some(0));
+    let written = std::fs::read_to_string(&path).unwrap();
+    let example = "# extends = \"../shared/oneharness.toml\"\n";
+    assert!(written.contains(example), "{written}");
+    std::fs::write(&path, written.replace(example, &example[2..])).unwrap();
+    std::fs::write(dir.join("shared").join("oneharness.toml"), "timeout = 9\n").unwrap();
+    std::fs::write(dir.join("user.toml"), "").unwrap();
+
+    let output = run_with_config(
+        &["config", "--config", &path.display().to_string()],
+        &[],
+        &dir.join("user.toml"),
+    );
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["timeout"]["value"], 9);
+    assert_eq!(
+        value["timeout"]["source"],
+        dir.join("project")
+            .join("../shared/oneharness.toml")
+            .display()
+            .to_string()
+    );
+    assert_eq!(value["run_mode"]["value"], "fallback");
+}
+
 /// A self-removing directory for the mock responder's rules/spy files, plus the
 /// standard ruleset the tests share: rule 0 denies `git push`, rule 1 rewrites
 /// `git status` to a stub that prints canned output.

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,7 +62,8 @@ import {
 	UsageOptionsSchema,
 	UsageSchema,
 } from "../src/index.js";
-import { removeScratch, scratch } from "./scratch.mjs";
+import { scratch } from "./scratch.mjs";
+import { registerScratchCleanup } from "./scratch-hook.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binary = resolve(here, "../../../target/debug/oneharness");
@@ -298,7 +299,7 @@ function layered(): OneHarness {
 describe("OneHarness", () => {
 	// Whatever a test does with its scratch directory, the framework takes it
 	// back: a case that throws cleans up exactly like one that passes.
-	afterEach(removeScratch);
+	registerScratchCleanup();
 
 	test("generated validators match the shared SDK acceptance matrix", () => {
 		const schemas = {

@@ -117,8 +117,8 @@ refuse() {
 # inside, because there is nothing to poll for when the API itself is
 # unreachable and nothing to fall back to when a verdict may exist unread.
 conclusion=none
-for_sha=0
 pending=0
+unreadable=0
 run_id=
 run_url=
 read_verdict_or_refuse() {
@@ -139,9 +139,22 @@ read_verdict_or_refuse() {
   # older run of the same commit concluded.
   #
   # A parseable answer is not yet a trustworthy one, so the fields this acts on
-  # are type-checked here: a run whose id or conclusion is missing or of the
-  # wrong type cannot become the verdict that publishes a release, and a start
-  # time that is not an ISO-8601 instant sorts as the oldest rather than as the
+  # are type-checked — and a run that fails the check is COUNTED, never merely
+  # dropped. Dropping is what makes an unreadable answer dangerous here: every
+  # run discarded brings the selection closer to empty, and empty is `absent`,
+  # the one state that runs the gate. So $unreadable is the count of runs this
+  # could not make sense of, and any of them stops the release:
+  #
+  #   * a run whose head_sha is not a string — there is no telling whose it is,
+  #     so it cannot be excluded as somebody else's;
+  #   * one of OURS whose status is not a string — it is neither finished nor
+  #     pending, so it would vanish from both counts;
+  #   * one of ours that finished without a usable id and conclusion — dropping
+  #     it would hand the verdict to an older run it supersedes.
+  #
+  # `run_started_at` is deliberately NOT in that list: it only orders runs, it
+  # is genuinely optional in the API (hence the `created_at` fallback), and a
+  # value that is not an ISO-8601 instant sorts as the oldest rather than as the
   # newest — jq orders objects above strings, and `not-a-timestamp` above any
   # digit, so either would win the selection outright unchecked. The URL is only
   # ever printed, but it arrives on a tab-delimited line this script then splits,
@@ -150,19 +163,24 @@ read_verdict_or_refuse() {
     if (type) != "object" or (has("workflow_runs") | not) or ((.workflow_runs | type) != "array") then
       error("the answer carries no workflow_runs array, so it is not a runs response at all")
     else . end
-    | [ .workflow_runs[]
-      | select((.head_sha | type) == "string" and .head_sha == $sha)
-      | select((.status | type) == "string") ] as $mine
-    | ([ $mine[] | select(.status != "completed") ] | length) as $pending
-    | ([ $mine[] | select(.status == "completed")
-         | select((.id | type) == "number" and (.conclusion | type) == "string") ]
+    | .workflow_runs as $all
+    | [ $all[] | select((.head_sha | type) == "string" and .head_sha == $sha) ] as $mine
+    | [ $mine[] | select((.status | type) == "string") ] as $readable
+    | [ $readable[] | select(.status == "completed") ] as $finished
+    | ( ([ $all[] | select((.head_sha | type) != "string") ] | length)
+      + (($mine | length) - ($readable | length))
+      + ([ $finished[]
+           | select(((.id | type) != "number") or ((.conclusion | type) != "string")) ] | length)
+      ) as $unreadable
+    | (($readable | length) - ($finished | length)) as $pending
+    | ([ $finished[] | select((.id | type) == "number" and (.conclusion | type) == "string") ]
        | sort_by((((.run_started_at // .created_at) | strings
                     | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$"))) // ""),
                   .id) | last) as $newest
     | if $newest == null then
-        "none\t\($mine | length)\t\($pending)\t\t"
+        "none\t\($pending)\t\($unreadable)\t\t"
       else
-        "\($newest.conclusion // "none")\t\($mine | length)\t\($pending)\t\($newest.id)\t\((($newest.html_url | strings) // "") | gsub("[^!-~]"; ""))"
+        "\($newest.conclusion)\t\($pending)\t\($unreadable)\t\($newest.id)\t\((($newest.html_url | strings) // "") | gsub("[^!-~]"; ""))"
       end
   ' 2>"$work/jq-error")"; then
     sed 's/^/    jq: /' "$work/jq-error" >&2
@@ -172,7 +190,17 @@ read_verdict_or_refuse() {
       "read that endpoint by hand — an HTML error page, a proxy's response, or any answer without a workflow_runs array arrives here — then re-run this release once it answers normally. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal, and an answer whose SHAPE is unrecognized says nothing about whether CI passed."
   fi
 
-  IFS=$'\t' read -r conclusion for_sha pending run_id run_url <<<"$summary"
+  IFS=$'\t' read -r conclusion pending unreadable run_id run_url <<<"$summary"
+
+  # Refused here rather than after the wait: there is nothing to poll for when
+  # the answer itself does not make sense, and every further poll would re-read
+  # the same malformed runs.
+  if [ "$unreadable" -gt 0 ]; then
+    refuse \
+      "ci-verdict: $unreadable run(s) in CI's answer for $sha could not be read — a head_sha, status, id or conclusion was missing or of the wrong type. Dropping them would leave this reporting fewer runs than CI has, so the release stops here." \
+      "it was reading $endpoint" \
+      "read that endpoint by hand and compare it with what the runs API documents; if the shape has changed, update the fields scripts/ci-verdict.sh type-checks. This job will not run the gate in CI's place: discarding the runs it cannot parse is how an answer it could not read would come to look like no answer at all."
+  fi
 }
 
 # A run that is still going is WAITED for, never duplicated: running the whole
@@ -215,14 +243,8 @@ case "$conclusion" in
     decide true "CI run $run_id was cancelled for $sha (${run_url:-no URL}), so CI reached no verdict; running the gate here instead."
     ;;
   none)
-    if [ "$for_sha" -gt 0 ]; then
-      # Finished runs exist but none carried a usable id and conclusion. That is
-      # an answer this could not read, not an absent one.
-      refuse \
-        "ci-verdict: CI's $for_sha finished run(s) for $sha reported no usable id and conclusion, so their verdict could not be read. The release stops here." \
-        "it was reading $endpoint" \
-        "read those runs by hand and re-run this release once the API reports them normally. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal."
-    fi
+    # Every run of ours was readable (checked above) and none was pending, so
+    # `none` means there were none of ours at all — genuinely absent.
     decide true "CI has no run for $sha, so CI reached no verdict; running the gate here instead."
     ;;
   *)

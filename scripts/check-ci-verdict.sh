@@ -233,14 +233,62 @@ expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "CI run 81 concluded success"
 
-# A finished run whose conclusion is absent — or of a type this cannot act on.
-# The run RAN, so CI very likely reached a verdict here and this could not read
-# it; that is an unread answer rather than an absent one, and it refuses.
+# A run whose own FIELDS cannot be read is the same hazard one level down, and
+# it is the subtler one: a malformed run that is merely dropped takes the
+# selection one step closer to empty, and empty is `absent` — the state that
+# runs the gate. Each of these is a sole run, so dropping it would have reported
+# "CI has no run for this commit" and gated it here.
+#
+# A finished run whose conclusion is absent, or of a type this cannot act on:
+# the run RAN, so CI very likely reached a verdict this could not read.
 run_case '{"workflow_runs":[{"id":90,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":null,"run_started_at":"2026-01-01T00:00:00Z","html_url":"https://example.invalid/run/90"}]}' \
   "a finished run with no conclusion"
 expect_refused
-expect_said "$tmp/err" "reported no usable id and conclusion"
+expect_said "$tmp/err" "1 run(s) in CI's answer"
 expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
+
+# A finished run whose id is not a number: it cannot be named to the reader, and
+# an unnamed run must not be the one that publishes or refuses a release.
+run_case '{"workflow_runs":[{"id":"ninety-one","head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"2026-01-01T00:00:00Z"}]}' \
+  "a finished run whose id is not a number"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
+
+# A run with no readable head_sha: there is no telling WHOSE it is, so it can
+# be excluded as neither ours nor somebody else's.
+for anonymous in '{"id":92,"status":"completed","conclusion":"failure"}' \
+                 '{"id":93,"head_sha":null,"status":"completed","conclusion":"failure"}' \
+                 '{"id":94,"head_sha":{},"status":"completed","conclusion":"failure"}'; do
+  run_case "{\"workflow_runs\":[$anonymous]}" "a run whose head_sha cannot be read: $anonymous"
+  expect_refused
+  expect_said "$tmp/err" "1 run(s) in CI's answer"
+done
+
+# One of OURS with no readable status: neither finished nor pending, so it would
+# vanish from both counts and leave the commit looking untouched by CI.
+for statusless in '{"id":95,"head_sha":"SHA","conclusion":"failure"}' \
+                  '{"id":96,"head_sha":"SHA","status":7,"conclusion":"failure"}'; do
+  run_case "{\"workflow_runs\":[${statusless//SHA/$SHA_UNDER_TEST}]}" \
+    "a run of ours whose status cannot be read: $statusless"
+  expect_refused
+  expect_said "$tmp/err" "1 run(s) in CI's answer"
+done
+
+# A malformed run of somebody ELSE's is not ours to refuse over: its head_sha is
+# readable and says so, and the release must not stop because an unrelated
+# commit's run is odd.
+run_case "{\"workflow_runs\":[{\"id\":97,\"head_sha\":\"$OTHER_SHA\"},$(workflow_run_json 98 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}" \
+  "a malformed run belonging to a different commit"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 98 concluded success"
+
+# Two malformed runs are counted, not collapsed: the message tells the reader
+# how much of CI's answer this could not make sense of.
+run_case "{\"workflow_runs\":[{\"id\":99,\"head_sha\":\"$SHA_UNDER_TEST\",\"status\":\"completed\",\"conclusion\":null},{\"id\":null,\"head_sha\":null}]}" \
+  "two runs that cannot be read"
+expect_refused
+expect_said "$tmp/err" "2 run(s) in CI's answer"
 
 # A start time of the wrong type must not select the run: jq sorts objects above
 # strings, so an unchecked key would make this malformed run the newest and
@@ -373,7 +421,6 @@ unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "is not a whole number of seconds"
 
-# ---------------------------------------------------------------------------
 # The rule above is stated in prose in five other places, and the predecessor of
 # this change got one of those copies wrong — a document promising a fallback
 # the script does not do is how a reader comes to trust a release that stopped.

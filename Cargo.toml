@@ -1,27 +1,19 @@
 [workspace]
 members = ["crates/oneharness-core"]
 
-# The metadata both publishable crates must agree on, stated once. The root is
-# still the `oneharness` package — cargo permits a package to carry these tables
-# too — so what changes is only where the values live: each crate inherits with
-# `.workspace = true` and restates none, and a license or MSRV move edits one
-# line instead of two that drift a release apart. `version` stays per-crate on
-# purpose (the binary and the engine release on their own tags), as does
-# `description`, which says a different thing about each.
+# Metadata both crates share, inherited with `.workspace = true`. `version` and
+# `description` stay per-crate: the binary and the engine release on their own
+# tags and describe different things.
 [workspace.package]
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/nickderobertis/oneharness"
 
-# The single source for every requirement both crates take. The binary crate's
-# `windows-sys` dev-dependency rides for free on the engine's own Windows
-# dependency only while the two resolve to one version, and cargo answers a
-# divergence with a second copy rather than a complaint. Inheriting is what keeps
-# that from rotting: each requirement lives here alone — a member restating it is
-# ignored — so a bump moves both. `windows-sys` names only the features each
-# crate uses at the member; `serde`'s `derive` is common to both, so it is stated
-# here with the requirement.
+# Every requirement both crates take, stated once so a bump moves both. Cargo
+# answers two diverging `windows-sys` requirements with a second copy rather than
+# an error. Features each crate needs beyond `serde`'s shared `derive` are
+# named at the member.
 [workspace.dependencies]
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }

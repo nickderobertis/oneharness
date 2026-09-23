@@ -3,20 +3,10 @@
 #
 # Behavioral test of the MSRV half of the workflow drift gate.
 #
-# `scripts/check-workflows.sh` holds every publishable manifest's `rust-version`
-# to the canonical `rust-toolchain.toml` channel. Both manifests now inherit
-# that field from `[workspace.package]`, which means the gate no longer reads a
-# value out of the manifest it is judging — and a gate that reads the wrong file
-# passes for a reason unrelated to what it checks. That already happened once:
-# a whole-file search for `rust-version = "…"` found the workspace table's line
-# while looking at the root manifest, so the root "passed" whatever its own
-# [package] table said, including nothing at all.
-#
-# So the resolution is driven here against a staged checkout, once per way a
-# manifest can state its MSRV and once per way that MSRV can drift, and the gate
-# is asserted to go red naming the manifest it read. The green baseline matters
-# as much as the refusals: without it, "the gate accepts the inherited form" and
-# "the gate is red for some unrelated reason" would look identical.
+# Both manifests inherit `rust-version` from `[workspace.package]`, so the gate
+# must resolve each manifest's own `[package]` table rather than search the
+# file. Each case drives the gate over a staged checkout; the green baseline
+# keeps a refusal from passing for an unrelated reason.
 #
 # Quiet on success, one line. On failure it prints what the gate said.
 set -euo pipefail
@@ -87,17 +77,8 @@ rewrite() {
 
 # Runs the staged gate against the staged checkout. Prints nothing; leaves its
 # combined output in $work/out and returns the gate's own exit status.
-#
-# The gate resolves its own root from $0 (`cd "$(dirname "$0")/.."`), so the
-# staged copy reads the staged tree from whatever directory it is invoked in.
-# The subshell `cd` pins the same answer locally, so which files a case actually
-# mutates is readable here without going to the gate to find out.
-#
-# What PROVES the mutations reach it is not either of those, though: it is that
-# every case below greps for a value the mutation introduced and the working
-# tree does not contain. A gate that read the repository instead of the fixture
-# could not print '1.70' or say a manifest declares no rust-version, so each
-# refusal is only reachable through the staged file it names.
+# Every case greps for a value only its staged mutation introduces, which is
+# what proves the gate read the fixture rather than this checkout.
 run_gate() {
   local root="$1"
   (cd "$root" && bash scripts/check-workflows.sh) >"$work/out" 2>&1
@@ -144,14 +125,9 @@ if grep -q "^workflow drift: Cargo\.toml rust-version" "$work/out"; then
   fail_showing "the root manifest still resolves its own MSRV and must not be named"
 fi
 
-# The regression case, and the only one that separates a table-scoped read from
-# the whole-file search that shipped before it: the ROOT manifest declares no
-# MSRV, while the [workspace.package] table in that same file still carries the
-# canonical one. A whole-file search finds 1.86 there, calls it the root
-# package's, and goes green on a manifest that states nothing. Every other case
-# here passes under that defect too, because the value the search wrongly picks
-# up is the value the manifest was supposed to have — so without this case the
-# suite cannot tell the two implementations apart.
+# The regression case: the root [package] declares no MSRV while
+# [workspace.package] in the same file still does. A whole-file search passes
+# here; only a table-scoped read refuses it.
 root="$(stage no-msrv-root)"
 rewrite "$root" Cargo.toml '
   !/^rust-version\.workspace = true$/ { print }

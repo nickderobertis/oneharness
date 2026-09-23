@@ -78,12 +78,17 @@ require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use
 # a runner to learn what is known and puts an approved commit at the mercy of an
 # unrelated transient failure DURING publication, where red reads as a broken
 # release. So the verdict for the exact tagged commit is read, and the gate runs
-# here only in the two states where CI reached NO verdict for that commit, a
-# cancelled run and no run at all — ONE check, `just check`, invoked the one way
-# named below: never a restatement of its stages, and never a second run of
-# something it already contains. (An answer scripts/ci-verdict.sh could not read
-# refuses the release instead of running the gate; that division is held by
-# scripts/check-ci-verdict.sh, which drives every state against a stand-in API.)
+# here only where scripts/ci-verdict.sh says it may:
+#
+#   only a cancelled CI run and no CI run at all make the release run the gate
+#   itself; every other state refuses rather than standing in for a verdict it
+#   could not read
+#
+# And when it does run, it is ONE check, `just check`, invoked the one way named
+# below: never a restatement of its stages, and never a second run of something
+# it already contains. The division above is held by scripts/check-ci-verdict.sh,
+# which drives every state against a stand-in API — and which checks this very
+# sentence against the one scripts/ci-verdict.sh carries.
 require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
   "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
 require_line .github/workflows/release.yml 'actions: read' \

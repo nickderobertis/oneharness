@@ -19,8 +19,14 @@
 #                                 push can cancel the tagged commit's run, and a
 #                                 hand-made Release may have no CI run at all.
 #
-# Those last two are the ONLY states that run the gate here, because they are
-# the only two where CI reached no verdict at all: repeating the checks then
+# That rule in one sentence — the line every other copy of it is checked
+# against, by scripts/check-ci-verdict.sh, so a document cannot come to promise
+# something this script does not do:
+#
+# CONTRACT: only a cancelled CI run and no CI run at all make the release run the gate itself; every other state refuses rather than standing in for a verdict it could not read
+#
+# Those two are the ONLY states that run the gate here, because they are the
+# only two where CI reached no verdict at all: repeating the checks then
 # establishes something nobody knew. Every other state — an answer that could
 # not be read, did not parse, carries a conclusion this does not recognize, or
 # has not arrived before the wait runs out — exits 1 naming what it was reading.
@@ -141,7 +147,10 @@ read_verdict_or_refuse() {
   # ever printed, but it arrives on a tab-delimited line this script then splits,
   # so anything unprintable is dropped from it here.
   if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
-    [ .workflow_runs[]?
+    if (type) != "object" or (has("workflow_runs") | not) or ((.workflow_runs | type) != "array") then
+      error("the answer carries no workflow_runs array, so it is not a runs response at all")
+    else . end
+    | [ .workflow_runs[]
       | select((.head_sha | type) == "string" and .head_sha == $sha)
       | select((.status | type) == "string") ] as $mine
     | ([ $mine[] | select(.status != "completed") ] | length) as $pending
@@ -158,9 +167,9 @@ read_verdict_or_refuse() {
   ' 2>"$work/jq-error")"; then
     sed 's/^/    jq: /' "$work/jq-error" >&2
     refuse \
-      "ci-verdict: could not read CI's verdict for $sha; the answer did not parse as workflow-run JSON (jq's own words are above). Whether CI passed or refused this commit is unknown, so the release stops here." \
+      "ci-verdict: could not read CI's verdict for $sha; the answer was not a readable list of workflow runs (jq's own words are above). Whether CI passed or refused this commit is unknown, so the release stops here." \
       "it was reading $endpoint" \
-      "read that endpoint by hand — an HTML error page or a proxy's response arrives here as unparseable — then re-run this release once it answers. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal."
+      "read that endpoint by hand — an HTML error page, a proxy's response, or any answer without a workflow_runs array arrives here — then re-run this release once it answers normally. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal, and an answer whose SHAPE is unrecognized says nothing about whether CI passed."
   fi
 
   IFS=$'\t' read -r conclusion for_sha pending run_id run_url <<<"$summary"

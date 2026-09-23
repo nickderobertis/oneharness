@@ -310,8 +310,25 @@ expect_said "$tmp/err" "HTTP 403"
 # reason: an HTML error page arrives here exactly like this.
 run_case 'not json at all' "an API answering with something that is not JSON"
 expect_refused
-expect_said "$tmp/err" "did not parse as workflow-run JSON"
+expect_said "$tmp/err" "was not a readable list of workflow runs"
 expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
+
+# An answer that PARSES but carries no workflow_runs array is the sharpest form
+# of this: traversing it selects nothing, and selecting nothing is `absent` —
+# the one state that runs the gate. So a truncated answer, a different endpoint's
+# JSON, or a proxy's `{"message": ...}` would have gated the commit here and
+# published on this job's own green. Each shape must refuse instead.
+for shape in \
+  '{"total_count":0}' \
+  '{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}' \
+  '{"workflow_runs":{}}' \
+  '{"workflow_runs":null}' \
+  '[]' \
+  'null'; do
+  run_case "$shape" "an API answering $shape, which parses but is not a runs response"
+  expect_refused
+  expect_said "$tmp/err" "was not a readable list of workflow runs"
+done
 
 # An input the runs API cannot be asked about is a wiring bug, not a verdict:
 # each must refuse loudly rather than decide the release is unverified.
@@ -355,5 +372,40 @@ WAIT_DELAY_OVERRIDE=soon run_case '{"workflow_runs":[]}' "a delay that is not a 
 unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "is not a whole number of seconds"
+
+# ---------------------------------------------------------------------------
+# The rule above is stated in prose in five other places, and the predecessor of
+# this change got one of those copies wrong — a document promising a fallback
+# the script does not do is how a reader comes to trust a release that stopped.
+# So scripts/ci-verdict.sh carries ONE canonical sentence and every copy quotes
+# it verbatim; this reconciles them.
+#
+# Matching is whitespace- and comment-marker-insensitive, because each copy
+# wraps the sentence to its own column and its own comment syntax. A copy that
+# reworded it, or that a future change edits on one side only, fails here.
+contract="$(sed -n 's/^# CONTRACT: //p' scripts/ci-verdict.sh)"
+[ -n "$contract" ] || fail "scripts/ci-verdict.sh no longer carries a '# CONTRACT: ' line, which is the one source every other statement of the fallback rule is checked against"
+[ "$(sed -n 's/^# CONTRACT: //p' scripts/ci-verdict.sh | wc -l)" -eq 1 ] ||
+  fail "scripts/ci-verdict.sh carries more than one '# CONTRACT: ' line; the rule has one source or it has none"
+
+# Drop comment markers and fold every run of whitespace, so a sentence wrapped
+# across two `#` lines of YAML reads the same as one line of Markdown.
+flatten() { tr -d '#' | tr '\n' ' ' | tr -s '[:space:]' ' '; }
+flat_contract="$(printf '%s' "$contract" | flatten)"
+
+for stated_in in \
+  .github/workflows/release.yml \
+  scripts/check-workflows.sh \
+  AGENTS.md \
+  README.md \
+  release-plz.toml; do
+  if ! flatten <"$stated_in" | grep -Fq "$flat_contract"; then
+    echo "check-ci-verdict: $stated_in does not state the CI-verdict fallback rule as scripts/ci-verdict.sh states it" >&2
+    echo "  Next: quote this sentence there, wrapped however that file wraps (the comment markers and line breaks do not matter, the words do):" >&2
+    printf '    %s\n' "$contract" >&2
+    echo "  If the RULE changed, change it in scripts/ci-verdict.sh's '# CONTRACT: ' line first — that line is the one source, and this check is what stops a document promising a fallback the script does not do." >&2
+    exit 1
+  fi
+done
 
 echo "check-ci-verdict: ok"

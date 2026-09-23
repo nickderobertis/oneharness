@@ -100,13 +100,20 @@ from oneharness_sdk import OneHarness, __version__
 
 expected = sys.argv[1]
 assert __version__ == expected, f"oneharness_sdk.__version__ is {__version__}, not {expected}"
-assert version("oneharness-sdk") == expected
-assert version("oneharness-cli") == expected
+# Each distribution names itself. An SDK whose own metadata is wrong and an SDK
+# installed beside a different CLI are different broken releases, and the
+# exhausted bound surfaces only what the last attempt said — so a bare assert
+# here would report a broken release with nothing to act on.
+for dist in ("oneharness-sdk", "oneharness-cli"):
+    installed = version(dist)
+    assert installed == expected, f"the installed {dist} is {installed}, not {expected}"
 
 
 async def verify():
     harnesses = await OneHarness().list()
-    assert any(item["id"] == "codex" for item in harnesses)
+    assert any(
+        item["id"] == "codex" for item in harnesses
+    ), "the installed SDK did not return the packaged CLI registry"
 
 
 asyncio.run(verify())

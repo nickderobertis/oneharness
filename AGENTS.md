@@ -1166,13 +1166,14 @@ shape. When you add one:
   cuts the GitHub Release. That Release fires `release.yml`, which reuses CI's
   verdict for the exact tagged commit instead of re-running the gate on it: a
   pass publishes, a refusal stops the release, and a run still in flight is
-  waited out rather than swept twice. Only the two states where CI reached NO
-  verdict — a **cancelled** run and **no run at all** — run `just check` here;
-  every other state (unreadable, unparseable, an unrecognized conclusion, a wait
-  that ran out) **stops the release** naming what it was reading, because there
-  a verdict may exist unread and gating the commit here would let this run's own
-  green stand in for CI's red. A release that reuses evidence must never be able
-  to manufacture it. It idempotently publishes both crates in dependency order
+  waited out rather than swept twice. Past that,
+  only a cancelled CI run and no CI run at all make the release run the gate
+  itself; every other state refuses rather than standing in for a verdict it
+  could not read — unreadable, unparseable, an unrecognized conclusion, or a
+  wait that ran out, each naming what it was reading. A verdict may EXIST unread
+  in every one of those, and a release that reuses evidence must never be able
+  to manufacture it. That sentence is `scripts/ci-verdict.sh`'s `# CONTRACT:`
+  line, and `check-ci-verdict.sh` fails if this copy of it drifts. It idempotently publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:

@@ -11,8 +11,10 @@
 #      the default GITHUB_TOKEN) triggers `release.yml`, which builds, archives,
 #      checksums, and attaches the cross-platform binaries. Its checks are CI's
 #      own: it reads CI's verdict for the exact tagged commit — the release PR's
-#      merge commit, which CI gates on `main` — and runs the gate itself only
-#      when that run was cancelled or absent.
+#      merge commit, which CI gates on `main`. Per scripts/ci-verdict.sh, only a
+#      cancelled CI run and no CI run at all make the release run the gate
+#      itself; every other state refuses rather than standing in for a verdict
+#      it could not read.
 
 [workspace]
 # Both crates are published to crates.io on release. release-plz runs

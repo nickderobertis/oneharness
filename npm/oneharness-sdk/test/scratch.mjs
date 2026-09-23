@@ -1,11 +1,12 @@
 // Scratch directories that the test framework removes, however a test ends.
 //
-// `removeScratch` is what each suite registers with `afterEach`, so a test that
-// throws cleans up exactly like one that passes — which a `finally` per call
-// site has to earn again every time.
+// `removeScratchAsync` is what each suite registers with `afterEach` — through
+// `registerScratchCleanup` in `scratch-hook.mjs`, which carries the one timeout
+// that removal is allowed — so a test that throws cleans up exactly like one
+// that passes, which a `finally` per call site has to earn again every time.
 
 import { mkdtempSync, rmSync } from "node:fs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -49,11 +50,29 @@ export function scratchSync(tag) {
 /**
  * Remove every scratch directory taken since the last call.
  *
- * Best-effort per directory, and synchronous so a `process.on("exit")` caller
- * can use it too: an exit handler cannot await.
+ * Best-effort per directory, and synchronous for the one caller that cannot
+ * await: a `process.on("exit")` handler. Every hook a test framework runs uses
+ * `removeScratchAsync` instead, so a slow disk blocks nothing.
  */
 export function removeScratch() {
 	for (const directory of held.splice(0)) {
 		rmSync(directory, { recursive: true, force: true });
 	}
+}
+
+/**
+ * The same, awaited rather than blocking the thread that runs the tests.
+ *
+ * This is the removal every `afterEach` here registers: a synchronous `rmSync`
+ * holds the runner's loop for the whole removal, and on a contended disk that
+ * is what ran an otherwise-passing test out of its teardown budget.
+ *
+ * @returns {Promise<void>}
+ */
+export async function removeScratchAsync() {
+	await Promise.all(
+		held
+			.splice(0)
+			.map((directory) => rm(directory, { recursive: true, force: true })),
+	);
 }

@@ -112,10 +112,11 @@ refuse() {
 }
 
 # Read CI's answer for this commit: it sets $conclusion (the newest FINISHED
-# run's, or `none`), $for_sha (how many runs exist for the commit at all),
-# $run_id and $run_url — but an answer that cannot be read at all refuses from
-# inside, because there is nothing to poll for when the API itself is
-# unreachable and nothing to fall back to when a verdict may exist unread.
+# run's, or `none`), $pending (how many runs for the commit have not finished),
+# $unreadable (how many this could not make sense of), $run_id and $run_url —
+# but an answer that cannot be read at all refuses from inside, because there is
+# nothing to poll for when the API itself is unreachable and nothing to fall
+# back to when a verdict may exist unread.
 conclusion=none
 pending=0
 unreadable=0
@@ -147,10 +148,20 @@ read_verdict_or_refuse() {
   #
   #   * a run whose head_sha is not a string — there is no telling whose it is,
   #     so it cannot be excluded as somebody else's;
-  #   * one of OURS whose status is not a string — it is neither finished nor
-  #     pending, so it would vanish from both counts;
+  #   * one of OURS whose status is neither a string nor one of the states the
+  #     runs API documents — it is neither finished nor pending, so it would
+  #     vanish from both counts;
   #   * one of ours that finished without a usable id and conclusion — dropping
   #     it would hand the verdict to an older run it supersedes.
+  #
+  # The status is enumerated rather than treated as "completed, or else still
+  # going", for the same reason the CONCLUSION is enumerated below: a value this
+  # does not recognize is not evidence of anything. Taking every unrecognized
+  # status for `pending` would hold the release for the whole bound and then
+  # report "CI still had 1 unfinished run(s) ... wait for that run to finish" —
+  # sending a reader after a run that is not running, at the end of a wait that
+  # was never going to end. A status outside the list refuses AT ONCE and names
+  # itself, and if GitHub adds a state the fix is to add it here.
   #
   # `run_started_at` is deliberately NOT in that list: it only orders runs, it
   # is genuinely optional in the API (hence the `created_at` fallback), and a
@@ -165,14 +176,18 @@ read_verdict_or_refuse() {
     else . end
     | .workflow_runs as $all
     | [ $all[] | select((.head_sha | type) == "string" and .head_sha == $sha) ] as $mine
-    | [ $mine[] | select((.status | type) == "string") ] as $readable
-    | [ $readable[] | select(.status == "completed") ] as $finished
+    | [ $mine[] | select((.status | type) == "string") ] as $typed
+    | [ $typed[] | select(.status == "completed") ] as $finished
+    | [ $typed[] | select(.status as $s
+                          | ["queued", "in_progress", "waiting", "requested", "pending", "action_required"]
+                          | index($s)) ] as $unfinished
     | ( ([ $all[] | select((.head_sha | type) != "string") ] | length)
-      + (($mine | length) - ($readable | length))
+      + (($mine | length) - ($typed | length))
+      + (($typed | length) - ($finished | length) - ($unfinished | length))
       + ([ $finished[]
            | select(((.id | type) != "number") or ((.conclusion | type) != "string")) ] | length)
       ) as $unreadable
-    | (($readable | length) - ($finished | length)) as $pending
+    | ($unfinished | length) as $pending
     | ([ $finished[] | select((.id | type) == "number" and (.conclusion | type) == "string") ]
        | sort_by((((.run_started_at // .created_at) | strings
                     | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$"))) // ""),
@@ -197,9 +212,9 @@ read_verdict_or_refuse() {
   # the same malformed runs.
   if [ "$unreadable" -gt 0 ]; then
     refuse \
-      "ci-verdict: $unreadable run(s) in CI's answer for $sha could not be read — a head_sha, status, id or conclusion was missing or of the wrong type. Dropping them would leave this reporting fewer runs than CI has, so the release stops here." \
+      "ci-verdict: $unreadable run(s) in CI's answer for $sha could not be read — a head_sha, status, id or conclusion was missing, of the wrong type, or named a status this does not recognize. Dropping them would leave this reporting fewer runs than CI has, so the release stops here." \
       "it was reading $endpoint" \
-      "read that endpoint by hand and compare it with what the runs API documents; if the shape has changed, update the fields scripts/ci-verdict.sh type-checks. This job will not run the gate in CI's place: discarding the runs it cannot parse is how an answer it could not read would come to look like no answer at all."
+      "read that endpoint by hand and compare it with what the runs API documents; if the shape has changed, update the fields scripts/ci-verdict.sh type-checks, and if GitHub has added a run status, add it to the statuses that script enumerates. This job will not run the gate in CI's place: discarding the runs it cannot parse is how an answer it could not read would come to look like no answer at all."
   fi
 }
 

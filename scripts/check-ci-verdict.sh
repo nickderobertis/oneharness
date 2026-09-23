@@ -297,6 +297,34 @@ for statusless in '{"id":95,"head_sha":"SHA","conclusion":"failure"}' \
   expect_said "$tmp/err" "1 run(s) in CI's answer"
 done
 
+# A status that IS a string but names no state the runs API documents. Read as
+# "not completed, so still going" it would be waited out for the whole bound and
+# then reported as a run that had not finished — sending a reader after a run
+# that is not running, at the end of a wait that could never end. It is an
+# unreadable run, exactly as an unrecognized CONCLUSION is an unreadable verdict,
+# and it refuses at once.
+run_case '{"workflow_runs":[{"id":112,"head_sha":"'"$SHA_UNDER_TEST"'","status":"borked","conclusion":"success","run_started_at":"2026-01-01T00:00:00Z"}]}' \
+  "a run of ours whose status names no documented state"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
+expect_said "$tmp/err" "named a status this does not recognize"
+[ "$(grep -c 'head_sha' "$tmp/calls")" -eq 1 ] || {
+  cat "$tmp/calls" >&2
+  fail "$description: an unrecognized status must refuse at once, not be polled for"
+}
+
+# ...and every state the API does document must still be waited for rather than
+# refused, so enumerating them cannot turn a run that is genuinely still going
+# into a stopped release.
+for going in queued in_progress waiting requested pending action_required; do
+  run_polling_case "a run of ours that is $going, then finishes" \
+    "{\"workflow_runs\":[$(workflow_run_json 113 "$SHA_UNDER_TEST" "$going" null 2026-01-01T00:00:00Z)]}" \
+    "{\"workflow_runs\":[$(workflow_run_json 113 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}"
+  expect_status 0
+  expect_needs_check false
+  expect_said "$tmp/out" "CI run 113 concluded success"
+done
+
 # A malformed run of somebody ELSE's is not ours to refuse over: its head_sha is
 # readable and says so, and the release must not stop because an unrelated
 # commit's run is odd.

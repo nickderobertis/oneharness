@@ -62,13 +62,23 @@ fail() {
 # Leaves the exit status in $status, stdout in $tmp/out, stderr in $tmp/err, and
 # the workflow output file in $tmp/github-output. The wait is three polls with no
 # delay, so a case that polls costs nothing.
+#
+# `env -u` is load-bearing, not tidiness. ci-verdict.sh falls back to
+# $GITHUB_REPOSITORY and $GITHUB_SHA when $REPO/$SHA are empty, and every job on
+# a GitHub runner is handed both — so the cases below that assert a refusal when
+# given NO commit and NO repository would instead be answered from the runner's
+# own commit, pass on a developer box, and fail only in CI. They did: a release
+# gate read `CI has no run for <the runner's sha>` and this test reported
+# `expected exit 2, got 0`. Stripping them is the same property `ONEHARNESS_NO_CONFIG`
+# gives the Rust suite — the machine's real environment cannot reshape an assertion.
 invoke() {
   : >"$tmp/calls"
   : >"$tmp/github-output"
   rm -rf "$tmp/state"
   mkdir -p "$tmp/state"
   set +e
-  GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" \
+  env -u GITHUB_REPOSITORY -u GITHUB_SHA \
+    GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" \
     PATH="$tmp/bin:$PATH" \
     REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
     CI_WORKFLOW="${WORKFLOW_OVERRIDE-ci.yml}" \
@@ -79,6 +89,19 @@ invoke() {
   set -e
   description="$1"
 }
+
+# ...and this holds that list complete. Every ambient GitHub variable
+# ci-verdict.sh reads must be one invoke() either SETS (GITHUB_OUTPUT, which the
+# cases read back) or STRIPS (the two fallbacks above). A new one added there and
+# left out here reintroduces exactly the defect described above, which is
+# invisible until a release runs — so it is caught here, where it is cheap.
+# Only whole-line comments are dropped, so the script's own documentation of the
+# three may mention them freely.
+handled_ambient="GITHUB_OUTPUT GITHUB_REPOSITORY GITHUB_SHA"
+read_ambient="$(sed 's/^[[:space:]]*#.*//' scripts/ci-verdict.sh |
+  grep -o 'GITHUB_[A-Z_]*' | sort -u | tr '\n' ' ')"
+[ "$read_ambient" = "$handled_ambient " ] ||
+  fail "scripts/ci-verdict.sh reads the ambient variables [${read_ambient% }], but this test only handles [$handled_ambient]. Set the new one in invoke() if a case must control it, or strip it with 'env -u' if no case may see the runner's own value; a GitHub runner sets most of them, and an unstripped fallback makes a case here pass locally and fail only during a release"
 
 # $1 the runs JSON the stubbed API answers with every time, $2 case description.
 run_case() {

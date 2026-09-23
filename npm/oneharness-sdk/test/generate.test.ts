@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
 	copyFileSync,
@@ -22,10 +22,11 @@ import {
 	SDK_SCHEMA_ALIASES,
 	SDK_SCHEMA_ROOTS,
 } from "../scripts/zod-generator.mjs";
-import { removeScratch, scratchSync } from "./scratch.mjs";
+import { scratchSync } from "./scratch.mjs";
+import { registerScratchCleanup } from "./scratch-hook.mjs";
 
 // Whatever a test does with its scratch checkout, the framework takes it back.
-afterEach(removeScratch);
+registerScratchCleanup();
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");

@@ -149,7 +149,7 @@ node -e '
   lines.splice(at - 1, 1);
   fs.writeFileSync(path, lines.join("\n"));
 ' "$workflow"
-expect_gate_refusal "run the complete repository gate only when CI did not answer for the tagged commit"
+expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
 
 # A forbidden pattern: a registry's metadata API answering, read as a consumer
 # being able to install.
@@ -165,6 +165,6 @@ expect_gate_refusal "must not run an SDK gate"
 # about every occurrence: one guarded copy says nothing about a sibling that
 # runs on every release.
 printf '        run: just check\n' >>"$workflow"
-expect_gate_refusal "run the complete repository gate only when CI did not answer for the tagged commit"
+expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
 
 echo 'check-workflows-e2e: ok'

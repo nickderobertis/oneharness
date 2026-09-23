@@ -8,8 +8,16 @@
 # far worse, publishes a commit CI refused. A real API cannot rehearse a
 # cancelled run or a missing one, so `gh` is stubbed and every branch is driven:
 # the selection (a foreign commit's run must not answer for ours, and the newest
-# finished run wins), then success, failure, cancelled, absent, unfinished, and
-# an answer that cannot be read at all.
+# finished run wins), then each verdict state.
+#
+# The division those cases hold is the point of the whole script. ONLY a
+# cancelled run and an absent one run the gate in the release — they are the two
+# states where CI reached no verdict, so running it establishes something nobody
+# knew. Every state where a verdict may EXIST unread — an API that refuses, an
+# answer that will not parse, a conclusion this does not recognize, a run still
+# going when the wait runs out — must REFUSE, because running the gate there
+# lets a green run in the release stand in for a red run in CI. So each of those
+# is driven here and asserted to decide nothing at all.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -124,6 +132,19 @@ expect_said() {
   }
 }
 
+# A refusal stops the release having decided NOTHING the workflow could act on —
+# an emitted needs_check is what would turn an unread verdict into a locally
+# manufactured one — and says enough for a person to act: the state met, what it
+# was reading, and what to do next.
+expect_refused() {
+  expect_status 1
+  if [ -s "$tmp/github-output" ]; then
+    cat "$tmp/github-output" >&2
+    fail "$description: a refusal must decide nothing for the workflow to act on"
+  fi
+  expect_said "$tmp/err" "  Next: "
+}
+
 workflow_run_json() { printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s,"run_started_at":"%s","html_url":"https://example.invalid/run/%s"}' "$1" "$2" "$3" "$4" "$5" "$1"; }
 
 # The tagged commit passed; a LATER run of a different commit failed in the same
@@ -159,27 +180,26 @@ expect_needs_check false
 for refusal in failure timed_out startup_failure; do
   run_case "{\"workflow_runs\":[$(workflow_run_json 30 "$SHA_UNDER_TEST" completed "\"$refusal\"" 2026-01-01T00:00:00Z)]}" \
     "a CI run that concluded $refusal for the tagged commit"
-  expect_status 1
+  expect_refused
   expect_said "$tmp/err" "CI run 30 concluded $refusal"
   expect_said "$tmp/err" "https://example.invalid/run/30"
-  if [ -s "$tmp/github-output" ]; then
-    cat "$tmp/github-output" >&2
-    fail "$description: a refusal must decide nothing for the workflow to act on"
-  fi
 done
 
-# Cancelled: CI answered nothing about this commit, so the release proves it.
+# Cancelled — the first of the only two states that run the gate in the release.
+# CI was stopped before it reached any verdict, so nothing is being stood in for.
 run_case "{\"workflow_runs\":[$(workflow_run_json 40 "$SHA_UNDER_TEST" completed '"cancelled"' 2026-01-01T00:00:00Z)]}" \
   "a cancelled CI run"
 expect_status 0
 expect_needs_check true
+expect_said "$tmp/out" "CI reached no verdict"
 expect_said "$tmp/out" "running the gate here instead"
 
-# No run at all — a hand-made Release, or a tag CI never saw.
+# Absent — the second, and the last. A hand-made Release, or a tag CI never saw.
 run_case '{"workflow_runs":[]}' "no CI run for the tagged commit"
 expect_status 0
 expect_needs_check true
 expect_said "$tmp/out" "no run for $SHA_UNDER_TEST"
+expect_said "$tmp/out" "CI reached no verdict"
 
 # Still running: the run is WAITED for rather than duplicated, and the verdict
 # that arrives is CI's. Running the whole gate beside the run already running it
@@ -195,13 +215,15 @@ expect_said "$tmp/out" "concluded success"
   fail "$description: expected the verdict to be asked for twice, once per poll"
 }
 
-# A run that never finishes inside the bound: the release stops waiting and
-# proves the commit itself rather than publishing on no verdict at all.
+# A run that never finishes inside the bound. CI has not finished DECIDING this
+# commit, and the verdict it is about to reach may be a refusal — so the bound
+# running out is not the same as CI having been cancelled, and the release stops
+# rather than gating the commit itself and publishing on its own green.
 run_case "{\"workflow_runs\":[$(workflow_run_json 51 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
   "a CI run that does not finish inside the bound"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "still had 1 unfinished run(s)"
+expect_refused
+expect_said "$tmp/err" "still had 1 unfinished run(s)"
+expect_said "$tmp/err" "has not finished deciding this commit"
 
 # Two finished runs that started at the same instant: the tie is broken by run
 # id, so the later run is CI's word and a coin flip never decides a release.
@@ -211,13 +233,14 @@ expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "CI run 81 concluded success"
 
-# A finished run whose conclusion is absent — or of a type this cannot act on —
-# is not a verdict, however parseable the answer was.
+# A finished run whose conclusion is absent — or of a type this cannot act on.
+# The run RAN, so CI very likely reached a verdict here and this could not read
+# it; that is an unread answer rather than an absent one, and it refuses.
 run_case '{"workflow_runs":[{"id":90,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":null,"run_started_at":"2026-01-01T00:00:00Z","html_url":"https://example.invalid/run/90"}]}' \
   "a finished run with no conclusion"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "reported no usable conclusion"
+expect_refused
+expect_said "$tmp/err" "reported no usable id and conclusion"
+expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
 
 # A start time of the wrong type must not select the run: jq sorts objects above
 # strings, so an unchecked key would make this malformed run the newest and
@@ -261,29 +284,34 @@ if [ -s "$tmp/github-output" ]; then
   fail "$description: an older success must not publish while CI is deciding again"
 fi
 
-# A conclusion nobody enumerated — GitHub has several, and a new one must not
-# read as a pass.
+# A conclusion nobody enumerated — GitHub has several, and a new one must read
+# as neither a pass nor the absence of a verdict. Gating the commit here would
+# let this release publish on its own green over an answer CI did give.
 run_case "{\"workflow_runs\":[$(workflow_run_json 60 "$SHA_UNDER_TEST" completed '"neutral"' 2026-01-01T00:00:00Z)]}" \
   "a CI run with a conclusion this script does not enumerate"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "concluded neutral"
-expect_said "$tmp/out" "which is not a pass"
+expect_refused
+expect_said "$tmp/err" "concluded neutral"
+expect_said "$tmp/err" "neither a pass, a refusal, nor the absence of a verdict"
+expect_said "$tmp/err" "https://example.invalid/run/60"
 
-# An unread answer is an absent one: the release proves the commit itself rather
-# than publishing on a verdict nobody saw.
+# An answer that could not be read is NOT an absent one: CI may have refused this
+# commit and simply not been reachable to say so. Running the gate here would put
+# a green run in this release where a red run in CI belongs, so it refuses and
+# names the endpoint it was reading and the permission that restores the read.
 GH_FAIL=1 run_case '{"workflow_runs":[]}' "an API that refuses the query"
 unset GH_FAIL
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "could not read ci.yml runs"
+expect_refused
+expect_said "$tmp/err" "could not read CI's verdict for $SHA_UNDER_TEST"
+expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
+expect_said "$tmp/err" "actions:read"
 expect_said "$tmp/err" "HTTP 403"
 
-# Unparseable JSON is the same kind of unread answer.
+# Unparseable JSON is the same kind of unread answer, and refuses for the same
+# reason: an HTML error page arrives here exactly like this.
 run_case 'not json at all' "an API answering with something that is not JSON"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "did not parse as workflow-run JSON"
+expect_refused
+expect_said "$tmp/err" "did not parse as workflow-run JSON"
+expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
 
 # An input the runs API cannot be asked about is a wiring bug, not a verdict:
 # each must refuse loudly rather than decide the release is unverified.

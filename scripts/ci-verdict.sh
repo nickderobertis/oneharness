@@ -19,14 +19,19 @@
 #                                 push can cancel the tagged commit's run, and a
 #                                 hand-made Release may have no CI run at all.
 #
+# Those last two are the ONLY states that run the gate here, because they are
+# the only two where CI reached no verdict at all: repeating the checks then
+# establishes something nobody knew. Every other state — an answer that could
+# not be read, did not parse, carries a conclusion this does not recognize, or
+# has not arrived before the wait runs out — exits 1 naming what it was reading.
+# A verdict may well EXIST in each of those and this simply could not see it, so
+# running the gate here would let a green run in this job stand in for a red run
+# in CI. A release that reuses evidence must never be able to manufacture it.
+#
 # A run that is still RUNNING is waited for rather than duplicated: a second full
 # sweep of the same commit, alongside the one already sweeping it, is the cost
-# this exists to avoid. The wait is bounded, and a bound that runs out falls back
-# to running the gate here.
-#
-# An answer that cannot be READ (no `gh`, no credential, an API error) is the
-# same as an absent one: the release proves the commit itself rather than
-# publishing on an unread verdict or dying with nothing published.
+# this exists to avoid. The wait is bounded, and a bound that runs out refuses
+# rather than deciding the commit is unverified — CI is still deciding it.
 #
 # Reads:
 #   REPO         owner/name to query (default $GITHUB_REPOSITORY)
@@ -74,6 +79,8 @@ esac
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+endpoint="repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100"
+
 # `needs_check` is the only thing the workflow reads; everything else here is for
 # the person reading the log of a release that behaved unexpectedly.
 decide() {
@@ -85,21 +92,37 @@ decide() {
   exit 0
 }
 
-# Read CI's answer for this commit, or decide the whole thing here: it sets
-# $conclusion (the newest FINISHED run's, or `none`), $for_sha (how many runs
-# exist for the commit at all), $run_id and $run_url — but an answer that cannot
-# be read at all is decided and exited from inside, because there is nothing to
-# poll for when the API itself is unreachable.
+# Stop the release without deciding anything for the workflow to act on, saying
+# which state was met, what it was reading when it met it, and what a person
+# does about it. This is every state but the four enumerated above: it is not a
+# licence to run the gate here, because a verdict this could not read may still
+# be a refusal.
+refuse() {
+  local headline="$1" detail="$2" next="$3"
+  printf '::error::%s\n' "$headline" >&2
+  printf 'ci-verdict: %s\n' "$detail" >&2
+  printf '  Next: %s\n' "$next" >&2
+  exit 1
+}
+
+# Read CI's answer for this commit: it sets $conclusion (the newest FINISHED
+# run's, or `none`), $for_sha (how many runs exist for the commit at all),
+# $run_id and $run_url — but an answer that cannot be read at all refuses from
+# inside, because there is nothing to poll for when the API itself is
+# unreachable and nothing to fall back to when a verdict may exist unread.
 conclusion=none
 for_sha=0
 pending=0
 run_id=
 run_url=
-read_verdict_or_decide() {
+read_verdict_or_refuse() {
   local runs summary
-  if ! runs="$(gh api "repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100" 2>"$work/gh-error")"; then
+  if ! runs="$(gh api "$endpoint" 2>"$work/gh-error")"; then
     sed 's/^/    gh: /' "$work/gh-error" >&2
-    decide true "could not read $workflow runs for $sha (gh said why above), so CI's verdict is unknown; running the gate here instead. To restore the fast path give this job the actions:read permission and a GH_TOKEN, and check that $workflow exists in $repo."
+    refuse \
+      "ci-verdict: could not read CI's verdict for $sha; gh refused the query (its own words are above). Whether CI passed or refused this commit is unknown, so the release stops here." \
+      "it was reading $endpoint" \
+      "give this job the actions:read permission and a GH_TOKEN, check that $workflow exists in $repo, then re-run this release. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal, and a green run here would stand in for it."
   fi
 
   # The API's own `head_sha` filter is not trusted to be the whole answer: this
@@ -134,7 +157,10 @@ read_verdict_or_decide() {
       end
   ' 2>"$work/jq-error")"; then
     sed 's/^/    jq: /' "$work/jq-error" >&2
-    decide true "the $workflow runs for $sha did not parse as workflow-run JSON (jq said why above), so CI's verdict is unknown; running the gate here instead."
+    refuse \
+      "ci-verdict: could not read CI's verdict for $sha; the answer did not parse as workflow-run JSON (jq's own words are above). Whether CI passed or refused this commit is unknown, so the release stops here." \
+      "it was reading $endpoint" \
+      "read that endpoint by hand — an HTML error page or a proxy's response arrives here as unparseable — then re-run this release once it answers. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal."
   fi
 
   IFS=$'\t' read -r conclusion for_sha pending run_id run_url <<<"$summary"
@@ -145,7 +171,7 @@ read_verdict_or_decide() {
 # this script exists to avoid. Silent while it waits — the decision below says
 # how long it took.
 for poll in $(seq 1 "$wait_attempts"); do
-  read_verdict_or_decide
+  read_verdict_or_refuse
   if [ "$pending" -eq 0 ]; then
     break
   fi
@@ -154,8 +180,13 @@ for poll in $(seq 1 "$wait_attempts"); do
   fi
 done
 
+# The wait running out is not a cancelled run: CI is still deciding this commit,
+# and the verdict it is about to reach may be a refusal.
 if [ "$pending" -gt 0 ]; then
-  decide true "CI still had $pending unfinished run(s) for $sha after $wait_attempts polls over ~$((wait_attempts * wait_delay))s; running the gate here instead."
+  refuse \
+    "ci-verdict: CI still had $pending unfinished run(s) for $sha after $wait_attempts polls over ~$((wait_attempts * wait_delay))s. CI has not finished deciding this commit, so the release stops here." \
+    "it was reading $endpoint" \
+    "wait for that run to finish and re-run this release workflow; if it will never finish, cancel it and re-run, which makes this a cancelled run and gets the gate run here. This job will not run the gate while CI is still deciding: the verdict CI is about to reach may be a refusal."
 fi
 
 case "$conclusion" in
@@ -163,19 +194,36 @@ case "$conclusion" in
     decide false "CI run $run_id concluded success for $sha ($run_url); publishing without re-running the gate."
     ;;
   failure | timed_out | startup_failure)
-    printf '::error::CI run %s concluded %s for the commit this release tags, %s. A commit CI refused must not publish.\n' \
-      "$run_id" "$conclusion" "$sha" >&2
-    printf 'ci-verdict: the failing run is %s\n' "${run_url:-<the API returned no URL>}" >&2
-    printf '  Next: read that run, fix the commit on the main branch, and release the fix. Re-running this release cannot make the refusal go away.\n' >&2
-    exit 1
+    refuse \
+      "CI run $run_id concluded $conclusion for the commit this release tags, $sha. A commit CI refused must not publish." \
+      "the failing run is ${run_url:-<the API returned no URL>}" \
+      "read that run, fix the commit on the main branch, and release the fix. Re-running this release cannot make the refusal go away."
+    ;;
+  cancelled)
+    # CI was stopped before it reached a verdict — on `main` a later push cancels
+    # the tagged commit's run — so nobody knows anything about this commit yet,
+    # and running the gate here establishes it.
+    decide true "CI run $run_id was cancelled for $sha (${run_url:-no URL}), so CI reached no verdict; running the gate here instead."
     ;;
   none)
     if [ "$for_sha" -gt 0 ]; then
-      decide true "CI's $for_sha run(s) for $sha reported no usable conclusion; running the gate here instead."
+      # Finished runs exist but none carried a usable id and conclusion. That is
+      # an answer this could not read, not an absent one.
+      refuse \
+        "ci-verdict: CI's $for_sha finished run(s) for $sha reported no usable id and conclusion, so their verdict could not be read. The release stops here." \
+        "it was reading $endpoint" \
+        "read those runs by hand and re-run this release once the API reports them normally. This job will not run the gate in CI's place: a verdict it could not read may well be a refusal."
     fi
-    decide true "CI has no run for $sha; running the gate here instead."
+    decide true "CI has no run for $sha, so CI reached no verdict; running the gate here instead."
     ;;
   *)
-    decide true "CI run $run_id concluded $conclusion for $sha (${run_url:-no URL}), which is not a pass; running the gate here instead."
+    # GitHub has several other conclusions (neutral, action_required, skipped,
+    # stale), and one of them may mean CI declined to gate this commit — or that
+    # it did and this does not know how to read it. Either way it is not the
+    # absence of a verdict, so it is not this job's to overwrite with one.
+    refuse \
+      "ci-verdict: CI run $run_id concluded $conclusion for $sha, which is neither a pass, a refusal, nor the absence of a verdict this can act on. The release stops here." \
+      "the run is ${run_url:-<the API returned no URL>}" \
+      "read that run and decide: release the commit again once CI has gated it, or add $conclusion to the conclusions scripts/ci-verdict.sh enumerates if it is one the release may act on. This job will not run the gate in CI's place: a conclusion it does not recognize may well be a refusal."
     ;;
 esac

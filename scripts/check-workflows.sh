@@ -78,9 +78,12 @@ require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use
 # a runner to learn what is known and puts an approved commit at the mercy of an
 # unrelated transient failure DURING publication, where red reads as a broken
 # release. So the verdict for the exact tagged commit is read, and the gate runs
-# here only when CI did not answer for that commit — ONE check, `just check`,
-# invoked the one way named below: never a restatement of its stages, and never
-# a second run of something it already contains.
+# here only in the two states where CI reached NO verdict for that commit, a
+# cancelled run and no run at all — ONE check, `just check`, invoked the one way
+# named below: never a restatement of its stages, and never a second run of
+# something it already contains. (An answer scripts/ci-verdict.sh could not read
+# refuses the release instead of running the gate; that division is held by
+# scripts/check-ci-verdict.sh, which drives every state against a stand-in API.)
 require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
   "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
 require_line .github/workflows/release.yml 'actions: read' \
@@ -91,7 +94,7 @@ require_line .github/workflows/release.yml 'needs_check: ${{ steps.verdict.outpu
   "publish that verdict to the jobs that would otherwise re-run a check"
 require_guarded .github/workflows/release.yml 'run: just check' \
   "if: steps.verdict.outputs.needs_check == 'true'" \
-  "run the complete repository gate only when CI did not answer for the tagged commit"
+  "run the complete repository gate only when CI reached no verdict for the tagged commit"
 # `just check` contains both SDK gates, so the fallback above has already run
 # them on this commit. A release job running either again is the same commit
 # swept twice, and neither belongs here any more.

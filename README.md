@@ -2678,9 +2678,14 @@ writes the changelog. That PR auto-merges once the gate is green, then:
 1. release-plz tags `vX.Y.Z` and cuts the GitHub Release;
 2. that Release fires `.github/workflows/release.yml`, which reads CI's verdict
    for the exact tagged commit instead of re-running the gate CI already ran on
-   it (a failure refuses the release; a run still in flight is waited out; any
-   other answer — cancelled, absent, or unreadable — makes the release run `just
-   check` itself), publishes both Cargo crates idempotently in dependency order
+   it — a success publishes without re-checking, a failure refuses the release
+   naming the run, and only a **cancelled** run or **no run at all** makes the
+   release run `just check` itself, those being the two states where CI reached
+   no verdict. A run still in flight is waited out; an answer that could not be
+   read, did not parse, or carries an unrecognized conclusion **stops the
+   release** rather than gating the commit here, because a verdict may exist
+   unread and a green run in the release must never stand in for a red run in
+   CI — publishes both Cargo crates idempotently in dependency order
    (`oneharness-core` first, then the `oneharness` binary that depends on it),
    attaches archived, sha256-checksummed binaries for Linux, macOS, and Windows,
    signs each archive with a keyless Sigstore build-provenance attestation and

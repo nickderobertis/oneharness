@@ -13,7 +13,11 @@ name: Release
 #
 #   * gate               — CI's verdict for the exact tagged commit: publish on
 #                           a success, refuse on a failure, and run the same
-#                           gate here when CI's run was cancelled or absent.
+#                           gate here ONLY when CI's run was cancelled or absent
+#                           — the two states where CI reached no verdict. An
+#                           answer that could not be read refuses the release
+#                           too, rather than letting this job's own green stand
+#                           in for a CI red it never saw.
 #   * upload             — build each target on a native runner, attach the
 #                           archive + sha256 checksum, sign a keyless Sigstore
 #                           build-provenance attestation (OIDC → the public Rekor
@@ -74,11 +78,18 @@ jobs:
   # to an unrelated transient failure DURING publication — where a red run reads
   # as a broken release rather than as the flake it is.
   #
-  # The gate still runs here whenever CI did not answer for this commit: CI on
-  # `main` cancels in progress per ref, so a later push can cancel the tagged
-  # commit's run, and a hand-made Release may have no run at all. A run that is
-  # still going is waited for rather than duplicated. A CI failure refuses the
-  # release outright, naming the run to read.
+  # The gate still runs here in the two states where CI reached no verdict at
+  # all: a cancelled run — CI on `main` cancels in progress per ref, so a later
+  # push can cancel the tagged commit's run — and no run at all, as a hand-made
+  # Release has. A run that is still going is waited for rather than duplicated.
+  # A CI failure refuses the release outright, naming the run to read.
+  #
+  # Every other state stops the release instead of gating the commit here: an
+  # answer that could not be read or parsed, a conclusion nobody enumerated, or
+  # a wait that ran out. A verdict may EXIST in each of those and simply not
+  # have been readable, so running the gate here would let this job's green
+  # stand in for a red run in CI — which is the one thing consuming CI's verdict
+  # must never be able to manufacture.
   #
   # The decision is scripts/ci-verdict.sh, driven against a stand-in GitHub API
   # by scripts/check-ci-verdict.sh; the fallback is `just check` itself, so it
@@ -116,7 +127,7 @@ jobs:
           tool: just,nextest,cargo-llvm-cov,shellcheck
       - if: steps.verdict.outputs.needs_check == 'true'
         run: just bootstrap
-      - name: Run the gate CI did not answer for
+      - name: Run the gate CI reached no verdict on
         if: steps.verdict.outputs.needs_check == 'true'
         run: just check
 

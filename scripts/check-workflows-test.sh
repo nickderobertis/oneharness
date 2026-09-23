@@ -85,11 +85,22 @@ rewrite() {
   mv "$root/$path.rewritten" "$root/$path"
 }
 
-# Runs the staged gate. Prints nothing; leaves its combined output in $work/out
-# and returns the gate's own exit status.
+# Runs the staged gate against the staged checkout. Prints nothing; leaves its
+# combined output in $work/out and returns the gate's own exit status.
+#
+# The gate resolves its own root from $0 (`cd "$(dirname "$0")/.."`), so the
+# staged copy reads the staged tree from whatever directory it is invoked in.
+# The subshell `cd` pins the same answer locally, so which files a case actually
+# mutates is readable here without going to the gate to find out.
+#
+# What PROVES the mutations reach it is not either of those, though: it is that
+# every case below greps for a value the mutation introduced and the working
+# tree does not contain. A gate that read the repository instead of the fixture
+# could not print '1.70' or say a manifest declares no rust-version, so each
+# refusal is only reachable through the staged file it names.
 run_gate() {
   local root="$1"
-  bash "$root/scripts/check-workflows.sh" >"$work/out" 2>&1
+  (cd "$root" && bash scripts/check-workflows.sh) >"$work/out" 2>&1
 }
 
 # The staged tree is the repository's own, so it must be green before any case
@@ -133,8 +144,26 @@ if grep -q "^workflow drift: Cargo\.toml rust-version" "$work/out"; then
   fail_showing "the root manifest still resolves its own MSRV and must not be named"
 fi
 
-# The case the whole-file search could not see: a manifest declaring no MSRV at
-# all, while [workspace.package] still carries one for the search to find.
+# The regression case, and the only one that separates a table-scoped read from
+# the whole-file search that shipped before it: the ROOT manifest declares no
+# MSRV, while the [workspace.package] table in that same file still carries the
+# canonical one. A whole-file search finds 1.86 there, calls it the root
+# package's, and goes green on a manifest that states nothing. Every other case
+# here passes under that defect too, because the value the search wrongly picks
+# up is the value the manifest was supposed to have — so without this case the
+# suite cannot tell the two implementations apart.
+root="$(stage no-msrv-root)"
+rewrite "$root" Cargo.toml '
+  !/^rust-version\.workspace = true$/ { print }
+'
+if run_gate "$root"; then
+  fail_showing "the root manifest declaring no rust-version must be refused, not satisfied by the [workspace.package] line in the same file"
+fi
+grep -Fq "Cargo.toml declares no rust-version" "$work/out" ||
+  fail_showing "the root manifest declaring no rust-version must be named as such"
+
+# The same absence in the member manifest, which has no workspace table of its
+# own to be confused with.
 root="$(stage no-msrv)"
 rewrite "$root" crates/oneharness-core/Cargo.toml '
   !/^rust-version\.workspace = true$/ { print }

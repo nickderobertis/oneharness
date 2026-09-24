@@ -101,6 +101,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-parity-audit.sh >/dev/null
     @bash scripts/report-scheduled-failure-test.sh >/dev/null
     @bash scripts/check-workflows.sh >/dev/null
+    @bash scripts/check-workflows-test.sh >/dev/null
     @bash scripts/check-workflows-e2e.sh >/dev/null
     @bash scripts/check-setup-just.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
@@ -292,7 +293,9 @@ python-sdk-check:
         rm -f target/python-sdk.coverage
         # The two steps that take scratch space run under check-temp-leaks.sh,
         # the same gate `test` uses.
-        COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src bash scripts/check-temp-leaks.sh "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py'
+        #
+        # `-t` preserves the test package for its relative imports.
+        COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src bash scripts/check-temp-leaks.sh "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py' -t python/oneharness-sdk
         COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
         bash scripts/check-temp-leaks.sh "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
     ) >"$log" 2>&1; then

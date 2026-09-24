@@ -84,6 +84,22 @@ set -e
 grep -q "could not build a symlinked temp root under $work/does-not-exist" "$work/out" ||
   fail "the lane should name the TMPDIR it could not build its root under"
 
+# A root half-built before `ln` fails — a filesystem without symlinks, stood in
+# for by an `ln` that refuses — is reported and still removed.
+mkdir -p "$work/no-symlinks"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$work/no-symlinks/ln"
+chmod +x "$work/no-symlinks/ln"
+set +e
+PATH="$work/no-symlinks:$PATH" bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "a root the lane cannot symlink should fail it (exit 1), got $status"
+[ ! -e "$work/ran" ] || fail "the lane should not run its command without its symlink"
+grep -q "could not build a symlinked temp root under $work" "$work/out" ||
+  fail "the lane should say it could not build its symlinked root"
+[ -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')" ] ||
+  fail "the lane left its half-built root behind under $work"
+
 set +e
 OH_SYMLINKED_TMP_UNAME=Linx bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1
 status=$?

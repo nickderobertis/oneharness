@@ -4,10 +4,11 @@
 // the directory below is gone afterwards — the property a passing test can never
 // demonstrate about itself. Named `.fixture.ts` so bun's own test glob leaves it
 // to that one caller.
-import { afterEach, test } from "bun:test";
-import { removeScratch, scratch } from "./scratch.mjs";
+import { test } from "bun:test";
+import { scratch } from "./scratch.mjs";
+import { registerScratchCleanup } from "./scratch-hook.mjs";
 
-afterEach(removeScratch);
+registerScratchCleanup();
 
 test("fails after taking scratch space", async () => {
 	console.log(`scratch-fixture-directory ${await scratch("cleanup-probe")}`);

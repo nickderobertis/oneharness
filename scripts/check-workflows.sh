@@ -16,16 +16,55 @@ require_line() {
   grep -Fq -- "$line" "$file" || fail "$file must $description"
 }
 
+# The `rust-version` a manifest's `[package]` table states, read from that table
+# alone. Prints `literal <value>` where one is stated, `inherit` where the
+# manifest takes the workspace's with `rust-version.workspace = true`, and
+# nothing where the table declares neither.
+#
+# Reading the table rather than the file is what makes the two answers
+# distinguishable: `[workspace.package]` now carries a `rust-version = "..."`
+# line of its own, and a whole-file search finds it for every manifest in the
+# workspace — including one that declares no MSRV at all.
+package_rust_version() {
+  awk '
+    $0 == "[package]" { inside = 1; next }
+    inside && /^\[/ { exit }
+    inside && match($0, /^rust-version[[:space:]]*=[[:space:]]*"[^"]+"/) {
+      line = substr($0, RSTART, RLENGTH)
+      sub(/^[^"]*"/, "", line)
+      sub(/"$/, "", line)
+      print "literal " line
+      exit
+    }
+    inside && /^rust-version\.workspace[[:space:]]*=[[:space:]]*true[[:space:]]*$/ {
+      print "inherit"
+      exit
+    }
+  ' "$1"
+}
+
 # rust-toolchain.toml is canonical. Cargo requires an MSRV in each publishable
 # manifest, while actions-rust-lang/setup-rust-toolchain reads the committed
-# toolchain file directly.
+# toolchain file directly. Both manifests inherit theirs from
+# `[workspace.package]`, so what is compared here is the value each one
+# RESOLVES to — the workspace's where it is inherited, the manifest's own where
+# it is stated — and an MSRV that reaches neither manifest is still named.
 toolchain="$(sed -n 's/^channel = "\([^"]*\)"$/\1/p' rust-toolchain.toml)"
 if ! [[ "$toolchain" =~ ^[0-9]+\.[0-9]+\.0$ ]]; then
   fail "rust-toolchain.toml must contain one stable x.y.0 channel"
 else
   msrv="${toolchain%.0}"
+  workspace_msrv="$(sed -n '/^\[workspace\.package\]$/,/^\[/ s/^rust-version = "\([^"]*\)"$/\1/p' Cargo.toml | head -n 1)"
   for manifest in Cargo.toml crates/oneharness-core/Cargo.toml; do
-    declared="$(sed -n 's/^rust-version = "\([^"]*\)"$/\1/p' "$manifest")"
+    stated="$(package_rust_version "$manifest")"
+    case "$stated" in
+      "literal "*) declared="${stated#literal }" ;;
+      inherit) declared="$workspace_msrv" ;;
+      *)
+        fail "$manifest declares no rust-version in its [package] table; state one, or inherit the workspace's with 'rust-version.workspace = true'"
+        continue
+        ;;
+    esac
     [ "$declared" = "$msrv" ] || fail "$manifest rust-version '$declared' must match canonical toolchain '$toolchain'"
   done
 

@@ -10,11 +10,9 @@
 #      Release with the changelog notes. That Release (created with a PAT, not
 #      the default GITHUB_TOKEN) triggers `release.yml`, which builds, archives,
 #      checksums, and attaches the cross-platform binaries. Its checks are CI's
-#      own: it reads CI's verdict for the exact tagged commit — the release PR's
-#      merge commit, which CI gates on `main`. Per scripts/ci-verdict.sh, only a
-#      cancelled CI run and no CI run at all make the release run the gate
-#      itself; every other state refuses rather than standing in for a verdict
-#      it could not read.
+#      own: it reads the check jobs for the exact tagged commit: a failed check
+#      job refuses release; only a complete successful check matrix skips the
+#      release gate; an absent or incomplete matrix runs the gate after CI ends.
 
 [workspace]
 # Both crates are published to crates.io on release. release-plz runs

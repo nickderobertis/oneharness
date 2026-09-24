@@ -11,7 +11,6 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin"
 
-# The commit under release, and one that merely looks like it.
 SHA_UNDER_TEST=1111111111111111111111111111111111111111
 OTHER_SHA=2222222222222222222222222222222222222222
 
@@ -26,14 +25,33 @@ if [ -n "${GH_FAIL:-}" ]; then
   echo 'gh: Resource not accessible by integration (HTTP 403)' >&2
   exit 1
 fi
+case "$*" in
+  */jobs\?*)
+    if [ -n "${GH_JOBS_FAIL:-}" ]; then
+      echo 'gh: jobs endpoint refused (HTTP 403)' >&2
+      exit 1
+    fi
+    if [ -n "${GH_JOBS_RESPONSE:-}" ]; then
+      printf '%s' "$GH_JOBS_RESPONSE"
+      exit 0
+    fi
+    run_id="$(sed -n 's@.*actions/runs/\([0-9]*\)/jobs.*@\1@p' <<<"$*")"
+    jq -c --argjson id "$run_id" '
+      [ .[] .workflow_runs[] | select(.id == $id) | . as $run
+        | ($run.check_jobs // ["ubuntu-latest", "macos-latest", "windows-latest"]
+           | if type == "array" and all(.[]; type == "string") then
+               map({name:("check (" + . + ")"), id:($id + 100), head_sha:$run.head_sha,
+                    status:(if $run.status == "completed" then "completed" else "in_progress" end),
+                    conclusion:(if $run.status == "completed" then $run.conclusion else null end)})
+             else . end)
+      ] | flatten | [{jobs:.}]
+    ' "$GH_STATE/last-response"
+    exit ;;
+esac
 count="$GH_STATE/calls"
 n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "$n" >"$count"
-if [ -f "$GH_RUNS.$n" ]; then
-  response="$(cat "$GH_RUNS.$n")"
-else
-  response="$(cat "$GH_RUNS")"
-fi
+if [ -f "$GH_RUNS.$n" ]; then response="$(cat "$GH_RUNS.$n")"; else response="$(cat "$GH_RUNS")"; fi
 # Older fixtures omit these stable GitHub fields; give them the values of a
 # main-branch push while preserving any explicit event and branch in a case.
 if decorated="$(printf '%s' "$response" | jq -c 'walk(if type == "object" and has("head_sha") then
@@ -45,9 +63,10 @@ fi
 # gh --slurp returns an array of pages. A fixture may supply multiple pages;
 # the usual single-page fixtures are wrapped as gh would wrap them.
 case "$response" in
-  '['*) printf '%s' "$response" ;;
-  *) printf '[%s]' "$response" ;;
+  '['*) printf '%s' "$response" >"$GH_STATE/last-response" ;;
+  *) printf '[%s]' "$response" >"$GH_STATE/last-response" ;;
 esac
+cat "$GH_STATE/last-response"
 STUB
 chmod +x "$tmp/bin/gh"
 
@@ -69,7 +88,7 @@ invoke() {
   mkdir -p "$tmp/state"
   set +e
   env -u GITHUB_REPOSITORY -u GITHUB_SHA \
-    GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" \
+    GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" GH_JOBS_FAIL="${GH_JOBS_FAIL:-}" GH_JOBS_RESPONSE="${GH_JOBS_RESPONSE:-}" \
     PATH="$tmp/bin:$PATH" \
     REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
     CI_WORKFLOW="${WORKFLOW_OVERRIDE-ci.yml}" \
@@ -161,6 +180,19 @@ expect_refused() {
 
 workflow_run_json() { printf '{"id":%s,"head_sha":"%s","status":"%s","conclusion":%s,"run_started_at":"%s","html_url":"https://example.invalid/run/%s"}' "$1" "$2" "$3" "$4" "$5" "$1"; }
 
+run_with_jobs() {
+  local id="$1" workflow_conclusion="$2" ubuntu="$3" macos="$4" windows="$5" jobs
+  jobs="$(jq -nc --arg sha "$SHA_UNDER_TEST" --arg u "$ubuntu" --arg m "$macos" --arg w "$windows" '
+    ["ubuntu-latest", "macos-latest", "windows-latest"] as $names
+    | [$u, $m, $w] | to_entries
+    | map(select(.value != "absent") | {id:(200 + .key), name:("check (" + $names[.key] + ")"), head_sha:$sha,
+      status:(if .value == "pending" then "in_progress" else "completed" end),
+      conclusion:(if .value == "pending" then null else .value end)})
+  ')"
+  workflow_run_json "$id" "$SHA_UNDER_TEST" completed "\"$workflow_conclusion\"" 2026-01-01T00:00:00Z |
+    jq -c --argjson jobs "$jobs" '. + {check_jobs:$jobs}'
+}
+
 # The tagged commit passed; a LATER run of a different commit failed in the same
 # answer. The selection is the whole point: CI on `main` runs per commit, so a
 # foreign run must never answer for this one — and being the newest must not
@@ -172,17 +204,46 @@ expect_needs_check false
 expect_said "$tmp/out" "concluded success for $SHA_UNDER_TEST"
 expect_said "$tmp/calls" '--paginate --slurp'
 expect_said "$tmp/calls" '&event=push&branch=main&'
+expect_said "$tmp/calls" 'actions/runs/11/jobs?filter=latest&per_page=100'
+
+GH_JOBS_FAIL=1 run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+  "the check jobs endpoint refuses after the run list succeeds"
+unset GH_JOBS_FAIL
+expect_refused
+expect_said "$tmp/err" "could not read check jobs in CI run 11"
+
+GH_JOBS_RESPONSE='not json' run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+  "a jobs endpoint returning malformed JSON"
+unset GH_JOBS_RESPONSE
+expect_refused
+expect_said "$tmp/err" "check jobs in CI run 11 were unreadable"
+
+GH_JOBS_RESPONSE='[{"jobs":{}}]' run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+  "a jobs endpoint returning no jobs array"
+unset GH_JOBS_RESPONSE
+expect_refused
+expect_said "$tmp/err" "check jobs in CI run 11 were unreadable"
+
+for mutation in '.check_jobs[0].id = 1.5' \
+                '.check_jobs[0].head_sha = "2222222222222222222222222222222222222222"' \
+                '.check_jobs[0].status = "unknown"' \
+                '.check_jobs[0].name = "check (bad\tname)"'; do
+  fixture="$(run_with_jobs 125 success success success success | jq -c "$mutation")"
+  run_case "{\"workflow_runs\":[$fixture]}" "an invalid check job field: $mutation"
+  expect_refused
+  expect_said "$tmp/err" "invalid field or unknown conclusion"
+done
 
 run_case "[{\"workflow_runs\":[$(workflow_run_json 12 "$OTHER_SHA" completed '"failure"' 2026-01-05T00:00:00Z)]},{\"workflow_runs\":[$(workflow_run_json 13 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}]" \
   "a tagged commit whose run is on the next API page"
 expect_status 0
 expect_needs_check false
-expect_said "$tmp/out" "CI run 13 concluded success"
+expect_said "$tmp/out" "CI run 13 check jobs concluded success"
 
 run_case "{\"workflow_runs\":[{\"id\":14,\"head_sha\":\"$SHA_UNDER_TEST\",\"event\":\"pull_request\",\"head_branch\":\"feature\",\"status\":\"completed\",\"conclusion\":\"success\",\"run_started_at\":\"2026-01-05T00:00:00Z\"},$(workflow_run_json 15 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-02T00:00:00Z)]}" \
   "a PR success cannot override main's failed push on the same SHA"
 expect_refused
-expect_said "$tmp/err" "CI run 15 concluded failure"
+expect_said "$tmp/err" "CI run 15 check job"
 grep -Fq "head_sha=$SHA_UNDER_TEST" "$tmp/calls" || {
   cat "$tmp/calls" >&2
   fail "$description: the API was not asked about the tagged commit"
@@ -193,7 +254,7 @@ run_case "{\"workflow_runs\":[$(workflow_run_json 15 "$OTHER_SHA" completed '"su
   "a run for a different commit only"
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/out" "no run for $SHA_UNDER_TEST"
+expect_said "$tmp/out" "no main-branch check run for $SHA_UNDER_TEST"
 
 # A re-run after a failure: the newest finished run for the commit is CI's word.
 run_case "{\"workflow_runs\":[$(workflow_run_json 20 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-01T00:00:00Z),$(workflow_run_json 21 "$SHA_UNDER_TEST" completed '"success"' 2026-01-03T00:00:00Z)]}" \
@@ -201,32 +262,56 @@ run_case "{\"workflow_runs\":[$(workflow_run_json 20 "$SHA_UNDER_TEST" completed
 expect_status 0
 expect_needs_check false
 
-# Every conclusion that means CI refused this commit must stop the release and
-# name the run, so the reader goes to it rather than to this workflow. A run
-# that timed out or failed to start refused it exactly as a failing one did.
+# Each failing check conclusion must stop release and name the CI run.
 for refusal in failure timed_out startup_failure; do
   run_case "{\"workflow_runs\":[$(workflow_run_json 30 "$SHA_UNDER_TEST" completed "\"$refusal\"" 2026-01-01T00:00:00Z)]}" \
     "a CI run that concluded $refusal for the tagged commit"
   expect_refused
-  expect_said "$tmp/err" "CI run 30 concluded $refusal"
+  expect_said "$tmp/err" "CI run 30 check job"
   expect_said "$tmp/err" "https://example.invalid/run/30"
 done
 
-# Cancelled — the first of the only two states that run the gate in the release.
-# CI was stopped before it reached any verdict, so nothing is being stood in for.
+# A cancelled workflow with no concluded check job needs the local gate.
 run_case "{\"workflow_runs\":[$(workflow_run_json 40 "$SHA_UNDER_TEST" completed '"cancelled"' 2026-01-01T00:00:00Z)]}" \
   "a cancelled CI run"
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/out" "CI reached no verdict"
-expect_said "$tmp/out" "running the gate here instead"
+expect_said "$tmp/out" "has no complete check verdict"
+expect_said "$tmp/out" "running the gate here"
 
-# Absent — the second, and the last. A hand-made Release, or a tag CI never saw.
+run_case "{\"workflow_runs\":[$(run_with_jobs 120 cancelled success success success)]}" \
+  "a cancelled workflow whose complete check matrix passed"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 120 check jobs concluded success"
+
+run_case "{\"workflow_runs\":[$(run_with_jobs 121 cancelled success failure success)]}" \
+  "a cancelled workflow with one failed check job"
+expect_refused
+expect_said "$tmp/err" "CI run 121 check job"
+
+run_case "{\"workflow_runs\":[$(run_with_jobs 122 cancelled success cancelled success)]}" \
+  "a cancelled workflow with one incomplete check job"
+expect_status 0
+expect_needs_check true
+expect_said "$tmp/out" "incomplete check matrix"
+
+run_case "{\"workflow_runs\":[$(run_with_jobs 123 cancelled success absent success)]}" \
+  "a cancelled workflow missing one matrix job"
+expect_status 0
+expect_needs_check true
+expect_said "$tmp/out" "incomplete check matrix"
+
+run_case "{\"workflow_runs\":[$(run_with_jobs 124 cancelled success mystery success)]}" \
+  "a successful check beside an unknown job conclusion"
+expect_refused
+expect_said "$tmp/err" "unknown conclusion"
+
+# A hand-made Release or a tag CI never saw has no run to read.
 run_case '{"workflow_runs":[]}' "no CI run for the tagged commit"
 expect_status 0
 expect_needs_check true
-expect_said "$tmp/out" "no run for $SHA_UNDER_TEST"
-expect_said "$tmp/out" "CI reached no verdict"
+expect_said "$tmp/out" "no main-branch check run for $SHA_UNDER_TEST"
 
 # Still running: the run is WAITED for rather than duplicated, and the verdict
 # that arrives is CI's. Running the whole gate beside the run already running it
@@ -249,8 +334,8 @@ expect_said "$tmp/out" "concluded success"
 run_case "{\"workflow_runs\":[$(workflow_run_json 51 "$SHA_UNDER_TEST" in_progress null 2026-01-01T00:00:00Z)]}" \
   "a CI run that does not finish inside the bound"
 expect_refused
-expect_said "$tmp/err" "still had 1 unfinished run(s)"
-expect_said "$tmp/err" "has not finished deciding this commit"
+expect_said "$tmp/err" "did not reach a decisive verdict"
+expect_said "$tmp/err" "after 3 polls"
 
 # Two finished runs that started at the same instant: the tie is broken by run
 # id, so the later run is CI's word and a coin flip never decides a release.
@@ -258,7 +343,7 @@ run_case "{\"workflow_runs\":[$(workflow_run_json 81 "$SHA_UNDER_TEST" completed
   "two finished runs that started at the same instant"
 expect_status 0
 expect_needs_check false
-expect_said "$tmp/out" "CI run 81 concluded success"
+expect_said "$tmp/out" "CI run 81 check jobs concluded success"
 
 # A run whose own FIELDS cannot be read is the same hazard one level down, and
 # it is the subtler one: a malformed run that is merely dropped takes the
@@ -270,21 +355,21 @@ expect_said "$tmp/out" "CI run 81 concluded success"
 # the run RAN, so CI very likely reached a verdict this could not read.
 run_case '{"workflow_runs":[{"id":90,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":null,"run_started_at":"2026-01-01T00:00:00Z","html_url":"https://example.invalid/run/90"}]}' \
   "a finished run with no conclusion"
-expect_refused
-expect_said "$tmp/err" "1 run(s) in CI's answer"
-expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
+expect_status 0
+expect_needs_check true
+expect_said "$tmp/out" "has no complete check verdict"
 
 # A control character in a conclusion must not shift the tab-delimited fields
 # the script reads from jq's summary.
 run_case '{"workflow_runs":[{"id":114,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success\t0\t0\t114","run_started_at":"2026-01-01T00:00:00Z"}]}' \
   "a conclusion containing a tab"
 expect_refused
-expect_said "$tmp/err" "1 run(s) in CI's answer"
+expect_said "$tmp/err" "invalid field or unknown conclusion"
 
 run_case '{"workflow_runs":[{"id":115,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success\n","run_started_at":"2026-01-01T00:00:00Z"}]}' \
   "a conclusion containing a newline"
 expect_refused
-expect_said "$tmp/err" "1 run(s) in CI's answer"
+expect_said "$tmp/err" "invalid field or unknown conclusion"
 
 # A finished run whose id is not a number: it cannot be named to the reader, and
 # an unnamed run must not be the one that publishes or refuses a release.
@@ -328,7 +413,6 @@ run_case '{"workflow_runs":[{"id":112,"head_sha":"'"$SHA_UNDER_TEST"'","status":
   "a run of ours whose status names no documented state"
 expect_refused
 expect_said "$tmp/err" "1 run(s) in CI's answer"
-expect_said "$tmp/err" "named a status this does not recognize"
 [ "$(grep -c 'head_sha' "$tmp/calls")" -eq 1 ] || {
   cat "$tmp/calls" >&2
   fail "$description: an unrecognized status must refuse at once, not be polled for"
@@ -343,7 +427,7 @@ for going in queued in_progress waiting requested pending action_required; do
     "{\"workflow_runs\":[$(workflow_run_json 113 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}"
   expect_status 0
   expect_needs_check false
-  expect_said "$tmp/out" "CI run 113 concluded success"
+  expect_said "$tmp/out" "CI run 113 check jobs concluded success"
 done
 
 # A malformed run of somebody ELSE's is not ours to refuse over: its head_sha is
@@ -353,7 +437,7 @@ run_case "{\"workflow_runs\":[{\"id\":97,\"head_sha\":\"$OTHER_SHA\"},$(workflow
   "a malformed run belonging to a different commit"
 expect_status 0
 expect_needs_check false
-expect_said "$tmp/out" "CI run 98 concluded success"
+expect_said "$tmp/out" "CI run 98 check jobs concluded success"
 
 # Two malformed runs are counted, not collapsed: the message tells the reader
 # how much of CI's answer this could not make sense of.
@@ -397,7 +481,7 @@ run_polling_case "a rerun in flight beside an older success" \
   "{\"workflow_runs\":[$(workflow_run_json 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(workflow_run_json 71 "$SHA_UNDER_TEST" in_progress null 2026-01-04T00:00:00Z)]}" \
   "{\"workflow_runs\":[$(workflow_run_json 70 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z),$(workflow_run_json 71 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-04T00:00:00Z)]}"
 expect_status 1
-expect_said "$tmp/err" "CI run 71 concluded failure"
+expect_said "$tmp/err" "CI run 71 check job"
 if [ -s "$tmp/github-output" ]; then
   cat "$tmp/github-output" >&2
   fail "$description: an older success must not publish while CI is deciding again"
@@ -409,14 +493,13 @@ fi
 run_case "{\"workflow_runs\":[$(workflow_run_json 60 "$SHA_UNDER_TEST" completed '"neutral"' 2026-01-01T00:00:00Z)]}" \
   "a CI run with a conclusion this script does not enumerate"
 expect_refused
-expect_said "$tmp/err" "concluded neutral"
-expect_said "$tmp/err" "neither a pass, a refusal, nor the absence of a verdict"
-expect_said "$tmp/err" "https://example.invalid/run/60"
+expect_said "$tmp/err" "unknown conclusion"
+expect_said "$tmp/err" "actions/runs/60/jobs"
 
 run_case "{\"workflow_runs\":[$(workflow_run_json 61 "$SHA_UNDER_TEST" completed '"none"' 2026-01-01T00:00:00Z)]}" \
   "a literal none conclusion from a completed run"
 expect_refused
-expect_said "$tmp/err" "CI run 61 concluded none"
+expect_said "$tmp/err" "unknown conclusion"
 
 # An answer that could not be read is NOT an absent one: CI may have refused this
 # commit and simply not been reachable to say so. Running the gate here would put
@@ -425,7 +508,7 @@ expect_said "$tmp/err" "CI run 61 concluded none"
 GH_FAIL=1 run_case '{"workflow_runs":[]}' "an API that refuses the query"
 unset GH_FAIL
 expect_refused
-expect_said "$tmp/err" "could not read CI's verdict for $SHA_UNDER_TEST"
+expect_said "$tmp/err" "could not read CI runs for $SHA_UNDER_TEST"
 expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
 expect_said "$tmp/err" "actions:read"
 expect_said "$tmp/err" "HTTP 403"
@@ -434,7 +517,7 @@ expect_said "$tmp/err" "HTTP 403"
 # reason: an HTML error page arrives here exactly like this.
 run_case 'not json at all' "an API answering with something that is not JSON"
 expect_refused
-expect_said "$tmp/err" "was not a readable list of workflow runs"
+expect_said "$tmp/err" "were unreadable"
 expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
 
 # An answer that PARSES but carries no workflow_runs array is the sharpest form
@@ -451,7 +534,7 @@ for shape in \
   'null'; do
   run_case "$shape" "an API answering $shape, which parses but is not a runs response"
   expect_refused
-  expect_said "$tmp/err" "was not a readable list of workflow runs"
+  expect_said "$tmp/err" "were unreadable"
 done
 
 # An input the runs API cannot be asked about is a wiring bug, not a verdict:
@@ -482,6 +565,16 @@ unset REPO_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "is not an owner/name repository"
 
+REPO_OVERRIDE="../repo" run_case '{"workflow_runs":[]}' "a parent-directory owner"
+unset REPO_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "invalid owner component"
+
+REPO_OVERRIDE="owner/." run_case '{"workflow_runs":[]}' "a current-directory repository"
+unset REPO_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "invalid repository component"
+
 WORKFLOW_OVERRIDE="../ci.yml/runs" run_case '{"workflow_runs":[]}' "a workflow that is not a file name"
 unset WORKFLOW_OVERRIDE
 expect_status 2
@@ -490,12 +583,17 @@ expect_said "$tmp/err" "is not a workflow file name"
 WAIT_ATTEMPTS_OVERRIDE=0 run_case '{"workflow_runs":[]}' "a wait that never asks"
 unset WAIT_ATTEMPTS_OVERRIDE
 expect_status 2
-expect_said "$tmp/err" "never asks"
+expect_said "$tmp/err" "between 1 and 1000 polls"
 
 WAIT_DELAY_OVERRIDE=soon run_case '{"workflow_runs":[]}' "a delay that is not a number of seconds"
 unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "is not a whole number of seconds"
+
+WAIT_DELAY_OVERRIDE=99999 run_case '{"workflow_runs":[]}' "a delay past the bound"
+unset WAIT_DELAY_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "exceeds the 3600-second bound"
 
 # The rule above is stated in prose in five other places, and the predecessor of
 # this change got one of those copies wrong — a document promising a fallback

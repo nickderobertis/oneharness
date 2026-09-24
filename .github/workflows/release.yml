@@ -8,8 +8,8 @@ name: Release
 # `release: published` event below; this workflow then reads CI's verdict for the
 # tagged commit, publishes the crates idempotently, and uploads the archives +
 # checksums. Creating a Release by hand in the GitHub UI is the supported manual
-# fallback — it triggers the same validated path, and gets the gate run here
-# because CI never saw that commit.
+# fallback — it triggers the same validated path, and runs the gate here when
+# that commit has no complete CI check matrix.
 #
 #   * gate               — consume CI's own verdict for the exact tagged commit
 #                           instead of re-running on it the gate CI already ran.
@@ -71,9 +71,9 @@ env:
 
 jobs:
   # CI's exact tagged-SHA verdict selects publication or the guarded fallback.
-  # only a cancelled CI run and no CI run at all make the release run the
-  # gate itself; every other state refuses rather than standing in for a
-  # verdict it could not read
+  # a failed check job refuses release; only a complete successful check
+  # matrix skips the release gate; an absent or incomplete matrix runs the
+  # gate after CI ends
   gate:
     runs-on: ubuntu-latest
     permissions:
@@ -315,7 +315,6 @@ jobs:
           # red-fail because these wheels already exist on PyPI.
           skip-existing: true
 
-  # Retry the consumer's pip install and smoke against the published version.
   verify-pypi:
     needs: publish-pypi
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
@@ -511,7 +510,6 @@ jobs:
           launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
           scripts/publish-npm.sh "$launcher" "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz
 
-  # Retry npm installs and smoke until the published packages resolve.
   verify-npm:
     needs: publish-npm
     if: ${{ vars.NPM_PUBLISH == 'true' }}

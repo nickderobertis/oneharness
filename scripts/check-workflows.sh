@@ -93,9 +93,9 @@ require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use
 # release. So the verdict for the exact tagged commit is read, and the gate runs
 # here only where scripts/ci-verdict.sh says it may:
 #
-#   only a cancelled CI run and no CI run at all make the release run the gate
-#   itself; every other state refuses rather than standing in for a verdict it
-#   could not read
+#   a failed check job refuses release; only a complete successful check matrix
+#   skips the release gate; an absent or incomplete matrix runs the gate after
+#   CI ends
 #
 # And when it does run, it is ONE check, `just check`, invoked the one way named
 # below: never a restatement of its stages, and never a second run of something
@@ -104,6 +104,28 @@ require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use
 # sentence against the one scripts/ci-verdict.sh carries.
 require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
   "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
+require_line .github/workflows/ci.yml 'os: [ubuntu-latest, macos-latest, windows-latest]' \
+  "keep the declared check matrix matched to the release verdict selector"
+require_line .github/workflows/ci.yml 'branches: [main]' \
+  "keep the CI push branch matched to the release verdict selector"
+require_line .github/workflows/ci.yml '  check:' \
+  "keep the check job named as the release verdict selector expects"
+require_line scripts/ci-verdict.sh 'event=push&branch=main' \
+  "select CI's main-branch push runs"
+require_line scripts/ci-verdict.sh '["check (macos-latest)", "check (ubuntu-latest)", "check (windows-latest)"]' \
+  "require every CI check matrix job before skipping the release gate"
+require_line pyproject.toml 'name = "oneharness-cli"' "keep the PyPI CLI name used by publication verification"
+require_line python/oneharness-sdk/pyproject.toml 'name = "oneharness-sdk"' "keep the PyPI SDK name used by publication verification"
+require_line npm/oneharness/package.json '"name": "oneharness-cli"' "keep the npm CLI name used by publication verification"
+require_line npm/oneharness-sdk/package.json '"name": "@oneharness/sdk"' "keep the npm SDK name used by publication verification"
+while IFS='|' read -r line description; do
+  require_line scripts/verify-published.sh "$line" "$description"
+done <<'INSTALL_LINES'
+pip install --no-cache-dir "oneharness-cli==$version"|install the published PyPI CLI name
+pip install --no-cache-dir "oneharness-sdk==$version"|install the published PyPI SDK name
+npm install -g --prefer-online "oneharness-cli@$version"|install the published npm CLI name
+npm install --prefer-online "@oneharness/sdk@$version"|install the published npm SDK name
+INSTALL_LINES
 require_gate_dependency
 require_line .github/workflows/release.yml 'actions: read' \
   "hold the permission that lets it read CI's own result"

@@ -45,13 +45,24 @@ esac
 # allowlist.
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] ||
   usage "'$version' is not an x.y.z version this release could have published"
+if [[ "$version" == *-* ]]; then
+  prerelease="${version#*-}"
+  prerelease="${prerelease%%+*}"
+  IFS=. read -ra identifiers <<<"$prerelease"
+  for identifier in "${identifiers[@]}"; do
+    [[ ! "$identifier" =~ ^0[0-9]+$ ]] ||
+      usage "'$version' has a numeric prerelease identifier with a leading zero"
+  done
+fi
 case "$attempts" in
   "" | *[!0-9]*) usage "VERIFY_ATTEMPTS='$attempts' is not a whole number of attempts" ;;
 esac
-[ "$attempts" -ge 1 ] || usage "VERIFY_ATTEMPTS='$attempts' verifies nothing; the bound must allow at least one attempt"
+[ "${#attempts}" -le 4 ] && [ "$attempts" -ge 1 ] && [ "$attempts" -le 1000 ] ||
+  usage "VERIFY_ATTEMPTS='$attempts' must be between 1 and 1000 attempts"
 case "$delay" in
   "" | *[!0-9]*) usage "VERIFY_DELAY='$delay' is not a whole number of seconds" ;;
 esac
+[ "${#delay}" -le 4 ] && [ "$delay" -le 3600 ] || usage "VERIFY_DELAY='$delay' exceeds the 3600-second bound"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -152,11 +163,6 @@ NODE
   ) || return 1
 }
 
-# One attempt at being the consumer of $target, called directly so each branch
-# is reachable to a reader (and to shellcheck) from here. This and the label
-# below enumerate the targets a second and third time; check-verify-published.sh
-# is their drift gate — it reads the allowlist above and drives every target in
-# it, so one added without an arm here fails there.
 run_attempt() {
   case "$target" in
     pypi-cli) attempt_pypi_cli ;;

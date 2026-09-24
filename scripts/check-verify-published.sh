@@ -112,7 +112,7 @@ STUB
 # a host may only ship `python3`.
 for interpreter in python node; do
   real="$(command -v "${interpreter}3" || command -v "$interpreter")" || {
-    echo "check-verify-published: no $interpreter on PATH to run the SDK smoke programs with" >&2
+    echo "check-verify-published: no $interpreter on PATH to run the SDK smoke programs with; install $interpreter and rerun this test" >&2
     exit 1
   }
   cat >"$tmp/bin/$interpreter" <<STUB
@@ -364,7 +364,7 @@ expect_said "$tmp/err" "@oneharness/sdk@$VERSION_UNDER_TEST from npm was still n
 ATTEMPTS_OVERRIDE=0 run_case pypi-cli "a bound of zero attempts"
 unset ATTEMPTS_OVERRIDE
 expect_status 2
-expect_said "$tmp/err" "verifies nothing"
+expect_said "$tmp/err" "between 1 and 1000 attempts"
 
 ATTEMPTS_OVERRIDE=soon run_case pypi-cli "a bound that is not a number"
 unset ATTEMPTS_OVERRIDE
@@ -375,6 +375,11 @@ DELAY_OVERRIDE=later run_case pypi-cli "a delay that is not a number of seconds"
 unset DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "is not a whole number of seconds"
+
+DELAY_OVERRIDE=99999 run_case pypi-cli "a delay past the bound"
+unset DELAY_OVERRIDE
+expect_status 2
+expect_said "$tmp/err" "exceeds the 3600-second bound"
 
 # A target nobody implemented, and arguments a caller can omit or mangle, are
 # all wiring bugs rather than lagging registries.
@@ -389,5 +394,7 @@ expect_usage_error "is not an x.y.z version" pypi-cli "1..2"
 expect_usage_error "is not an x.y.z version" pypi-cli "-"
 expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9+a+b"
 expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9-a..b"
+expect_usage_error "numeric prerelease identifier with a leading zero" pypi-cli "9.9.9-01"
+expect_usage_error "numeric prerelease identifier with a leading zero" pypi-cli "9.9.9-rc.02+build"
 
 echo "check-verify-published: ok"

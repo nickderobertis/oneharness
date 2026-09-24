@@ -190,6 +190,16 @@ for diagnostic in \
 done
 rm -rf "$work/fakebin" "$work/ran"
 
+# A temp dir the gate cannot write its own files into is refused, and said.
+set +e
+TMPDIR="$work/no-such-dir" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a temp dir the gate cannot write to should be a usage error (exit 2), got $status"
+[ ! -e "$work/ran" ] || fail "the gate should not run its command without its own files"
+grep -q "could not create its sweep-error file" "$work/out" ||
+  fail "the gate should say which of its files it could not create"
+
 # So is a symlink leading nowhere, which is not an absent root: whatever it was
 # meant to watch, sweeping it would see nothing.
 ln -s "$work/nowhere" "$work/dangling"

@@ -126,6 +126,18 @@ grep -q "cannot watch scratch root '$work/not-a-directory'" "$work/out" ||
   fail "the gate should name the scratch root it cannot watch"
 rm -f "$work/not-a-directory"
 
+# So is a root list that names no root at all.
+for roots in ":" "::"; do
+  set +e
+  OH_SCRATCH_ROOTS="$roots" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 2 ] || fail "OH_SCRATCH_ROOTS='$roots' should be a usage error (exit 2), got $status"
+  [ ! -e "$work/ran" ] || fail "the gate should not run its command when OH_SCRATCH_ROOTS='$roots' names no root"
+  grep -q "names no scratch root to watch" "$work/out" ||
+    fail "the gate should say OH_SCRATCH_ROOTS='$roots' names no root"
+done
+
 # So is a symlink leading nowhere, which is not an absent root: whatever it was
 # meant to watch, sweeping it would see nothing.
 ln -s "$work/nowhere" "$work/dangling"

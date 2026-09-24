@@ -53,6 +53,10 @@ if ! root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX") ||
 fi
 
 # Only `$TMPDIR` moves: the leak gate's default roots are what must keep
-# watching the scratch space behind the symlink.
+# watching the scratch space behind the symlink. An inherited root list would
+# replace those defaults, so this lane's root joins it rather than going unwatched.
 export TMPDIR="$root/link"
+if [ -n "${OH_SCRATCH_ROOTS-}" ]; then
+  export OH_SCRATCH_ROOTS="$TMPDIR:$OH_SCRATCH_ROOTS"
+fi
 bash "$repo_root/scripts/check-temp-leaks.sh" "$@"

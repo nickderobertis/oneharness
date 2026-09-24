@@ -51,6 +51,15 @@ fi
 grep -q "${prefix}leaked-behind-a-symlink" "$work/out" ||
   fail "the lane went red without naming the directory left behind the symlink"
 
+# An inherited root list that never names the lane's TMPDIR still sees the leak.
+mkdir -p "$work/elsewhere"
+if OH_SCRATCH_ROOTS="$work/elsewhere" \
+  bash "$lane" bash -c "mkdir \"\$TMPDIR/${prefix}leaked-past-an-override\"" >"$work/out" 2>&1; then
+  fail "a leak behind the symlinked TMPDIR should turn the lane red under an inherited OH_SCRATCH_ROOTS"
+fi
+grep -q "${prefix}leaked-past-an-override" "$work/out" ||
+  fail "the lane went red under an inherited OH_SCRATCH_ROOTS without naming the directory left behind"
+
 set +e
 bash "$lane" bash -c 'exit 5' >"$work/out" 2>&1
 status=$?

@@ -31,6 +31,17 @@ fi
 # `/tmp` as well as `$TMPDIR`: the control tests root their sockets there
 # deliberately, because a socket path is an address with a `sun_path` budget.
 IFS=':' read -r -a scratch_roots <<< "${OH_SCRATCH_ROOTS:-${TMPDIR:-/tmp}:/tmp}"
+# A list of nothing but separators names no root, and sweeping none of them would
+# read as a clean run.
+named=0
+for dir in ${scratch_roots[@]+"${scratch_roots[@]}"}; do
+  [ -z "$dir" ] || named=1
+done
+if [ "$named" -eq 0 ]; then
+  echo "check-temp-leaks: OH_SCRATCH_ROOTS='${OH_SCRATCH_ROOTS-}' names no scratch root to watch." >&2
+  echo "  fix: set it to colon-separated directories, or unset it to watch \$TMPDIR and /tmp." >&2
+  exit 2
+fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 scratch_source="$repo_root/crates/oneharness-core/src/io/scratch.rs"
@@ -93,7 +104,8 @@ leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 
 # `/tmp` is shared with every other checkout on the host, and their suites mint
 # the same names. A scratch directory ends in the id of the process that made it
-# (`io::scratch::ScratchDir::name`), and every process of the watched command has
+# (`io::scratch::ScratchDir::name`, whose unit test pins that suffix for this
+# gate), and every process of the watched command has
 # exited by now, so one whose maker is still alive belongs to someone else's run
 # still in progress — not a leak of this one. A gate that counted it failed a
 # publication on another checkout's live coverage suite.

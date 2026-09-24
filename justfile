@@ -114,6 +114,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/check-sdk-install.sh >/dev/null
     @bash scripts/check-build-mock-harness.sh >/dev/null
     @bash scripts/check-temp-leaks-test.sh >/dev/null
+    @bash scripts/with-symlinked-tmp-test.sh >/dev/null
     @bash scripts/check-scratch-prefixes.sh >/dev/null
     @bash scripts/check-scratch-prefixes-test.sh >/dev/null
     @bash scripts/check-codex-usage-schema.sh >/dev/null
@@ -142,27 +143,11 @@ test:
     bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
 
 # Replay the CLI journeys with the host temp directory reached through a symlink
-# — the spelling macOS gives every temp path and Linux never does. Linux only,
-# skipped elsewhere: macOS runs every journey that way already, Windows has no
-# such root.
-#
-# `--test cli` is where the path-sensitive journeys live. `$TMPDIR` alone points
-# at the symlink — nothing sets `OH_SCRATCH_ROOTS` — so the leak gate's own
-# default roots are what have to keep watching the scratch space behind it, the
-# arrangement `check-temp-leaks-test.sh` holds in place.
+# — the spelling macOS gives every temp path and Linux never does (skipped off
+# Linux; `scripts/with-symlinked-tmp.sh` says why). `--test cli` is where the
+# path-sensitive journeys live.
 test-symlinked-tmp:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "$(uname -s)" != "Linux" ]]; then
-        echo "test-symlinked-tmp: skipped off Linux (macOS spells every temp path through /tmp -> /private/tmp already; Windows has no such root)"
-        exit 0
-    fi
-    root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX")
-    trap 'rm -rf "$root"' EXIT
-    mkdir "$root/real"
-    ln -s "$root/real" "$root/link"
-    export TMPDIR="$root/link"
-    bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --test cli --locked --status-level fail --final-status-level fail; else cargo test --features {{FEATURES}} --test cli --locked --quiet; fi'
+    bash scripts/with-symlinked-tmp.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --test cli --locked --status-level fail --final-status-level fail; else cargo test --features {{FEATURES}} --test cli --locked --quiet; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and

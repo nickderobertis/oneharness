@@ -79,11 +79,7 @@ if ! bash "$gate" true >"$work/out" 2>&1; then
 fi
 rm -rf "$work/oneharness-pre-existing"
 
-# A root reached through a symlink still watches the directory the scratch space
-# really lands in. `find` does not follow a symlinked starting point, so a gate
-# that swept the root as spelled would call every run clean — and that spelling
-# is what macOS gives every run for free and what `just test-symlinked-tmp`
-# reproduces on Linux.
+# A root reached through a symlink still watches the directory behind it.
 mkdir -p "$work/behind-a-symlink"
 ln -s "$work/behind-a-symlink" "$work/through-a-symlink"
 if OH_SCRATCH_ROOTS="$work/through-a-symlink" \

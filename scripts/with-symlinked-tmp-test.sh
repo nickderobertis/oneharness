@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file and `just lint-workflows` is what runs it.
 #
 # Behavioral test of the symlinked-TMPDIR lane (`scripts/with-symlinked-tmp.sh`,
 # which `just test-symlinked-tmp` runs the CLI journeys through).
@@ -66,6 +67,22 @@ if ! OH_SYMLINKED_TMP_UNAME=Darwin bash "$lane" bash -c "touch '$work/ran'" >"$w
 fi
 [ ! -e "$work/ran" ] || fail "the lane should not run its command off Linux"
 grep -q "skipped on Darwin" "$work/out" || fail "the lane should say it skipped off Linux"
+
+set +e
+bash "$lane" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "the lane with no command should be a usage error (exit 2), got $status"
+grep -q "no command to run" "$work/out" || fail "the lane with no command should say so"
+
+set +e
+TMPDIR="$work/does-not-exist" bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "a TMPDIR the lane cannot build its root under should fail it (exit 1), got $status"
+[ ! -e "$work/ran" ] || fail "the lane should not run its command without its symlinked root"
+grep -q "could not build a symlinked temp root under $work/does-not-exist" "$work/out" ||
+  fail "the lane should name the TMPDIR it could not build its root under"
 
 set +e
 OH_SYMLINKED_TMP_UNAME=Linx bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file and `just test-symlinked-tmp` is what runs it.
 #
 # Run a command with `$TMPDIR` reached through a symlink, under the scratch-leak
 # gate — the temp-path spelling macOS gives every run (`/tmp` is a symlink to
@@ -35,15 +36,12 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX") || {
-  echo "with-symlinked-tmp: could not create a scratch directory under ${TMPDIR:-/tmp}." >&2
-  echo "  fix: make that directory writable (or point TMPDIR at one that is) and re-run." >&2
-  exit 1
-}
-trap 'rm -rf "$root"' EXIT
-if ! mkdir "$root/real" || ! ln -s "$root/real" "$root/link"; then
-  echo "with-symlinked-tmp: could not build the symlinked temp root under $root." >&2
-  echo "  fix: this lane needs a filesystem that supports symlinks; point TMPDIR at one and re-run." >&2
+root=""
+trap '[ -z "$root" ] || rm -rf "$root"' EXIT
+if ! root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX") ||
+  ! mkdir "$root/real" || ! ln -s "$root/real" "$root/link"; then
+  echo "with-symlinked-tmp: could not build a symlinked temp root under ${TMPDIR:-/tmp}." >&2
+  echo "  fix: point TMPDIR at a writable directory on a filesystem that supports symlinks, then re-run." >&2
   exit 1
 fi
 

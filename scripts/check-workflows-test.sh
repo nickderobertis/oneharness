@@ -8,18 +8,13 @@
 # file. Each case drives the gate over a staged checkout; the green baseline
 # keeps a refusal from passing for an unrelated reason.
 #
-# Quiet on success, one line. On failure it prints what the gate said.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 work="$(mktemp -d)"
-# The staged checkouts are what a failure is diagnosed from, and they are gone
-# by the time anyone reads the diagnostic. KEEP_FIXTURES leaves them, so the
-# `fix:` line below can name a checkout that will still be there — but only on
-# the failure it was asked for. A passing run has nothing to diagnose, so it
-# takes the checkouts back and says its one line either way.
+# Keep staged checkouts only on failure, when the diagnostic names one.
 keep=0
 cleanup() {
   if [ "$keep" = 1 ]; then
@@ -54,7 +49,6 @@ staged=(
   .github/actions/setup-just/action.yml
 )
 
-# $1 = fixture name. Leaves a fresh staged checkout at $work/$1 and prints it.
 stage() {
   local root="$work/$1" file
   rm -rf "$root"
@@ -67,16 +61,12 @@ stage() {
   printf '%s\n' "$root"
 }
 
-# Rewrite a staged file through an awk program. $1 = fixture root,
-# $2 = repository-relative path, $3 = awk program.
 rewrite() {
   local root="$1" path="$2" program="$3"
   awk "$program" "$root/$path" >"$root/$path.rewritten"
   mv "$root/$path.rewritten" "$root/$path"
 }
 
-# Runs the staged gate against the staged checkout. Prints nothing; leaves its
-# combined output in $work/out and returns the gate's own exit status.
 # Every case greps for a value only its staged mutation introduces, which is
 # what proves the gate read the fixture rather than this checkout.
 run_gate() {
@@ -90,6 +80,28 @@ root="$(stage baseline)"
 if ! run_gate "$root"; then
   fail_showing "the unmodified staged checkout must pass"
 fi
+
+root="$(stage matching-literal)"
+rewrite "$root" crates/oneharness-core/Cargo.toml '
+  { sub(/^rust-version\.workspace = true$/, "rust-version = \"1.86\""); print }
+'
+if ! run_gate "$root"; then
+  fail_showing "a package declaring the canonical rust-version literally must pass"
+fi
+
+root="$(stage missing-workspace-msrv)"
+rewrite "$root" Cargo.toml '
+  /^\[workspace\.package\]$/ { inside = 1; print; next }
+  inside && /^\[/ { inside = 0 }
+  !(inside && /^rust-version = /) { print }
+'
+if run_gate "$root"; then
+  fail_showing "packages inheriting an absent workspace rust-version must be refused"
+fi
+for manifest in Cargo.toml crates/oneharness-core/Cargo.toml; do
+  grep -Fq "$manifest rust-version ''" "$work/out" ||
+    fail_showing "an absent workspace rust-version must name $manifest, which inherits it"
+done
 
 # The inherited form resolves through [workspace.package]: a drift there reaches
 # BOTH manifests, and each is named, because each is what a reader must fix.
@@ -108,7 +120,6 @@ for manifest in Cargo.toml crates/oneharness-core/Cargo.toml; do
     fail_showing "a drifted workspace rust-version must name $manifest, which inherits it"
 done
 
-# A manifest that states its own is still read from its own [package] table.
 root="$(stage literal-drift)"
 rewrite "$root" crates/oneharness-core/Cargo.toml '
   { sub(/^rust-version\.workspace = true$/, "rust-version = \"1.70\""); print }
@@ -138,8 +149,6 @@ fi
 grep -Fq "Cargo.toml declares no rust-version" "$work/out" ||
   fail_showing "the root manifest declaring no rust-version must be named as such"
 
-# The same absence in the member manifest, which has no workspace table of its
-# own to be confused with.
 root="$(stage no-msrv)"
 rewrite "$root" crates/oneharness-core/Cargo.toml '
   !/^rust-version\.workspace = true$/ { print }

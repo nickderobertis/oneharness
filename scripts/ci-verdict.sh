@@ -1,53 +1,9 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's `gate` job, and scripts/check-ci-verdict.sh covers it from `just lint-workflows`.
-# Read CI's verdict for the exact commit a release was tagged at, so the release
-# consumes the gate CI already ran instead of running it a second time.
-#
-# release.yml starts from `release: published`, and the commit it publishes is
-# the one CI already gated on `main`. Re-running that gate spends a runner for
-# twenty minutes and exposes an approved commit to an unrelated transient
-# failure DURING publication, where a red run is read as a broken release.
-#
-# So this answers one question — what did CI say about THIS commit? — and the
-# workflow acts on it:
-#
-#   success                    -> needs_check=false, publish without re-checking.
-#   failure/timed out/startup  -> exit 1 naming the run, because a commit CI
-#                                 refused must not publish.
-#   cancelled or absent        -> needs_check=true, run the gate here. CI on
-#                                 `main` cancels in progress per ref, so a later
-#                                 push can cancel the tagged commit's run, and a
-#                                 hand-made Release may have no CI run at all.
-#
-# That rule in one sentence — the line every other copy of it is checked
-# against, by scripts/check-ci-verdict.sh, so a document cannot come to promise
-# something this script does not do:
-#
+# Decide whether the tagged commit's CI run permits release publication.
 # CONTRACT: only a cancelled CI run and no CI run at all make the release run the gate itself; every other state refuses rather than standing in for a verdict it could not read
-#
-# Those two are the ONLY states that run the gate here, because they are the
-# only two where CI reached no verdict at all: repeating the checks then
-# establishes something nobody knew. Every other state — an answer that could
-# not be read, did not parse, carries a conclusion this does not recognize, or
-# has not arrived before the wait runs out — exits 1 naming what it was reading.
-# A verdict may well EXIST in each of those and this simply could not see it, so
-# running the gate here would let a green run in this job stand in for a red run
-# in CI. A release that reuses evidence must never be able to manufacture it.
-#
-# A run that is still RUNNING is waited for rather than duplicated: a second full
-# sweep of the same commit, alongside the one already sweeping it, is the cost
-# this exists to avoid. The wait is bounded, and a bound that runs out refuses
-# rather than deciding the commit is unverified — CI is still deciding it.
-#
-# Reads:
-#   REPO         owner/name to query (default $GITHUB_REPOSITORY)
-#   SHA          the tagged commit, full 40-hex (default $GITHUB_SHA)
-#   CI_WORKFLOW  the workflow file whose verdict counts (default ci.yml)
-#   CI_WAIT_ATTEMPTS / CI_WAIT_DELAY
-#                how long to wait on a run that has not finished (default 60
-#                polls, 30s apart)
-# Writes `needs_check=true|false` to $GITHUB_OUTPUT when set, and says on stdout
-# what it decided and why. `gh` must be authenticated with `actions: read`.
+# Reads REPO, SHA, CI_WORKFLOW, CI_WAIT_ATTEMPTS and CI_WAIT_DELAY. Writes
+# needs_check=true|false to GITHUB_OUTPUT when set.
 set -euo pipefail
 
 repo="${REPO:-${GITHUB_REPOSITORY:-}}"
@@ -85,7 +41,7 @@ esac
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-endpoint="repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&per_page=100"
+endpoint="repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&event=push&branch=main&per_page=100"
 
 # `needs_check` is the only thing the workflow reads; everything else here is for
 # the person reading the log of a release that behaved unexpectedly.
@@ -124,7 +80,7 @@ run_id=
 run_url=
 read_verdict_or_refuse() {
   local runs summary
-  if ! runs="$(gh api "$endpoint" 2>"$work/gh-error")"; then
+  if ! runs="$(gh api --paginate --slurp "$endpoint" 2>"$work/gh-error")"; then
     sed 's/^/    gh: /' "$work/gh-error" >&2
     refuse \
       "ci-verdict: could not read CI's verdict for $sha; gh refused the query (its own words are above). Whether CI passed or refused this commit is unknown, so the release stops here." \
@@ -163,35 +119,40 @@ read_verdict_or_refuse() {
   # was never going to end. A status outside the list refuses AT ONCE and names
   # itself, and if GitHub adds a state the fix is to add it here.
   #
-  # `run_started_at` is deliberately NOT in that list: it only orders runs, it
-  # is genuinely optional in the API (hence the `created_at` fallback), and a
-  # value that is not an ISO-8601 instant sorts as the oldest rather than as the
-  # newest — jq orders objects above strings, and `not-a-timestamp` above any
-  # digit, so either would win the selection outright unchecked. The URL is only
+  # A finished run needs a whole-number ID and a usable timestamp to establish
+  # which rerun is newest. The URL is only
   # ever printed, but it arrives on a tab-delimited line this script then splits,
   # so anything unprintable is dropped from it here.
   if ! summary="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
-    if (type) != "object" or (has("workflow_runs") | not) or ((.workflow_runs | type) != "array") then
+    def valid_id: type == "number" and . > 0 and floor == .;
+    def valid_instant: type == "string" and (. as $t | try ((fromdateiso8601 | todateiso8601) == $t) catch false);
+    if (type) != "array" or length == 0 or any(.[]; (type) != "object" or (has("workflow_runs") | not) or ((.workflow_runs | type) != "array")) then
       error("the answer carries no workflow_runs array, so it is not a runs response at all")
-    else . end
-    | .workflow_runs as $all
-    | [ $all[] | select((.head_sha | type) == "string" and .head_sha == $sha) ] as $mine
+    else map(.workflow_runs) | add end
+    | . as $all
+    | [ $all[] | select((.head_sha | type) == "string" and .head_sha == $sha) ] as $matching
+    | [ $matching[] | select(.event == "push" and .head_branch == "main") ] as $mine
     | [ $mine[] | select((.status | type) == "string") ] as $typed
     | [ $typed[] | select(.status == "completed") ] as $finished
     | [ $typed[] | select(.status as $s
                           | ["queued", "in_progress", "waiting", "requested", "pending", "action_required"]
                           | index($s)) ] as $unfinished
     | ( ([ $all[] | select((.head_sha | type) != "string") ] | length)
+      + ([ $matching[] | select((.event | type) != "string" or (.head_branch | type) != "string") ] | length)
       + (($mine | length) - ($typed | length))
       + (($typed | length) - ($finished | length) - ($unfinished | length))
       + ([ $finished[]
-           | select(((.id | type) != "number") or ((.conclusion | type) != "string")) ] | length)
+           | select((.id | valid_id | not) or (((.run_started_at // .created_at) | valid_instant) | not)
+                    or ((.conclusion | type) != "string")
+                    or ((.conclusion | length) == 0)
+                    or (.conclusion | test("[^a-z_]"))) ] | length)
       ) as $unreadable
     | ($unfinished | length) as $pending
-    | ([ $finished[] | select((.id | type) == "number" and (.conclusion | type) == "string") ]
-       | sort_by((((.run_started_at // .created_at) | strings
-                    | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([.][0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$"))) // ""),
-                  .id) | last) as $newest
+    | ([ $finished[] | select((.id | valid_id) and ((.run_started_at // .created_at) | valid_instant)
+                             and (.conclusion | type) == "string"
+                             and ((.conclusion | length) > 0)
+                             and (.conclusion | test("[^a-z_]") | not)) ]
+       | sort_by((.run_started_at // .created_at), .id) | last) as $newest
     | if $newest == null then
         "none\t\($pending)\t\($unreadable)\t\t"
       else
@@ -212,7 +173,7 @@ read_verdict_or_refuse() {
   # the same malformed runs.
   if [ "$unreadable" -gt 0 ]; then
     refuse \
-      "ci-verdict: $unreadable run(s) in CI's answer for $sha could not be read — a head_sha, status, id or conclusion was missing, of the wrong type, or named a status this does not recognize. Dropping them would leave this reporting fewer runs than CI has, so the release stops here." \
+      "ci-verdict: $unreadable run(s) in CI's answer for $sha could not be read — a head_sha, event, branch, status, whole-number id, timestamp or conclusion was missing or invalid, or named a status this does not recognize. Dropping them would leave this reporting fewer runs than CI has, so the release stops here." \
       "it was reading $endpoint" \
       "read that endpoint by hand and compare it with what the runs API documents; if the shape has changed, update the fields scripts/ci-verdict.sh type-checks, and if GitHub has added a run status, add it to the statuses that script enumerates. This job will not run the gate in CI's place: discarding the runs it cannot parse is how an answer it could not read would come to look like no answer at all."
   fi
@@ -258,6 +219,12 @@ case "$conclusion" in
     decide true "CI run $run_id was cancelled for $sha (${run_url:-no URL}), so CI reached no verdict; running the gate here instead."
     ;;
   none)
+    if [ -n "$run_id" ]; then
+      refuse \
+        "ci-verdict: CI run $run_id concluded none for $sha; this is not an absent CI run, so the release stops here." \
+        "the run is ${run_url:-<the API returned no URL>}" \
+        "read that run and determine why CI supplied no recognized verdict before releasing again."
+    fi
     # Every run of ours was readable (checked above) and none was pending, so
     # `none` means there were none of ours at all — genuinely absent.
     decide true "CI has no run for $sha, so CI reached no verdict; running the gate here instead."

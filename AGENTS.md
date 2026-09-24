@@ -1163,17 +1163,11 @@ shape. When you add one:
   generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
   `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
   the required checks are green, then `release-plz release` tags `vX.Y.Z` and
-  cuts the GitHub Release. That Release fires `release.yml`, which reuses CI's
-  verdict for the exact tagged commit instead of re-running the gate on it: a
-  pass publishes, a refusal stops the release, and a run still in flight is
-  waited out rather than swept twice. Past that,
-  only a cancelled CI run and no CI run at all make the release run the gate
-  itself; every other state refuses rather than standing in for a verdict it
-  could not read — unreadable, unparseable, an unrecognized conclusion, or a
-  wait that ran out, each naming what it was reading. A verdict may EXIST unread
-  in every one of those, and a release that reuses evidence must never be able
-  to manufacture it. That sentence is `scripts/ci-verdict.sh`'s `# CONTRACT:`
-  line, and `check-ci-verdict.sh` fails if this copy of it drifts. It idempotently publishes both crates in dependency order
+  cuts the GitHub Release. `release.yml` reads CI's verdict for the exact
+  tagged commit: only a cancelled CI run and no CI run at all make the release
+  run the gate itself; every other state refuses rather than standing in for a
+  verdict it could not read. A run still in flight is awaited to a bound.
+  The release publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
   PyPI wheels and npm packages. The bump is not the commit subject's word alone:

@@ -95,7 +95,13 @@ if [ "${1:-}" = "--version" ]; then
     echo "oneharness: no binary package found for this platform (attempt $n)" >&2
     exit 1
   fi
+  if [ -n "${STUB_CLI_SILENT_FAILURE:-}" ]; then
+    exit 1
+  fi
   printf '%s %s\n' "${STUB_CLI_NAME:-oneharness}" "${STUB_CLI_VERSION:?}"
+  if [ -n "${STUB_CLI_EXTRA_LINE:-}" ]; then
+    printf '%s\n' "$STUB_CLI_EXTRA_LINE"
+  fi
 fi
 STUB
 
@@ -106,8 +112,8 @@ STUB
 # a host may only ship `python3`.
 for interpreter in python node; do
   real="$(command -v "${interpreter}3" || command -v "$interpreter")" || {
-    echo "check-verify-published: skipped; no $interpreter on PATH to run the SDK smoke programs with" >&2
-    exit 0
+    echo "check-verify-published: no $interpreter on PATH to run the SDK smoke programs with" >&2
+    exit 1
   }
   cat >"$tmp/bin/$interpreter" <<STUB
 #!/usr/bin/env bash
@@ -278,6 +284,14 @@ STUB_CLI_NAME=oneharness-mock run_case pypi-cli "a version line printed by anoth
 unset STUB_CLI_NAME
 expect_status 1
 expect_said "$tmp/err" "the installed oneharness reports oneharness-mock $VERSION_UNDER_TEST"
+
+STUB_CLI_EXTRA_LINE='unexpected output' run_case pypi-cli "a version response with an extra line"
+expect_status 1
+expect_said "$tmp/err" 'unexpected output'
+
+STUB_CLI_SILENT_FAILURE=1 run_case pypi-cli "a version command that fails silently"
+expect_status 1
+expect_said "$tmp/err" 'the installed oneharness could not run --version'
 
 # A smoke step AFTER the version check failing is still a failed install: the
 # package resolved, and the thing it installed does not work.

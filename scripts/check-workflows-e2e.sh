@@ -78,7 +78,7 @@ while IFS='|' read -r pattern expected; do
     const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
     const line = source.split("\n").find((l) => l.includes(needle));
     if (!line) throw new Error(`semver gate fixture is missing: ${needle}`);
-    fs.writeFileSync(path, source.split("\n").filter((l) => l !== line).join("\n"));
+    fs.writeFileSync(path, source.replace(line, line.replace(needle, "run: ':'")));
   ' "$release_plz" "$pattern"
 
   if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
@@ -136,6 +136,19 @@ run: scripts/ci-verdict.sh|read CI's verdict for the tagged commit
 run: scripts/verify-published.sh npm-cli|verify the published npm-cli with the consumer's own install
 CASES
 
+# Artifact construction must not start before the tagged commit's verdict.
+node -e '
+  const fs = require("node:fs");
+  const path = process.argv[1];
+  const source = fs.readFileSync(path, "utf8");
+  const start = source.indexOf("  build-wheels:\n");
+  const end = source.indexOf("\n  publish-pypi:", start);
+  if (start < 0 || end < 0) throw new Error("build-wheels fixture is missing");
+  const block = source.slice(start, end).replace("    needs: gate\n", "");
+  fs.writeFileSync(path, source.slice(0, start) + block + source.slice(end));
+' "$workflow"
+expect_gate_refusal "job build-wheels must depend on gate"
+
 # A missing GUARD rather than a missing line: `just check` is still there, but
 # nothing conditions it, so it runs on every release again.
 # The single-quoted program is JavaScript.
@@ -153,18 +166,18 @@ expect_gate_refusal "run the complete repository gate only when CI reached no ve
 
 # A forbidden pattern: a registry's metadata API answering, read as a consumer
 # being able to install.
-printf '          npm view "oneharness-cli@1.2.3" version\n' >>"$workflow"
+printf '      - run: npm view "oneharness-cli@1.2.3" version\n' >>"$workflow"
 expect_gate_refusal "must not wait on a registry's metadata API"
 
 # The other forbidden pattern: a gate `just check` already contains, run again
 # here against the same commit.
-printf '        run: just sdk-check\n' >>"$workflow"
+printf '      - name: Re-run the SDK gate\n        run: just sdk-check\n' >>"$workflow"
 expect_gate_refusal "must not run an SDK gate"
 
 # A SECOND copy of the gate, this one unconditioned. The guard requirement is
 # about every occurrence: one guarded copy says nothing about a sibling that
 # runs on every release.
-printf '        run: just check\n' >>"$workflow"
+printf '      - name: Re-run the gate\n        run: just check\n' >>"$workflow"
 expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
 
 echo 'check-workflows-e2e: ok'

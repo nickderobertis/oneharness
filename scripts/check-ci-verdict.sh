@@ -1,23 +1,7 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
-# Hermetic behavioral test for scripts/ci-verdict.sh, against a stand-in GitHub
-# API.
-#
-# The verdict decides whether a release publishes an unverified commit, and it
-# runs exactly once per release — where a wrong answer either wastes the gate or,
-# far worse, publishes a commit CI refused. A real API cannot rehearse a
-# cancelled run or a missing one, so `gh` is stubbed and every branch is driven:
-# the selection (a foreign commit's run must not answer for ours, and the newest
-# finished run wins), then each verdict state.
-#
-# The division those cases hold is the point of the whole script. ONLY a
-# cancelled run and an absent one run the gate in the release — they are the two
-# states where CI reached no verdict, so running it establishes something nobody
-# knew. Every state where a verdict may EXIST unread — an API that refuses, an
-# answer that will not parse, a conclusion this does not recognize, a run still
-# going when the wait runs out — must REFUSE, because running the gate there
-# lets a green run in the release stand in for a red run in CI. So each of those
-# is driven here and asserted to decide nothing at all.
+# Drive CI verdict selection through a stand-in GitHub API, including reruns
+# and unreadable responses that cannot safely authorize publication.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,10 +30,24 @@ count="$GH_STATE/calls"
 n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "$n" >"$count"
 if [ -f "$GH_RUNS.$n" ]; then
-  cat "$GH_RUNS.$n"
+  response="$(cat "$GH_RUNS.$n")"
 else
-  cat "$GH_RUNS"
+  response="$(cat "$GH_RUNS")"
 fi
+# Older fixtures omit these stable GitHub fields; give them the values of a
+# main-branch push while preserving any explicit event and branch in a case.
+if decorated="$(printf '%s' "$response" | jq -c 'walk(if type == "object" and has("head_sha") then
+  (if has("event") then . else . + {event:"push"} end)
+  | (if has("head_branch") then . else . + {head_branch:"main"} end)
+else . end)' 2>/dev/null)"; then
+  response="$decorated"
+fi
+# gh --slurp returns an array of pages. A fixture may supply multiple pages;
+# the usual single-page fixtures are wrapped as gh would wrap them.
+case "$response" in
+  '['*) printf '%s' "$response" ;;
+  *) printf '[%s]' "$response" ;;
+esac
 STUB
 chmod +x "$tmp/bin/gh"
 
@@ -63,14 +61,7 @@ fail() {
 # the workflow output file in $tmp/github-output. The wait is three polls with no
 # delay, so a case that polls costs nothing.
 #
-# `env -u` is load-bearing, not tidiness. ci-verdict.sh falls back to
-# $GITHUB_REPOSITORY and $GITHUB_SHA when $REPO/$SHA are empty, and every job on
-# a GitHub runner is handed both — so the cases below that assert a refusal when
-# given NO commit and NO repository would instead be answered from the runner's
-# own commit, pass on a developer box, and fail only in CI. They did: a release
-# gate read `CI has no run for <the runner's sha>` and this test reported
-# `expected exit 2, got 0`. Stripping them is the same property `ONEHARNESS_NO_CONFIG`
-# gives the Rust suite — the machine's real environment cannot reshape an assertion.
+# Strip runner-provided fallbacks so missing-input cases exercise that absence.
 invoke() {
   : >"$tmp/calls"
   : >"$tmp/github-output"
@@ -149,7 +140,7 @@ expect_needs_check() {
 
 expect_said() {
   local where="$1" needle="$2"
-  grep -Fq "$needle" "$where" || {
+  grep -Fq -- "$needle" "$where" || {
     cat "$tmp/out" "$tmp/err" >&2
     fail "$description: expected to say '$needle'"
   }
@@ -179,6 +170,19 @@ run_case "{\"workflow_runs\":[$(workflow_run_json 10 "$OTHER_SHA" completed '"fa
 expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "concluded success for $SHA_UNDER_TEST"
+expect_said "$tmp/calls" '--paginate --slurp'
+expect_said "$tmp/calls" '&event=push&branch=main&'
+
+run_case "[{\"workflow_runs\":[$(workflow_run_json 12 "$OTHER_SHA" completed '"failure"' 2026-01-05T00:00:00Z)]},{\"workflow_runs\":[$(workflow_run_json 13 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}]" \
+  "a tagged commit whose run is on the next API page"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 13 concluded success"
+
+run_case "{\"workflow_runs\":[{\"id\":14,\"head_sha\":\"$SHA_UNDER_TEST\",\"event\":\"pull_request\",\"head_branch\":\"feature\",\"status\":\"completed\",\"conclusion\":\"success\",\"run_started_at\":\"2026-01-05T00:00:00Z\"},$(workflow_run_json 15 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-02T00:00:00Z)]}" \
+  "a PR success cannot override main's failed push on the same SHA"
+expect_refused
+expect_said "$tmp/err" "CI run 15 concluded failure"
 grep -Fq "head_sha=$SHA_UNDER_TEST" "$tmp/calls" || {
   cat "$tmp/calls" >&2
   fail "$description: the API was not asked about the tagged commit"
@@ -270,10 +274,27 @@ expect_refused
 expect_said "$tmp/err" "1 run(s) in CI's answer"
 expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
 
+# A control character in a conclusion must not shift the tab-delimited fields
+# the script reads from jq's summary.
+run_case '{"workflow_runs":[{"id":114,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success\t0\t0\t114","run_started_at":"2026-01-01T00:00:00Z"}]}' \
+  "a conclusion containing a tab"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
+
+run_case '{"workflow_runs":[{"id":115,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success\n","run_started_at":"2026-01-01T00:00:00Z"}]}' \
+  "a conclusion containing a newline"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
+
 # A finished run whose id is not a number: it cannot be named to the reader, and
 # an unnamed run must not be the one that publishes or refuses a release.
 run_case '{"workflow_runs":[{"id":"ninety-one","head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"2026-01-01T00:00:00Z"}]}' \
   "a finished run whose id is not a number"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
+
+run_case "{\"workflow_runs\":[$(workflow_run_json 91.5 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}" \
+  "a finished run with a fractional id"
 expect_refused
 expect_said "$tmp/err" "1 run(s) in CI's answer"
 
@@ -341,35 +362,34 @@ run_case "{\"workflow_runs\":[{\"id\":99,\"head_sha\":\"$SHA_UNDER_TEST\",\"stat
 expect_refused
 expect_said "$tmp/err" "2 run(s) in CI's answer"
 
-# A start time of the wrong type must not select the run: jq sorts objects above
-# strings, so an unchecked key would make this malformed run the newest and
-# refuse a release CI passed.
+# An undated run may be newer than a dated one, so it cannot be discarded
+# while selecting the verdict.
 run_case '{"workflow_runs":[
   {"id":100,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"failure","run_started_at":{},"html_url":"https://example.invalid/run/100"},
   {"id":99,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"2026-05-01T00:00:00Z","html_url":"https://example.invalid/run/99"}]}' \
   "a run whose start time is not a timestamp"
-expect_status 0
-expect_needs_check false
-expect_said "$tmp/out" "CI run 99 concluded success"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
 
-# ...and a start time that is a string but not an instant is no better: it
-# sorts above any digit, so unchecked it would be the newest run.
+# A non-instant string leaves the same uncertainty.
 run_case '{"workflow_runs":[
   {"id":110,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"failure","run_started_at":"not-a-timestamp","html_url":"https://example.invalid/run/110"},
   {"id":109,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"2026-05-01T00:00:00Z","html_url":"https://example.invalid/run/109"}]}' \
   "a run whose start time is a string but not an instant"
-expect_status 0
-expect_needs_check false
-expect_said "$tmp/out" "CI run 109 concluded success"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
 
-# The same malformed start time on the ONLY run for the commit: ordering is all
-# that field decides, so the run is still CI's word on this commit.
+run_case "{\"workflow_runs\":[$(workflow_run_json 116 "$SHA_UNDER_TEST" completed '"failure"' 2026-99-01T00:00:00Z),$(workflow_run_json 117 "$SHA_UNDER_TEST" completed '"success"' 2026-05-01T00:00:00Z)]}" \
+  "an impossible month must not outrank a real CI run"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
+
+# Even the sole run needs a valid timestamp to establish a readable verdict.
 run_case '{"workflow_runs":[
   {"id":111,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":"success","run_started_at":"whenever","html_url":"https://example.invalid/run/111"}]}' \
   "a sole run whose start time is not an instant"
-expect_status 0
-expect_needs_check false
-expect_said "$tmp/out" "CI run 111 concluded success"
+expect_refused
+expect_said "$tmp/err" "1 run(s) in CI's answer"
 
 # A rerun in flight beside an older finished run: CI is deciding this commit
 # again, so the older verdict is not the answer — the rerun's is.
@@ -392,6 +412,11 @@ expect_refused
 expect_said "$tmp/err" "concluded neutral"
 expect_said "$tmp/err" "neither a pass, a refusal, nor the absence of a verdict"
 expect_said "$tmp/err" "https://example.invalid/run/60"
+
+run_case "{\"workflow_runs\":[$(workflow_run_json 61 "$SHA_UNDER_TEST" completed '"none"' 2026-01-01T00:00:00Z)]}" \
+  "a literal none conclusion from a completed run"
+expect_refused
+expect_said "$tmp/err" "CI run 61 concluded none"
 
 # An answer that could not be read is NOT an absent one: CI may have refused this
 # commit and simply not been reachable to say so. Running the gate here would put

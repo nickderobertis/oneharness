@@ -59,15 +59,17 @@ trap 'rm -rf "$work"' EXIT
 # Every attempt ends in this: an install nothing was run against proves only
 # that a registry answered.
 smoke_cli() {
-  local installed name reported extra
-  installed="$(oneharness --version)" || return 1
+  local installed
+  installed="$(oneharness --version)" || {
+    printf 'the installed oneharness could not run --version\n' >&2
+    return 1
+  }
   # The whole shape AND the value, from process output that is external like any
   # other input: clap prints exactly `<bin> <version>`, so the name must be this
   # binary, the version field must EQUAL the asked-for one, and nothing may
   # follow. A substring would accept `oneharness 9.9.99` for 9.9.9, which is a
   # release that shipped the wrong artifact — the thing this is here to catch.
-  read -r name reported extra <<<"$installed"
-  if [ "$name" != oneharness ] || [ "$reported" != "$version" ] || [ -n "$extra" ]; then
+  if [ "$installed" != "oneharness $version" ]; then
     printf 'the installed oneharness reports %s, not oneharness %s\n' "$installed" "$version" >&2
     return 1
   fi

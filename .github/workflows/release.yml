@@ -70,29 +70,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Consume CI's verdict for the exact commit this release tags instead of
-  # re-running the gate CI already ran on it. A second run of that gate spends
-  # twenty minutes learning what is already known, and exposes an approved commit
-  # to an unrelated transient failure DURING publication — where a red run reads
-  # as a broken release rather than as the flake it is.
-  #
-  # The rule, stated once in scripts/ci-verdict.sh and quoted here because this
-  # is the job that acts on it:
-  #
-  #   only a cancelled CI run and no CI run at all make the release run the
-  #   gate itself; every other state refuses rather than standing in for a
-  #   verdict it could not read
-  #
-  # A success publishes without re-checking; a CI failure refuses outright,
-  # naming the run to read. The two fallback states are the two where CI reached
-  # no verdict at all — CI on `main` cancels in progress per ref, so a later push
-  # can cancel the tagged commit's run, and a hand-made Release may have no run.
-  # A run still going is waited for rather than duplicated, and a wait that runs
-  # out refuses too: CI is still deciding, and may yet refuse this commit.
-  #
-  # The decision is scripts/ci-verdict.sh, driven against a stand-in GitHub API
-  # by scripts/check-ci-verdict.sh; the fallback is `just check` itself, so it
-  # cannot drift from what CI runs.
+  # CI's exact tagged-SHA verdict selects publication or the guarded fallback.
+  # only a cancelled CI run and no CI run at all make the release run the
+  # gate itself; every other state refuses rather than standing in for a
+  # verdict it could not read
   gate:
     runs-on: ubuntu-latest
     permissions:
@@ -334,12 +315,7 @@ jobs:
           # red-fail because these wheels already exist on PyPI.
           skip-existing: true
 
-  # Post-publish gate: prove the just-published version is pip-installable by
-  # installing it. PyPI's JSON API answers before the simple index a `pip
-  # install` reads, so waiting on the metadata and installing once reddens a
-  # release that published perfectly; the thing retried here is the install
-  # itself. A failure means a broken release, not a blocked publish (the wheel
-  # is already public).
+  # Retry the consumer's pip install and smoke against the published version.
   verify-pypi:
     needs: publish-pypi
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
@@ -535,13 +511,7 @@ jobs:
           launcher="$(node scripts/npm-build.mjs launcher --out npm/dist)"
           scripts/publish-npm.sh "$launcher" "$GITHUB_WORKSPACE"/sdk-artifact/*.tgz
 
-  # Post-publish gate: prove the just-published CLI and SDK are installable from
-  # npm by installing them. `npm view` answering says nothing about the
-  # per-platform @oneharness/cli-<platform>-<arch> package the launcher needs —
-  # and because npm installs that as an OPTIONAL dependency, an install that
-  # resolved none of it still exits 0. So the retried unit is the install
-  # TOGETHER with the smoke that runs the binary, which is the only thing that
-  # notices.
+  # Retry npm installs and smoke until the published packages resolve.
   verify-npm:
     needs: publish-npm
     if: ${{ vars.NPM_PUBLISH == 'true' }}

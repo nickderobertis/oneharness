@@ -35,6 +35,19 @@ require_guarded() {
   done
 }
 
+require_gate_dependency() {
+  local job
+  for job in publish-crates upload build-wheels build-python-sdk build-npm build-node-sdk; do
+    awk -v job="$job" '
+      $0 == "  " job ":" { inside=1; found=1; next }
+      inside && /^  [a-z][a-z-]*:/ { exit }
+      inside && /^    needs: gate$/ { gated=1 }
+      END { if (!found || !gated) exit 1 }
+    ' .github/workflows/release.yml ||
+      fail "release.yml job $job must depend on gate before constructing or publishing an artifact"
+  done
+}
+
 # rust-toolchain.toml is canonical. Cargo requires an MSRV in each publishable
 # manifest, while actions-rust-lang/setup-rust-toolchain reads the committed
 # toolchain file directly.
@@ -91,6 +104,7 @@ require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use
 # sentence against the one scripts/ci-verdict.sh carries.
 require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
   "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
+require_gate_dependency
 require_line .github/workflows/release.yml 'actions: read' \
   "hold the permission that lets it read CI's own result"
 # This is a literal GitHub expression in YAML.

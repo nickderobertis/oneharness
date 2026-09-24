@@ -102,6 +102,8 @@ lint-workflows: build build-mock-harness
     @bash scripts/report-scheduled-failure-test.sh >/dev/null
     @bash scripts/check-workflows.sh >/dev/null
     @bash scripts/check-workflows-e2e.sh >/dev/null
+    @bash scripts/check-ci-verdict.sh >/dev/null
+    @bash scripts/check-verify-published.sh >/dev/null
     @bash scripts/check-setup-just.sh >/dev/null
     @bash scripts/check-publish-crates.sh >/dev/null
     @bash scripts/check-package-crates.sh >/dev/null
@@ -251,6 +253,13 @@ sdk-generate:
 sdk-install:
     @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
 
+# Compile the Node SDK's publishable `dist/`. It is gitignored, so it has to be
+# built both for the gate's packaged e2e and for the release's `npm pack` — and
+# the release skips the gate when CI already ran it, so this is the one spelling
+# both reach rather than two that can drift.
+sdk-build: sdk-install
+    bun run --cwd npm/oneharness-sdk build
+
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
 #
 # The two steps that take scratch space run under `check-temp-leaks.sh`, which
@@ -262,7 +271,7 @@ sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk lint
     bun run --cwd npm/oneharness-sdk typecheck
     bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test
-    bun run --cwd npm/oneharness-sdk build
+    just sdk-build
     bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.

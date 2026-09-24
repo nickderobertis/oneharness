@@ -16,6 +16,38 @@ require_line() {
   grep -Fq -- "$line" "$file" || fail "$file must $description"
 }
 
+# Like require_line, but for a line that may only run behind a condition: the
+# guard must be the line immediately above it. A `run:` on its own is the shape
+# this repository is moving away from — a check re-run on every release — so
+# presence alone is not the contract. EVERY occurrence is checked, because one
+# guarded copy says nothing about a second that runs unconditionally.
+require_guarded() {
+  local file="$1" line="$2" guard="$3" description="$4" numbers number previous
+  numbers="$(grep -Fn -- "$line" "$file" | cut -d: -f1)"
+  if [ -z "$numbers" ]; then
+    fail "$file must $description"
+    return
+  fi
+  for number in $numbers; do
+    previous=
+    [ "$number" -gt 1 ] && previous="$(sed -n "$((number - 1))p" "$file" | sed 's/^[[:space:]]*//')"
+    [ "$previous" = "$guard" ] || fail "$file must $description"
+  done
+}
+
+require_gate_dependency() {
+  local job
+  for job in publish-crates upload build-wheels build-python-sdk build-npm build-node-sdk; do
+    awk -v job="$job" '
+      $0 == "  " job ":" { inside=1; found=1; next }
+      inside && /^  [a-z][a-z-]*:/ { exit }
+      inside && /^    needs: gate$/ { gated=1 }
+      END { if (!found || !gated) exit 1 }
+    ' .github/workflows/release.yml ||
+      fail "release.yml job $job must depend on gate before constructing or publishing an artifact"
+  done
+}
+
 # rust-toolchain.toml is canonical. Cargo requires an MSRV in each publishable
 # manifest, while actions-rust-lang/setup-rust-toolchain reads the committed
 # toolchain file directly.
@@ -54,10 +86,88 @@ if [ -n "$tag_line" ] && [ -n "$pr_line" ] && [ "$tag_line" -ge "$pr_line" ]; th
 fi
 
 require_line .github/workflows/release.yml 'types: [published]' "start distribution from a published GitHub Release"
-require_line .github/workflows/release.yml 'run: just check' "run the complete repository gate before publishing"
 require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use the validated crates.io publisher"
-require_line .github/workflows/release.yml 'run: just sdk-check' "use the Node SDK command surface"
-require_line .github/workflows/release.yml 'run: just python-sdk-check' "use the Python SDK command surface"
+# A release publishes a commit CI has already gated. Re-running that gate spends
+# a runner to learn what is known and puts an approved commit at the mercy of an
+# unrelated transient failure DURING publication, where red reads as a broken
+# release. So the verdict for the exact tagged commit is read, and the gate runs
+# here only where scripts/ci-verdict.sh says it may:
+#
+#   a failed check job refuses release; only a complete successful check matrix
+#   skips the release gate; an absent or incomplete matrix runs the gate after
+#   CI ends
+#
+# And when it does run, it is ONE check, `just check`, invoked the one way named
+# below: never a restatement of its stages, and never a second run of something
+# it already contains. The division above is held by scripts/check-ci-verdict.sh,
+# which drives every state against a stand-in API — and which checks this very
+# sentence against the one scripts/ci-verdict.sh carries.
+require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
+  "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
+require_line .github/workflows/ci.yml 'os: [ubuntu-latest, macos-latest, windows-latest]' \
+  "keep the declared check matrix matched to the release verdict selector"
+require_line .github/workflows/ci.yml 'branches: [main]' \
+  "keep the CI push branch matched to the release verdict selector"
+require_line .github/workflows/ci.yml '  check:' \
+  "keep the check job named as the release verdict selector expects"
+require_line scripts/ci-verdict.sh 'event=push&branch=main' \
+  "select CI's main-branch push runs"
+require_line scripts/ci-verdict.sh '["check (macos-latest)", "check (ubuntu-latest)", "check (windows-latest)"]' \
+  "require every CI check matrix job before skipping the release gate"
+require_line pyproject.toml 'name = "oneharness-cli"' "keep the PyPI CLI name used by publication verification"
+require_line python/oneharness-sdk/pyproject.toml 'name = "oneharness-sdk"' "keep the PyPI SDK name used by publication verification"
+require_line npm/oneharness/package.json '"name": "oneharness-cli"' "keep the npm CLI name used by publication verification"
+require_line npm/oneharness-sdk/package.json '"name": "@oneharness/sdk"' "keep the npm SDK name used by publication verification"
+while IFS='|' read -r line description; do
+  require_line scripts/verify-published.sh "$line" "$description"
+done <<'INSTALL_LINES'
+pip install --no-cache-dir "oneharness-cli==$version"|install the published PyPI CLI name
+pip install --no-cache-dir "oneharness-sdk==$version"|install the published PyPI SDK name
+npm install -g --prefer-online "oneharness-cli@$version"|install the published npm CLI name
+npm install --prefer-online "@oneharness/sdk@$version"|install the published npm SDK name
+INSTALL_LINES
+require_gate_dependency
+require_line .github/workflows/release.yml 'actions: read' \
+  "hold the permission that lets it read CI's own result"
+# This is a literal GitHub expression in YAML.
+# shellcheck disable=SC2016
+require_line .github/workflows/release.yml 'needs_check: ${{ steps.verdict.outputs.needs_check }}' \
+  "publish that verdict to the jobs that would otherwise re-run a check"
+require_guarded .github/workflows/release.yml 'run: just check' \
+  "if: steps.verdict.outputs.needs_check == 'true'" \
+  "run the complete repository gate only when CI reached no verdict for the tagged commit"
+# `just check` contains both SDK gates, so the fallback above has already run
+# them on this commit. A release job running either again is the same commit
+# swept twice, and neither belongs here any more.
+if grep -qE '^[[:space:]]*run: just (sdk-check|python-sdk-check)$' .github/workflows/release.yml; then
+  fail "release.yml must not run an SDK gate; 'just check' in the gate job contains both, so running one here sweeps the same commit twice"
+fi
+# The gate builds the gitignored SDK dist on its way past; skipping the gate must
+# not leave the pack with nothing to pack.
+require_line .github/workflows/release.yml 'run: just sdk-build' \
+  "build the Node SDK's publishable sources even on the release that skips the gate"
+# Every post-publication wait is the consumer's own operation, retried to a
+# bound. A registry answers its metadata API before the index a consumer reads —
+# PyPI's JSON before the simple index, `npm view` before the per-platform package
+# an optional dependency resolves — so a metadata probe standing in for the
+# install reddens a release that published perfectly.
+# The target list is verify-published.sh's own, read out of the allowlist it
+# validates against rather than restated here — a target added there and not
+# called from the workflow is exactly the drift this catches.
+verify_targets="$(sed -n 's/^  \([a-z| -]*\)) ;;$/\1/p' scripts/verify-published.sh | head -1 | tr -d ' ' | tr '|' ' ')"
+if [ -z "$verify_targets" ]; then
+  fail "scripts/verify-published.sh must keep its accepted targets in one 'case' allowlist ending in ') ;;', which is what names the workflow calls this gate requires"
+fi
+for verify_target in $verify_targets; do
+  require_line .github/workflows/release.yml \
+    "run: scripts/verify-published.sh $verify_target \"\${GITHUB_REF_NAME#v}\"" \
+    "verify the published $verify_target with the consumer's own install"
+done
+# Comment lines are exempt: the rule is about what the release RUNS, and the
+# job comments have to be able to say what they replaced.
+if grep -vE '^[[:space:]]*#' .github/workflows/release.yml | grep -qE 'pypi\.org/pypi/|npm view'; then
+  fail "release.yml must not wait on a registry's metadata API; retry the consumer's own install through scripts/verify-published.sh instead"
+fi
 require_line .github/workflows/release.yml 'needs: [publish-pypi, build-python-sdk]' "publish the Python SDK only after its exact CLI dependency"
 require_line .github/workflows/release.yml 'name: python-sdk' "retain the Python SDK release artifact"
 require_line .github/workflows/release.yml 'packages-dir: python-sdk-artifact' "publish the Python SDK through PyPI Trusted Publishing"

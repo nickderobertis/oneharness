@@ -156,6 +156,9 @@ read_jobs() {
   fi
 }
 
+# Only a complete set of successful check legs gates the commit. A completed
+# run with a missing or non-successful leg needs the local gate; a failed leg
+# refuses publication before that fallback can run.
 for poll in $(seq 1 "$wait_attempts"); do
   read_run
   if [ "$run_status" = absent ]; then

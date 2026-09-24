@@ -107,7 +107,9 @@ jobs:
           tool: just,nextest,cargo-llvm-cov,shellcheck
       - if: steps.verdict.outputs.needs_check == 'true'
         run: just bootstrap
-      - name: Run the gate CI reached no verdict on
+      # needs_check is true only when no failed leg exists and at least one
+      # required CI check leg has no success verdict for this tagged commit.
+      - name: Run gate when a required CI leg lacks a success verdict
         if: steps.verdict.outputs.needs_check == 'true'
         run: just check
 

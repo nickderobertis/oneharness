@@ -90,6 +90,19 @@ grep -q "oneharness-under-a-symlink" "$work/out" ||
   fail "the gate went red under a symlinked root without naming the directory left behind"
 rm -rf "$work/through-a-symlink" "$work/behind-a-symlink"
 
+# A root that exists but cannot be swept is refused before the command runs,
+# rather than skipped into a clean verdict.
+touch "$work/not-a-directory"
+set +e
+OH_SCRATCH_ROOTS="$work/not-a-directory" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "an unsweepable scratch root should be a usage error (exit 2), got $status"
+[ ! -e "$work/ran" ] || fail "the gate should not run its command over an unsweepable scratch root"
+grep -q "cannot watch scratch root '$work/not-a-directory'" "$work/out" ||
+  fail "the gate should name the scratch root it cannot watch"
+rm -f "$work/not-a-directory"
+
 # A temp *file* is not a leak: the temp directory is shared with real
 # `oneharness` runs, which write and clean up files of their own.
 if ! bash "$gate" bash -c "touch '$work/oneharness-left.txt'" >"$work/out" 2>&1; then

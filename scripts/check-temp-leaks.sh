@@ -47,11 +47,27 @@ fi
 # it to every run for free (`/tmp` is a symlink to `/private/tmp`) and
 # `just test-symlinked-tmp` reproduces it on Linux, where `$TMPDIR` is the
 # symlink and the scratch space lands in the directory behind it.
+resolve_root() {
+  CDPATH='' cd -- "$1" 2>/dev/null && pwd -P
+}
+
+# A root that does not exist yet holds nothing to leak (and is swept afterwards
+# if the command creates it); one that exists but cannot be entered would be
+# skipped by every sweep, so it is refused before anything runs.
+for dir in "${scratch_roots[@]}"; do
+  if [ -z "$dir" ] || [ ! -e "$dir" ]; then continue; fi
+  if ! resolve_root "$dir" >/dev/null; then
+    echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter." >&2
+    echo "  fix: point OH_SCRATCH_ROOTS (or TMPDIR) at readable directories, then re-run." >&2
+    exit 2
+  fi
+done
+
 snapshot() {
   local dir real
   for dir in "${scratch_roots[@]}"; do
-    if [ -z "$dir" ]; then continue; fi
-    real=$(CDPATH='' cd -- "$dir" 2>/dev/null && pwd -P) || continue
+    if [ -z "$dir" ] || [ ! -e "$dir" ]; then continue; fi
+    real=$(resolve_root "$dir") || continue
     find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
   done | sort -u
 }

@@ -16,7 +16,9 @@ trap 'rm -rf "$work"' EXIT
 # The lane's scratch root lands under this test's own directory, and the leak
 # gate runs on its default roots, exactly as the recipe runs it.
 export TMPDIR="$work"
-unset OH_SCRATCH_ROOTS OH_SYMLINKED_TMP_UNAME
+unset OH_SCRATCH_ROOTS
+# The lane under test is the Linux one on whichever host runs this test.
+export OH_SYMLINKED_TMP_UNAME=Linux
 
 fail() {
   echo "with-symlinked-tmp-test: $1" >&2
@@ -32,8 +34,8 @@ printf "%s\n" "$TMPDIR" > "$1/seen"
 if ! bash "$lane" bash -c "$probe" probe "$work" >"$work/out" 2>&1; then
   fail "the wrapped command should have seen a TMPDIR spelled through a symlink"
 fi
-seen=$(cat "$work/seen")
-resolved=$(cat "$work/resolved")
+seen=$(cat "$work/seen" 2>/dev/null) || fail "the wrapped command never ran its probe"
+resolved=$(cat "$work/resolved" 2>/dev/null) || fail "the wrapped command never resolved its TMPDIR"
 [ "$seen" != "$resolved" ] ||
   fail "TMPDIR ($seen) should be spelled differently from the directory it resolves to"
 [ ! -e "$seen" ] && [ ! -e "$resolved" ] ||
@@ -77,21 +79,25 @@ set -e
 grep -q "could not build a symlinked temp root under $work/does-not-exist" "$work/out" ||
   fail "the lane should name the TMPDIR it could not build its root under"
 
-# A root half-built before `ln` fails — a filesystem without symlinks, stood in
-# for by an `ln` that refuses — is reported and still removed.
-mkdir -p "$work/no-symlinks"
-printf '#!/usr/bin/env bash\nexit 1\n' >"$work/no-symlinks/ln"
-chmod +x "$work/no-symlinks/ln"
-set +e
-PATH="$work/no-symlinks:$PATH" bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1
-status=$?
-set -e
-[ "$status" -eq 1 ] || fail "a root the lane cannot symlink should fail it (exit 1), got $status"
-[ ! -e "$work/ran" ] || fail "the lane should not run its command without its symlink"
-grep -q "could not build a symlinked temp root under $work" "$work/out" ||
-  fail "the lane should say it could not build its symlinked root"
-[ -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')" ] ||
-  fail "the lane left its half-built root behind under $work"
+# A root half-built before `mkdir` or `ln` fails — a filesystem without room or
+# without symlinks, stood in for by a tool that refuses — is reported and still
+# removed.
+for tool in mkdir ln; do
+  mkdir -p "$work/refusing-$tool"
+  printf '#!/usr/bin/env bash\nexit 1\n' >"$work/refusing-$tool/$tool"
+  chmod +x "$work/refusing-$tool/$tool"
+  set +e
+  PATH="$work/refusing-$tool:$PATH" bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "a root the lane cannot finish ($tool refused) should fail it (exit 1), got $status"
+  [ ! -e "$work/ran" ] || fail "the lane should not run its command without its symlinked root ($tool refused)"
+  grep -q "could not build a symlinked temp root under $work" "$work/out" ||
+    fail "the lane should say it could not build its symlinked root ($tool refused)"
+  [ -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')" ] ||
+    fail "the lane left its half-built root behind under $work ($tool refused)"
+  rm -rf "$work/refusing-$tool"
+done
 
 set +e
 OH_SYMLINKED_TMP_UNAME=Linx bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1

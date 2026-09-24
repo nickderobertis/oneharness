@@ -103,6 +103,26 @@ grep -q "cannot watch scratch root '$work/not-a-directory'" "$work/out" ||
   fail "the gate should name the scratch root it cannot watch"
 rm -f "$work/not-a-directory"
 
+# So is one the command leaves unsweepable, which would otherwise read as clean.
+mkdir -p "$work/goes-away"
+set +e
+OH_SCRATCH_ROOTS="$work/goes-away" bash "$gate" bash -c "rmdir '$work/goes-away' && touch '$work/goes-away'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a scratch root the command left unsweepable should fail the gate (exit 2), got $status"
+grep -q "cannot watch scratch root '$work/goes-away'" "$work/out" ||
+  fail "the gate should name the scratch root the command left unsweepable"
+rm -f "$work/goes-away"
+
+# Resolving the roots leaves the command in the directory it was started from.
+mkdir -p "$work/started-here"
+if ! (cd "$work/started-here" && bash "$repo_root/$gate" bash -c "pwd -P > '$work/cwd'") >"$work/out" 2>&1; then
+  fail "the gate should run a clean command to success"
+fi
+[ "$(cat "$work/cwd" 2>/dev/null)" = "$(cd "$work/started-here" && pwd -P)" ] ||
+  fail "the gate should run its command in the caller's directory, not in a scratch root"
+rm -rf "$work/started-here" "$work/cwd"
+
 # A temp *file* is not a leak: the temp directory is shared with real
 # `oneharness` runs, which write and clean up files of their own.
 if ! bash "$gate" bash -c "touch '$work/oneharness-left.txt'" >"$work/out" 2>&1; then

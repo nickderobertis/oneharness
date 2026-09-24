@@ -47,32 +47,28 @@ fi
 # it to every run for free (`/tmp` is a symlink to `/private/tmp`) and
 # `just test-symlinked-tmp` reproduces it on Linux, where `$TMPDIR` is the
 # symlink and the scratch space lands in the directory behind it.
-resolve_root() {
+# A subshell body: resolving a root must never move the gate's own directory.
+resolve_root() (
   CDPATH='' cd -- "$1" 2>/dev/null && pwd -P
-}
+)
 
-# A root that does not exist yet holds nothing to leak (and is swept afterwards
-# if the command creates it); one that exists but cannot be entered would be
-# skipped by every sweep, so it is refused before anything runs.
-for dir in "${scratch_roots[@]}"; do
-  if [ -z "$dir" ] || [ ! -e "$dir" ]; then continue; fi
-  if ! resolve_root "$dir" >/dev/null; then
-    echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter." >&2
-    echo "  fix: point OH_SCRATCH_ROOTS (or TMPDIR) at readable directories, then re-run." >&2
-    exit 2
-  fi
-done
-
+# A root that does not exist holds nothing to leak (and is swept afterwards if
+# the command creates it); one that exists but cannot be entered would match
+# nothing and read as a clean run, so a sweep that meets one fails instead.
 snapshot() {
   local dir real
   for dir in "${scratch_roots[@]}"; do
     if [ -z "$dir" ] || [ ! -e "$dir" ]; then continue; fi
-    real=$(resolve_root "$dir") || continue
+    if ! real=$(resolve_root "$dir"); then
+      echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter." >&2
+      echo "  fix: point OH_SCRATCH_ROOTS (or TMPDIR) at readable directories, then re-run." >&2
+      return 2
+    fi
     find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
   done | sort -u
 }
 
-before=$(snapshot)
+before=$(snapshot) || exit 2
 
 # Both streams into one file, so a replay preserves the order the command wrote
 # them in rather than the order two buffers happened to flush.
@@ -82,12 +78,14 @@ trap 'rm -f "$transcript"' EXIT
 status=0
 "$@" >"$transcript" 2>&1 || status=$?
 
-leaked=$(comm -13 <(printf '%s\n' "$before") <(snapshot))
+unwatched=0
+after=$(snapshot) || unwatched=1
+leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 
 # Everything the command said, verbatim, the moment anything is wrong with the
 # run — including a leak after a clean exit, where it is the only account of
 # what the suite was doing when it abandoned the directory.
-if [ "$status" -ne 0 ] || [ -n "$leaked" ]; then
+if [ "$status" -ne 0 ] || [ -n "$leaked" ] || [ "$unwatched" -eq 1 ]; then
   cat "$transcript" >&2
 fi
 
@@ -109,5 +107,9 @@ if [ -n "$leaked" ]; then
   # hide the thing to fix first.
   [ "$status" -eq 0 ] && exit 1
 fi
+
+# A root the command left unsweepable is a verdict this gate cannot give; the
+# command's own failure still wins.
+[ "$unwatched" -eq 1 ] && [ "$status" -eq 0 ] && exit 2
 
 exit "$status"

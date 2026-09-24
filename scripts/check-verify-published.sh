@@ -53,11 +53,13 @@ case "$*" in
     mkdir -p node_modules/@oneharness/sdk
     printf '{"name":"@oneharness/sdk","version":"%s","type":"module","main":"index.js"}\n' \
       "$STUB_SDK_VERSION" >node_modules/@oneharness/sdk/package.json
+    [ -z "${STUB_SDK_MANIFEST_NULL:-}" ] || echo null >node_modules/@oneharness/sdk/package.json
     # An SDK that imports and reports the right version but cannot reach the CLI
     # it packages answers an empty registry: installable, and useless. Composed
     # here rather than inlined, because `${VAR:-[{...}]}` ends at the first `}`.
     registry='[{ id: "stub-harness" }]'
     [ -z "${STUB_SDK_REGISTRY_EMPTY:-}" ] || registry='[]'
+    [ -z "${STUB_SDK_REGISTRY_NOT_A_LIST:-}" ] || registry='{ "id": "stub-harness" }'
     cat >node_modules/@oneharness/sdk/index.js <<PKG
 export class OneHarness {
   async list() {
@@ -130,6 +132,7 @@ make_python_sdk() {
   # default containing braces ends at the first one.
   registry='[{"id": "stub-harness"}]'
   [ -z "${STUB_SDK_REGISTRY_EMPTY:-}" ] || registry='[]'
+  [ -z "${STUB_SDK_REGISTRY_NOT_A_LIST:-}" ] || registry='{"id": "stub-harness"}'
   cat >"$root/oneharness_sdk/__init__.py" <<PYPKG
 __version__ = "$version"
 
@@ -166,6 +169,7 @@ run_case() {
   CALL_LOG="$tmp/calls" STUB_STATE="$tmp/state" \
     STUB_CLI_VERSION="${STUB_CLI_VERSION:-$VERSION_UNDER_TEST}" STUB_CLI_NAME="${STUB_CLI_NAME:-oneharness}" \
     STUB_SDK_VERSION="$sdk_version" STUB_SDK_REGISTRY_EMPTY="${STUB_SDK_REGISTRY_EMPTY:-}" \
+    STUB_SDK_REGISTRY_NOT_A_LIST="${STUB_SDK_REGISTRY_NOT_A_LIST:-}" STUB_SDK_MANIFEST_NULL="${STUB_SDK_MANIFEST_NULL:-}" \
     PYTHONPATH="$tmp/pyfake" \
     PATH="$tmp/bin:$PATH" VERIFY_ATTEMPTS="${ATTEMPTS_OVERRIDE-3}" VERIFY_DELAY="${DELAY_OVERRIDE-0}" \
     bash "$root/scripts/verify-published.sh" "$1" "${VERSION_OVERRIDE-$VERSION_UNDER_TEST}" \
@@ -360,6 +364,24 @@ STUB_SDK_REGISTRY_EMPTY=1 run_case npm-sdk "a Node SDK that reaches no packaged 
 unset STUB_SDK_REGISTRY_EMPTY
 expect_status 1
 expect_said "$tmp/err" "did not return the packaged CLI registry"
+
+# What an SDK hands back is read as data from outside: a registry that is not a
+# list of objects, or a manifest that is not an object, is named rather than
+# crashing the program on an attribute it assumed.
+STUB_SDK_REGISTRY_NOT_A_LIST=1 run_case pypi-sdk "a Python SDK whose registry is not a list"
+unset STUB_SDK_REGISTRY_NOT_A_LIST
+expect_status 1
+expect_said "$tmp/err" "did not return the packaged CLI registry: got {'id': 'stub-harness'}"
+
+STUB_SDK_REGISTRY_NOT_A_LIST=1 run_case npm-sdk "a Node SDK whose registry is not an array"
+unset STUB_SDK_REGISTRY_NOT_A_LIST
+expect_status 1
+expect_said "$tmp/err" 'did not return the packaged CLI registry: got {"id":"stub-harness"}'
+
+STUB_SDK_MANIFEST_NULL=1 run_case npm-sdk "a Node SDK whose package.json is not an object"
+unset STUB_SDK_MANIFEST_NULL
+expect_status 1
+expect_said "$tmp/err" "installed SDK package.json is not a JSON object: got null"
 
 # Both SDK targets lag exactly as the CLI ones do: one recovers inside the
 # bound, one never does and must surface its last error.

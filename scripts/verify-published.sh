@@ -122,9 +122,11 @@ for dist in ("oneharness-sdk", "oneharness-cli"):
 
 async def verify():
     harnesses = await OneHarness().list()
-    assert harnesses and all(
-        isinstance(item.get("id"), str) for item in harnesses
-    ), "the installed SDK did not return the packaged CLI registry"
+    assert (
+        isinstance(harnesses, list)
+        and harnesses
+        and all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in harnesses)
+    ), f"the installed SDK did not return the packaged CLI registry: got {harnesses!r}"
 
 
 asyncio.run(verify())
@@ -146,16 +148,26 @@ attempt_npm_sdk() {
     npm install --prefer-online "@oneharness/sdk@$version" || exit 1
     node --input-type=module - "$version" <<'NODE' || exit 1
 import { readFileSync } from "node:fs";
-import { OneHarness } from "@oneharness/sdk";
 
 const expected = process.argv[2];
+const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const manifest = JSON.parse(readFileSync("node_modules/@oneharness/sdk/package.json", "utf8"));
+if (!isObject(manifest)) {
+  throw new Error(`installed SDK package.json is not a JSON object: got ${JSON.stringify(manifest)}`);
+}
 if (manifest.version !== expected) {
   throw new Error(`installed SDK version ${manifest.version} does not match ${expected}`);
 }
+// Imported only now: resolving the package reads this same manifest, and would
+// refuse a malformed one with a loader error that names nothing to act on.
+const { OneHarness } = await import("@oneharness/sdk");
 const harnesses = await new OneHarness().list();
-if (harnesses.length === 0 || !harnesses.every(({ id }) => typeof id === "string")) {
-  throw new Error("installed SDK did not return the packaged CLI registry");
+if (
+  !Array.isArray(harnesses) ||
+  harnesses.length === 0 ||
+  !harnesses.every((item) => isObject(item) && typeof item.id === "string")
+) {
+  throw new Error(`installed SDK did not return the packaged CLI registry: got ${JSON.stringify(harnesses)}`);
 }
 NODE
   ) || return 1

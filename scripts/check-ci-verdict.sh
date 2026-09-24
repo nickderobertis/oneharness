@@ -313,6 +313,19 @@ expect_status 0
 expect_needs_check true
 expect_said "$tmp/out" "no main-branch check run for $SHA_UNDER_TEST"
 
+# The runs API can list a new push after the release's first query. Wait for
+# the bound before treating an empty list as permanent absence.
+run_polling_case "the tagged commit's CI run appears after the first query" \
+  '{"workflow_runs":[]}' \
+  "{\"workflow_runs\":[$(workflow_run_json 49 "$SHA_UNDER_TEST" completed '"success"' 2026-01-01T00:00:00Z)]}"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 49 check jobs concluded success"
+[ "$(grep -c 'head_sha' "$tmp/calls")" -eq 2 ] || {
+  cat "$tmp/calls" >&2
+  fail "$description: expected two queries before deciding"
+}
+
 # Still running: the run is WAITED for rather than duplicated, and the verdict
 # that arrives is CI's. Running the whole gate beside the run already running it
 # is the second sweep of one commit this script exists to avoid.

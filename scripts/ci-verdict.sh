@@ -159,7 +159,11 @@ read_jobs() {
 for poll in $(seq 1 "$wait_attempts"); do
   read_run
   if [ "$run_status" = absent ]; then
-    decide true "CI has no main-branch check run for $sha; running the gate here."
+    if [ "$poll" -eq "$wait_attempts" ]; then
+      decide true "CI has no main-branch check run for $sha after $wait_attempts polls; running the gate here."
+    fi
+    sleep "$wait_delay"
+    continue
   fi
   read_jobs
   case "$check_state" in

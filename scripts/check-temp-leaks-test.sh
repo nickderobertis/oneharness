@@ -79,6 +79,29 @@ if ! bash "$gate" true >"$work/out" 2>&1; then
 fi
 rm -rf "$work/oneharness-pre-existing"
 
+# One another checkout's suite made while this run was going, and whose maker is
+# still alive, is that suite's scratch — not this run's leak.
+sleep 60 &
+foreign=$!
+if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-foreign-$foreign'" >"$work/out" 2>&1; then
+  kill "$foreign"
+  fail "a scratch directory whose making process is still alive must not be reported as this run's leak"
+fi
+kill "$foreign"
+wait "$foreign" 2>/dev/null || true
+rm -rf "$work/oneharness-foreign-$foreign"
+
+# ...while one whose maker has exited is still a leak, pid suffix and all.
+sh -c 'exit 0' &
+exited=$!
+wait "$exited"
+if bash "$gate" bash -c "mkdir -p '$work/oneharness-abandoned-$exited'" >"$work/out" 2>&1; then
+  fail "a scratch directory whose making process has exited should have been reported"
+fi
+grep -q "oneharness-abandoned-$exited" "$work/out" ||
+  fail "the gate failed but did not name the abandoned directory"
+rm -rf "$work/oneharness-abandoned-$exited"
+
 # A root reached through a symlink still watches the directory behind it.
 mkdir -p "$work/behind-a-symlink"
 ln -s "$work/behind-a-symlink" "$work/through-a-symlink"

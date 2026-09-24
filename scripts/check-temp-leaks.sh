@@ -91,6 +91,25 @@ unwatched=0
 after=$(snapshot) || unwatched=1
 leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 
+# `/tmp` is shared with every other checkout on the host, and their suites mint
+# the same names. A scratch directory ends in the id of the process that made it
+# (`io::scratch::ScratchDir::name`), and every process of the watched command has
+# exited by now, so one whose maker is still alive belongs to someone else's run
+# still in progress — not a leak of this one. A gate that counted it failed a
+# publication on another checkout's live coverage suite.
+owned_by_a_live_process() {
+  local pid=${1##*-}
+  case "$pid" in '' | *[!0-9]*) return 1 ;; esac
+  ps -p "$pid" >/dev/null 2>&1
+}
+if [ -n "$leaked" ]; then
+  kept=""
+  while IFS= read -r dir; do
+    owned_by_a_live_process "$dir" || kept+="$dir"$'\n'
+  done <<< "$leaked"
+  leaked=${kept%$'\n'}
+fi
+
 # Everything the command said, verbatim, the moment anything is wrong with the
 # run — including a leak after a clean exit, where it is the only account of
 # what the suite was doing when it abandoned the directory.

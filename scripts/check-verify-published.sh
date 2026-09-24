@@ -253,6 +253,19 @@ VERSION_OVERRIDE=9.9.9+build.7 STUB_CLI_VERSION=9.9.9+build.7 run_case npm-cli "
 expect_status 0
 expect_calls 1 "npm install -g --prefer-online oneharness-cli@9.9.9+build.7"
 
+# SemVer identifiers may carry hyphens, in the prerelease and the build part.
+VERSION_OVERRIDE=9.9.9-rc-1+build-7 STUB_CLI_VERSION=9.9.9-rc-1+build-7 run_case npm-cli "a valid version with hyphenated identifiers"
+expect_status 0
+expect_calls 1 "npm install -g --prefer-online oneharness-cli@9.9.9-rc-1+build-7"
+
+# The version release-plz publishes is the root crate's; whatever it is now
+# must be one this verifier accepts.
+cargo_version="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$root/Cargo.toml" | head -n 1)"
+[ -n "$cargo_version" ] || fail "could not read the root package version from Cargo.toml; the next step is to read its [package] version line and update this sed to match it"
+VERSION_OVERRIDE="$cargo_version" STUB_CLI_VERSION="$cargo_version" run_case npm-cli "the version Cargo.toml would release"
+expect_status 0
+expect_calls 1 "npm install -g --prefer-online oneharness-cli@$cargo_version"
+
 # The npm lag this exists for: the meta-package installs every time — an
 # unresolvable optional dependency is not an install failure — and only the
 # smoke notices, for two attempts. The install must be retried WITH it.
@@ -381,6 +394,14 @@ DELAY_OVERRIDE=99999 run_case pypi-cli "a delay past the bound"
 unset DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "exceeds the 3600-second bound"
+
+# Leading zeros are decimal, not octal: the exhausted bound still reports its
+# last error and its arithmetic.
+ATTEMPTS_OVERRIDE=09 DELAY_OVERRIDE=00 STUB_NPM_FAILS=99 run_case npm-sdk "a zero-padded bound that exhausts"
+unset ATTEMPTS_OVERRIDE DELAY_OVERRIDE STUB_NPM_FAILS
+expect_status 1
+expect_said "$tmp/err" "npm error code E404 (attempt 9)"
+expect_said "$tmp/err" "still not installable after 9 attempts over ~0 seconds"
 
 # A target nobody implemented, and arguments a caller can omit or mangle, are
 # all wiring bugs rather than lagging registries.

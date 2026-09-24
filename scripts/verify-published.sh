@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's verify jobs, and scripts/check-verify-published.sh covers it from `just lint-workflows`.
-# Prove a just-published artifact is installable by doing what its consumer
-# does, retried until the registry catches up.
+# Prove a just-published artifact is installable by retrying, to a bound, what
+# its consumer does: the install plus a smoke of it, with the last attempt's
+# output surfaced when the bound runs out.
 #
-# A registry answers its metadata API before the thing a consumer actually
-# reaches for is resolvable: PyPI's JSON API before the simple index a `pip
-# install` reads, and npm's `view` before the per-platform
-# `@oneharness/cli-<platform>-<arch>` package the launcher needs — which npm
-# installs as an OPTIONAL dependency, so a `npm install -g` that resolved
-# nothing still exits 0 and only the binary's absence says so. A metadata probe
-# followed by one install therefore reddens a release that published perfectly,
-# and a person then has to work out whether it is a false negative or a broken
-# release.
-#
-# So the thing that is waited on here IS the consumer's operation — the install
-# and the smoke that proves the install usable — retried to a bound, with the
-# last attempt's output surfaced when the bound runs out.
+# A registry's metadata API answers before the index a consumer installs from
+# does, and npm installs the per-platform `@oneharness/cli-<platform>-<arch>`
+# as an OPTIONAL dependency — a `npm install -g` that resolved nothing still
+# exits 0, and only the smoke finds the binary missing.
 #
 # Usage: scripts/verify-published.sh <pypi-cli|pypi-sdk|npm-cli|npm-sdk> <version>
 # Reads: VERIFY_ATTEMPTS (default 30), VERIFY_DELAY seconds (default 10).
@@ -43,11 +35,13 @@ esac
 # major.minor.patch, then at most one prerelease and one build part — rather
 # than merely swept for dangerous characters: `1..2`, `-` and `.` all pass an
 # allowlist.
-[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] ||
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]] ||
   usage "'$version' is not an x.y.z version this release could have published"
-if [[ "$version" == *-* ]]; then
-  prerelease="${version#*-}"
-  prerelease="${prerelease%%+*}"
+# A build part may carry hyphens of its own, so the prerelease is read from
+# the version with that part already removed.
+without_build="${version%%+*}"
+if [[ "$without_build" == *-* ]]; then
+  prerelease="${without_build#*-}"
   IFS=. read -ra identifiers <<<"$prerelease"
   for identifier in "${identifiers[@]}"; do
     [[ ! "$identifier" =~ ^0[0-9]+$ ]] ||
@@ -63,6 +57,10 @@ case "$delay" in
   "" | *[!0-9]*) usage "VERIFY_DELAY='$delay' is not a whole number of seconds" ;;
 esac
 [ "${#delay}" -le 4 ] && [ "$delay" -le 3600 ] || usage "VERIFY_DELAY='$delay' exceeds the 3600-second bound"
+# Shell arithmetic reads a leading zero as octal, so `08` would pass the checks
+# above and then fail where the exhausted bound is reported.
+attempts=$((10#$attempts))
+delay=$((10#$delay))
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

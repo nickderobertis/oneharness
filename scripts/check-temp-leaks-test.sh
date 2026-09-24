@@ -130,6 +130,18 @@ if [ "$(id -u)" -ne 0 ]; then
   rmdir "$work/unlistable"
 fi
 
+# A command that fails and leaves a root unsweepable keeps its own status, and
+# the unsweepable root is still named.
+mkdir -p "$work/goes-away"
+set +e
+OH_SCRATCH_ROOTS="$work/goes-away" bash "$gate" bash -c "rmdir '$work/goes-away' && touch '$work/goes-away' && exit 3" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 3 ] || fail "a failed command's exit status 3 should win over an unsweepable root, got $status"
+grep -q "cannot watch scratch root '$work/goes-away'" "$work/out" ||
+  fail "the gate should still name the scratch root a failed command left unsweepable"
+rm -f "$work/goes-away"
+
 # Resolving the roots leaves the command in the directory it was started from.
 mkdir -p "$work/started-here"
 if ! (cd "$work/started-here" && bash "$repo_root/$gate" bash -c "pwd -P > '$work/cwd'") >"$work/out" 2>&1; then

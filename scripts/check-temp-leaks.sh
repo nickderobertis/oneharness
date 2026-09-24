@@ -59,12 +59,15 @@ snapshot() {
   local dir real
   for dir in "${scratch_roots[@]}"; do
     if [ -z "$dir" ] || [ ! -e "$dir" ]; then continue; fi
-    if ! real=$(resolve_root "$dir") ||
-      ! find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null; then
+    if ! real=$(resolve_root "$dir") || [ ! -r "$real" ]; then
       echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter and read." >&2
       echo "  fix: point OH_SCRATCH_ROOTS (or TMPDIR) at readable directories, then re-run." >&2
       return 2
     fi
+    # Readability is checked above rather than read off `find`'s status: on a
+    # shared temp dir other processes delete entries mid-sweep, and `find`
+    # reports each one it then cannot stat as a failure.
+    find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
   done | sort -u
 }
 

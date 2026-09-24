@@ -37,7 +37,14 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 root=""
-trap '[ -z "$root" ] || rm -rf "$root"' EXIT
+cleanup() {
+  local status=$?
+  if [ -z "$root" ] || rm -rf "$root"; then return; fi
+  echo "with-symlinked-tmp: could not remove its symlinked temp root $root." >&2
+  echo "  fix: remove it by hand with 'rm -rf $root'." >&2
+  [ "$status" -ne 0 ] || exit 1
+}
+trap cleanup EXIT
 if ! root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX") ||
   ! mkdir "$root/real" || ! ln -s "$root/real" "$root/link"; then
   echo "with-symlinked-tmp: could not build a symlinked temp root under ${TMPDIR:-/tmp}." >&2

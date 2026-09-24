@@ -1,16 +1,9 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file and `just lint-workflows` is what runs it.
 #
-# Behavioral test of the symlinked-TMPDIR lane (`scripts/with-symlinked-tmp.sh`,
-# which `just test-symlinked-tmp` runs the CLI journeys through).
-#
-# The lane is only worth its minutes while the command it wraps really sees a
-# `$TMPDIR` spelled through a symlink, while a scratch directory leaked behind
-# that symlink still turns it red, and while it runs nothing off Linux (nor under
-# a platform override it does not recognize) — so each of those is driven here
-# against a probe command rather than read off the script.
-#
-# Quiet on success, one line. On failure it prints what the lane said.
+# Behavioral test of `scripts/with-symlinked-tmp.sh`. A green CLI run through the
+# lane cannot tell whether it ever saw a symlinked `$TMPDIR`, so the lane is
+# driven here against probe commands instead.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

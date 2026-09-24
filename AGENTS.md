@@ -87,8 +87,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   the suite under `scripts/check-temp-leaks.sh`, which fails a run that abandoned
   scratch space. `test-symlinked-tmp` (Linux, in `check`) replays the CLI
   journeys with `$TMPDIR` reached through a symlink, the spelling macOS gives
-  every temp path; the leak gate resolves its roots before sweeping, so it still
-  watches the scratch space behind one. `just lint-doc` (also in `check`) builds
+  every temp path. `just lint-doc` (also in `check`) builds
   `oneharness-core`'s public documentation with rustdoc warnings as errors; never
   make an item public to satisfy a doc link.
 - `just coverage` — run the workspace suite under `cargo llvm-cov` and fail below

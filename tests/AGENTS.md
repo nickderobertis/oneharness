@@ -18,14 +18,10 @@ Subtree rules for tests. Root `AGENTS.md` still applies.
 - **Assert the contract, not the prose.** Parse the JSON and assert on fields
   (`status`, `exit_code`, `text`, `text_source`); never grep human stderr except
   when the test is specifically about a usage-error message.
-- **A printed-path assertion canonicalizes BOTH sides.** oneharness resolves most
-  of the paths it prints (a history store, a history project, a bound socket
-  address), while the path a test spelled is whatever the caller wrote — on macOS
-  the two differ for every temp path. So compare `resolved(actual)` with
-  `resolved(expected)` (`cli.rs`'s helper), never the expected side alone:
-  canonicalizing only what the test spelled still pins the product's own
-  spelling. An assertion deliberately pinning that a path is echoed **as the
-  caller spelled it** (the `config_files` chain) is the other contract and stays
-  raw on both sides; `just test-symlinked-tmp` is what tells the two apart.
+- **A printed-path assertion canonicalizes BOTH sides** — `resolved(actual)`
+  against `resolved(expected)` (`cli.rs`'s helper), since on macOS a temp path
+  the test spelled and the one oneharness prints differ. The exception is an
+  assertion pinning a path echoed as the caller spelled it (the `config_files`
+  chain), which stays raw on both sides.
 - Keep tests deterministic and isolated (temp paths, no shared global state) so
   they pass under parallel execution on Linux, macOS, and Windows.

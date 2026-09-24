@@ -103,6 +103,19 @@ grep -q "cannot watch scratch root '$work/not-a-directory'" "$work/out" ||
   fail "the gate should name the scratch root it cannot watch"
 rm -f "$work/not-a-directory"
 
+# So is a symlink leading nowhere, which is not an absent root: whatever it was
+# meant to watch, sweeping it would see nothing.
+ln -s "$work/nowhere" "$work/dangling"
+set +e
+OH_SCRATCH_ROOTS="$work/dangling" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a dangling symlink as a scratch root should be a usage error (exit 2), got $status"
+[ ! -e "$work/ran" ] || fail "the gate should not run its command over a dangling scratch root"
+grep -q "cannot watch scratch root '$work/dangling'" "$work/out" ||
+  fail "the gate should name the dangling scratch root it cannot watch"
+rm -f "$work/dangling"
+
 # So is one the command leaves unsweepable, which would otherwise read as clean.
 mkdir -p "$work/goes-away"
 set +e

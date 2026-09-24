@@ -99,9 +99,10 @@ for tool in mkdir ln; do
   rm -rf "$work/refusing-$tool"
 done
 
-# A root the lane cannot remove afterwards is named, with how to remove it. The
-# stub refuses only the lane's root itself, so the leak gate's own cleanup of
-# its transcript (which lives under that root) still runs.
+# A root the lane cannot remove afterwards is named, with how to remove it — and
+# when the wrapped command failed too, its exit status is still the lane's. The
+# stub refuses only the lane's root itself, so the leak gate's own cleanup of its
+# transcript (which lives under that root) still runs.
 mkdir -p "$work/refusing-rm"
 cat >"$work/refusing-rm/rm" <<EOF
 #!/usr/bin/env bash
@@ -111,18 +112,21 @@ done
 exec $(command -v rm) "\$@"
 EOF
 chmod +x "$work/refusing-rm/rm"
-set +e
-PATH="$work/refusing-rm:$PATH" bash "$lane" true >"$work/out" 2>&1
-status=$?
-set -e
+for wrapped in "true:1" "exit 5:5"; do
+  set +e
+  PATH="$work/refusing-rm:$PATH" bash "$lane" bash -c "${wrapped%%:*}" >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq "${wrapped##*:}" ] ||
+    fail "a root the lane cannot remove after '${wrapped%%:*}' should exit ${wrapped##*:}, got $status"
+  left=$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')
+  [ -n "$left" ] || fail "the refusing rm should have left the lane's root behind to report"
+  grep -q "could not remove its symlinked temp root $left" "$work/out" ||
+    fail "the lane should name the root it could not remove after '${wrapped%%:*}'"
+  grep -q "rm -rf $left" "$work/out" || fail "the lane should say how to remove the root it left"
+  rm -rf "$left"
+done
 rm -rf "$work/refusing-rm"
-[ "$status" -eq 1 ] || fail "a root the lane cannot remove should fail it (exit 1), got $status"
-left=$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')
-[ -n "$left" ] || fail "the refusing rm should have left the lane's root behind to report"
-grep -q "could not remove its symlinked temp root $left" "$work/out" ||
-  fail "the lane should name the root it could not remove"
-grep -q "rm -rf $left" "$work/out" || fail "the lane should say how to remove the root it left"
-rm -rf "$left"
 
 set +e
 OH_SYMLINKED_TMP_UNAME=Linx bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1

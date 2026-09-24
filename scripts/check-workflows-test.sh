@@ -67,8 +67,6 @@ rewrite() {
   mv "$root/$path.rewritten" "$root/$path"
 }
 
-# Every case greps for a value only its staged mutation introduces, which is
-# what proves the gate read the fixture rather than this checkout.
 run_gate() {
   local root="$1"
   (cd "$root" && bash scripts/check-workflows.sh) >"$work/out" 2>&1
@@ -99,7 +97,7 @@ if run_gate "$root"; then
   fail_showing "packages inheriting an absent workspace rust-version must be refused"
 fi
 for manifest in Cargo.toml crates/oneharness-core/Cargo.toml; do
-  grep -Fq "$manifest rust-version ''" "$work/out" ||
+  grep -Fxq "workflow drift: $manifest rust-version '' must match canonical toolchain '1.86.0'" "$work/out" ||
     fail_showing "an absent workspace rust-version must name $manifest, which inherits it"
 done
 
@@ -116,7 +114,7 @@ if run_gate "$root"; then
   fail_showing "a drifted [workspace.package] rust-version must be refused"
 fi
 for manifest in Cargo.toml crates/oneharness-core/Cargo.toml; do
-  grep -Fq "$manifest rust-version '1.70'" "$work/out" ||
+  grep -Fxq "workflow drift: $manifest rust-version '1.70' must match canonical toolchain '1.86.0'" "$work/out" ||
     fail_showing "a drifted workspace rust-version must name $manifest, which inherits it"
 done
 
@@ -146,7 +144,7 @@ rewrite "$root" Cargo.toml '
 if run_gate "$root"; then
   fail_showing "the root manifest declaring no rust-version must be refused, not satisfied by the [workspace.package] line in the same file"
 fi
-grep -Fq "Cargo.toml declares no rust-version" "$work/out" ||
+grep -Fxq "workflow drift: Cargo.toml declares no rust-version in its [package] table; state one, or inherit the workspace's with 'rust-version.workspace = true'" "$work/out" ||
   fail_showing "the root manifest declaring no rust-version must be named as such"
 
 root="$(stage no-msrv)"

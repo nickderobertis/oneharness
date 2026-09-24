@@ -294,12 +294,7 @@ python-sdk-check:
         # The two steps that take scratch space run under check-temp-leaks.sh,
         # the same gate `test` uses.
         #
-        # `-t` is load-bearing: the test directory carries an `__init__.py`, so
-        # its modules are `test.test_*` and import each other relatively
-        # (`from .scratch import ...`). Without a top-level directory, discovery
-        # makes the start directory the top level, imports each module under a
-        # bare name with no parent package, and every one of those relative
-        # imports raises before a single case runs.
+        # `-t` preserves the test package for its relative imports.
         COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src bash scripts/check-temp-leaks.sh "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py' -t python/oneharness-sdk
         COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
         bash scripts/check-temp-leaks.sh "${run[@]}" python python/oneharness-sdk/test/package_e2e.py

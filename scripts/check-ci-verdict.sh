@@ -244,6 +244,7 @@ expect_said "$tmp/err" "2 JSON documents"
 for mutation in '.check_jobs[0].id = 1.5' \
                 '.check_jobs[0].head_sha = "2222222222222222222222222222222222222222"' \
                 '.check_jobs[0].status = "unknown"' \
+                '.check_jobs[1] |= (.status = "in_progress" | .conclusion = "failure")' \
                 '.check_jobs[0].name = "check (bad\tname)"'; do
   fixture="$(run_with_jobs 125 success success success success | jq -c "$mutation")"
   run_case "{\"workflow_runs\":[$fixture]}" "an invalid check job field: $mutation"

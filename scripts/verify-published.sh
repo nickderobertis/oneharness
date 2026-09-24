@@ -148,6 +148,7 @@ attempt_npm_sdk() {
     npm install --prefer-online "@oneharness/sdk@$version" || exit 1
     node --input-type=module - "$version" <<'NODE' || exit 1
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 
 const expected = process.argv[2];
 const isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -157,6 +158,15 @@ if (!isObject(manifest)) {
 }
 if (manifest.version !== expected) {
   throw new Error(`installed SDK version ${manifest.version} does not match ${expected}`);
+}
+// The SDK pins its CLI exactly, so a different oneharness-cli beside it is the
+// pin having failed. Resolved from the SDK's own location, as its import is.
+const cliManifestPath = createRequire(`${process.cwd()}/node_modules/@oneharness/sdk/package.json`).resolve(
+  "oneharness-cli/package.json",
+);
+const cliManifest = JSON.parse(readFileSync(cliManifestPath, "utf8"));
+if (!isObject(cliManifest) || cliManifest.version !== expected) {
+  throw new Error(`the installed oneharness-cli is ${JSON.stringify(cliManifest?.version)}, not ${expected}`);
 }
 // Imported only now: resolving the package reads this same manifest, and would
 // refuse a malformed one with a loader error that names nothing to act on.

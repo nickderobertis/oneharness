@@ -11,8 +11,8 @@ name: Release
 # fallback — it triggers the same validated path, and runs the gate here when
 # that commit has no complete CI check matrix.
 #
-#   * gate               — consume CI's own verdict for the exact tagged commit;
-#                           the rule is stated at that job below.
+#   * gate               — consume CI's own verdict for the exact tagged commit
+#                           instead of re-running a check it already passed.
 #   * upload             — build each target on a native runner, attach the
 #                           archive + sha256 checksum, sign a keyless Sigstore
 #                           build-provenance attestation (OIDC → the public Rekor

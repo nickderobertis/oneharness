@@ -134,7 +134,8 @@ read_jobs() {
     | if any($all[]; (.name | type) != "string")
          or any($checks[]; (.name | test("[^ -~]")) or (.id | valid_id | not) or .head_sha != $sha
                        or (.status | valid_status | not)
-                       or (.conclusion | known_conclusion | not)) then
+                       or (.conclusion | known_conclusion | not)
+                       or (.status != "completed" and .conclusion != null)) then
         "unreadable\t0\t"
       elif $failed != null then
         "failure\t\($failed.id)\t\($failed.name)"

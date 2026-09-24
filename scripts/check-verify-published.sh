@@ -54,6 +54,9 @@ case "$*" in
     printf '{"name":"@oneharness/sdk","version":"%s","type":"module","main":"index.js"}\n' \
       "$STUB_SDK_VERSION" >node_modules/@oneharness/sdk/package.json
     [ -z "${STUB_SDK_MANIFEST_NULL:-}" ] || echo null >node_modules/@oneharness/sdk/package.json
+    # The CLI the SDK depends on exactly, as npm would hoist it beside the SDK.
+    mkdir -p node_modules/oneharness-cli
+    printf '{"name":"oneharness-cli","version":"%s"}\n' "$STUB_CLI_DIST_VERSION" >node_modules/oneharness-cli/package.json
     # An SDK that imports and reports the right version but cannot reach the CLI
     # it packages answers an empty registry: installable, and useless. Composed
     # here rather than inlined, because `${VAR:-[{...}]}` ends at the first `}`.
@@ -168,7 +171,7 @@ run_case() {
   set +e
   CALL_LOG="$tmp/calls" STUB_STATE="$tmp/state" \
     STUB_CLI_VERSION="${STUB_CLI_VERSION:-$VERSION_UNDER_TEST}" STUB_CLI_NAME="${STUB_CLI_NAME:-oneharness}" \
-    STUB_SDK_VERSION="$sdk_version" STUB_SDK_REGISTRY_EMPTY="${STUB_SDK_REGISTRY_EMPTY:-}" \
+    STUB_SDK_VERSION="$sdk_version" STUB_CLI_DIST_VERSION="${STUB_CLI_DIST_VERSION:-$sdk_version}" STUB_SDK_REGISTRY_EMPTY="${STUB_SDK_REGISTRY_EMPTY:-}" \
     STUB_SDK_REGISTRY_NOT_A_LIST="${STUB_SDK_REGISTRY_NOT_A_LIST:-}" STUB_SDK_MANIFEST_NULL="${STUB_SDK_MANIFEST_NULL:-}" \
     PYTHONPATH="$tmp/pyfake" \
     PATH="$tmp/bin:$PATH" VERIFY_ATTEMPTS="${ATTEMPTS_OVERRIDE-3}" VERIFY_DELAY="${DELAY_OVERRIDE-0}" \
@@ -352,6 +355,11 @@ STUB_CLI_DIST_VERSION=1.1.1 run_case pypi-sdk "a Python SDK installed beside a d
 unset STUB_CLI_DIST_VERSION
 expect_status 1
 expect_said "$tmp/err" "the installed oneharness-cli is 1.1.1, not $VERSION_UNDER_TEST"
+
+STUB_CLI_DIST_VERSION=1.1.1 run_case npm-sdk "a Node SDK installed beside a different CLI"
+unset STUB_CLI_DIST_VERSION
+expect_status 1
+expect_said "$tmp/err" "the installed oneharness-cli is \"1.1.1\", not $VERSION_UNDER_TEST"
 
 # An SDK can import, report every version correctly, and still not reach the CLI
 # it packages — which is an install a consumer cannot use, on both runtimes.

@@ -136,6 +136,8 @@ require_line .github/workflows/ci.yml 'branches: [main]' \
   "keep the CI push branch matched to the release verdict selector"
 require_line .github/workflows/ci.yml '  check:' \
   "keep the check job named as the release verdict selector expects"
+# This is a literal shell expansion in the selector's source.
+# shellcheck disable=SC2016
 require_line scripts/ci-verdict.sh 'workflow="${CI_WORKFLOW:-ci.yml}"' \
   "keep the verdict selector pointed at ci.yml"
 require_line scripts/ci-verdict.sh 'event=push&branch=main' \

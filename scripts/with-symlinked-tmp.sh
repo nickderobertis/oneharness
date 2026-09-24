@@ -9,7 +9,8 @@
 # every temp path this way and Windows has no such root.
 #
 # Usage: scripts/with-symlinked-tmp.sh <command> [args...]
-#   OH_SYMLINKED_TMP_UNAME  the platform to act as (default: `uname -s`).
+#   OH_SYMLINKED_TMP_UNAME  the platform to act as, a `uname -s` value (default:
+#                           `uname -s`); anything else is a usage error.
 set -euo pipefail
 
 if [ "$#" -eq 0 ]; then
@@ -19,6 +20,14 @@ if [ "$#" -eq 0 ]; then
 fi
 
 platform="${OH_SYMLINKED_TMP_UNAME:-$(uname -s)}"
+case "$platform" in
+  Linux | Darwin | MINGW* | MSYS* | CYGWIN*) ;;
+  *)
+    echo "with-symlinked-tmp: unrecognized platform '$platform'." >&2
+    echo "  fix: set OH_SYMLINKED_TMP_UNAME to a 'uname -s' value (Linux, Darwin, MINGW*, MSYS*, CYGWIN*), or unset it." >&2
+    exit 2
+    ;;
+esac
 if [ "$platform" != "Linux" ]; then
   echo "with-symlinked-tmp: skipped on $platform (macOS spells every temp path through /tmp -> /private/tmp already; Windows has no such root)"
   exit 0

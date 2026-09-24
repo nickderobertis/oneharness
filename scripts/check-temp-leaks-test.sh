@@ -114,6 +114,22 @@ grep -q "cannot watch scratch root '$work/goes-away'" "$work/out" ||
   fail "the gate should name the scratch root the command left unsweepable"
 rm -f "$work/goes-away"
 
+# And one it can enter but not list. Root reads every directory, so there the
+# case cannot be staged.
+if [ "$(id -u)" -ne 0 ]; then
+  mkdir -p "$work/unlistable"
+  chmod 311 "$work/unlistable"
+  set +e
+  OH_SCRATCH_ROOTS="$work/unlistable" bash "$gate" true >"$work/out" 2>&1
+  status=$?
+  set -e
+  chmod 755 "$work/unlistable"
+  [ "$status" -eq 2 ] || fail "a scratch root the gate cannot list should be a usage error (exit 2), got $status"
+  grep -q "cannot watch scratch root '$work/unlistable'" "$work/out" ||
+    fail "the gate should name the scratch root it cannot list"
+  rmdir "$work/unlistable"
+fi
+
 # Resolving the roots leaves the command in the directory it was started from.
 mkdir -p "$work/started-here"
 if ! (cd "$work/started-here" && bash "$repo_root/$gate" bash -c "pwd -P > '$work/cwd'") >"$work/out" 2>&1; then

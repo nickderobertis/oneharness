@@ -53,18 +53,18 @@ resolve_root() (
 )
 
 # A root that does not exist holds nothing to leak (and is swept afterwards if
-# the command creates it); one that exists but cannot be entered would match
-# nothing and read as a clean run, so a sweep that meets one fails instead.
+# the command creates it); one that exists but cannot be entered or read would
+# match nothing and read as a clean run, so a sweep that meets one fails instead.
 snapshot() {
   local dir real
   for dir in "${scratch_roots[@]}"; do
     if [ -z "$dir" ] || [ ! -e "$dir" ]; then continue; fi
-    if ! real=$(resolve_root "$dir"); then
-      echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter." >&2
+    if ! real=$(resolve_root "$dir") ||
+      ! find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null; then
+      echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter and read." >&2
       echo "  fix: point OH_SCRATCH_ROOTS (or TMPDIR) at readable directories, then re-run." >&2
       return 2
     fi
-    find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
   done | sort -u
 }
 

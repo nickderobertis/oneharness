@@ -99,13 +99,18 @@ snapshot() {
   # `find` reports as gone. Anything else it says — the root itself gone
   # included — means the listing is not whole, and a partial listing would read
   # as a clean run.
-  local listing="" errors line
+  local listing="" errors line found
   for real in ${reals[@]+"${reals[@]}"}; do
-    listing+=$(LC_ALL=C find "$real" -maxdepth 1 -type d -name "$prefix*" 2>"$sweep_errors")$'\n' || true
+    found=0
+    listing+=$(LC_ALL=C find "$real" -maxdepth 1 -type d -name "$prefix*" 2>"$sweep_errors")$'\n' || found=$?
     errors=""
     while IFS= read -r line; do
       vanished_entry "$real" "$line" || errors+="$line"$'\n'
     done <"$sweep_errors"
+    # A failure that said nothing names no vanished entry to excuse it.
+    if [ "$found" -ne 0 ] && [ ! -s "$sweep_errors" ]; then
+      errors="find exited $found without saying why"
+    fi
     if [ -n "$errors" ]; then
       echo "check-temp-leaks: sweeping scratch root '$real' failed:" >&2
       printf '%s\n' "$errors" | sed 's/^/  /' >&2

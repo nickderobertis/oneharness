@@ -156,7 +156,7 @@ done
 mkdir -p "$work/fakebin"
 cat >"$work/fakebin/find" <<'FIND'
 #!/usr/bin/env bash
-printf '%b\n' "${FAKE_FIND_ERROR//@ROOT@/$1}" >&2
+[ -z "$FAKE_FIND_ERROR" ] || printf '%b\n' "${FAKE_FIND_ERROR//@ROOT@/$1}" >&2
 exit 1
 FIND
 chmod +x "$work/fakebin/find"
@@ -169,9 +169,10 @@ set -e
 [ ! -e "$work/ran" ] || fail "the gate should not run its command over a sweep it could not finish"
 grep -q "Input/output error" "$work/out" ||
   fail "the gate should say what stopped its sweep"
-# The root itself gone, and a vanished entry beside a real failure, are not a
-# vanished entry either.
+# The root itself gone, a vanished entry beside a real failure, and a failure
+# that says nothing at all are not a vanished entry either.
 for diagnostic in \
+  "" \
   "find: '@ROOT@': No such file or directory" \
   "find: '@ROOT@/oneharness-x': No such file or directory\nfind: '@ROOT@/oneharness-y': Input/output error"; do
   set +e

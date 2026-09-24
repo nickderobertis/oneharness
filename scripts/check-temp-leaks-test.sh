@@ -197,8 +197,8 @@ status=$?
 set -e
 [ "$status" -eq 2 ] || fail "a temp dir the gate cannot write to should be a usage error (exit 2), got $status"
 [ ! -e "$work/ran" ] || fail "the gate should not run its command without its own files"
-grep -q "could not create its sweep-error file" "$work/out" ||
-  fail "the gate should say which of its files it could not create"
+grep -q "could not create its own working directory" "$work/out" ||
+  fail "the gate should say it could not create its working directory"
 
 # So is a symlink leading nowhere, which is not an absent root: whatever it was
 # meant to watch, sweeping it would see nothing.

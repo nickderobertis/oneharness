@@ -121,22 +121,21 @@ snapshot() {
   printf '%s' "$listing" | sed '/^$/d' | sort -u
 }
 
-# The gate's own two files live in the temp dir it is about to judge.
-scratch_file() {
-  mktemp && return
-  echo "check-temp-leaks: could not create its $1 file under ${TMPDIR:-/tmp}." >&2
+# The gate's own files, in one directory made up front so nothing is left to
+# fail once the command has run. Its name is not a scratch name, so the sweep
+# never counts it.
+if ! own=$(mktemp -d); then
+  echo "check-temp-leaks: could not create its own working directory under ${TMPDIR:-/tmp}." >&2
   echo "  fix: point TMPDIR at a writable directory with free space, then re-run." >&2
-  return 2
-}
-transcript=""
-sweep_errors=$(scratch_file "sweep-error") || exit 2
-trap 'rm -f "$sweep_errors" ${transcript:+"$transcript"}' EXIT
-
-before=$(snapshot) || exit 2
-
+  exit 2
+fi
+trap 'rm -rf "$own"' EXIT
+sweep_errors="$own/sweep-errors"
 # Both streams into one file, so a replay preserves the order the command wrote
 # them in rather than the order two buffers happened to flush.
-transcript=$(scratch_file "transcript") || exit 2
+transcript="$own/transcript"
+
+before=$(snapshot) || exit 2
 
 # Every process of this run carries the token, which is how a scratch directory's
 # maker is told apart from another checkout's below.

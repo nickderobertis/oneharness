@@ -91,6 +91,18 @@ kill "$foreign"
 wait "$foreign" 2>/dev/null || true
 rm -rf "$work/oneharness-foreign-$foreign"
 
+# ...but one the watched command's own child made is this run's, even while that
+# child outlives the command.
+bash "$gate" bash -c "sleep 60 >/dev/null 2>&1 & echo \$! > '$work/child'; mkdir -p '$work/oneharness-outlived-'\$!" >"$work/out" 2>&1 &&
+  outlived=0 || outlived=$?
+child=$(cat "$work/child")
+kill "$child" 2>/dev/null || true
+[ "$outlived" -ne 0 ] ||
+  fail "a scratch directory made by a child of the watched command should be reported even while that child lives"
+grep -q "oneharness-outlived-$child" "$work/out" ||
+  fail "the gate failed but did not name the directory the command's child left behind"
+rm -rf "$work/oneharness-outlived-$child" "$work/child"
+
 # ...while one whose maker has exited is still a leak, pid suffix and all.
 sh -c 'exit 0' &
 exited=$!
@@ -137,6 +149,31 @@ for roots in ":" "::"; do
   grep -q "names no scratch root to watch" "$work/out" ||
     fail "the gate should say OH_SCRATCH_ROOTS='$roots' names no root"
 done
+
+# A sweep `find` could not finish is refused rather than read as a clean listing.
+# Only an entry that vanished mid-sweep — another process cleaning up on the
+# shared temp dir — is not a failure.
+mkdir -p "$work/fakebin"
+cat >"$work/fakebin/find" <<'FIND'
+#!/usr/bin/env bash
+echo "find: '$1/oneharness-x': ${FAKE_FIND_ERROR}" >&2
+exit 1
+FIND
+chmod +x "$work/fakebin/find"
+set +e
+PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="Input/output error" \
+  bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a sweep find could not finish should be a usage error (exit 2), got $status"
+[ ! -e "$work/ran" ] || fail "the gate should not run its command over a sweep it could not finish"
+grep -q "Input/output error" "$work/out" ||
+  fail "the gate should say what stopped its sweep"
+if ! PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="No such file or directory" \
+  bash "$gate" true >"$work/out" 2>&1; then
+  fail "an entry that vanished mid-sweep must not fail the gate"
+fi
+rm -rf "$work/fakebin" "$work/ran"
 
 # So is a symlink leading nowhere, which is not an absent root: whatever it was
 # meant to watch, sweeping it would see nothing.

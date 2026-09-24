@@ -80,44 +80,67 @@ snapshot() {
     fi
     reals+=("$real")
   done
-  # Readability is checked above rather than read off `find`'s status: on a
-  # shared temp dir other processes delete entries mid-sweep, and `find`
-  # reports each one it then cannot stat as a failure.
+  # Readability is checked above, so the one failure a sweep may still meet is
+  # an entry another process on this shared temp dir deleted mid-sweep, which
+  # `find` reports as gone. Anything else it says means the listing is not
+  # whole, and a partial listing would read as a clean run.
+  local listing="" errors
   for real in ${reals[@]+"${reals[@]}"}; do
-    find "$real" -maxdepth 1 -type d -name "$prefix*" 2>/dev/null || true
-  done | sort -u
+    listing+=$(LC_ALL=C find "$real" -maxdepth 1 -type d -name "$prefix*" 2>"$sweep_errors")$'\n' || true
+    errors=$(grep -v 'No such file or directory' "$sweep_errors" || true)
+    if [ -n "$errors" ]; then
+      echo "check-temp-leaks: sweeping scratch root '$real' failed:" >&2
+      printf '%s\n' "$errors" | sed 's/^/  /' >&2
+      echo "  fix: resolve the error above, then re-run." >&2
+      return 2
+    fi
+  done
+  printf '%s' "$listing" | sed '/^$/d' | sort -u
 }
+
+sweep_errors=$(mktemp)
+transcript=""
+trap 'rm -f "$sweep_errors" ${transcript:+"$transcript"}' EXIT
 
 before=$(snapshot) || exit 2
 
 # Both streams into one file, so a replay preserves the order the command wrote
 # them in rather than the order two buffers happened to flush.
 transcript=$(mktemp)
-trap 'rm -f "$transcript"' EXIT
 
+# Every process of this run carries the token, which is how a scratch directory's
+# maker is told apart from another checkout's below.
+run_token="$$.$RANDOM$RANDOM"
 status=0
-"$@" >"$transcript" 2>&1 || status=$?
+OH_TEMP_LEAKS_RUN=$run_token "$@" >"$transcript" 2>&1 || status=$?
 
 unwatched=0
 after=$(snapshot) || unwatched=1
 leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 
 # `/tmp` is shared with every other checkout on the host, and their suites mint
-# the same names. A scratch directory ends in the id of the process that made it
+# the same names, so a directory made during this run need not be this run's. A
+# scratch directory ends in the id of the process that made it
 # (`io::scratch::ScratchDir::name`, whose unit test pins that suffix for this
-# gate), and every process of the watched command has
-# exited by now, so one whose maker is still alive belongs to someone else's run
-# still in progress — not a leak of this one. A gate that counted it failed a
-# publication on another checkout's live coverage suite.
-owned_by_a_live_process() {
-  local pid=${1##*-}
+# gate). A maker still alive whose environment lacks this run's token is someone
+# else's run in progress — a gate that counted it failed a publication on another
+# checkout's live coverage suite. A maker that carries the token, has exited, or
+# whose environment cannot be read is this run's, and its directory is a leak.
+made_outside_this_run() {
+  local pid=${1##*-} environment
   case "$pid" in '' | *[!0-9]*) return 1 ;; esac
-  ps -p "$pid" >/dev/null 2>&1
+  if [ -r "/proc/$pid/environ" ]; then
+    environment=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null) || return 1
+  else
+    environment=$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n') || return 1
+  fi
+  [ -n "$environment" ] || return 1
+  ! grep -qxF "OH_TEMP_LEAKS_RUN=$run_token" <<< "$environment"
 }
 if [ -n "$leaked" ]; then
   kept=""
   while IFS= read -r dir; do
-    owned_by_a_live_process "$dir" || kept+="$dir"$'\n'
+    made_outside_this_run "$dir" || kept+="$dir"$'\n'
   done <<< "$leaked"
   leaked=${kept%$'\n'}
 fi

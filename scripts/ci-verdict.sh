@@ -79,10 +79,11 @@ read_run() {
     sed 's/^/    gh: /' "$work/gh-error" >&2
     refuse "ci-verdict: could not read CI runs for $sha" "it was reading $endpoint" "restore actions:read and GH_TOKEN access, then re-run this release"
   fi
-  if ! selected="$(printf '%s' "$runs" | jq -r --arg sha "$sha" '
+  if ! selected="$(printf '%s' "$runs" | jq -rs --arg sha "$sha" '
     def valid_id: type == "number" and . > 0 and floor == .;
     def valid_instant: type == "string" and (. as $t | try ((fromdateiso8601 | todateiso8601) == $t) catch false);
-    if type != "array" or length == 0 or any(.[]; type != "object" or (.workflow_runs | type) != "array") then
+    if length != 1 then error("the answer is \(length) JSON documents; `gh api --slurp` returns one") else .[0] end
+    | if type != "array" or length == 0 or any(.[]; type != "object" or (.workflow_runs | type) != "array") then
       error("the answer has no workflow_runs pages")
     else map(.workflow_runs) | add end
     | . as $all
@@ -119,11 +120,12 @@ read_jobs() {
     sed 's/^/    gh: /' "$work/gh-error" >&2
     refuse "ci-verdict: could not read check jobs in CI run $run_id" "it was reading $jobs_endpoint" "restore the GitHub API read, then re-run this release"
   fi
-  if ! summary="$(printf '%s' "$jobs" | jq -r --arg sha "$sha" '
+  if ! summary="$(printf '%s' "$jobs" | jq -rs --arg sha "$sha" '
     def valid_id: type == "number" and . > 0 and floor == .;
     def valid_status: . as $s | ["completed", "queued", "in_progress", "waiting", "requested", "pending"] | index($s) != null;
     def known_conclusion: . == null or (. as $c | ["success", "failure", "timed_out", "startup_failure", "cancelled", "skipped", "stale"] | index($c) != null);
-    if type != "array" or length == 0 or any(.[]; type != "object" or (.jobs | type) != "array") then
+    if length != 1 then error("the answer is \(length) JSON documents; `gh api --slurp` returns one") else .[0] end
+    | if type != "array" or length == 0 or any(.[]; type != "object" or (.jobs | type) != "array") then
       error("the answer has no jobs pages")
     else map(.jobs) | add end
     | . as $all

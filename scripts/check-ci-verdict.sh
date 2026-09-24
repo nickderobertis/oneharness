@@ -224,6 +224,23 @@ unset GH_JOBS_RESPONSE
 expect_refused
 expect_said "$tmp/err" "check jobs in CI run 11 were unreadable"
 
+# `gh api --slurp` answers one document. A second one after it must refuse
+# rather than be ignored: here only the ignored one carries the failure.
+passing_jobs="$(run_with_jobs 11 success success success success | jq -c '[{jobs:.check_jobs}]')"
+GH_JOBS_RESPONSE="$passing_jobs$(printf '%s' "$passing_jobs" | jq -c '.[0].jobs[1].conclusion = "failure"')" \
+  run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+  "a jobs endpoint returning a second JSON document after a passing one"
+unset GH_JOBS_RESPONSE
+expect_refused
+expect_said "$tmp/err" "check jobs in CI run 11 were unreadable"
+expect_said "$tmp/err" "2 JSON documents"
+
+run_case "[{\"workflow_runs\":[$(workflow_run_json 16 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}][{\"workflow_runs\":[$(workflow_run_json 17 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-03T00:00:00Z)]}]" \
+  "a runs endpoint returning a second JSON document after a passing one"
+expect_refused
+expect_said "$tmp/err" "CI runs for $SHA_UNDER_TEST were unreadable"
+expect_said "$tmp/err" "2 JSON documents"
+
 for mutation in '.check_jobs[0].id = 1.5' \
                 '.check_jobs[0].head_sha = "2222222222222222222222222222222222222222"' \
                 '.check_jobs[0].status = "unknown"' \

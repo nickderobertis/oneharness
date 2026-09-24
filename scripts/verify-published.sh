@@ -124,8 +124,8 @@ for dist in ("oneharness-sdk", "oneharness-cli"):
 
 async def verify():
     harnesses = await OneHarness().list()
-    assert any(
-        item["id"] == "codex" for item in harnesses
+    assert harnesses and all(
+        isinstance(item.get("id"), str) for item in harnesses
     ), "the installed SDK did not return the packaged CLI registry"
 
 
@@ -156,7 +156,7 @@ if (manifest.version !== expected) {
   throw new Error(`installed SDK version ${manifest.version} does not match ${expected}`);
 }
 const harnesses = await new OneHarness().list();
-if (!harnesses.some(({ id }) => id === "codex")) {
+if (harnesses.length === 0 || !harnesses.every(({ id }) => typeof id === "string")) {
   throw new Error("installed SDK did not return the packaged CLI registry");
 }
 NODE

@@ -56,7 +56,7 @@ case "$*" in
     # An SDK that imports and reports the right version but cannot reach the CLI
     # it packages answers an empty registry: installable, and useless. Composed
     # here rather than inlined, because `${VAR:-[{...}]}` ends at the first `}`.
-    registry='[{ id: "codex" }]'
+    registry='[{ id: "stub-harness" }]'
     [ -z "${STUB_SDK_REGISTRY_EMPTY:-}" ] || registry='[]'
     cat >node_modules/@oneharness/sdk/index.js <<PKG
 export class OneHarness {
@@ -128,7 +128,7 @@ make_python_sdk() {
   mkdir -p "$root/oneharness_sdk"
   # Composed first for the same reason the npm stub composes it: a `${VAR:-...}`
   # default containing braces ends at the first one.
-  registry='[{"id": "codex"}]'
+  registry='[{"id": "stub-harness"}]'
   [ -z "${STUB_SDK_REGISTRY_EMPTY:-}" ] || registry='[]'
   cat >"$root/oneharness_sdk/__init__.py" <<PYPKG
 __version__ = "$version"

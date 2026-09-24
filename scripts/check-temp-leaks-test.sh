@@ -156,12 +156,12 @@ done
 mkdir -p "$work/fakebin"
 cat >"$work/fakebin/find" <<'FIND'
 #!/usr/bin/env bash
-echo "find: '$1/oneharness-x': ${FAKE_FIND_ERROR}" >&2
+printf '%b\n' "${FAKE_FIND_ERROR//@ROOT@/$1}" >&2
 exit 1
 FIND
 chmod +x "$work/fakebin/find"
 set +e
-PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="Input/output error" \
+PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="find: '@ROOT@/oneharness-x': Input/output error" \
   bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
 status=$?
 set -e
@@ -169,10 +169,24 @@ set -e
 [ ! -e "$work/ran" ] || fail "the gate should not run its command over a sweep it could not finish"
 grep -q "Input/output error" "$work/out" ||
   fail "the gate should say what stopped its sweep"
-if ! PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="No such file or directory" \
-  bash "$gate" true >"$work/out" 2>&1; then
-  fail "an entry that vanished mid-sweep must not fail the gate"
-fi
+# The root itself gone, and a vanished entry beside a real failure, are not a
+# vanished entry either.
+for diagnostic in \
+  "find: '@ROOT@': No such file or directory" \
+  "find: '@ROOT@/oneharness-x': No such file or directory\nfind: '@ROOT@/oneharness-y': Input/output error"; do
+  set +e
+  PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="$diagnostic" bash "$gate" true >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 2 ] || fail "a sweep that said '$diagnostic' should be a usage error (exit 2), got $status"
+done
+for diagnostic in \
+  "find: '@ROOT@/oneharness-x': No such file or directory" \
+  "find: @ROOT@/oneharness-x: No such file or directory"; do
+  if ! PATH="$work/fakebin:$PATH" FAKE_FIND_ERROR="$diagnostic" bash "$gate" true >"$work/out" 2>&1; then
+    fail "an entry that vanished mid-sweep ('$diagnostic') must not fail the gate"
+  fi
+done
 rm -rf "$work/fakebin" "$work/ran"
 
 # So is a symlink leading nowhere, which is not an absent root: whatever it was

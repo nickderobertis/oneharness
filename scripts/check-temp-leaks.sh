@@ -68,6 +68,20 @@ resolve_root() (
 # symlink leading nowhere — would match nothing and read as a clean run, so a
 # sweep that meets one fails instead. Every root is settled before the sweep
 # starts, so that refusal is this function's own status, never a pipeline's.
+# Whether a `find` diagnostic says only that one entry directly inside `root`
+# was gone by the time it was read — `find: '<root>/<name>': No such file or
+# directory`, quoted as GNU spells it in the C locale or bare as BSD does.
+vanished_entry() {
+  local root=$1 line=$2 path name
+  path=${line#find: }
+  [ "$path" != "$line" ] || return 1
+  path=${path%: No such file or directory}
+  [ "$path" != "${line#find: }" ] || return 1
+  case "$path" in "'"*"'") path=${path#"'"}; path=${path%"'"} ;; esac
+  name=${path#"$root/"}
+  [ "$name" != "$path" ] && [ -n "$name" ] && [ "${name#*/}" = "$name" ]
+}
+
 snapshot() {
   local dir real
   local -a reals=()
@@ -82,12 +96,16 @@ snapshot() {
   done
   # Readability is checked above, so the one failure a sweep may still meet is
   # an entry another process on this shared temp dir deleted mid-sweep, which
-  # `find` reports as gone. Anything else it says means the listing is not
-  # whole, and a partial listing would read as a clean run.
-  local listing="" errors
+  # `find` reports as gone. Anything else it says — the root itself gone
+  # included — means the listing is not whole, and a partial listing would read
+  # as a clean run.
+  local listing="" errors line
   for real in ${reals[@]+"${reals[@]}"}; do
     listing+=$(LC_ALL=C find "$real" -maxdepth 1 -type d -name "$prefix*" 2>"$sweep_errors")$'\n' || true
-    errors=$(grep -v 'No such file or directory' "$sweep_errors" || true)
+    errors=""
+    while IFS= read -r line; do
+      vanished_entry "$real" "$line" || errors+="$line"$'\n'
+    done <"$sweep_errors"
     if [ -n "$errors" ]; then
       echo "check-temp-leaks: sweeping scratch root '$real' failed:" >&2
       printf '%s\n' "$errors" | sed 's/^/  /' >&2

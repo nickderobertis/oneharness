@@ -12,13 +12,16 @@ work="$(mktemp -d)"
 workflow=.github/workflows/release.yml
 ci=.github/workflows/ci.yml
 release_plz=.github/workflows/release-plz.yml
+verdict=scripts/ci-verdict.sh
 cp "$workflow" "$work/release.yml"
 cp "$ci" "$work/ci.yml"
 cp "$release_plz" "$work/release-plz.yml"
+cp "$verdict" "$work/ci-verdict.sh"
 restore() {
   cp "$work/release.yml" "$workflow"
   cp "$work/ci.yml" "$ci"
   cp "$work/release-plz.yml" "$release_plz"
+  cp "$work/ci-verdict.sh" "$verdict"
   rm -rf "$work"
 }
 trap restore EXIT
@@ -179,5 +182,19 @@ expect_gate_refusal "must not run an SDK gate"
 # runs on every release.
 printf '      - name: Re-run the gate\n        run: just check\n' >>"$workflow"
 expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
+
+# A renamed CI workflow must be changed in the verdict selector too.
+sed -i 's/CI_WORKFLOW:-ci.yml/CI_WORKFLOW:-renamed.yml/' "$verdict"
+if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
+  echo 'check-workflows-e2e: a stale CI workflow filename unexpectedly passed the gate' >&2
+  echo '  fix: require the selector default in scripts/check-workflows.sh' >&2
+  exit 1
+fi
+grep -Fq 'keep the verdict selector pointed at ci.yml' "$work/stderr" || {
+  cat "$work/stderr" >&2
+  echo 'check-workflows-e2e: the stale CI workflow filename was not named; restore its drift check' >&2
+  exit 1
+}
+cp "$work/ci-verdict.sh" "$verdict"
 
 echo 'check-workflows-e2e: ok'

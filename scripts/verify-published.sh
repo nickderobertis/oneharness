@@ -43,7 +43,7 @@ esac
 # major.minor.patch, then at most one prerelease and one build part — rather
 # than merely swept for dangerous characters: `1..2`, `-` and `.` all pass an
 # allowlist.
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] ||
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?(\+[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?$ ]] ||
   usage "'$version' is not an x.y.z version this release could have published"
 if [[ "$version" == *-* ]]; then
   prerelease="${version#*-}"
@@ -67,7 +67,7 @@ esac
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# Every attempt ends in this: an install nothing was run against proves only
+# Each CLI attempt ends in this: an install nothing was run against proves only
 # that a registry answered.
 smoke_cli() {
   local installed

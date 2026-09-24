@@ -127,7 +127,7 @@ while IFS='|' read -r pattern expected; do
     const [path, needle] = process.argv.slice(1);
     const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
     const line = source.split("\n").find((l) => l.includes(needle));
-    if (!line) throw new Error(`release fixture is missing: ${needle}`);
+    if (!line) throw new Error(`release fixture is missing: ${needle}; update this mutation to a current release.yml line`);
     fs.writeFileSync(path, source.split("\n").filter((l) => l !== line).join("\n"));
   ' "$workflow" "$pattern"
   expect_gate_refusal "$expected"
@@ -143,7 +143,7 @@ node -e '
   const source = fs.readFileSync(path, "utf8");
   const start = source.indexOf("  build-wheels:\n");
   const end = source.indexOf("\n  publish-pypi:", start);
-  if (start < 0 || end < 0) throw new Error("build-wheels fixture is missing");
+  if (start < 0 || end < 0) throw new Error("build-wheels fixture is missing; update the job boundaries in this mutation to match release.yml");
   const block = source.slice(start, end).replace("    needs: gate\n", "");
   fs.writeFileSync(path, source.slice(0, start) + block + source.slice(end));
 ' "$workflow"
@@ -158,7 +158,7 @@ node -e '
   const path = process.argv[1];
   const lines = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n").split("\n");
   const at = lines.findIndex((l) => l.trim() === "run: just check");
-  if (at < 1) throw new Error("the conditioned gate fixture is missing");
+  if (at < 1) throw new Error("the conditioned gate fixture is missing; update this mutation to the current guarded check step in release.yml");
   lines.splice(at - 1, 1);
   fs.writeFileSync(path, lines.join("\n"));
 ' "$workflow"

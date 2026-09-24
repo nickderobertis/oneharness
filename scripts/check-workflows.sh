@@ -126,21 +126,8 @@ fi
 
 require_line .github/workflows/release.yml 'types: [published]' "start distribution from a published GitHub Release"
 require_line .github/workflows/release.yml 'run: scripts/publish-crates.sh' "use the validated crates.io publisher"
-# A release publishes a commit CI has already gated. Re-running that gate spends
-# a runner to learn what is known and puts an approved commit at the mercy of an
-# unrelated transient failure DURING publication, where red reads as a broken
-# release. So the verdict for the exact tagged commit is read, and the gate runs
-# here only where scripts/ci-verdict.sh says it may:
-#
-#   a failed check job refuses release; only a complete successful check matrix
-#   skips the release gate; an absent or incomplete matrix runs the gate after
-#   CI ends
-#
-# And when it does run, it is ONE check, `just check`, invoked the one way named
-# below: never a restatement of its stages, and never a second run of something
-# it already contains. The division above is held by scripts/check-ci-verdict.sh,
-# which drives every state against a stand-in API — and which checks this very
-# sentence against the one scripts/ci-verdict.sh carries.
+# Pin the release workflow to the verdict selector and the CI job names it
+# consumes; check-ci-verdict.sh exercises the selector's status branches.
 require_line .github/workflows/release.yml 'run: scripts/ci-verdict.sh' \
   "read CI's verdict for the tagged commit instead of re-running the gate CI already ran on it"
 require_line .github/workflows/ci.yml 'os: [ubuntu-latest, macos-latest, windows-latest]' \

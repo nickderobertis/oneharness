@@ -1,16 +1,7 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
-# Hermetic behavioral test for scripts/verify-published.sh, against stand-in
-# registries.
-#
-# A real registry cannot rehearse the one case this script exists for — an
-# artifact that is published but not yet resolvable — and a real publish cannot
-# be rolled back. So `pip`, `npm`, `python`, `node` and the installed
-# `oneharness` are stubbed, and the cases are the ones a release meets: an
-# install that only works after a retry (npm's per-platform package is an
-# OPTIONAL dependency, so the install exits 0 and only the smoke says the binary
-# is missing — which is why the smoke has to be inside the retried unit), and an
-# install that never works, whose last error must reach the reader.
+# Exercise the release verifier through stand-in registry clients and installed
+# packages, including delayed installs and failures from its smoke commands.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -251,6 +242,16 @@ run_case npm-sdk "an npm SDK install that resolves immediately"
 expect_status 0
 expect_calls 1 "npm install --prefer-online @oneharness/sdk@$VERSION_UNDER_TEST"
 expect_calls 1 "node --input-type=module - $VERSION_UNDER_TEST"
+
+# Versions with release-plz's prerelease and build parts must reach the exact
+# npm package spec and the installed CLI smoke, not fail input validation.
+VERSION_OVERRIDE=9.9.9-rc.1 STUB_CLI_VERSION=9.9.9-rc.1 run_case npm-cli "a valid prerelease version"
+expect_status 0
+expect_calls 1 "npm install -g --prefer-online oneharness-cli@9.9.9-rc.1"
+
+VERSION_OVERRIDE=9.9.9+build.7 STUB_CLI_VERSION=9.9.9+build.7 run_case npm-cli "a valid build version"
+expect_status 0
+expect_calls 1 "npm install -g --prefer-online oneharness-cli@9.9.9+build.7"
 
 # The npm lag this exists for: the meta-package installs every time — an
 # unresolvable optional dependency is not an install failure — and only the

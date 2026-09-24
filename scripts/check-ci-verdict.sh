@@ -595,7 +595,7 @@ unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "exceeds the 3600-second bound"
 
-# The rule above is stated in prose in five other places, and the predecessor of
+# The rule above is stated in prose in four other places, and the predecessor of
 # this change got one of those copies wrong — a document promising a fallback
 # the script does not do is how a reader comes to trust a release that stopped.
 # So scripts/ci-verdict.sh carries ONE canonical sentence and every copy quotes
@@ -616,7 +616,6 @@ flat_contract="$(printf '%s' "$contract" | flatten)"
 
 for stated_in in \
   .github/workflows/release.yml \
-  scripts/check-workflows.sh \
   AGENTS.md \
   README.md \
   release-plz.toml; do

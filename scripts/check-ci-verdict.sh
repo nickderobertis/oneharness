@@ -595,11 +595,8 @@ unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "exceeds the 3600-second bound"
 
-# The rule above is stated in prose in four other places, and the predecessor of
-# this change got one of those copies wrong — a document promising a fallback
-# the script does not do is how a reader comes to trust a release that stopped.
-# So scripts/ci-verdict.sh carries ONE canonical sentence and every copy quotes
-# it verbatim; this reconciles them.
+# Keep the four prose copies of the fallback rule aligned with the contract in
+# scripts/ci-verdict.sh.
 #
 # Matching is whitespace- and comment-marker-insensitive, because each copy
 # wraps the sentence to its own column and its own comment syntax. A copy that

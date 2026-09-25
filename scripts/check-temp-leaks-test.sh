@@ -19,7 +19,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 gate="scripts/check-temp-leaks.sh"
-work="$(mktemp -d)"
+if ! work="$(mktemp -d)"; then
+  echo "check-temp-leaks-test: could not create its scratch directory under ${TMPDIR:-/tmp}." >&2
+  echo "  fix: point TMPDIR at a writable directory with free space, then rerun 'bash scripts/check-temp-leaks-test.sh'." >&2
+  exit 1
+fi
 # Scratch left behind is a failure, so a run whose cases all passed still exits
 # non-zero when it cannot give its directory back.
 cleanup() {

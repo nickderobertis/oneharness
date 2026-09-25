@@ -10,7 +10,11 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 lane="scripts/with-symlinked-tmp.sh"
-work="$(mktemp -d)"
+if ! work="$(mktemp -d)"; then
+  echo "with-symlinked-tmp-test: could not create its scratch directory under ${TMPDIR:-/tmp}." >&2
+  echo "  fix: point TMPDIR at a writable directory with free space, then rerun 'bash scripts/with-symlinked-tmp-test.sh'." >&2
+  exit 1
+fi
 # Scratch left behind is a failure, so a run whose cases all passed still exits
 # non-zero when it cannot give its directory back.
 cleanup() {

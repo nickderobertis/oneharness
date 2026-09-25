@@ -20,7 +20,7 @@ cd "$repo_root"
 
 gate="scripts/check-temp-leaks.sh"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" || echo "check-temp-leaks-test: could not remove its scratch directory; fix: rm -rf $work" >&2' EXIT
 
 # Watch only this test's own scratch root, so a real `oneharness` run happening
 # elsewhere on the host cannot decide the verdict.
@@ -200,7 +200,7 @@ mkdir -p "$work/fakebin"
 cat >"$work/fakebin/find" <<'FIND'
 #!/usr/bin/env bash
 [ -z "$FAKE_FIND_ERROR" ] || printf '%b\n' "${FAKE_FIND_ERROR//@ROOT@/$1}" >&2
-exit 1
+exit "${FAKE_FIND_STATUS:-1}"
 FIND
 chmod +x "$work/fakebin/find"
 set +e
@@ -212,6 +212,14 @@ set -e
 [ ! -e "$work/ran" ] || fail "the gate should not run its command over a sweep it could not finish"
 grep -q "Input/output error" "$work/out" ||
   fail "the gate should say what stopped its sweep"
+# ...even when find reports the error and still exits 0: what it said decides.
+set +e
+PATH="$work/fakebin:$PATH" FAKE_FIND_STATUS=0 FAKE_FIND_ERROR="find: '@ROOT@/oneharness-x': Input/output error" \
+  bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a sweep whose find exited 0 after an error should be a usage error (exit 2), got $status"
+[ ! -e "$work/ran" ] || fail "the gate should not run its command over a sweep find reported an error in"
 # The root itself gone, a vanished entry beside a real failure, and a failure
 # that says nothing at all are not a vanished entry either.
 for diagnostic in \
@@ -380,6 +388,34 @@ if ! bash "$gate" bash -c "touch '$work/oneharness-left.txt'" >"$work/out" 2>&1;
   fail "a temp file must not be read as a leaked scratch directory"
 fi
 rm -f "$work/oneharness-left.txt"
+
+# A working directory the gate cannot remove afterwards is named, with how to
+# remove it, and a failed command's status still wins.
+mkdir -p "$work/refusing-rm"
+real_rm=$(command -v rm)
+cat >"$work/refusing-rm/rm" <<RM
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  case "\$arg" in */check-temp-leaks.*) exit 1 ;; esac
+done
+exec $real_rm "\$@"
+RM
+chmod +x "$work/refusing-rm/rm"
+for wrapped in "true:1" "exit 3:3"; do
+  set +e
+  TMPDIR="$work/refusing-rm" PATH="$work/refusing-rm:$PATH" bash "$gate" bash -c "${wrapped%%:*}" >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq "${wrapped##*:}" ] ||
+    fail "a working directory the gate cannot remove after '${wrapped%%:*}' should exit ${wrapped##*:}, got $status"
+  left=$(find "$work/refusing-rm" -mindepth 1 -maxdepth 1 -name 'check-temp-leaks.*')
+  [ -n "$left" ] || fail "the refusing rm should have left the gate's working directory behind to report"
+  grep -q "could not remove its working directory $left" "$work/out" ||
+    fail "the gate should name the working directory it could not remove after '${wrapped%%:*}'"
+  grep -q "rm -rf $left" "$work/out" || fail "the gate should say how to remove the working directory it left"
+  "$real_rm" -rf "$left"
+done
+rm -rf "$work/refusing-rm"
 
 # A clean run says nothing at all — not the command's output, not the gate's.
 # A gate that echoed a passing 1,187-test suite would bury the run that failed.

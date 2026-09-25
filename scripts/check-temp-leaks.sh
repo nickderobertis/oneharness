@@ -142,7 +142,17 @@ if ! own=$(mktemp -d "${own_parent%/}/check-temp-leaks.XXXXXX"); then
   echo "  fix: point TMPDIR at a writable directory with free space, then re-run." >&2
   exit 2
 fi
-trap 'rm -rf "$own"' EXIT
+# A working directory left behind is named with how to remove it; a command
+# that failed keeps its own status.
+# shellcheck disable=SC2329  # the EXIT trap below invokes it; shellcheck loses that past the script's final top-level `exit`.
+remove_own() {
+  local status=$?
+  rm -rf "$own" && return
+  echo "check-temp-leaks: could not remove its working directory $own." >&2
+  echo "  fix: remove it by hand with 'rm -rf $own'." >&2
+  [ "$status" -ne 0 ] || exit 1
+}
+trap remove_own EXIT
 sweep_errors="$own/sweep-errors"
 # Both streams into one file, so a replay preserves the order the command wrote
 # them in rather than the order two buffers happened to flush.

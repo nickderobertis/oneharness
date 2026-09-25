@@ -11,7 +11,7 @@ cd "$repo_root"
 
 lane="scripts/with-symlinked-tmp.sh"
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" || echo "with-symlinked-tmp-test: could not remove its scratch directory; fix: rm -rf $work" >&2' EXIT
 
 # The lane's scratch root lands under this test's own directory, and the leak
 # gate runs on its default roots, exactly as the recipe runs it.

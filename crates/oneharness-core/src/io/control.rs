@@ -191,7 +191,6 @@ enum Redirect {
     Deliverable(RedirectInput),
 }
 
-/// The abort a committed redirection rides has landed, so it is the next turn.
 fn make_deliverable(slot: &mut Redirect) {
     if let Redirect::Committed(input) = std::mem::replace(slot, Redirect::None) {
         *slot = Redirect::Deliverable(input);

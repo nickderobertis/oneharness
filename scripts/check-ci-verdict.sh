@@ -252,6 +252,32 @@ for mutation in '.check_jobs[0].id = 1.5' \
   expect_said "$tmp/err" "invalid field or unknown conclusion"
 done
 
+# The check jobs decide, not the workflow's own state: a run still going (a
+# later job, or the run's own bookkeeping) whose check matrix already concluded
+# is CI's word either way.
+fixture="$(run_with_jobs 126 success success success success | jq -c '.status = "in_progress" | .conclusion = null')"
+run_case "{\"workflow_runs\":[$fixture]}" "a complete passing check matrix while the workflow is still in progress"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 126 check jobs concluded success"
+
+fixture="$(run_with_jobs 127 success success failure pending | jq -c '.status = "in_progress" | .conclusion = null')"
+run_case "{\"workflow_runs\":[$fixture]}" "a failed check job while the workflow is still in progress"
+expect_refused
+expect_said "$tmp/err" "CI run 127 check job 201 (check (macos-latest)) concluded failure"
+expect_said "$tmp/err" "https://example.invalid/run/127"
+
+# The jobs endpoint is paginated like the runs one: a required job on a later
+# page still counts.
+paged_jobs="$(run_with_jobs 11 success success success success | jq -c '[{jobs:.check_jobs[0:1]},{jobs:.check_jobs[1:]}]')"
+GH_JOBS_RESPONSE="$paged_jobs" \
+  run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+  "check jobs split across two API pages"
+unset GH_JOBS_RESPONSE
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "CI run 11 check jobs concluded success"
+
 run_case "[{\"workflow_runs\":[$(workflow_run_json 12 "$OTHER_SHA" completed '"failure"' 2026-01-05T00:00:00Z)]},{\"workflow_runs\":[$(workflow_run_json 13 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}]" \
   "a tagged commit whose run is on the next API page"
 expect_status 0

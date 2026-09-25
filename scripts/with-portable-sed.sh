@@ -89,6 +89,6 @@ if [ -s "$refusals" ]; then
   echo "  fix: rewrite that call portably, then rerun: scripts/with-portable-sed.sh $1" >&2
   [ "$status" -ne 0 ] || status=1
 elif [ "$status" -ne 0 ]; then
-  echo "with-portable-sed: $1 failed with exit $status, with no sed call refused; its own output says why. Next: rerun it alone with 'bash -x $1'" >&2
+  echo "with-portable-sed: $1 failed with exit $status, with no sed call refused, so the cause is its own: read any output it printed above, and if it printed none, trace it with 'bash -x $1'" >&2
 fi
 exit "$status"

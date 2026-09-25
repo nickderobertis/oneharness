@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
+import sys
 import unittest
 from pathlib import Path
 
-from .scratch import PREFIX, scratch
+from .scratch import PREFIX, control_scratch, scratch
 
 
 class ScratchTests(unittest.TestCase):
@@ -53,6 +54,21 @@ class ScratchTests(unittest.TestCase):
         directory out of its verdict; a name without it counts as this run's leak."""
         directory = scratch(self, "pid-probe")
         self.assertTrue(directory.name.endswith(f"-{os.getpid()}"), directory.name)
+
+    def test_a_control_store_leaves_its_socket_inside_the_tightest_budget(self) -> None:
+        """The CLI refuses a socket address past `sun_path` before it answers.
+
+        macOS allows 103 bytes before the NUL. Charged at the longest address the
+        CLI builds there — ``/private/tmp`` plus the 12-hex digest it shortens a
+        session name to — so an overrun fails on Linux too, not only in macOS CI.
+        """
+        store = control_scratch(self, "interrupt")
+        self.assertTrue(store.is_dir())
+        if sys.platform == "win32":
+            return
+        self.assertEqual(str(store.parent), os.path.realpath("/tmp"))
+        address = f"/private/tmp/{store.name}/control/{'0' * 12}.sock"
+        self.assertLessEqual(len(address), 103, address)
 
 
 if __name__ == "__main__":

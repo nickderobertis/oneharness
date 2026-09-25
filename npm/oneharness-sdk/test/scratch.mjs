@@ -6,7 +6,7 @@
 // that passes, which a `finally` per call site has to earn again every time.
 
 import { randomBytes } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -31,11 +31,12 @@ const held = [];
  * part, so the caller makes the directory with an exclusive `mkdir` instead.
  *
  * @param {string} tag
+ * @param {string} [root] the directory it goes under; the temp dir by default
  * @returns {string}
  */
-function scratchPath(tag) {
+function scratchPath(tag, root = tmpdir()) {
 	const unique = randomBytes(6).toString("hex");
-	return resolve(tmpdir(), `${PREFIX}${tag}-${unique}-${process.pid}`);
+	return resolve(root, `${PREFIX}${tag}-${unique}-${process.pid}`);
 }
 
 /**
@@ -52,7 +53,28 @@ export async function scratch(tag) {
 }
 
 /**
- * The same, for a caller with no `await` to spend.
+ * A scratch session store, for a test whose store path becomes a control socket
+ * address: `<store>/control/<name>.sock`.
+ *
+ * Rooted at the canonical `/tmp` on unix rather than the temp dir, as the Rust
+ * suite's `control_store_root` is, because that address has a `sun_path` budget
+ * of 104 bytes on macOS and its per-user `$TMPDIR` spends 49 of them before the
+ * store's own name begins — a name ending in the pid then leaves the socket no
+ * room. Windows has no `sun_path`, so the temp dir serves there.
+ *
+ * @param {string} tag
+ * @returns {Promise<string>}
+ */
+export async function controlScratch(tag) {
+	const root = process.platform === "win32" ? tmpdir() : realpathSync("/tmp");
+	const directory = scratchPath(tag, root);
+	await mkdir(directory, { mode: 0o700 });
+	held.push(directory);
+	return directory;
+}
+
+/**
+ * The same as `scratch`, for a caller with no `await` to spend.
  *
  * @param {string} tag
  * @returns {string}

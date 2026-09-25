@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PREFIX, removeScratch, scratch, scratchSync } from "./scratch.mjs";
+import {
+	controlScratch,
+	PREFIX,
+	removeScratch,
+	scratch,
+	scratchSync,
+} from "./scratch.mjs";
 import { registerScratchCleanup, SLOW_CLEANUP_MS } from "./scratch-hook.mjs";
 
 registerScratchCleanup();
@@ -116,6 +122,20 @@ test("scratch names end in the id of the process that made them", () => {
 	// out of its verdict; a name without it is counted as this run's leak.
 	const directory = scratchSync("pid-probe");
 	expect(directory.split(/[\\/]/u).at(-1)).toEndWith(`-${process.pid}`);
+});
+
+test("a control store leaves its socket inside the tightest sun_path budget", async () => {
+	// The CLI refuses a socket address past `sun_path` before it answers at all,
+	// and macOS allows 103 bytes before the NUL. Charged at the longest address
+	// the CLI builds there — `/private/tmp` plus the 12-hex digest it shortens a
+	// session name to — so an overrun fails on Linux too, not only in macOS CI.
+	const store = await controlScratch("int");
+	expect(existsSync(store)).toBe(true);
+	if (process.platform === "win32") return;
+	expect(dirname(store)).toBe(realpathSync("/tmp"));
+	const name = store.split(/[\\/]/u).at(-1) ?? "";
+	const address = `/private/tmp/${name}/control/${"0".repeat(12)}.sock`;
+	expect(address.length).toBeLessThanOrEqual(103);
 });
 
 test("the exit handler's synchronous removal gives its directory back", () => {

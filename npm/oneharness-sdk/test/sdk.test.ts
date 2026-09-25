@@ -62,7 +62,7 @@ import {
 	UsageOptionsSchema,
 	UsageSchema,
 } from "../src/index.js";
-import { scratch } from "./scratch.mjs";
+import { controlScratch, scratch } from "./scratch.mjs";
 import { registerScratchCleanup } from "./scratch-hook.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -1574,7 +1574,7 @@ describe("OneHarness", () => {
 	}, 30_000);
 
 	test("answers an interrupt for a session no run is serving", async () => {
-		const sessionDir = await scratch("int");
+		const sessionDir = await controlScratch("int");
 		// A refusal is the answer, not a throw: the CLI exits non-zero and the
 		// frame says which of the refusal reasons applies, which is what a
 		// supervisor branches on.

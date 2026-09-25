@@ -9,7 +9,11 @@
 #   3. Merging that PR makes the `release` job tag `vX.Y.Z` and cut a GitHub
 #      Release with the changelog notes. That Release (created with a PAT, not
 #      the default GITHUB_TOKEN) triggers `release.yml`, which builds, archives,
-#      checksums, and attaches the cross-platform binaries.
+#      checksums, and attaches the cross-platform binaries. It reads CI's
+#      verdict for the tagged commit: a failed check job refuses release; only
+#      a complete successful check matrix skips the release gate; once CI
+#      ends, a non-Ubuntu check job without a success verdict refuses release,
+#      and an Ubuntu one alone runs the gate on the Ubuntu release runner.
 
 [workspace]
 # Both crates are published to crates.io on release. release-plz runs

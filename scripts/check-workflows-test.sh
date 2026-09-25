@@ -41,9 +41,15 @@ fail_showing() {
 # leaves a manifest broken cannot reach the working tree.
 staged=(
   scripts/check-workflows.sh
+  scripts/ci-verdict.sh
+  scripts/verify-published.sh
   rust-toolchain.toml
   Cargo.toml
   crates/oneharness-core/Cargo.toml
+  pyproject.toml
+  python/oneharness-sdk/pyproject.toml
+  npm/oneharness/package.json
+  npm/oneharness-sdk/package.json
   justfile
   release-plz.toml
   .github/actions/setup-just/action.yml

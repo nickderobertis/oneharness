@@ -183,6 +183,18 @@ expect_gate_refusal "must not run an SDK gate"
 printf '      - name: Re-run the gate\n        run: just check\n' >>"$workflow"
 expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
 
+# A `name:` on CI's check job renames the `check (<os>)` jobs the selector
+# requires, so every release would read CI's verdict as absent.
+node -e '
+  const fs = require("node:fs");
+  const path = process.argv[1];
+  const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
+  if (!source.includes("\n  check:\n")) throw new Error("the ci.yml check job fixture is missing; update this mutation to the check job key in ci.yml");
+  fs.writeFileSync(path, source.replace("\n  check:\n", "\n  check:\n    name: Full gate\n"));
+' "$ci"
+expect_gate_refusal "check job must not set 'name:'"
+cp "$work/ci.yml" "$ci"
+
 # A renamed CI workflow must be changed in the verdict selector too.
 sed 's/CI_WORKFLOW:-ci.yml/CI_WORKFLOW:-renamed.yml/' "$work/ci-verdict.sh" >"$verdict"
 if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then

@@ -46,6 +46,7 @@ printf 'sed -i %q %q || true\n' 's/x/y/' "$work/file" >"$work/ignored.sh"
 printf 'sed -i.bak %q %q\n' 's/x/y/' "$work/file" >"$work/portable.sh"
 printf 'sed %q -n %q\n' 's/x/y/' "$work/file" >"$work/late.sh"
 printf 'sed -z %q %q\n' 's/x/y/' "$work/file" >"$work/unknown.sh"
+printf 'sed --expression=%q %q\n' 's/x/y/' "$work/file" >"$work/long.sh"
 while IFS='|' read -r case named; do
   if bash scripts/with-portable-sed.sh "$work/$case.sh" >"$work/out" 2>&1; then
     fail "the portable-sed runner passed $case.sh, a call BSD sed reads differently" \
@@ -59,7 +60,18 @@ bare|bare -i
 ignored|bare -i
 late|option '-n' after the script
 unknown|'-z'; use only
+long|'--expression=s/x/y/'; use only
 CASES
+
+# Called with no script, the runner says how to call it rather than running nothing.
+status=0
+bash scripts/with-portable-sed.sh >"$work/out" 2>&1 || status=$?
+[ "$status" = 2 ] ||
+  fail "the portable-sed runner exited $status when given no script" "$(cat "$work/out")" \
+    "fix: restore its argument-count check in scripts/with-portable-sed.sh"
+grep -Fq "usage: scripts/with-portable-sed.sh <script>" "$work/out" ||
+  fail "the portable-sed runner refused a missing script without its usage line" "$(cat "$work/out")" \
+    "fix: restore that usage message in scripts/with-portable-sed.sh"
 bash scripts/with-portable-sed.sh "$work/portable.sh" >"$work/out" 2>&1 ||
   fail "the portable-sed runner refused 'sed -i.bak', which both sed families read alike" "$(cat "$work/out")" \
     "fix: accept an attached -i suffix in scripts/with-portable-sed.sh"

@@ -93,7 +93,7 @@ invoke() {
     REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
     CI_WORKFLOW="${WORKFLOW_OVERRIDE-ci.yml}" \
     CI_WAIT_ATTEMPTS="${WAIT_ATTEMPTS_OVERRIDE-3}" CI_WAIT_DELAY="${WAIT_DELAY_OVERRIDE-0}" \
-    GITHUB_OUTPUT="$tmp/github-output" \
+    GITHUB_OUTPUT="${OUTPUT_OVERRIDE-$tmp/github-output}" \
     bash "$root/scripts/ci-verdict.sh" >"$tmp/out" 2>"$tmp/err"
   status=$?
   set -e
@@ -205,6 +205,14 @@ expect_said "$tmp/out" "concluded success for $SHA_UNDER_TEST"
 expect_said "$tmp/calls" '--paginate --slurp'
 expect_said "$tmp/calls" '&event=push&branch=main&'
 expect_said "$tmp/calls" 'actions/runs/11/jobs?filter=latest&per_page=100'
+
+# The same verdict, with nowhere to record it: the workflow would read no
+# decision, so the release stops saying so rather than failing through the shell.
+mkdir -p "$tmp/unwritable-output"
+OUTPUT_OVERRIDE="$tmp/unwritable-output" run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
+  "an unwritable workflow output refuses"
+expect_refused
+expect_said "$tmp/err" "could not record the verdict for $SHA_UNDER_TEST"
 
 GH_JOBS_FAIL=1 run_case "{\"workflow_runs\":[$(workflow_run_json 11 "$SHA_UNDER_TEST" completed '"success"' 2026-01-02T00:00:00Z)]}" \
   "the check jobs endpoint refuses after the run list succeeds"

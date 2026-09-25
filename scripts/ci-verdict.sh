@@ -52,8 +52,10 @@ endpoint="repos/$repo/actions/workflows/$workflow/runs?head_sha=$sha&event=push&
 decide() {
   local needs_check="$1" why="$2"
   printf 'ci-verdict: %s\n' "$why"
-  if [ -n "${GITHUB_OUTPUT:-}" ]; then
-    printf 'needs_check=%s\n' "$needs_check" >>"$GITHUB_OUTPUT"
+  if [ -n "${GITHUB_OUTPUT:-}" ] && ! printf 'needs_check=%s\n' "$needs_check" >>"$GITHUB_OUTPUT"; then
+    refuse "ci-verdict: could not record the verdict for $sha" \
+      "it was writing needs_check=$needs_check to \$GITHUB_OUTPUT ($GITHUB_OUTPUT)" \
+      "re-run this release; the runner provides a writable \$GITHUB_OUTPUT, so a failed write is the runner's, not CI's verdict"
   fi
   exit 0
 }

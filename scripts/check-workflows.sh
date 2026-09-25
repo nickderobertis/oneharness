@@ -140,6 +140,15 @@ require_line .github/workflows/ci.yml 'branches: [main]' \
   "keep the CI push branch matched to the release verdict selector"
 require_line .github/workflows/ci.yml '  check:' \
   "keep the check job named as the release verdict selector expects"
+# GitHub names each matrix job `check (<os>)` only while the job states no
+# `name:` of its own; one would rename every job the selector looks for.
+if tr -d '\r' <.github/workflows/ci.yml | awk '
+  /^  [^ #]/ { inside = ($0 == "  check:"); next }
+  inside && /^    name:/ { found = 1 }
+  END { exit !found }
+'; then
+  fail ".github/workflows/ci.yml check job must not set 'name:', which renames the 'check (<os>)' jobs scripts/ci-verdict.sh requires; remove it, or rename those jobs in ci-verdict.sh and here together"
+fi
 # This is a literal shell expansion in the selector's source.
 # shellcheck disable=SC2016
 require_line scripts/ci-verdict.sh 'workflow="${CI_WORKFLOW:-ci.yml}"' \

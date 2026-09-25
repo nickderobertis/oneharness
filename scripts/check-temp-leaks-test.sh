@@ -154,6 +154,8 @@ if ! bash "$gate" bash -c "$ask_foreign" watched "$work/oneharness-foreign" >"$w
   fail "a scratch directory another live run made while this one was going must not be reported as this run's leak"
 fi
 [ -d "$work/oneharness-foreign-$foreign" ] || fail "the foreign run never made its directory"
+grep -q "left out $work/oneharness-foreign-$foreign: its maker (pid $foreign) is alive" "$work/out" ||
+  fail "the gate left out another live run's directory without saying which one or why"
 kill "$foreign"
 wait "$foreign" 2>/dev/null || true
 rm -rf "$work/oneharness-foreign-$foreign" "$work/oneharness-foreign.go" "$work/oneharness-foreign.made"
@@ -192,6 +194,19 @@ kill "$child" 2>/dev/null || true
 grep -q "oneharness-outlived-$child" "$work/out" ||
   fail "the gate failed but did not name the directory the command's child left behind"
 rm -rf "$work/oneharness-outlived-$child" "$work/child"
+
+# A child of the watched command that outlives it after clearing the run's
+# marker cannot be told from another checkout's run, so its directory is left
+# out — but named, never dropped silently.
+bash "$gate" bash -c "env -u OH_TEMP_LEAKS_RUN sleep 60 >/dev/null 2>&1 & echo \$! > '$work/child'; mkdir -p '$work/oneharness-unmarked-'\$!" >"$work/out" 2>&1 &&
+  unmarked=0 || unmarked=$?
+child=$(cat "$work/child")
+kill "$child" 2>/dev/null || true
+[ "$unmarked" -eq 0 ] ||
+  fail "a directory whose live maker lacks the run's marker should be left out, got exit $unmarked"
+grep -q "left out $work/oneharness-unmarked-$child: its maker (pid $child) is alive" "$work/out" ||
+  fail "the gate left out a directory whose live maker cleared the run's marker without naming it"
+rm -rf "$work/oneharness-unmarked-$child" "$work/child"
 
 # ...while one whose maker has exited is still a leak, pid suffix and all.
 sh -c 'exit 0' &

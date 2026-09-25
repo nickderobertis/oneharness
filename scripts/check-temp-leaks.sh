@@ -166,7 +166,8 @@ done
 
 # Every process of this run carries the token, which is how a scratch directory's
 # maker is told apart from another checkout's below.
-run_marker="OH_TEMP_LEAKS_RUN=$$.$RANDOM$RANDOM"
+marker_name=OH_TEMP_LEAKS_RUN
+run_marker="$marker_name=$$.$RANDOM$RANDOM"
 status=0
 env "$run_marker" "$@" >"$transcript" 2>&1 || status=$?
 
@@ -205,7 +206,13 @@ named_for_a_live_process_lacking_the_run_marker() {
 if [ -n "$leaked" ]; then
   kept=""
   while IFS= read -r dir; do
-    named_for_a_live_process_lacking_the_run_marker "$dir" || kept+="$dir"$'\n'
+    if named_for_a_live_process_lacking_the_run_marker "$dir"; then
+      # Said rather than dropped: a descendant of this run that cleared its own
+      # environment reads exactly like another checkout's run.
+      echo "check-temp-leaks: left out $dir: its maker (pid ${dir##*-}) is alive without this run's $marker_name, so it is taken as another checkout's run; if that process is this run's own, end it and rerun" >&2
+    else
+      kept+="$dir"$'\n'
+    fi
   done <<< "$leaked"
   leaked=${kept%$'\n'}
 fi

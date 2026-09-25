@@ -33,10 +33,11 @@ fail() {
   exit 1
 }
 
-# A case this platform cannot stage is said rather than passed over, on stderr
-# so it survives the recipe discarding the one-line success.
+# A case this platform cannot stage is said rather than passed over: gathered
+# into one stderr line at the end, which survives the recipe discarding stdout.
+skipped=""
 skip() {
-  echo "check-temp-leaks-test: skipped: $1" >&2
+  skipped+="${skipped:+; }$1"
 }
 
 # Whether this shell can make a real symlink. Git Bash on Windows cannot without
@@ -49,7 +50,6 @@ mkdir -p "$work/symlink-target"
 symlinks=0
 if can_symlink; then symlinks=1; fi
 rm -rf "$work/symlink-target" "$work/symlink-probe"
-no_symlinks="this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)"
 
 # What a wrapped command writes, on both streams, so a replay can be told apart
 # from a gate that merely happens to print something.
@@ -166,8 +166,6 @@ if [ "$symlinks" -eq 1 ]; then
   grep -q "oneharness-under-a-symlink" "$work/out" ||
     fail "the gate went red under a symlinked root without naming the directory left behind"
   rm -rf "$work/through-a-symlink" "$work/behind-a-symlink"
-else
-  skip "a leak under a symlinked root: $no_symlinks"
 fi
 
 # A root that exists but cannot be swept is refused before the command runs,
@@ -308,8 +306,6 @@ if [ "$symlinks" -eq 1 ]; then
   grep -q "cannot watch scratch root '$work/dangling'" "$work/out" ||
     fail "the gate should name the dangling scratch root it cannot watch"
   rm -f "$work/dangling"
-else
-  skip "a dangling symlink as a scratch root: $no_symlinks"
 fi
 
 # So is one the command leaves unsweepable, which would otherwise read as clean.
@@ -453,4 +449,9 @@ bash "$gate" >"$work/out" 2>&1 || status=$?
 grep -q "no command to run" "$work/out" ||
   fail "the usage error must say what is missing"
 
+# Both symlink cases are skipped together where the shell cannot make one.
+if [ "$symlinks" -eq 0 ]; then
+  skip "a leak under a symlinked root, and a dangling symlink as a scratch root: this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)"
+fi
+[ -z "$skipped" ] || echo "check-temp-leaks-test: skipped what this platform cannot stage — $skipped" >&2
 echo "check-temp-leaks-test: the scratch-leak gate goes red for a leaked directory and green otherwise"

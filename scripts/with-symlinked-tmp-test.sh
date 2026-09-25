@@ -36,8 +36,9 @@ if ln -s "$work/symlink-target" "$work/symlink-probe" 2>/dev/null && [ -L "$work
   symlinks=1
 fi
 rm -rf "$work/symlink-target" "$work/symlink-probe"
+skipped=""
 skip() {
-  echo "with-symlinked-tmp-test: skipped: $1: this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)" >&2
+  skipped+="${skipped:+; }$1"
 }
 
 if [ "$symlinks" -eq 1 ]; then
@@ -183,4 +184,6 @@ set -e
 [ ! -e "$work/ran" ] || fail "the lane should not run its command under a misspelled platform override"
 grep -q "unrecognized platform 'Linx'" "$work/out" || fail "the lane should name the platform override it refused"
 
+[ -z "$skipped" ] ||
+  echo "with-symlinked-tmp-test: skipped, since this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode) — $skipped" >&2
 echo "with-symlinked-tmp-test: the lane hands its command a symlinked TMPDIR, catches a leak behind it, and runs nothing off Linux"

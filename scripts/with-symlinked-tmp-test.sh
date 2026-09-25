@@ -184,6 +184,11 @@ set -e
 [ ! -e "$work/ran" ] || fail "the lane should not run its command under a misspelled platform override"
 grep -q "unrecognized platform 'Linx'" "$work/out" || fail "the lane should name the platform override it refused"
 
-[ -z "$skipped" ] ||
-  echo "with-symlinked-tmp-test: skipped, since this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode) — $skipped" >&2
-echo "with-symlinked-tmp-test: the lane hands its command a symlinked TMPDIR, catches a leak behind it, and runs nothing off Linux"
+# One line either way; a skip goes to stderr so the gate, which discards
+# stdout, still shows what went unproven.
+done_line="with-symlinked-tmp-test: the lane hands its command a symlinked TMPDIR, catches a leak behind it, and runs nothing off Linux"
+if [ -z "$skipped" ]; then
+  echo "$done_line"
+else
+  echo "$done_line; skipped, since this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode) — $skipped" >&2
+fi

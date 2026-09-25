@@ -488,5 +488,11 @@ grep -q "no command to run" "$work/out" ||
 if [ "$symlinks" -eq 0 ]; then
   skip "a leak under a symlinked root, and a dangling symlink as a scratch root: this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)"
 fi
-[ -z "$skipped" ] || echo "check-temp-leaks-test: skipped what this platform cannot stage — $skipped" >&2
-echo "check-temp-leaks-test: the scratch-leak gate goes red for a leaked directory and green otherwise"
+# One line either way; a skip goes to stderr so the gate, which discards
+# stdout, still shows what went unproven.
+done_line="check-temp-leaks-test: the scratch-leak gate goes red for a leaked directory and green otherwise"
+if [ -z "$skipped" ]; then
+  echo "$done_line"
+else
+  echo "$done_line; skipped what this platform cannot stage — $skipped" >&2
+fi

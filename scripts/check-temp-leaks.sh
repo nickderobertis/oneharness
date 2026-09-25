@@ -153,9 +153,9 @@ done
 
 # Every process of this run carries the token, which is how a scratch directory's
 # maker is told apart from another checkout's below.
-run_token="$$.$RANDOM$RANDOM"
+run_marker="OH_TEMP_LEAKS_RUN=$$.$RANDOM$RANDOM"
 status=0
-OH_TEMP_LEAKS_RUN=$run_token "$@" >"$transcript" 2>&1 || status=$?
+env "$run_marker" "$@" >"$transcript" 2>&1 || status=$?
 
 unwatched=0
 after=$(snapshot) || unwatched=1
@@ -183,7 +183,7 @@ made_outside_this_run() {
     environment=$(tr ' ' '\n' <<< "$environment")
   fi
   [ -n "$environment" ] || return 1
-  ! grep -qxF "OH_TEMP_LEAKS_RUN=$run_token" <<< "$environment"
+  ! grep -qxF "$run_marker" <<< "$environment"
 }
 if [ -n "$leaked" ]; then
   kept=""

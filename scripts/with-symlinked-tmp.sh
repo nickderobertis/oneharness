@@ -21,14 +21,18 @@ if [ "$#" -eq 0 ]; then
 fi
 
 platform="${OH_SYMLINKED_TMP_UNAME:-$(uname -s)}"
-case "$platform" in
-  Linux | Darwin | MINGW* | MSYS* | CYGWIN*) ;;
-  *)
-    echo "with-symlinked-tmp: unrecognized platform '$platform'." >&2
-    echo "  fix: set OH_SYMLINKED_TMP_UNAME to a 'uname -s' value (Linux, Darwin, MINGW*, MSYS*, CYGWIN*), or unset it." >&2
-    exit 2
-    ;;
-esac
+known_platforms=(Linux Darwin 'MINGW*' 'MSYS*' 'CYGWIN*')
+recognized=0
+for pattern in "${known_platforms[@]}"; do
+  # shellcheck disable=SC2254 # the pattern must glob, so it stays unquoted.
+  case "$platform" in $pattern) recognized=1 ;; esac
+done
+if [ "$recognized" -eq 0 ]; then
+  echo "with-symlinked-tmp: unrecognized platform '$platform'." >&2
+  listed=$(printf '%s, ' "${known_platforms[@]}")
+  echo "  fix: set OH_SYMLINKED_TMP_UNAME to a 'uname -s' value (${listed%, }), or unset it." >&2
+  exit 2
+fi
 if [ "$platform" != "Linux" ]; then
   echo "with-symlinked-tmp: skipped on $platform (macOS spells every temp path through /tmp -> /private/tmp already; Windows has no such root)"
   exit 0

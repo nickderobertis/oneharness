@@ -109,17 +109,17 @@ snapshot() {
   # `find` reports as gone. Anything else it says — the root itself gone
   # included — means the listing is not whole, and a partial listing would read
   # as a clean run.
-  local listing="" errors line found
+  local listing="" errors line find_status
   for real in ${reals[@]+"${reals[@]}"}; do
-    found=0
-    listing+=$(LC_ALL=C find "$real" -maxdepth 1 -type d -name "$prefix*" 2>"$sweep_errors")$'\n' || found=$?
+    find_status=0
+    listing+=$(LC_ALL=C find "$real" -maxdepth 1 -type d -name "$prefix*" 2>"$sweep_errors")$'\n' || find_status=$?
     errors=""
     while IFS= read -r line; do
       vanished_entry "$real" "$line" || errors+="$line"$'\n'
     done <"$sweep_errors"
     # A failure that said nothing names no vanished entry to excuse it.
-    if [ "$found" -ne 0 ] && [ ! -s "$sweep_errors" ]; then
-      errors="find exited $found without saying why"
+    if [ "$find_status" -ne 0 ] && [ ! -s "$sweep_errors" ]; then
+      errors="find exited $find_status without saying why"
     fi
     if [ -n "$errors" ]; then
       echo "check-temp-leaks: sweeping scratch root '$real' failed:" >&2
@@ -133,9 +133,12 @@ snapshot() {
 
 # The gate's own files, in one directory made up front so nothing is left to
 # fail once the command has run. Its name is not a scratch name, so the sweep
-# never counts it.
-if ! own=$(mktemp -d); then
-  echo "check-temp-leaks: could not create its own working directory under ${TMPDIR:-/tmp}." >&2
+# never counts it. The template names where it goes: a bare `mktemp -d` still
+# succeeded on macOS with `$TMPDIR` pointing nowhere, so the command ran over a
+# temp dir nothing could write to instead of being refused.
+own_parent=${TMPDIR:-/tmp}
+if ! own=$(mktemp -d "${own_parent%/}/check-temp-leaks.XXXXXX"); then
+  echo "check-temp-leaks: could not create its own working directory under $own_parent." >&2
   echo "  fix: point TMPDIR at a writable directory with free space, then re-run." >&2
   exit 2
 fi

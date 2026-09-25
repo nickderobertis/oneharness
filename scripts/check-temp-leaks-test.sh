@@ -33,6 +33,24 @@ fail() {
   exit 1
 }
 
+# A case this platform cannot stage is said rather than passed over, on stderr
+# so it survives the recipe discarding the one-line success.
+skip() {
+  echo "check-temp-leaks-test: skipped: $1" >&2
+}
+
+# Whether this shell can make a real symlink. Git Bash on Windows cannot without
+# developer mode: its `ln -s` copies the target, or refuses one that is missing.
+can_symlink() {
+  ln -s "$work/symlink-target" "$work/symlink-probe" 2>/dev/null &&
+    [ -L "$work/symlink-probe" ] && rm -f "$work/symlink-probe"
+}
+mkdir -p "$work/symlink-target"
+symlinks=0
+if can_symlink; then symlinks=1; fi
+rm -rf "$work/symlink-target" "$work/symlink-probe"
+no_symlinks="this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)"
+
 # What a wrapped command writes, on both streams, so a replay can be told apart
 # from a gate that merely happens to print something.
 chatter_out="a line the wrapped command wrote to stdout"
@@ -124,6 +142,8 @@ if [ "$(id -u)" -ne 0 ]; then
   grep -q "oneharness-unreadable-1" "$work/out" ||
     fail "the gate failed but did not name the directory whose maker it could not read"
   rm -rf "$work/oneharness-unreadable-1"
+else
+  skip "a maker whose environment cannot be read: root reads every process's environment"
 fi
 
 # A root the command creates is swept after it, so a leak inside it is caught.
@@ -136,15 +156,19 @@ grep -q "oneharness-in-a-new-root" "$work/out" ||
 rm -rf "$work/made-later"
 
 # A root reached through a symlink still watches the directory behind it.
-mkdir -p "$work/behind-a-symlink"
-ln -s "$work/behind-a-symlink" "$work/through-a-symlink"
-if OH_SCRATCH_ROOTS="$work/through-a-symlink" \
-  bash "$gate" bash -c "mkdir -p '$work/behind-a-symlink/oneharness-under-a-symlink'" >"$work/out" 2>&1; then
-  fail "a leak under a symlinked root should have been reported"
+if [ "$symlinks" -eq 1 ]; then
+  mkdir -p "$work/behind-a-symlink"
+  ln -s "$work/behind-a-symlink" "$work/through-a-symlink"
+  if OH_SCRATCH_ROOTS="$work/through-a-symlink" \
+    bash "$gate" bash -c "mkdir -p '$work/behind-a-symlink/oneharness-under-a-symlink'" >"$work/out" 2>&1; then
+    fail "a leak under a symlinked root should have been reported"
+  fi
+  grep -q "oneharness-under-a-symlink" "$work/out" ||
+    fail "the gate went red under a symlinked root without naming the directory left behind"
+  rm -rf "$work/through-a-symlink" "$work/behind-a-symlink"
+else
+  skip "a leak under a symlinked root: $no_symlinks"
 fi
-grep -q "oneharness-under-a-symlink" "$work/out" ||
-  fail "the gate went red under a symlinked root without naming the directory left behind"
-rm -rf "$work/through-a-symlink" "$work/behind-a-symlink"
 
 # A root that exists but cannot be swept is refused before the command runs,
 # rather than skipped into a clean verdict.
@@ -236,28 +260,57 @@ if ! PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/ar
 fi
 rm -rf "$work/fakebin" "$work/ran" "$work/armed"
 
-# A temp dir the gate cannot write its own files into is refused, and said.
+# A temp dir the gate cannot write its own files into is refused, and said. Both
+# fixtures are ones no user can write through, root included: a path that does
+# not exist, and a regular file.
+touch "$work/a-file"
+for unwritable in "$work/no-such-dir" "$work/a-file"; do
+  set +e
+  TMPDIR="$unwritable" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 2 ] || fail "a temp dir the gate cannot write to ($unwritable) should be a usage error (exit 2), got $status"
+  [ ! -e "$work/ran" ] || fail "the gate should not run its command without its own files ($unwritable)"
+  grep -q "could not create its own working directory under $unwritable" "$work/out" ||
+    fail "the gate should say it could not create its working directory under $unwritable"
+done
+rm -f "$work/a-file"
+# ...even where a bare `mktemp -d` would make one elsewhere, as it did on macOS:
+# stood in for by a `mktemp` that ignores an unusable TMPDIR unless handed a
+# template naming the directory.
+mkdir -p "$work/fakebin" "$work/elsewhere"
+real_mktemp=$(command -v mktemp)
+cat >"$work/fakebin/mktemp" <<'MKTEMP'
+#!/usr/bin/env bash
+[ "$#" -eq 1 ] && [ "$1" = "-d" ] && exec "$REAL_MKTEMP" -d "$FALLBACK_TMP/tmp.XXXXXX"
+exec "$REAL_MKTEMP" "$@"
+MKTEMP
+chmod +x "$work/fakebin/mktemp"
 set +e
-TMPDIR="$work/no-such-dir" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+PATH="$work/fakebin:$PATH" REAL_MKTEMP="$real_mktemp" FALLBACK_TMP="$work/elsewhere" \
+  TMPDIR="$work/no-such-dir" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
 status=$?
 set -e
-[ "$status" -eq 2 ] || fail "a temp dir the gate cannot write to should be a usage error (exit 2), got $status"
-[ ! -e "$work/ran" ] || fail "the gate should not run its command without its own files"
-grep -q "could not create its own working directory" "$work/out" ||
-  fail "the gate should say it could not create its working directory"
+[ "$status" -eq 2 ] || fail "a temp dir the gate cannot write to should be refused even by a mktemp that falls back elsewhere, got $status"
+[ ! -e "$work/ran" ] || fail "the gate should not run its command over a temp dir it cannot write to"
+rm -rf "$work/fakebin" "$work/elsewhere"
 
 # So is a symlink leading nowhere, which is not an absent root: whatever it was
 # meant to watch, sweeping it would see nothing.
-ln -s "$work/nowhere" "$work/dangling"
-set +e
-OH_SCRATCH_ROOTS="$work/dangling" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
-status=$?
-set -e
-[ "$status" -eq 2 ] || fail "a dangling symlink as a scratch root should be a usage error (exit 2), got $status"
-[ ! -e "$work/ran" ] || fail "the gate should not run its command over a dangling scratch root"
-grep -q "cannot watch scratch root '$work/dangling'" "$work/out" ||
-  fail "the gate should name the dangling scratch root it cannot watch"
-rm -f "$work/dangling"
+if [ "$symlinks" -eq 1 ]; then
+  ln -s "$work/nowhere" "$work/dangling"
+  set +e
+  OH_SCRATCH_ROOTS="$work/dangling" bash "$gate" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 2 ] || fail "a dangling symlink as a scratch root should be a usage error (exit 2), got $status"
+  [ ! -e "$work/ran" ] || fail "the gate should not run its command over a dangling scratch root"
+  grep -q "cannot watch scratch root '$work/dangling'" "$work/out" ||
+    fail "the gate should name the dangling scratch root it cannot watch"
+  rm -f "$work/dangling"
+else
+  skip "a dangling symlink as a scratch root: $no_symlinks"
+fi
 
 # So is one the command leaves unsweepable, which would otherwise read as clean.
 mkdir -p "$work/goes-away"
@@ -285,11 +338,11 @@ if ! OH_SCRATCH_ROOTS="$work/never-made" bash "$gate" true >"$work/out" 2>&1; th
   fail "a scratch root absent before and after the command must not fail the gate"
 fi
 
-# And one it can enter but not list. Root reads every directory, so there the
-# case cannot be staged.
-if [ "$(id -u)" -ne 0 ]; then
-  mkdir -p "$work/unlistable"
-  chmod 311 "$work/unlistable"
+# And one it can enter but not list — staged only where the fixture holds, since
+# root lists every directory and Windows ignores the mode.
+mkdir -p "$work/unlistable"
+chmod 311 "$work/unlistable"
+if ! ls "$work/unlistable" >/dev/null 2>&1; then
   set +e
   OH_SCRATCH_ROOTS="$work/unlistable" bash "$gate" true >"$work/out" 2>&1
   status=$?
@@ -298,8 +351,11 @@ if [ "$(id -u)" -ne 0 ]; then
   [ "$status" -eq 2 ] || fail "a scratch root the gate cannot list should be a usage error (exit 2), got $status"
   grep -q "cannot watch scratch root '$work/unlistable'" "$work/out" ||
     fail "the gate should name the scratch root it cannot list"
-  rmdir "$work/unlistable"
+else
+  chmod 755 "$work/unlistable"
+  skip "a scratch root the gate cannot list: this user can still list a directory whose read permission is removed"
 fi
+rmdir "$work/unlistable"
 
 # A command that fails and leaves a root unsweepable keeps its own status, and
 # the unsweepable root is still named.

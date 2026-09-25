@@ -138,9 +138,10 @@ kill "$foreign"
 wait "$foreign" 2>/dev/null || true
 rm -rf "$work/oneharness-foreign-$foreign" "$work/oneharness-foreign.go" "$work/oneharness-foreign.made"
 
-# The SDK suites' names carry a random part before the pid (`mkdtemp` makes it),
-# and attribution reads only the trailing pid: another run's live one is left
-# out, while the same shape ending in the watched command's own pid is a leak.
+# The SDK suites' names carry a random part before the pid (Python's `mkdtemp`
+# and Node's `randomBytes` make it), and attribution reads only the trailing
+# pid: another run's live one is left out, while the same shape ending in the
+# watched command's own pid is a leak.
 # Without the pid — the shape those helpers used to make — nothing names a
 # maker, so a concurrent SDK run elsewhere on the host failed this run's gate.
 foreign=$(foreign_run oneharness-python-installed-mq_z5o)

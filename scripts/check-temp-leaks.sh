@@ -64,7 +64,9 @@ resolve_root() (
 )
 
 # A root that does not exist holds nothing to leak (and is swept afterwards if
-# the command creates it); one that exists but cannot be entered or read — or a
+# the command creates it), unless it existed before the command ran: one the
+# command removed is a sweep that sees nothing, not a clean one. One that exists
+# but cannot be entered or read — or a
 # symlink leading nowhere — would match nothing and read as a clean run, so a
 # sweep that meets one fails instead. Every root is settled before the sweep
 # starts, so that refusal is this function's own status, never a pipeline's.
@@ -86,7 +88,15 @@ snapshot() {
   local dir real
   local -a reals=()
   for dir in "${scratch_roots[@]}"; do
-    if [ -z "$dir" ] || { [ ! -e "$dir" ] && [ ! -L "$dir" ]; }; then continue; fi
+    [ -n "$dir" ] || continue
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+      if grep -qxF -- "$dir" <<< "$present_before"; then
+        echo "check-temp-leaks: cannot watch scratch root '$dir': it was removed while the command ran." >&2
+        echo "  fix: leave the scratch roots in place while the command runs, then re-run." >&2
+        return 2
+      fi
+      continue
+    fi
     if ! real=$(resolve_root "$dir") || [ ! -r "$real" ]; then
       echo "check-temp-leaks: cannot watch scratch root '$dir': it exists but is not a directory this gate can enter and read." >&2
       echo "  fix: point OH_SCRATCH_ROOTS (or TMPDIR) at readable directories, then re-run." >&2
@@ -135,7 +145,11 @@ sweep_errors="$own/sweep-errors"
 # them in rather than the order two buffers happened to flush.
 transcript="$own/transcript"
 
+present_before=""
 before=$(snapshot) || exit 2
+for dir in "${scratch_roots[@]}"; do
+  if [ -n "$dir" ] && { [ -e "$dir" ] || [ -L "$dir" ]; }; then present_before+="$dir"$'\n'; fi
+done
 
 # Every process of this run carries the token, which is how a scratch directory's
 # maker is told apart from another checkout's below.

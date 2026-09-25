@@ -224,6 +224,21 @@ grep -q "cannot watch scratch root '$work/goes-away'" "$work/out" ||
   fail "the gate should name the scratch root the command left unsweepable"
 rm -f "$work/goes-away"
 
+# So is one the command removes outright: a root that is gone lists nothing,
+# which is not the same as listing no leak.
+mkdir -p "$work/removed"
+set +e
+OH_SCRATCH_ROOTS="$work/removed" bash "$gate" bash -c "mkdir '$work/removed/oneharness-in-removed' && rm -rf '$work/removed'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a scratch root the command removed should fail the gate (exit 2), got $status"
+grep -q "cannot watch scratch root '$work/removed': it was removed while the command ran" "$work/out" ||
+  fail "the gate should name the scratch root the command removed"
+# ...while one that never existed and still does not is not watched at all.
+if ! OH_SCRATCH_ROOTS="$work/never-made" bash "$gate" true >"$work/out" 2>&1; then
+  fail "a scratch root absent before and after the command must not fail the gate"
+fi
+
 # And one it can enter but not list. Root reads every directory, so there the
 # case cannot be staged.
 if [ "$(id -u)" -ne 0 ]; then

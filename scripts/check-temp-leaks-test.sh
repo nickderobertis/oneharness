@@ -114,6 +114,27 @@ grep -q "oneharness-abandoned-$exited" "$work/out" ||
   fail "the gate failed but did not name the abandoned directory"
 rm -rf "$work/oneharness-abandoned-$exited"
 
+# ...and so is one whose live maker's environment this gate may not read — here
+# pid 1, another user's process, where `ps` prints the command without it.
+# Root reads every environment, so there the case cannot be staged.
+if [ "$(id -u)" -ne 0 ]; then
+  if bash "$gate" bash -c "mkdir -p '$work/oneharness-unreadable-1'" >"$work/out" 2>&1; then
+    fail "a scratch directory whose maker's environment cannot be read should have been reported"
+  fi
+  grep -q "oneharness-unreadable-1" "$work/out" ||
+    fail "the gate failed but did not name the directory whose maker it could not read"
+  rm -rf "$work/oneharness-unreadable-1"
+fi
+
+# A root the command creates is swept after it, so a leak inside it is caught.
+if OH_SCRATCH_ROOTS="$work/made-later" \
+  bash "$gate" bash -c "mkdir -p '$work/made-later/oneharness-in-a-new-root'" >"$work/out" 2>&1; then
+  fail "a leak under a scratch root the command created should have been reported"
+fi
+grep -q "oneharness-in-a-new-root" "$work/out" ||
+  fail "the gate went red under a root the command created without naming the directory left behind"
+rm -rf "$work/made-later"
+
 # A root reached through a symlink still watches the directory behind it.
 mkdir -p "$work/behind-a-symlink"
 ln -s "$work/behind-a-symlink" "$work/through-a-symlink"

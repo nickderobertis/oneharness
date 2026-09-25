@@ -170,12 +170,17 @@ leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 # checkout's live coverage suite. A maker that carries the token, has exited, or
 # whose environment cannot be read is this run's, and its directory is a leak.
 made_outside_this_run() {
-  local pid=${1##*-} environment
+  local pid=${1##*-} environment command
   case "$pid" in '' | *[!0-9]*) return 1 ;; esac
   if [ -r "/proc/$pid/environ" ]; then
     environment=$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null) || return 1
   else
-    environment=$(ps eww -o command= -p "$pid" 2>/dev/null | tr ' ' '\n') || return 1
+    # `ps e` appends the environment only where it may read it, and prints the
+    # bare command otherwise, so output no longer than the command read nothing.
+    environment=$(ps eww -o command= -p "$pid" 2>/dev/null) || return 1
+    command=$(ps ww -o command= -p "$pid" 2>/dev/null) || return 1
+    [ "${#environment}" -gt "${#command}" ] || return 1
+    environment=$(tr ' ' '\n' <<< "$environment")
   fi
   [ -n "$environment" ] || return 1
   ! grep -qxF "OH_TEMP_LEAKS_RUN=$run_token" <<< "$environment"

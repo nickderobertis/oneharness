@@ -91,43 +91,46 @@ lint-sh:
 # Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
 # plus the hermetic behavioral test of the idempotent crates.io publisher.
 lint-workflows: build build-mock-harness
-    @bash scripts/check-pr-title-e2e.sh >/dev/null
-    @bash scripts/check-e2e-matrix.sh >/dev/null
-    @bash scripts/check-e2e-matrix-test.sh >/dev/null
-    @bash scripts/check-capability-surface.sh >/dev/null
-    @bash scripts/check-sdk-coverage.sh >/dev/null
-    @bash scripts/check-sdk-coverage-test.sh >/dev/null
-    @bash scripts/check-lf-contracts.sh >/dev/null
-    @bash scripts/check-lf-contracts-test.sh >/dev/null
-    @bash scripts/check-parity-audit.sh >/dev/null
-    @bash scripts/report-scheduled-failure-test.sh >/dev/null
-    @bash scripts/check-workflows.sh >/dev/null
-    @bash scripts/check-workflows-test.sh >/dev/null
-    @bash scripts/check-workflows-e2e.sh >/dev/null
-    @bash scripts/check-setup-just.sh >/dev/null
-    @bash scripts/check-publish-crates.sh >/dev/null
-    @bash scripts/check-package-crates.sh >/dev/null
-    @bash scripts/check-semver-check.sh >/dev/null
-    @bash scripts/check-smoke-env.sh >/dev/null
-    @bash scripts/check-publish-npm.sh >/dev/null
-    @bash scripts/check-local-gate.sh >/dev/null
-    @bash scripts/check-sdk-install.sh >/dev/null
-    @bash scripts/check-build-mock-harness.sh >/dev/null
-    @bash scripts/check-temp-leaks-test.sh >/dev/null
-    @bash scripts/with-symlinked-tmp-test.sh >/dev/null
-    @bash scripts/check-scratch-prefixes.sh >/dev/null
-    @bash scripts/check-scratch-prefixes-test.sh >/dev/null
-    @bash scripts/check-codex-usage-schema.sh >/dev/null
-    @bash scripts/check-codex-usage-schema-test.sh >/dev/null
-    @bash scripts/check-usage-enforce.sh >/dev/null
-    @bash scripts/check-release-targets.sh >/dev/null
-    @bash scripts/check-release-targets-test.sh >/dev/null
-    @bash scripts/check-release-probe.sh >/dev/null
-    @bash scripts/check-control-probes.sh >/dev/null
-    @bash scripts/check-control-probe-http.sh >/dev/null
-    @bash scripts/check-control-enforce.sh >/dev/null
-    @bash scripts/check-copilot-login-probe.sh >/dev/null
-    @bash scripts/e2e-variants-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-sdk-coverage.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-sdk-coverage-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-parity-audit.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-ci-verdict.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-verify-published.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-setup-just.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-publish-crates.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-package-crates.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-semver-check.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-smoke-env.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-publish-npm.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-local-gate.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-sdk-install.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-usage-enforce.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-release-targets.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-release-targets-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-release-probe.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-control-probes.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-control-probe-http.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-control-enforce.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 
 # Run the test suite across the workspace (core unit tests + binary unit and
@@ -261,6 +264,13 @@ sdk-generate:
 sdk-install:
     @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
 
+# Compile the Node SDK's publishable `dist/`. It is gitignored, so it has to be
+# built both for the gate's packaged e2e and for the release's `npm pack` — and
+# the release skips the gate when CI already ran it, so this is the one spelling
+# both reach rather than two that can drift.
+sdk-build: sdk-install
+    bun run --cwd npm/oneharness-sdk build
+
 # Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
 #
 # The two steps that take scratch space run under `check-temp-leaks.sh`, which
@@ -272,7 +282,7 @@ sdk-check: build build-mock-harness sdk-install
     bun run --cwd npm/oneharness-sdk lint
     bun run --cwd npm/oneharness-sdk typecheck
     bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test
-    bun run --cwd npm/oneharness-sdk build
+    just sdk-build
     bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.

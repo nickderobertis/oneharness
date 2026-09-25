@@ -25,9 +25,10 @@ def scratch_dir(stack: ExitStack, tag: str) -> Path:
 
     There is no test framework here to hang a teardown on, so the caller's
     :class:`contextlib.ExitStack` is the hook — it unwinds on the way out of a
-    failed run exactly as it does on a clean one.
+    failed run exactly as it does on a clean one. The name ends in this
+    process's id, which is how `scripts/check-temp-leaks.sh` tells another
+    run's live directory from one this run left behind.
     """
-    # Ends in this process's id, as `test.scratch` explains.
     return Path(
         stack.enter_context(
             tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}")

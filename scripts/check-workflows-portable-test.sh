@@ -132,20 +132,30 @@ to_crlf() {
   local line
   while IFS= read -r line || [ -n "$line" ]; do printf '%s\r\n' "${line%$'\r'}"; done <"$1"
 }
-# One carriage return per line feed: CR-CR-LF counts two, LF alone none.
+# Every line ends CR-LF: with each CR-LF pair removed, no CR or LF is left, so
+# CR-CR-LF, a bare LF and a stray CR all fail, mixed or not.
 is_crlf() {
-  local cr lf
-  cr="$(tr -cd '\r' <"$1" | wc -c)"
-  lf="$(tr -cd '\n' <"$1" | wc -c)"
-  [ $((lf)) -gt 0 ] && [ $((cr)) -eq $((lf)) ]
+  local text
+  text="$(cat "$1"; printf x)"
+  text="${text%x}"
+  [[ "$text" == *$'\r\n' ]] || return 1
+  text="${text//$'\r\n'/}"
+  [[ "$text" != *[$'\r\n']* ]]
 }
 printf 'a\r\nb\r\n' >"$work/crlf.sample"
 printf 'a\r\r\nb\r\r\n' >"$work/crcrlf.sample"
 printf 'a\nb\n' >"$work/lf.sample"
-if ! is_crlf "$work/crlf.sample" || is_crlf "$work/crcrlf.sample" || is_crlf "$work/lf.sample"; then
-  fail "is_crlf above misreads CR-LF, CR-CR-LF or LF samples" \
-    "fix: count one carriage return per line feed in is_crlf above"
+printf 'a\r\r\nb\n' >"$work/mixed.sample"
+printf 'a\rb\r\n' >"$work/stray.sample"
+if ! is_crlf "$work/crlf.sample"; then
+  fail "is_crlf above refused a CR-LF sample" "fix: accept a file whose every line ends CR-LF in is_crlf above"
 fi
+for sample in crcrlf lf mixed stray; do
+  if is_crlf "$work/$sample.sample"; then
+    fail "is_crlf above accepted the $sample sample, which is not CR-LF throughout" \
+      "fix: require every line feed to follow exactly one carriage return in is_crlf above"
+  fi
+done
 to_crlf .github/workflows/release.yml >"$work/from-lf.yml"
 to_crlf "$work/from-lf.yml" >"$release"
 for staged in "$work/from-lf.yml" "$release"; do

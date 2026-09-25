@@ -24,6 +24,7 @@ usage() {
   exit 2
 }
 
+[ "$#" -le 2 ] || usage "$# arguments given; it takes a target and a version"
 [ -n "$target" ] || usage "no target to verify"
 [ -n "$version" ] || usage "no version to verify"
 case "$target" in

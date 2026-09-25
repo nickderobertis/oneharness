@@ -91,7 +91,7 @@ read_run() {
     | . as $all
     | [$all[] | select(.head_sha == $sha)] as $matching
     | [$matching[] | select(.event == "push" and .head_branch == "main")] as $mine
-    | (([ $all[] | select((.head_sha | type) != "string") ] | length)
+    | (([ $all[] | select(.head_sha | if type == "string" then test("^[0-9a-f]{40}$") | not else true end) ] | length)
       + ([ $matching[] | select((.event | type) != "string" or (.head_branch | type) != "string") ] | length)
       + ([ $mine[] | select((.id | valid_id | not)
                             or ((.run_started_at // .created_at) | valid_instant | not)

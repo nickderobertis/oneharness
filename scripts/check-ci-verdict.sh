@@ -496,7 +496,9 @@ expect_said "$tmp/err" "1 run(s) in CI's answer"
 # selector refuses rather than guess whether it is ours.
 for anonymous in '{"id":92,"status":"completed","conclusion":"failure"}' \
                  '{"id":93,"head_sha":null,"status":"completed","conclusion":"failure"}' \
-                 '{"id":94,"head_sha":{},"status":"completed","conclusion":"failure"}'; do
+                 '{"id":94,"head_sha":{},"status":"completed","conclusion":"failure"}' \
+                 '{"id":116,"head_sha":"not-a-commit","status":"completed","conclusion":"failure"}' \
+                 '{"id":117,"head_sha":"abc1234","status":"completed","conclusion":"failure"}'; do
   run_case "{\"workflow_runs\":[$anonymous]}" "a run whose head_sha cannot be read: $anonymous"
   expect_refused
   expect_said "$tmp/err" "1 run(s) in CI's answer"

@@ -458,6 +458,7 @@ expect_said "$tmp/err" "is not a target this script knows how to install"
 
 expect_usage_error "no target to verify"
 expect_usage_error "no version to verify" pypi-cli
+expect_usage_error "3 arguments given" pypi-cli 9.9.9 npm-cli
 expect_usage_error "is not an x.y.z version" pypi-cli "9.9.9; rm -rf /"
 expect_usage_error "is not an x.y.z version" pypi-cli "1..2"
 expect_usage_error "is not an x.y.z version" pypi-cli "-"

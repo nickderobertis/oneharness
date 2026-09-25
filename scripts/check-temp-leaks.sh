@@ -174,9 +174,6 @@ if [ -n "$leaked" ]; then
   leaked=${kept%$'\n'}
 fi
 
-# Everything the command said, verbatim, the moment anything is wrong with the
-# run — including a leak after a clean exit, where it is the only account of
-# what the suite was doing when it abandoned the directory.
 if [ "$status" -ne 0 ] || [ -n "$leaked" ] || [ "$unwatched" -eq 1 ]; then
   cat "$transcript" >&2
 fi

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -55,21 +56,14 @@ class ScratchTests(unittest.TestCase):
         directory = scratch(self, "pid-probe")
         self.assertTrue(directory.name.endswith(f"-{os.getpid()}"), directory.name)
 
-    def test_a_control_store_leaves_its_socket_inside_the_tightest_budget(self) -> None:
-        """The CLI refuses a socket address past `sun_path` before it answers.
-
-        macOS allows 103 bytes before the NUL. Charged at the longest address the
-        CLI builds there — ``/private/tmp`` plus the 12-hex digest it shortens a
-        session name to — so an overrun fails on Linux too, not only in macOS CI.
-        """
+    def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
+        """Its path becomes a socket address, and macOS's per-user temp dir alone
+        spends about half of `sun_path` — the interrupt test's refusal there. The
+        budget itself is the CLI's to enforce, which that test drives for real."""
         store = control_scratch(self, "interrupt")
         self.assertTrue(store.is_dir())
-        if sys.platform == "win32":
-            return
-        self.assertEqual(str(store.parent), os.path.realpath("/tmp"))
-        address = f"/private/tmp/{store.name}/control/{'0' * 12}.sock"
-        self.assertLessEqual(len(address), 103, address)
-
+        expected = tempfile.gettempdir() if sys.platform == "win32" else os.path.realpath("/tmp")
+        self.assertEqual(str(store.parent), expected)
 
 if __name__ == "__main__":
     unittest.main()

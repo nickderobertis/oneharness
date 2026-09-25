@@ -63,13 +63,6 @@ resolve_root() (
   CDPATH='' cd -- "$1" 2>/dev/null && pwd -P
 )
 
-# A root that does not exist holds nothing to leak (and is swept afterwards if
-# the command creates it), unless it existed before the command ran: one the
-# command removed is a sweep that sees nothing, not a clean one. One that exists
-# but cannot be entered or read — or a
-# symlink leading nowhere — would match nothing and read as a clean run, so a
-# sweep that meets one fails instead. Every root is settled before the sweep
-# starts, so that refusal is this function's own status, never a pipeline's.
 # Whether a `find` diagnostic says only that one entry directly inside `root`
 # was gone by the time it was read — `find: '<root>/<name>': No such file or
 # directory`, quoted as GNU spells it in the C locale or bare as BSD does.
@@ -84,6 +77,13 @@ vanished_entry() {
   [ "$name" != "$path" ] && [ -n "$name" ] && [ "${name#*/}" = "$name" ]
 }
 
+# A root that does not exist holds nothing to leak (and is swept afterwards if
+# the command creates it), unless it existed before the command ran: one the
+# command removed is a sweep that sees nothing, not a clean one. One that exists
+# but cannot be entered or read — or a symlink leading nowhere — would match
+# nothing and read as a clean run, so a sweep that meets one fails instead.
+# Every root is settled before the sweep starts, so that refusal is this
+# function's own status, never a pipeline's.
 snapshot() {
   local dir real
   local -a reals=()
@@ -179,14 +179,14 @@ leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 # the same names, so a directory made during this run need not be this run's. A
 # scratch directory ends in the id of the process that made it
 # (`io::scratch::ScratchDir::name`, whose unit test pins that suffix for this
-# gate; `check-scratch-prefixes.sh` holds the SDK suites' helpers to it). A maker still alive whose environment lacks this run's token is someone
-# else's run in progress — a gate that counted it failed a publication on another
+# gate; `check-scratch-prefixes.sh` holds the SDK suites' helpers to it). A
+# maker still alive whose environment lacks this run's token is someone else's
+# run in progress — a gate that counted it failed a publication on another
 # checkout's live coverage suite. A maker that carries the token, has exited, or
 # whose environment cannot be read is this run's, and its directory is a leak.
-# The suffix is taken at its word, not proven: this gate catches the repository's
-# own suites leaking by accident, and their helpers name the pid they run in
-# (pinned by `ScratchDir::name`'s unit test and `check-scratch-prefixes.sh`). A
-# name that spells another live process's pid on purpose would pass it.
+# The suffix is taken at its word, not proven: this gate catches the
+# repository's own suites leaking by accident, so a name that spells another
+# live process's pid on purpose would pass it.
 named_for_a_live_process_lacking_the_run_marker() {
   local pid=${1##*-} environment command
   case "$pid" in '' | *[!0-9]*) return 1 ;; esac

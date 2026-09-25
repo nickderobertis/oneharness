@@ -204,17 +204,19 @@ named_for_a_live_process_lacking_the_run_marker() {
   ! grep -qxF "$run_marker" <<< "$environment"
 }
 if [ -n "$leaked" ]; then
-  kept=""
+  kept="" left_out=""
   while IFS= read -r dir; do
     if named_for_a_live_process_lacking_the_run_marker "$dir"; then
-      # Said rather than dropped: a descendant of this run that cleared its own
-      # environment reads exactly like another checkout's run.
-      echo "check-temp-leaks: left out $dir: its maker (pid ${dir##*-}) is alive without this run's $marker_name, so it is taken as another checkout's run; if that process is this run's own, end it and rerun" >&2
+      left_out+="${left_out:+, }$dir (pid ${dir##*-})"
     else
       kept+="$dir"$'\n'
     fi
   done <<< "$leaked"
   leaked=${kept%$'\n'}
+  # Said rather than dropped, on one line: a descendant of this run that cleared
+  # its own environment reads exactly like another checkout's run.
+  [ -z "$left_out" ] ||
+    echo "check-temp-leaks: left out as other checkouts' runs, their makers alive without this run's $marker_name: $left_out; if one is this run's own, end it and rerun" >&2
 fi
 
 if [ "$status" -ne 0 ] || [ -n "$leaked" ] || [ "$unwatched" -eq 1 ]; then

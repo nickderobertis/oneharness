@@ -154,7 +154,7 @@ if ! bash "$gate" bash -c "$ask_foreign" watched "$work/oneharness-foreign" >"$w
   fail "a scratch directory another live run made while this one was going must not be reported as this run's leak"
 fi
 [ -d "$work/oneharness-foreign-$foreign" ] || fail "the foreign run never made its directory"
-grep -q "left out $work/oneharness-foreign-$foreign: its maker (pid $foreign) is alive" "$work/out" ||
+grep -q "left out as other checkouts' runs.*$work/oneharness-foreign-$foreign (pid $foreign)" "$work/out" ||
   fail "the gate left out another live run's directory without saying which one or why"
 kill "$foreign"
 wait "$foreign" 2>/dev/null || true
@@ -204,7 +204,7 @@ child=$(cat "$work/child")
 kill "$child" 2>/dev/null || true
 [ "$unmarked" -eq 0 ] ||
   fail "a directory whose live maker lacks the run's marker should be left out, got exit $unmarked"
-grep -q "left out $work/oneharness-unmarked-$child: its maker (pid $child) is alive" "$work/out" ||
+grep -q "left out as other checkouts' runs.*$work/oneharness-unmarked-$child (pid $child)" "$work/out" ||
   fail "the gate left out a directory whose live maker cleared the run's marker without naming it"
 rm -rf "$work/oneharness-unmarked-$child" "$work/child"
 

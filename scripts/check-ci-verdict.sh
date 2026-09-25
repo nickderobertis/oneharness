@@ -457,9 +457,9 @@ expect_said "$tmp/out" "CI run 81 check jobs concluded success"
 
 # A run whose own FIELDS cannot be read is the same hazard one level down, and
 # it is the subtler one: a malformed run that is merely dropped takes the
-# selection one step closer to empty, and empty is `absent` — the state that
-# runs the gate. Each of these is a sole run, so dropping it would have reported
-# "CI has no run for this commit" and gated it here.
+# selection one step closer to empty, and empty reads as `absent`. Each of these
+# is a sole run, so dropping it would have waited out every poll and then
+# blamed a missing CI run for what is an unreadable one.
 #
 # A finished run whose conclusion is absent, or of a type this cannot act on:
 # the run RAN, so CI very likely reached a verdict this could not read.
@@ -630,10 +630,10 @@ expect_said "$tmp/err" "were unreadable"
 expect_said "$tmp/err" "it was reading repos/owner/repo/actions/workflows/ci.yml/runs"
 
 # An answer that PARSES but carries no workflow_runs array is the sharpest form
-# of this: traversing it selects nothing, and selecting nothing is `absent` —
-# the one state that runs the gate. So a truncated answer, a different endpoint's
-# JSON, or a proxy's `{"message": ...}` would have gated the commit here and
-# published on this job's own green. Each shape must refuse instead.
+# of this: traversing it selects nothing, and selecting nothing reads as
+# `absent`. So a truncated answer, a different endpoint's JSON, or a proxy's
+# `{"message": ...}` would have waited out every poll and then blamed a missing
+# CI run. Each shape must refuse at once, naming the unread answer instead.
 for shape in \
   '{"total_count":0}' \
   '{"message":"Not Found","documentation_url":"https://docs.github.com/rest"}' \

@@ -188,7 +188,32 @@ for diagnostic in \
     fail "an entry that vanished mid-sweep ('$diagnostic') must not fail the gate"
   fi
 done
-rm -rf "$work/fakebin" "$work/ran"
+# The sweep after the command is held to the same rule: armed only by the
+# command, the same failures turn a clean run red and a vanished entry does not.
+real_find=$(command -v find)
+cat >"$work/fakebin/find" <<'FIND'
+#!/usr/bin/env bash
+[ -e "$FAKE_FIND_ARMED" ] || exec "$REAL_FIND" "$@"
+printf '%b\n' "${FAKE_FIND_ERROR//@ROOT@/$1}" >&2
+exit 1
+FIND
+arm="touch '$work/armed'"
+set +e
+PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" \
+  FAKE_FIND_ERROR="find: '@ROOT@/oneharness-x': Input/output error" \
+  bash "$gate" bash -c "$arm" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 2 ] || fail "a sweep after the command that find could not finish should fail the gate (exit 2), got $status"
+grep -q "Input/output error" "$work/out" ||
+  fail "the gate should say what stopped its sweep after the command"
+rm -f "$work/armed"
+if ! PATH="$work/fakebin:$PATH" REAL_FIND="$real_find" FAKE_FIND_ARMED="$work/armed" \
+  FAKE_FIND_ERROR="find: '@ROOT@/oneharness-x': No such file or directory" \
+  bash "$gate" bash -c "$arm" >"$work/out" 2>&1; then
+  fail "an entry that vanished during the sweep after the command must not fail the gate"
+fi
+rm -rf "$work/fakebin" "$work/ran" "$work/armed"
 
 # A temp dir the gate cannot write its own files into is refused, and said.
 set +e

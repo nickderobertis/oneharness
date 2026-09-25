@@ -66,6 +66,24 @@ bash scripts/with-portable-sed.sh "$work/portable.sh" >"$work/out" 2>&1 ||
 [ "$(cat "$work/file")" = y ] ||
   fail "the portable-sed runner did not run the host's sed" "fix: check the exec at the end of its shim"
 
+# A step that runs the runner again (this test does) must reach the real sed,
+# not refuse its outer shim's probe.
+printf 'x\n' >"$work/file"
+printf 'bash %q %q\n' "$repo_root/scripts/with-portable-sed.sh" "$work/portable.sh" >"$work/nested.sh"
+bash scripts/with-portable-sed.sh "$work/nested.sh" >"$work/out" 2>&1 ||
+  fail "a nested portable-sed run refused a portable call" "$(cat "$work/out")" \
+    "fix: pass the real sed to the child through PORTABLE_SED_REAL in scripts/with-portable-sed.sh"
+[ "$(cat "$work/file")" = y ] ||
+  fail "a nested portable-sed run did not run the host's sed" "fix: check PORTABLE_SED_REAL in scripts/with-portable-sed.sh"
+
+# A step failing for its own reason keeps its own exit status.
+printf 'exit 3\n' >"$work/failing.sh"
+status=0
+bash scripts/with-portable-sed.sh "$work/failing.sh" >"$work/out" 2>&1 || status=$?
+[ "$status" = 3 ] ||
+  fail "the portable-sed runner turned a step's exit 3 into $status" "$(cat "$work/out")" \
+    "fix: exit with the child's status in scripts/with-portable-sed.sh"
+
 root="$work/crlf"
 mkdir -p "$root"
 while IFS= read -r file; do

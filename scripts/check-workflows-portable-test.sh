@@ -83,6 +83,9 @@ bash scripts/with-portable-sed.sh "$work/failing.sh" >"$work/out" 2>&1 || status
 [ "$status" = 3 ] ||
   fail "the portable-sed runner turned a step's exit 3 into $status" "$(cat "$work/out")" \
     "fix: exit with the child's status in scripts/with-portable-sed.sh"
+grep -Fq "failed with exit 3, with no sed call refused" "$work/out" ||
+  fail "the portable-sed runner passed on a step's failure without saying it was the step's own" "$(cat "$work/out")" \
+    "fix: restore the failed-step diagnostic in scripts/with-portable-sed.sh"
 
 root="$work/crlf"
 mkdir -p "$root"

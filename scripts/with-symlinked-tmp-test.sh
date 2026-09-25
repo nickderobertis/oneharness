@@ -88,6 +88,14 @@ if [ "$symlinks" -eq 1 ]; then
   fi
   grep -q "${prefix}leaked-past-an-override" "$work/out" ||
     fail "the lane went red under an inherited OH_SCRATCH_ROOTS without naming the directory left behind"
+  # ...and the roots that list did name are still watched beside it.
+  if OH_SCRATCH_ROOTS="$work/elsewhere" \
+    bash "$lane" bash -c "mkdir '$work/elsewhere/${prefix}leaked-in-an-inherited-root'" >"$work/out" 2>&1; then
+    fail "a leak under an inherited OH_SCRATCH_ROOTS entry should still turn the lane red"
+  fi
+  grep -q "${prefix}leaked-in-an-inherited-root" "$work/out" ||
+    fail "the lane went red without naming the directory left in an inherited root"
+  rm -rf "$work/elsewhere/${prefix}leaked-in-an-inherited-root"
 
   set +e
   bash "$lane" bash -c 'exit 5' >"$work/out" 2>&1

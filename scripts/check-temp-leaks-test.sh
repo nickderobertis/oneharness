@@ -485,7 +485,6 @@ bash "$gate" >"$work/out" 2>&1 || status=$?
 grep -q "no command to run" "$work/out" ||
   fail "the usage error must say what is missing"
 
-# Both symlink cases are skipped together where the shell cannot make one.
 if [ "$symlinks" -eq 0 ]; then
   skip "a leak under a symlinked root, and a dangling symlink as a scratch root: this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)"
 fi

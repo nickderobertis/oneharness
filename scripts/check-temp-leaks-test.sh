@@ -20,7 +20,17 @@ cd "$repo_root"
 
 gate="scripts/check-temp-leaks.sh"
 work="$(mktemp -d)"
-trap 'rm -rf "$work" || echo "check-temp-leaks-test: could not remove its scratch directory; fix: rm -rf $work" >&2' EXIT
+# Scratch left behind is a failure, so a run whose cases all passed still exits
+# non-zero when it cannot give its directory back.
+cleanup() {
+  local status=$?
+  if ! rm -rf "$work"; then
+    echo "check-temp-leaks-test: could not remove its scratch directory; fix: rm -rf $work" >&2
+    [ "$status" -ne 0 ] || status=1
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
 
 # Watch only this test's own scratch root, so a real `oneharness` run happening
 # elsewhere on the host cannot decide the verdict.

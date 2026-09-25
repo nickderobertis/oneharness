@@ -217,7 +217,18 @@ fi
 if [ -n "$leaked" ]; then
   echo "check-temp-leaks: '$1' left scratch directories behind:" >&2
   printf '%s\n' "$leaked" | sed 's/^/  /' >&2
-  echo "  fix: own each one with oneharness_core::io::scratch::ScratchDir, which removes it when the test ends — including when the test panics." >&2
+  # Each suite owns its scratch through its own helper, told apart by the prefix
+  # `check-scratch-prefixes.sh` holds it to, so the fix names the one that made it.
+  names=$(printf '%s\n' "$leaked" | sed 's#.*/##')
+  if grep -q "^${prefix}sdk-" <<< "$names"; then
+    echo "  fix (${prefix}sdk-*): make each with scratch(), scratchSync() or controlScratch() from npm/oneharness-sdk/test/scratch.mjs, then remove what they hold: registerScratchCleanup() from scratch-hook.mjs in a test file, or process.on('exit', removeScratch) in a script such as test/package-e2e.mjs." >&2
+  fi
+  if grep -q "^${prefix}python-" <<< "$names"; then
+    echo "  fix (${prefix}python-*): make each with scratch() or control_scratch() from python/oneharness-sdk/test/scratch.py, which registers its removal with the test case — or, outside a test case, scratch_dir() in package_e2e.py, which its ExitStack removes." >&2
+  fi
+  if grep -v "^${prefix}sdk-" <<< "$names" | grep -q -v "^${prefix}python-"; then
+    echo "  fix: own each one with oneharness_core::io::scratch::ScratchDir, which removes it when the test ends — including when the test panics." >&2
+  fi
   # Named either way, but a command that failed keeps its status: the leak is
   # usually a consequence of the failure, and reporting it as the outcome would
   # hide the thing to fix first.

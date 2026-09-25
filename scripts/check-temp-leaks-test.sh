@@ -97,6 +97,27 @@ grep -q "oneharness-leaked" "$work/out" ||
   fail "the gate failed but did not name the directory that was left behind"
 rm -rf "$work/oneharness-leaked"
 
+# The fix a leak gets is its own suite's helper, never another suite's: a Node or
+# Python directory told to use the Rust `ScratchDir` sends its reader nowhere.
+rust_fix="io::scratch::ScratchDir"
+node_fix="npm/oneharness-sdk/test/scratch.mjs"
+python_fix="python/oneharness-sdk/test/scratch.py"
+leak_fixes() {
+  local dir=$1 wanted=$2 fix
+  run_gate "mkdir -p '$work/$dir'" >/dev/null
+  rm -rf "${work:?}/$dir"
+  for fix in "$rust_fix" "$node_fix" "$python_fix"; do
+    if [ "$fix" = "$wanted" ]; then
+      grep -qF "$fix" "$work/stderr" || fail "a leaked $dir should have been told to use $fix"
+    else
+      ! grep -qF "$fix" "$work/stderr" || fail "a leaked $dir was told to use $fix, which does not make it"
+    fi
+  done
+}
+leak_fixes oneharness-cli-a1b2c3-4242 "$rust_fix"
+leak_fixes oneharness-sdk-int-0a1b2c3d4e5f-4242 "$node_fix"
+leak_fixes oneharness-python-watch-ww2lnpwx-4242 "$python_fix"
+
 # A directory some other tool left is not a scratch directory: the sweep is
 # keyed on the prefix `io::scratch` mints, not on anything in the temp dir.
 if ! bash "$gate" bash -c "mkdir -p '$work/some-other-tool'" >"$work/out" 2>&1; then

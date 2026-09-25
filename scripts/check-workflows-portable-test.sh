@@ -123,8 +123,20 @@ done < <(git ls-files -- scripts .github Cargo.toml crates/oneharness-core/Cargo
   pyproject.toml python/oneharness-sdk/pyproject.toml npm/oneharness/package.json \
   npm/oneharness-sdk/package.json justfile release-plz.toml)
 release="$root/.github/workflows/release.yml"
-awk '{ printf "%s\r\n", $0 }' .github/workflows/release.yml >"$release"
-grep -q $'\r$' "$release" || fail "could not stage a CRLF release.yml" "fix: check awk writes the carriage returns above"
+# A Windows checkout already carries CRLF, so the fixture strips any carriage
+# return before writing its own: either checkout must stage exactly CR-LF.
+to_crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$1"; }
+to_crlf .github/workflows/release.yml >"$work/from-lf.yml"
+to_crlf "$work/from-lf.yml" >"$release"
+for staged in "$work/from-lf.yml" "$release"; do
+  grep -q $'\r$' "$staged" || fail "could not stage a CRLF release.yml" "fix: check to_crlf above writes the carriage returns"
+  ! grep -q $'\r\r' "$staged" ||
+    fail "the CRLF release.yml fixture carries CR-CR-LF, which is no Windows checkout's line ending" \
+      "fix: strip a trailing carriage return in to_crlf above before writing CR-LF"
+done
+cmp -s "$work/from-lf.yml" "$release" ||
+  fail "the CRLF release.yml fixture differs between an LF and a CRLF checkout" \
+    "fix: make to_crlf above normalise its input to LF before writing CR-LF"
 
 for script in check-workflows.sh check-workflows-e2e.sh; do
   bash "$root/scripts/$script" >"$work/out" 2>&1 ||

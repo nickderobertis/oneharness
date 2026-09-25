@@ -109,24 +109,32 @@ import sys
 from importlib.metadata import version
 from oneharness_sdk import OneHarness, __version__
 
+
+# Not `assert`: PYTHONOPTIMIZE strips those, and every check would then pass.
+def require(holds, message):
+    if not holds:
+        raise SystemExit(message)
+
+
 expected = sys.argv[1]
-assert __version__ == expected, f"oneharness_sdk.__version__ is {__version__}, not {expected}"
+require(__version__ == expected, f"oneharness_sdk.__version__ is {__version__}, not {expected}")
 # Each distribution names itself. An SDK whose own metadata is wrong and an SDK
 # installed beside a different CLI are different broken releases, and the
-# exhausted bound surfaces only what the last attempt said — so a bare assert
+# exhausted bound surfaces only what the last attempt said — so a bare check
 # here would report a broken release with nothing to act on.
 for dist in ("oneharness-sdk", "oneharness-cli"):
     installed = version(dist)
-    assert installed == expected, f"the installed {dist} is {installed}, not {expected}"
+    require(installed == expected, f"the installed {dist} is {installed}, not {expected}")
 
 
 async def verify():
     harnesses = await OneHarness().list()
-    assert (
+    require(
         isinstance(harnesses, list)
         and harnesses
-        and all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in harnesses)
-    ), f"the installed SDK did not return the packaged CLI registry: got {harnesses!r}"
+        and all(isinstance(item, dict) and isinstance(item.get("id"), str) for item in harnesses),
+        f"the installed SDK did not return the packaged CLI registry: got {harnesses!r}",
+    )
 
 
 asyncio.run(verify())

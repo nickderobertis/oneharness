@@ -391,6 +391,23 @@ unset STUB_SDK_MANIFEST_NULL
 expect_status 1
 expect_said "$tmp/err" "installed SDK package.json is not a JSON object: got null"
 
+# Python drops `assert` under PYTHONOPTIMIZE, which a runner may set; the
+# program's checks must refuse there too.
+PYTHONOPTIMIZE=1 STUB_SDK_VERSION=1.1.1 run_case pypi-sdk "a wrong Python SDK version under PYTHONOPTIMIZE"
+unset PYTHONOPTIMIZE STUB_SDK_VERSION
+expect_status 1
+expect_said "$tmp/err" "oneharness_sdk.__version__ is 1.1.1, not $VERSION_UNDER_TEST"
+
+PYTHONOPTIMIZE=1 STUB_CLI_DIST_VERSION=1.1.1 run_case pypi-sdk "a Python SDK beside a different CLI under PYTHONOPTIMIZE"
+unset PYTHONOPTIMIZE STUB_CLI_DIST_VERSION
+expect_status 1
+expect_said "$tmp/err" "the installed oneharness-cli is 1.1.1, not $VERSION_UNDER_TEST"
+
+PYTHONOPTIMIZE=1 STUB_SDK_REGISTRY_EMPTY=1 run_case pypi-sdk "a Python SDK reaching no registry under PYTHONOPTIMIZE"
+unset PYTHONOPTIMIZE STUB_SDK_REGISTRY_EMPTY
+expect_status 1
+expect_said "$tmp/err" "did not return the packaged CLI registry"
+
 # Both SDK targets lag exactly as the CLI ones do: one recovers inside the
 # bound, one never does and must surface its last error.
 STUB_PIP_FAILS=2 run_case pypi-sdk "a PyPI SDK install that resolves on the third try"

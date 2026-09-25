@@ -3,9 +3,8 @@
 # Behavioral test of the scratch-prefix drift check.
 #
 # A gate nobody has watched fail is not known to work — and this one's whole job
-# is to fail. So it is driven against a checkout whose Node prefix has drifted
-# out of the sweep, one renamed inside it, a leak gate routing by another name, one whose declaration is gone, one whose names drop the
-# maker's pid, and one whose Rust constant is gone, and asserted to go red naming the file each time.
+# is to fail. So each case below breaks one thing it reads and asserts it goes
+# red naming the file.
 #
 # Quiet on success, one line. On failure it prints what the check said.
 set -euo pipefail

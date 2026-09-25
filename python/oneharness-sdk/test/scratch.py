@@ -43,13 +43,13 @@ def control_scratch(case: unittest.TestCase, tag: str) -> Path:
     store's own name begins — a name ending in the pid then leaves the socket no
     room. Windows has no ``sun_path``, so the temp dir serves there.
     """
-    root = None if sys.platform == "win32" else os.path.realpath("/tmp")
+    # S108: the shared root is the point, and mkdtemp still makes an unguessable
+    # owner-only directory under it.
+    root = None if sys.platform == "win32" else os.path.realpath("/tmp")  # noqa: S108
     return _scratch_under(case, tag, root)
 
 
 def _scratch_under(case: unittest.TestCase, tag: str, root: str | None) -> Path:
-    directory = Path(
-        tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}", dir=root)
-    )
+    directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}", dir=root))
     case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
     return directory

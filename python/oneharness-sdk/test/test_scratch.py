@@ -62,8 +62,11 @@ class ScratchTests(unittest.TestCase):
         budget itself is the CLI's to enforce, which that test drives for real."""
         store = control_scratch(self, "interrupt")
         self.assertTrue(store.is_dir())
-        expected = tempfile.gettempdir() if sys.platform == "win32" else os.path.realpath("/tmp")
+        # S108: asserts the root control_scratch() chooses, and creates nothing there.
+        tmp = os.path.realpath("/tmp")  # noqa: S108
+        expected = tempfile.gettempdir() if sys.platform == "win32" else tmp
         self.assertEqual(str(store.parent), expected)
+
 
 if __name__ == "__main__":
     unittest.main()

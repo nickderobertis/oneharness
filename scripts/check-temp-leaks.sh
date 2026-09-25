@@ -178,7 +178,7 @@ leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 # the same names, so a directory made during this run need not be this run's. A
 # scratch directory ends in the id of the process that made it
 # (`io::scratch::ScratchDir::name`, whose unit test pins that suffix for this
-# gate). A maker still alive whose environment lacks this run's token is someone
+# gate; `check-scratch-prefixes.sh` holds the SDK suites' helpers to it). A maker still alive whose environment lacks this run's token is someone
 # else's run in progress — a gate that counted it failed a publication on another
 # checkout's live coverage suite. A maker that carries the token, has exited, or
 # whose environment cannot be read is this run's, and its directory is a leak.

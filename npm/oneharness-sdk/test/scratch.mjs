@@ -5,8 +5,9 @@
 // that removal is allowed — so a test that throws cleans up exactly like one
 // that passes, which a `finally` per call site has to earn again every time.
 
-import { mkdtempSync, rmSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, rmSync } from "node:fs";
+import { mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
@@ -24,13 +25,28 @@ export const PREFIX = "oneharness-sdk-";
 const held = [];
 
 /**
+ * A fresh path for `tag`, ending in this process's id — which is how
+ * `scripts/check-temp-leaks.sh` tells another checkout's live directory from
+ * one this run left behind. `mkdtemp` cannot put anything after its random
+ * part, so the caller makes the directory with an exclusive `mkdir` instead.
+ *
+ * @param {string} tag
+ * @returns {string}
+ */
+function scratchPath(tag) {
+	const unique = randomBytes(6).toString("hex");
+	return resolve(tmpdir(), `${PREFIX}${tag}-${unique}-${process.pid}`);
+}
+
+/**
  * A private directory for one test, removed when that test ends.
  *
  * @param {string} tag distinguishes one case's directory from another's
  * @returns {Promise<string>}
  */
 export async function scratch(tag) {
-	const directory = await mkdtemp(resolve(tmpdir(), `${PREFIX}${tag}-`));
+	const directory = scratchPath(tag);
+	await mkdir(directory, { mode: 0o700 });
 	held.push(directory);
 	return directory;
 }
@@ -42,7 +58,8 @@ export async function scratch(tag) {
  * @returns {string}
  */
 export function scratchSync(tag) {
-	const directory = mkdtempSync(resolve(tmpdir(), `${PREFIX}${tag}-`));
+	const directory = scratchPath(tag);
+	mkdirSync(directory, { mode: 0o700 });
 	held.push(directory);
 	return directory;
 }

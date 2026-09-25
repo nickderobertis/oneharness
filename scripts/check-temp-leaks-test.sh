@@ -119,6 +119,28 @@ kill "$foreign"
 wait "$foreign" 2>/dev/null || true
 rm -rf "$work/oneharness-foreign-$foreign"
 
+# The SDK suites' names carry a random part before the pid (`mkdtemp` makes it),
+# and attribution reads only the trailing pid: another run's live one is left
+# out, while the same shape ending in the watched command's own pid is a leak.
+# Without the pid — the shape those helpers used to make — nothing names a
+# maker, so a concurrent SDK run elsewhere on the host failed this run's gate.
+sleep 60 &
+foreign=$!
+if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-python-installed-mq_z5o-$foreign'" >"$work/out" 2>&1; then
+  kill "$foreign"
+  fail "an SDK-shaped scratch directory ending in another live run's pid must not be reported as this run's leak"
+fi
+kill "$foreign"
+wait "$foreign" 2>/dev/null || true
+rm -rf "$work/oneharness-python-installed-mq_z5o-$foreign"
+if bash "$gate" bash -c "mkdir -p \"$work/oneharness-sdk-probe-3fa9c1-\$\$\"; echo \$\$ > '$work/own'" >"$work/out" 2>&1; then
+  fail "an SDK-shaped scratch directory ending in the watched command's own pid should have been reported"
+fi
+own=$(cat "$work/own")
+grep -q "oneharness-sdk-probe-3fa9c1-$own" "$work/out" ||
+  fail "the gate failed but did not name the SDK-shaped directory the watched command left"
+rm -rf "$work/oneharness-sdk-probe-3fa9c1-$own" "$work/own"
+
 # ...but one the watched command's own child made is this run's, even while that
 # child outlives the command.
 bash "$gate" bash -c "sleep 60 >/dev/null 2>&1 & echo \$! > '$work/child'; mkdir -p '$work/oneharness-outlived-'\$!" >"$work/out" 2>&1 &&

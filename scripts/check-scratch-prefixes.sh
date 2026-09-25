@@ -58,5 +58,26 @@ for declaration in "${declarations[@]}"; do
   esac
 done
 
+# The leak gate leaves a directory out of its verdict only when its name ends in
+# the id of a live process outside the run, so a name without that suffix is
+# always counted — and every concurrent suite on the host then fails this one.
+# Rust's `ScratchDir::name` pins its suffix in a unit test; each helper here
+# spells its own, so each spelling is required where it is made.
+# shellcheck disable=SC2016  # these are source spellings to find, not expansions
+pid_suffixes=(
+  'npm/oneharness-sdk/test/scratch.mjs:-${process.pid}`'
+  'python/oneharness-sdk/test/scratch.py:suffix=f"-{os.getpid()}"'
+  'python/oneharness-sdk/test/package_e2e.py:suffix=f"-{os.getpid()}"'
+)
+for suffix in "${pid_suffixes[@]}"; do
+  file=${suffix%%:*}
+  spelling=${suffix#*:}
+  if ! grep -qF -- "$spelling" "$file"; then
+    echo "check-scratch-prefixes: $file no longer ends its scratch names in the maker's process id ('$spelling')." >&2
+    echo "  fix: end each name in the pid, as io::scratch::ScratchDir::name does, so scripts/check-temp-leaks.sh can tell another run's live directory from this run's leak." >&2
+    failed=1
+  fi
+done
+
 [ "$failed" -eq 0 ] || exit 1
-echo "check-scratch-prefixes: every suite's scratch prefix is inside the leak gate's sweep"
+echo "check-scratch-prefixes: every suite's scratch prefix is inside the leak gate's sweep, and every name ends in its maker's pid"

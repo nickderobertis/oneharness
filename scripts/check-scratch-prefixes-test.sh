@@ -4,8 +4,8 @@
 #
 # A gate nobody has watched fail is not known to work — and this one's whole job
 # is to fail. So it is driven against a checkout whose Node prefix has drifted
-# out of the sweep, one whose declaration is gone, and one whose Rust constant is
-# gone, and asserted to go red naming the file each time.
+# out of the sweep, one whose declaration is gone, one whose names drop the
+# maker's pid, and one whose Rust constant is gone, and asserted to go red naming the file each time.
 #
 # Quiet on success, one line. On failure it prints what the check said.
 set -euo pipefail
@@ -58,6 +58,18 @@ if bash "$check" >"$work/out" 2>&1; then
   fail "a removed prefix declaration should have failed the check"
 fi
 grep -q "declares no scratch prefix" "$work/out" || fail "the check failed but did not say the declaration is missing"
+restore
+
+# A helper whose names no longer end in the maker's pid is red, naming the file:
+# the leak gate would count every such directory another run made as a leak.
+# shellcheck disable=SC2016  # the Node source's own template spelling, not an expansion
+sed -i.bak 's/-${process.pid}`/`/' "$node_prefixes"
+rm -f "$node_prefixes.bak"
+if bash "$check" >"$work/out" 2>&1; then
+  fail "a scratch helper whose names drop the maker's pid should have failed the check"
+fi
+grep -q "$node_prefixes no longer ends its scratch names in the maker's process id" "$work/out" ||
+  fail "the check failed but did not name the helper that dropped the pid"
 restore
 
 # ...and so is a Rust constant that moved, since every comparison depends on it.

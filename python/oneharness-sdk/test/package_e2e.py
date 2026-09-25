@@ -27,7 +27,12 @@ def scratch_dir(stack: ExitStack, tag: str) -> Path:
     :class:`contextlib.ExitStack` is the hook — it unwinds on the way out of a
     failed run exactly as it does on a clean one.
     """
-    return Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-")))
+    # Ends in this process's id, as `test.scratch` explains.
+    return Path(
+        stack.enter_context(
+            tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}")
+        )
+    )
 
 
 def cargo_version() -> str:

@@ -7,6 +7,7 @@ a test that errored or failed exactly as it does after one that passed, which a
 
 from __future__ import annotations
 
+import os
 import shutil
 import tempfile
 import unittest
@@ -24,8 +25,10 @@ PREFIX = "oneharness-python-"
 def scratch(case: unittest.TestCase, tag: str) -> Path:
     """Return a private directory for ``case``, removed when that case ends.
 
-    ``tag`` distinguishes one case's directory from another's.
+    ``tag`` distinguishes one case's directory from another's. The name ends in
+    this process's id, which is how ``scripts/check-temp-leaks.sh`` tells another
+    checkout's live directory from one this run left behind.
     """
-    directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-"))
+    directory = Path(tempfile.mkdtemp(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}"))
     case.addCleanup(shutil.rmtree, directory, ignore_errors=True)
     return directory

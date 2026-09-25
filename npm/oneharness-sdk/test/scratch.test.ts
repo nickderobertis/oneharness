@@ -111,6 +111,13 @@ test("scratch names carry the prefix the leak gate sweeps for", async () => {
 	expect(directory.split(/[\\/]/u).at(-1)).toStartWith(PREFIX);
 });
 
+test("scratch names end in the id of the process that made them", () => {
+	// The leak gate reads that suffix to leave another checkout's live directory
+	// out of its verdict; a name without it is counted as this run's leak.
+	const directory = scratchSync("pid-probe");
+	expect(directory.split(/[\\/]/u).at(-1)).toEndWith(`-${process.pid}`);
+});
+
 test("the exit handler's synchronous removal gives its directory back", () => {
 	// Every hook here awaits `removeScratchAsync`, so this suite would otherwise
 	// never reach the synchronous one — and `package-e2e.mjs` is the caller that

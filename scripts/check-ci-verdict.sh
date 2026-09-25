@@ -696,7 +696,7 @@ unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "exceeds the 3600-second bound"
 
-# Keep the three prose copies of the fallback rule aligned with the contract in
+# Keep the four prose copies of the fallback rule aligned with the contract in
 # scripts/ci-verdict.sh.
 #
 # Matching is whitespace- and comment-marker-insensitive, because each copy
@@ -715,7 +715,8 @@ flat_contract="$(printf '%s' "$contract" | flatten)"
 for stated_in in \
   .github/workflows/release.yml \
   AGENTS.md \
-  README.md; do
+  README.md \
+  release-plz.toml; do
   if ! flatten <"$stated_in" | grep -Fq "$flat_contract"; then
     echo "check-ci-verdict: $stated_in does not state the CI-verdict fallback rule as scripts/ci-verdict.sh states it" >&2
     echo "  Next: quote this sentence there, wrapped however that file wraps (the comment markers and line breaks do not matter, the words do):" >&2

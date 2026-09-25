@@ -210,15 +210,6 @@ if [ "$status" -ne 0 ] || [ -n "$leaked" ] || [ "$unwatched" -eq 1 ]; then
   cat "$transcript" >&2
 fi
 
-# A command that failed without saying anything leaves the caller a bare exit
-# code from a step it did not run itself, so the gate says what it ran and what
-# came back. Only when the failure is the command's: a leak after a clean exit
-# has its own account below.
-if [ "$status" -ne 0 ] && [ ! -s "$transcript" ]; then
-  echo "check-temp-leaks: '$*' exited $status without printing anything." >&2
-  echo "  fix: run that command directly — this gate captured its output and there was none to replay." >&2
-fi
-
 if [ -n "$leaked" ]; then
   echo "check-temp-leaks: '$1' left scratch directories behind:" >&2
   printf '%s\n' "$leaked" | sed 's/^/  /' >&2
@@ -232,5 +223,19 @@ fi
 # A root the command left unsweepable is a verdict this gate cannot give; the
 # command's own failure still wins.
 [ "$unwatched" -eq 1 ] && [ "$status" -eq 0 ] && exit 2
+
+# A failed command's status is the verdict, so the gate's output ends on what to
+# do about it — after any leak or unswept root, which are usually its
+# consequences. One that failed silently leaves a bare exit code from a step the
+# caller did not run itself, so the gate says what it ran and what came back.
+if [ "$status" -ne 0 ]; then
+  if [ -s "$transcript" ]; then
+    echo "check-temp-leaks: '$*' exited $status; its output is replayed above." >&2
+    echo "  fix: resolve the first error in that output, then rerun '$*'." >&2
+  else
+    echo "check-temp-leaks: '$*' exited $status without printing anything." >&2
+    echo "  fix: run that command directly — this gate captured its output and there was none to replay." >&2
+  fi
+fi
 
 exit "$status"

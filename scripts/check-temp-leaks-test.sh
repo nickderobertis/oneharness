@@ -442,8 +442,8 @@ status=$(run_gate "exit 4")
 [ "$status" -eq 4 ] || fail "a silent failing command must keep its status; got $status"
 grep -q "exited 4 without printing anything" "$work/stderr" ||
   fail "a silent failure must be reported rather than left as a bare exit code"
-grep -q "run that command directly" "$work/stderr" ||
-  fail "the silent-failure report must say what to do next"
+tail -n 1 "$work/stderr" | grep -q "fix: run that command directly" ||
+  fail "the silent-failure report must end with what to do next; it ended: $(tail -n 1 "$work/stderr")"
 [ ! -s "$work/stdout" ] ||
   fail "the gate's own diagnostics belong on stderr; stdout carried: $(cat "$work/stdout")"
 
@@ -453,6 +453,8 @@ status=$(run_gate "$chatter; exit 4")
 [ "$status" -eq 4 ] || fail "a chatty failing command must keep its status; got $status"
 grep -q "without printing anything" "$work/stderr" &&
   fail "a command that printed must not be reported as silent"
+tail -n 1 "$work/stderr" | grep -q "fix: resolve the first error in that output" ||
+  fail "a chatty failure must end with what to do next; it ended: $(tail -n 1 "$work/stderr")"
 
 # A leak is the other way of going red, and it replays just as much: on a clean
 # exit the command's own output is the only account of what it was doing when it
@@ -475,6 +477,8 @@ bash "$gate" bash -c "mkdir -p '$work/oneharness-failed-and-leaked'; exit 3" >"$
   fail "a command that failed AND leaked must keep its own status; got $status"
 grep -q "oneharness-failed-and-leaked" "$work/out" ||
   fail "the leak must still be named even when the command's status wins"
+tail -n 1 "$work/out" | grep -q "fix: run that command directly" ||
+  fail "a command that failed AND leaked must end with what to do about the failure; it ended: $(tail -n 1 "$work/out")"
 rm -rf "$work/oneharness-failed-and-leaked"
 
 # Asked to watch nothing at all, the gate says what to pass rather than

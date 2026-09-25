@@ -19,7 +19,21 @@ set -euo pipefail
 }
 
 # A nested run keeps the outer run's real sed rather than probing its shim.
-real_sed="${PORTABLE_SED_REAL:-$(command -v sed)}"
+real_sed="${PORTABLE_SED_REAL:-$(command -v sed || true)}"
+source_name="${PORTABLE_SED_REAL:+PORTABLE_SED_REAL}"
+source_name="${source_name:-the sed on PATH}"
+case "$real_sed" in
+  /*) sed_ok=1 ;;
+  *) sed_ok=0 ;;
+esac
+if [ "$sed_ok" = 1 ] && [ -f "$real_sed" ] && [ -x "$real_sed" ] &&
+  [ "$(printf 'a\n' | "$real_sed" 's/a/b/' 2>/dev/null)" = b ]; then
+  :
+else
+  echo "with-portable-sed: $source_name ('$real_sed') is not an absolute path to a working sed" >&2
+  echo "  fix: unset PORTABLE_SED_REAL, or set it to the host's sed: PORTABLE_SED_REAL=\"\$(command -v sed)\"" >&2
+  exit 2
+fi
 posix=""
 if "$real_sed" --posix -n p </dev/null >/dev/null 2>&1; then
   posix="--posix"

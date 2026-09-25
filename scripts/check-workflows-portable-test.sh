@@ -76,6 +76,21 @@ bash scripts/with-portable-sed.sh "$work/nested.sh" >"$work/out" 2>&1 ||
 [ "$(cat "$work/file")" = y ] ||
   fail "a nested portable-sed run did not run the host's sed" "fix: check PORTABLE_SED_REAL in scripts/with-portable-sed.sh"
 
+# An inherited real sed that is not one is refused before any step runs.
+printf 'touch %q\n' "$work/ran" >"$work/marker.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$work/not-sed"
+chmod +x "$work/not-sed"
+for bad in "$work/not-sed" relative-sed "$work/missing-sed"; do
+  status=0
+  PORTABLE_SED_REAL="$bad" bash scripts/with-portable-sed.sh "$work/marker.sh" >"$work/out" 2>&1 || status=$?
+  [ "$status" = 2 ] && [ ! -e "$work/ran" ] ||
+    fail "the portable-sed runner accepted PORTABLE_SED_REAL='$bad' (exit $status)" "$(cat "$work/out")" \
+      "fix: restore the working-sed check on PORTABLE_SED_REAL in scripts/with-portable-sed.sh"
+  grep -Fq "is not an absolute path to a working sed" "$work/out" ||
+    fail "the portable-sed runner refused PORTABLE_SED_REAL='$bad' without saying why" "$(cat "$work/out")" \
+      "fix: restore that refusal's message in scripts/with-portable-sed.sh"
+done
+
 # A step failing for its own reason keeps its own exit status.
 printf 'exit 3\n' >"$work/failing.sh"
 status=0

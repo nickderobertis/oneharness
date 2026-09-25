@@ -182,7 +182,11 @@ leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 # else's run in progress — a gate that counted it failed a publication on another
 # checkout's live coverage suite. A maker that carries the token, has exited, or
 # whose environment cannot be read is this run's, and its directory is a leak.
-made_outside_this_run() {
+# The suffix is taken at its word, not proven: this gate catches the repository's
+# own suites leaking by accident, and their helpers name the pid they run in
+# (pinned by `ScratchDir::name`'s unit test and `check-scratch-prefixes.sh`). A
+# name that spells another live process's pid on purpose would pass it.
+named_for_a_live_process_outside_this_run() {
   local pid=${1##*-} environment command
   case "$pid" in '' | *[!0-9]*) return 1 ;; esac
   if [ -r "/proc/$pid/environ" ]; then
@@ -201,7 +205,7 @@ made_outside_this_run() {
 if [ -n "$leaked" ]; then
   kept=""
   while IFS= read -r dir; do
-    made_outside_this_run "$dir" || kept+="$dir"$'\n'
+    named_for_a_live_process_outside_this_run "$dir" || kept+="$dir"$'\n'
   done <<< "$leaked"
   leaked=${kept%$'\n'}
 fi

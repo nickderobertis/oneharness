@@ -111,32 +111,47 @@ if ! bash "$gate" true >"$work/out" 2>&1; then
 fi
 rm -rf "$work/oneharness-pre-existing"
 
+# Another checkout's run is stood in for by a process started outside the gate,
+# so it lacks the run's token: it makes `<stem>-<its pid>` only once the watched
+# command asks, then stays alive, and the watched command waits to see it made.
+# Prints that process's pid.
+foreign_run() {
+  local stem=$1
+  # shellcheck disable=SC2016  # expanded by the foreign process, not here
+  bash -c 'until [ -e "$1.go" ]; do sleep 0.1; done; mkdir "$1-$$"; touch "$1.made"; exec sleep 60' \
+    foreign "$work/$stem" >/dev/null 2>&1 &
+  echo "$!"
+}
+# The watched command's half: ask the foreign run for its directory, and wait
+# (bounded) until it exists, so the directory is made while this run is going.
+ask_foreign="touch \"\$1.go\"; for _ in \$(seq 100); do [ -e \"\$1.made\" ] && exit 0; sleep 0.1; done; exit 9"
+
 # One another checkout's suite made while this run was going, and whose maker is
 # still alive, is that suite's scratch — not this run's leak.
-sleep 60 &
-foreign=$!
-if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-foreign-$foreign'" >"$work/out" 2>&1; then
+foreign=$(foreign_run oneharness-foreign)
+if ! bash "$gate" bash -c "$ask_foreign" watched "$work/oneharness-foreign" >"$work/out" 2>&1; then
   kill "$foreign"
-  fail "a scratch directory whose making process is still alive must not be reported as this run's leak"
+  fail "a scratch directory another live run made while this one was going must not be reported as this run's leak"
 fi
+[ -d "$work/oneharness-foreign-$foreign" ] || fail "the foreign run never made its directory"
 kill "$foreign"
 wait "$foreign" 2>/dev/null || true
-rm -rf "$work/oneharness-foreign-$foreign"
+rm -rf "$work/oneharness-foreign-$foreign" "$work/oneharness-foreign.go" "$work/oneharness-foreign.made"
 
 # The SDK suites' names carry a random part before the pid (`mkdtemp` makes it),
 # and attribution reads only the trailing pid: another run's live one is left
 # out, while the same shape ending in the watched command's own pid is a leak.
 # Without the pid — the shape those helpers used to make — nothing names a
 # maker, so a concurrent SDK run elsewhere on the host failed this run's gate.
-sleep 60 &
-foreign=$!
-if ! bash "$gate" bash -c "mkdir -p '$work/oneharness-python-installed-mq_z5o-$foreign'" >"$work/out" 2>&1; then
+foreign=$(foreign_run oneharness-python-installed-mq_z5o)
+if ! bash "$gate" bash -c "$ask_foreign" watched "$work/oneharness-python-installed-mq_z5o" >"$work/out" 2>&1; then
   kill "$foreign"
-  fail "an SDK-shaped scratch directory ending in another live run's pid must not be reported as this run's leak"
+  fail "an SDK-shaped scratch directory another live run made while this one was going must not be reported as this run's leak"
 fi
+[ -d "$work/oneharness-python-installed-mq_z5o-$foreign" ] || fail "the foreign SDK-shaped run never made its directory"
 kill "$foreign"
 wait "$foreign" 2>/dev/null || true
-rm -rf "$work/oneharness-python-installed-mq_z5o-$foreign"
+rm -rf "$work/oneharness-python-installed-mq_z5o-$foreign" "$work/oneharness-python-installed-mq_z5o.go" "$work/oneharness-python-installed-mq_z5o.made"
 if bash "$gate" bash -c "mkdir -p \"$work/oneharness-sdk-probe-3fa9c1-\$\$\"; echo \$\$ > '$work/own'" >"$work/out" 2>&1; then
   fail "an SDK-shaped scratch directory ending in the watched command's own pid should have been reported"
 fi

@@ -191,6 +191,13 @@ enum Redirect {
     Deliverable(RedirectInput),
 }
 
+/// The abort a committed redirection rides has landed, so it is the next turn.
+fn make_deliverable(slot: &mut Redirect) {
+    if let Redirect::Committed(input) = std::mem::replace(slot, Redirect::None) {
+        *slot = Redirect::Deliverable(input);
+    }
+}
+
 impl ControlHandle {
     /// An unbound handle whose report names `starts_on` until a candidate binds
     /// its own mechanism.
@@ -437,10 +444,7 @@ impl ControlHandle {
 
     /// The abort landed, so a committed redirection is now the next turn.
     fn release_redirect(&self) {
-        let mut slot = self.redirect();
-        if let Redirect::Committed(input) = std::mem::replace(&mut *slot, Redirect::None) {
-            *slot = Redirect::Deliverable(input);
-        }
+        make_deliverable(&mut self.redirect());
     }
 
     /// Whether a redirection is committed and not yet delivered.
@@ -666,25 +670,29 @@ impl ControlHandle {
             }
             Delivery::Frames(frames) => frames,
         };
+        // Held from the first frame until the message is deliverable: the
+        // harness can answer the abort before this thread is back from writing
+        // it, and the driver reading that answer must then find the message
+        // ready rather than still committed, or it ends the turn without it.
+        // `redirect` before `state` is the nesting order `write_line` keeps.
+        let mut slot = self.redirect();
         for frame in &frames {
-            match self.write_line(frame) {
-                Ok(()) => {}
-                Err(err) if err.kind() == io::ErrorKind::NotConnected => {
-                    self.abandon_redirect();
-                    return no_active_turn();
-                }
-                Err(err) => {
-                    self.abandon_redirect();
-                    return ControlResponse::refused(
-                        format!("could not deliver the interrupt to the harness: {err}"),
-                        ControlReason::NotRunning,
-                    );
-                }
-            }
+            let refused = match self.write_line(frame) {
+                Ok(()) => continue,
+                Err(err) if err.kind() == io::ErrorKind::NotConnected => no_active_turn(),
+                Err(err) => ControlResponse::refused(
+                    format!("could not deliver the interrupt to the harness: {err}"),
+                    ControlReason::NotRunning,
+                ),
+            };
+            drop(slot);
+            self.abandon_redirect();
+            return refused;
         }
         // Every abort frame is on the child's stdin, so the message may be
         // handed on once the harness says the turn it aborted has ended.
-        self.release_redirect();
+        make_deliverable(&mut slot);
+        drop(slot);
         served()
     }
 
@@ -1739,6 +1747,80 @@ mod tests {
             events[0].is_redirected(),
             "the report must distinguish a redirect from a plain stop"
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_turn_that_ends_before_the_interrupt_returns_from_writing_still_gets_its_redirection() {
+        use crate::domain::control::RedirectInput;
+        use std::sync::mpsc;
+        use std::time::Duration;
+        // The harness answers an abort as soon as the frame reaches it, which
+        // can be before the thread that wrote the frame has marked the message
+        // deliverable. Holding the turn's stdin stops the interrupt inside that
+        // window, so the terminal line is read exactly where a loaded host once
+        // read it: the run ended the turn without the message and still
+        // reported it redirected.
+        let dir = temp_dir("redirect-window");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        handle.bind(Binding::Stdin);
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        let stdin = handle.state.lock().unwrap();
+        let interrupting = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || {
+                handle.serve(&ControlRequest::redirect(
+                    RedirectInput::new("do X instead").unwrap(),
+                ))
+            })
+        };
+        // The interrupt has committed the message and is writing its frame:
+        // the message is either committed or its slot is held for the write.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while matches!(handle.redirect.try_lock().as_deref(), Ok(Redirect::None)) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the interrupt never committed"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let (ended, turn_over) = mpsc::channel();
+        let advancing = {
+            let handle = Arc::clone(&handle);
+            std::thread::spawn(move || {
+                let over =
+                    handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#);
+                ended.send(over).ok();
+            })
+        };
+        // A turn that ends while the frame is still going out must wait for it
+        // rather than decide without the message.
+        assert!(
+            turn_over.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the turn ended while its redirection was still being committed"
+        );
+        drop(stdin);
+        assert!(interrupting.join().unwrap().is_redirected());
+        advancing.join().unwrap();
+        assert_eq!(
+            turn_over.recv().ok(),
+            Some(false),
+            "the run must keep the turn open to deliver the redirection"
+        );
+        assert!(!handle.has_pending_redirect(), "delivered exactly once");
+
+        handle.end_turn();
+        child.wait().ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

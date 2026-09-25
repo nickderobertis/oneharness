@@ -186,7 +186,7 @@ leaked=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after"))
 # own suites leaking by accident, and their helpers name the pid they run in
 # (pinned by `ScratchDir::name`'s unit test and `check-scratch-prefixes.sh`). A
 # name that spells another live process's pid on purpose would pass it.
-named_for_a_live_process_outside_this_run() {
+named_for_a_live_process_lacking_the_run_marker() {
   local pid=${1##*-} environment command
   case "$pid" in '' | *[!0-9]*) return 1 ;; esac
   if [ -r "/proc/$pid/environ" ]; then
@@ -205,7 +205,7 @@ named_for_a_live_process_outside_this_run() {
 if [ -n "$leaked" ]; then
   kept=""
   while IFS= read -r dir; do
-    named_for_a_live_process_outside_this_run "$dir" || kept+="$dir"$'\n'
+    named_for_a_live_process_lacking_the_run_marker "$dir" || kept+="$dir"$'\n'
   done <<< "$leaked"
   leaked=${kept%$'\n'}
 fi

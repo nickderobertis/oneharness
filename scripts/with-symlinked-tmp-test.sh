@@ -27,44 +27,61 @@ fail() {
   exit 1
 }
 
-# shellcheck disable=SC2016  # the probe's $TMPDIR must expand inside the wrapped command, not here
-probe='[ -L "$TMPDIR" ] || { echo "TMPDIR is not a symlink: $TMPDIR"; exit 7; }
-printf "%s\n" "$TMPDIR" > "$1/seen"
-(cd "$TMPDIR" && pwd -P) > "$1/resolved"'
-if ! bash "$lane" bash -c "$probe" probe "$work" >"$work/out" 2>&1; then
-  fail "the wrapped command should have seen a TMPDIR spelled through a symlink"
+# Whether this shell can make a real symlink. Git Bash on Windows cannot without
+# developer mode (its `ln -s` copies), so there the lane can only refuse, and the
+# cases that need it to run are said to be skipped rather than failed.
+mkdir "$work/symlink-target"
+symlinks=0
+if ln -s "$work/symlink-target" "$work/symlink-probe" 2>/dev/null && [ -L "$work/symlink-probe" ]; then
+  symlinks=1
 fi
-seen=$(cat "$work/seen" 2>/dev/null) || fail "the wrapped command never ran its probe"
-resolved=$(cat "$work/resolved" 2>/dev/null) || fail "the wrapped command never resolved its TMPDIR"
-[ "$seen" != "$resolved" ] ||
-  fail "TMPDIR ($seen) should be spelled differently from the directory it resolves to"
-[ ! -e "$seen" ] && [ ! -e "$resolved" ] ||
-  fail "the lane should remove its symlinked root once the command ends: $seen"
-[ -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')" ] ||
-  fail "the lane left its scratch root behind under $work"
+rm -rf "$work/symlink-target" "$work/symlink-probe"
+skip() {
+  echo "with-symlinked-tmp-test: skipped: $1: this shell cannot create a symlink (ln -s copies or refuses; on Windows it needs developer mode)" >&2
+}
 
-prefix=$(sed -n 's/^pub const PREFIX: &str = "\(.*\)";$/\1/p' crates/oneharness-core/src/io/scratch.rs)
-[ -n "$prefix" ] || fail "could not read the scratch prefix from crates/oneharness-core/src/io/scratch.rs"
-if bash "$lane" bash -c "mkdir \"\$TMPDIR/${prefix}leaked-behind-a-symlink\"" >"$work/out" 2>&1; then
-  fail "a scratch directory leaked behind the symlinked TMPDIR should have turned the lane red"
+if [ "$symlinks" -eq 1 ]; then
+  # shellcheck disable=SC2016  # the probe's $TMPDIR must expand inside the wrapped command, not here
+  probe='[ -L "$TMPDIR" ] || { echo "TMPDIR is not a symlink: $TMPDIR"; exit 7; }
+  printf "%s\n" "$TMPDIR" > "$1/seen"
+  (cd "$TMPDIR" && pwd -P) > "$1/resolved"'
+  if ! bash "$lane" bash -c "$probe" probe "$work" >"$work/out" 2>&1; then
+    fail "the wrapped command should have seen a TMPDIR spelled through a symlink"
+  fi
+  seen=$(cat "$work/seen" 2>/dev/null) || fail "the wrapped command never ran its probe"
+  resolved=$(cat "$work/resolved" 2>/dev/null) || fail "the wrapped command never resolved its TMPDIR"
+  [ "$seen" != "$resolved" ] ||
+    fail "TMPDIR ($seen) should be spelled differently from the directory it resolves to"
+  [ ! -e "$seen" ] && [ ! -e "$resolved" ] ||
+    fail "the lane should remove its symlinked root once the command ends: $seen"
+  [ -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')" ] ||
+    fail "the lane left its scratch root behind under $work"
+
+  prefix=$(sed -n 's/^pub const PREFIX: &str = "\(.*\)";$/\1/p' crates/oneharness-core/src/io/scratch.rs)
+  [ -n "$prefix" ] || fail "could not read the scratch prefix from crates/oneharness-core/src/io/scratch.rs"
+  if bash "$lane" bash -c "mkdir \"\$TMPDIR/${prefix}leaked-behind-a-symlink\"" >"$work/out" 2>&1; then
+    fail "a scratch directory leaked behind the symlinked TMPDIR should have turned the lane red"
+  fi
+  grep -q "${prefix}leaked-behind-a-symlink" "$work/out" ||
+    fail "the lane went red without naming the directory left behind the symlink"
+
+  # An inherited root list that never names the lane's TMPDIR still sees the leak.
+  mkdir -p "$work/elsewhere"
+  if OH_SCRATCH_ROOTS="$work/elsewhere" \
+    bash "$lane" bash -c "mkdir \"\$TMPDIR/${prefix}leaked-past-an-override\"" >"$work/out" 2>&1; then
+    fail "a leak behind the symlinked TMPDIR should turn the lane red under an inherited OH_SCRATCH_ROOTS"
+  fi
+  grep -q "${prefix}leaked-past-an-override" "$work/out" ||
+    fail "the lane went red under an inherited OH_SCRATCH_ROOTS without naming the directory left behind"
+
+  set +e
+  bash "$lane" bash -c 'exit 5' >"$work/out" 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 5 ] || fail "the wrapped command's exit status 5 should be the lane's, got $status"
+else
+  skip "a leak behind the symlinked TMPDIR, and the wrapped command's status"
 fi
-grep -q "${prefix}leaked-behind-a-symlink" "$work/out" ||
-  fail "the lane went red without naming the directory left behind the symlink"
-
-# An inherited root list that never names the lane's TMPDIR still sees the leak.
-mkdir -p "$work/elsewhere"
-if OH_SCRATCH_ROOTS="$work/elsewhere" \
-  bash "$lane" bash -c "mkdir \"\$TMPDIR/${prefix}leaked-past-an-override\"" >"$work/out" 2>&1; then
-  fail "a leak behind the symlinked TMPDIR should turn the lane red under an inherited OH_SCRATCH_ROOTS"
-fi
-grep -q "${prefix}leaked-past-an-override" "$work/out" ||
-  fail "the lane went red under an inherited OH_SCRATCH_ROOTS without naming the directory left behind"
-
-set +e
-bash "$lane" bash -c 'exit 5' >"$work/out" 2>&1
-status=$?
-set -e
-[ "$status" -eq 5 ] || fail "the wrapped command's exit status 5 should be the lane's, got $status"
 
 if ! OH_SYMLINKED_TMP_UNAME=Darwin bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1; then
   fail "the lane should succeed off Linux"
@@ -107,35 +124,56 @@ for tool in mkdir ln; do
     fail "the lane left its half-built root behind under $work ($tool refused)"
   rm -rf "$work/refusing-$tool"
 done
+# ...and so is one whose `ln -s` succeeded without making a symlink, as Git
+# Bash's copy does: running the command there would prove nothing.
+mkdir -p "$work/copying-ln"
+# shellcheck disable=SC2016  # $2 and $3 are the stub's own arguments, expanded when it runs
+printf '#!/usr/bin/env bash\nexec cp -R "$2" "$3"\n' >"$work/copying-ln/ln"
+chmod +x "$work/copying-ln/ln"
+set +e
+PATH="$work/copying-ln:$PATH" bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1
+status=$?
+set -e
+[ "$status" -eq 1 ] || fail "a root whose ln -s made a copy should fail the lane (exit 1), got $status"
+[ ! -e "$work/ran" ] || fail "the lane should not run its command under a TMPDIR that is not a symlink"
+grep -q "could not build a symlinked temp root under $work" "$work/out" ||
+  fail "the lane should say it could not build its symlinked root (ln -s made a copy)"
+[ -z "$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')" ] ||
+  fail "the lane left its half-built root behind under $work (ln -s made a copy)"
+rm -rf "$work/copying-ln"
 
-# A root the lane cannot remove afterwards is named, with how to remove it — and
-# when the wrapped command failed too, its exit status is still the lane's. The
-# stub refuses only the lane's root itself, so the leak gate's own cleanup of its
-# transcript (which lives under that root) still runs.
-mkdir -p "$work/refusing-rm"
-cat >"$work/refusing-rm/rm" <<EOF
+if [ "$symlinks" -eq 1 ]; then
+  # A root the lane cannot remove afterwards is named, with how to remove it — and
+  # when the wrapped command failed too, its exit status is still the lane's. The
+  # stub refuses only the lane's root itself, so the leak gate's own cleanup of its
+  # transcript (which lives under that root) still runs.
+  mkdir -p "$work/refusing-rm"
+  cat >"$work/refusing-rm/rm" <<EOF
 #!/usr/bin/env bash
 for arg in "\$@"; do
   case "\$arg" in */symlinked-tmp.*/*) ;; */symlinked-tmp.*) exit 1 ;; esac
 done
 exec $(command -v rm) "\$@"
 EOF
-chmod +x "$work/refusing-rm/rm"
-for wrapped in "true:1" "exit 5:5"; do
-  set +e
-  PATH="$work/refusing-rm:$PATH" bash "$lane" bash -c "${wrapped%%:*}" >"$work/out" 2>&1
-  status=$?
-  set -e
-  [ "$status" -eq "${wrapped##*:}" ] ||
-    fail "a root the lane cannot remove after '${wrapped%%:*}' should exit ${wrapped##*:}, got $status"
-  left=$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')
-  [ -n "$left" ] || fail "the refusing rm should have left the lane's root behind to report"
-  grep -q "could not remove its symlinked temp root $left" "$work/out" ||
-    fail "the lane should name the root it could not remove after '${wrapped%%:*}'"
-  grep -q "rm -rf $left" "$work/out" || fail "the lane should say how to remove the root it left"
-  rm -rf "$left"
-done
-rm -rf "$work/refusing-rm"
+  chmod +x "$work/refusing-rm/rm"
+  for wrapped in "true:1" "exit 5:5"; do
+    set +e
+    PATH="$work/refusing-rm:$PATH" bash "$lane" bash -c "${wrapped%%:*}" >"$work/out" 2>&1
+    status=$?
+    set -e
+    [ "$status" -eq "${wrapped##*:}" ] ||
+      fail "a root the lane cannot remove after '${wrapped%%:*}' should exit ${wrapped##*:}, got $status"
+    left=$(find "$work" -mindepth 1 -maxdepth 1 -name 'symlinked-tmp.*')
+    [ -n "$left" ] || fail "the refusing rm should have left the lane's root behind to report"
+    grep -q "could not remove its symlinked temp root $left" "$work/out" ||
+      fail "the lane should name the root it could not remove after '${wrapped%%:*}'"
+    grep -q "rm -rf $left" "$work/out" || fail "the lane should say how to remove the root it left"
+    rm -rf "$left"
+  done
+  rm -rf "$work/refusing-rm"
+else
+  skip "a root the lane cannot remove afterwards"
+fi
 
 set +e
 OH_SYMLINKED_TMP_UNAME=Linx bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1

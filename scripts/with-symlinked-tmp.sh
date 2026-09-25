@@ -49,8 +49,10 @@ cleanup() {
   [ "$status" -ne 0 ] || exit 1
 }
 trap cleanup EXIT
+# An `ln -s` that exits 0 need not have made a symlink (Git Bash copies the
+# target), and a copy would run the command under a plain `$TMPDIR`.
 if ! root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX") ||
-  ! mkdir "$root/real" || ! ln -s "$root/real" "$root/link"; then
+  ! mkdir "$root/real" || ! ln -s "$root/real" "$root/link" || [ ! -L "$root/link" ]; then
   echo "with-symlinked-tmp: could not build a symlinked temp root under ${TMPDIR:-/tmp}." >&2
   echo "  fix: point TMPDIR at a writable directory on a filesystem that supports symlinks, then re-run." >&2
   exit 1

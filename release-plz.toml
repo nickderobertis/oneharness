@@ -10,7 +10,8 @@
 #      Release with the changelog notes. That Release (created with a PAT, not
 #      the default GITHUB_TOKEN) triggers `release.yml`, which builds, archives,
 #      checksums, and attaches the cross-platform binaries. It re-runs CI's
-#      checks only where CI's verdict for the tagged commit is incomplete.
+#      checks only where CI's Ubuntu check job alone has no verdict for the
+#      tagged commit, and refuses where a macOS or Windows one has none.
 
 [workspace]
 # Both crates are published to crates.io on release. release-plz runs

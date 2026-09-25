@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's `gate` job, and scripts/check-ci-verdict.sh covers it from `just lint-workflows`.
 # Decide whether the tagged commit's CI run permits release publication.
-# CONTRACT: a failed check job refuses release; only a complete successful check matrix skips the release gate; an absent or incomplete matrix runs the gate after CI ends
+# CONTRACT: a failed check job refuses release; only a complete successful check matrix skips the release gate; once CI ends, a non-Ubuntu check job without a success verdict refuses release, and an Ubuntu one alone runs the gate on the Ubuntu release runner
 # Reads REPO, SHA, CI_WORKFLOW, CI_WAIT_ATTEMPTS and CI_WAIT_DELAY. Writes
 # needs_check=true|false to GITHUB_OUTPUT when set.
 set -euo pipefail
@@ -60,7 +60,7 @@ decide() {
 
 # Stop the release without deciding anything for the workflow to act on, saying
 # which state was met, what it was reading when it met it, and what a person
-# does about it. This is every state but the four enumerated above: it is not a
+# does about it. This is every state but the two decide() is given: it is not a
 # licence to run the gate here, because a verdict this could not read may still
 # be a refusal.
 refuse() {
@@ -113,6 +113,8 @@ read_run() {
 
 # Read the matrix jobs through the documented jobs endpoint. A workflow may be
 # cancelled after those jobs passed, so its own conclusion cannot replace this.
+# Until the run ends, a job without a verdict may still get one, so only a
+# success or a failure decides; once it ends, a job without one never will.
 read_jobs() {
   local jobs summary jobs_endpoint
   jobs_endpoint="repos/$repo/actions/runs/$run_id/jobs?filter=latest&per_page=100"
@@ -120,7 +122,7 @@ read_jobs() {
     sed 's/^/    gh: /' "$work/gh-error" >&2
     refuse "ci-verdict: could not read check jobs in CI run $run_id" "it was reading $jobs_endpoint" "restore the GitHub API read, then re-run this release"
   fi
-  if ! summary="$(printf '%s' "$jobs" | jq -rs --arg sha "$sha" '
+  if ! summary="$(printf '%s' "$jobs" | jq -rs --arg sha "$sha" --arg run_status "$run_status" '
     def valid_id: type == "number" and . > 0 and floor == .;
     def valid_status: . as $s | ["completed", "queued", "in_progress", "waiting", "requested", "pending"] | index($s) != null;
     def known_conclusion: . == null or (. as $c | ["success", "failure", "timed_out", "startup_failure", "cancelled", "skipped", "stale"] | index($c) != null);
@@ -129,44 +131,48 @@ read_jobs() {
       error("the answer has no jobs pages")
     else map(.jobs) | add end
     | . as $all
+    | ["check (macos-latest)", "check (ubuntu-latest)", "check (windows-latest)"] as $declared
     | [ $all[] | select((.name | type) == "string" and (.name | test("^check \\("))) ] as $checks
     | ([$checks[] | select(.status == "completed" and (.conclusion as $c | ["failure", "timed_out", "startup_failure"] | index($c)))] | first) as $failed
     | if any($all[]; (.name | type) != "string")
          or any($checks[]; (.name | test("[^ -~]")) or (.id | valid_id | not) or .head_sha != $sha
                        or (.status | valid_status | not)
                        or (.conclusion | known_conclusion | not)
-                       or (.status != "completed" and .conclusion != null)) then
-        "unreadable\t0\t"
+                       or (.status != "completed" and .conclusion != null)
+                       or (.name as $n | $declared | index($n) | not))
+         or ([$checks[].name] | length) != ([$checks[].name] | unique | length) then
+        "unreadable\t0\t\t"
       elif $failed != null then
-        "failure\t\($failed.id)\t\($failed.name)"
-      elif ([$checks[].name] | sort) == ["check (macos-latest)", "check (ubuntu-latest)", "check (windows-latest)"]
-           and all($checks[]; .status == "completed" and .conclusion == "success") then
-        "success\t0\t"
-      elif any($checks[]; .status == "completed" and .conclusion == "success") then
-        "partial\t0\t"
-      elif any($checks[]; .status != "completed") then
-        "pending\t0\t"
-      elif any($checks[]; .conclusion != null and (.conclusion as $c | ["cancelled", "skipped", "stale"] | index($c) | not)) then
-        "unreadable\t0\t"
-      else "absent\t0\t" end
+        "failure\t\($failed.id)\t\($failed.name)\t\($failed.conclusion)"
+      elif all($declared[]; . as $n | any($checks[]; .name == $n and .status == "completed" and .conclusion == "success")) then
+        "success\t0\t\t"
+      elif $run_status != "completed" then
+        "pending\t0\t\t"
+      else
+        [ $declared[] | . as $n | ([$checks[] | select(.name == $n)] | first) as $job
+          | select($job == null or $job.status != "completed" or $job.conclusion != "success")
+          | {name: $n, id: ($job.id // 0),
+             why: (if $job == null then "absent" elif $job.status != "completed" then "never finished" else ($job.conclusion // "no conclusion") end)} ]
+        | (map(select(.name != "check (ubuntu-latest)")) + .) | first
+        | "\(if .name == "check (ubuntu-latest)" then "here" else "elsewhere" end)\t\(.id)\t\(.name)\t\(.why)"
+      end
   ' 2>"$work/jq-error")"; then
     sed 's/^/    jq: /' "$work/jq-error" >&2
     refuse "ci-verdict: check jobs in CI run $run_id were unreadable" "it was reading $jobs_endpoint" "inspect the API response, then re-run this release"
   fi
-  IFS=$'\t' read -r check_state job_id job_name <<<"$summary"
+  IFS=$'\t' read -r check_state job_id job_name job_why <<<"$summary"
   if [ "$check_state" = unreadable ]; then
-    refuse "ci-verdict: check jobs in CI run $run_id contained an invalid field or unknown conclusion" "it was reading $jobs_endpoint" "inspect those jobs before releasing"
+    refuse "ci-verdict: check jobs in CI run $run_id contained an invalid field or unknown conclusion, or an undeclared or repeated check job" "it was reading $jobs_endpoint" "inspect those jobs before releasing"
   fi
 }
 
-# Only a complete set of successful check legs gates the commit. A completed
-# run with a missing or non-successful leg needs the local gate; a failed leg
-# refuses publication before that fallback can run.
+# This runner is Ubuntu, so the gate it can run stands in for CI's Ubuntu check
+# job only; a macOS or Windows job without a verdict has no stand-in here.
 for poll in $(seq 1 "$wait_attempts"); do
   read_run
   if [ "$run_status" = absent ]; then
     if [ "$poll" -eq "$wait_attempts" ]; then
-      decide true "CI has no main-branch check run for $sha after $wait_attempts polls; running the gate here."
+      refuse "ci-verdict: CI has no main-branch run of $workflow for $sha after $wait_attempts polls, so check (macos-latest) has no verdict" "the release runs on Ubuntu, so the gate it could run here cannot verify macOS or Windows" "get $workflow to run on $sha (push it to main, or re-run its CI), then re-run this release"
     fi
     sleep "$wait_delay"
     continue
@@ -176,19 +182,11 @@ for poll in $(seq 1 "$wait_attempts"); do
     success)
       decide false "CI run $run_id check jobs concluded success for $sha ($run_url); publishing without re-running the gate." ;;
     failure)
-      refuse "CI run $run_id check job $job_id ($job_name) concluded failure for $sha" "the run is ${run_url:-<no URL>}" "fix the commit and release the fix" ;;
-    absent)
-      if [ "$run_status" = completed ]; then
-        decide true "CI run $run_id has no complete check verdict for $sha; running the gate here."
-      fi ;;
-    partial)
-      if [ "$run_status" = completed ]; then
-        decide true "CI run $run_id has an incomplete check matrix for $sha; running the gate here."
-      fi ;;
-    pending)
-      if [ "$run_status" = completed ]; then
-        decide true "CI run $run_id ended with an incomplete check matrix for $sha; running the gate here."
-      fi ;;
+      refuse "CI run $run_id check job $job_id ($job_name) concluded $job_why for $sha" "the run is ${run_url:-<no URL>}" "fix the commit and release the fix" ;;
+    elsewhere)
+      refuse "CI run $run_id check job $job_name has no success verdict for $sha ($job_why)" "the run is ${run_url:-<no URL>}; the release runs on Ubuntu, so the gate it could run here cannot verify that platform" "re-run $job_name in CI run $run_id until it concludes, then re-run this release" ;;
+    here)
+      decide true "CI run $run_id check job $job_name has no success verdict for $sha ($job_why) and every other check job succeeded; running the gate here on Ubuntu." ;;
   esac
   if [ "$poll" -lt "$wait_attempts" ]; then sleep "$wait_delay"; fi
 done

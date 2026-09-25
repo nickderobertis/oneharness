@@ -293,12 +293,13 @@ grep -Fq "head_sha=$SHA_UNDER_TEST" "$tmp/calls" || {
   fail "$description: the API was not asked about the tagged commit"
 }
 
-# Only a foreign commit's run: this commit has no verdict, whatever that run says.
+# Only a foreign commit's run: this commit has no verdict, whatever that run
+# says — and with no run, no macOS or Windows job verified it either.
 run_case "{\"workflow_runs\":[$(workflow_run_json 15 "$OTHER_SHA" completed '"success"' 2026-01-05T00:00:00Z)]}" \
   "a run for a different commit only"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "no main-branch check run for $SHA_UNDER_TEST"
+expect_refused
+expect_said "$tmp/err" "no main-branch run of ci.yml for $SHA_UNDER_TEST"
+expect_said "$tmp/err" "check (macos-latest) has no verdict"
 
 # A re-run after a failure: the newest finished run for the commit is CI's word.
 run_case "{\"workflow_runs\":[$(workflow_run_json 20 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-01T00:00:00Z),$(workflow_run_json 21 "$SHA_UNDER_TEST" completed '"success"' 2026-01-03T00:00:00Z)]}" \
@@ -315,13 +316,13 @@ for refusal in failure timed_out startup_failure; do
   expect_said "$tmp/err" "https://example.invalid/run/30"
 done
 
-# A cancelled workflow with no concluded check job needs the local gate.
+# A cancelled workflow with no concluded check job: the Ubuntu gate here could
+# stand in for one of the three, so it stands in for none.
 run_case "{\"workflow_runs\":[$(workflow_run_json 40 "$SHA_UNDER_TEST" completed '"cancelled"' 2026-01-01T00:00:00Z)]}" \
   "a cancelled CI run"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "has no complete check verdict"
-expect_said "$tmp/out" "running the gate here"
+expect_refused
+expect_said "$tmp/err" "CI run 40 check job check (macos-latest) has no success verdict for $SHA_UNDER_TEST (cancelled)"
+expect_said "$tmp/err" "https://example.invalid/run/40"
 
 run_case "{\"workflow_runs\":[$(run_with_jobs 120 cancelled success success success)]}" \
   "a cancelled workflow whose complete check matrix passed"
@@ -334,28 +335,72 @@ run_case "{\"workflow_runs\":[$(run_with_jobs 121 cancelled success failure succ
 expect_refused
 expect_said "$tmp/err" "CI run 121 check job"
 
-run_case "{\"workflow_runs\":[$(run_with_jobs 122 cancelled success cancelled success)]}" \
-  "a cancelled workflow with one incomplete check job"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "incomplete check matrix"
+# The Ubuntu check job alone without a verdict: the gate this Ubuntu runner can
+# run is the one that job would have run, so it runs here.
+for gap in cancelled skipped stale absent pending; do
+  run_case "{\"workflow_runs\":[$(run_with_jobs 122 cancelled "$gap" success success)]}" \
+    "an Ubuntu check job that is $gap beside two successes"
+  expect_status 0
+  expect_needs_check true
+  expect_said "$tmp/out" "CI run 122 check job check (ubuntu-latest) has no success verdict"
+  expect_said "$tmp/out" "running the gate here on Ubuntu"
+done
 
-run_case "{\"workflow_runs\":[$(run_with_jobs 123 cancelled success absent success)]}" \
-  "a cancelled workflow missing one matrix job"
+# A macOS or Windows check job without a verdict has no stand-in on this runner,
+# so the release refuses naming that job and the run, whatever Ubuntu says.
+for gap in cancelled skipped stale absent pending; do
+  run_case "{\"workflow_runs\":[$(run_with_jobs 123 cancelled success "$gap" success)]}" \
+    "a macOS check job that is $gap beside two successes"
+  expect_refused
+  expect_said "$tmp/err" "CI run 123 check job check (macos-latest) has no success verdict"
+  expect_said "$tmp/err" "https://example.invalid/run/123"
+  run_case "{\"workflow_runs\":[$(run_with_jobs 128 cancelled success success "$gap")]}" \
+    "a Windows check job that is $gap beside two successes"
+  expect_refused
+  expect_said "$tmp/err" "CI run 128 check job check (windows-latest) has no success verdict"
+done
+expect_said "$tmp/err" "(never finished)"
+
+run_case "{\"workflow_runs\":[$(run_with_jobs 129 cancelled cancelled success skipped)]}" \
+  "Ubuntu and Windows check jobs both without a verdict"
+expect_refused
+expect_said "$tmp/err" "check job check (windows-latest) has no success verdict for $SHA_UNDER_TEST (skipped)"
+
+run_case "{\"workflow_runs\":[$(run_with_jobs 130 failure cancelled success failure)]}" \
+  "a failed check job beside an Ubuntu job without a verdict"
+expect_refused
+expect_said "$tmp/err" "CI run 130 check job 202 (check (windows-latest)) concluded failure"
+
+# While the run is still going, an Ubuntu job without a verdict may yet get one,
+# so it is waited for rather than gated here.
+run_polling_case "an Ubuntu check job cancelled while CI is still running, then rerun" \
+  "{\"workflow_runs\":[$(run_with_jobs 131 cancelled cancelled success success | jq -c '.status = "in_progress" | .conclusion = null')]}" \
+  "{\"workflow_runs\":[$(run_with_jobs 131 success success success success)]}"
 expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "incomplete check matrix"
+expect_needs_check false
+expect_said "$tmp/out" "CI run 131 check jobs concluded success"
+
+# A check job the release does not know, or one it sees twice, is a matrix this
+# selector was not written against.
+fixture="$(run_with_jobs 132 success success success success | jq -c '.check_jobs += [.check_jobs[0] | .name = "check (freebsd-latest)" | .id = 299]')"
+run_case "{\"workflow_runs\":[$fixture]}" "an undeclared check job beside a passing matrix"
+expect_refused
+expect_said "$tmp/err" "undeclared or repeated check job"
+fixture="$(run_with_jobs 133 success success success success | jq -c '.check_jobs += [.check_jobs[1] | .conclusion = "cancelled" | .id = 299]')"
+run_case "{\"workflow_runs\":[$fixture]}" "a check job listed twice"
+expect_refused
+expect_said "$tmp/err" "undeclared or repeated check job"
 
 run_case "{\"workflow_runs\":[$(run_with_jobs 124 cancelled success mystery success)]}" \
   "a successful check beside an unknown job conclusion"
 expect_refused
 expect_said "$tmp/err" "unknown conclusion"
 
-# A hand-made Release or a tag CI never saw has no run to read.
+# A hand-made Release or a tag CI never saw has no run to read, so nothing
+# verified it on macOS or Windows.
 run_case '{"workflow_runs":[]}' "no CI run for the tagged commit"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "no main-branch check run for $SHA_UNDER_TEST"
+expect_refused
+expect_said "$tmp/err" "no main-branch run of ci.yml for $SHA_UNDER_TEST after 3 polls"
 
 # The runs API can list a new push after the release's first query. Wait for
 # the bound before treating an empty list as permanent absence.
@@ -412,9 +457,8 @@ expect_said "$tmp/out" "CI run 81 check jobs concluded success"
 # the run RAN, so CI very likely reached a verdict this could not read.
 run_case '{"workflow_runs":[{"id":90,"head_sha":"'"$SHA_UNDER_TEST"'","status":"completed","conclusion":null,"run_started_at":"2026-01-01T00:00:00Z","html_url":"https://example.invalid/run/90"}]}' \
   "a finished run with no conclusion"
-expect_status 0
-expect_needs_check true
-expect_said "$tmp/out" "has no complete check verdict"
+expect_refused
+expect_said "$tmp/err" "check job check (macos-latest) has no success verdict for $SHA_UNDER_TEST (no conclusion)"
 
 # A control character in a conclusion must not shift the tab-delimited fields
 # the script reads from jq's summary.

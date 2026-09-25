@@ -1165,8 +1165,9 @@ shape. When you add one:
   the required checks are green, then `release-plz release` tags `vX.Y.Z` and
   cuts the GitHub Release. `release.yml` reads CI's verdict for the exact
   tagged commit: a failed check job refuses release; only a complete successful
-  check matrix skips the release gate; an absent or incomplete matrix runs the
-  gate after CI ends. An in-flight matrix is awaited to a bound.
+  check matrix skips the release gate; once CI ends, a non-Ubuntu check job
+  without a success verdict refuses release, and an Ubuntu one alone runs the
+  gate on the Ubuntu release runner. An in-flight matrix is awaited to a bound.
   The release publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the

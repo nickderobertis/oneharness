@@ -28,8 +28,6 @@ fail() {
   exit 1
 }
 
-# --- sed -------------------------------------------------------------------
-
 # Every step of the recipe runs through the portable-sed runner, or the calls it
 # makes are held to nothing.
 steps="$(tr -d '\r' <justfile | sed -n '/^lint-workflows:/,/^$/ { /^    @/p; }')"
@@ -46,22 +44,27 @@ printf 'x\n' >"$work/file"
 printf 'sed -i %q %q\n' 's/x/y/' "$work/file" >"$work/bare.sh"
 printf 'sed -i %q %q || true\n' 's/x/y/' "$work/file" >"$work/ignored.sh"
 printf 'sed -i.bak %q %q\n' 's/x/y/' "$work/file" >"$work/portable.sh"
-for case in bare ignored; do
+printf 'sed %q -n %q\n' 's/x/y/' "$work/file" >"$work/late.sh"
+printf 'sed -z %q %q\n' 's/x/y/' "$work/file" >"$work/unknown.sh"
+while IFS='|' read -r case named; do
   if bash scripts/with-portable-sed.sh "$work/$case.sh" >"$work/out" 2>&1; then
-    fail "the portable-sed runner passed a bare 'sed -i' ($case.sh), the call macOS rejected" \
-      "fix: restore the '-i)' refusal and the refusal-log check in scripts/with-portable-sed.sh"
+    fail "the portable-sed runner passed $case.sh, a call BSD sed reads differently" \
+      "fix: restore its refusal, and the refusal-log check, in scripts/with-portable-sed.sh"
   fi
-  grep -Fq 'bare -i' "$work/out" ||
-    fail "the portable-sed runner refused $case.sh without naming the bare -i" "$(cat "$work/out")" \
-      "fix: restore the refusal message in scripts/with-portable-sed.sh"
-done
+  grep -Fq "$named" "$work/out" ||
+    fail "the portable-sed runner refused $case.sh without saying '$named'" "$(cat "$work/out")" \
+      "fix: restore that refusal's message in scripts/with-portable-sed.sh"
+done <<'CASES'
+bare|bare -i
+ignored|bare -i
+late|option '-n' after the script
+unknown|'-z'; use only
+CASES
 bash scripts/with-portable-sed.sh "$work/portable.sh" >"$work/out" 2>&1 ||
   fail "the portable-sed runner refused 'sed -i.bak', which both sed families read alike" "$(cat "$work/out")" \
     "fix: accept an attached -i suffix in scripts/with-portable-sed.sh"
 [ "$(cat "$work/file")" = y ] ||
   fail "the portable-sed runner did not run the host's sed" "fix: check the exec at the end of its shim"
-
-# --- CRLF ------------------------------------------------------------------
 
 root="$work/crlf"
 mkdir -p "$root"

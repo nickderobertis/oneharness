@@ -167,11 +167,21 @@ cmp -s "$work/from-lf.yml" "$release" ||
   fail "the CRLF release.yml fixture differs between an LF and a CRLF checkout" \
     "fix: make to_crlf above normalise its input to LF before writing CR-LF"
 
+# Both scripts run from the staged tree, so they read the CRLF release.yml; a
+# staged copy without the gate job must then be refused, or they read another.
 for script in check-workflows.sh check-workflows-e2e.sh; do
-  bash "$root/scripts/$script" >"$work/out" 2>&1 ||
+  (cd "$root" && bash "scripts/$script") >"$work/out" 2>&1 ||
     fail "scripts/$script failed over a CRLF release.yml, as a Windows checkout has it" \
       "$(cat "$work/out")" \
       "fix: drop the carriage return in the read that anchored on the line's end, then rerun: bash scripts/check-workflows-portable-test.sh"
 done
+
+broken="$work/crlf-broken"
+cp -R "$root" "$broken"
+printf 'name: Release\r\n' >"$broken/.github/workflows/release.yml"
+if (cd "$broken" && bash scripts/check-workflows.sh) >"$work/out" 2>&1; then
+  fail "scripts/check-workflows.sh passed over a staged release.yml with no gate job, so it did not read the staged CRLF copy" \
+    "fix: keep scripts/check-workflows.sh reading release.yml relative to its own checkout"
+fi
 
 echo 'check-workflows-portable-test: ok'

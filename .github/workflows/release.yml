@@ -68,11 +68,6 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # CI's exact tagged-SHA verdict selects publication or the guarded fallback.
-  # a failed check job refuses release; only a complete successful check
-  # matrix skips the release gate; once CI ends, a non-Ubuntu check job
-  # without a success verdict refuses release, and an Ubuntu one alone runs
-  # the gate on the Ubuntu release runner
   gate:
     runs-on: ubuntu-latest
     permissions:

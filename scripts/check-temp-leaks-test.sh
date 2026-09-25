@@ -114,7 +114,6 @@ rm -rf "$work/oneharness-pre-existing"
 # Another checkout's run is stood in for by a process started outside the gate,
 # so it lacks the run's token: it makes `<stem>-<its pid>` only once the watched
 # command asks, then stays alive, and the watched command waits to see it made.
-# Prints that process's pid.
 foreign_run() {
   local stem=$1
   # shellcheck disable=SC2016  # expanded by the foreign process, not here

@@ -125,13 +125,32 @@ done < <(git ls-files -- scripts .github Cargo.toml crates/oneharness-core/Cargo
 release="$root/.github/workflows/release.yml"
 # A Windows checkout already carries CRLF, so the fixture strips any carriage
 # return before writing its own: either checkout must stage exactly CR-LF.
-to_crlf() { awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$1"; }
+# Bash, tr and wc handle bytes as they are on every platform; Git for Windows'
+# awk and grep may translate carriage returns themselves (on windows-latest
+# this check once read none in the CR-LF file awk had written).
+to_crlf() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do printf '%s\r\n' "${line%$'\r'}"; done <"$1"
+}
+# One carriage return per line feed: CR-CR-LF counts two, LF alone none.
+is_crlf() {
+  local cr lf
+  cr="$(tr -cd '\r' <"$1" | wc -c)"
+  lf="$(tr -cd '\n' <"$1" | wc -c)"
+  [ $((lf)) -gt 0 ] && [ $((cr)) -eq $((lf)) ]
+}
+printf 'a\r\nb\r\n' >"$work/crlf.sample"
+printf 'a\r\r\nb\r\r\n' >"$work/crcrlf.sample"
+printf 'a\nb\n' >"$work/lf.sample"
+if ! is_crlf "$work/crlf.sample" || is_crlf "$work/crcrlf.sample" || is_crlf "$work/lf.sample"; then
+  fail "is_crlf above misreads CR-LF, CR-CR-LF or LF samples" \
+    "fix: count one carriage return per line feed in is_crlf above"
+fi
 to_crlf .github/workflows/release.yml >"$work/from-lf.yml"
 to_crlf "$work/from-lf.yml" >"$release"
 for staged in "$work/from-lf.yml" "$release"; do
-  grep -q $'\r$' "$staged" || fail "could not stage a CRLF release.yml" "fix: check to_crlf above writes the carriage returns"
-  ! grep -q $'\r\r' "$staged" ||
-    fail "the CRLF release.yml fixture carries CR-CR-LF, which is no Windows checkout's line ending" \
+  is_crlf "$staged" ||
+    fail "the CRLF release.yml fixture $staged is not exactly CR-LF (CR-CR-LF or bare LF), which no Windows checkout has" \
       "fix: strip a trailing carriage return in to_crlf above before writing CR-LF"
 done
 cmp -s "$work/from-lf.yml" "$release" ||

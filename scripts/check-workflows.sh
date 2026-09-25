@@ -43,6 +43,9 @@ package_rust_version() {
   ' "$1"
 }
 
+# A Windows checkout gives release.yml CRLF endings, so every read of it that
+# anchors on a line's end drops the carriage return first.
+
 # Like require_line, but for a line that may only run behind a condition: the
 # guard must be the line immediately above it. A `run:` on its own is the shape
 # this repository is moving away from — a check re-run on every release — so
@@ -57,7 +60,7 @@ require_guarded() {
   fi
   for number in $numbers; do
     previous=
-    [ "$number" -gt 1 ] && previous="$(sed -n "$((number - 1))p" "$file" | sed 's/^[[:space:]]*//')"
+    [ "$number" -gt 1 ] && previous="$(sed -n "$((number - 1))p" "$file" | tr -d '\r' | sed 's/^[[:space:]]*//')"
     [ "$previous" = "$guard" ] || fail "$file must $description"
   done
 }
@@ -66,6 +69,7 @@ require_gate_dependency() {
   local job
   for job in publish-crates upload build-wheels build-python-sdk build-npm build-node-sdk; do
     awk -v job="$job" '
+      { sub(/\r$/, "") }
       $0 == "  " job ":" { inside=1; found=1; next }
       inside && /^  [a-z][a-z-]*:/ { exit }
       inside && /^    needs: gate$/ { gated=1 }
@@ -169,7 +173,7 @@ require_guarded .github/workflows/release.yml 'run: just check' \
 # `just check` contains both SDK gates, so the fallback above has already run
 # them on this commit. A release job running either again is the same commit
 # swept twice, and neither belongs here any more.
-if grep -qE '^[[:space:]]*run: just (sdk-check|python-sdk-check)$' .github/workflows/release.yml; then
+if tr -d '\r' <.github/workflows/release.yml | grep -qE '^[[:space:]]*run: just (sdk-check|python-sdk-check)$'; then
   fail "release.yml must not run an SDK gate; 'just check' in the gate job contains both, so running one here sweeps the same commit twice"
 fi
 # The gate builds the gitignored SDK dist on its way past; skipping the gate must

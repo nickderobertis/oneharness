@@ -90,44 +90,45 @@ lint-sh:
 # Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
 # plus the hermetic behavioral test of the idempotent crates.io publisher.
 lint-workflows: build build-mock-harness
-    @bash scripts/check-pr-title-e2e.sh >/dev/null
-    @bash scripts/check-e2e-matrix.sh >/dev/null
-    @bash scripts/check-e2e-matrix-test.sh >/dev/null
-    @bash scripts/check-capability-surface.sh >/dev/null
-    @bash scripts/check-sdk-coverage.sh >/dev/null
-    @bash scripts/check-sdk-coverage-test.sh >/dev/null
-    @bash scripts/check-lf-contracts.sh >/dev/null
-    @bash scripts/check-lf-contracts-test.sh >/dev/null
-    @bash scripts/check-parity-audit.sh >/dev/null
-    @bash scripts/report-scheduled-failure-test.sh >/dev/null
-    @bash scripts/check-workflows.sh >/dev/null
-    @bash scripts/check-workflows-test.sh >/dev/null
-    @bash scripts/check-workflows-e2e.sh >/dev/null
-    @bash scripts/check-ci-verdict.sh >/dev/null
-    @bash scripts/check-verify-published.sh >/dev/null
-    @bash scripts/check-setup-just.sh >/dev/null
-    @bash scripts/check-publish-crates.sh >/dev/null
-    @bash scripts/check-package-crates.sh >/dev/null
-    @bash scripts/check-semver-check.sh >/dev/null
-    @bash scripts/check-smoke-env.sh >/dev/null
-    @bash scripts/check-publish-npm.sh >/dev/null
-    @bash scripts/check-local-gate.sh >/dev/null
-    @bash scripts/check-sdk-install.sh >/dev/null
-    @bash scripts/check-build-mock-harness.sh >/dev/null
-    @bash scripts/check-temp-leaks-test.sh >/dev/null
-    @bash scripts/check-scratch-prefixes.sh >/dev/null
-    @bash scripts/check-scratch-prefixes-test.sh >/dev/null
-    @bash scripts/check-codex-usage-schema.sh >/dev/null
-    @bash scripts/check-codex-usage-schema-test.sh >/dev/null
-    @bash scripts/check-usage-enforce.sh >/dev/null
-    @bash scripts/check-release-targets.sh >/dev/null
-    @bash scripts/check-release-targets-test.sh >/dev/null
-    @bash scripts/check-release-probe.sh >/dev/null
-    @bash scripts/check-control-probes.sh >/dev/null
-    @bash scripts/check-control-probe-http.sh >/dev/null
-    @bash scripts/check-control-enforce.sh >/dev/null
-    @bash scripts/check-copilot-login-probe.sh >/dev/null
-    @bash scripts/e2e-variants-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-sdk-coverage.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-sdk-coverage-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-parity-audit.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-ci-verdict.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-verify-published.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-setup-just.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-publish-crates.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-package-crates.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-semver-check.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-smoke-env.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-publish-npm.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-local-gate.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-sdk-install.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-usage-enforce.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-release-targets.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-release-targets-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-release-probe.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-control-probes.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-control-probe-http.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-control-enforce.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/e2e-variants-test.sh >/dev/null
     @echo 'lint-workflows: ok'
 
 # Run the test suite across the workspace (core unit tests + binary unit and

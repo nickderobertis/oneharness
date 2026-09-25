@@ -143,7 +143,7 @@ CASES
 node -e '
   const fs = require("node:fs");
   const path = process.argv[1];
-  const source = fs.readFileSync(path, "utf8");
+  const source = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n");
   const start = source.indexOf("  build-wheels:\n");
   const end = source.indexOf("\n  publish-pypi:", start);
   if (start < 0 || end < 0) throw new Error("build-wheels fixture is missing; update the job boundaries in this mutation to match release.yml");
@@ -184,7 +184,7 @@ printf '      - name: Re-run the gate\n        run: just check\n' >>"$workflow"
 expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
 
 # A renamed CI workflow must be changed in the verdict selector too.
-sed -i 's/CI_WORKFLOW:-ci.yml/CI_WORKFLOW:-renamed.yml/' "$verdict"
+sed 's/CI_WORKFLOW:-ci.yml/CI_WORKFLOW:-renamed.yml/' "$work/ci-verdict.sh" >"$verdict"
 if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
   echo 'check-workflows-e2e: a stale CI workflow filename unexpectedly passed the gate' >&2
   echo '  fix: require the selector default in scripts/check-workflows.sh' >&2

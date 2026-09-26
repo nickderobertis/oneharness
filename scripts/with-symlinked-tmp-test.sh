@@ -97,6 +97,39 @@ if [ "$symlinks" -eq 1 ]; then
     fail "the lane went red without naming the directory left in an inherited root"
   rm -rf "$work/elsewhere/${prefix}leaked-in-an-inherited-root"
 
+  # The sccache server a build would otherwise start is started first, outside
+  # the root the lane removes; one already serving, or one that cannot start,
+  # still leaves the command to run.
+  mkdir -p "$work/sccache-bin"
+  cat >"$work/sccache-bin/sccache" <<'STUB'
+#!/usr/bin/env bash
+printf '%s TMPDIR=%s\n' "$*" "$TMPDIR" >>"$SCCACHE_STUB_LOG"
+case $SCCACHE_STUB in
+  running) echo "sccache: error: Server startup failed: Address in use" >&2; exit 2 ;;
+  broken) echo "sccache: error: no cache directory" >&2; exit 2 ;;
+esac
+STUB
+  chmod +x "$work/sccache-bin/sccache"
+  for answer in started running broken; do
+    : >"$work/sccache-log"
+    rm -f "$work/ran"
+    if ! SCCACHE_STUB=$answer SCCACHE_STUB_LOG="$work/sccache-log" PATH="$work/sccache-bin:$PATH" \
+      bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1; then
+      fail "the lane should run its command when sccache answers '$answer'"
+    fi
+    [ -e "$work/ran" ] || fail "the lane never ran its command when sccache answered '$answer'"
+    [ "$(cat "$work/sccache-log")" = "--start-server TMPDIR=$work" ] ||
+      fail "the lane should start sccache once under the unmoved TMPDIR $work, but it was called as: $(cat "$work/sccache-log")"
+    if [ "$answer" = broken ]; then
+      grep -q "could not start the sccache server outside the symlinked root: sccache: error: no cache directory" "$work/out" ||
+        fail "the lane should say, with sccache's reason, that it could not start the server"
+      grep -q "sccache --stop-server" "$work/out" || fail "the lane should say how to stop a server started under its root"
+    elif grep -q "sccache" "$work/out"; then
+      fail "sccache answering '$answer' needs no warning"
+    fi
+  done
+  rm -rf "$work/sccache-bin" "$work/sccache-log" "$work/ran"
+
   set +e
   bash "$lane" bash -c 'exit 5' >"$work/out" 2>&1
   status=$?
@@ -208,7 +241,7 @@ grep -q "unrecognized platform 'Linx'" "$work/out" || fail "the lane should name
 
 # One line either way; a skip goes to stderr so the gate, which discards
 # stdout, still shows what went unproven.
-done_line="with-symlinked-tmp-test: the lane hands its command a symlinked TMPDIR, catches a leak behind it, and runs nothing off Linux"
+done_line="with-symlinked-tmp-test: the lane hands its command a symlinked TMPDIR, catches a leak behind it, starts sccache outside it, and runs nothing off Linux"
 if [ -z "$skipped" ]; then
   echo "$done_line"
 else

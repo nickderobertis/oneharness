@@ -58,6 +58,16 @@ if ! root=$(mktemp -d "${TMPDIR:-/tmp}/symlinked-tmp.XXXXXX") ||
   exit 1
 fi
 
+# A compiler-cache server that a build starts outlives it, keeping the `$TMPDIR`
+# it started under. Starting it under this root, which is removed at exit, broke
+# every later sccache build on the host, so one is started here first, under the
+# unmoved `$TMPDIR`. "Address in use" means one is already serving.
+if command -v sccache >/dev/null 2>&1 && ! started=$(sccache --start-server 2>&1) &&
+  [[ $started != *"Address in use"* ]]; then
+  echo "with-symlinked-tmp: could not start the sccache server outside the symlinked root: $started" >&2
+  echo "  fix: if a build here starts it instead, run 'sccache --stop-server' once the lane ends, so later builds do not use a removed TMPDIR." >&2
+fi
+
 # Only `$TMPDIR` moves: the leak gate's default roots are what must keep
 # watching the scratch space behind the symlink. An inherited root list would
 # replace those defaults, so this lane's root joins it rather than going unwatched.

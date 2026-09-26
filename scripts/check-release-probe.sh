@@ -94,6 +94,17 @@ STUB
       fail "no $tool on this host, so the restricted-PATH cases cannot be built; install $tool (it is in coreutils on Linux and macOS) and rerun"
     ln -s "$path" "$work/minbin/$tool"
   done
+
+  # tool_path under the relative PATH entry it exists for: a tool found through
+  # `.venv/bin` must be linked into another directory and still run there.
+  mkdir -p "$work/relative/.venv/bin" "$work/relative-link"
+  printf '#!/bin/sh\necho relative-tool-ran\n' >"$work/relative/.venv/bin/relative-tool"
+  chmod +x "$work/relative/.venv/bin/relative-tool"
+  path="$(cd "$work/relative" && PATH=.venv/bin tool_path relative-tool)" ||
+    fail "tool_path could not resolve a tool on the relative PATH entry .venv/bin; it must resolve what \`type -P\` finds there"
+  ln -s "$path" "$work/relative-link/relative-tool"
+  [ "$("$work/relative-link/relative-tool" 2>/dev/null)" = relative-tool-ran ] ||
+    fail "a tool resolved through the relative PATH entry .venv/bin linked as '$path', which does not run from another directory; tool_path must prefix a relative answer with the directory it was resolved in"
 fi
 
 # $1 = description, $2 = the reason the refusal must give, $3 = PATH to run

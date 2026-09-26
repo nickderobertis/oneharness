@@ -64,8 +64,7 @@ fi
 # unmoved `$TMPDIR`. "Address in use" means one is already serving.
 if command -v sccache >/dev/null 2>&1 && ! started=$(sccache --start-server 2>&1) &&
   [[ $started != *"Address in use"* ]]; then
-  echo "with-symlinked-tmp: could not start the sccache server outside the symlinked root: $started" >&2
-  echo "  fix: if a build here starts it instead, run 'sccache --stop-server' once the lane ends, so later builds do not use a removed TMPDIR." >&2
+  echo "with-symlinked-tmp: sccache would not start outside the symlinked root (${started##*$'\n'}); if a build here starts it, run 'sccache --stop-server' after the lane." >&2
 fi
 
 # Only `$TMPDIR` moves: the leak gate's default roots are what must keep

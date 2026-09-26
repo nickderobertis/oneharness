@@ -106,7 +106,7 @@ if [ "$symlinks" -eq 1 ]; then
 printf '%s TMPDIR=%s\n' "$*" "$TMPDIR" >>"$SCCACHE_STUB_LOG"
 case $SCCACHE_STUB in
   running) echo "sccache: error: Server startup failed: Address in use" >&2; exit 2 ;;
-  broken) echo "sccache: error: no cache directory" >&2; exit 2 ;;
+  broken) printf 'sccache: Starting the server...\nsccache: error: no cache directory\n' >&2; exit 2 ;;
 esac
 STUB
   chmod +x "$work/sccache-bin/sccache"
@@ -121,9 +121,10 @@ STUB
     [ "$(cat "$work/sccache-log")" = "--start-server TMPDIR=$work" ] ||
       fail "the lane should start sccache once under the unmoved TMPDIR $work, but it was called as: $(cat "$work/sccache-log")"
     if [ "$answer" = broken ]; then
-      grep -q "could not start the sccache server outside the symlinked root: sccache: error: no cache directory" "$work/out" ||
-        fail "the lane should say, with sccache's reason, that it could not start the server"
-      grep -q "sccache --stop-server" "$work/out" || fail "the lane should say how to stop a server started under its root"
+      if [ "$(grep -c sccache "$work/out")" -ne 1 ] ||
+        ! grep -q "sccache would not start outside the symlinked root (sccache: error: no cache directory); .*'sccache --stop-server'" "$work/out"; then
+        fail "the lane should say in one line, with sccache's reason and how to stop a stranded server, that sccache would not start"
+      fi
     elif grep -q "sccache" "$work/out"; then
       fail "sccache answering '$answer' needs no warning"
     fi

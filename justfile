@@ -38,8 +38,9 @@ bootstrap:
 # enforced coverage*, build, artifact smoke. Fails on any issue. `coverage`
 # re-runs the workspace suite under instrumentation and fails below
 # {{COVERAGE_MIN}}% lines; `test` stays in the gate as the fast, un-instrumented
-# pass/fail signal.
-check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check test coverage build smoke
+# pass/fail signal, and `test-symlinked-tmp` replays the CLI journeys under the
+# temp-path spelling only macOS would otherwise produce.
+check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check test test-symlinked-tmp coverage build smoke
     @echo "check: ok"
 
 # Complete pre-push gate: deterministic product/dependency/API checks, followed
@@ -116,6 +117,7 @@ lint-workflows: build build-mock-harness
     @bash scripts/with-portable-sed.sh scripts/check-sdk-install.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh >/dev/null
+    @bash scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh >/dev/null
@@ -142,6 +144,13 @@ lint-workflows: build build-mock-harness
 # minutes-long step still says what it is running before it goes quiet.
 test:
     bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
+
+# Replay the CLI journeys with the host temp directory reached through a symlink
+# — the spelling macOS gives every temp path and Linux never does (skipped off
+# Linux; `scripts/with-symlinked-tmp.sh` says why). `--test cli` is where the
+# path-sensitive journeys live.
+test-symlinked-tmp:
+    bash scripts/with-symlinked-tmp.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --test cli --locked --status-level fail --final-status-level fail; else cargo test --features {{FEATURES}} --test cli --locked --quiet; fi'
 
 # Run the workspace suite under instrumentation and FAIL if line coverage drops
 # below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and

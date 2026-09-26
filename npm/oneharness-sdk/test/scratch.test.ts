@@ -1,9 +1,16 @@
 import { expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { PREFIX, removeScratch, scratch, scratchSync } from "./scratch.mjs";
+import {
+	controlScratch,
+	PREFIX,
+	removeScratch,
+	scratch,
+	scratchSync,
+} from "./scratch.mjs";
 import { registerScratchCleanup, SLOW_CLEANUP_MS } from "./scratch-hook.mjs";
 
 registerScratchCleanup();
@@ -109,6 +116,24 @@ test("scratch names carry the prefix the leak gate sweeps for", async () => {
 	expect(existsSync(directory)).toBe(true);
 	expect(resolve(directory, "..") === directory).toBe(false);
 	expect(directory.split(/[\\/]/u).at(-1)).toStartWith(PREFIX);
+});
+
+test("scratch names end in the id of the process that made them", () => {
+	// The leak gate reads that suffix to leave another checkout's live directory
+	// out of its verdict; a name without it is counted as this run's leak.
+	const directory = scratchSync("pid-probe");
+	expect(directory.split(/[\\/]/u).at(-1)).toEndWith(`-${process.pid}`);
+});
+
+test("a control store is rooted at /tmp rather than the temp dir", async () => {
+	// Its path becomes a socket address, and macOS's per-user temp dir alone
+	// spends about half of `sun_path` — the interrupt test's refusal there. The
+	// budget itself is the CLI's to enforce, which that test drives for real.
+	const store = await controlScratch("int");
+	expect(existsSync(store)).toBe(true);
+	expect(dirname(store)).toBe(
+		process.platform === "win32" ? tmpdir() : realpathSync("/tmp"),
+	);
 });
 
 test("the exit handler's synchronous removal gives its directory back", () => {

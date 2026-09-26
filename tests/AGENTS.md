@@ -18,5 +18,10 @@ Subtree rules for tests. Root `AGENTS.md` still applies.
 - **Assert the contract, not the prose.** Parse the JSON and assert on fields
   (`status`, `exit_code`, `text`, `text_source`); never grep human stderr except
   when the test is specifically about a usage-error message.
+- **A printed-path assertion canonicalizes BOTH sides** — `resolved(actual)`
+  against `resolved(expected)` (`cli.rs`'s helper), since on macOS a temp path
+  the test spelled and the one oneharness prints differ. The exception is an
+  assertion pinning a path echoed as the caller spelled it (the `config_files`
+  chain), which stays raw on both sides.
 - Keep tests deterministic and isolated (temp paths, no shared global state) so
   they pass under parallel execution on Linux, macOS, and Windows.

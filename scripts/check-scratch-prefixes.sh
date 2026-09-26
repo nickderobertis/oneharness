@@ -10,7 +10,9 @@
 #
 # So the constants are checked against the Rust one here, and the count is
 # checked too: a rename that removed them all would otherwise pass an empty
-# comparison.
+# comparison. Each is also held to its whole value, because the leak gate tells
+# the suites apart by what follows the Rust prefix to name the helper that fixes
+# a leak: a suite renamed inside the sweep would get another suite's fix.
 #
 # Quiet on success, one line. On failure it names each prefix and what it must
 # start with.
@@ -29,16 +31,21 @@ fi
 
 # One declaration per suite, each named `PREFIX` so this stays a fixed list
 # rather than a scan for string literals that a new spelling could slip past.
+# The last field names the assignment in the leak gate that routes that suite's
+# fix, so the value each suite must declare is read from the gate itself.
+leak_gate="scripts/check-temp-leaks.sh"
 declarations=(
-  "npm/oneharness-sdk/test/scratch.mjs:export const PREFIX = "
-  "python/oneharness-sdk/test/scratch.py:PREFIX = "
-  "python/oneharness-sdk/test/package_e2e.py:PREFIX = "
+  "npm/oneharness-sdk/test/scratch.mjs:export const PREFIX = :node_suite"
+  "python/oneharness-sdk/test/scratch.py:PREFIX = :python_suite"
+  "python/oneharness-sdk/test/package_e2e.py:PREFIX = :python_suite"
 )
 
 failed=0
 for declaration in "${declarations[@]}"; do
   file=${declaration%%:*}
+  route=${declaration##*:}
   assignment=${declaration#*:}
+  assignment=${assignment%:*}
   # `|| true`: a declaration that is gone is a finding to report, not a reason
   # for `set -e` to end the run before it is printed.
   prefix=$(grep -F "$assignment" "$file" | head -n 1 | sed 's/.*"\(.*\)".*/\1/' || true)
@@ -54,9 +61,42 @@ for declaration in "${declarations[@]}"; do
       echo "check-scratch-prefixes: $file uses '$prefix', which the leak gate would never see." >&2
       echo "  fix: start it with '$rust_prefix' (io::scratch::PREFIX), which scripts/check-temp-leaks.sh sweeps for." >&2
       failed=1
+      continue
       ;;
   esac
+  # shellcheck disable=SC2016  # the gate's own `${prefix}` spelling, matched literally
+  suite=$(sed -n 's/^ *'"$route"'="${prefix}\(.*\)"$/\1/p' "$leak_gate")
+  if [ -z "$suite" ]; then
+    echo "check-scratch-prefixes: $leak_gate no longer assigns $route=\"\${prefix}...\", which routes $file's leaks to its fix." >&2
+    echo "  fix: restore that assignment, or update this check with the name the gate routes by now." >&2
+    failed=1
+  elif [ "$prefix" != "$rust_prefix$suite" ]; then
+    echo "check-scratch-prefixes: $file uses '$prefix', but $leak_gate routes this suite's fix by '$rust_prefix$suite' ($route)." >&2
+    echo "  fix: make the two agree, so a leak from this suite names its own helper." >&2
+    failed=1
+  fi
+done
+
+# The leak gate leaves a directory out of its verdict only when its name ends in
+# the id of a live process outside the run, so a name without that suffix is
+# always counted — and every concurrent suite on the host then fails this one.
+# Rust's `ScratchDir::name` pins its suffix in a unit test; each helper here
+# spells its own, so each spelling is required where it is made.
+# shellcheck disable=SC2016  # these are source spellings to find, not expansions
+pid_suffixes=(
+  'npm/oneharness-sdk/test/scratch.mjs:-${process.pid}`'
+  'python/oneharness-sdk/test/scratch.py:suffix=f"-{os.getpid()}"'
+  'python/oneharness-sdk/test/package_e2e.py:suffix=f"-{os.getpid()}"'
+)
+for suffix in "${pid_suffixes[@]}"; do
+  file=${suffix%%:*}
+  spelling=${suffix#*:}
+  if ! grep -qF -- "$spelling" "$file"; then
+    echo "check-scratch-prefixes: $file no longer ends its scratch names in the maker's process id ('$spelling')." >&2
+    echo "  fix: end each name in the pid, as io::scratch::ScratchDir::name does, so scripts/check-temp-leaks.sh can tell another run's live directory from this run's leak." >&2
+    failed=1
+  fi
 done
 
 [ "$failed" -eq 0 ] || exit 1
-echo "check-scratch-prefixes: every suite's scratch prefix is inside the leak gate's sweep"
+echo "check-scratch-prefixes: every suite's scratch prefix is inside the leak gate's sweep, and every name ends in its maker's pid"

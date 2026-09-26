@@ -25,9 +25,15 @@ def scratch_dir(stack: ExitStack, tag: str) -> Path:
 
     There is no test framework here to hang a teardown on, so the caller's
     :class:`contextlib.ExitStack` is the hook — it unwinds on the way out of a
-    failed run exactly as it does on a clean one.
+    failed run exactly as it does on a clean one. The name ends in this
+    process's id, which is how `scripts/check-temp-leaks.sh` tells another
+    run's live directory from one this run left behind.
     """
-    return Path(stack.enter_context(tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-")))
+    return Path(
+        stack.enter_context(
+            tempfile.TemporaryDirectory(prefix=f"{PREFIX}{tag}-", suffix=f"-{os.getpid()}")
+        )
+    )
 
 
 def cargo_version() -> str:
@@ -52,6 +58,11 @@ def main(stack: ExitStack) -> None:
         text=True,
     ).stdout.strip()
     wheel_dir = scratch_dir(stack, "wheelhouse")
+    if not wheel_dir.name.endswith(f"-{os.getpid()}"):
+        raise AssertionError(
+            f"{wheel_dir} does not end in this process's id, so "
+            "scripts/check-temp-leaks.sh would count it as a leak while this run is live"
+        )
     subprocess.run(
         ["uv", "build", "--wheel", "--out-dir", str(wheel_dir), staged],
         cwd=ROOT,

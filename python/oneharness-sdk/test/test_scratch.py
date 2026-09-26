@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import os
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
-from .scratch import PREFIX, scratch
+from .scratch import PREFIX, control_scratch, scratch
 
 
 class ScratchTests(unittest.TestCase):
@@ -46,6 +49,23 @@ class ScratchTests(unittest.TestCase):
         directory = scratch(self, "prefix-probe")
         self.assertTrue(directory.is_dir())
         self.assertTrue(directory.name.startswith(PREFIX), directory.name)
+
+    def test_scratch_names_end_in_the_id_of_the_process_that_made_them(self) -> None:
+        """The leak gate reads that suffix to leave another checkout's live
+        directory out of its verdict; a name without it counts as this run's leak."""
+        directory = scratch(self, "pid-probe")
+        self.assertTrue(directory.name.endswith(f"-{os.getpid()}"), directory.name)
+
+    def test_a_control_store_is_rooted_at_tmp_rather_than_the_temp_dir(self) -> None:
+        """Its path becomes a socket address, and macOS's per-user temp dir alone
+        spends about half of `sun_path` — the interrupt test's refusal there. The
+        budget itself is the CLI's to enforce, which that test drives for real."""
+        store = control_scratch(self, "interrupt")
+        self.assertTrue(store.is_dir())
+        # S108: asserts the root control_scratch() chooses, and creates nothing there.
+        tmp = os.path.realpath("/tmp")  # noqa: S108
+        expected = tempfile.gettempdir() if sys.platform == "win32" else tmp
+        self.assertEqual(str(store.parent), expected)
 
 
 if __name__ == "__main__":

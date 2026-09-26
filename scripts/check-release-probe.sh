@@ -36,6 +36,18 @@ fail() {
   exit 1
 }
 
+# The executable FILE `type -P` resolves for $1, made absolute. A relative PATH
+# entry (`.venv/bin`) resolves to a relative path, and a link made from it
+# dangles in the scratch directory it is placed in.
+tool_path() {
+  local path
+  path="$(type -P "$1")" || return 1
+  case $path in
+    /*) printf '%s\n' "$path" ;;
+    *) printf '%s/%s\n' "$PWD" "$path" ;;
+  esac
+}
+
 # The stubbed halves need an extensionless executable, which is a Unix shape —
 # the same reason scripts/check-local-gate.sh names. Windows keeps every
 # assertion that does not need one.
@@ -78,10 +90,21 @@ STUB
     # shell function of the same name where a developer's profile defines one,
     # and the link this makes from that answer points at itself — leaving the
     # tool missing, and every case below refused for a reason it is not testing.
-    path="$(type -P "$tool")" ||
+    path="$(tool_path "$tool")" ||
       fail "no $tool on this host, so the restricted-PATH cases cannot be built; install $tool (it is in coreutils on Linux and macOS) and rerun"
     ln -s "$path" "$work/minbin/$tool"
   done
+
+  # tool_path under the relative PATH entry it exists for: a tool found through
+  # `.venv/bin` must be linked into another directory and still run there.
+  mkdir -p "$work/relative/.venv/bin" "$work/relative-link"
+  printf '#!/bin/sh\necho relative-tool-ran\n' >"$work/relative/.venv/bin/relative-tool"
+  chmod +x "$work/relative/.venv/bin/relative-tool"
+  path="$(cd "$work/relative" && PATH=.venv/bin tool_path relative-tool)" ||
+    fail "tool_path could not resolve a tool on the relative PATH entry .venv/bin; it must resolve what \`type -P\` finds there"
+  ln -s "$path" "$work/relative-link/relative-tool"
+  [ "$("$work/relative-link/relative-tool" 2>/dev/null)" = relative-tool-ran ] ||
+    fail "a tool resolved through the relative PATH entry .venv/bin linked as '$path', which does not run from another directory; tool_path must prefix a relative answer with the directory it was resolved in"
 fi
 
 # $1 = description, $2 = the reason the refusal must give, $3 = PATH to run
@@ -336,7 +359,7 @@ STUB_BODY='{"crate":{"max_stable_version":"","max_version":"0.1.0-alpha.1"}}' \
 # exercise them failing; neither was ever proven to produce a right answer.
 readers=0
 for reader in jq python3; do
-  path="$(type -P "$reader")" || continue
+  path="$(tool_path "$reader")" || continue
   mkdir -p "$work/reader-$reader"
   ln -sf "$path" "$work/reader-$reader/$reader"
   # minbin carries no reader, so each case runs with exactly the one it names.

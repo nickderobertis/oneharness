@@ -168,6 +168,12 @@ mod tests {
     fn the_name_carries_the_prefix_the_leak_gate_sweeps_for() {
         let name = ScratchDir::name("anything");
         assert!(name.starts_with(PREFIX), "{name}");
+        // The gate also reads the maker's pid off the end of the name, to leave
+        // another checkout's live run out of its verdict.
+        assert!(
+            name.ends_with(&format!("-{}", std::process::id())),
+            "{name}"
+        );
         let scratch = ScratchDir::new(&tag("prefix")).unwrap();
         assert!(scratch
             .file_name()

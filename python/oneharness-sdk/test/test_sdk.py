@@ -31,7 +31,7 @@ from oneharness_sdk._client import (
     _SCHEMAS as SCHEMAS,
 )
 
-from .scratch import scratch
+from .scratch import control_scratch, scratch
 
 
 @contextmanager
@@ -817,7 +817,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:
         """Return the refusal frame instead of raising on a non-zero exit."""
-        session_dir = str(scratch(self, "interrupt"))
+        session_dir = str(control_scratch(self, "interrupt"))
         response = await self.client().interrupt(
             {"session": "no-such-session", "session_dir": session_dir}
         )

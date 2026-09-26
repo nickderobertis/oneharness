@@ -131,13 +131,20 @@ STUB
   done
   rm -rf "$work/sccache-bin" "$work/sccache-log" "$work/ran"
 
+  # The leak gate names what it leaves out by resolved path, and its own test
+  # once expected the caller's spelling there: green on Linux, red on Git Bash,
+  # whose `/tmp` resolves to `/c/Users/...`. Under the lane Linux spells it too.
+  if ! bash "$lane" bash scripts/check-temp-leaks-test.sh >"$work/out" 2>&1; then
+    fail "the leak gate's own test should hold with its scratch reached through a symlinked TMPDIR"
+  fi
+
   set +e
   bash "$lane" bash -c 'exit 5' >"$work/out" 2>&1
   status=$?
   set -e
   [ "$status" -eq 5 ] || fail "the wrapped command's exit status 5 should be the lane's, got $status"
 else
-  skip "a leak behind the symlinked TMPDIR, and the wrapped command's status"
+  skip "a leak behind the symlinked TMPDIR, the leak gate's own test under it, and the wrapped command's status"
 fi
 
 if ! OH_SYMLINKED_TMP_UNAME=Darwin bash "$lane" bash -c "touch '$work/ran'" >"$work/out" 2>&1; then

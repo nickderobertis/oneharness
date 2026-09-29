@@ -6,9 +6,12 @@
 //! [`PermissionMode`] is oneharness's single ordered spectrum; the registry
 //! ([`crate::domain::harness`]) maps each value to the selected harness's native
 //! mechanism (argv flags and/or environment), and declares which modes a harness
-//! can actually honor in a *headless* run via [`ModeHeadless`]. This module is
-//! pure data + parsing; the mapping and the spawn live in the harness registry
-//! and the command/io layers.
+//! can actually honor in a *headless* run via [`ModeHeadless`]. One mode can
+//! need two spellings on one harness: Codex's sandbox rides `--sandbox` on a
+//! fresh `codex exec`, but `codex exec resume` has no such option, so a resumed
+//! turn carries the same sandbox as the `-c sandbox_mode=` config override.
+//! This module is pure data + parsing; the mapping and the spawn live in the
+//! harness registry and the command/io layers.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

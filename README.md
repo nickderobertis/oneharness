@@ -2618,8 +2618,8 @@ user starts it, rather than through `oneharness run` (`oh_codex_rules_enforce`):
 `sync` writes `.codex/rules/oneharness.rules` into a scratch project that a
 scratch `CODEX_HOME` trusts (its `auth.json` copied from the existing login —
 the user's own `~/.codex` is never written), and each half runs one command
-before and after the sync. A synced `denied_tools` `Bash(mkdir:*)` must refuse
-a `mkdir` that ran before it, and a synced `allowed_tools` `Bash(rm -f:*)` must
+before and after the sync. A synced `denied_tools` `Bash(mkdir <dir>:*)` must refuse
+a `mkdir` that ran before it, and a synced `allowed_tools` `Bash(rm -f <file>:*)` must
 run an `rm -f` Codex's own dangerous-command check refused before it. Neither
 half leans on Codex's OS sandbox, so the proof holds on runners without
 unprivileged user namespaces.

@@ -1608,12 +1608,12 @@ oh_resume_mode_enforce() {
         _oh_control_evidence "$sandbox/work" "$sandbox/first.json"
         note "  first turn stderr: $(head -c 800 "$sandbox/first.err" 2>/dev/null || true)"
         rm -rf "$sandbox"
-        fail "$id: turn one under --mode $mode did not complete (status=${status:-<no report>}) — the fresh turn is not what this phase tests, but without it there is no session to continue"
+        fail "$id: turn one under --mode $mode did not complete (status=${status:-<no report>}) — the fresh turn is not what this phase tests, but without it there is no session to continue; read the turn-one stderr above, confirm \`codex exec\` runs in a scratch git repo under --mode $mode, then rerun \`just live-codex\`"
     fi
     if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
         "$sandbox/first.json" >/dev/null 2>&1; then
         rm -rf "$sandbox"
-        fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
+        fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>')); check \`oneharness list\` still reports $id session_capable and that its --json stream carries thread_id, then rerun \`just live-codex\`"
     fi
 
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
@@ -1630,16 +1630,16 @@ oh_resume_mode_enforce() {
         note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | head -c 800)"
         note "  second turn oneharness stderr: $(head -c 800 "$sandbox/second.err" 2>/dev/null || true)"
         rm -rf "$sandbox"
-        fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one"
+        fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one; read the harness stderr above for the argument codex rejected and fix that mode's resume arm in \`argv_codex\` (domain/harness.rs), then rerun \`just live-codex\`"
     fi
     if ! jq -e '.results[0].command | index("resume") != null' "$sandbox/second.json" >/dev/null 2>&1; then
         rm -rf "$sandbox"
-        fail "$id: turn two did not run the resume argv ($(jq -c '.results[0].command' "$sandbox/second.json")) — nothing about a resumed turn was exercised"
+        fail "$id: turn two did not run the resume argv ($(jq -c '.results[0].command' "$sandbox/second.json")) — nothing about a resumed turn was exercised; check the session store kept turn one's token and that \`run --session\` feeds it to the resume argv"
     fi
     phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
     if [ "$phase" != "continue" ]; then
         rm -rf "$sandbox"
-        fail "$id: turn two reported session phase=$phase, not continue — a fresh thread is not a resumed one"
+        fail "$id: turn two reported session phase=$phase, not continue — a fresh thread is not a resumed one; inspect \`domain::session\`'s create-vs-continue decision for this store and rerun"
     fi
     text="$(jq -r '.results[0].text // ""' "$sandbox/second.json")"
     case "$text" in
@@ -1647,7 +1647,7 @@ oh_resume_mode_enforce() {
     *)
         note "  second turn text: $(printf '%s' "$text" | head -c 500)"
         rm -rf "$sandbox"
-        fail "$id: turn two reported phase=continue under --mode $mode but did not recall the word turn one established — the resume carried no conversation"
+        fail "$id: turn two reported phase=continue under --mode $mode but did not recall the word turn one established — the resume carried no conversation; compare turn two's \`thread_id\` frame with turn one's token and check \`codex exec resume <id>\` still reopens that thread"
         ;;
     esac
 
@@ -1662,20 +1662,20 @@ oh_resume_mode_enforce() {
         if [ ! -e "$sandbox/work/$file" ]; then
             _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
             rm -rf "$sandbox"
-            fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had"
+            fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had; read the probe and stderr above — a probe that ran means the resumed argv lost the sandbox, so check the \`-c sandbox_mode=\` arm in \`argv_codex\`"
         fi
         ;;
     *)
         if [ -e "$sandbox/work/$file" ]; then
             rm -rf "$sandbox"
-            fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had"
+            fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had; check the resumed argv carries \`-c sandbox_mode=read-only\` last (\`argv_with_caller_args\`) and that codex still honors it"
         fi
         if [ "$mode" = "read-only" ] && ! jq -e --arg f "$file" \
             '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
             "$sandbox/second.json" >/dev/null 2>&1; then
             _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
             rm -rf "$sandbox"
-            fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing"
+            fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing; read the events and text above — if the model declined, tighten the turn-two prompt; if codex dropped the item, check \`exec --json\` still emits \`command_execution\` for an exit-0 command"
         fi
         ;;
     esac
@@ -1696,20 +1696,20 @@ oh_resume_mode_enforce() {
 # one clap argument whatever the key (`CliConfigOverrides::raw_overrides`).
 oh_codex_config_override_order() {
     command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
-    local spelling first last got
+    local spelling first last
     for spelling in "-c" "--config" "--config=" "-c<kv>"; do
         for first in true false; do
             last="$([ "$first" = true ] && printf false || printf true)"
             # The spelling under test comes last: its value must win.
             _oh_codex_spell "$spelling" "features.hooks=$last"
-            got="$(_oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}")"
-            [ "$got" = "$last" ] \
-                || fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${got:-<unreadable>} — that spelling is not a config override codex applies last-wins, so oneharness restating the mode after it proves nothing"
+            _oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}"
+            [ "$_OH_FEATURE_VAL" = "$last" ] \
+                || fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — that spelling is not a config override codex applies last-wins; drop it from \`sets_codex_sandbox_mode\` (domain/harness.rs) or restate the mode after every caller arg"
             # And first: the plain `-c` after it must win.
             _oh_codex_spell "$spelling" "features.hooks=$first"
-            got="$(_oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last")"
-            [ "$got" = "$last" ] \
-                || fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${got:-<unreadable>} — position no longer decides between two overrides, so the restated mode may not govern a resumed turn"
+            _oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last"
+            [ "$_OH_FEATURE_VAL" = "$last" ] \
+                || fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
         done
     done
     note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
@@ -1726,9 +1726,17 @@ _oh_codex_spell() {
     esac
 }
 
-# The effective value of codex's `hooks` feature under the given args.
+# The effective value of codex's `hooks` feature under the given args, in
+# $_OH_FEATURE_VAL, with codex's own stderr in $_OH_FEATURE_ERR for a failure
+# to quote. Globals rather than stdout, so a caller keeps both.
+_OH_FEATURE_VAL=""
+_OH_FEATURE_ERR=""
 _oh_codex_feature_value() {
-    codex features list "$@" </dev/null 2>/dev/null | awk '$1 == "hooks" { print $NF }' | tr -d '\r'
+    local err
+    err="$(mktemp)"
+    _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk '$1 == "hooks" { print $NF }' | tr -d '\r')" || true
+    _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
+    rm -f "$err"
 }
 
 # Whether the harness's own OS sandbox for `mode` can START on this host,

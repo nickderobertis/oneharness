@@ -1534,6 +1534,300 @@ oh_mode_enforce() {
     note "PASS: $id $mode enforcement"
 }
 
+# Live proof that a CONTINUED turn runs under the same sandbox mode as the turn
+# that opened the session (issue #1372). Two ordinary (non-control)
+# `oneharness run --session` turns under one `--mode`: turn one establishes a
+# word, turn two — the harness's own resume argv (`codex exec resume` for codex)
+# — must actually run, report `session.phase == "continue"`, recall the word,
+# and be asked to `touch` a file. Under a writing mode (`auto`) the file must
+# exist afterwards; under a no-mutation mode (`read-only`, `plan`) it must not.
+# Under `read-only` the turn's normalized tool events must also show the
+# `touch` was ATTEMPTED, so an absent file cannot pass merely because the model
+# declined. The `; echo touch-exit=$?` tail is what makes that visible: codex
+# 0.157's `exec --json` emits no `command_execution` item for a command that
+# exits non-zero on a sandbox denial (observed live under read-only), so the
+# command must itself exit 0 for its attempt — and the sandbox's own
+# `Read-only file system` — to reach the normalized events at all.
+# Only the real CLI can alarm this: an argv test restates what
+# oneharness believes the resume subcommand accepts, and it was wrong once —
+# `exec resume` has no `--sandbox`, so every continued sandboxed turn died at
+# argument parsing while the fresh turn passed.
+#
+# Two halves, asserted where each can be. The #1372 half — turn two runs as the
+# resume argv, `ok`, `continue`, recalls the word — is asserted on every host.
+# The sandbox half (the write, the block, the attempt) needs a host where the
+# harness's OS sandbox can START, and some cannot: on GitHub's Linux runner
+# codex's bwrap fails (`bwrap: loopback: Failed RTM_NEWADDR: Operation not
+# permitted`), and on its Windows runner no sandbox backend is enabled, so codex
+# refuses every command (`rejected: blocked by policy`) — fresh or resumed.
+# `_oh_sandbox_starts` asks that of the harness without a model; where it
+# cannot, the phase says `sandbox half NOT PROVEN on this host` with the probe's
+# own output, and neither passes nor fails that half.
+#
+# Extra run args ($3..) ride BOTH turns. e2e-codex.sh passes a caller's own
+# `-- -c sandbox_mode=read-only` under `auto`: on a fresh turn codex's
+# `--sandbox` outranks it, on a resumed one the last `-c` wins, so the resumed
+# turn still writing is the live proof that oneharness restates the mode after
+# a caller's override and the mode governs both turns alike.
+#   $1 harness id, $2 mode (auto | read-only | plan), $3.. extra run args
+oh_resume_mode_enforce() {
+    local id="$1" mode="$2"
+    shift 2
+    local bin sandbox store name marker file status phase text refusal probe
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    mkdir -p "$sandbox/work"
+    # A real repo: codex refuses to run outside one (`untrusted_directory`)
+    # unless the directory is trusted, and trusting it is not this phase's job.
+    git init -q "$sandbox/work" 2>/dev/null || true
+    probe=""
+    _oh_sandbox_starts "$id" "$mode" "$sandbox/work" || probe="$_OH_SANDBOX_PROBE"
+    store="$sandbox/sessions"
+    name="ohresume${RANDOM}"
+    marker="$(oh_marker_fixed)"
+    file="$(oh_enforce_file "resume-$mode")"
+
+    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
+        "Remember this exact word for the rest of our conversation: $marker. Do not run any tools. Reply with only the word OK." \
+        "$sandbox/first.json" "$sandbox/first.err" "$@"
+    status="$(_oh_result_status "$sandbox/first.json")"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ "$status" != "ok" ]; then
+        refusal="$(_oh_provider_refusal <"$sandbox/first.json" 2>/dev/null)" || refusal=""
+        if [ -n "$refusal" ]; then
+            rm -rf "$sandbox"
+            not_run "$id: its own provider refused turn one, so the $mode resume was never reached: $refusal"
+        fi
+        _oh_control_evidence "$sandbox/work" "$sandbox/first.json"
+        note "  first turn stderr: $(head -c 800 "$sandbox/first.err" 2>/dev/null || true)"
+        rm -rf "$sandbox"
+        fail "$id: turn one under --mode $mode did not complete (status=${status:-<no report>}) — the fresh turn is not what this phase tests, but without it there is no session to continue; read the turn-one stderr above, confirm \`codex exec\` runs in a scratch git repo under --mode $mode, then rerun \`just live-codex\`"
+    fi
+    if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
+        "$sandbox/first.json" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>')); check \`oneharness list\` still reports $id session_capable and that its --json stream carries thread_id, then rerun \`just live-codex\`"
+    fi
+
+    local ask_touch
+    ask_touch="You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation."
+    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
+        "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+    # Under a no-mutation mode the model sometimes declines outright — it sees
+    # the read-only sandbox and never calls the tool (observed live on codex
+    # 0.159: a reasoning item and the word, no call). That proves nothing
+    # either way, so it gets ONE more resumed turn, as `oh_mock_enforce` does
+    # for an agent that never fired the hook. Anything else is judged as run.
+    if [ "$mode" = read-only ] && [ "$(_oh_result_status "$sandbox/second.json")" = ok ] \
+        && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
+        _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
+            "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+    fi
+    status="$(_oh_result_status "$sandbox/second.json")"
+    if [ "$status" != "ok" ]; then
+        refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
+        if [ -n "$refusal" ]; then
+            rm -rf "$sandbox"
+            not_run "$id: its own provider refused the resumed turn under --mode $mode: $refusal"
+        fi
+        note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
+        note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | head -c 800)"
+        note "  second turn oneharness stderr: $(head -c 800 "$sandbox/second.err" 2>/dev/null || true)"
+        rm -rf "$sandbox"
+        fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one; read the harness stderr above for the argument codex rejected and fix that mode's resume arm in \`argv_codex\` (domain/harness.rs), then rerun \`just live-codex\`"
+    fi
+    if ! jq -e '.results[0].command | index("resume") != null' "$sandbox/second.json" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: turn two did not run the resume argv ($(jq -c '.results[0].command' "$sandbox/second.json")) — nothing about a resumed turn was exercised; check the session store kept turn one's token and that \`run --session\` feeds it to the resume argv"
+    fi
+    phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
+    if [ "$phase" != "continue" ]; then
+        rm -rf "$sandbox"
+        fail "$id: turn two reported session phase=$phase, not continue — a fresh thread is not a resumed one; inspect \`domain::session\`'s create-vs-continue decision for this store and rerun"
+    fi
+    text="$(jq -r '.results[0].text // ""' "$sandbox/second.json")"
+    case "$text" in
+    *"$marker"*) ;;
+    *)
+        note "  second turn text: $(printf '%s' "$text" | head -c 500)"
+        rm -rf "$sandbox"
+        fail "$id: turn two reported phase=continue under --mode $mode but did not recall the word turn one established — the resume carried no conversation; compare turn two's \`thread_id\` frame with turn one's token and check \`codex exec resume <id>\` still reopens that thread"
+        ;;
+    esac
+
+    if [ -n "$probe" ]; then
+        rm -rf "$sandbox"
+        note "sandbox half NOT PROVEN on this host: $id's own sandbox for --mode $mode cannot start here, so whether turn two's touch of $file was written or blocked says nothing about the mode ($probe); the #1372 half held: turn two ran as the resume argv on session $name, status ok, phase continue, and recalled $marker"
+        return 0
+    fi
+
+    case "$mode" in
+    auto)
+        if [ ! -e "$sandbox/work/$file" ]; then
+            _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
+            rm -rf "$sandbox"
+            fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had; read the probe and stderr above — a probe that ran means the resumed argv lost the sandbox, so check the \`-c sandbox_mode=\` arm in \`argv_codex\`"
+        fi
+        ;;
+    *)
+        if [ -e "$sandbox/work/$file" ]; then
+            rm -rf "$sandbox"
+            fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had; check the resumed argv carries \`-c sandbox_mode=read-only\` last (\`argv_with_caller_args\`) and that codex still honors it"
+        fi
+        # The attempt is demanded of `read-only` only. `plan` prepends an
+        # instruction NOT to act, so a model that declines the touch there is
+        # obeying the mode, not dodging the test; its sandbox is the very
+        # `-c sandbox_mode=read-only` that read-only's attempted-and-blocked
+        # write proves live, and the argv unit tests
+        # (`codex_resumed_turn_carries_the_sandbox_as_config_per_mode`) pin the
+        # two modes' resumed sandbox tokens as identical.
+        if [ "$mode" = "read-only" ] && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
+            _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
+            rm -rf "$sandbox"
+            fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing; read the events and text above — if the model declined, tighten the turn-two prompt; if codex dropped the item, check \`exec --json\` still emits \`command_execution\` for an exit-0 command"
+        fi
+        ;;
+    esac
+
+    rm -rf "$sandbox"
+    # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+    note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
+}
+
+# Model-free drift gate for the config-override spellings oneharness reads in
+# a caller's codex args (`-c k=v`, `--config k=v`, `--config=k=v`, `-ck=v`):
+# on a resumed turn the mode's sandbox is restated after any of them that sets
+# `sandbox_mode`, because codex applies every override in argv order and the
+# LAST one wins (see `argv_with_caller_args`). Codex's own parser is asked
+# both facts — that each spelling IS an override, and that position rather than
+# spelling decides between two — through `codex features list`, which prints
+# the effective value and needs no model, login or OS sandbox. The key is a
+# feature flag rather than `sandbox_mode` for exactly that reason; the parse is
+# one clap argument whatever the key (`CliConfigOverrides::raw_overrides`).
+oh_codex_config_override_order() {
+    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+    local spelling first last
+    for spelling in "-c" "--config" "--config=" "-c<kv>"; do
+        for first in true false; do
+            last="$([ "$first" = true ] && printf false || printf true)"
+            # The spelling under test comes last: its value must win.
+            _oh_codex_spell "$spelling" "features.hooks=$last"
+            _oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}"
+            [ "$_OH_FEATURE_VAL" = "$last" ] \
+                || fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — that spelling is not a config override codex applies last-wins; drop it from \`sets_codex_sandbox_mode\` (domain/harness.rs) or restate the mode after every caller arg"
+            # And first: the plain `-c` after it must win.
+            _oh_codex_spell "$spelling" "features.hooks=$first"
+            _oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last"
+            [ "$_OH_FEATURE_VAL" = "$last" ] \
+                || fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
+        done
+    done
+    # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+    note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
+}
+
+# One spelling of a config override, as argv words in $_OH_SPELLED.
+#   $1 spelling (-c | --config | --config= | -c<kv>), $2 key=value
+_OH_SPELLED=()
+_oh_codex_spell() {
+    case "$1" in
+    -c | --config) _OH_SPELLED=("$1" "$2") ;;
+    --config=) _OH_SPELLED=("--config=$2") ;;
+    -c\<kv\>) _OH_SPELLED=("-c$2") ;;
+    esac
+}
+
+# The effective value of codex's `hooks` feature under the given args, in
+# $_OH_FEATURE_VAL, with codex's own stderr in $_OH_FEATURE_ERR for a failure
+# to quote. Globals rather than stdout, so a caller keeps both.
+_OH_FEATURE_VAL=""
+_OH_FEATURE_ERR=""
+_oh_codex_feature_value() {
+    local err
+    err="$(mktemp)"
+    _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk '$1 == "hooks" { print $NF }' | tr -d '\r')" || true
+    _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
+    rm -f "$err"
+}
+
+# Whether the harness's own OS sandbox for `mode` can START on this host,
+# asked without a model. Returns non-zero, with the probe's own words in
+# $_OH_SANDBOX_PROBE, when it cannot. Only codex has a model-free way to ask
+# (`codex sandbox`); any other harness is assumed able, so its sandbox half is
+# asserted in full.
+#   $1 harness id, $2 mode, $3 directory to probe in
+_OH_SANDBOX_PROBE=""
+_oh_sandbox_starts() {
+    local id="$1" mode="$2" dir="$3" sandbox out rc=0
+    _OH_SANDBOX_PROBE=""
+    [ "$id" = codex ] || return 0
+    case "$mode" in
+    auto) sandbox=workspace-write ;;
+    read-only | plan) sandbox=read-only ;;
+    *) return 0 ;;
+    esac
+    out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'echo ohprobe-ran' </dev/null 2>&1)" || rc=$?
+    case "$rc:$out" in
+    0:*ohprobe-ran*) return 0 ;;
+    esac
+    _OH_SANDBOX_PROBE="\`codex sandbox -c sandbox_mode=$sandbox\` exited $rc: $(printf '%s' "$out" | tr -d '\000' | tail -c 400)"
+    return 1
+}
+
+# Why a resumed turn's write came out as it did, for a failure. The turn's own
+# words and stderr say what the model did; the probe says what the harness's OS
+# sandbox can do in that directory WITHOUT a model: codex's `exec --json` drops
+# a command that fails inside a sandbox that could not start, so a sandbox the
+# host cannot run looks, in the events, exactly like a model that never tried.
+#   $1 harness id, $2 the turn's cwd, $3 its report
+_oh_resume_mode_evidence() {
+    local id="$1" dir="$2" report="$3" sandbox out rc
+    note "  second turn events: $(jq -c '.results[0].events' "$report" | head -c 800)"
+    note "  second turn text: $(jq -r '.results[0].text // ""' "$report" | head -c 500)"
+    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$report" | tail -c 800)"
+    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$report" | tail -n 6 | cut -c1-300)"
+    [ "$id" = codex ] || return 0
+    for sandbox in workspace-write read-only; do
+        # A sandbox that cannot start exits non-zero, which is the evidence
+        # itself — captured, never allowed to end the script under `set -e`.
+        rc=0
+        out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'touch ohprobe.txt; echo probe-touch-exit=$?' </dev/null 2>&1)" || rc=$?
+        note "  codex sandbox probe ($sandbox, exit $rc): $(printf '%s' "$out" | tr -d '\000' | tail -c 600)"
+        rm -f "$dir/ohprobe.txt"
+    done
+}
+
+# Whether a turn's normalized tool events show a `touch` of the file.
+#   $1 report, $2 file name
+_oh_touch_attempted() {
+    jq -e --arg f "$2" \
+        '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
+        "$1" >/dev/null 2>&1
+}
+
+# One ordinary (non-control) turn on a named session handle, under `--mode`.
+# Its exit code is not the verdict — the caller reads the report — so it never
+# fails the phase by itself.
+#   $1 id, $2 mode, $3 session name, $4 store dir, $5 cwd, $6 prompt,
+#   $7 report, $8 stderr, $9.. extra run args
+_oh_resume_mode_turn() {
+    local id="$1" mode="$2" name="$3" store="$4" cwd="$5" prompt="$6" report="$7" err="$8"
+    shift 8
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+    ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
+        --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
+        --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
+}
+
 # Live proof that `--mode edit` AUTO-APPROVES file edits — the reliably-testable
 # half of edit's "auto-approve edits, gate shell" contract. The agent is asked to
 # create a file with ONLY its file-writing/editing tool; under `--mode edit` that

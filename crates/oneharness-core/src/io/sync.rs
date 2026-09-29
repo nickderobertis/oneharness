@@ -897,6 +897,8 @@ mod tests {
         assert!(e2e.contains(r#"denied_tools = ["Bash(mkdir %s:*)"]"#));
         // The allow half's delete is spelled per shell: Windows Codex runs
         // PowerShell, whose `rm` alias rejects `-f`.
+        assert!(e2e.contains("\n_oh_codex_render_forced_delete() {"));
+        assert!(e2e.contains(r#"del="$(_oh_codex_render_forced_delete "$file")""#));
         assert!(e2e.contains("printf 'Remove-Item -Force %s' \"$1\""));
         assert!(e2e.contains("printf 'rm -f %s' \"$1\""));
         assert!(lane.contains("\noh_codex_rules_match\n"));

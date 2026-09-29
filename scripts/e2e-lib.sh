@@ -1298,7 +1298,7 @@ _oh_codex_direct() {
 # parse_powershell_command_into_plain_commands) — so this is where a Linux run
 # shows the synced rule matching what a Windows Codex asks about.
 oh_codex_rules_match() {
-    local bin scratch cfg out rules file dir argv want got
+    local bin scratch cfg out rules file dir argv want got status
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
     command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
@@ -1318,8 +1318,22 @@ oh_codex_rules_match() {
     rules="$scratch/.codex/rules/oneharness.rules"
     # One case per line: the decision Codex must reach, then the argv it checks.
     while IFS=' ' read -r want argv; do
+        status=0
         # shellcheck disable=SC2086 # argv is space-separated words by construction
-        got="$(codex execpolicy check --rules "$(oh_native_path "$rules")" $argv | jq -r '.decision // "unmatched"')"
+        out="$(codex execpolicy check --rules "$(oh_native_path "$rules")" $argv 2>"$scratch/check.err")" || status=$?
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$out" >&2
+            cat "$scratch/check.err" >&2
+            rm -rf "$scratch"
+            fail "codex-rules-match: \`codex execpolicy check --rules $rules $argv\` exited $status (output above) — if it names the rules file, check that sync wrote $rules; otherwise check that \`codex --version\` still has the \`execpolicy check\` subcommand"
+        fi
+        status=0
+        got="$(printf '%s\n' "$out" | jq -r '.decision // "unmatched"' 2>&1)" || status=$?
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n%s\n' "$out" "$got" >&2
+            rm -rf "$scratch"
+            fail "codex-rules-match: jq exited $status reading \`codex execpolicy check\`'s answer for [$argv] (answer and jq error above) — codex no longer prints its decision as JSON; check \`codex execpolicy check --help\` for the release \`codex --version\` names"
+        fi
         if [ "$got" != "$want" ]; then
             sed 's/^/    /' "$rules" >&2
             rm -rf "$scratch"
@@ -1336,13 +1350,13 @@ CASES
     rm -rf "$scratch"
 }
 
-# The forced delete of $1, spelled for the shell `codex exec` runs commands in.
-# On Windows that is PowerShell, whose `rm` alias refuses `-f` as ambiguous — a
+# Print (never run) the forced-delete command for $1, spelled for the shell
+# `codex exec` runs commands in. On Windows that is PowerShell, whose `rm` alias refuses `-f` as ambiguous — a
 # failure that once read as the synced rule not matching, though Codex checks
 # rules against the words it lowers the `pwsh -Command` script into
 # (codex-rs/shell-command/src/powershell.rs,
 # parse_powershell_command_into_plain_commands) and `rm -f` had matched.
-_oh_codex_forced_delete() {
+_oh_codex_render_forced_delete() {
     case "$(uname -s)" in
         MINGW* | MSYS* | CYGWIN*) printf 'Remove-Item -Force %s' "$1" ;;
         *) printf 'rm -f %s' "$1" ;;
@@ -1359,7 +1373,7 @@ _oh_codex_forced_delete() {
 # only thing that changed Codex's decision.
 #   * deny:  `mkdir <dir>` runs under --dangerously-bypass-approvals-and-sandbox;
 #            a synced `denied_tools` `Bash(mkdir <dir>:*)` must make Codex refuse it.
-#   * allow: a forced delete of <file> (_oh_codex_forced_delete) is refused
+#   * allow: a forced delete of <file> (_oh_codex_render_forced_delete) is refused
 #            by Codex's own dangerous-command check (no approval can be asked
 #            for under that flag); a synced `allowed_tools` rule naming it must
 #            let it run.
@@ -1388,7 +1402,7 @@ oh_codex_rules_enforce() {
         | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
     dir="rules-deny-${RANDOM}${RANDOM}"
     file="$(oh_enforce_file rules-allow)"
-    del="$(_oh_codex_forced_delete "$file")"
+    del="$(_oh_codex_render_forced_delete "$file")"
     touch "$proj/$file"
     local deny_prompt allow_prompt
     deny_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: mkdir $dir. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not create the directory any other way; reply with the single word DENIED and stop."
@@ -1414,7 +1428,7 @@ oh_codex_rules_enforce() {
     if ! printf '%s\n' "$_OH_CODEX_OUT" | grep -qF 'rejected: '; then
         printf '%s\n' "$_OH_CODEX_OUT" >&2
         rm -rf "$scratch"
-        fail "codex: $file survived the control run but codex never refused '$del' — the command failed some other way (read the transcript above), so the allow half would prove nothing; fix the spelling in _oh_codex_forced_delete"
+        fail "codex: $file survived the control run but codex never refused '$del' — the command failed some other way (read the transcript above), so the allow half would prove nothing; fix the spelling in _oh_codex_render_forced_delete"
     fi
 
     cfg="$scratch/oneharness.toml"

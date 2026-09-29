@@ -207,7 +207,7 @@ fn apply_rules(
         write_text_atomically(&target, &plan.text)?;
     }
     let (added, removed) = if exact {
-        sync_domain::rules_changes(existing.as_deref().unwrap_or(""), &plan.text, spec)
+        sync_domain::rules_changes(existing.as_deref().unwrap_or(""), &plan.text)
     } else {
         (Vec::new(), Vec::new())
     };

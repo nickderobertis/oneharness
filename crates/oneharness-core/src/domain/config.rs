@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::domain::fallback::RunMode;
-use crate::domain::harness;
+use crate::domain::harness::{self, SyncSpec};
 use crate::domain::history::{self, HistoryLabels};
 use crate::domain::hooks::HookSpec;
 use crate::domain::mode::PermissionMode;
@@ -449,9 +449,9 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         // rules file has no keys to merge it into.
         let takes_settings = sync.is_some_and(|value| value.format() == harness::SyncFormat::Json);
         let unsupported = [
-            (h.allowed_tools.is_some() && sync.and_then(|s| s.allow_path).is_none())
+            (h.allowed_tools.is_some() && !sync.is_some_and(SyncSpec::carries_allowed_tools))
                 .then_some("allowed_tools"),
-            (h.denied_tools.is_some() && sync.and_then(|s| s.deny_path).is_none())
+            (h.denied_tools.is_some() && !sync.is_some_and(SyncSpec::carries_denied_tools))
                 .then_some("denied_tools"),
             (h.hooks.is_some() && sync.and_then(|s| s.hooks_path).is_none()).then_some("hooks"),
             (h.settings.is_some() && !takes_settings).then_some("settings"),
@@ -476,10 +476,10 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         for (name, variant) in &h.variant {
             let unsupported = [
                 (variant.allowed_tools.is_some()
-                    && sync.and_then(|value| value.allow_path).is_none())
+                    && !sync.is_some_and(SyncSpec::carries_allowed_tools))
                 .then_some("allowed_tools"),
                 (variant.denied_tools.is_some()
-                    && sync.and_then(|value| value.deny_path).is_none())
+                    && !sync.is_some_and(SyncSpec::carries_denied_tools))
                 .then_some("denied_tools"),
                 (variant.hooks.is_some() && sync.and_then(|value| value.hooks_path).is_none())
                     .then_some("hooks"),

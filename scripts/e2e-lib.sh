@@ -1323,7 +1323,7 @@ oh_codex_rules_match() {
         if [ "$got" != "$want" ]; then
             sed 's/^/    /' "$rules" >&2
             rm -rf "$scratch"
-            fail "codex: execpolicy decided '$got' for [$argv] against the synced rules above, expected '$want' — the synced prefix_rule no longer matches the argv codex checks"
+            fail "codex: execpolicy decided '$got' for [$argv] against the synced rules above, expected '$want' — if the file above renders [$argv]'s rule differently, fix the codex rendering in domain::sync; if it renders it as expected, codex's prefix_rule matching changed, so re-read codex-rs/execpolicy for the release \`codex --version\` names"
         fi
     done <<CASES
 allow rm -f $file
@@ -1336,6 +1336,19 @@ CASES
     rm -rf "$scratch"
 }
 
+# The forced delete of $1, spelled for the shell `codex exec` runs commands in.
+# On Windows that is PowerShell, whose `rm` alias refuses `-f` as ambiguous — a
+# failure that once read as the synced rule not matching, though Codex checks
+# rules against the words it lowers the `pwsh -Command` script into
+# (codex-rs/shell-command/src/powershell.rs,
+# parse_powershell_command_into_plain_commands) and `rm -f` had matched.
+_oh_codex_forced_delete() {
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*) printf 'Remove-Item -Force %s' "$1" ;;
+        *) printf 'rm -f %s' "$1" ;;
+    esac
+}
+
 # Live proof that a DIRECTLY started Codex honors the execpolicy rules
 # `oneharness sync` writes to `.codex/rules/oneharness.rules` — the drift alarm
 # for the file's location, its `prefix_rule` dialect, and the project-layer
@@ -1346,31 +1359,14 @@ CASES
 # only thing that changed Codex's decision.
 #   * deny:  `mkdir <dir>` runs under --dangerously-bypass-approvals-and-sandbox;
 #            a synced `denied_tools` `Bash(mkdir <dir>:*)` must make Codex refuse it.
-#   * allow: a forced delete of <file> is refused by Codex's own
-#            dangerous-command check (no approval can be asked for under that
-#            flag); a synced `allowed_tools` rule naming it must let it run.
-#            The delete is spelled in the shell Codex runs it in (see
-#            _oh_codex_forced_delete): `rm -f` is a POSIX spelling, and on
-#            Windows PowerShell's `rm` alias refuses `-f` as ambiguous — which
-#            once passed the control and failed the allow half with the rule
-#            matching all along.
+#   * allow: a forced delete of <file> (_oh_codex_forced_delete) is refused
+#            by Codex's own dangerous-command check (no approval can be asked
+#            for under that flag); a synced `allowed_tools` rule naming it must
+#            let it run.
 # Neither half leans on Codex's OS sandbox, so the proof holds on a host (or CI
 # runner) without unprivileged user namespaces. Codex reads a scratch
 # CODEX_HOME: auth.json copied from the existing login, and a config.toml that
 # trusts only the scratch project — the user's own ~/.codex is never written.
-# The forced delete of $1 in the shell `codex exec` runs commands in: POSIX
-# `rm -f`, or PowerShell's `Remove-Item -Force` on Windows. Both are what
-# Codex's dangerous-command check refuses, and both are the argv Codex checks
-# against a `prefix_rule` — on Windows the words it lowers the `pwsh -Command`
-# script into (codex-rs/shell-command/src/powershell.rs,
-# parse_powershell_command_into_plain_commands).
-_oh_codex_forced_delete() {
-    case "$(uname -s)" in
-        MINGW* | MSYS* | CYGWIN*) printf 'Remove-Item -Force %s' "$1" ;;
-        *) printf 'rm -f %s' "$1" ;;
-    esac
-}
-
 oh_codex_rules_enforce() {
     local bin auth scratch home proj cfg real out rules dir file del
     bin="$(oh_bin)"

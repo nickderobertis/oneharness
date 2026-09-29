@@ -204,7 +204,9 @@ has an ONEHARNESS_<FIELD> environment override (e.g. ONEHARNESS_MODEL,
 ONEHARNESS_TIMEOUT, ONEHARNESS_HARNESSES) that beats the files. Full precedence,
 lowest first: built-in defaults < user file < project file < environment < CLI
 flags. --no-config (or ONEHARNESS_NO_CONFIG=1) ignores files AND env overrides;
---config <path> loads exactly one file (the env overrides still apply on top).";
+--config <path> (repeatable) replaces discovery with the named files, each later
+file overriding the earlier ones and each file's `extends` chain beneath it (the
+env overrides still apply on top).";
 
 #[derive(Parser, Debug)]
 #[command(name = "oneharness", version, about = ABOUT, long_about = LONG_ABOUT)]

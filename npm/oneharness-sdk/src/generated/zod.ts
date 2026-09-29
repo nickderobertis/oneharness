@@ -1513,6 +1513,13 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                           kind: z.literal("tool_result").optional(),
                         }),
                       ),
+                      z.intersection(
+                        z.lazy(() => ActionEventSchema),
+                        z.looseObject({
+                          kind: z.union([z.literal("message"), z.literal("reasoning")]).optional(),
+                          status: z.null().optional(),
+                        }),
+                      ),
                     ]),
                   ),
                   z.null(),
@@ -1684,6 +1691,13 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                           z.lazy(() => ActionEventSchema),
                           z.looseObject({
                             kind: z.literal("tool_result").optional(),
+                          }),
+                        ),
+                        z.intersection(
+                          z.lazy(() => ActionEventSchema),
+                          z.looseObject({
+                            kind: z.union([z.literal("message"), z.literal("reasoning")]).optional(),
+                            status: z.null().optional(),
                           }),
                         ),
                       ]),

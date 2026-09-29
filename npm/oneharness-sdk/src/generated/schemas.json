@@ -1508,7 +1508,7 @@
             ]
           },
           "index": {
-            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "description": "Position of this event within the run, so \"did X before Y\" is\nexpressible from a stable ordering (also array order). It counts every\nkind, so tool calls interleaved with `message`/`reasoning` events do not\ncarry contiguous indexes; count tool calls by `kind`, not by `index`.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -1517,7 +1517,7 @@
             "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
           },
           "kind": {
-            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "description": "The kind of event: `tool_call` (the model invoked a tool),\n`tool_result` (the observation returned to the model), `message` (the\nagent's own text, in `output`) or `reasoning` (its reasoning text, in\n`output`). A `message` or `reasoning` event is one finished item, never\na token delta. Left open for future kinds rather than an enum, so a new\nshape never breaks the field — a consumer counting tool calls filters on\nit (see [`ActionEvent::is_tool_activity`]).",
             "type": "string"
           },
           "name": {
@@ -2589,7 +2589,7 @@
             ]
           },
           "index": {
-            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "description": "Position of this event within the run, so \"did X before Y\" is\nexpressible from a stable ordering (also array order). It counts every\nkind, so tool calls interleaved with `message`/`reasoning` events do not\ncarry contiguous indexes; count tool calls by `kind`, not by `index`.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -2598,7 +2598,7 @@
             "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
           },
           "kind": {
-            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "description": "The kind of event: `tool_call` (the model invoked a tool),\n`tool_result` (the observation returned to the model), `message` (the\nagent's own text, in `output`) or `reasoning` (its reasoning text, in\n`output`). A `message` or `reasoning` event is one finished item, never\na token delta. Left open for future kinds rather than an enum, so a new\nshape never breaks the field — a consumer counting tool calls filters on\nit (see [`ActionEvent::is_tool_activity`]).",
             "type": "string"
           },
           "name": {
@@ -5923,7 +5923,7 @@
             ]
           },
           "index": {
-            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "description": "Position of this event within the run, so \"did X before Y\" is\nexpressible from a stable ordering (also array order). It counts every\nkind, so tool calls interleaved with `message`/`reasoning` events do not\ncarry contiguous indexes; count tool calls by `kind`, not by `index`.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -5932,7 +5932,7 @@
             "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
           },
           "kind": {
-            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "description": "The kind of event: `tool_call` (the model invoked a tool),\n`tool_result` (the observation returned to the model), `message` (the\nagent's own text, in `output`) or `reasoning` (its reasoning text, in\n`output`). A `message` or `reasoning` event is one finished item, never\na token delta. Left open for future kinds rather than an enum, so a new\nshape never breaks the field — a consumer counting tool calls filters on\nit (see [`ActionEvent::is_tool_activity`]).",
             "type": "string"
           },
           "name": {
@@ -6771,6 +6771,28 @@
                       }
                     }
                   ]
+                },
+                {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/ActionEvent"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "message",
+                            "reasoning"
+                          ]
+                        },
+                        "status": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  ]
                 }
               ]
             }
@@ -7149,6 +7171,28 @@
                             "kind": {
                               "type": "string",
                               "const": "tool_result"
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "message",
+                                "reasoning"
+                              ]
+                            },
+                            "status": {
+                              "type": "null"
                             }
                           }
                         }
@@ -8925,7 +8969,7 @@
             ]
           },
           "index": {
-            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "description": "Position of this event within the run, so \"did X before Y\" is\nexpressible from a stable ordering (also array order). It counts every\nkind, so tool calls interleaved with `message`/`reasoning` events do not\ncarry contiguous indexes; count tool calls by `kind`, not by `index`.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -8934,7 +8978,7 @@
             "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
           },
           "kind": {
-            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "description": "The kind of event: `tool_call` (the model invoked a tool),\n`tool_result` (the observation returned to the model), `message` (the\nagent's own text, in `output`) or `reasoning` (its reasoning text, in\n`output`). A `message` or `reasoning` event is one finished item, never\na token delta. Left open for future kinds rather than an enum, so a new\nshape never breaks the field — a consumer counting tool calls filters on\nit (see [`ActionEvent::is_tool_activity`]).",
             "type": "string"
           },
           "name": {
@@ -9309,7 +9353,7 @@
             ]
           },
           "index": {
-            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "description": "Position of this event within the run, so \"did X before Y\" is\nexpressible from a stable ordering (also array order). It counts every\nkind, so tool calls interleaved with `message`/`reasoning` events do not\ncarry contiguous indexes; count tool calls by `kind`, not by `index`.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -9318,7 +9362,7 @@
             "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
           },
           "kind": {
-            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "description": "The kind of event: `tool_call` (the model invoked a tool),\n`tool_result` (the observation returned to the model), `message` (the\nagent's own text, in `output`) or `reasoning` (its reasoning text, in\n`output`). A `message` or `reasoning` event is one finished item, never\na token delta. Left open for future kinds rather than an enum, so a new\nshape never breaks the field — a consumer counting tool calls filters on\nit (see [`ActionEvent::is_tool_activity`]).",
             "type": "string"
           },
           "name": {
@@ -10096,6 +10140,28 @@
                           }
                         }
                       ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "message",
+                                "reasoning"
+                              ]
+                            },
+                            "status": {
+                              "type": "null"
+                            }
+                          }
+                        }
+                      ]
                     }
                   ]
                 }
@@ -10474,6 +10540,28 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "tool_result"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "message",
+                                    "reasoning"
+                                  ]
+                                },
+                                "status": {
+                                  "type": "null"
                                 }
                               }
                             }
@@ -12431,7 +12519,7 @@
             ]
           },
           "index": {
-            "description": "Position of this event within the run, so \"≤ N tool calls\" and \"did X\nbefore Y\" are expressible from a stable ordering (also array order).",
+            "description": "Position of this event within the run, so \"did X before Y\" is\nexpressible from a stable ordering (also array order). It counts every\nkind, so tool calls interleaved with `message`/`reasoning` events do not\ncarry contiguous indexes; count tool calls by `kind`, not by `index`.",
             "type": "integer",
             "format": "uint",
             "minimum": 0
@@ -12440,7 +12528,7 @@
             "description": "Structured, tool-shaped arguments (the command string, the file path),\nso a consumer asserts on specific args without re-parsing; `null` when the\nevent carries none (e.g. a `tool_result`)."
           },
           "kind": {
-            "description": "The kind of event: `tool_call` (the model invoked a tool) or\n`tool_result` (the observation returned to the model). Left open for\nfuture kinds rather than an enum, so a new shape never breaks the field.",
+            "description": "The kind of event: `tool_call` (the model invoked a tool),\n`tool_result` (the observation returned to the model), `message` (the\nagent's own text, in `output`) or `reasoning` (its reasoning text, in\n`output`). A `message` or `reasoning` event is one finished item, never\na token delta. Left open for future kinds rather than an enum, so a new\nshape never breaks the field — a consumer counting tool calls filters on\nit (see [`ActionEvent::is_tool_activity`]).",
             "type": "string"
           },
           "name": {
@@ -13104,6 +13192,28 @@
                           }
                         }
                       ]
+                    },
+                    {
+                      "allOf": [
+                        {
+                          "$ref": "#/$defs/ActionEvent"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "message",
+                                "reasoning"
+                              ]
+                            },
+                            "status": {
+                              "type": "null"
+                            }
+                          }
+                        }
+                      ]
                     }
                   ]
                 }
@@ -13482,6 +13592,28 @@
                                 "kind": {
                                   "type": "string",
                                   "const": "tool_result"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "allOf": [
+                            {
+                              "$ref": "#/$defs/ActionEvent"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "message",
+                                    "reasoning"
+                                  ]
+                                },
+                                "status": {
+                                  "type": "null"
                                 }
                               }
                             }

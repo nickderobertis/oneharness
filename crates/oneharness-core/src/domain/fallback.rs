@@ -118,7 +118,13 @@ impl RunWork {
     /// Read the evidence off a finished result. A `spawn_error` nulls every
     /// signal by contract, so its evidence is always [`RunWork::None`].
     pub fn from_result(result: &RunResult) -> Self {
-        let used_tools = result.events.as_ref().is_some_and(|e| !e.is_empty());
+        // Tool activity only: an agent `message` is the same text a refusal
+        // (Claude's quota response) is delivered as, so it is not work.
+        let used_tools = result.events.as_ref().is_some_and(|events| {
+            events
+                .iter()
+                .any(crate::domain::events::ActionEvent::is_tool_activity)
+        });
         // Refusal text is not work (Claude's quota response is normalized into
         // `text`), but a Codex overload after an agent message is: Codex's
         // terminal overload object itself is not normalized as answer text.

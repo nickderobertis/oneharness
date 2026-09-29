@@ -12,6 +12,7 @@ use crate::cli::{
 };
 use crate::commands::{print_report, printable};
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
+use oneharness_core::domain::render::render_history_show_text;
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
@@ -319,7 +320,7 @@ fn render_record_values(
     format: StdoutFormat,
     records: &[serde_json::Value],
 ) -> Result<i32, OneharnessError> {
-    print_report(&records, format, |r| render_show_text(r))?;
+    print_report(&records, format, |r| render_history_show_text(r))?;
     Ok(EXIT_OK)
 }
 
@@ -459,37 +460,6 @@ fn render_list_text(sessions: &[SessionSummary]) -> String {
     out
 }
 
-/// A readable dump for `history show --format text`: one block per record.
-fn render_show_text(records: &[serde_json::Value]) -> String {
-    if records.is_empty() {
-        return "no records\n".to_string();
-    }
-    let mut out = String::new();
-    for r in records {
-        let get = |key: &str| r.get(key).and_then(|value| value.as_str()).unwrap_or("");
-        let status = get("status");
-        out.push_str(&printable(&format!(
-            "{ts}  [{harness}] {status}\n",
-            ts = get("timestamp"),
-            harness = get("harness"),
-        )));
-        let prompt = get("prompt");
-        if !prompt.is_empty() {
-            out.push_str(&format!("  prompt: {}\n", printable(first_line(prompt))));
-        }
-        if let Some(text) = r.get("text").and_then(|value| value.as_str()) {
-            out.push_str(&format!("  text: {}\n", printable(first_line(text))));
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// The first line of a string, so a multi-line prompt/answer stays one row.
-fn first_line(s: &str) -> &str {
-    s.lines().next().unwrap_or("")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -529,27 +499,6 @@ mod tests {
         assert!(text.contains("2 runs"));
         assert!(text.contains("claude-code, codex"));
         assert!(text.contains("id: fix-bug-20260101T000000Z-1"));
-    }
-
-    #[test]
-    fn show_text_renders_first_lines() {
-        let records = vec![serde_json::json!({
-            "timestamp": "2026-01-01T00:00:00Z",
-            "harness": "codex",
-            "status": "ok",
-            "prompt": "line one\nline two",
-            "text": "answer\nmore",
-        })];
-        let text = render_show_text(&records);
-        assert!(text.contains("[codex] ok"));
-        assert!(text.contains("prompt: line one"));
-        assert!(!text.contains("line two"));
-        assert!(text.contains("text: answer"));
-    }
-
-    #[test]
-    fn show_text_empty_is_labeled() {
-        assert_eq!(render_show_text(&[]), "no records\n");
     }
 
     #[test]

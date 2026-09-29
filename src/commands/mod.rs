@@ -75,59 +75,6 @@ pub(crate) fn print_report<T: Serialize>(
     }
 }
 
-/// `text` with every control character except the newline flattened to a
-/// space, for a text view.
-///
-/// Harness output reaches the text views verbatim — a result's `text`, its
-/// `error`, a version string `detect` read off a binary — and an ANSI escape, a
-/// carriage return or a bell inside it could move the cursor, recolour, or
-/// overwrite part of a report whose whole point is to be read at a glance. The
-/// JSON contract carries the bytes as they were; the text view is the one that
-/// draws them, so it is the one that flattens. Newlines survive because a
-/// multi-line answer is laid out by the renderer, one row per line.
-pub(crate) fn printable(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() && c != '\n' { ' ' } else { c })
-        .collect()
-}
-
-/// `text` as an indented block: every line prefixed with `indent`, each
-/// terminated, so a multi-line value sits under its label rather than beside
-/// it. Flattened through [`printable`] on the way.
-pub(crate) fn indented(text: &str, indent: &str) -> String {
-    let mut out = String::new();
-    for line in printable(text).lines() {
-        out.push_str(indent);
-        out.push_str(line);
-        out.push('\n');
-    }
-    out
-}
-
-/// A display value for something the JSON reports as `null`.
-pub(crate) fn or_null(value: Option<&str>) -> String {
-    value.map_or_else(|| "null".to_string(), printable)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn printable_keeps_newlines_and_flattens_every_other_control_character() {
-        let flattened = printable("a\u{1b}[31mb\r\nc\u{7}d\u{9b}e\tf");
-        assert_eq!(flattened, "a [31mb \nc d e f");
-    }
-
-    #[test]
-    fn indented_lays_a_multi_line_value_out_one_row_per_line() {
-        assert_eq!(indented("one\ntwo\u{1b}", "  "), "  one\n  two \n");
-        assert_eq!(indented("", "  "), "");
-    }
-
-    #[test]
-    fn or_null_names_an_absent_value() {
-        assert_eq!(or_null(None), "null");
-        assert_eq!(or_null(Some("x\u{8}")), "x ");
-    }
-}
+// The text views' flattening is the engine's, so a verb's view
+// and the renderers an embedder calls draw a harness's bytes the same way.
+pub(crate) use oneharness_core::domain::render::printable;

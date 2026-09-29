@@ -47,6 +47,9 @@ pub enum JsonOnlySelection {
     /// The `--compact` flag.
     Compact,
     /// A run that will stream, selected where its [`StreamOrigin`] says.
+    ///
+    /// No longer raised by `oneharness run`, which streams readable text under
+    /// `--format text`; kept so code matching on this enum still compiles.
     Stream(StreamOrigin),
 }
 

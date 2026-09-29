@@ -18,6 +18,7 @@ pub mod http;
 pub mod mock;
 pub mod mode;
 pub mod normalize;
+pub mod render;
 pub mod report;
 pub mod sdk;
 pub mod select;

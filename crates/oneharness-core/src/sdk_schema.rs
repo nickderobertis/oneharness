@@ -817,9 +817,20 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         terminal_event("failed", true),
                         terminal_event("timeout", false),
                         terminal_event("interrupted", false),
-                        {"allOf": [event_base, {
+                        {"allOf": [event_base.clone(), {
                             "type": "object",
                             "properties": {"kind": {"const": "tool_result", "type": "string"}}
+                        }]},
+                        // The agent's own text: one finished item, never timed.
+                        // Ungated by version on purpose — `kind` is an open
+                        // string on the wire, and a version bump would make
+                        // every earlier reader refuse the record outright.
+                        {"allOf": [event_base, {
+                            "type": "object",
+                            "properties": {
+                                "kind": {"enum": ["message", "reasoning"], "type": "string"},
+                                "status": {"type": "null"}
+                            }
                         }]}
                     ]
                 });

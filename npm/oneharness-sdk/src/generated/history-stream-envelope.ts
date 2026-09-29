@@ -212,6 +212,11 @@ export type HistoryRecord =
                 kind?: "tool_result" | undefined;
                 [k: string]: unknown;
               })
+            | (ActionEvent & {
+                kind?: "message" | "reasoning" | undefined;
+                status?: null | undefined;
+                [k: string]: unknown;
+              })
           )[]
         | null;
       exit_code: number | null;
@@ -377,6 +382,11 @@ export type HistoryRecord =
               })
             | (ActionEvent & {
                 kind?: "tool_result" | undefined;
+                [k: string]: unknown;
+              })
+            | (ActionEvent & {
+                kind?: "message" | "reasoning" | undefined;
+                status?: null | undefined;
                 [k: string]: unknown;
               })
           ) & {
@@ -1525,8 +1535,10 @@ export interface ActionEvent {
   duration_ms: number | null;
   finished_at: string | null;
   /**
-   * Position of this event within the run, so "≤ N tool calls" and "did X
-   * before Y" are expressible from a stable ordering (also array order).
+   * Position of this event within the run, so "did X before Y" is
+   * expressible from a stable ordering (also array order). It counts every
+   * kind, so tool calls interleaved with `message`/`reasoning` events do not
+   * carry contiguous indexes; count tool calls by `kind`, not by `index`.
    */
   index: number;
   /**
@@ -1536,9 +1548,13 @@ export interface ActionEvent {
    */
   input: unknown;
   /**
-   * The kind of event: `tool_call` (the model invoked a tool) or
-   * `tool_result` (the observation returned to the model). Left open for
-   * future kinds rather than an enum, so a new shape never breaks the field.
+   * The kind of event: `tool_call` (the model invoked a tool),
+   * `tool_result` (the observation returned to the model), `message` (the
+   * agent's own text, in `output`) or `reasoning` (its reasoning text, in
+   * `output`). A `message` or `reasoning` event is one finished item, never
+   * a token delta. Left open for future kinds rather than an enum, so a new
+   * shape never breaks the field — a consumer counting tool calls filters on
+   * it (see [`ActionEvent::is_tool_activity`]).
    */
   kind: string;
   /**

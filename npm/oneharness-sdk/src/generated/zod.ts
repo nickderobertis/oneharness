@@ -65,7 +65,16 @@ import type { HistoryLabels, OutputFormat, PermissionMode, RunMode, RunOptions }
 import type { HarnessInfo, ListReport, ModeInfo, VariantInfo } from "./registry.js";
 import type { RunStreamEnvelope } from "./run-stream-envelope.js";
 import type { SyncOptions } from "./sync-options.js";
-import type { FileStatus, HookFileResult, SyncReport, SyncResult, SyncStatus } from "./sync-report.js";
+import type {
+  FileStatus,
+  HookFileResult,
+  RuleChange,
+  RuleList,
+  SyncReport,
+  SyncResult,
+  SyncStatus,
+  UnmappedRule,
+} from "./sync-report.js";
 import type { UsageOptions } from "./usage-options.js";
 import type {
   AuthMode,
@@ -2725,6 +2734,13 @@ export const QuotaCountersSchema: z.ZodType<QuotaCounters> = z.looseObject({
 
 export const QuotaUnitSchema: z.ZodType<QuotaUnit> = z.union([z.literal("ai_credits"), z.literal("unspecified")]);
 
+export const RuleChangeSchema: z.ZodType<RuleChange> = z.looseObject({
+  list: z.union([z.lazy(() => RuleListSchema), z.null()]).optional(),
+  rule: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const RuleListSchema: z.ZodType<RuleList> = z.union([z.literal("allowed_tools"), z.literal("denied_tools")]);
+
 export const RunModeSchema: z.ZodType<RunMode> = z.union([z.literal("parallel"), z.literal("fallback")]);
 
 export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
@@ -2889,6 +2905,7 @@ export const SyncOptionsSchema: z.ZodType<SyncOptions> = z.strictObject({
   check: z.boolean().optional(),
   config: z.string().optional(),
   cwd: z.string().optional(),
+  exact: z.boolean().optional(),
   global: z.boolean().optional(),
   harnesses: z.array(z.string()).optional(),
   noConfig: z.boolean().optional(),
@@ -2897,16 +2914,20 @@ export const SyncOptionsSchema: z.ZodType<SyncOptions> = z.strictObject({
 export const SyncReportSchema: z.ZodType<SyncReport> = z.looseObject({
   check: z.boolean().refine((value) => value !== undefined, { message: "Required" }),
   config_files: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
+  exact: z.boolean().optional(),
   results: z.array(z.lazy(() => SyncResultSchema)).refine((value) => value !== undefined, { message: "Required" }),
   schema_version: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const SyncResultSchema: z.ZodType<SyncResult> = z.looseObject({
+  added_rules: z.array(z.lazy(() => RuleChangeSchema)).optional(),
   file: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
   hooks: z.array(z.lazy(() => HookFileResultSchema)).refine((value) => value !== undefined, { message: "Required" }),
+  removed_rules: z.array(z.lazy(() => RuleChangeSchema)).optional(),
   status: z.lazy(() => SyncStatusSchema).refine((value) => value !== undefined, { message: "Required" }),
   unmapped: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
+  unmapped_rules: z.array(z.lazy(() => UnmappedRuleSchema)).optional(),
 });
 
 export const SyncStatusSchema: z.ZodType<SyncStatus> = z.union([
@@ -2949,6 +2970,12 @@ export const UnknownReasonSchema: z.ZodType<UnknownReason> = z.union([
     kind: z.literal("binary_missing").refine((value) => value !== undefined, { message: "Required" }),
   }),
 ]);
+
+export const UnmappedRuleSchema: z.ZodType<UnmappedRule> = z.looseObject({
+  list: z.lazy(() => RuleListSchema).refine((value) => value !== undefined, { message: "Required" }),
+  reason: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  rule: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
 
 export const UsageSchema: z.ZodType<Usage> = z.looseObject({
   cache_read_tokens: z

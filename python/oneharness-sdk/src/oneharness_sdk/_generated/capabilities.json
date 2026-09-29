@@ -1214,6 +1214,12 @@
         "unless": null
       },
       {
+        "flag": "--exact",
+        "kind": "switch",
+        "option": "exact",
+        "unless": null
+      },
+      {
         "flag": "--global",
         "kind": "switch",
         "option": "global",
@@ -1236,7 +1242,7 @@
     "method": "sync",
     "options": "sync_options",
     "output": "sync_report",
-    "rust": "oneharness_core::io::sync::sync",
+    "rust": "oneharness_core::io::sync::sync_with",
     "stdin": false,
     "stdout": "json",
     "uncovered": []

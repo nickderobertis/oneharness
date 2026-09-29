@@ -753,7 +753,7 @@ export const CAPABILITIES = {
 		output: "sync_report",
 		stdout: "json",
 		stdin: false,
-		rust: "oneharness_core::io::sync::sync",
+		rust: "oneharness_core::io::sync::sync_with",
 		always: ["--compact", "--format", "json"],
 		bindings: [
 			{
@@ -771,6 +771,12 @@ export const CAPABILITIES = {
 			{
 				option: "check",
 				flag: "--check",
+				kind: "switch",
+				unless: null,
+			},
+			{
+				option: "exact",
+				flag: "--exact",
 				kind: "switch",
 				unless: null,
 			},

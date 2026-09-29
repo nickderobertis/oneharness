@@ -26,7 +26,7 @@ use oneharness_core::io::detect::{self, DetectRequest};
 use oneharness_core::io::init::{self, InitRequest};
 use oneharness_core::io::registry::{self, ListRequest};
 use oneharness_core::io::scratch::ScratchDir;
-use oneharness_core::io::sync::{self, SyncRequest, SyncStatus};
+use oneharness_core::io::sync::{self, SyncMode, SyncRequest, SyncStatus};
 use oneharness_core::io::usage::{self, UsageRequest};
 
 #[path = "support/library_fixture.rs"]
@@ -374,6 +374,62 @@ fn a_check_only_sync_writes_nothing_and_says_a_change_is_pending() {
     assert!(
         !dir.join(".claude").join("settings.json").exists(),
         "a check must not write the file it describes"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// capability: sync
+#[test]
+fn an_exact_sync_holds_the_lists_to_the_source_and_writes_codex_rules() {
+    // `sync_with` is the entry point that reaches every sync option: in exact
+    // mode an entry nobody configured leaves the harness file, and Codex gets
+    // its own rules file with the rule it cannot express reported, not written.
+    let dir = project(
+        "sync-exact",
+        "allowed_tools = [\"Bash(git log:*)\", \"Bash(git status*)\"]\n",
+    );
+    let settings = dir.join(".claude").join("settings.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"permissions":{"allow":["Bash(curl:*)"]},"env":{"A":"1"}}"#,
+    )
+    .unwrap();
+    let request = SyncRequest {
+        cwd: Some(dir.to_path_buf()),
+        harness: vec!["claude-code".to_string(), "codex".to_string()],
+        ..SyncRequest::default()
+    };
+
+    let report = sync::sync_with(&request, SyncMode::Exact).expect("an exact sync applies");
+    assert!(report.exact);
+    let claude = &report.results[0];
+    assert_eq!(claude.status, SyncStatus::Updated);
+    assert_eq!(claude.removed_rules[0].rule, "Bash(curl:*)");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(
+        written,
+        serde_json::json!({
+            "permissions": { "allow": ["Bash(git log:*)", "Bash(git status*)"] },
+            "env": { "A": "1" },
+        })
+    );
+
+    let codex = &report.results[1];
+    assert_eq!(codex.harness, "codex");
+    assert_eq!(codex.status, SyncStatus::Created);
+    assert_eq!(codex.unmapped_rules[0].rule, "Bash(git status*)");
+    let rules = std::fs::read_to_string(dir.join(".codex/rules/oneharness.rules")).unwrap();
+    assert!(
+        rules.contains("prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")"),
+        "{rules}"
+    );
+
+    let again = sync::sync_with(&request, SyncMode::Exact).expect("re-syncing is safe");
+    assert!(
+        !again.changes(),
+        "an exact sync that already holds changes nothing"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

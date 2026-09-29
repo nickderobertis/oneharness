@@ -257,11 +257,14 @@ pub struct HarnessSpec {
     pub fork_reuses_cache: bool,
     /// Where this harness reads project-scoped configuration, and how the
     /// unified enforcement settings (`allowed_tools` / `denied_tools` /
-    /// `hooks` / `settings`) map into that file. `None` means the harness has
-    /// no project-level config file oneharness knows how to write (Codex and
-    /// Goose read only user-global config; Copilot takes permission rules as
-    /// flags, deliverable via `[harness.copilot] args`) — configuring a sync
-    /// setting for it is then a loud usage error, never a silent no-op.
+    /// `hooks` / `settings`) map into that file. Codex's target is not a
+    /// config file but its own execpolicy rules file
+    /// ([`SyncFormat::ExecPolicyRules`]): it takes the allow/deny lists,
+    /// translated per rule, and nothing else. `None` means the harness has no
+    /// project-level file oneharness knows how to write (Goose reads only
+    /// user-global config; Copilot takes permission rules as flags,
+    /// deliverable via `[harness.copilot] args`) — configuring a sync setting
+    /// for it is then a loud usage error, never a silent no-op.
     /// Consumed by `oneharness sync`; nothing here is passed on the argv.
     pub sync: Option<SyncSpec>,
     /// How a normalized pre-tool [`crate::domain::hooks::HookSpec`] is installed
@@ -556,11 +559,14 @@ pub struct SyncSpec {
     /// when one exists, oneharness merges into it instead of `file` so it
     /// never creates a second, shadowed config (e.g. crush's `.crush.json`).
     pub alt_files: &'static [&'static str],
-    /// Key path `allowed_tools` rules land at (e.g. `permissions.allow`);
-    /// `None` rejects the unified list field for this harness (OpenCode's
-    /// `permission` is a policy map, not a list — use `settings` instead).
+    /// Key path `allowed_tools` rules land at in a JSON target (e.g.
+    /// `permissions.allow`); `None` there rejects the unified list field for
+    /// this harness (OpenCode's `permission` is a policy map, not a list — use
+    /// `settings` instead). Always `None` for a
+    /// [`SyncFormat::ExecPolicyRules`] target, which has no keys and takes the
+    /// list regardless ([`SyncSpec::carries_allowed_tools`]).
     pub allow_path: Option<&'static [&'static str]>,
-    /// Key path `denied_tools` rules land at. For crush this is
+    /// Key path `denied_tools` rules land at, as `allow_path`. For crush this is
     /// `options.disabled_tools`: the tool is hidden from the agent entirely,
     /// the strongest deny it offers.
     pub deny_path: Option<&'static [&'static str]>,
@@ -574,6 +580,51 @@ pub struct SyncSpec {
     /// must seed an empty deny. Keys the fragment doesn't touch are never
     /// seeded, preserving the "only keys oneharness manages" contract.
     pub schema_seed: Option<&'static str>,
+}
+
+/// How a [`SyncSpec`] target file is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SyncFormat {
+    /// A JSON config file oneharness merges into, key by key.
+    Json,
+    /// A Codex execpolicy file (`<layer>/rules/*.rules`) holding one
+    /// `prefix_rule(...)` per translatable rule, `allowed_tools` as
+    /// `decision="allow"` and `denied_tools` as `decision="forbidden"`.
+    /// oneharness owns the file wholly and rewrites it whole. It has no keys,
+    /// so the spec's key-path fields and `schema_seed` stay `None` (pinned by
+    /// the registry test), and it takes both rule lists and nothing else.
+    ExecPolicyRules,
+}
+
+impl SyncSpec {
+    /// The format of [`SyncSpec::file`], read from its extension: Codex loads
+    /// execpolicy rules only from files named `*.rules`
+    /// (`codex-rs/core/src/exec_policy.rs`'s `RULE_EXTENSION`), so the name
+    /// the harness selects the file by is also what declares its format, and
+    /// the two cannot drift apart. Every other target is JSON.
+    #[must_use]
+    pub fn format(&self) -> SyncFormat {
+        if self.file.ends_with(".rules") {
+            SyncFormat::ExecPolicyRules
+        } else {
+            SyncFormat::Json
+        }
+    }
+
+    /// Whether `allowed_tools` has a place in this target: a key path in a
+    /// JSON file, or a rule in an execpolicy file.
+    #[must_use]
+    pub fn carries_allowed_tools(&self) -> bool {
+        self.allow_path.is_some() || self.format() == SyncFormat::ExecPolicyRules
+    }
+
+    /// Whether `denied_tools` has a place in this target, as
+    /// [`SyncSpec::carries_allowed_tools`] asks of `allowed_tools`.
+    #[must_use]
+    pub fn carries_denied_tools(&self) -> bool {
+        self.deny_path.is_some() || self.format() == SyncFormat::ExecPolicyRules
+    }
 }
 
 /// How a normalized hook reaches one harness. The [`HookShape`] (where present)
@@ -955,7 +1006,21 @@ static REGISTRY: &[HarnessSpec] = &[
         session_formats: &[OutputFormat::Json, OutputFormat::StreamJson],
         supports_fork: false,
         fork_reuses_cache: false,
-        sync: None,
+        // Codex loads execpolicy rules from `<layer>/rules/*.rules` for every
+        // active config layer, the project's `.codex/` included once that
+        // project is trusted (`codex-rs/core/src/exec_policy.rs`, codex 0.80.0
+        // onward; verified live on 0.156.1 by `oh_codex_rules_enforce`). The
+        // file is oneharness's alone and holds only `prefix_rule`s — the
+        // `.rules` name is what makes it `SyncFormat::ExecPolicyRules` — so it
+        // has no key paths.
+        sync: Some(SyncSpec {
+            file: ".codex/rules/oneharness.rules",
+            alt_files: &[],
+            allow_path: None,
+            deny_path: None,
+            hooks_path: None,
+            schema_seed: None,
+        }),
         hooks: Some(HookBinding::File {
             shape: HookShape::Nested {
                 event: "PreToolUse",

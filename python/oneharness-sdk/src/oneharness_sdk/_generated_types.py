@@ -113,6 +113,7 @@ class _SyncOptionsOptional(TypedDict, total=False):
     check: bool
     config: str
     cwd: str
+    exact: bool
     global_: bool
     harnesses: Sequence[str]
     no_config: bool

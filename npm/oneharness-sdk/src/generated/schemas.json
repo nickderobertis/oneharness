@@ -732,7 +732,7 @@
       "output": "sync_report",
       "stdout": "json",
       "stdin": false,
-      "rust": "oneharness_core::io::sync::sync",
+      "rust": "oneharness_core::io::sync::sync_with",
       "always": [
         "--compact",
         "--format",
@@ -754,6 +754,12 @@
         {
           "option": "check",
           "flag": "--check",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "exact",
+          "flag": "--exact",
           "kind": "switch",
           "unless": null
         },
@@ -16592,6 +16598,10 @@
       "cwd": {
         "type": "string"
       },
+      "exact": {
+        "description": "Hold each harness's allow/deny list to exactly the configured one:\nstale and hand-added entries are removed, every other key is merged as\nusual, and the report names each added and removed entry.",
+        "type": "boolean"
+      },
       "global": {
         "type": "boolean"
       },
@@ -16623,6 +16633,10 @@
         "items": {
           "type": "string"
         }
+      },
+      "exact": {
+        "description": "True under `--exact`: each permission list was held to exactly the\nsource's, and each result names the entries that added and removed.\nOmitted when false.",
+        "type": "boolean"
       },
       "results": {
         "type": "array",
@@ -16677,10 +16691,56 @@
           "status"
         ]
       },
+      "RuleChange": {
+        "description": "One entry an `--exact` sync added to, or removed from, a harness's rules.",
+        "type": "object",
+        "properties": {
+          "list": {
+            "description": "The list the entry belongs to; absent for a statement in a Codex rules\nfile that no unified list renders (a hand-written `decision=\"prompt\"`).",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RuleList"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "rule": {
+            "description": "The entry as it appears in the harness's file: the rule string for a\nJSON list, the whole `prefix_rule(...)` statement for a Codex rules file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ]
+      },
+      "RuleList": {
+        "description": "Which unified rule list an entry belongs to.",
+        "oneOf": [
+          {
+            "description": "`allowed_tools`.",
+            "type": "string",
+            "const": "allowed_tools"
+          },
+          {
+            "description": "`denied_tools`.",
+            "type": "string",
+            "const": "denied_tools"
+          }
+        ]
+      },
       "SyncResult": {
         "description": "What one harness's sync did (or would do).",
         "type": "object",
         "properties": {
+          "added_rules": {
+            "description": "Under `--exact`: each entry the sync added (or would add) to this\nharness's permission lists. Omitted when empty.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/RuleChange"
+            }
+          },
           "file": {
             "description": "The permission/settings config file written (or that would be written);\n`null` when nothing of that kind is configured for this harness.",
             "type": [
@@ -16698,6 +16758,13 @@
               "$ref": "#/$defs/HookFileResult"
             }
           },
+          "removed_rules": {
+            "description": "Under `--exact`: each entry the sync removed (or would remove) from\nthis harness's permission lists — stale and hand-added alike. Omitted\nwhen empty.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/RuleChange"
+            }
+          },
           "status": {
             "$ref": "#/$defs/SyncStatus"
           },
@@ -16706,6 +16773,13 @@
             "type": "array",
             "items": {
               "type": "string"
+            }
+          },
+          "unmapped_rules": {
+            "description": "Individual configured rules this harness cannot express (a Codex\nexecpolicy pattern has no wildcards and no exact-length form), each left\nout of the file with the reason — never widened, and never silently\ndropped. Omitted when empty.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/UnmappedRule"
             }
           }
         },
@@ -16740,6 +16814,28 @@
             "type": "string",
             "const": "skipped"
           }
+        ]
+      },
+      "UnmappedRule": {
+        "description": "A configured rule the harness cannot express, left out of what was written.",
+        "type": "object",
+        "properties": {
+          "list": {
+            "$ref": "#/$defs/RuleList"
+          },
+          "reason": {
+            "description": "Why the harness cannot express it.",
+            "type": "string"
+          },
+          "rule": {
+            "description": "The rule exactly as configured.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "rule",
+          "reason"
         ]
       }
     }

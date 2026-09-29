@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::domain::config::FileConfig;
 use crate::domain::control::ControlShape;
-use crate::domain::harness::{self, BuildCtx};
+use crate::domain::harness::{self, BuildCtx, SyncSpec};
 use crate::domain::mode::{ModeHeadless, PermissionMode};
 use crate::domain::report::{OutputFormat, SCHEMA_VERSION};
 use crate::errors::OneharnessError;
@@ -218,8 +218,8 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         supports_native_schema: spec.native_schema.is_some(),
         supports_reasoning: spec.reasoning.is_some(),
         sync_file: sync.map(|s| s.file),
-        supports_allowed_tools: sync.is_some_and(|s| s.allow_path.is_some()),
-        supports_denied_tools: sync.is_some_and(|s| s.deny_path.is_some()),
+        supports_allowed_tools: sync.is_some_and(SyncSpec::carries_allowed_tools),
+        supports_denied_tools: sync.is_some_and(SyncSpec::carries_denied_tools),
         supports_hooks: sync.is_some_and(|s| s.hooks_path.is_some()),
         supports_mock_deny: spec.gate_deny.is_some(),
         mock_rewrite: spec.mock_rewrite.map(|s| s.as_str()),

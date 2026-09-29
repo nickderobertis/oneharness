@@ -1268,6 +1268,123 @@ oh_sync_enforce() {
 # A shell-safe scratch file name for the enforcement phases.
 oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 
+# Run the real `codex exec` DIRECTLY — the way a user starts it, never through
+# `oneharness run` — in project $1 under CODEX_HOME $2, with the one-line prompt
+# $3 and any further codex flags. Its whole output lands in $_OH_CODEX_OUT.
+_OH_CODEX_OUT=""
+_oh_codex_direct() {
+    local proj="$1" home="$2" prompt="$3"
+    shift 3
+    local model_args=() limit_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
+    command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
+    _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
+        "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check \
+        "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
+    local refusal
+    refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"
+    if [ -n "$refusal" ]; then
+        not_run "codex: the provider refused the turn, so the synced-rules phase proved nothing: $refusal"
+    fi
+}
+
+# Live proof that a DIRECTLY started Codex honors the execpolicy rules
+# `oneharness sync` writes to `.codex/rules/oneharness.rules` — the drift alarm
+# for the file's location, its `prefix_rule` dialect, and the project-layer
+# loading Codex gates on trust. A comparison of files proves none of that.
+#
+# Each half runs one command twice in the same trusted scratch project: once
+# before the sync (the control) and once after it, so the synced rule is the
+# only thing that changed Codex's decision.
+#   * deny:  `mkdir <dir>` runs under --dangerously-bypass-approvals-and-sandbox;
+#            a synced `denied_tools` `Bash(mkdir <dir>:*)` must make Codex refuse it.
+#   * allow: `rm -f <file>` is refused by Codex's own dangerous-command check
+#            (no approval can be asked for under that flag); a synced
+#            `allowed_tools` `Bash(rm -f <file>:*)` must let it run.
+# Neither half leans on Codex's OS sandbox, so the proof holds on a host (or CI
+# runner) without unprivileged user namespaces. Codex reads a scratch
+# CODEX_HOME: auth.json copied from the existing login, and a config.toml that
+# trusts only the scratch project — the user's own ~/.codex is never written.
+oh_codex_rules_enforce() {
+    local bin auth scratch home proj cfg real out rules dir file
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+    auth="${CODEX_HOME:-$HOME/.codex}/auth.json"
+    [ -f "$auth" ] || skip "no codex login at $auth (run \`codex login\`)"
+
+    scratch="$(mktemp -d)"
+    home="$scratch/codex-home"
+    proj="$scratch/project"
+    mkdir -p "$home" "$proj"
+    cp "$auth" "$home/auth.json"
+    real="$(cd "$proj" && pwd -P)"
+    # Trust every spelling Codex may resolve the project to (macOS's
+    # /private/var, Windows's native path), each named once.
+    printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")" \
+        | sort -u \
+        | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
+    dir="rules-deny-${RANDOM}${RANDOM}"
+    file="$(oh_enforce_file rules-allow)"
+    touch "$proj/$file"
+    local deny_prompt allow_prompt
+    deny_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: mkdir $dir. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not create the directory any other way; reply with the single word DENIED and stop."
+    allow_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: rm -f $file. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not remove the file any other way; reply with the single word DENIED and stop."
+    local bypass=(--dangerously-bypass-approvals-and-sandbox)
+
+    _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
+    if [ ! -d "$proj/$dir" ]; then
+        printf '%s\n' "$_OH_CODEX_OUT" >&2
+        rm -rf "$scratch"
+        fail "codex: the control run did not create $dir with no rule synced, so the deny half would prove nothing — read the transcript above for why the model did not run mkdir, then rerun \`just live-codex\`"
+    fi
+    rmdir "$proj/$dir"
+    _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
+    if [ ! -e "$proj/$file" ]; then
+        printf '%s\n' "$_OH_CODEX_OUT" >&2
+        rm -rf "$scratch"
+        fail "codex: the control run removed $file with no rule synced, so the allow half would prove nothing — if the transcript shows codex ran rm -f itself, its dangerous-command check no longer refuses it: pick a command codex-rs/shell-command's is_dangerous_command still refuses and use it here"
+    fi
+
+    cfg="$scratch/oneharness.toml"
+    # Each rule names only the scratch path its half needs.
+    printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+        "$file" "$dir" >"$cfg"
+    if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
+        --config "$cfg" --compact 2>&1)"; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$scratch"
+        fail "codex: oneharness sync failed — fix the error above, then rerun \`just live-codex\`"
+    fi
+    rules="$proj/.codex/rules/oneharness.rules"
+    if ! printf '%s' "$out" | grep -qF '"status":"created"' || [ ! -f "$rules" ]; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$scratch"
+        fail "codex: sync did not create $rules — check that \`oneharness list\` still reports codex's sync_file as .codex/rules/oneharness.rules"
+    fi
+
+    _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
+    if [ -d "$proj/$dir" ]; then
+        printf '%s\n' "$_OH_CODEX_OUT" >&2
+        sed 's/^/    /' "$rules" >&2
+        rm -rf "$scratch"
+        fail "codex: mkdir $dir ran DESPITE the synced denied_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> mkdir $dir\` whether it matches"
+    fi
+    local refused
+    refused="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -o 'rejected: [^"\\]*' | head -n 1 || true)"
+
+    _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
+    if [ -e "$proj/$file" ]; then
+        printf '%s\n' "$_OH_CODEX_OUT" >&2
+        sed 's/^/    /' "$rules" >&2
+        rm -rf "$scratch"
+        fail "codex: rm -f $file was still refused with the synced allowed_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> rm -f $file\` whether it matches"
+    fi
+    # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran and passed, and it quotes Codex's own refusal — the evidence that the synced rule, not something else, decided.
+    note "  ok[codex-rules]: before sync mkdir ran and rm -f was refused; after it, mkdir was ${refused:-refused} and rm -f ran"
+    rm -rf "$scratch"
+}
+
 # --- approval-mode enforcement ----------------------------------------------
 
 # Live proof that a NO-MUTATION mode (`read-only` or `plan`) is HONORED by the

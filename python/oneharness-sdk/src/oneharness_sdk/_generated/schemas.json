@@ -15810,6 +15810,10 @@
       "cwd": {
         "type": "string"
       },
+      "exact": {
+        "description": "Hold each harness's allow/deny list to exactly the configured one:\nstale and hand-added entries are removed, every other key is merged as\nusual, and the report names each added and removed entry.",
+        "type": "boolean"
+      },
       "global_": {
         "type": "boolean"
       },
@@ -15864,9 +15868,55 @@
         ],
         "type": "object"
       },
+      "RuleChange": {
+        "description": "One entry an `--exact` sync added to, or removed from, a harness's rules.",
+        "properties": {
+          "list": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/RuleList"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The list the entry belongs to; absent for a statement in a Codex rules\nfile that no unified list renders (a hand-written `decision=\"prompt\"`)."
+          },
+          "rule": {
+            "description": "The entry as it appears in the harness's file: the rule string for a\nJSON list, the whole `prefix_rule(...)` statement for a Codex rules file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "rule"
+        ],
+        "type": "object"
+      },
+      "RuleList": {
+        "description": "Which unified rule list an entry belongs to.",
+        "oneOf": [
+          {
+            "const": "allowed_tools",
+            "description": "`allowed_tools`.",
+            "type": "string"
+          },
+          {
+            "const": "denied_tools",
+            "description": "`denied_tools`.",
+            "type": "string"
+          }
+        ]
+      },
       "SyncResult": {
         "description": "What one harness's sync did (or would do).",
         "properties": {
+          "added_rules": {
+            "description": "Under `--exact`: each entry the sync added (or would add) to this\nharness's permission lists. Omitted when empty.",
+            "items": {
+              "$ref": "#/$defs/RuleChange"
+            },
+            "type": "array"
+          },
           "file": {
             "description": "The permission/settings config file written (or that would be written);\n`null` when nothing of that kind is configured for this harness.",
             "type": [
@@ -15884,6 +15934,13 @@
             },
             "type": "array"
           },
+          "removed_rules": {
+            "description": "Under `--exact`: each entry the sync removed (or would remove) from\nthis harness's permission lists \u2014 stale and hand-added alike. Omitted\nwhen empty.",
+            "items": {
+              "$ref": "#/$defs/RuleChange"
+            },
+            "type": "array"
+          },
           "status": {
             "$ref": "#/$defs/SyncStatus"
           },
@@ -15891,6 +15948,13 @@
             "description": "Top-level settings that have no mapping for this harness (e.g. a\ntop-level `allowed_tools` while the harness has no allow-list concept)\n\u2014 visible here and warned on stderr, never silently dropped.",
             "items": {
               "type": "string"
+            },
+            "type": "array"
+          },
+          "unmapped_rules": {
+            "description": "Individual configured rules this harness cannot express (a Codex\nexecpolicy pattern has no wildcards and no exact-length form), each left\nout of the file with the reason \u2014 never widened, and never silently\ndropped. Omitted when empty.",
+            "items": {
+              "$ref": "#/$defs/UnmappedRule"
             },
             "type": "array"
           }
@@ -15928,6 +15992,28 @@
             "type": "string"
           }
         ]
+      },
+      "UnmappedRule": {
+        "description": "A configured rule the harness cannot express, left out of what was written.",
+        "properties": {
+          "list": {
+            "$ref": "#/$defs/RuleList"
+          },
+          "reason": {
+            "description": "Why the harness cannot express it.",
+            "type": "string"
+          },
+          "rule": {
+            "description": "The rule exactly as configured.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "list",
+          "rule",
+          "reason"
+        ],
+        "type": "object"
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -15943,6 +16029,10 @@
           "type": "string"
         },
         "type": "array"
+      },
+      "exact": {
+        "description": "True under `--exact`: each permission list was held to exactly the\nsource's, and each result names the entries that added and removed.\nOmitted when false.",
+        "type": "boolean"
       },
       "results": {
         "items": {

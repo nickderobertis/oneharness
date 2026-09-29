@@ -584,6 +584,32 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             # Idempotent, so a second sync of the same policy changes nothing.
             self.assertEqual(self.claude(await client.sync(options)), "unchanged")
 
+    async def test_sync_exact_holds_the_lists_to_the_source(self) -> None:
+        """Under `exact`, a hand-added entry is pending, named, then removed."""
+        project = scratch(self, "sync-exact")
+        (project / "oneharness.toml").write_text(
+            'allowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
+        )
+        (project / ".claude").mkdir()
+        settings = project / ".claude" / "settings.json"
+        settings.write_text('{"permissions":{"allow":["Bash(curl:*)"]}}\n', encoding="utf-8")
+        client = self.layered(project)
+        cwd = str(project)
+        with without_ambient_overrides():
+            add_only = await client.sync({"cwd": cwd, "harnesses": ["claude-code"], "check": True})
+            self.assertNotIn("exact", add_only)
+            checked = await client.sync(
+                {"cwd": cwd, "harnesses": ["claude-code"], "check": True, "exact": True}
+            )
+            self.assertIs(checked.get("exact"), True)
+            result = checked["results"][0]
+            self.assertEqual(result["status"], "updated")
+            removed = [change["rule"] for change in result.get("removed_rules", [])]
+            self.assertEqual(removed, ["Bash(curl:*)"])
+            await client.sync({"cwd": cwd, "harnesses": ["claude-code"], "exact": True})
+        written = json.loads(settings.read_text(encoding="utf-8"))
+        self.assertEqual(written["permissions"]["allow"], ["Bash(echo:*)"])
+
     def claude(self, report: Any) -> str:
         """Return the claude-code result's status from one sync report."""
         results = [item for item in report["results"] if item["harness"] == "claude-code"]

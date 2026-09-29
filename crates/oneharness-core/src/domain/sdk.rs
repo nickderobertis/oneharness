@@ -634,6 +634,12 @@ pub struct SyncOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub check: Option<bool>,
+    /// Hold each harness's allow/deny list to exactly the configured one:
+    /// stale and hand-added entries are removed, every other key is merged as
+    /// usual, and the report names each added and removed entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub exact: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub global: Option<bool>,

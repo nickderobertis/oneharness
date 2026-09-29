@@ -44,21 +44,16 @@ pub fn indented(text: &str, indent: &str) -> String {
     out
 }
 
-/// A display value for something the JSON reports as `null`.
 fn or_null(value: Option<&str>) -> String {
     value.map_or_else(|| "null".to_string(), printable)
 }
 
-/// The prefix of an agent `message` line.
 const MESSAGE_MARK: &str = "› ";
 /// The prefix of a `reasoning` line — a label rather than a glyph, so it cannot
 /// be mistaken for the agent's own text.
 const REASONING_MARK: &str = "(thinking) ";
-/// The prefix of a shell command.
 const COMMAND_MARK: &str = "$ ";
-/// The prefix of one changed file.
 const FILE_MARK: &str = "✎ ";
-/// The prefix of any other tool call.
 const TOOL_MARK: &str = "▸ ";
 /// The widest a tool call's argument summary is drawn before it is cut.
 const SUMMARY_MAX_CHARS: usize = 120;

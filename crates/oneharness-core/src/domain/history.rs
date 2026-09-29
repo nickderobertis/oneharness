@@ -2126,7 +2126,7 @@ pub(crate) fn session_started_from_id(id: &str) -> Option<String> {
     {
         return None;
     }
-    Some(format!(
+    let text = format!(
         "{}-{}-{}T{}:{}:{}Z",
         digits(0..4)?,
         digits(4..6)?,
@@ -2134,7 +2134,12 @@ pub(crate) fn session_started_from_id(id: &str) -> Option<String> {
         digits(9..11)?,
         digits(11..13)?,
         digits(13..15)?
-    ))
+    );
+    // Only a real calendar instant: parsed, then formatted back unchanged, so
+    // a month 13 or a February 30th (which the parse would roll over) is none.
+    crate::domain::usage::normalize_timestamp(&text)
+        .filter(|instant| instant.as_str() == text)
+        .map(|_| text)
 }
 
 #[cfg(test)]
@@ -2156,6 +2161,10 @@ mod tests {
             "x-2026092T165809Z-1",
             "x-20260929T16580aZ-1",
             "x-20260929T165809Z-p",
+            "x-20261329T165809Z-1",
+            "x-20260230T165809Z-1",
+            "x-20260929T245809Z-1",
+            "x-20260929T166009Z-1",
         ] {
             assert_eq!(session_started_from_id(foreign), None, "{foreign}");
         }

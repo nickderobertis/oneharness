@@ -10,16 +10,5 @@ while IFS= read -r name; do
   [[ -z $name ]] || unset "$name"
 done < <(git rev-parse --local-env-vars)
 
-# A push launched by a non-login process (an IDE, a publishing agent) may not
-# have sourced the user's profile, so the gate would die on `cargo: command not
-# found` or `shellcheck not installed` before checking anything. Append the
-# per-user install locations rustup and pip/uv/installers use; anything already
-# on PATH still wins.
-for user_bin in "${CARGO_HOME:-$HOME/.cargo}/bin" "$HOME/.local/bin"; do
-  if [[ -d $user_bin && :$PATH: != *:"$user_bin":* ]]; then
-    export PATH="$PATH:$user_bin"
-  fi
-done
-
 echo "pre-push: running complete gate against $remote..." >&2
 just gate "$remote" "${ONEHARNESS_COMPARISON_BASE:-}"

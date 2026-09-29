@@ -6158,12 +6158,12 @@ fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives(
 }
 
 #[test]
-fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
-    assert_controlled_codex_without_tools_reports_an_empty_app_server_reading();
+fn controlled_codex_without_tools_reports_only_its_message_from_the_app_server() {
+    assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_server();
 }
 
 #[cfg(windows)]
-fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+fn assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_server() {
     // The mock's tool-free controlled turn emits this app-server agent item;
     // exercise the production extractor directly where no control socket exists.
     let raw = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"item_1","text":"still working"}}}"#;
@@ -6180,7 +6180,7 @@ fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
 }
 
 #[cfg(not(windows))]
-fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+fn assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_server() {
     let session_dir = control_store_dir("cn");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();

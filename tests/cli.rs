@@ -72,6 +72,52 @@ fn run_as_typed(args: &[&str], envs: &[(&str, &str)]) -> Output {
     cmd.output().expect("failed to run oneharness")
 }
 
+/// [`run`], but a child still running at `limit` is killed and the test fails
+/// there, naming the args — for a journey whose regression would otherwise be
+/// a process that never exits (a `history watch` that follows instead of
+/// refusing), so it fails fast rather than hanging the suite.
+fn run_within(args: &[&str], envs: &[(&str, &str)], limit: std::time::Duration) -> Output {
+    use std::io::Read;
+    let json_args = with_format_json(args);
+    let redirect = mock_profile_redirect();
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_NO_CONFIG", "1")
+        .args(with_mock_profile_redirect(&json_args, &redirect))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().expect("failed to run oneharness");
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).ok();
+            bytes
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = drain(Box::new(child.stderr.take().expect("piped stderr")));
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll the child") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("stop the child this test started");
+            child.wait().expect("reap the child");
+            panic!("oneharness {args:?} was still running after {limit:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Output {
+        status,
+        stdout: stdout.join().expect("stdout reader"),
+        stderr: stderr.join().expect("stderr reader"),
+    }
+}
+
 /// Every verb path whose stdout is a JSON document, read off the clap tree
 /// itself: a (sub)command carrying a `--format` whose values include `json`.
 /// The one source the format journeys below and the `run` helper share, so a
@@ -35344,6 +35390,10 @@ fn a_running_session_is_listed_shown_and_tailed_from_a_second_process() {
 
 #[test]
 fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_labels() {
+    // Every child this journey starts is bounded: a seed run or a refusal
+    // still going at the limit fails the test rather than hanging it, as the
+    // watchers `watch_output` reads already do.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
     let dir = hist_dir("watch-session");
     let ds = dir.display().to_string();
     let bin = bin_override("codex");
@@ -35367,7 +35417,7 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
         for label in labels {
             args.extend(["--history-label", label]);
         }
-        let output = run(&args, &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)]);
+        let output = run_within(&args, &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)], LIMIT);
         assert!(output.status.success(), "{output:?}");
         let report = String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -35380,7 +35430,7 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
     // path-like — names nothing: refused before anything is read, rather than
     // followed forever.
     for selector in ["", "Alpha Beta", "Alpha", "../alpha", "alpha-"] {
-        let refused = run(
+        let refused = run_within(
             &[
                 "history",
                 "watch",
@@ -35390,6 +35440,7 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
                 &ds,
             ],
             &[],
+            LIMIT,
         );
         assert_eq!(refused.status.code(), Some(2), "{selector:?}: {refused:?}");
         assert!(refused.stdout.is_empty(), "{selector:?}");

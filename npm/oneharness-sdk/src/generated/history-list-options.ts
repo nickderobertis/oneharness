@@ -12,7 +12,8 @@ export interface HistoryListOptions {
   config?: string[] | undefined;
   historyDir?: string | undefined;
   /**
-   * Ignore every configuration file.
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;

@@ -359,7 +359,10 @@ pub struct RunOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -457,8 +460,10 @@ pub struct HistoryLookupByLast {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
-    /// Ignore every configuration file.
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -496,8 +501,10 @@ pub struct HistoryLookupBySession {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
-    /// Ignore every configuration file.
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -525,8 +532,10 @@ pub struct HistoryListOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
-    /// Ignore every configuration file.
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -567,8 +576,10 @@ pub struct HistoryWatchOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
-    /// Ignore every configuration file.
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -595,7 +606,10 @@ pub struct DetectOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -619,7 +633,10 @@ pub struct ConfigOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -653,7 +670,10 @@ pub struct SyncOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -701,7 +721,10 @@ pub struct UsageOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -785,7 +808,10 @@ pub struct HistoryClearOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,
@@ -813,7 +839,10 @@ pub struct HistoryMigrateOptions {
     /// user/project discovery; each later file overrides the earlier ones.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub no_config: Option<bool>,

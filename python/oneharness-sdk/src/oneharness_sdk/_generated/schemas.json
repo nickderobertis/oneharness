@@ -15,6 +15,7 @@
         "type": "string"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       }
     },
@@ -688,6 +689,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "require_available": {
@@ -802,6 +804,7 @@
         "type": "string"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "project": {
@@ -2966,7 +2969,7 @@
         "type": "string"
       },
       "no_config": {
-        "description": "Ignore every configuration file.",
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "project": {
@@ -3009,7 +3012,7 @@
             "type": "boolean"
           },
           "no_config": {
-            "description": "Ignore every configuration file.",
+            "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
             "type": "boolean"
           },
           "project": {
@@ -3051,7 +3054,7 @@
             "type": "boolean"
           },
           "no_config": {
-            "description": "Ignore every configuration file.",
+            "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
             "type": "boolean"
           },
           "project": {
@@ -3099,6 +3102,7 @@
         "type": "string"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       }
     },
@@ -12523,7 +12527,7 @@
         "$ref": "#/$defs/HistoryLabels"
       },
       "no_config": {
-        "description": "Ignore every configuration file.",
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "project": {
@@ -13277,6 +13281,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "no_history": {
@@ -15860,6 +15865,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       }
     },
@@ -16126,6 +16132,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "timeout_seconds": {

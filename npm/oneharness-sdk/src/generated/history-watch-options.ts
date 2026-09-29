@@ -19,7 +19,8 @@ export interface HistoryWatchOptions {
   historyDir?: string | undefined;
   labels?: HistoryLabels | undefined;
   /**
-   * Ignore every configuration file.
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;

@@ -10,5 +10,9 @@ export interface HistoryMigrateOptions {
    */
   config?: string[] | undefined;
   historyDir?: string | undefined;
+  /**
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
+   */
   noConfig?: boolean | undefined;
 }

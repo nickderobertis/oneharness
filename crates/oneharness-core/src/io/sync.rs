@@ -279,8 +279,10 @@ pub struct SyncRequest {
     /// user/project discovery — the repeatable `--config` flag. Each later file
     /// (its own `extends` chain beneath it) overrides the earlier ones; empty
     /// means discovery. See [`crate::io::config::load_layers`].
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
     pub config: Vec<PathBuf>,
-    /// Ignore every configuration file.
+    /// Ignore every configuration file and `ONEHARNESS_*` override. Takes
+    /// precedence over `config`: set together, no file is loaded.
     pub no_config: bool,
 }
 

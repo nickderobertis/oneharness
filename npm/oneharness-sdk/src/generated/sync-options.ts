@@ -22,5 +22,9 @@ export interface SyncOptions {
   exact?: boolean | undefined;
   global?: boolean | undefined;
   harnesses?: string[] | undefined;
+  /**
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
+   */
   noConfig?: boolean | undefined;
 }

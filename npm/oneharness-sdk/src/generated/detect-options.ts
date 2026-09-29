@@ -15,6 +15,10 @@ export interface DetectOptions {
   config?: string[] | undefined;
   exclude?: string[] | undefined;
   harnesses?: string[] | undefined;
+  /**
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
+   */
   noConfig?: boolean | undefined;
   /**
    * Exit non-zero if any probed harness is not installed. The SDKs surface

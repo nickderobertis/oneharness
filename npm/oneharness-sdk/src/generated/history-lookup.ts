@@ -48,7 +48,8 @@ export interface HistoryLookupByLast {
    */
   last: true;
   /**
-   * Ignore every configuration file.
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;
@@ -83,7 +84,8 @@ export interface HistoryLookupBySession {
    */
   last?: boolean | undefined;
   /**
-   * Ignore every configuration file.
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;

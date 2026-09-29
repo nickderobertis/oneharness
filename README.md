@@ -467,8 +467,7 @@ Useful `run` flags:
   variant's own env key and config-file `bin`.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 - `--config <path>` (repeatable) / `--no-config` — load exactly the named
-  config files, each later file overriding the earlier ones / ignore all config
-  files (see below).
+  config files / ignore all config files (see below).
 - `--format <text|json>` / `--compact` — see the next section.
 
 ### `--format` and `--compact`
@@ -523,12 +522,21 @@ precedence first:
    else the current directory), with its `extends` chain.
 4. **Environment overrides** — `ONEHARNESS_<FIELD>` variables (see below); beat
    every config file.
-
-Naming files with `--config` replaces steps 2 and 3: the named files are the
-only file layers, in the order given, so the order is `built-ins → --config A
-(A's own extends chain immediately beneath A) → --config B (B's chain beneath
-B) → … → ONEHARNESS_* → flags`.
 5. **CLI flags** — always win.
+
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the one user-facing statement of the repeatable `--config` contract the task requires in this README (the flag bullet and the opt-out paragraph point here rather than restating it); its source is `io::config::load_layers`, and its drift gate is the behavior, pinned claim by claim through the real binary in `tests/cli.rs` (`repeated_config_files_layer_in_order_beneath_env_and_flags`, `config_command_lists_repeated_files_in_layering_order_with_each_value_attributed`, `a_run_reports_repeated_config_files_in_the_order_config_lists_them`) and in-process in `tests/library_config_layers.rs`. -->
+Naming files with `--config` replaces steps 2 and 3. The flag is repeatable,
+and the named files are the only file layers, in the order given: `built-ins →
+--config A (A's own extends chain immediately beneath A) → --config B (B's
+chain beneath B) → … → ONEHARNESS_* → flags`. So a program wrapping oneharness
+can put its defaults first and its user's config after (`--config
+wrapper-defaults.toml --config user.toml`), and the user's values win without
+the wrapper forcing any flag. `$ONEHARNESS_CONFIG` stays the single user-level
+file of discovery; several files come only from `--config` (or `config:
+Vec<PathBuf>` on the library's request structs, where an empty list means
+discovery). `config_files` and `oneharness config` list every file in this
+layering order, each value attributed to the file that set it.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 Every top-level field with a `run` flag also has a standard
 **`ONEHARNESS_<FIELD>`** environment override, the field name upper-snake-cased
@@ -938,16 +946,9 @@ The merge is deliberately conservative:
   report plus a stderr warning (top-level fields); an individual rule a harness
   cannot express (Codex) is surfaced the same way in `unmapped_rules`.
 
-To opt out: `--config <path>` loads exactly that file and skips discovery (the
-`ONEHARNESS_<FIELD>` overrides still apply on top). It is repeatable: each
-named file is its own layer, later files overriding earlier ones per field, so
-a program wrapping oneharness can put its defaults first and its user's config
-after (`--config wrapper-defaults.toml --config user.toml`) and the user's
-values win without the wrapper forcing any flag. `$ONEHARNESS_CONFIG` stays the
-single user-level file of discovery; several files come only from `--config`
-(or `config: Vec<PathBuf>` on the library's request structs, where an empty
-list means discovery). `config_files` and `oneharness config` list every file in
-layering order, each value attributed to the file that set it. `--no-config` (or
+To opt out: `--config <path>` (repeatable, layered as above) loads exactly
+the named files and skips discovery (the `ONEHARNESS_<FIELD>` overrides still
+apply on top); `--no-config` (or
 `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test suites) ignores every
 config file **and** the env overrides, leaving only flags and defaults. `detect`
 honors the configured `bin`s too, so it probes the same binaries `run` would

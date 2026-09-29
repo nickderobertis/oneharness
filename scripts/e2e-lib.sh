@@ -1653,8 +1653,7 @@ oh_resume_mode_enforce() {
 
     if [ -n "$probe" ]; then
         rm -rf "$sandbox"
-        note "sandbox half NOT PROVEN on this host: $id's own sandbox for --mode $mode cannot start here, so whether turn two's touch of $file was written or blocked says nothing about the mode ($probe)"
-        note "  (the #1372 half held: turn two ran as the resume argv on session $name, status ok, phase continue, and recalled $marker)"
+        note "sandbox half NOT PROVEN on this host: $id's own sandbox for --mode $mode cannot start here, so whether turn two's touch of $file was written or blocked says nothing about the mode ($probe); the #1372 half held: turn two ran as the resume argv on session $name, status ok, phase continue, and recalled $marker"
         return 0
     fi
 
@@ -1683,6 +1682,53 @@ oh_resume_mode_enforce() {
 
     rm -rf "$sandbox"
     note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
+}
+
+# Model-free drift gate for the config-override spellings oneharness reads in
+# a caller's codex args (`-c k=v`, `--config k=v`, `--config=k=v`, `-ck=v`):
+# on a resumed turn the mode's sandbox is restated after any of them that sets
+# `sandbox_mode`, because codex applies every override in argv order and the
+# LAST one wins (see `argv_with_caller_args`). Codex's own parser is asked
+# both facts — that each spelling IS an override, and that position rather than
+# spelling decides between two — through `codex features list`, which prints
+# the effective value and needs no model, login or OS sandbox. The key is a
+# feature flag rather than `sandbox_mode` for exactly that reason; the parse is
+# one clap argument whatever the key (`CliConfigOverrides::raw_overrides`).
+oh_codex_config_override_order() {
+    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+    local spelling first last got
+    for spelling in "-c" "--config" "--config=" "-c<kv>"; do
+        for first in true false; do
+            last="$([ "$first" = true ] && printf false || printf true)"
+            # The spelling under test comes last: its value must win.
+            _oh_codex_spell "$spelling" "features.hooks=$last"
+            got="$(_oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}")"
+            [ "$got" = "$last" ] \
+                || fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${got:-<unreadable>} — that spelling is not a config override codex applies last-wins, so oneharness restating the mode after it proves nothing"
+            # And first: the plain `-c` after it must win.
+            _oh_codex_spell "$spelling" "features.hooks=$first"
+            got="$(_oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last")"
+            [ "$got" = "$last" ] \
+                || fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${got:-<unreadable>} — position no longer decides between two overrides, so the restated mode may not govern a resumed turn"
+        done
+    done
+    note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
+}
+
+# One spelling of a config override, as argv words in $_OH_SPELLED.
+#   $1 spelling (-c | --config | --config= | -c<kv>), $2 key=value
+_OH_SPELLED=()
+_oh_codex_spell() {
+    case "$1" in
+    -c | --config) _OH_SPELLED=("$1" "$2") ;;
+    --config=) _OH_SPELLED=("--config=$2") ;;
+    -c\<kv\>) _OH_SPELLED=("-c$2") ;;
+    esac
+}
+
+# The effective value of codex's `hooks` feature under the given args.
+_oh_codex_feature_value() {
+    codex features list "$@" </dev/null 2>/dev/null | awk '$1 == "hooks" { print $NF }' | tr -d '\r'
 }
 
 # Whether the harness's own OS sandbox for `mode` can START on this host,

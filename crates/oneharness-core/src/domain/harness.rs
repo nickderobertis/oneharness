@@ -1908,6 +1908,9 @@ fn codex_sandbox_override(sandbox: &str) -> [String; 2] {
 
 /// Whether a caller's own args set codex's `sandbox_mode` through `-c` /
 /// `--config` (either as `-c k=v`, `--config k=v`, `--config=k=v` or `-ck=v`).
+/// That codex parses each of these spellings as one last-wins override list is
+/// drift-gated against the real CLI by `oh_codex_config_override_order`
+/// (`scripts/e2e-lib.sh`).
 fn sets_codex_sandbox_mode(extra: &[String]) -> bool {
     let is_sandbox_mode = |kv: &str| {
         kv.split_once('=')

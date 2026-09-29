@@ -4329,7 +4329,10 @@ fn every_spelling_of_a_callers_sandbox_mode_is_outranked_on_a_resumed_codex_turn
     // Codex takes a config override as `-c k=v`, `--config k=v`,
     // `--config=k=v` or `-ck=v`; each one is a `sandbox_mode` that would win a
     // resumed turn by coming last, so each must be followed by the mode's own.
-    // A key that only LOOKS like it is left alone, with nothing restated.
+    // A key that only LOOKS like it is left alone, with nothing restated. This
+    // pins oneharness's reading of the spellings; that codex applies each one
+    // last-wins is proven against the real CLI by the live, model-free
+    // `oh_codex_config_override_order` phase in `scripts/e2e-lib.sh`.
     let cases: [(&[&str], bool); 5] = [
         (&["-c", "sandbox_mode=danger-full-access"], true),
         (&["--config", "sandbox_mode=\"danger-full-access\""], true),

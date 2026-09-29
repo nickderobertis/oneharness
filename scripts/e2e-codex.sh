@@ -54,6 +54,11 @@ note "» resume under a sandbox mode: a continued turn must run and keep the san
 oh_resume_mode_enforce codex auto
 oh_resume_mode_enforce codex read-only
 oh_resume_mode_enforce codex plan
+# Model-free: every spelling of a config override oneharness restates the mode
+# after is one codex applies, last one winning.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» config overrides: codex must apply every -c spelling as one last-wins list"
+oh_codex_config_override_order
 # A caller's own `-c sandbox_mode=` must not outrank the mode on a resumed turn
 # any more than it does on a fresh one, where `--sandbox` beats it.
 oh_resume_mode_enforce codex auto -- -c sandbox_mode=read-only

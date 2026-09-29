@@ -1681,6 +1681,7 @@ oh_resume_mode_enforce() {
     esac
 
     rm -rf "$sandbox"
+    # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
     note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
 }
 
@@ -1712,6 +1713,7 @@ oh_codex_config_override_order() {
                 || fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
         done
     done
+    # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
     note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
 }
 

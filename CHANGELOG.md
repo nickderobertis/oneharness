@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.1](https://github.com/nickderobertis/oneharness/compare/v0.17.0...v0.17.1) - 2026-09-29
+
+### Fixed
+
+- *(codex)* carry the sandbox mode on a resumed exec turn as config ([#1376](https://github.com/nickderobertis/oneharness/pull/1376))
+
 ## [0.17.0](https://github.com/nickderobertis/oneharness/compare/v0.16.2...v0.17.0) - 2026-09-29
 
 ### Added

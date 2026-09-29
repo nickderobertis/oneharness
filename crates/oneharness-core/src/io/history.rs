@@ -25,7 +25,7 @@ use fs2::FileExt;
 use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
-    HistoryRunRecord, PointerSession,
+    HistoryRunRecord, HistorySessionName, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
@@ -85,7 +85,7 @@ pub struct HistoryWriter {
     path: PathBuf,
     relative_path: String,
     session: String,
-    name: String,
+    name: HistorySessionName,
     labels: HistoryLabels,
     project: String,
     /// The run's pointer file, when one was named: every harness run this
@@ -162,7 +162,7 @@ impl HistoryWriter {
         PointerSession::new(
             &self.dir,
             &self.path,
-            &self.name,
+            self.name.as_str(),
             &self.project,
             self.labels.clone(),
         )
@@ -236,7 +236,7 @@ impl HistoryWriter {
         name: &str,
         labels: HistoryLabels,
     ) -> std::io::Result<HistoryWriter> {
-        let name = history::sanitize_name(name);
+        let name = HistorySessionName::sanitize(name);
         let project = fs::canonicalize(project)?;
         let project_display = project.display().to_string();
         let slug = history::project_slug(&project_display);
@@ -318,7 +318,7 @@ impl HistoryWriter {
         let record = HistoryRecord::from_result(
             run_id,
             &self.session,
-            &self.name,
+            self.name.as_str(),
             &self.labels,
             &self.project,
             history::format_rfc3339(now_epoch_secs()),
@@ -937,7 +937,14 @@ impl HistoryWatcher {
         });
         if in_project
             && entry.labels.matches(&self.labels)
-            && self.in_session(&entry.session_path, entry.line.session_name.as_deref())
+            && self.in_session(
+                &entry.session_path,
+                entry
+                    .line
+                    .session_name
+                    .as_ref()
+                    .map(HistorySessionName::as_str),
+            )
         {
             self.pending_events.push_back(entry.line);
         }
@@ -1524,7 +1531,11 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
     Ok(SessionSummary {
         name: first
             .map(|record| record.name.clone())
-            .or_else(|| events.iter().find_map(|event| event.session_name.clone()))
+            .or_else(|| {
+                events
+                    .iter()
+                    .find_map(|event| event.session_name.as_ref().map(ToString::to_string))
+            })
             .unwrap_or_else(|| id.clone()),
         labels: first
             .map(|record| record.labels.clone())

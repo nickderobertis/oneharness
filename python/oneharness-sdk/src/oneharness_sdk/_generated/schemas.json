@@ -1265,6 +1265,10 @@
                       },
                       "session_name": {
                         "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                        "minLength": 1,
+                        "not": {
+                          "pattern": "[^a-z0-9-]|^-|-$|--"
+                        },
                         "type": [
                           "string",
                           "null"
@@ -1334,6 +1338,10 @@
                       },
                       "session_name": {
                         "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                        "minLength": 1,
+                        "not": {
+                          "pattern": "[^a-z0-9-]|^-|-$|--"
+                        },
                         "type": [
                           "string",
                           "null"
@@ -9578,6 +9586,10 @@
                   },
                   "session_name": {
                     "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                    "minLength": 1,
+                    "not": {
+                      "pattern": "[^a-z0-9-]|^-|-$|--"
+                    },
                     "type": [
                       "string",
                       "null"
@@ -9642,6 +9654,10 @@
                   },
                   "session_name": {
                     "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                    "minLength": 1,
+                    "not": {
+                      "pattern": "[^a-z0-9-]|^-|-$|--"
+                    },
                     "type": [
                       "string",
                       "null"

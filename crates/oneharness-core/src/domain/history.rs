@@ -209,7 +209,7 @@ pub struct HistoryEventLine {
     /// absent: lines written before it existed carry none, and every reader
     /// that predates it ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_name: Option<String>,
+    pub session_name: Option<HistorySessionName>,
 }
 
 impl HistoryEventLine {
@@ -549,6 +549,92 @@ impl JsonSchema for HistoryId {
             "minLength": UUID_LEN,
             "maxLength": UUID_LEN,
             "pattern": UUID_PATTERN,
+        })
+    }
+}
+
+/// A non-empty character run outside the sanitized session-name alphabet, or a
+/// dash that leads, trails, or doubles — the shapes [`sanitize_name`] never
+/// produces. Stated as a forbidden unanchored search (see
+/// [`LABEL_KEY_FORBIDDEN_PATTERN`]) so every SDK regex engine agrees.
+const SESSION_NAME_FORBIDDEN_PATTERN: &str = "[^a-z0-9-]|^-|-$|--";
+
+/// The error returned when text is not a sanitized [`HistorySessionName`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error(
+    "must be a non-empty session name of lowercase ASCII letters and digits joined by single dashes"
+)]
+pub struct HistorySessionNameError;
+
+/// A session name in exactly the shape [`sanitize_name`] and [`session_name`]
+/// produce: lowercase ASCII alphanumeric words joined by single dashes. It is
+/// read back from history files and used to select a session, so text that no
+/// writer could have produced — empty, upper-case, spaced, or path-like — is
+/// refused at the boundary rather than matched.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct HistorySessionName(String);
+
+impl HistorySessionName {
+    /// Sanitize arbitrary text (a `--history-name`, or a derived name) into a
+    /// valid session name; see [`sanitize_name`].
+    #[must_use]
+    pub fn sanitize(raw: &str) -> Self {
+        Self(sanitize_name(raw))
+    }
+
+    /// The name as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for HistorySessionName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for HistorySessionName {
+    type Err = HistorySessionNameError;
+
+    /// Accept exactly the fixed points of [`sanitize_name`] other than its
+    /// empty-input fallback — what the JSON Schema's forbidden pattern plus a
+    /// minimum length of one also accepts.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() || sanitize_name(value) != value {
+            return Err(HistorySessionNameError);
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for HistorySessionName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for HistorySessionName {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistorySessionName")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "not": { "pattern": SESSION_NAME_FORBIDDEN_PATTERN },
         })
     }
 }
@@ -2215,6 +2301,62 @@ mod tests {
         assert_eq!(sanitize_name("My Release v2!"), "my-release-v2");
         assert_eq!(sanitize_name("   "), "session");
         assert_eq!(sanitize_name("---"), "session");
+    }
+
+    #[test]
+    fn session_name_type_accepts_only_what_a_writer_produces() {
+        for name in [
+            "session",
+            "fix-login-v2",
+            &session_name("Refactor!! the (parser)."),
+        ] {
+            assert_eq!(
+                name.parse::<HistorySessionName>().map(|n| n.to_string()),
+                Ok(name.to_string())
+            );
+        }
+        for name in [
+            "", "Name", "my name", "../name", "my--name", "-name", "name-", "name\n",
+        ] {
+            assert_eq!(
+                name.parse::<HistorySessionName>(),
+                Err(HistorySessionNameError),
+                "{name:?}"
+            );
+        }
+        assert_eq!(
+            HistorySessionName::sanitize("My Release v2!").as_str(),
+            "my-release-v2"
+        );
+        assert_eq!(HistorySessionName::sanitize("").as_str(), "session");
+    }
+
+    #[test]
+    fn an_event_line_with_an_unsanitized_session_name_is_refused() {
+        let line = |name: &str| {
+            serde_json::json!({
+                "type": "event", "schema_version": "1.1",
+                "run_id": "0198f0d0-7b31-7000-8000-00000000003c",
+                "harness": "codex", "harness_id": "codex",
+                "event": {"kind": "message", "name": null, "input": null, "output": "On it.",
+                          "index": 0, "tool_call_id": null},
+                "session_name": name,
+            })
+        };
+        let accepted = serde_json::from_value::<HistoryLine>(line("fix-login")).unwrap();
+        let HistoryLine::Event(event) = accepted else {
+            panic!("an event line parses as an event")
+        };
+        assert_eq!(
+            event.session_name.as_ref().map(HistorySessionName::as_str),
+            Some("fix-login")
+        );
+        for bad in ["", "Fix Login", "../fix"] {
+            assert!(
+                serde_json::from_value::<HistoryLine>(line(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

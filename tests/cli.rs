@@ -4244,6 +4244,87 @@ fn print_command_for(extra: &[&str]) -> Vec<String> {
 }
 
 #[test]
+fn a_resumed_codex_turn_is_sandboxed_like_a_fresh_one_over_a_callers_override() {
+    // Issue #1372. `codex exec resume` has no `--sandbox`, so a resumed turn
+    // states the mode's sandbox as `-c sandbox_mode=`. A caller's own
+    // `-c sandbox_mode=` in `[harness.codex] args` rides after the adapter's
+    // argv; fresh, codex's `--sandbox` outranks it, and resumed the LAST `-c`
+    // of the key wins — so the mode's override must come last for the mode to
+    // govern the resumed turn as it does the fresh one.
+    let project = r#"
+        [harness.codex]
+        args = ["-c", "sandbox_mode=danger-full-access"]
+        "#;
+    let fx = ConfigFixture::new("codex-resume-sandbox", project, "");
+    let cwd = fx.cwd();
+    let command = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec![
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "go",
+            "--cwd",
+            &cwd,
+            "--print-command",
+            "--compact",
+        ];
+        args.extend_from_slice(extra);
+        let output = run_with_config(&args, &[], &fx.user_config());
+        assert!(output.status.success(), "{output:?}");
+        json_stdout(&output)["results"][0]["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect()
+    };
+    let sandbox_modes = |argv: &[String]| -> Vec<String> {
+        argv.windows(2)
+            .filter(|w| w[0] == "-c" && w[1].starts_with("sandbox_mode="))
+            .map(|w| w[1].clone())
+            .collect()
+    };
+    for (mode, sandbox) in [
+        ("auto", "workspace-write"),
+        ("read-only", "read-only"),
+        ("plan", "read-only"),
+    ] {
+        let fresh = command(&["--mode", mode]);
+        assert!(
+            fresh.windows(2).any(|w| w == ["--sandbox", sandbox]),
+            "{mode}: {fresh:?}"
+        );
+        assert_eq!(sandbox_modes(&fresh), ["sandbox_mode=danger-full-access"]);
+        let resumed = command(&["--mode", mode, "--resume", "th-1"]);
+        assert!(
+            resumed.windows(2).any(|w| w == ["exec", "resume"]),
+            "{resumed:?}"
+        );
+        assert!(!resumed.iter().any(|t| t == "--sandbox"), "{resumed:?}");
+        let mode_override = format!("sandbox_mode={sandbox}");
+        assert_eq!(
+            sandbox_modes(&resumed),
+            [
+                mode_override.clone(),
+                "sandbox_mode=danger-full-access".to_string(),
+                mode_override,
+            ],
+            "{mode}: the mode's override must be the last one"
+        );
+    }
+    // `default` names no sandbox, so the caller's override governs both turns.
+    for extra in [
+        &["--mode", "default"][..],
+        &["--mode", "default", "--resume", "th-1"],
+    ] {
+        let argv = command(extra);
+        assert!(!argv.iter().any(|t| t == "--sandbox"), "{argv:?}");
+        assert_eq!(sandbox_modes(&argv), ["sandbox_mode=danger-full-access"]);
+    }
+}
+
+#[test]
 fn resume_maps_for_the_text_output_harnesses() {
     // codex: `exec resume <id> <prompt>` (subcommand, id before prompt).
     let codex = print_command_for(&["--harness", "codex", "--resume", "th-1"]);

@@ -1802,8 +1802,17 @@ fn argv_claude_code(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-/// `codex exec [resume <id>] [--dangerously-bypass-approvals-and-sandbox]
-/// [--model M] <prompt>`
+/// `codex exec [--sandbox S | --dangerously-bypass-approvals-and-sandbox]
+/// [--model M] [--json] <prompt>`, or on a continued turn
+/// `codex exec resume [-c sandbox_mode=S | --dangerously-bypass-approvals-and-sandbox]
+/// [--model M] [--json] <id> <prompt>`
+///
+/// The sandbox takes two spellings because `codex exec resume` has no
+/// `-s/--sandbox` option (codex exits 2, `unexpected argument '--sandbox'`,
+/// before the turn runs): a fresh turn asks with `--sandbox`, a resumed one
+/// with the `-c sandbox_mode=` config override it does accept. See
+/// [`codex_sandbox`] and [`argv_with_caller_args`] for how the two resolve
+/// against a caller's own `sandbox_mode` override.
 ///
 /// Codex exposes no system-prompt flag, so `--system` is prepended to the prompt.
 /// The single bypass flag replaces the older `--sandbox danger-full-access -a
@@ -1832,24 +1841,18 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     }
     // The sandbox is the real control surface under `exec` (approval downgrades
     // to `never`). `Default` keeps the exec default (read-only). `Edit` is not a
-    // supported mode for codex, so it is never reached.
-    match c.mode {
-        PermissionMode::Bypass => {
-            a.push("--dangerously-bypass-approvals-and-sandbox".into());
-        }
-        // `plan` is the read-only sandbox too (enforcement half); its plan
-        // instruction is prepended to the prompt by the command layer.
-        PermissionMode::ReadOnly | PermissionMode::Plan => {
+    // supported mode for codex, so it is never reached. Bypass is one flag both
+    // `exec` and `exec resume` accept; a sandbox mode is `--sandbox S` fresh and
+    // `-c sandbox_mode=S` resumed, because `exec resume` has no `--sandbox`.
+    if c.mode == PermissionMode::Bypass {
+        a.push("--dangerously-bypass-approvals-and-sandbox".into());
+    } else if let Some(sandbox) = codex_sandbox(c.mode) {
+        if c.resume.is_some() {
+            a.extend(codex_sandbox_override(sandbox));
+        } else {
             a.push("--sandbox".into());
-            a.push("read-only".into());
+            a.push(sandbox.into());
         }
-        PermissionMode::Auto => {
-            a.push("--sandbox".into());
-            a.push("workspace-write".into());
-        }
-        // `default` keeps the exec default; `edit` is unsupported for codex and
-        // never reaches here.
-        PermissionMode::Default | PermissionMode::Edit => {}
     }
     if let Some(m) = c.model {
         a.push("--model".into());
@@ -1879,6 +1882,83 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
         a.push(prompt_with_system(c));
     }
     a
+}
+
+/// The sandbox a codex `exec` turn asks for under `mode`, in codex's own
+/// `SandboxMode` spelling; `None` where the mode names no sandbox (`default`
+/// keeps exec's own, `bypass` rides its dedicated flag, `edit` is unsupported).
+/// `plan` is the read-only sandbox too (its enforcement half); its plan
+/// instruction is prepended to the prompt by the command layer.
+fn codex_sandbox(mode: PermissionMode) -> Option<&'static str> {
+    match mode {
+        PermissionMode::ReadOnly | PermissionMode::Plan => Some("read-only"),
+        PermissionMode::Auto => Some("workspace-write"),
+        PermissionMode::Default | PermissionMode::Edit | PermissionMode::Bypass => None,
+    }
+}
+
+/// `-c sandbox_mode=<sandbox>`: the sandbox as a config override, the one
+/// spelling `codex exec resume` accepts. The value is left bare rather than
+/// TOML-quoted: codex parses it as TOML and, failing that, takes the raw text
+/// as a string (`CliConfigOverrides::parse_overrides`), so both mean the same
+/// value — and a bare one carries no quote for a Windows `.cmd` shim to mangle.
+fn codex_sandbox_override(sandbox: &str) -> [String; 2] {
+    ["-c".into(), format!("sandbox_mode={sandbox}")]
+}
+
+/// Whether a caller's own args set codex's `sandbox_mode` through `-c` /
+/// `--config` (either as `-c k=v`, `--config k=v`, `--config=k=v` or `-ck=v`).
+fn sets_codex_sandbox_mode(extra: &[String]) -> bool {
+    let is_sandbox_mode = |kv: &str| {
+        kv.split_once('=')
+            .is_some_and(|(key, _)| key.trim() == "sandbox_mode")
+    };
+    extra.iter().enumerate().any(|(i, arg)| {
+        if arg == "-c" || arg == "--config" {
+            return extra.get(i + 1).is_some_and(|kv| is_sandbox_mode(kv));
+        }
+        arg.strip_prefix("--config=")
+            .or_else(|| arg.strip_prefix("-c").filter(|kv| !kv.is_empty()))
+            .is_some_and(is_sandbox_mode)
+    })
+}
+
+/// An adapter's argv followed by the caller's own args (`[harness.<id>] args`,
+/// the reasoning delivery, CLI passthrough), which ride after it verbatim.
+///
+/// One harness needs more than concatenation. On a fresh codex turn the mode's
+/// sandbox rides `--sandbox`, which codex turns into
+/// `ConfigOverrides::sandbox_mode`, and that outranks every `-c sandbox_mode=`
+/// wherever it sits: `ConfigToml::derive_permission_profile` resolves
+/// `sandbox_mode_override.or(self.sandbox_mode)` (codex-rs
+/// `config/src/config_toml.rs`, rust-v0.157.1), and `-c` only ever reaches
+/// `self.sandbox_mode`. So under a sandbox mode the MODE governs, and a
+/// caller's `-c sandbox_mode=` is inert. A resumed turn can only say the mode
+/// as `-c sandbox_mode=` too, and between repeated `-c` of one key the LAST one
+/// wins — every `-c` is one global, appending list, applied in argv order by
+/// `build_cli_overrides_layer` (`config/src/overrides.rs`), each later insert
+/// replacing the earlier value. Left as is, the caller's override would win on
+/// resume where it lost fresh. So when a caller's args set `sandbox_mode` on a
+/// resumed turn under a sandbox mode, the mode's override is stated again
+/// after them, and the mode governs a resumed turn exactly as it does a fresh
+/// one. Under `default` no mode sandbox exists and the caller's governs both.
+pub(crate) fn argv_with_caller_args(
+    spec: &HarnessSpec,
+    c: &BuildCtx,
+    extra: &[String],
+) -> Vec<String> {
+    let mut argv = (spec.build_argv)(c);
+    argv.extend(extra.iter().cloned());
+    if spec.id == "codex"
+        && c.resume.is_some()
+        && !c.delivery.is_control_stream()
+        && sets_codex_sandbox_mode(extra)
+    {
+        if let Some(sandbox) = codex_sandbox(c.mode) {
+            argv.extend(codex_sandbox_override(sandbox));
+        }
+    }
+    argv
 }
 
 /// `opencode run [--dangerously-skip-permissions] --format json [-m M]
@@ -3281,6 +3361,161 @@ mod tests {
         );
         // No fork token for codex.
         assert!(!argv.iter().any(|t| t == "--fork"), "{argv:?}");
+    }
+
+    /// Codex's argv under `mode`, fresh or continuing `resume`.
+    fn codex_argv(mode: PermissionMode, resume: Option<&'static str>) -> Vec<String> {
+        let spec = by_id("codex").unwrap();
+        (spec.build_argv)(&BuildCtx {
+            mode,
+            resume,
+            ..base_ctx(spec)
+        })
+    }
+
+    #[test]
+    fn codex_fresh_turn_carries_the_sandbox_as_a_flag_per_mode() {
+        // A fresh `codex exec` takes the mode's sandbox as `--sandbox S`; bypass
+        // is its own flag and default leaves exec's own sandbox alone.
+        let cases: &[(PermissionMode, &[&str])] = &[
+            (PermissionMode::ReadOnly, &["--sandbox", "read-only"]),
+            (PermissionMode::Plan, &["--sandbox", "read-only"]),
+            (PermissionMode::Auto, &["--sandbox", "workspace-write"]),
+            (
+                PermissionMode::Bypass,
+                &["--dangerously-bypass-approvals-and-sandbox"],
+            ),
+            (PermissionMode::Default, &[]),
+        ];
+        for (mode, sandbox) in cases {
+            let mut want = vec!["codex", "exec"];
+            want.extend_from_slice(sandbox);
+            want.extend(["--json", "hi"]);
+            assert_eq!(codex_argv(*mode, None), want, "fresh {mode:?}");
+        }
+    }
+
+    #[test]
+    fn codex_resumed_turn_carries_the_sandbox_as_config_per_mode() {
+        // `codex exec resume` has no `--sandbox` (codex exits 2 on it before the
+        // turn runs), so a resumed turn states the sandbox through the `-c`
+        // config override it does accept. Bypass's flag is accepted by both.
+        let cases: &[(PermissionMode, &[&str])] = &[
+            (PermissionMode::ReadOnly, &["-c", "sandbox_mode=read-only"]),
+            (PermissionMode::Plan, &["-c", "sandbox_mode=read-only"]),
+            (
+                PermissionMode::Auto,
+                &["-c", "sandbox_mode=workspace-write"],
+            ),
+            (
+                PermissionMode::Bypass,
+                &["--dangerously-bypass-approvals-and-sandbox"],
+            ),
+            (PermissionMode::Default, &[]),
+        ];
+        for (mode, sandbox) in cases {
+            let argv = codex_argv(*mode, Some("0199-thread"));
+            let mut want = vec!["codex", "exec", "resume"];
+            want.extend_from_slice(sandbox);
+            want.extend(["--json", "0199-thread", "hi"]);
+            assert_eq!(argv, want, "resumed {mode:?}");
+            assert!(
+                !argv.iter().any(|t| t == "--sandbox"),
+                "`exec resume` rejects --sandbox under {mode:?}: {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_resumed_codex_turn_keeps_the_mode_sandbox_over_a_callers_override() {
+        // Fresh, codex's `--sandbox` outranks any `-c sandbox_mode=`; resumed,
+        // the last `-c` of the key wins. So the mode's override is restated
+        // after a caller's, and the mode governs both turns alike.
+        let spec = by_id("codex").unwrap();
+        let caller = |args: &[&str]| args.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+        let assembled = |mode, resume, extra: &[String]| {
+            argv_with_caller_args(
+                spec,
+                &BuildCtx {
+                    mode,
+                    resume,
+                    ..base_ctx(spec)
+                },
+                extra,
+            )
+        };
+        let last_sandbox_mode = |argv: &[String]| {
+            argv.windows(2)
+                .filter(|w| w[0] == "-c" && w[1].starts_with("sandbox_mode="))
+                .map(|w| w[1].clone())
+                .next_back()
+        };
+        for spelling in [
+            &["-c", "sandbox_mode=danger-full-access"][..],
+            &["--config", "sandbox_mode=\"danger-full-access\""][..],
+            &["--config=sandbox_mode=danger-full-access"][..],
+            &["-csandbox_mode=danger-full-access"][..],
+        ] {
+            let extra = caller(spelling);
+            for (mode, sandbox) in [
+                (PermissionMode::ReadOnly, "read-only"),
+                (PermissionMode::Plan, "read-only"),
+                (PermissionMode::Auto, "workspace-write"),
+            ] {
+                // Fresh: the mode's flag, the caller's args after it verbatim.
+                let fresh = assembled(mode, None, &extra);
+                assert!(
+                    fresh.windows(2).any(|w| w == ["--sandbox", sandbox]),
+                    "{fresh:?}"
+                );
+                assert!(fresh.ends_with(&extra), "{fresh:?}");
+                // Resumed: the caller's args, then the mode's override last.
+                let resumed = assembled(mode, Some("0199-thread"), &extra);
+                let mode_override = format!("sandbox_mode={sandbox}");
+                assert!(
+                    resumed.ends_with(&[extra.clone(), caller(&["-c", &mode_override])].concat()),
+                    "{spelling:?} {mode:?}: {resumed:?}"
+                );
+                assert_eq!(last_sandbox_mode(&resumed), Some(mode_override));
+            }
+            // Default names no sandbox: the caller's governs, fresh and resumed.
+            for resume in [None, Some("0199-thread")] {
+                let argv = assembled(PermissionMode::Default, resume, &extra);
+                assert!(argv.ends_with(&extra), "{argv:?}");
+                assert!(!argv.iter().any(|t| t == "--sandbox"), "{argv:?}");
+                assert_eq!(
+                    argv.iter().filter(|t| t.contains("sandbox_mode")).count(),
+                    1
+                );
+            }
+        }
+        // A caller's args that leave `sandbox_mode` alone are appended verbatim:
+        // no restatement, on the key or a look-alike one.
+        for other in [
+            &["-c", "model_reasoning_effort=high"][..],
+            &["-c", "sandbox_mode_extra=x"][..],
+            &["-c"][..],
+            &["--sandbox-mode=workspace-write"][..],
+        ] {
+            let extra = caller(other);
+            let mut want = codex_argv(PermissionMode::Auto, Some("0199-thread"));
+            want.extend(extra.clone());
+            assert_eq!(
+                assembled(PermissionMode::Auto, Some("0199-thread"), &extra),
+                want
+            );
+        }
+        // Another harness's args are never touched.
+        let claude = by_id("claude-code").unwrap();
+        let extra = caller(&["-c", "sandbox_mode=x"]);
+        let ctx = BuildCtx {
+            mode: PermissionMode::Auto,
+            resume: Some("sid"),
+            ..base_ctx(claude)
+        };
+        let mut want = (claude.build_argv)(&ctx);
+        want.extend(extra.clone());
+        assert_eq!(argv_with_caller_args(claude, &ctx, &extra), want);
     }
 
     #[test]

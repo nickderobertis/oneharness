@@ -36167,6 +36167,158 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
 }
 
 #[test]
+fn history_watch_session_labels_pick_a_running_session_by_name() {
+    // A name plus labels resolves a session still in its first turn — no
+    // closing record states its labels yet — and never pins one whose labels
+    // differ: an older, closed `gamma` under `team=x` beside a newer `gamma`
+    // still running under `team=y`, each composition following its own.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let mock_profile = mock_profile_redirect();
+    let dir = hist_dir("watch-session-running-labels");
+    let ds = dir.display().to_string();
+    let bin = bin_override("codex");
+    let closed = run_within(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "gamma",
+            "--bin",
+            &bin,
+            "--stream",
+            "--format",
+            "json",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "gamma",
+            "--history-label",
+            "team=x",
+            "--bypass",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+        LIMIT,
+    );
+    assert!(closed.status.success(), "{closed:?}");
+    let closed_session = String::from_utf8_lossy(&closed.stdout)
+        .lines()
+        .last()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .map(|report| raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0))
+        .unwrap();
+
+    // Sessions order newest first by their start second: the running `gamma`
+    // starts in a later one, so it is the name's newest session.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut running = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", CODEX_EXEC_TURN)
+        // Six recorded events this far apart keep the turn going for seconds
+        // after its first event lands.
+        .env("MOCK_STREAM_DELAY_MS", "500")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "gamma",
+            "--bin",
+            &bin,
+            "--stream",
+            "--format",
+            "json",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "gamma",
+            "--history-label",
+            "team=y",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the running session");
+    let scope = ["--all-projects", "--history-dir", ds.as_str()];
+    let deadline = std::time::Instant::now() + LIMIT;
+    let running_id = loop {
+        let listed = json_stdout(&run_within(
+            &[&["history", "list", "--format", "json"][..], &scope[..]].concat(),
+            &[],
+            LIMIT,
+        ));
+        if let Some(session) = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["running"] == true)
+        {
+            break session["id"].as_str().unwrap().to_string();
+        }
+        if std::time::Instant::now() >= deadline {
+            running.kill().expect("stop the run this test started");
+            running.wait().expect("reap the run");
+            panic!("the running session never appeared: {listed}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_ne!(running_id, closed_session["session"].as_str().unwrap());
+
+    let watch = |label: &str| {
+        spawn_watch(
+            &[
+                &["--session", "gamma", "--label", label, "--events"][..],
+                &scope[..],
+            ]
+            .concat(),
+        )
+    };
+    // Both watchers resolve the name while the newer `gamma` is running.
+    let older = watch("team=x");
+    let newer = watch("team=y");
+    assert!(
+        running.try_wait().unwrap().is_none(),
+        "the turn ended before the watchers resolved the name"
+    );
+
+    // `team=x` follows the closed session: its one event, then its record —
+    // nothing from the running `gamma` beside it.
+    let watched = watch_output(older, 2);
+    assert_eq!(watched.len(), 2, "{watched:#?}");
+    let event: Value = serde_json::from_str(&watched[0]).unwrap();
+    assert_eq!(event["line"]["run_id"], closed_session["history_id"]);
+    let record: Value = serde_json::from_str(&watched[1]).unwrap();
+    assert_eq!(record["record"]["session"], closed_session["session"]);
+
+    // `team=y` follows the running session: every event of its turn, then the
+    // closing record that states the labels it was resolved by.
+    let watched = watch_output(newer, CODEX_EXEC_TURN_TEXT.len() + 1);
+    assert!(running.wait().unwrap().success());
+    assert_eq!(
+        watched.len(),
+        CODEX_EXEC_TURN_TEXT.len() + 1,
+        "{watched:#?}"
+    );
+    let lines: Vec<Value> = watched
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let (record, events) = lines.split_last().unwrap();
+    for event in events {
+        assert_eq!(event["type"], "event", "{event}");
+        assert_eq!(event["line"]["session_name"], "gamma", "{event}");
+        assert_ne!(event["line"]["run_id"], closed_session["history_id"]);
+    }
+    assert_eq!(record["type"], "record", "{record}");
+    assert_eq!(record["record"]["session"], running_id.as_str());
+    assert_eq!(record["record"]["labels"]["team"], "y");
+}
+
+#[test]
 fn agent_messages_and_reasoning_reach_history_for_codex_and_claude() {
     for (harness, recording, kinds) in [
         (

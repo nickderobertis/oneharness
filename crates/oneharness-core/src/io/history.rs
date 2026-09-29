@@ -791,8 +791,8 @@ impl HistoryWatcher {
     /// [`open`](Self::open), narrowed to one session when `session` names one:
     /// a session id (its file stem) selects that session; any other value is a
     /// session name, which selects the newest session carrying it in scope
-    /// whose labels match `labels` — a run still in its first turn, whose
-    /// labels no record states yet, included — or, when none exists yet, the
+    /// whose labels match `labels` — a run still in its first turn included,
+    /// by the labels its events were indexed under — or, when none exists yet, the
     /// first matching one to appear. A name is non-unique, so the labels pick
     /// among its sessions rather than filtering only the newest one to nothing.
     /// Labels and project scope still apply on top.
@@ -810,13 +810,30 @@ impl HistoryWatcher {
                 id: Some(id.to_string()),
             }),
             Some(HistorySessionSelector::Name(name)) => {
-                let id = list_sessions(dir, project_slug.as_deref())?
-                    .into_iter()
-                    .find(|summary| {
-                        summary.name == name.as_str()
-                            && (summary.record_count == 0 || summary.labels.matches(&labels))
-                    })
-                    .map(|summary| summary.id);
+                // A session still in its first turn has no closing record to
+                // state its labels yet; its event-index entries carry them.
+                let mut running_labels: Option<BTreeMap<String, HistoryLabels>> = None;
+                let mut id = None;
+                for summary in list_sessions(dir, project_slug.as_deref())? {
+                    if summary.name != name.as_str() {
+                        continue;
+                    }
+                    let matched = if summary.record_count == 0 {
+                        if running_labels.is_none() {
+                            running_labels = Some(event_index_labels(dir)?);
+                        }
+                        running_labels
+                            .as_ref()
+                            .and_then(|known| known.get(&summary.id))
+                            .is_none_or(|known| known.matches(&labels))
+                    } else {
+                        summary.labels.matches(&labels)
+                    };
+                    if matched {
+                        id = Some(summary.id);
+                        break;
+                    }
+                }
                 Some(SessionFilter {
                     selector: HistorySessionSelector::Name(name.clone()),
                     id,
@@ -1317,6 +1334,22 @@ fn append_event_index_entry(dir: &Path, entry: &HistoryEventIndexEntry) -> std::
     })();
     let unlock = FileExt::unlock(&lock);
     result.and(unlock)
+}
+
+/// The labels each session's event lines were indexed under, by session id
+/// (the session file's stem).
+fn event_index_labels(dir: &Path) -> Result<BTreeMap<String, HistoryLabels>, OneharnessError> {
+    let (entries, _) = reconcile_event_index(dir)?;
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| {
+            let stem = Path::new(&entry.session_path)
+                .file_stem()?
+                .to_str()?
+                .to_string();
+            Some((stem, entry.labels))
+        })
+        .collect())
 }
 
 fn reconcile_event_index(

@@ -11,10 +11,10 @@ export interface HistoryWatchOptions {
   after?: string | undefined;
   allProjects?: boolean | undefined;
   /**
-   * Load configuration from exactly this file, skipping user/project
-   * discovery.
+   * Load configuration from exactly these files, in order, skipping
+   * user/project discovery; each later file overrides the earlier ones.
    */
-  config?: string | undefined;
+  config?: string[] | undefined;
   events?: boolean | undefined;
   historyDir?: string | undefined;
   labels?: HistoryLabels | undefined;

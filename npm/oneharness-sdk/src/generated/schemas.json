@@ -196,7 +196,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -495,7 +495,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -666,7 +666,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -710,7 +710,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -772,7 +772,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -868,7 +868,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -1048,7 +1048,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -1106,7 +1106,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -1181,7 +1181,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -1239,7 +1239,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -1278,7 +1278,7 @@
         {
           "option": "config",
           "flag": "--config",
-          "kind": "value",
+          "kind": "repeated",
           "unless": "noConfig",
           "unless_resolution": "refuse"
         },
@@ -3796,7 +3796,11 @@
         }
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "control": {
         "description": "Open the out-of-band turn-control socket, so a separate `interrupt()`\ncan abort the in-flight turn without killing this run.",
@@ -4105,8 +4109,11 @@
             "type": "boolean"
           },
           "config": {
-            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-            "type": "string"
+            "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "historyDir": {
             "type": "string"
@@ -4145,8 +4152,11 @@
             "type": "boolean"
           },
           "config": {
-            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-            "type": "string"
+            "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "historyDir": {
             "type": "string"
@@ -4185,8 +4195,11 @@
         "type": "boolean"
       },
       "config": {
-        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "historyDir": {
         "type": "string"
@@ -4221,8 +4234,11 @@
         "type": "boolean"
       },
       "config": {
-        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "events": {
         "type": "boolean"
@@ -15907,7 +15923,11 @@
         }
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "exclude": {
         "type": "array",
@@ -15938,7 +15958,11 @@
     "type": "object",
     "properties": {
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "cwd": {
         "type": "string"
@@ -16593,7 +16617,11 @@
         "type": "boolean"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "cwd": {
         "type": "string"
@@ -16872,7 +16900,11 @@
         }
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "cwd": {
         "type": "string"
@@ -17612,7 +17644,11 @@
         "type": "boolean"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "historyDir": {
         "type": "string"
@@ -17710,7 +17746,11 @@
     "type": "object",
     "properties": {
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
       },
       "historyDir": {
         "type": "string"

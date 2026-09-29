@@ -271,8 +271,11 @@ pub struct RunRequest {
     pub mode: Option<PermissionMode>,
     /// Silence the warning that the chosen mode may block on an approval prompt.
     pub permit_prompts: bool,
-    /// Load configuration from this file only (skip user/project discovery).
-    pub config: Option<PathBuf>,
+    /// Load configuration from exactly these files, in order, skipping
+    /// user/project discovery — the repeatable `--config` flag. Each later file
+    /// (its own `extends` chain beneath it) overrides the earlier ones; empty
+    /// means discovery. See [`crate::io::config::load_layers`].
+    pub config: Vec<PathBuf>,
     /// Ignore all configuration files and `ONEHARNESS_*` overrides.
     pub no_config: bool,
     /// Maximum harnesses (or batch prompts) to run concurrently.
@@ -525,7 +528,7 @@ pub fn run_supervised(
         Some(dir) => dir.clone(),
         None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
-    let loaded = config_io::load(args.config.as_deref(), args.no_config, &project_start)?;
+    let loaded = config_io::load(&args.config, args.no_config, &project_start)?;
     let cfg = &loaded.config;
 
     // stdin can be consumed only once total, so `--prompt-file -` and

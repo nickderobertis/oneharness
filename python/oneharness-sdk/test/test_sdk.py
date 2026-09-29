@@ -94,7 +94,7 @@ POPULATED: dict[str, Any] = {
     "batchStrategy": "speed",
     "bins": {"codex": "/bin/codex"},
     "check": True,
-    "config": "/nowhere/oneharness.toml",
+    "config": ["/nowhere/defaults.toml", "/nowhere/oneharness.toml"],
     "control": True,
     "cwd": "/nowhere",
     "denyIfContains": "rm -rf",
@@ -564,6 +564,21 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("oneharness.toml", report["harnesses"]["source"])
         self.assertEqual(report["mode"]["value"], "bypass")
 
+    async def test_config_layers_each_path_as_its_own_config_later_winning(self) -> None:
+        """Pass each config path as its own `--config`, a later file winning."""
+        directory = scratch(self, "config-layers")
+        defaults = directory / "defaults.toml"
+        user = directory / "user-layer.toml"
+        defaults.write_text('mode = "read-only"\ntimeout = 9\n', encoding="utf-8")
+        user.write_text('mode = "auto"\n', encoding="utf-8")
+        with without_ambient_overrides():
+            report = await self.layered(directory).config(
+                {"cwd": str(directory), "config": [str(defaults), str(user)]}
+            )
+        self.assertEqual(report["config_files"], [str(defaults), str(user)])
+        self.assertEqual(report["mode"], {"value": "auto", "source": str(user)})
+        self.assertEqual(report["timeout"], {"value": 9, "source": str(defaults)})
+
     async def test_sync_plans_then_writes_a_harness_policy_file(self) -> None:
         """Report what a check would change, write it, then change nothing."""
         project = scratch(self, "sync")
@@ -728,7 +743,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             ContractError, r"`config` and `no_config` are mutually exclusive"
         ):
             await client.run(
-                {"prompt": "never spawned", "config": "oneharness.toml", "no_config": True}
+                {"prompt": "never spawned", "config": ["oneharness.toml"], "no_config": True}
             )
         with self.assertRaisesRegex(
             ContractError, r"`history` and `no_history` are mutually exclusive"

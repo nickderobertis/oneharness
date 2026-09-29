@@ -1,0 +1,155 @@
+{
+  "schema_version": "0.11",
+  "config_files": [
+    "<dir>/base.toml",
+    "<dir>/single.toml",
+    "environment"
+  ],
+  "all": {
+    "value": null,
+    "source": null
+  },
+  "harnesses": {
+    "value": [
+      "claude-code"
+    ],
+    "source": "<dir>/single.toml"
+  },
+  "exclude": {
+    "value": null,
+    "source": null
+  },
+  "model": {
+    "value": "m",
+    "source": "<dir>/single.toml"
+  },
+  "models": {
+    "value": null,
+    "source": null
+  },
+  "system": {
+    "value": null,
+    "source": null
+  },
+  "reasoning": {
+    "value": null,
+    "source": null
+  },
+  "bypass": {
+    "value": false,
+    "source": "default"
+  },
+  "mode": {
+    "value": "read-only",
+    "source": "<dir>/single.toml"
+  },
+  "timeout": {
+    "value": 30,
+    "source": "<dir>/base.toml"
+  },
+  "output_format": {
+    "value": null,
+    "source": null
+  },
+  "stream": {
+    "value": false,
+    "source": "default"
+  },
+  "schema_file": {
+    "value": null,
+    "source": null
+  },
+  "schema_max_retries": {
+    "value": null,
+    "source": null
+  },
+  "server_overloaded_max_retries": {
+    "value": 2,
+    "source": "default"
+  },
+  "max_parallel": {
+    "value": 3,
+    "source": "environment"
+  },
+  "run_mode": {
+    "value": "fallback",
+    "source": "default"
+  },
+  "require_available": {
+    "value": false,
+    "source": "default"
+  },
+  "history": {
+    "value": false,
+    "source": "default"
+  },
+  "history_dir": {
+    "value": null,
+    "source": null
+  },
+  "history_pointer_file": {
+    "value": null,
+    "source": null
+  },
+  "history_labels": {},
+  "allowed_tools": {
+    "value": null,
+    "source": null
+  },
+  "denied_tools": {
+    "value": null,
+    "source": null
+  },
+  "hooks": {
+    "value": null,
+    "source": null
+  },
+  "env": {
+    "OWN": {
+      "value": "single",
+      "source": "<dir>/single.toml"
+    },
+    "SHARED": {
+      "value": "base",
+      "source": "<dir>/base.toml"
+    }
+  },
+  "harness": {
+    "claude-code": {
+      "model": {
+        "value": "hm",
+        "source": "<dir>/single.toml"
+      },
+      "reasoning": {
+        "value": null,
+        "source": null
+      },
+      "bin": {
+        "value": null,
+        "source": null
+      },
+      "args": {
+        "value": null,
+        "source": null
+      },
+      "allowed_tools": {
+        "value": null,
+        "source": null
+      },
+      "denied_tools": {
+        "value": null,
+        "source": null
+      },
+      "hooks": {
+        "value": null,
+        "source": null
+      },
+      "settings": {
+        "value": null,
+        "source": null
+      },
+      "env": {},
+      "variant": {}
+    }
+  }
+}

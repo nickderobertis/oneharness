@@ -99,11 +99,8 @@ fn stream_origin(args: &RunArgs) -> Result<Option<StreamOrigin>, OneharnessError
         Some(dir) => dir.clone(),
         None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
-    let layers = oneharness_core::io::config::load_layers(
-        args.config.as_deref(),
-        args.no_config,
-        &project_start,
-    )?;
+    let layers =
+        oneharness_core::io::config::load_layers(&args.config, args.no_config, &project_start)?;
     let stream = config::explain(&layers).stream;
     Ok(match (stream.value, stream.source) {
         (Some(true), Some(source)) if source == config::ENV_SOURCE => {
@@ -770,6 +767,8 @@ mod tests {
             "--permit-prompts",
             "--config",
             "c.toml",
+            "--config",
+            "d.toml",
             "--max-parallel",
             "3",
             "--batch-strategy",
@@ -839,8 +838,11 @@ mod tests {
         assert_eq!(request.mode, Some(PermissionMode::Plan));
         assert!(request.permit_prompts);
         assert_eq!(
-            request.config.as_deref(),
-            Some(std::path::Path::new("c.toml"))
+            request.config,
+            [
+                std::path::PathBuf::from("c.toml"),
+                std::path::PathBuf::from("d.toml")
+            ]
         );
         assert!(!request.no_config);
         assert_eq!(request.max_parallel, Some(3));

@@ -8,7 +8,11 @@ export interface SyncOptions {
    * Report what would change and write nothing.
    */
   check?: boolean | undefined;
-  config?: string | undefined;
+  /**
+   * Load configuration from exactly these files, in order, skipping
+   * user/project discovery; each later file overrides the earlier ones.
+   */
+  config?: string[] | undefined;
   cwd?: string | undefined;
   /**
    * Hold each harness's allow/deny list to exactly the configured one:

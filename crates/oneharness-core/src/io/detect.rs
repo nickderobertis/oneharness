@@ -190,8 +190,11 @@ pub struct DetectRequest {
     pub exclude: Vec<String>,
     /// `--bin ID=PATH` overrides, in the CLI's own spelling.
     pub bin: Vec<String>,
-    /// Load configuration from exactly this file, skipping discovery.
-    pub config: Option<PathBuf>,
+    /// Load configuration from exactly these files, in order, skipping
+    /// user/project discovery — the repeatable `--config` flag. Each later file
+    /// (its own `extends` chain beneath it) overrides the earlier ones; empty
+    /// means discovery. See [`crate::io::config::load_layers`].
+    pub config: Vec<PathBuf>,
     /// Ignore every configuration file.
     pub no_config: bool,
     /// Where project-config discovery starts. `None` means the process's
@@ -250,7 +253,7 @@ pub fn detect(request: &DetectRequest) -> Result<DetectReport, OneharnessError> 
             &fallback
         }
     };
-    let loaded = crate::io::config::load(request.config.as_deref(), request.no_config, start)?;
+    let loaded = crate::io::config::load(&request.config, request.no_config, start)?;
     for id in request.harness.iter().chain(&request.exclude) {
         if let Some((base, variant)) = id.split_once(':') {
             if loaded.config.variant_for(id).is_none() {

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Migration: repeatable config files
+
+Explicit configuration is now a list of files, layered in order with each later
+file (its own `extends` chain beneath it) overriding the earlier ones.
+
+- `RunRequest`, `ListRequest`, `DetectRequest`, `SyncRequest` and
+  `UsageRequest`: `config: Some(path)` becomes `config: vec![path]`, and
+  `config: None` becomes `config: Vec::new()` (an empty list still means
+  user/project discovery).
+- `io::config::load(Some(&path), no_config, start)` becomes
+  `load(&[path], no_config, start)`, and `load(None, …)` becomes
+  `load(&[], …)`; `load_layers` changes the same way.
+
 ## [0.19.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.18.0...oneharness-core-v0.19.0) - 2026-09-29
 
 ### Added

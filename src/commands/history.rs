@@ -41,11 +41,7 @@ fn pointers(args: &HistoryPointersArgs) -> Result<i32, OneharnessError> {
 }
 
 fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
-    let dir = resolve_dir(
-        args.history_dir.as_deref(),
-        args.config.as_deref(),
-        args.no_config,
-    )?;
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let report = history_io::HistoryMigrateReport::new(history_io::migrate(&dir)?);
     print_report(&report, args.stdout, render_migrate_text)?;
     Ok(EXIT_OK)
@@ -54,11 +50,7 @@ fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
 fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     use std::time::Duration;
 
-    let dir = resolve_dir(
-        args.history_dir.as_deref(),
-        args.config.as_deref(),
-        args.no_config,
-    )?;
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let after = args
         .after
         .as_deref()
@@ -188,7 +180,7 @@ fn write_watch_envelopes(
 /// a consumer never silently reads the wrong (or no) store.
 fn resolve_dir(
     history_dir: Option<&Path>,
-    config: Option<&Path>,
+    config: &[PathBuf],
     no_config: bool,
 ) -> Result<PathBuf, OneharnessError> {
     let configured = match history_dir {
@@ -218,11 +210,7 @@ fn project_slug(all_projects: bool, project: Option<&Path>) -> Option<String> {
 }
 
 fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
-    let dir = resolve_dir(
-        args.history_dir.as_deref(),
-        args.config.as_deref(),
-        args.no_config,
-    )?;
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
     let mut sessions = history_io::list_sessions(&dir, slug.as_deref())?;
     if let Some(variant) = &args.variant {
@@ -239,11 +227,7 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
 }
 
 fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
-    let dir = resolve_dir(
-        args.history_dir.as_deref(),
-        args.config.as_deref(),
-        args.no_config,
-    )?;
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     // A UUID is an exact record lookup, independent of session names and project
     // scoping. Preserve the existing id-or-name session lookup for every other
     // spelling.
@@ -326,11 +310,7 @@ fn render_record_values(
 fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
     // Settled before anything is removed: a contradictory flag pair must not
     // cost a `--yes` its sessions.
-    let dir = resolve_dir(
-        args.history_dir.as_deref(),
-        args.config.as_deref(),
-        args.no_config,
-    )?;
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
 
     let report = if args.yes {

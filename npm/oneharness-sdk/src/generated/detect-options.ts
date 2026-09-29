@@ -8,7 +8,11 @@ export interface DetectOptions {
   bins?: {
     [k: string]: string;
   } | undefined;
-  config?: string | undefined;
+  /**
+   * Load configuration from exactly these files, in order, skipping
+   * user/project discovery; each later file overrides the earlier ones.
+   */
+  config?: string[] | undefined;
   exclude?: string[] | undefined;
   harnesses?: string[] | undefined;
   noConfig?: boolean | undefined;

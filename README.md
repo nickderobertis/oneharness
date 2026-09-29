@@ -466,8 +466,9 @@ Useful `run` flags:
   so `--bin claude-code=<path>` covers `claude-code:work` and still beats that
   variant's own env key and config-file `bin`.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
-- `--config <path>` / `--no-config` — load exactly one config file / ignore all
-  config files (see below).
+- `--config <path>` (repeatable) / `--no-config` — load exactly the named
+  config files, each later file overriding the earlier ones / ignore all config
+  files (see below).
 - `--format <text|json>` / `--compact` — see the next section.
 
 ### `--format` and `--compact`
@@ -522,6 +523,11 @@ precedence first:
    else the current directory), with its `extends` chain.
 4. **Environment overrides** — `ONEHARNESS_<FIELD>` variables (see below); beat
    every config file.
+
+Naming files with `--config` replaces steps 2 and 3: the named files are the
+only file layers, in the order given, so the order is `built-ins → --config A
+(A's own extends chain immediately beneath A) → --config B (B's chain beneath
+B) → … → ONEHARNESS_* → flags`.
 5. **CLI flags** — always win.
 
 Every top-level field with a `run` flag also has a standard
@@ -583,7 +589,7 @@ model = "claude-opus-4-8"
 - **Scope.** `extends` is top-level only: inside `[harness.<id>]` or a variant
   it is an unknown field and refused. Precedence is otherwise unchanged — the
   environment overrides and CLI flags beat every file, parents included — and
-  `--config <file>` loads that file and its chain with no discovery.
+  each `--config <file>` loads that file and its chain with no discovery.
 - **Provenance.** Each file of a chain is its own layer, so `oneharness config`
   attributes an inherited value to the parent file it was written in, and
   `config_files` (in `config` and in the run report) lists every file of the
@@ -933,7 +939,15 @@ The merge is deliberately conservative:
   cannot express (Codex) is surfaced the same way in `unmapped_rules`.
 
 To opt out: `--config <path>` loads exactly that file and skips discovery (the
-`ONEHARNESS_<FIELD>` overrides still apply on top); `--no-config` (or
+`ONEHARNESS_<FIELD>` overrides still apply on top). It is repeatable: each
+named file is its own layer, later files overriding earlier ones per field, so
+a program wrapping oneharness can put its defaults first and its user's config
+after (`--config wrapper-defaults.toml --config user.toml`) and the user's
+values win without the wrapper forcing any flag. `$ONEHARNESS_CONFIG` stays the
+single user-level file of discovery; several files come only from `--config`
+(or `config: Vec<PathBuf>` on the library's request structs, where an empty
+list means discovery). `config_files` and `oneharness config` list every file in
+layering order, each value attributed to the file that set it. `--no-config` (or
 `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test suites) ignores every
 config file **and** the env overrides, leaving only flags and defaults. `detect`
 honors the configured `bin`s too, so it probes the same binaries `run` would

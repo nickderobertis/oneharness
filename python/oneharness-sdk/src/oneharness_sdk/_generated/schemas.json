@@ -5,7 +5,11 @@
     "description": "Options accepted by the language SDKs' `config()`.",
     "properties": {
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "cwd": {
         "type": "string"
@@ -665,7 +669,11 @@
         "type": "object"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "exclude": {
         "items": {
@@ -784,7 +792,11 @@
         "type": "boolean"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "history_dir": {
         "type": "string"
@@ -2944,8 +2956,11 @@
         "type": "boolean"
       },
       "config": {
-        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "history_dir": {
         "type": "string"
@@ -2979,8 +2994,11 @@
             "type": "boolean"
           },
           "config": {
-            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-            "type": "string"
+            "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "history_dir": {
             "type": "string"
@@ -3019,8 +3037,11 @@
             "type": "boolean"
           },
           "config": {
-            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-            "type": "string"
+            "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "history_dir": {
             "type": "string"
@@ -3068,7 +3089,11 @@
     "description": "Options accepted by the language SDKs' `historyMigrate()`.",
     "properties": {
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "history_dir": {
         "type": "string"
@@ -12482,8 +12507,11 @@
         "type": "boolean"
       },
       "config": {
-        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "events": {
         "type": "boolean"
@@ -13167,7 +13195,11 @@
         "type": "object"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "control": {
         "description": "Open the out-of-band turn-control socket, so a separate `interrupt()`\ncan abort the in-flight turn without killing this run.",
@@ -15805,7 +15837,11 @@
         "type": "boolean"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "cwd": {
         "type": "string"
@@ -16068,7 +16104,11 @@
         "type": "object"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "cwd": {
         "type": "string"

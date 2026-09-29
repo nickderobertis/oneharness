@@ -35776,11 +35776,9 @@ fn without_run_varying_values(value: &mut Value) {
 /// Everything a `history watch` child printed, read `lines` deep and then to
 /// its end once it is stopped: the watch never ends by itself, so after the
 /// expected lines it is given a moment to print anything it should not, then
-/// killed (this test started it) and drained.
-/// The watcher's first `lines` lines, then whatever else it printed in the
-/// moment after. A watcher that never prints what it was expected to fails the
-/// test at a deadline rather than blocking it forever: it is stopped, and the
-/// lines it did print are in the message.
+/// killed (this test started it) and drained. A watcher that never prints what
+/// it was expected to fails the test at a deadline rather than blocking it
+/// forever: it is stopped, and the lines it did print are in the message.
 fn watch_output(mut watcher: std::process::Child, lines: usize) -> Vec<String> {
     use std::io::BufReader;
     use std::sync::mpsc;

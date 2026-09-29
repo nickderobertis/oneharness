@@ -208,7 +208,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
 | `--mode` | `mode` | `--flag VALUE` |
 | `--permit-prompts` | `permitPrompts` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--max-parallel` | `maxParallel` | `--flag VALUE` |
 | `--batch-strategy` | `batchStrategy` | `--flag VALUE` |
@@ -262,7 +262,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--env` | `env` | `--flag KEY=VALUE` per entry |
 | `--mode` | `mode` | `--flag VALUE` |
 | `--permit-prompts` | `permitPrompts` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--max-parallel` | `maxParallel` | `--flag VALUE` |
 | `--batch-strategy` | `batchStrategy` | `--flag VALUE` |
@@ -299,7 +299,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all` | `all` | `--flag` when true (refused beside `harnesses`) |
 | `--exclude` | `exclude` | `--flag VALUE` per element |
 | `--bin` | `bins` | `--flag KEY=VALUE` per entry |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 | `--require-available` | `requireAvailable` | `--flag` when true |
 
@@ -310,7 +310,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--compact` | _(always sent)_ | fixed |
 | `--format` | _(always sent)_ | fixed |
 | `--cwd` | `cwd` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `sync` — `oneharness sync`
@@ -324,7 +324,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--check` | `check` | `--flag` when true |
 | `--exact` | `exact` | `--flag` when true |
 | `--global` | `global` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `init` — `oneharness init`
@@ -346,7 +346,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--bin` | `bins` | `--flag KEY=VALUE` per entry |
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--timeout` | `timeoutSeconds` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `gate` — `oneharness gate`
@@ -388,7 +388,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyList` — `oneharness history list`
@@ -401,7 +401,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyWatch` — `oneharness history watch`
@@ -417,7 +417,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--events` | `events` | `--flag` when true |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyClear` — `oneharness history clear`
@@ -430,7 +430,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--yes` | `yes` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyMigrate` — `oneharness history migrate`
@@ -440,7 +440,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--compact` | _(always sent)_ | fixed |
 | `--format` | _(always sent)_ | fixed |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
-| `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyPointers` — `oneharness history pointers`

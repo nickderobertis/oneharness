@@ -27,10 +27,12 @@ const MAX_EXTENDS_CHAIN: usize = 32;
 /// The fully layered configuration plus the files it actually came from.
 #[derive(Debug, Default)]
 pub struct LoadedConfig {
-    /// User and project files merged (project wins per field).
+    /// Every layer merged, each later one winning per field.
     pub config: FileConfig,
-    /// Paths loaded, in layering order (user first, project last; each file's
-    /// `extends` parents immediately before it, deepest ancestor first).
+    /// Paths loaded, in layering order (the explicit files in the order given,
+    /// or user first and project last under discovery; each file's `extends`
+    /// parents immediately before it, deepest ancestor first; `environment`
+    /// last when any `ONEHARNESS_*` override is set).
     /// Surfaced in the run report so a consumer can see which files shaped a
     /// run.
     pub files: Vec<String>,
@@ -39,7 +41,7 @@ pub struct LoadedConfig {
 /// Load the effective config for an invocation: [`load_layers`], folded with
 /// the domain's per-field merge.
 pub fn load(
-    explicit: Option<&Path>,
+    explicit: &[PathBuf],
     no_config: bool,
     project_start: &Path,
 ) -> Result<LoadedConfig, OneharnessError> {
@@ -52,13 +54,13 @@ pub fn load(
 }
 
 /// Locate and parse the config layers for an invocation, in layering order
-/// (user first, project last). `oneharness config` consumes the layers
+/// (the explicit files in the order given, else user first and project last). `oneharness config` consumes the layers
 /// directly to attribute each value to its file; `run`/`detect` use [`load`].
 ///
 /// Every file loaded here — explicit, user or project — has its `extends`
 /// chain followed: each parent becomes its own layer immediately below the
 /// file declaring it, named by its own path, so the chain folds through the
-/// same [`config::merge`] as the user/project pair and `oneharness config`
+/// same [`config::merge`] as every other pair of layers and `oneharness config`
 /// attributes an inherited value to the file it was written in. A relative
 /// `extends` resolves against the declaring file's directory; an absolute one
 /// is used as written. A parent that cannot be read, a cycle, or a chain past
@@ -68,9 +70,13 @@ pub fn load(
 /// - `no_config` (or `ONEHARNESS_NO_CONFIG=1`) loads nothing — neither files
 ///   nor the `ONEHARNESS_*` environment overrides — so a hermetic run sees only
 ///   CLI flags and built-in defaults.
-/// - `explicit` (`--config <path>`) loads exactly that file — no discovery —
-///   and a missing file is an error, since the user named it.
-/// - Otherwise: the user-level file (`$ONEHARNESS_CONFIG`, else the platform
+/// - A non-empty `explicit` (each `--config <path>`, repeatable) loads exactly
+///   those files — no discovery — in the order given, each file (its own
+///   `extends` chain immediately beneath it) layered over the ones before it,
+///   so a later file overrides an earlier one per field. A missing file is an
+///   error, since the caller named it. A wrapper puts its defaults first and
+///   its user's config after.
+/// - Otherwise (empty `explicit`): the user-level file (`$ONEHARNESS_CONFIG`, else the platform
 ///   config dir) layered under the project-level file (`oneharness.toml` /
 ///   `.oneharness.toml`, walking up from `project_start`). A missing
 ///   discovered file is simply an absent layer, never an error.
@@ -80,7 +86,7 @@ pub fn load(
 /// file (an explicit `--config` included). CLI flags, applied by each command
 /// after this, still beat them — giving CLI > env > files > defaults.
 pub fn load_layers(
-    explicit: Option<&Path>,
+    explicit: &[PathBuf],
     no_config: bool,
     project_start: &Path,
 ) -> Result<Vec<(String, FileConfig)>, OneharnessError> {
@@ -89,8 +95,10 @@ pub fn load_layers(
     }
 
     let mut layers = Vec::new();
-    if let Some(path) = explicit {
-        layers.extend(with_parents(path.to_path_buf(), read_required(path)?)?);
+    if !explicit.is_empty() {
+        for path in explicit {
+            layers.extend(with_parents(path.clone(), read_required(path)?)?);
+        }
     } else {
         if let Some(path) = user_config_path()? {
             if let Some(user) = read_optional(&path)? {
@@ -351,7 +359,7 @@ mod tests {
             ],
         );
         let child = dir.join("roles/child.toml");
-        let loaded = load(Some(&child), false, &dir).unwrap();
+        let loaded = load(&[child.clone()], false, &dir).unwrap();
         // Each parent resolves against its declaring file's own directory, joined
         // the way the platform joins it (`roles\../shared/mid/mid.toml` on Windows).
         let mid = dir.join("roles").join("../shared/mid/mid.toml");
@@ -383,7 +391,7 @@ mod tests {
             format!("extends = {:?}", base.display().to_string()),
         )
         .unwrap();
-        let loaded = load(Some(&child), false, &dir).unwrap();
+        let loaded = load(&[child.clone()], false, &dir).unwrap();
         assert_eq!(loaded.config.model.as_deref(), Some("base"));
         assert_eq!(loaded.files[0], base.display().to_string());
     }
@@ -399,7 +407,7 @@ mod tests {
             ],
         );
         let a = dir.join("a.toml");
-        let (path, message) = invalid(load(Some(&a), false, &dir).unwrap_err());
+        let (path, message) = invalid(load(&[a.clone()], false, &dir).unwrap_err());
         assert_eq!(path, dir.join("b.toml").display().to_string());
         let chain = format!(
             "{} -> {} -> {}",
@@ -412,7 +420,7 @@ mod tests {
 
         // A file naming itself is the shortest cycle.
         plant(&dir, &[("self.toml", "extends = \"self.toml\"")]);
-        let (_, message) = invalid(load(Some(&dir.join("self.toml")), false, &dir).unwrap_err());
+        let (_, message) = invalid(load(&[dir.join("self.toml")], false, &dir).unwrap_err());
         assert!(message.contains("closes a cycle"), "{message}");
     }
 
@@ -427,7 +435,7 @@ mod tests {
             .unwrap();
         }
         let first = dir.join("0.toml");
-        let (path, message) = invalid(load(Some(&first), false, &dir).unwrap_err());
+        let (path, message) = invalid(load(&[first.clone()], false, &dir).unwrap_err());
         assert_eq!(path, first.display().to_string());
         assert!(
             message.contains(&format!("longer than {MAX_EXTENDS_CHAIN} files")),
@@ -451,7 +459,7 @@ mod tests {
             "model = \"last\"",
         )
         .unwrap();
-        let loaded = load(Some(&first), false, &dir).unwrap();
+        let loaded = load(&[first.clone()], false, &dir).unwrap();
         assert_eq!(loaded.config.model.as_deref(), Some("last"));
     }
 
@@ -463,14 +471,14 @@ mod tests {
         // The parent resolves against the declaring file's own directory, joined
         // the way the platform joins it (`sub\../gone.toml` on Windows).
         let parent = dir.join("sub").join("../gone.toml").display().to_string();
-        let (path, message) = invalid(load(Some(&child), false, &dir).unwrap_err());
+        let (path, message) = invalid(load(&[child.clone()], false, &dir).unwrap_err());
         assert_eq!(path, child.display().to_string());
         assert!(message.contains(&parent), "{message}");
         assert!(message.contains("could not be read"), "{message}");
 
         // A parent that exists but does not parse names the parent itself.
         plant(&dir, &[("gone.toml", "modle = 1")]);
-        let (path, _) = invalid(load(Some(&child), false, &dir).unwrap_err());
+        let (path, _) = invalid(load(&[child.clone()], false, &dir).unwrap_err());
         assert_eq!(path, parent);
     }
 
@@ -489,7 +497,7 @@ mod tests {
         );
         let nested = dir.join("x");
         std::fs::create_dir_all(&nested).unwrap();
-        let layers = load_layers(None, false, &nested).unwrap();
+        let layers = load_layers(&[], false, &nested).unwrap();
         let names: Vec<&str> = layers.iter().map(|(p, _)| p.as_str()).collect();
         let base = dir.join("conf/base.toml").display().to_string();
         let project = dir.join("oneharness.toml").display().to_string();

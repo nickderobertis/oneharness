@@ -275,9 +275,14 @@ pub struct SyncRequest {
     pub check: bool,
     /// Install hooks into the user-global location instead of the project.
     pub global: bool,
-    /// Load configuration from exactly this file, skipping discovery.
-    pub config: Option<PathBuf>,
-    /// Ignore every configuration file.
+    /// Load configuration from exactly these files, in order, skipping
+    /// user/project discovery — the repeatable `--config` flag. Each later file
+    /// (its own `extends` chain beneath it) overrides the earlier ones; empty
+    /// means discovery. See [`crate::io::config::load_layers`].
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
+    pub config: Vec<PathBuf>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. Takes
+    /// precedence over `config`: set together, no file is loaded.
     pub no_config: bool,
 }
 
@@ -428,8 +433,7 @@ pub fn sync_with(request: &SyncRequest, mode: SyncMode) -> Result<SyncReport, On
         Some(dir) => dir.clone(),
         None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
-    let loaded =
-        crate::io::config::load(request.config.as_deref(), request.no_config, &project_dir)?;
+    let loaded = crate::io::config::load(&request.config, request.no_config, &project_dir)?;
     let cfg = &loaded.config;
     let selected_ids = if request.harness.is_empty() {
         cfg.harnesses.clone().unwrap_or_default()

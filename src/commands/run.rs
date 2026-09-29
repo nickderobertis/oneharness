@@ -324,6 +324,8 @@ mod tests {
             "--permit-prompts",
             "--config",
             "c.toml",
+            "--config",
+            "d.toml",
             "--max-parallel",
             "3",
             "--batch-strategy",
@@ -393,8 +395,11 @@ mod tests {
         assert_eq!(request.mode, Some(PermissionMode::Plan));
         assert!(request.permit_prompts);
         assert_eq!(
-            request.config.as_deref(),
-            Some(std::path::Path::new("c.toml"))
+            request.config,
+            [
+                std::path::PathBuf::from("c.toml"),
+                std::path::PathBuf::from("d.toml")
+            ]
         );
         assert!(!request.no_config);
         assert_eq!(request.max_parallel, Some(3));

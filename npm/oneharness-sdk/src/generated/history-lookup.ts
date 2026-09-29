@@ -37,10 +37,10 @@ export interface HistoryLookupByLast {
   all?: boolean | undefined;
   allProjects?: boolean | undefined;
   /**
-   * Load configuration from exactly this file, skipping user/project
-   * discovery.
+   * Load configuration from exactly these files, in order, skipping
+   * user/project discovery; each later file overrides the earlier ones.
    */
-  config?: string | undefined;
+  config?: string[] | undefined;
   historyDir?: string | undefined;
   /**
    * Select the most recent session. Only `true` selects, so this variant
@@ -48,7 +48,8 @@ export interface HistoryLookupByLast {
    */
   last: true;
   /**
-   * Ignore every configuration file.
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;
@@ -70,10 +71,10 @@ export interface HistoryLookupBySession {
   all?: boolean | undefined;
   allProjects?: boolean | undefined;
   /**
-   * Load configuration from exactly this file, skipping user/project
-   * discovery.
+   * Load configuration from exactly these files, in order, skipping
+   * user/project discovery; each later file overrides the earlier ones.
    */
-  config?: string | undefined;
+  config?: string[] | undefined;
   historyDir?: string | undefined;
   /**
    * Whether the most recent session was asked for instead. An ordinary
@@ -83,7 +84,8 @@ export interface HistoryLookupBySession {
    */
   last?: boolean | undefined;
   /**
-   * Ignore every configuration file.
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;

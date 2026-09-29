@@ -239,7 +239,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -534,7 +534,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -695,7 +695,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -733,7 +733,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -789,7 +789,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -877,7 +877,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -1040,7 +1040,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -1091,7 +1091,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -1166,7 +1166,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -1217,7 +1217,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},
@@ -1249,7 +1249,7 @@ export const CAPABILITIES = {
 			{
 				option: "config",
 				flag: "--config",
-				kind: "value",
+				kind: "repeated",
 				unless: "noConfig",
 				unless_resolution: "refuse",
 			},

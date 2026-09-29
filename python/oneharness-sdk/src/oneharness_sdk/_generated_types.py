@@ -11,7 +11,7 @@ class _RunOptionsOptional(TypedDict, total=False):
     batch_prompts: Sequence[str]
     batch_strategy: str
     bins: dict[str, str]
-    config: str
+    config: Sequence[str]
     control: bool
     cwd: str
     env: dict[str, str]
@@ -58,7 +58,7 @@ class RunOptions(_RunOptionsOptional):
 
 class _HistoryListOptionsOptional(TypedDict, total=False):
     all_projects: bool
-    config: str
+    config: Sequence[str]
     history_dir: str
     no_config: bool
     project: str
@@ -72,7 +72,7 @@ class HistoryListOptions(_HistoryListOptionsOptional):
 class _HistoryWatchOptionsOptional(TypedDict, total=False):
     after: str
     all_projects: bool
-    config: str
+    config: Sequence[str]
     events: bool
     history_dir: str
     labels: dict[str, str]
@@ -89,7 +89,7 @@ class HistoryWatchOptions(_HistoryWatchOptionsOptional):
 class _DetectOptionsOptional(TypedDict, total=False):
     all: bool
     bins: dict[str, str]
-    config: str
+    config: Sequence[str]
     exclude: Sequence[str]
     harnesses: Sequence[str]
     no_config: bool
@@ -101,7 +101,7 @@ class DetectOptions(_DetectOptionsOptional):
 
 
 class _ConfigOptionsOptional(TypedDict, total=False):
-    config: str
+    config: Sequence[str]
     cwd: str
     no_config: bool
 
@@ -112,7 +112,7 @@ class ConfigOptions(_ConfigOptionsOptional):
 
 class _SyncOptionsOptional(TypedDict, total=False):
     check: bool
-    config: str
+    config: Sequence[str]
     cwd: str
     exact: bool
     global_: bool
@@ -136,7 +136,7 @@ class InitOptions(_InitOptionsOptional):
 class _UsageOptionsOptional(TypedDict, total=False):
     all: bool
     bins: dict[str, str]
-    config: str
+    config: Sequence[str]
     cwd: str
     exclude: Sequence[str]
     harnesses: Sequence[str]
@@ -180,7 +180,7 @@ class InterruptOptions(_InterruptOptionsOptional):
 
 class _HistoryClearOptionsOptional(TypedDict, total=False):
     all_projects: bool
-    config: str
+    config: Sequence[str]
     history_dir: str
     no_config: bool
     project: str
@@ -192,7 +192,7 @@ class HistoryClearOptions(_HistoryClearOptionsOptional):
 
 
 class _HistoryMigrateOptionsOptional(TypedDict, total=False):
-    config: str
+    config: Sequence[str]
     history_dir: str
     no_config: bool
 

@@ -212,7 +212,9 @@ has an ONEHARNESS_<FIELD> environment override (e.g. ONEHARNESS_MODEL,
 ONEHARNESS_TIMEOUT, ONEHARNESS_HARNESSES) that beats the files. Full precedence,
 lowest first: built-in defaults < user file < project file < environment < CLI
 flags. --no-config (or ONEHARNESS_NO_CONFIG=1) ignores files AND env overrides;
---config <path> loads exactly one file (the env overrides still apply on top).";
+--config <path> (repeatable) replaces discovery with the named files, each later
+file overriding the earlier ones and each file's `extends` chain beneath it (the
+env overrides still apply on top).";
 
 #[derive(Parser, Debug)]
 #[command(name = "oneharness", version, about = ABOUT, long_about = LONG_ABOUT)]
@@ -433,9 +435,11 @@ pub struct UsageArgs {
     )]
     pub timeout: u64,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -498,9 +502,11 @@ pub struct HistoryMigrateArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -558,9 +564,11 @@ pub struct HistoryWatchArgs {
     )]
     pub format: HistoryWatchFormat,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -590,9 +598,11 @@ pub struct HistoryListArgs {
     #[command(flatten)]
     pub stdout: StdoutFormat,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -633,9 +643,11 @@ pub struct HistoryShowArgs {
     #[command(flatten)]
     pub stdout: StdoutFormat,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -662,9 +674,11 @@ pub struct HistoryClearArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -939,9 +953,11 @@ pub struct RunArgs {
     #[arg(long)]
     pub permit_prompts: bool,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -1056,9 +1072,11 @@ pub struct ConfigArgs {
     #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -1102,9 +1120,11 @@ pub struct SyncArgs {
     #[arg(long)]
     pub global: bool,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
@@ -1189,9 +1209,11 @@ pub struct DetectArgs {
     #[arg(long = "bin", value_name = "ID=PATH")]
     pub bin: Vec<String>,
 
-    /// Load configuration from this file only (skip user/project discovery).
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
     #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
-    pub config: Option<PathBuf>,
+    pub config: Vec<PathBuf>,
 
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]

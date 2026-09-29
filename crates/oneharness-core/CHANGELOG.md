@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is history a consumer reads when upgrading, not a live copy of the stream, event, history or Rust API contracts to keep in step. Their sources are `ActionEvent`'s doc comments (generated into the SDK schemas), `domain::render`, `commands::run`'s `StreamView` and `HistoryEventLine`, each pinned by its own tests and `just sdk-check`. -->
+
 ### Changed
 
 - **Breaking:** `events` — on the live `EventSink`, in `RunReport.events` (and
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `HistoryWatchOptions::session` — a validated `HistorySessionSelector` (a
   minted session id or a sanitized session name), so a selector no session
   could carry is refused at the CLI, SDK and library boundary.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 ## [0.20.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.19.1...oneharness-core-v0.20.0) - 2026-09-29
 

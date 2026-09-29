@@ -740,6 +740,49 @@ mod tests {
     }
 
     #[test]
+    fn the_readme_text_stream_example_is_render_events_own_output() {
+        // README.md draws a text stream by example; this is that example, so
+        // the documented form cannot drift from what `render_event` prints.
+        let mut failed = event(
+            "tool_call",
+            Some("command_execution"),
+            Some(json!({"command": "bash -lc 'ls does-not-exist'", "exit_code": 2})),
+            Some("ls: cannot access 'does-not-exist': No such file or directory\n"),
+        );
+        failed.status = Some(ToolCallStatus::Failed);
+        let events = [
+            event(
+                "message",
+                None,
+                None,
+                Some("I'll compare the products, then run both commands."),
+            ),
+            event("reasoning", None, None, Some("**Proceeding with 391–399**")),
+            command("/bin/zsh -lc 'cat note.txt'"),
+            event(
+                "tool_call",
+                Some("Edit"),
+                Some(json!({"file_path": "src/lib.rs"})),
+                None,
+            ),
+            failed,
+            event(
+                "message",
+                None,
+                None,
+                Some("Done: the file holds two lines."),
+            ),
+        ];
+        let drawn: Vec<String> = events.iter().filter_map(render_event).collect();
+        let block = format!("```text\n{}\n\nprompt: …\n```", drawn.join("\n"));
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        assert!(
+            readme.contains(&block),
+            "README.md must carry the text-stream example as `render_event` draws it:\n{block}"
+        );
+    }
+
+    #[test]
     fn a_file_change_is_one_line_per_path() {
         let codex = event(
             "tool_call",

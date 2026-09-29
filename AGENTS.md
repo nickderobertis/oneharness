@@ -212,20 +212,15 @@ Use the `just` recipes; do not hand-roll equivalents.
   `--compact` alone selects it. Each verb carries the pair as ONE
   `cli::StdoutFormat`, parsed at the clap boundary, so `--format text
   --compact` is refused there (exit 2, naming both) before any verb runs —
-  nothing has been synced, spawned or interrupted when it is. A streamed run
-  prints by `--format` alone, whichever layer (flag, config, env) turned the
-  stream on: `json` is the NDJSON protocol, `text` one `render_event` line per
-  event then the text report; with no `--format` it is NDJSON plus one
-  stderr deprecation warning per process — keep the two together, since the
-  warning is the only notice a consumer relying on that default gets.
-  Every text view a consumer could want to reproduce lives in
-  `oneharness_core::domain::render`, never in `src/commands` — the binary
-  calls it so an embedder prints what the CLI prints. The live sink and the
-  report fold stdout through one `events::EventStream` (an open item such as
-  codex's `item.started` is held, never delivered), so a streamed event and
-  the report's carry the same `index`; the closing history record relies on
-  that to skip exactly the events already persisted, so never number live
-  events any other way. Anything reading stdout as JSON says so: the SDKs on
+  nothing has been synced, spawned or interrupted when it is. A streamed run's
+  stdout is chosen by `--format` alone, whichever layer turned streaming on
+  (`commands::run`'s `StreamView`); its no-`--format` default ships with
+  `STREAM_DEFAULT_WARNING`, never without it, since that warning is the only
+  notice its consumers get. Text views live in `oneharness_core::domain::render`,
+  never in `src/commands`, so an embedder prints what the CLI prints. Number
+  live events only through `events::EventStream`: history's closing record
+  skips the events already persisted by the `index` it shares with the report.
+  Anything reading stdout as JSON says so: the SDKs on
   every call, and every test or script here (the `tests/cli.rs` `run` helper
   passes `--format json`; `run_as_typed` is the bare invocation).
   Nor is any `--no-x` half of a clap-exclusive pair — the request carries the one

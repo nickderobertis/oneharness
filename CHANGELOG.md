@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is history a consumer reads when upgrading, not a live copy of the stream, event, history or Rust API contracts to keep in step. Their sources are `ActionEvent`'s doc comments (generated into the SDK schemas), `domain::render`, `commands::run`'s `StreamView` and `HistoryEventLine`, each pinned by its own tests and `just sdk-check`. -->
+
 ### Changed
 
 - **Breaking:** `events` — on the live `EventSink`, in `RunReport.events` (and
@@ -27,6 +29,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   event, then the text report. A stream with no `--format` is still NDJSON in
   this release and warns once that the default becomes text in the next one;
   pass `--format json` to keep the NDJSON protocol.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 ## [0.18.0](https://github.com/nickderobertis/oneharness/compare/v0.17.1...v0.18.0) - 2026-09-29
 

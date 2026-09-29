@@ -513,16 +513,18 @@ $ ls does-not-exist ✗ exit 2: ls: cannot access 'does-not-exist': No such file
 prompt: …
 ```
 
-A command is drawn without the harness's shell wrapper (`/bin/zsh -lc '…'`), a
-file change as one `✎` line per path, agent text after `›`, reasoning after
-`(thinking)`, and a failed call is marked `✗` with its exit code (when the
-harness reported one) and the first line of its output. **With no `--format`
-a stream is still NDJSON in this release**, and says once on stderr that the
-default becomes text in the next one — pass `--format json` to keep the
-protocol. The same per-event renderer is public as
-`oneharness_core::domain::render::render_event` (beside `render_report_text`
-and `render_history_show_text`), so an embedder prints exactly what the CLI
-does. `history watch` has its own `--format jsonl|text`.
+Each line is what the public
+[`oneharness_core::domain::render::render_event`](https://docs.rs/oneharness-core/latest/oneharness_core/domain/render/fn.render_event.html)
+returns for that event — its documentation is the one statement of the form,
+and the example above is test-pinned to it — so an embedder prints exactly
+what the CLI does. With no `--format`, a stream stays NDJSON in this release
+and prints, once per process on stderr:
+
+```text
+oneharness: warning: a streamed run with no --format prints NDJSON today, but the stream default becomes text in the next release; pass --format json to keep the NDJSON protocol (or --format text for the readable stream)
+```
+
+`history watch` has its own `--format jsonl|text`.
 
 ### Configuration
 
@@ -1140,18 +1142,13 @@ invalidating earlier ones):
 - `events` / `events_source` — a **normalized array of tool-call / action
   events** the harness took, in order, so a consumer can assert on *behavior*
   (`ran bash with a command matching /…/`, `edited exactly config.yaml`, `used ≤
-  3 tool calls`), not just the final `text`. Each entry is `{ kind, name, input,
-  output, index }`: `kind` is `tool_call` or `tool_result` — or `message` (the
-  agent's own text) or `reasoning`, each carrying its text in `output`, so a
-  consumer counting tool calls filters on `kind` — `name` is the normalized
-  tool name (`null` for a result or text), `input` is the structured,
-  tool-shaped arguments (so a consumer reads the command string / file path
-  without re-parsing; a codex command adds the `exit_code` it reported), `output`
-  is the observation when exposed, and `index` is the position in the run
-  across every kind (so it is not contiguous across tool calls). A `message` or
-  `reasoning` event is one **finished** item — codex `agent_message` /
-  `reasoning` items, a Claude Code assistant `text` / `thinking` block — never a
-  token delta. `events` is `null` (never `[]`) when the harness's
+  3 tool calls`), not just the final `text`. Each entry is an `ActionEvent` —
+  `{ kind, name, input, output, index, … }` — whose fields are described once,
+  on the Rust struct, and carried from there into the generated SDK schemas
+  (`npm/oneharness-sdk/src/generated/schemas.json`, drift-checked by `just
+  sdk-check`). Not every entry is a tool call: `kind` also names the agent's
+  own `message` and `reasoning` text, so a consumer counting tool calls filters
+  on `kind`. `events` is `null` (never `[]`) when the harness's
   output carries no machine-readable trace — a plain-text harness (Goose, Qwen,
   Crush, Copilot), or Claude Code's single-document `json` result, which
   omits the intermediate transcript — with `events_source` then also `null`, so a
@@ -1183,10 +1180,8 @@ invalidating earlier ones):
   so `events` stays `null` for them — the honest answer, not a gap.
 
   **Streaming** (`oneharness run --stream <one harness> --format json`) emits
-  each event as an NDJSON `{"type":"event","event":{…}}` line the moment it
-  finishes — a codex call once, when it completes, carrying its terminal
-  `status`; the live events carry the same `index` as the report's — then a
-  terminal `{"type":"result","report":{…}}` line with the full envelope. A
+  each event as an NDJSON `{"type":"event","event":{…}}` line as it finishes,
+  then a terminal `{"type":"result","report":{…}}` line with the full envelope. A
   consumer can **short-circuit** the moment it sees a disallowed action by
   closing the stream — oneharness's next write fails (broken pipe) and it tears
   the harness down, so a bad turn is cut off instead of paid for in full. Stream
@@ -2275,13 +2270,11 @@ append-only `.index.jsonl` without rescanning the history tree. Reconciliation
 on startup adds missing session records, ignores removed sessions, and truncates
 a partial final index line left by an interrupted writer. Reusing the last
 emitted `history_id` with `--after` resumes without duplication; repeated
-`--label` filters are ANDed. `--session` follows exactly one session, by its id
-or its name (the newest so named whose labels match every `--label`, or the
-first to appear), with or without labels; `--format text` prints each event in the renderer's form and a short
-block per closing record, so `oneharness history watch --session <name> --events
---format text` tails a run from another terminal. A session whose run is still
-going — events on disk, no closing record yet — is already listed (marked
-`running`) and shown, so it can be found while its first turn runs. `clear` reports
+`--label` filters are ANDed. `--session` follows one session and `--format
+text` draws it readably (`oneharness history watch --help` says how each
+resolves), so `oneharness history watch --session <name> --events --format
+text` tails a run from another terminal — even one still in its first turn,
+which `history list` marks `running`. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
 non-interactively first.
 

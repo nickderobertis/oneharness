@@ -108,16 +108,17 @@ impl StreamView {
     }
 }
 
+/// What a stream with no `--format` says on stderr. `README.md` quotes it.
+const STREAM_DEFAULT_WARNING: &str = "oneharness: warning: a streamed run with no --format \
+     prints NDJSON today, but the stream default becomes text in the next release; pass \
+     --format json to keep the NDJSON protocol (or --format text for the readable stream)";
+
 /// Say — once per process, however many runs or events reach it — that a
 /// stream with no `--format` will print text from the next release.
 fn warn_stream_default_changes() {
     static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!(
-            "oneharness: warning: a streamed run with no --format prints NDJSON today, but the \
-             stream default becomes text in the next release; pass --format json to keep the \
-             NDJSON protocol (or --format text for the readable stream)"
-        );
+        eprintln!("{STREAM_DEFAULT_WARNING}");
     }
 }
 
@@ -259,6 +260,15 @@ impl From<&RunArgs> for RunRequest {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn the_readme_quotes_the_stream_default_warning() {
+        let readme = include_str!("../../README.md").replace("\r\n", "\n");
+        assert!(
+            readme.contains(&format!("```text\n{STREAM_DEFAULT_WARNING}\n```")),
+            "README.md must quote the stream-default warning verbatim:\n{STREAM_DEFAULT_WARNING}"
+        );
+    }
 
     /// Parse a `run` command line into its args, exactly as `main` does.
     fn args_of(argv: &[&str]) -> RunArgs {

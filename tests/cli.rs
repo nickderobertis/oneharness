@@ -36341,6 +36341,73 @@ fn history_watch_session_labels_pick_a_running_session_by_name() {
 }
 
 #[test]
+fn history_watch_session_name_follows_the_first_matching_session_to_appear() {
+    // A name no session carries yet is awaited, not refused: the watcher
+    // follows the first `late` session to appear — its event, then its record
+    // — and nothing from a second `late` reusing the name after it. Had the
+    // watcher opened after both existed it would resolve the newest one, so a
+    // pass cannot come from the already-present path.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let dir = hist_dir("watch-session-awaited");
+    let ds = dir.display().to_string();
+    let bin = bin_override("codex");
+    let watcher = spawn_watch(&[
+        "--session",
+        "late",
+        "--events",
+        "--all-projects",
+        "--history-dir",
+        &ds,
+    ]);
+    // Give the watcher time to open before any `late` session exists.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let seed = || -> Value {
+        let output = run_within(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "late",
+                "--bin",
+                bin.as_str(),
+                "--stream",
+                "--format",
+                "json",
+                "--history",
+                "--history-dir",
+                ds.as_str(),
+                "--history-name",
+                "late",
+                "--bypass",
+            ],
+            &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+            LIMIT,
+        );
+        assert!(output.status.success(), "{output:?}");
+        let report = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .last()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .unwrap();
+        raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0)
+    };
+    let first = seed();
+    let second = seed();
+    assert_ne!(first["session"], second["session"]);
+
+    let watched = watch_output(watcher, 2);
+    assert_eq!(watched.len(), 2, "{watched:#?}");
+    let event: Value = serde_json::from_str(&watched[0]).unwrap();
+    assert_eq!(event["type"], "event", "{event}");
+    assert_eq!(event["line"]["run_id"], first["history_id"], "{event}");
+    assert_eq!(event["line"]["session_name"], "late", "{event}");
+    let record: Value = serde_json::from_str(&watched[1]).unwrap();
+    assert_eq!(record["type"], "record", "{record}");
+    assert_eq!(record["record"]["session"], first["session"], "{record}");
+}
+
+#[test]
 fn agent_messages_and_reasoning_reach_history_for_codex_and_claude() {
     for (harness, recording, kinds) in [
         (

@@ -25,7 +25,7 @@ use fs2::FileExt;
 use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
-    HistoryRunRecord, HistorySessionName, HistorySessionSelector, PointerSession,
+    HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
@@ -766,13 +766,13 @@ pub struct HistoryWatcher {
     session: Option<SessionFilter>,
 }
 
-/// The one session a watcher follows: named by id or by name, and — once a
-/// name has resolved — held to that session's id, so a later session reusing
-/// the name is not mixed in.
+/// The one session a watcher follows: a session id, given or resolved from a
+/// name — held there, so a later session reusing the name is not mixed in — or
+/// a name no session in scope carries yet, awaiting the first that does.
 #[derive(Debug)]
-struct SessionFilter {
-    selector: HistorySessionSelector,
-    id: Option<String>,
+enum SessionFilter {
+    Following(HistorySessionId),
+    Awaiting(HistorySessionName),
 }
 
 impl HistoryWatcher {
@@ -805,10 +805,7 @@ impl HistoryWatcher {
         session: Option<&HistorySessionSelector>,
     ) -> Result<Self, OneharnessError> {
         let session = match session {
-            Some(HistorySessionSelector::Id(id)) => Some(SessionFilter {
-                selector: HistorySessionSelector::Id(id.clone()),
-                id: Some(id.to_string()),
-            }),
+            Some(HistorySessionSelector::Id(id)) => Some(SessionFilter::Following(id.clone())),
             Some(HistorySessionSelector::Name(name)) => {
                 // A session still in its first turn has no closing record to
                 // state its labels yet; its event-index entries carry them.
@@ -818,6 +815,11 @@ impl HistoryWatcher {
                     if summary.name != name.as_str() {
                         continue;
                     }
+                    // A file stem no writer could have minted names no
+                    // session this watcher can follow.
+                    let Ok(summary_id) = summary.id.parse::<HistorySessionId>() else {
+                        continue;
+                    };
                     let matched = if summary.record_count == 0 {
                         if running_labels.is_none() {
                             running_labels = Some(event_index_labels(dir)?);
@@ -830,14 +832,14 @@ impl HistoryWatcher {
                         summary.labels.matches(&labels)
                     };
                     if matched {
-                        id = Some(summary.id);
+                        id = Some(summary_id);
                         break;
                     }
                 }
-                Some(SessionFilter {
-                    selector: HistorySessionSelector::Name(name.clone()),
-                    id,
-                })
+                Some(id.map_or_else(
+                    || SessionFilter::Awaiting(name.clone()),
+                    SessionFilter::Following,
+                ))
             }
             None => None,
         };
@@ -977,7 +979,8 @@ impl HistoryWatcher {
 
     /// Whether an in-scope entry belongs to the followed session (always, when
     /// none is). The first entry a still-unresolved name matches pins the
-    /// session to that entry's id.
+    /// session to that entry's id — only when its file stem is a session id a
+    /// writer could have minted, since the index is read from disk.
     fn in_session(&mut self, session_path: &str, name: Option<&str>) -> bool {
         let Some(filter) = &mut self.session else {
             return true;
@@ -986,14 +989,18 @@ impl HistoryWatcher {
             .file_stem()
             .and_then(|stem| stem.to_str())
             .unwrap_or_default();
-        match &filter.id {
-            Some(id) => id == stem,
-            None if matches!(&filter.selector, HistorySessionSelector::Name(wanted) if name == Some(wanted.as_str())) =>
-            {
-                filter.id = Some(stem.to_string());
-                true
+        match filter {
+            SessionFilter::Following(id) => id.as_str() == stem,
+            SessionFilter::Awaiting(wanted) if name == Some(wanted.as_str()) => {
+                match stem.parse::<HistorySessionId>() {
+                    Ok(id) => {
+                        *filter = SessionFilter::Following(id);
+                        true
+                    }
+                    Err(_) => false,
+                }
             }
-            None => false,
+            SessionFilter::Awaiting(_) => false,
         }
     }
 

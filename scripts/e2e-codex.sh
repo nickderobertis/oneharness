@@ -54,6 +54,9 @@ note "» resume under a sandbox mode: a continued turn must run and keep the san
 oh_resume_mode_enforce codex auto
 oh_resume_mode_enforce codex read-only
 oh_resume_mode_enforce codex plan
+# A caller's own `-c sandbox_mode=` must not outrank the mode on a resumed turn
+# any more than it does on a fresh one, where `--sandbox` beats it.
+oh_resume_mode_enforce codex auto -- -c sandbox_mode=read-only
 
 # Mock enforcement: codex's hooks engine loads project .codex/hooks.json under
 # `exec` and honors the claude-nested `updatedInput` rewrite — but only when

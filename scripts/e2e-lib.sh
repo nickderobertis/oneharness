@@ -1552,9 +1552,16 @@ oh_mode_enforce() {
 # oneharness believes the resume subcommand accepts, and it was wrong once —
 # `exec resume` has no `--sandbox`, so every continued sandboxed turn died at
 # argument parsing while the fresh turn passed.
-#   $1 harness id, $2 mode (auto | read-only | plan)
+#
+# Extra run args ($3..) ride BOTH turns. e2e-codex.sh passes a caller's own
+# `-- -c sandbox_mode=read-only` under `auto`: on a fresh turn codex's
+# `--sandbox` outranks it, on a resumed one the last `-c` wins, so the resumed
+# turn still writing is the live proof that oneharness restates the mode after
+# a caller's override and the mode governs both turns alike.
+#   $1 harness id, $2 mode (auto | read-only | plan), $3.. extra run args
 oh_resume_mode_enforce() {
     local id="$1" mode="$2"
+    shift 2
     local bin sandbox store name marker file status phase text refusal
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -1573,7 +1580,7 @@ oh_resume_mode_enforce() {
 
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
         "Remember this exact word for the rest of our conversation: $marker. Do not run any tools. Reply with only the word OK." \
-        "$sandbox/first.json" "$sandbox/first.err"
+        "$sandbox/first.json" "$sandbox/first.err" "$@"
     status="$(_oh_result_status "$sandbox/first.json")"
     if [ "$status" = "skipped" ]; then
         rm -rf "$sandbox"
@@ -1598,7 +1605,7 @@ oh_resume_mode_enforce() {
 
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
         "You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation." \
-        "$sandbox/second.json" "$sandbox/second.err" --events
+        "$sandbox/second.json" "$sandbox/second.err" --events "$@"
     status="$(_oh_result_status "$sandbox/second.json")"
     if [ "$status" != "ok" ]; then
         refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""

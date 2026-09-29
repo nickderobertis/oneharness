@@ -295,8 +295,8 @@ fn a_sync_request_layers_its_config_files() {
     // `denied_tools` is set only in the earlier file; `allowed_tools` in both.
     let (dir, d, j) = two_configs(
         "sync",
-        "allowed_tools = [\"Bash(ls:*)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
-        "allowed_tools = [\"Bash(echo:*)\"]\n",
+        "allowed_tools = [\"Bash(ls)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+        "allowed_tools = [\"Bash(echo layered)\"]\n",
     );
     sync::sync(&SyncRequest {
         config: vec![d, j],
@@ -311,6 +311,6 @@ fn a_sync_request_layers_its_config_files() {
     .unwrap();
     assert_eq!(
         written["permissions"],
-        serde_json::json!({"allow": ["Bash(echo:*)"], "deny": ["Bash(rm:*)"]})
+        serde_json::json!({"allow": ["Bash(echo layered)"], "deny": ["Bash(rm:*)"]})
     );
 }

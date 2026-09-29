@@ -10754,8 +10754,8 @@ fn sync_honors_repeated_config_files() {
     // where the later file's list replaces the earlier one.
     let (fx, d, j) = two_configs(
         "layered-sync",
-        "allowed_tools = [\"Bash(ls:*)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
-        "allowed_tools = [\"Bash(echo:*)\"]\n",
+        "allowed_tools = [\"Bash(ls)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+        "allowed_tools = [\"Bash(echo layered)\"]\n",
     );
     let cwd = fx.cwd();
     let output = run_with_config(
@@ -10784,7 +10784,7 @@ fn sync_honors_repeated_config_files() {
     .unwrap();
     assert_eq!(
         written["permissions"],
-        serde_json::json!({"allow": ["Bash(echo:*)"], "deny": ["Bash(rm:*)"]})
+        serde_json::json!({"allow": ["Bash(echo layered)"], "deny": ["Bash(rm:*)"]})
     );
 }
 

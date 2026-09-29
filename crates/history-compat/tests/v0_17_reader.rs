@@ -1,6 +1,7 @@
 //! History this build writes stays readable by the released reader of
 //! oneharness v0.17.0 (`oneharness-core` 0.19.0, a pinned dev-dependency — the
-//! published crate, not this tree). A session now carries `message` and
+//! published crate, not this tree; see this crate's `Cargo.toml` for why it
+//! lives here rather than in the binary crate). A session now carries `message` and
 //! `reasoning` events and names itself on every event line; an older reader
 //! must still list the session and hand back its events.
 
@@ -10,18 +11,32 @@ use std::process::Command;
 use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core_v0_19 as released;
 
+/// A binary the root crate builds into the target directory this test runs
+/// from (`<target>/<profile>/deps/<this test>`): another package's
+/// `CARGO_BIN_EXE_*` is not visible here, and a workspace-wide build (`just
+/// test`, `just coverage`) has built both before any test runs.
+fn workspace_bin(name: &str) -> PathBuf {
+    let test_exe = std::env::current_exe().expect("test executable path");
+    let profile_dir = test_exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("test executable under <target>/<profile>/deps");
+    let path = profile_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "{} is not built; run the workspace suite with `just test`",
+        path.display()
+    );
+    path
+}
+
 fn oneharness_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_oneharness"))
+    workspace_bin("oneharness")
 }
 
 /// The mock harness built beside the binary under the `mock-harness` feature.
 fn mock_bin() -> PathBuf {
-    let mut path = oneharness_bin();
-    path.set_file_name(format!(
-        "oneharness-mock-harness{}",
-        std::env::consts::EXE_SUFFIX
-    ));
-    path
+    workspace_bin("oneharness-mock-harness")
 }
 
 #[test]
@@ -32,7 +47,7 @@ fn oneharness_v0_17_0_reads_the_history_this_build_writes() {
         .env("ONEHARNESS_NO_CONFIG", "1")
         .env(
             "MOCK_STDOUT",
-            include_str!("fixtures/codex-exec-turn.jsonl"),
+            include_str!("../../../tests/fixtures/codex-exec-turn.jsonl"),
         )
         .args([
             "run",

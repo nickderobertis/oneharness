@@ -630,28 +630,9 @@ version = "0.17.1"
 dependencies = [
  "clap",
  "libc",
- "oneharness-core 0.19.0",
+ "oneharness-core 0.19.1",
  "serde",
  "serde_json",
- "windows-sys",
-]
-
-[[package]]
-name = "oneharness-core"
-version = "0.19.1"
-dependencies = [
- "fs2",
- "jsonschema",
- "libc",
- "regex",
- "schemars",
- "serde",
- "serde_json",
- "thiserror",
- "toml",
- "uuid",
- "wait-timeout",
- "which",
  "windows-sys",
 ]
 
@@ -677,11 +658,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "oneharness-core"
+version = "0.19.1"
+dependencies = [
+ "fs2",
+ "jsonschema",
+ "libc",
+ "regex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "uuid",
+ "wait-timeout",
+ "which",
+ "windows-sys",
+]
+
+[[package]]
 name = "oneharness-history-compat"
 version = "0.0.0"
 dependencies = [
  "oneharness-core 0.19.0",
- "oneharness-core 0.19.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "oneharness-core 0.19.1",
 ]
 
 [[package]]

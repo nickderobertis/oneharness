@@ -1446,7 +1446,10 @@ describe("OneHarness", () => {
 		const user = resolve(dir, "user.toml");
 		await writeFile(defaults, 'mode = "read-only"\ntimeout = 9\n');
 		await writeFile(user, 'mode = "auto"\n');
-		const report = await layered().config({ cwd: dir, config: [defaults, user] });
+		const report = await layered().config({
+			cwd: dir,
+			config: [defaults, user],
+		});
 		expect(report.config_files).toEqual([defaults, user]);
 		expect(report.mode).toEqual({ value: "auto", source: user });
 		expect(report.timeout).toEqual({ value: 9, source: defaults });

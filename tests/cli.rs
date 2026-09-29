@@ -10932,39 +10932,91 @@ fn every_history_verb_honors_repeated_config_files() {
 
 #[test]
 fn stream_origin_honors_repeated_config_files() {
-    // A stream selected by config refuses `--format text`, naming the file that
-    // selected it. The earlier file alone selects it; where both set `stream`,
-    // the later file's value — naming it, or turning the stream off — wins.
-    let stdout = r#"{"result":"not streamed"}"#;
-    for (label, later, refused_by) in [
-        ("earlier only", "timeout = 60\n", Some(false)),
-        ("both stream", "stream = true\n", Some(true)),
-        ("the later file turns it off", "stream = false\n", None),
+    // A stream selected by config prints by `--format` alone, and `stream` is
+    // layered like any field: the earlier file alone turns it on, a later
+    // file's `stream = true` turns it on over an earlier one that is silent,
+    // and a later `stream = false` turns off what the earlier file set. With
+    // no `--format` a stream is NDJSON plus the one notice that its default is
+    // changing; an explicit `--format text` is the readable stream.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let codex = |settings: &str| {
+        format!("{settings}harnesses = [\"codex\"]\n[harness.codex]\nbin = \"{bin}\"\n")
+    };
+    let turn = codex_exec_turn_with_update();
+    let text_lines = CODEX_EXEC_TURN_TEXT.join("\n");
+    for (label, earlier, later, streams) in [
+        ("earlier only", "stream = true\n", "timeout = 60\n", true),
+        ("the later file turns it on", "", "stream = true\n", true),
+        (
+            "the later file turns it off",
+            "stream = true\n",
+            "stream = false\n",
+            false,
+        ),
     ] {
         let (fx, d, j) = two_configs(
             &format!("layered-stream-{}", label.replace(' ', "-")),
-            &mock_claude_defaults("stream = true\n"),
+            &codex(earlier),
             later,
         );
         let cwd = fx.cwd();
-        let output = run_with_config(
-            &[
-                "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j, "--format",
-                "text",
-            ],
-            &[("MOCK_STDOUT", stdout)],
-            &fx.user_config(),
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        match refused_by {
-            Some(later_named) => {
-                assert_eq!(output.status.code(), Some(2), "{label}: {stderr}");
-                let (named, unnamed) = if later_named { (&j, &d) } else { (&d, &j) };
-                assert!(stderr.contains(named.as_str()), "{label}: {stderr}");
-                assert!(!stderr.contains(unnamed.as_str()), "{label}: {stderr}");
-            }
-            None => assert!(output.status.success(), "{label}: {stderr}"),
+        let invoke = |format: &[&str]| {
+            let args: Vec<&str> = [
+                "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j,
+            ]
+            .into_iter()
+            .chain(format.iter().copied())
+            .collect();
+            let output = run_with_config_as_typed(
+                &args,
+                &[("MOCK_STDOUT", turn.as_str())],
+                &fx.user_config(),
+            );
+            assert!(output.status.success(), "{label} {format:?}: {output:?}");
+            output
+        };
+
+        let unchosen = invoke(&[]);
+        let stdout = String::from_utf8_lossy(&unchosen.stdout);
+        if streams {
+            let lines: Vec<RunStreamEnvelope> = stdout
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("each line is a stream envelope"))
+                .collect();
+            let events = lines
+                .iter()
+                .filter(|line| matches!(line, RunStreamEnvelope::Event { .. }))
+                .count();
+            assert_eq!(events, CODEX_EXEC_TURN_TEXT.len(), "{label}: {stdout}");
+            assert!(
+                matches!(lines.last(), Some(RunStreamEnvelope::Result { .. })),
+                "{label}: {stdout}"
+            );
+            assert_eq!(
+                stream_default_warnings(&unchosen),
+                1,
+                "{label}: {unchosen:?}"
+            );
+        } else {
+            // Not streamed: the buffered text report, with no stream notice.
+            assert!(stdout.starts_with("prompt: hi\n"), "{label}: {stdout}");
+            assert_eq!(
+                stream_default_warnings(&unchosen),
+                0,
+                "{label}: {unchosen:?}"
+            );
         }
+
+        let text = invoke(&["--format", "text"]);
+        let stdout = String::from_utf8_lossy(&text.stdout);
+        let report = if streams {
+            format!("{text_lines}\n\nprompt: hi\n")
+        } else {
+            "prompt: hi\n".to_string()
+        };
+        assert!(stdout.starts_with(&report), "{label}: {stdout}");
+        assert!(stdout.contains("codex: ok · exit 0"), "{label}: {stdout}");
+        assert_eq!(stream_default_warnings(&text), 0, "{label}: {text:?}");
     }
 }
 
@@ -34560,7 +34612,7 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
     // lines all along, so the terminal envelope is not the place to switch. A
     // bare `--stream` and `--format json --stream` (and `--compact --stream`,
     // the SDKs' spelling) are the same lines; an explicit `--format text` beside
-    // it is refused up front, naming both flags, before any harness spawns.
+    // it is the readable stream instead.
     let stdout = concat!(
         r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
         "\n",

@@ -893,11 +893,23 @@ mod tests {
         // The live proof the README describes is the one the lane runs.
         assert!(lane.contains("\noh_codex_rules_enforce\n"));
         assert!(e2e.contains("\noh_codex_rules_enforce() {"));
-        assert!(e2e.contains(r#"allowed_tools = ["Bash(rm -f %s:*)"]"#));
+        assert!(e2e.contains(r#"allowed_tools = ["Bash(%s:*)"]"#));
         assert!(e2e.contains(r#"denied_tools = ["Bash(mkdir %s:*)"]"#));
-        assert!(readme.contains("`oh_codex_rules_enforce`"));
+        // The allow half's delete is spelled per shell: Windows Codex runs
+        // PowerShell, whose `rm` alias rejects `-f`.
+        assert!(e2e.contains("printf 'Remove-Item -Force %s' \"$1\""));
+        assert!(e2e.contains("printf 'rm -f %s' \"$1\""));
+        assert!(lane.contains("\noh_codex_rules_match\n"));
+        assert!(e2e.contains("\noh_codex_rules_match() {"));
+        assert!(e2e.contains("allow Remove-Item -Force $file\n"));
         assert!(
-            readme.contains("`Bash(mkdir <dir>:*)`") && readme.contains("`Bash(rm -f <file>:*)`")
+            readme.contains("`oh_codex_rules_enforce`")
+                && readme.contains("`oh_codex_rules_match`")
+        );
+        assert!(
+            readme.contains("`Bash(mkdir <dir>:*)`")
+                && readme.contains("`rm -f <file>`")
+                && readme.contains("`Remove-Item -Force <file>`")
         );
     }
 

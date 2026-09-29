@@ -3,15 +3,16 @@
 //! policy also governs the tools when they're used directly, without
 //! oneharness.
 //!
-//! The merge is a library call ([`oneharness_core::io::sync::sync`]), so a Rust
+//! The merge is a library call ([`oneharness_core::io::sync::sync_with`]), so a Rust
 //! consumer gets the same [`SyncReport`] without spawning anything; this is the
 //! shell that prints it (JSON, or a per-harness summary under `--format text`)
 //! and maps `--check` to an exit code.
 
 use crate::cli::SyncArgs;
 use crate::commands::{print_report, printable};
+use oneharness_core::domain::sync::RuleChange;
 use oneharness_core::errors::OneharnessError;
-use oneharness_core::io::sync::{self as sync_io, FileStatus, SyncRequest, SyncStatus};
+use oneharness_core::io::sync::{self as sync_io, FileStatus, SyncMode, SyncRequest, SyncStatus};
 
 // Re-exported so a consumer keeps one import path for the CLI's output
 // contract, wherever the type is defined.
@@ -20,14 +21,22 @@ pub use oneharness_core::io::sync::{HookFileResult, SyncReport, SyncResult};
 pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
     // Settled before the sync writes anything, so a contradictory flag pair
     // refuses a run that has not touched a harness config yet.
-    let report = sync_io::sync(&SyncRequest {
-        cwd: args.cwd.clone(),
-        harness: args.harness.clone(),
-        check: args.check,
-        global: args.global,
-        config: args.config.clone(),
-        no_config: args.no_config,
-    })?;
+    let mode = if args.exact {
+        SyncMode::Exact
+    } else {
+        SyncMode::AddOnly
+    };
+    let report = sync_io::sync_with(
+        &SyncRequest {
+            cwd: args.cwd.clone(),
+            harness: args.harness.clone(),
+            check: args.check,
+            global: args.global,
+            config: args.config.clone(),
+            no_config: args.no_config,
+        },
+        mode,
+    )?;
     // `--check` is the CI mode: it writes nothing, so a difference it found is
     // still pending and exits 1, like a formatter's check mode. A real sync
     // has already written that same difference, so it exits 0 — which is why
@@ -44,8 +53,9 @@ pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
 }
 
 /// Per harness: the settings file and what happened to it (or would, under
-/// `--check`), each hook file likewise, and every top-level setting the
-/// harness has no mapping for. Closes with the check-mode verdict, so a reader
+/// `--check`), each hook file likewise, every top-level setting and every
+/// individual rule the harness has no mapping for, and under `--exact` each
+/// entry added to or removed from its lists. Closes with the check-mode verdict, so a reader
 /// of a `--check` run sees whether anything is pending without reading the
 /// exit code.
 fn render_text(report: &SyncReport) -> String {
@@ -79,6 +89,19 @@ fn render_text(report: &SyncReport) -> String {
                 r.unmapped.join(", ")
             ));
         }
+        for rule in &r.unmapped_rules {
+            out.push_str(&format!(
+                "  unmapped rule ({}) {}: {}\n",
+                rule.list.as_str(),
+                printable(&rule.rule),
+                rule.reason
+            ));
+        }
+        for (verb, changes) in [("added", &r.added_rules), ("removed", &r.removed_rules)] {
+            for change in changes {
+                out.push_str(&format!("  {tense}{verb}{}\n", rule_change(change)));
+            }
+        }
     }
     if report.check {
         out.push_str(if report.changes() {
@@ -88,6 +111,14 @@ fn render_text(report: &SyncReport) -> String {
         });
     }
     out
+}
+
+/// ` (<list>): <entry>`, or `: <entry>` for a statement no list renders.
+fn rule_change(change: &RuleChange) -> String {
+    match change.list {
+        Some(list) => format!(" ({}): {}", list.as_str(), printable(&change.rule)),
+        None => format!(": {}", printable(&change.rule)),
+    }
 }
 
 fn sync_status(status: SyncStatus) -> &'static str {
@@ -111,31 +142,21 @@ fn file_status(status: FileStatus) -> &'static str {
 mod tests {
     use super::*;
 
+    // `SyncResult`/`SyncReport` are `#[non_exhaustive]`, so a report is built
+    // through their constructors and then filled in field by field.
     fn report(check: bool) -> SyncReport {
-        SyncReport {
-            schema_version: "test",
-            config_files: vec![],
-            check,
-            results: vec![
-                SyncResult {
-                    harness: "claude-code",
-                    file: Some(".claude/settings.json".to_string()),
-                    status: SyncStatus::Updated,
-                    hooks: vec![HookFileResult {
-                        file: ".claude/settings.json".to_string(),
-                        status: FileStatus::Unchanged,
-                    }],
-                    unmapped: vec![],
-                },
-                SyncResult {
-                    harness: "goose",
-                    file: None,
-                    status: SyncStatus::Skipped,
-                    hooks: vec![],
-                    unmapped: vec!["allowed_tools", "denied_tools"],
-                },
-            ],
-        }
+        let mut claude = SyncResult::new(
+            "claude-code",
+            Some(".claude/settings.json".to_string()),
+            SyncStatus::Updated,
+        );
+        claude.hooks = vec![HookFileResult {
+            file: ".claude/settings.json".to_string(),
+            status: FileStatus::Unchanged,
+        }];
+        let mut goose = SyncResult::new("goose", None, SyncStatus::Skipped);
+        goose.unmapped = vec!["allowed_tools", "denied_tools"];
+        SyncReport::new(vec![], check, vec![claude, goose])
     }
 
     #[test]

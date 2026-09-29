@@ -130,6 +130,7 @@
     "check": "check",
     "config": "config",
     "cwd": "cwd",
+    "exact": "exact",
     "global_": "global",
     "harnesses": "harnesses",
     "no_config": "noConfig"

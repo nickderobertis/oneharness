@@ -1478,6 +1478,45 @@ describe("OneHarness", () => {
 		).toBe("unchanged");
 	}, 30_000);
 
+	test("holds a harness's rule lists to the source under exact", async () => {
+		const project = await scratch("sync-exact");
+		await writeFile(
+			resolve(project, "oneharness.toml"),
+			'allowed_tools = ["Bash(echo:*)"]\n',
+		);
+		await mkdir(resolve(project, ".claude"), { recursive: true });
+		await writeFile(
+			resolve(project, ".claude", "settings.json"),
+			'{"permissions":{"allow":["Bash(curl:*)"]}}\n',
+		);
+		const options = { cwd: project, harnesses: ["claude-code"] };
+		// Add-only, the hand-added entry is invisible to a check...
+		const addOnly = await layered().sync({ ...options, check: true });
+		expect(addOnly.exact).toBeUndefined();
+		// ...and under `exact` it is a pending removal the report names.
+		const checked = await layered().sync({
+			...options,
+			check: true,
+			exact: true,
+		});
+		expect(checked.exact).toBe(true);
+		const claude = checked.results.find(
+			({ harness }) => harness === "claude-code",
+		);
+		expect(claude?.status).toBe("updated");
+		expect(claude?.removed_rules?.map(({ rule }) => rule)).toEqual([
+			"Bash(curl:*)",
+		]);
+		expect(claude?.added_rules?.map(({ rule }) => rule)).toEqual([
+			"Bash(echo:*)",
+		]);
+		await layered().sync({ ...options, exact: true });
+		const written = JSON.parse(
+			await readFile(resolve(project, ".claude", "settings.json"), "utf8"),
+		);
+		expect(written.permissions.allow).toEqual(["Bash(echo:*)"]);
+	}, 30_000);
+
 	test("scaffolds a starter config and refuses to clobber it", async () => {
 		const project = await scratch("init");
 		const path = resolve(project, "oneharness.toml");

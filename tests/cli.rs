@@ -10470,8 +10470,24 @@ fn sync_materializes_every_harness_config_file() {
         serde_json::json!(["allowed_tools", "denied_tools"])
     );
 
-    // codex/goose/copilot: nothing to write, rules unmapped, warned on stderr.
-    for id in ["codex", "goose", "copilot"] {
+    // codex: each translatable rule becomes a prefix_rule in its own rules
+    // file; `Read` is no shell command, so it is reported, rule by rule.
+    let codex = sync_result(&value, "codex");
+    assert_eq!(codex["status"], "created");
+    assert_eq!(codex["unmapped"], serde_json::json!([]));
+    assert_eq!(codex["unmapped_rules"][0]["rule"], "Read");
+    let rules = std::fs::read_to_string(fx.dir.join(".codex/rules/oneharness.rules")).unwrap();
+    assert!(
+        rules.contains("prefix_rule(pattern=[\"git\", \"log\"], decision=\"allow\")"),
+        "{rules}"
+    );
+    assert!(
+        rules.contains("prefix_rule(pattern=[\"rm\"], decision=\"forbidden\")"),
+        "{rules}"
+    );
+
+    // goose/copilot: nothing to write, rules unmapped, warned on stderr.
+    for id in ["goose", "copilot"] {
         let entry = sync_result(&value, id);
         assert_eq!(entry["status"], "skipped", "{id}");
         assert!(entry["file"].is_null(), "{id}");
@@ -10483,7 +10499,7 @@ fn sync_materializes_every_harness_config_file() {
     }
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("NOT applied") && stderr.contains("codex"),
+        stderr.contains("NOT applied") && stderr.contains("goose"),
         "{stderr}"
     );
 }
@@ -10791,13 +10807,19 @@ fn list_exposes_sync_capabilities() {
     assert_eq!(claude["supports_denied_tools"], true);
     assert_eq!(claude["supports_hooks"], true);
     // qwen and crush gained deny support via their files; opencode is
-    // settings-table only; codex/goose/copilot have no sync file at all.
+    // settings-table only; codex's target is its execpolicy rules file, which
+    // takes both lists and no hooks table; goose/copilot have no sync file.
     assert_eq!(by_id("qwen")["supports_denied_tools"], true);
     assert_eq!(by_id("crush")["supports_denied_tools"], true);
     let opencode = by_id("opencode");
     assert_eq!(opencode["sync_file"], "opencode.json");
     assert_eq!(opencode["supports_allowed_tools"], false);
-    for id in ["codex", "goose", "copilot"] {
+    let codex = by_id("codex");
+    assert_eq!(codex["sync_file"], ".codex/rules/oneharness.rules");
+    assert_eq!(codex["supports_allowed_tools"], true);
+    assert_eq!(codex["supports_denied_tools"], true);
+    assert_eq!(codex["supports_hooks"], false);
+    for id in ["goose", "copilot"] {
         assert!(by_id(id)["sync_file"].is_null(), "{id}");
         assert_eq!(by_id(id)["supports_allowed_tools"], false, "{id}");
     }
@@ -10904,6 +10926,399 @@ fn sync_is_add_only_across_config_edits() {
         merged["permissions"]["allow"],
         serde_json::json!(["RuleA", "RuleB"])
     );
+}
+
+/// `oneharness sync <args…> --harness <id> --cwd <fx> --config <fx>` with the
+/// JSON report, for the `--exact` and Codex-rules journeys below.
+fn sync_in(fx: &ConfigFixture, id: &str, extra: &[&str]) -> Output {
+    let config = fx.dir.join("oneharness.toml");
+    let cwd = fx.cwd();
+    let mut args = vec![
+        "sync",
+        "--harness",
+        id,
+        "--cwd",
+        &cwd,
+        "--config",
+        config.to_str().unwrap(),
+    ];
+    args.extend_from_slice(extra);
+    run_with_config(&args, &[], &fx.user_config())
+}
+
+fn rule_names(result: &Value, field: &str) -> Vec<String> {
+    result[field]
+        .as_array()
+        .map(|entries| {
+            entries
+                .iter()
+                .map(|entry| entry["rule"].as_str().unwrap().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn sync_exact_removes_a_rule_dropped_from_the_source() {
+    // The add-only journey above, re-run with `--exact`: the rule edited out of
+    // the unified config leaves the harness file too, and the report says so.
+    let fx = ConfigFixture::new(
+        "sync-exact-edit",
+        "allowed_tools = [\"RuleA\", \"RuleB\"]\n",
+        "",
+    );
+    assert!(sync_in(&fx, "claude-code", &[]).status.success());
+    std::fs::write(
+        fx.dir.join("oneharness.toml"),
+        "allowed_tools = [\"RuleB\"]\n",
+    )
+    .unwrap();
+
+    let output = sync_in(&fx, "claude-code", &["--exact"]);
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    assert_eq!(value["exact"], true);
+    let claude = sync_result(&value, "claude-code");
+    assert_eq!(claude["status"], "updated");
+    assert_eq!(rule_names(claude, "removed_rules"), ["RuleA"]);
+    assert_eq!(claude["removed_rules"][0]["list"], "allowed_tools");
+    assert_eq!(rule_names(claude, "added_rules"), Vec::<String>::new());
+    let settings = read_json(&fx.dir.join(".claude/settings.json"));
+    assert_eq!(
+        settings["permissions"]["allow"],
+        serde_json::json!(["RuleB"])
+    );
+
+    // Held: a second exact sync has nothing left to do.
+    let again = json_stdout(&sync_in(&fx, "claude-code", &["--exact", "--check"]));
+    assert_eq!(sync_result(&again, "claude-code")["status"], "unchanged");
+    // And without --exact the report carries none of the exact-only fields.
+    let plain = json_stdout(&sync_in(&fx, "claude-code", &["--check"]));
+    assert!(plain.get("exact").is_none(), "{plain}");
+    assert!(sync_result(&plain, "claude-code")
+        .get("removed_rules")
+        .is_none());
+}
+
+#[test]
+fn sync_check_exact_fails_on_a_hand_added_entry_and_names_it() {
+    let fx = ConfigFixture::new(
+        "sync-exact-hand",
+        "allowed_tools = [\"Bash(git log:*)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+        "",
+    );
+    assert!(sync_in(&fx, "claude-code", &[]).status.success());
+    let path = fx.dir.join(".claude/settings.json");
+    let mut settings = read_json(&path);
+    settings["permissions"]["allow"]
+        .as_array_mut()
+        .unwrap()
+        .push(Value::String("Bash(curl:*)".into()));
+    let hand_edited = serde_json::to_string_pretty(&settings).unwrap() + "\n";
+    std::fs::write(&path, &hand_edited).unwrap();
+
+    // The add-only check cannot see an extra: everything it asks for is there.
+    assert_eq!(
+        sync_in(&fx, "claude-code", &["--check"]).status.code(),
+        Some(0)
+    );
+
+    let output = sync_in(&fx, "claude-code", &["--check", "--exact"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let value = json_stdout(&output);
+    let claude = sync_result(&value, "claude-code");
+    assert_eq!(claude["status"], "updated");
+    assert_eq!(rule_names(claude, "removed_rules"), ["Bash(curl:*)"]);
+    assert!(String::from_utf8_lossy(&output.stderr).contains("out of sync"));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        hand_edited,
+        "a check writes nothing"
+    );
+
+    let text = sync_in(
+        &fx,
+        "claude-code",
+        &["--check", "--exact", "--format", "text"],
+    );
+    assert_eq!(text.status.code(), Some(1));
+    let rendered = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        rendered.contains("  would be removed (allowed_tools): Bash(curl:*)\n"),
+        "{rendered}"
+    );
+
+    // Applying it drops the hand-added entry and nothing else.
+    assert!(sync_in(&fx, "claude-code", &["--exact"]).status.success());
+    let fixed = read_json(&path);
+    assert_eq!(
+        fixed["permissions"]["allow"],
+        serde_json::json!(["Bash(git log:*)"])
+    );
+    assert_eq!(
+        fixed["permissions"]["deny"],
+        serde_json::json!(["Bash(rm:*)"])
+    );
+}
+
+#[test]
+fn sync_exact_leaves_hooks_and_unrelated_keys_byte_for_byte() {
+    // SessionStart/Stop hooks, env and every non-permission setting a user (or
+    // another tool) keeps in the same file must survive an exact sync
+    // untouched; only the allow/deny lists move.
+    let fx = ConfigFixture::new("sync-exact-keep", "allowed_tools = [\"Bash(ls:*)\"]\n", "");
+    let before = serde_json::json!({
+        "env": { "FOO": "bar" },
+        "hooks": {
+            "SessionStart": [{ "hooks": [{ "type": "command", "command": "./start.sh" }] }],
+            "Stop": [{ "hooks": [{ "type": "command", "command": "./stop.sh" }] }],
+        },
+        "model": "opus",
+        "permissions": {
+            "allow": ["Bash(stale:*)"],
+            "defaultMode": "acceptEdits",
+            "deny": ["Bash(hand:*)"],
+        },
+        "statusLine": { "type": "command", "command": "./status.sh" },
+    });
+    let path = fx.dir.join(".claude/settings.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_string_pretty(&before).unwrap() + "\n").unwrap();
+
+    let output = sync_in(&fx, "claude-code", &["--exact"]);
+    assert!(output.status.success(), "{output:?}");
+    let mut expected = before.clone();
+    expected["permissions"]["allow"] = serde_json::json!(["Bash(ls:*)"]);
+    expected["permissions"]["deny"] = serde_json::json!([]);
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        serde_json::to_string_pretty(&expected).unwrap() + "\n"
+    );
+    let value = json_stdout(&output);
+    let claude = sync_result(&value, "claude-code");
+    assert_eq!(rule_names(claude, "added_rules"), ["Bash(ls:*)"]);
+    assert_eq!(
+        rule_names(claude, "removed_rules"),
+        ["Bash(stale:*)", "Bash(hand:*)"]
+    );
+}
+
+#[test]
+fn sync_writes_codex_rules_and_reports_each_untranslatable_rule() {
+    let fx = ConfigFixture::new(
+        "sync-codex-rules",
+        concat!(
+            "allowed_tools = [\"Bash(git status:*)\", \"Bash(git -C * log*)\", ",
+            "\"Bash(git status*)\", \"Read\", \"Bash(just check)\", \"Bash(npm run *)\"]\n",
+            "denied_tools = [\"Bash(rm -rf:*)\"]\n",
+            "[[hooks]]\n",
+            "command = \"oneharness gate {harness}\"\n",
+        ),
+        "",
+    );
+    let output = sync_in(&fx, "codex", &[]);
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    let codex = sync_result(&value, "codex");
+    let rules_path = fx.dir.join(".codex/rules/oneharness.rules");
+    assert_eq!(codex["status"], "created");
+    assert_eq!(codex["file"], rules_path.display().to_string());
+    assert_eq!(
+        std::fs::read_to_string(&rules_path).unwrap(),
+        concat!(
+            "# Generated by `oneharness sync` from the unified `allowed_tools` / `denied_tools`.\n",
+            "# Do not edit: every sync that changes it rewrites this file whole.\n",
+            "\n",
+            "# allowed_tools: Bash(git status:*)\n",
+            "prefix_rule(pattern=[\"git\", \"status\"], decision=\"allow\")\n",
+            "\n",
+            "# allowed_tools: Bash(npm run *)\n",
+            "prefix_rule(pattern=[\"npm\", \"run\"], decision=\"allow\")\n",
+            "\n",
+            "# denied_tools: Bash(rm -rf:*)\n",
+            "prefix_rule(pattern=[\"rm\", \"-rf\"], decision=\"forbidden\")\n",
+        )
+    );
+    // Every rule Codex cannot express is reported with its reason, in order —
+    // never widened (the exact `just check` is not turned into a prefix).
+    let unmapped: Vec<(String, String)> = codex["unmapped_rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            assert_eq!(r["list"], "allowed_tools");
+            (
+                r["rule"].as_str().unwrap().into(),
+                r["reason"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    let rules: Vec<&str> = unmapped.iter().map(|(rule, _)| rule.as_str()).collect();
+    assert_eq!(
+        rules,
+        [
+            "Bash(git -C * log*)",
+            "Bash(git status*)",
+            "Read",
+            "Bash(just check)"
+        ]
+    );
+    assert!(
+        unmapped[0].1.contains("wildcard before the end"),
+        "{unmapped:?}"
+    );
+    assert!(unmapped[1].1.contains("glued to a token"), "{unmapped:?}");
+    assert!(
+        unmapped[2].1.contains("not a `Bash(...)` rule"),
+        "{unmapped:?}"
+    );
+    assert!(unmapped[3].1.contains("never widens"), "{unmapped:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for rule in &rules {
+        assert!(
+            stderr.contains(&format!(
+                "rule `{rule}` has no mapping for harness `codex` and was NOT applied"
+            )),
+            "{rule}: {stderr}"
+        );
+    }
+
+    // Nothing else lands under .codex/: the rules file, and the hooks file the
+    // `[[hooks]]` binding has always written, exactly as it writes it.
+    let mut under_codex: Vec<String> = walk(&fx.dir.join(".codex"));
+    under_codex.sort();
+    assert_eq!(under_codex, ["hooks.json", "rules/oneharness.rules"]);
+    assert_eq!(
+        codex["hooks"][0]["file"],
+        fx.dir.join(".codex/hooks.json").display().to_string()
+    );
+
+    // In sync means equal to the translatable subset: the unmapped rules do
+    // not keep --check failing.
+    let check = sync_in(&fx, "codex", &["--check"]);
+    assert_eq!(check.status.code(), Some(0), "{check:?}");
+    assert_eq!(
+        sync_result(&json_stdout(&check), "codex")["status"],
+        "unchanged"
+    );
+}
+
+/// Every file under `dir`, relative and `/`-separated.
+fn walk(dir: &std::path::Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        if path.is_dir() {
+            out.extend(
+                walk(&path)
+                    .into_iter()
+                    .map(|inner| format!("{name}/{inner}")),
+            );
+        } else {
+            out.push(name);
+        }
+    }
+    out
+}
+
+#[test]
+fn codex_rules_are_owned_whole_and_exact_names_a_hand_edit() {
+    let fx = ConfigFixture::new(
+        "sync-codex-owned",
+        "[harness.codex]\nallowed_tools = [\"Bash(cargo test:*)\"]\n",
+        "",
+    );
+    assert!(sync_in(&fx, "codex", &[]).status.success());
+    let path = fx.dir.join(".codex/rules/oneharness.rules");
+    let synced = std::fs::read_to_string(&path).unwrap();
+    assert!(synced.contains("[\"cargo\", \"test\"]"), "{synced}");
+    std::fs::write(
+        &path,
+        format!("{synced}prefix_rule(pattern=[\"curl\"], decision=\"allow\")\n"),
+    )
+    .unwrap();
+
+    // The file is oneharness's alone, so even the add-only check sees the edit.
+    assert_eq!(sync_in(&fx, "codex", &["--check"]).status.code(), Some(1));
+    let output = sync_in(&fx, "codex", &["--check", "--exact"]);
+    assert_eq!(output.status.code(), Some(1));
+    let codex_result = json_stdout(&output);
+    let codex = sync_result(&codex_result, "codex");
+    assert_eq!(
+        rule_names(codex, "removed_rules"),
+        ["prefix_rule(pattern=[\"curl\"], decision=\"allow\")"]
+    );
+    assert_eq!(codex["removed_rules"][0]["list"], "allowed_tools");
+
+    // A plain sync replaces it whole.
+    assert!(sync_in(&fx, "codex", &[]).status.success());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), synced);
+
+    // Dropping every rule empties the owned file rather than leaving it.
+    std::fs::write(fx.dir.join("oneharness.toml"), "model = \"x\"\n").unwrap();
+    let emptied = json_stdout(&sync_in(&fx, "codex", &[]));
+    assert_eq!(sync_result(&emptied, "codex")["status"], "updated");
+    assert!(!std::fs::read_to_string(&path)
+        .unwrap()
+        .contains("prefix_rule"));
+}
+
+#[test]
+fn codex_rules_follow_the_selected_variants_lists() {
+    let fx = ConfigFixture::new(
+        "sync-codex-variant",
+        concat!(
+            "allowed_tools = [\"Bash(ls:*)\"]\n",
+            "[harness.codex.variant.work]\n",
+            "denied_tools = [\"Bash(git push:*)\"]\n",
+        ),
+        "",
+    );
+    let output = sync_in(&fx, "codex:work", &[]);
+    assert!(output.status.success(), "{output:?}");
+    let rules = std::fs::read_to_string(fx.dir.join(".codex/rules/oneharness.rules")).unwrap();
+    assert!(
+        rules.contains("prefix_rule(pattern=[\"ls\"], decision=\"allow\")"),
+        "{rules}"
+    );
+    assert!(
+        rules.contains("prefix_rule(pattern=[\"git\", \"push\"], decision=\"forbidden\")"),
+        "{rules}"
+    );
+}
+
+#[test]
+fn sync_global_refuses_codex_permission_rules() {
+    for toml in [
+        "allowed_tools = [\"Bash(ls:*)\"]\n",
+        "[harness.codex]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+    ] {
+        let dir = ScratchDir::new("global-codex").unwrap();
+        let cfg = dir.join("oh.toml");
+        std::fs::write(&cfg, toml).unwrap();
+        let out = Command::new(oneharness_bin())
+            .env("HOME", dir.join("home"))
+            .args([
+                "sync",
+                "--harness",
+                "codex",
+                "--global",
+                "--config",
+                cfg.to_str().unwrap(),
+                "--cwd",
+                dir.to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run oneharness");
+        assert_eq!(out.status.code(), Some(2), "{toml}");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("installs hooks only") && stderr.contains("`codex`"),
+            "{stderr}"
+        );
+        assert!(!dir.join(".codex").exists(), "{toml}: nothing written");
+    }
 }
 
 #[test]
@@ -33570,7 +33985,7 @@ fn sync_text_view_reports_each_file_the_unmapped_settings_and_the_check_verdict(
     let check = [
         "sync",
         "--harness",
-        "claude-code,codex",
+        "claude-code,goose,codex",
         "--check",
         "--cwd",
         &fx.cwd(),
@@ -33598,11 +34013,17 @@ fn sync_text_view_reports_each_file_the_unmapped_settings_and_the_check_verdict(
         "{rendered}"
     );
     assert!(
-        rendered.contains("codex:\n  settings: nothing to sync for this harness\n"),
+        rendered.contains("goose:\n  settings: nothing to sync for this harness\n"),
         "{rendered}"
     );
     assert!(
         rendered.contains("  unmapped (no mapping for this harness): allowed_tools\n"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains(
+            "  unmapped rule (allowed_tools) Read: not a `Bash(...)` rule: Codex execpolicy rules govern only shell commands\n"
+        ),
         "{rendered}"
     );
     assert!(

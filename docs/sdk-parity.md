@@ -140,7 +140,7 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `list` | `oneharness list` | `oneharness_core::io::registry::list` | yes | yes | `list_report` |
 | `detect` | `oneharness detect` | `oneharness_core::io::detect::detect` | yes | yes | `detect_report` |
 | `config` | `oneharness config` | `oneharness_core::domain::config::explain` | yes | yes | `config_report` |
-| `sync` | `oneharness sync` | `oneharness_core::io::sync::sync` | yes | yes | `sync_report` |
+| `sync` | `oneharness sync` | `oneharness_core::io::sync::sync_with` | yes | yes | `sync_report` |
 | `init` | `oneharness init` | `oneharness_core::io::init::init` | yes | yes | text (see notes) |
 | `usage` | `oneharness usage` | `oneharness_core::io::usage::report` | yes | yes | `usage_report` |
 | `gate` | `oneharness gate` | `oneharness_core::domain::gate::render_deny` | yes | yes | text (see notes) |
@@ -311,6 +311,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--cwd` | `cwd` | `--flag VALUE` |
 | `--harness` | `harnesses` | `--flag VALUE` per element |
 | `--check` | `check` | `--flag` when true |
+| `--exact` | `exact` | `--flag` when true |
 | `--global` | `global` | `--flag` when true |
 | `--config` | `config` | `--flag VALUE` (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
@@ -459,7 +460,7 @@ caller rather than being dropped.
 | `list_report` | `harnesses`, `schema_version` | 36 | yes | yes | yes |
 | `detect_report` | `detected`, `schema_version` | 7 | yes | yes | yes |
 | `config_report` | `all`, `allowed_tools`, `bypass`, `config_files`, `denied_tools`, `env`, `exclude`, `harness`, `harnesses`, `history`, `history_dir`, `history_labels`, `history_pointer_file`, `hooks`, `max_parallel`, `mode`, `model`, `models`, `output_format`, `reasoning`, `require_available`, `run_mode`, `schema_file`, `schema_max_retries`, `schema_version`, `server_overloaded_max_retries`, `stream`, `system`, `timeout` | 41 | yes | yes | yes |
-| `sync_report` | `check`, `config_files`, `results`, `schema_version` | 9 | yes | yes | yes |
+| `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 33 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |
 | `history_records` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_model`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `usage`, `variant`, `work` | 42 | yes | yes | yes |

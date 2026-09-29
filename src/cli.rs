@@ -1073,6 +1073,14 @@ pub struct SyncArgs {
     #[arg(long)]
     pub check: bool,
 
+    /// Hold each harness's allow/deny list to exactly the configured one, in
+    /// source order: entries removed from the config, and entries added to the
+    /// harness file by hand, are dropped. Every other key is merged as usual.
+    /// With --check, any difference in those lists (extras included) exits 1,
+    /// and the report names each added and removed entry.
+    #[arg(long)]
+    pub exact: bool,
+
     /// Install hooks into the user-global config location (resolved from $HOME /
     /// $XDG_CONFIG_HOME) instead of the project. Only `[[hooks]]` entries have a
     /// global mapping; permission rules and raw `settings` are project-scoped, so

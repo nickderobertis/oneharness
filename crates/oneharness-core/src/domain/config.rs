@@ -445,13 +445,16 @@ fn validate(config: &FileConfig) -> Result<(), String> {
             validate_variant_name(name.as_str())?;
         }
         let sync = spec.sync.as_ref();
+        // A raw `settings` table is merged into a JSON config file; Codex's
+        // rules file has no keys to merge it into.
+        let takes_settings = sync.is_some_and(|value| value.format() == harness::SyncFormat::Json);
         let unsupported = [
             (h.allowed_tools.is_some() && sync.and_then(|s| s.allow_path).is_none())
                 .then_some("allowed_tools"),
             (h.denied_tools.is_some() && sync.and_then(|s| s.deny_path).is_none())
                 .then_some("denied_tools"),
             (h.hooks.is_some() && sync.and_then(|s| s.hooks_path).is_none()).then_some("hooks"),
-            (h.settings.is_some() && sync.is_none()).then_some("settings"),
+            (h.settings.is_some() && !takes_settings).then_some("settings"),
         ];
         if let Some(setting) = unsupported.into_iter().flatten().next() {
             return Err(format!(
@@ -480,7 +483,7 @@ fn validate(config: &FileConfig) -> Result<(), String> {
                 .then_some("denied_tools"),
                 (variant.hooks.is_some() && sync.and_then(|value| value.hooks_path).is_none())
                     .then_some("hooks"),
-                (variant.settings.is_some() && sync.is_none()).then_some("settings"),
+                (variant.settings.is_some() && !takes_settings).then_some("settings"),
             ];
             if let Some(setting) = unsupported.into_iter().flatten().next() {
                 return Err(format!(
@@ -1738,11 +1741,17 @@ model = "child-home"
 
     #[test]
     fn sync_settings_without_a_file_mapping_are_rejected_at_parse() {
-        // codex/goose/copilot have no project config file oneharness writes;
-        // opencode's permission shape is a map, not a list; only claude-code
-        // has a hooks mapping.
+        // goose/copilot have no project config file oneharness writes;
+        // codex's is a rules file, which takes the rule lists and nothing
+        // else; opencode's permission shape is a map, not a list; only
+        // claude-code has a hooks mapping.
         for (text, what) in [
-            ("[harness.codex]\nallowed_tools = [\"x\"]", "allowed_tools"),
+            ("[harness.codex.settings]\nmodel = \"x\"", "settings"),
+            (
+                "[harness.codex.variant.work.settings]\nmodel = \"x\"",
+                "settings",
+            ),
+            ("[harness.codex]\nhooks = {}", "hooks"),
             (
                 "[harness.copilot]\nallowed_tools = [\"x\"]",
                 "allowed_tools",
@@ -1775,6 +1784,8 @@ model = "child-home"
             "[harness.cursor]\nallowed_tools = [\"Shell(ls)\"]",
             "[harness.claude-code.hooks]\nPreToolUse = []",
             "[harness.opencode.settings.permission]\nedit = \"deny\"",
+            "[harness.codex]\nallowed_tools = [\"Bash(ls:*)\"]\ndenied_tools = [\"Bash(rm:*)\"]",
+            "[harness.codex.variant.work]\ndenied_tools = [\"Bash(rm:*)\"]",
         ] {
             assert!(parse(text).is_ok(), "{text} should parse");
         }

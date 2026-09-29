@@ -1616,9 +1616,20 @@ oh_resume_mode_enforce() {
         fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>')); check \`oneharness list\` still reports $id session_capable and that its --json stream carries thread_id, then rerun \`just live-codex\`"
     fi
 
-    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
-        "You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation." \
+    local ask_touch
+    ask_touch="You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation."
+    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
         "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+    # Under a no-mutation mode the model sometimes declines outright — it sees
+    # the read-only sandbox and never calls the tool (observed live on codex
+    # 0.159: a reasoning item and the word, no call). That proves nothing
+    # either way, so it gets ONE more resumed turn, as `oh_mock_enforce` does
+    # for an agent that never fired the hook. Anything else is judged as run.
+    if [ "$mode" = read-only ] && [ "$(_oh_result_status "$sandbox/second.json")" = ok ] \
+        && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
+        _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
+            "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+    fi
     status="$(_oh_result_status "$sandbox/second.json")"
     if [ "$status" != "ok" ]; then
         refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
@@ -1670,9 +1681,7 @@ oh_resume_mode_enforce() {
             rm -rf "$sandbox"
             fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had; check the resumed argv carries \`-c sandbox_mode=read-only\` last (\`argv_with_caller_args\`) and that codex still honors it"
         fi
-        if [ "$mode" = "read-only" ] && ! jq -e --arg f "$file" \
-            '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
-            "$sandbox/second.json" >/dev/null 2>&1; then
+        if [ "$mode" = "read-only" ] && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
             _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
             rm -rf "$sandbox"
             fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing; read the events and text above — if the model declined, tighten the turn-two prompt; if codex dropped the item, check \`exec --json\` still emits \`command_execution\` for an exit-0 command"
@@ -1786,6 +1795,14 @@ _oh_resume_mode_evidence() {
         note "  codex sandbox probe ($sandbox, exit $rc): $(printf '%s' "$out" | tr -d '\000' | tail -c 600)"
         rm -f "$dir/ohprobe.txt"
     done
+}
+
+# Whether a turn's normalized tool events show a `touch` of the file.
+#   $1 report, $2 file name
+_oh_touch_attempted() {
+    jq -e --arg f "$2" \
+        '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
+        "$1" >/dev/null 2>&1
 }
 
 # One ordinary (non-control) turn on a named session handle, under `--mode`.

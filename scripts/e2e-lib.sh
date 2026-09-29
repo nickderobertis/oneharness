@@ -1641,7 +1641,7 @@ oh_resume_mode_enforce() {
     case "$mode" in
     auto)
         if [ ! -e "$sandbox/work/$file" ]; then
-            note "  second turn events: $(jq -c '[(.results[0].events // [])[] | select(.kind == "tool_call") | .input]' "$sandbox/second.json" | head -c 800)"
+            _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
             rm -rf "$sandbox"
             fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had"
         fi
@@ -1654,7 +1654,7 @@ oh_resume_mode_enforce() {
         if [ "$mode" = "read-only" ] && ! jq -e --arg f "$file" \
             '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
             "$sandbox/second.json" >/dev/null 2>&1; then
-            note "  second turn events: $(jq -c '.results[0].events' "$sandbox/second.json" | head -c 800)"
+            _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
             rm -rf "$sandbox"
             fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing"
         fi
@@ -1663,6 +1663,26 @@ oh_resume_mode_enforce() {
 
     rm -rf "$sandbox"
     note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
+}
+
+# Why a resumed turn's write came out as it did, for a failure. The turn's own
+# words and stderr say what the model did; the probe says what the harness's OS
+# sandbox can do in that directory WITHOUT a model: codex's `exec --json` drops
+# a command that fails inside a sandbox that could not start, so a sandbox the
+# host cannot run looks, in the events, exactly like a model that never tried.
+#   $1 harness id, $2 the turn's cwd, $3 its report
+_oh_resume_mode_evidence() {
+    local id="$1" dir="$2" report="$3" sandbox out
+    note "  second turn events: $(jq -c '.results[0].events' "$report" | head -c 800)"
+    note "  second turn text: $(jq -r '.results[0].text // ""' "$report" | head -c 500)"
+    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$report" | tail -c 800)"
+    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$report" | tail -n 6 | cut -c1-300)"
+    [ "$id" = codex ] || return 0
+    for sandbox in workspace-write read-only; do
+        out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'touch ohprobe.txt; echo probe-touch-exit=$?' </dev/null 2>&1)"
+        note "  codex sandbox probe ($sandbox, exit $?): $(printf '%s' "$out" | tail -c 600)"
+        rm -f "$dir/ohprobe.txt"
+    done
 }
 
 # One ordinary (non-control) turn on a named session handle, under `--mode`.

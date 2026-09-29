@@ -10,6 +10,7 @@ version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 
 # Accepted so the workspace-wide `--features mock-harness` of `just test` and

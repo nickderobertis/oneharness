@@ -414,6 +414,12 @@
         "unless": null
       },
       {
+        "flag": "--session",
+        "kind": "value",
+        "option": "session",
+        "unless": null
+      },
+      {
         "flag": "--project",
         "kind": "value",
         "option": "project",

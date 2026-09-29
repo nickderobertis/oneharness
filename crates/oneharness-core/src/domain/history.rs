@@ -203,6 +203,13 @@ pub struct HistoryEventLine {
     // llmlint: ignore[invalid_states_unrepresentable] This field is optional specifically to read v1.0 event lines; current writers always derive it with base/variant from one composed id, and event-stream integration coverage asserts all three.
     pub harness_id: Option<String>,
     pub event: ActionEvent,
+    /// The name of the session this line belongs to — the `name` its run's
+    /// closing `run` line will carry — so a run still in progress (events but
+    /// no closing line yet) can be listed and followed by name. Omitted when
+    /// absent: lines written before it existed carry none, and every reader
+    /// that predates it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
 }
 
 impl HistoryEventLine {
@@ -2097,10 +2104,62 @@ pub fn format_compact_utc(secs: i64) -> String {
     format!("{y:04}{mo:02}{d:02}T{h:02}{mi:02}{s:02}Z")
 }
 
+/// The RFC 3339 instant a session id records its start at: the id is minted
+/// as `<name>-<YYYYMMDDThhmmssZ>-<pid>` ([`format_compact_utc`]), so a session
+/// with no closing record yet still has a start to sort by. `None` for an id
+/// not in that shape — never a guessed instant.
+pub(crate) fn session_started_from_id(id: &str) -> Option<String> {
+    let mut parts = id.rsplitn(3, '-');
+    let pid = parts.next()?;
+    let stamp = parts.next()?;
+    parts.next()?;
+    let digits = |range: std::ops::Range<usize>| {
+        stamp
+            .get(range)
+            .filter(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    if pid.is_empty()
+        || !pid.bytes().all(|byte| byte.is_ascii_digit())
+        || stamp.len() != 16
+        || stamp.as_bytes()[8] != b'T'
+        || stamp.as_bytes()[15] != b'Z'
+    {
+        return None;
+    }
+    Some(format!(
+        "{}-{}-{}T{}:{}:{}Z",
+        digits(0..4)?,
+        digits(4..6)?,
+        digits(6..8)?,
+        digits(9..11)?,
+        digits(11..13)?,
+        digits(13..15)?
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::report::OutputFormat;
+
+    #[test]
+    fn a_session_id_carries_its_start_instant() {
+        let id = format!("fix-the-bug-{}-4242", format_compact_utc(1_790_700_180));
+        assert_eq!(
+            session_started_from_id(&id).as_deref(),
+            Some(format_rfc3339(1_790_700_180).as_str())
+        );
+        for foreign in [
+            "",
+            "name",
+            "x-20260929T165809Z",
+            "x-2026092T165809Z-1",
+            "x-20260929T16580aZ-1",
+            "x-20260929T165809Z-p",
+        ] {
+            assert_eq!(session_started_from_id(foreign), None, "{foreign}");
+        }
+    }
 
     #[test]
     fn slug_sanitizes_and_collapses() {

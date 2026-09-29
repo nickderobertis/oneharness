@@ -62,6 +62,7 @@
     "labels": "labels",
     "no_config": "noConfig",
     "project": "project",
+    "session": "session",
     "variant": "variant"
   },
   "init_options": {

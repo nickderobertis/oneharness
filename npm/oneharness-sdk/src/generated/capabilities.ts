@@ -1133,6 +1133,12 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "session",
+				flag: "--session",
+				kind: "value",
+				unless: null,
+			},
+			{
 				option: "project",
 				flag: "--project",
 				kind: "value",

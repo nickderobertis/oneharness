@@ -212,10 +212,19 @@ Use the `just` recipes; do not hand-roll equivalents.
   `--compact` alone selects it. Each verb carries the pair as ONE
   `cli::StdoutFormat`, parsed at the clap boundary, so `--format text
   --compact` is refused there (exit 2, naming both) before any verb runs —
-  nothing has been synced, spawned or interrupted when it is. A streaming run
-  keeps its NDJSON protocol whatever the default is, and `--format text`
-  beside a stream is the same refusal whichever layer (flag or config)
-  selected the stream. Anything reading stdout as JSON says so: the SDKs on
+  nothing has been synced, spawned or interrupted when it is. A streamed run
+  prints by `--format` alone, whichever layer (flag, config, env) turned the
+  stream on: `json` is the NDJSON protocol, `text` one `render_event` line per
+  event then the text report; with no `--format` it is still NDJSON in this
+  release, with one stderr warning per process that text becomes the default.
+  Every text view a consumer could want to reproduce lives in
+  `oneharness_core::domain::render`, never in `src/commands` — the binary
+  calls it so an embedder prints what the CLI prints. The live sink and the
+  report fold stdout through one `events::EventStream` (an open item such as
+  codex's `item.started` is held, never delivered), so a streamed event and
+  the report's carry the same `index`; the closing history record relies on
+  that to skip exactly the events already persisted, so never number live
+  events any other way. Anything reading stdout as JSON says so: the SDKs on
   every call, and every test or script here (the `tests/cli.rs` `run` helper
   passes `--format json`; `run_as_typed` is the bare invocation).
   Nor is any `--no-x` half of a clap-exclusive pair — the request carries the one

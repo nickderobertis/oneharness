@@ -1154,6 +1154,12 @@
           "unless": null
         },
         {
+          "option": "session",
+          "flag": "--session",
+          "kind": "value",
+          "unless": null
+        },
+        {
           "option": "project",
           "flag": "--project",
           "kind": "value",
@@ -4240,6 +4246,10 @@
       "project": {
         "type": "string"
       },
+      "session": {
+        "description": "Follow one session: its id, or its name (the newest session so named,\nincluding one still running, or the first to appear).",
+        "type": "string"
+      },
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
@@ -4314,6 +4324,13 @@
                           "1.9"
                         ]
                       },
+                      "session_name": {
+                        "description": "The name of the session this line belongs to — the `name` its run's\nclosing `run` line will carry — so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "type": {
                         "type": "string",
                         "const": "event"
@@ -4374,6 +4391,13 @@
                         "enum": [
                           "1.0",
                           "1.1"
+                        ]
+                      },
+                      "session_name": {
+                        "description": "The name of the session this line belongs to — the `name` its run's\nclosing `run` line will carry — so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                        "type": [
+                          "string",
+                          "null"
                         ]
                       },
                       "type": {
@@ -6786,9 +6810,6 @@
                             "message",
                             "reasoning"
                           ]
-                        },
-                        "status": {
-                          "type": "null"
                         }
                       }
                     }
@@ -7190,9 +7211,6 @@
                                 "message",
                                 "reasoning"
                               ]
-                            },
-                            "status": {
-                              "type": "null"
                             }
                           }
                         }
@@ -9523,6 +9541,13 @@
                       "1.9"
                     ]
                   },
+                  "session_name": {
+                    "description": "The name of the session this line belongs to — the `name` its run's\nclosing `run` line will carry — so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "variant": {
                     "type": [
                       "string",
@@ -9578,6 +9603,13 @@
                     "enum": [
                       "1.0",
                       "1.1"
+                    ]
+                  },
+                  "session_name": {
+                    "description": "The name of the session this line belongs to — the `name` its run's\nclosing `run` line will carry — so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                    "type": [
+                      "string",
+                      "null"
                     ]
                   },
                   "variant": {
@@ -10155,9 +10187,6 @@
                                 "message",
                                 "reasoning"
                               ]
-                            },
-                            "status": {
-                              "type": "null"
                             }
                           }
                         }
@@ -10559,9 +10588,6 @@
                                     "message",
                                     "reasoning"
                                   ]
-                                },
-                                "status": {
-                                  "type": "null"
                                 }
                               }
                             }
@@ -13207,9 +13233,6 @@
                                 "message",
                                 "reasoning"
                               ]
-                            },
-                            "status": {
-                              "type": "null"
                             }
                           }
                         }
@@ -13611,9 +13634,6 @@
                                     "message",
                                     "reasoning"
                                   ]
-                                },
-                                "status": {
-                                  "type": "null"
                                 }
                               }
                             }
@@ -15606,6 +15626,10 @@
             "type": "integer",
             "format": "uint",
             "minimum": 0
+          },
+          "running": {
+            "description": "Whether a harness run in this session has written events but not yet\nits closing record — the run is still going (or ended without one: a\nkilled process leaves the same file). Omitted when false.",
+            "type": "boolean"
           },
           "started": {
             "description": "The RFC3339 UTC start time (first record's timestamp); empty if unknown.",

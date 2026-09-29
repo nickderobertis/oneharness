@@ -524,6 +524,7 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.union([
         z.literal("1.9"),
       ])
       .refine((value) => value !== undefined, { message: "Required" }),
+    session_name: z.union([z.string(), z.null()]).optional(),
     variant: z.union([z.string(), z.null()]).optional(),
   }),
   z.looseObject({
@@ -548,6 +549,7 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.union([
     schema_version: z
       .union([z.literal("1.0"), z.literal("1.1")])
       .refine((value) => value !== undefined, { message: "Required" }),
+    session_name: z.union([z.string(), z.null()]).optional(),
     variant: z.union([z.string(), z.null()]).optional(),
   }),
 ]);
@@ -595,6 +597,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
           z.literal("1.9"),
         ])
         .refine((value) => value !== undefined, { message: "Required" }),
+      session_name: z.union([z.string(), z.null()]).optional(),
       type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
       variant: z.union([z.string(), z.null()]).optional(),
     }),
@@ -620,6 +623,7 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       schema_version: z
         .union([z.literal("1.0"), z.literal("1.1")])
         .refine((value) => value !== undefined, { message: "Required" }),
+      session_name: z.union([z.string(), z.null()]).optional(),
       type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
       variant: z.union([z.string(), z.null()]).optional(),
     }),
@@ -1517,7 +1521,6 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                         z.lazy(() => ActionEventSchema),
                         z.looseObject({
                           kind: z.union([z.literal("message"), z.literal("reasoning")]).optional(),
-                          status: z.null().optional(),
                         }),
                       ),
                     ]),
@@ -1697,7 +1700,6 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                           z.lazy(() => ActionEventSchema),
                           z.looseObject({
                             kind: z.union([z.literal("message"), z.literal("reasoning")]).optional(),
-                            status: z.null().optional(),
                           }),
                         ),
                       ]),
@@ -2587,6 +2589,7 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
     .int()
     .gte(0)
     .refine((value) => value !== undefined, { message: "Required" }),
+  running: z.boolean().optional(),
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
@@ -2617,6 +2620,7 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
+  session: z.string().optional(),
   variant: z.string().optional(),
 });
 

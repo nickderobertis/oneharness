@@ -209,6 +209,7 @@ impl HistoryWriter {
             variant: variant.map(str::to_string),
             harness_id: Some(harness.to_string()),
             event,
+            session_name: Some(self.name.clone()),
         };
         let mut file = open_session_for_append(&self.path)?;
         write_session_line(&mut file, &HistoryLine::Event(line.clone()))?;
@@ -349,6 +350,7 @@ impl HistoryWriter {
                     variant: run.variant.clone(),
                     harness_id: run.harness_id.clone(),
                     event,
+                    session_name: Some(self.name.clone()),
                 }),
             )?;
         }
@@ -684,6 +686,7 @@ fn migrate_file(dir: &Path, path: &Path) -> Result<MigrationSummary, OneharnessE
                         variant: record.variant.clone(),
                         harness_id: Some(record.harness_id.clone()),
                         event: event.clone(),
+                        session_name: None,
                     }),
                 )?;
             }
@@ -760,6 +763,16 @@ pub struct HistoryWatcher {
     seen: BTreeSet<HistoryId>,
     labels: HistoryLabels,
     project_slug: Option<String>,
+    session: Option<SessionFilter>,
+}
+
+/// The one session a watcher follows: named by id or by name, and — once a
+/// name has resolved — held to that session's id, so a later session reusing
+/// the name is not mixed in.
+#[derive(Debug)]
+struct SessionFilter {
+    needle: String,
+    id: Option<String>,
 }
 
 impl HistoryWatcher {
@@ -772,6 +785,37 @@ impl HistoryWatcher {
         project_slug: Option<String>,
         events: bool,
     ) -> Result<Self, OneharnessError> {
+        Self::open_session(dir, after, labels, project_slug, events, None)
+    }
+
+    /// [`open`](Self::open), narrowed to one session when `session` names one:
+    /// a session id (its file stem) selects that session; any other value is a
+    /// session name, which selects the newest session carrying it in scope —
+    /// a run still in progress included — or, when none exists yet, the first
+    /// one to appear. Labels and project scope still apply on top.
+    pub fn open_session(
+        dir: &Path,
+        after: Option<HistoryId>,
+        labels: HistoryLabels,
+        project_slug: Option<String>,
+        events: bool,
+        session: Option<&str>,
+    ) -> Result<Self, OneharnessError> {
+        let session = match session {
+            Some(needle) => {
+                let sessions = list_sessions(dir, project_slug.as_deref())?;
+                let id = sessions
+                    .iter()
+                    .find(|summary| summary.id == needle)
+                    .or_else(|| sessions.iter().find(|summary| summary.name == needle))
+                    .map(|summary| summary.id.clone());
+                Some(SessionFilter {
+                    needle: needle.to_string(),
+                    id,
+                })
+            }
+            None => None,
+        };
         let reconciled = reconcile_index(dir)?;
         let start = match after {
             Some(cursor) => reconciled
@@ -800,6 +844,7 @@ impl HistoryWatcher {
                 .collect(),
             labels,
             project_slug,
+            session,
         };
         if events {
             let (event_entries, event_offset) = reconcile_event_index(dir)?;
@@ -890,8 +935,32 @@ impl HistoryWatcher {
                 .next()
                 .is_some_and(|component| component.as_os_str() == slug.as_str())
         });
-        if in_project && entry.labels.matches(&self.labels) {
+        if in_project
+            && entry.labels.matches(&self.labels)
+            && self.in_session(&entry.session_path, entry.line.session_name.as_deref())
+        {
             self.pending_events.push_back(entry.line);
+        }
+    }
+
+    /// Whether an in-scope entry belongs to the followed session (always, when
+    /// none is). The first entry a still-unresolved name matches pins the
+    /// session to that entry's id.
+    fn in_session(&mut self, session_path: &str, name: Option<&str>) -> bool {
+        let Some(filter) = &mut self.session else {
+            return true;
+        };
+        let stem = Path::new(session_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default();
+        match &filter.id {
+            Some(id) => id == stem,
+            None if stem == filter.needle || name == Some(filter.needle.as_str()) => {
+                filter.id = Some(stem.to_string());
+                true
+            }
+            None => false,
         }
     }
 
@@ -905,6 +974,7 @@ impl HistoryWatcher {
         if self.seen.insert(entry.record.history_id)
             && in_project
             && entry.record.labels.matches(&self.labels)
+            && self.in_session(&entry.session_path, Some(entry.record.name.as_str()))
         {
             self.pending.push_back(entry.record.materialize(Vec::new()));
         }
@@ -934,6 +1004,11 @@ pub struct SessionSummary {
     pub harnesses: Vec<String>,
     /// The absolute path of the session file.
     pub path: String,
+    /// Whether a harness run in this session has written events but not yet
+    /// its closing record — the run is still going (or ended without one: a
+    /// killed process leaves the same file). Omitted when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running: bool,
 }
 
 /// List the sessions under `dir`, newest first. When `project_slug` is `Some`,
@@ -957,7 +1032,7 @@ pub fn list_sessions(
         }
         for path in read_session_files(&pdir)? {
             let summary = summarize(&path)?;
-            if summary.record_count > 0 {
+            if summary.record_count > 0 || summary.running {
                 sessions.push(summary);
             }
         }
@@ -996,7 +1071,7 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
     })?;
     let mut dangling: BTreeMap<HistoryId, (String, Vec<_>)> = BTreeMap::new();
     let mut values = Vec::new();
-    for line in parse_lines(path, &text) {
+    for line in parse_lines(path, &text, Unmigrated::Report) {
         match line {
             HistoryLine::Event(line) => {
                 dangling
@@ -1026,8 +1101,8 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
     Ok(values)
 }
 
-/// Resolve an event-only session by its file id without making it visible to
-/// `history list` before a closing run line exists.
+/// Resolve a session by its file id alone, for an id `history list` did not
+/// surface (a file whose every line was unreadable).
 pub fn find_session_path(
     dir: &Path,
     project_slug: Option<&str>,
@@ -1401,8 +1476,9 @@ fn read_dir(dir: &Path) -> Result<Vec<fs::DirEntry>, OneharnessError> {
 }
 
 /// Build a [`SessionSummary`] by reading a session file. Robust to a partial or
-/// empty file: fields the records don't supply fall back to the file stem / the
-/// slug / empty.
+/// empty file: fields the records don't supply fall back to what the event
+/// lines say (a run still in progress has only those), then to the file stem /
+/// the slug / the start the session id records.
 fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
     let id = path
         .file_stem()
@@ -1415,44 +1491,65 @@ fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    let records = read_run_lines(path)?;
+    let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
+        path: path.display().to_string(),
+        source,
+    })?;
+    let mut records = Vec::new();
+    let mut events = Vec::new();
+    for line in parse_lines(path, &text, Unmigrated::Report) {
+        match line {
+            HistoryLine::Run(run) => records.push(run),
+            HistoryLine::Event(event) => events.push(event),
+        }
+    }
+    let closed: BTreeSet<HistoryId> = records.iter().map(|record| record.history_id).collect();
+    let running = events.iter().any(|event| !closed.contains(&event.run_id));
 
-    let field = |key: &str| -> Option<String> {
-        records.first().map(|record| match key {
-            "name" => record.name.clone(),
-            "project" => record.project.clone(),
-            "timestamp" => record.timestamp.clone(),
-            _ => String::new(),
-        })
-    };
     let mut harnesses: Vec<String> = Vec::new();
-    for r in &records {
-        let harness_id = r.harness_id.as_ref().unwrap_or(&r.harness);
+    let touched = records
+        .iter()
+        .map(|record| record.harness_id.as_ref().unwrap_or(&record.harness))
+        .chain(
+            events
+                .iter()
+                .map(|event| event.harness_id.as_ref().unwrap_or(&event.harness)),
+        );
+    for harness_id in touched {
         if !harnesses.iter().any(|x| x == harness_id) {
             harnesses.push(harness_id.clone());
         }
     }
+    let first = records.first();
     Ok(SessionSummary {
-        name: field("name").unwrap_or_else(|| id.clone()),
-        labels: records
-            .first()
+        name: first
+            .map(|record| record.name.clone())
+            .or_else(|| events.iter().find_map(|event| event.session_name.clone()))
+            .unwrap_or_else(|| id.clone()),
+        labels: first
             .map(|record| record.labels.clone())
             .unwrap_or_default(),
-        project: field("project").unwrap_or(slug),
-        started: field("timestamp").unwrap_or_default(),
+        project: first.map_or(slug, |record| record.project.clone()),
+        started: first
+            .map(|record| record.timestamp.clone())
+            .or_else(|| history::session_started_from_id(&id))
+            .unwrap_or_default(),
         record_count: records.len(),
         harnesses,
         path: path.display().to_string(),
         id,
+        running,
     })
 }
 
+/// The closing `run` lines of a session file, for index maintenance over the
+/// whole store — which is why a legacy line here is skipped without a word.
 fn read_run_lines(path: &Path) -> Result<Vec<HistoryRunRecord>, OneharnessError> {
     let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
         path: path.display().to_string(),
         source,
     })?;
-    Ok(parse_lines(path, &text)
+    Ok(parse_lines(path, &text, Unmigrated::Skip)
         .into_iter()
         .filter_map(|line| match line {
             HistoryLine::Run(run) => Some(run),
@@ -1473,7 +1570,7 @@ fn parse_values(text: &str) -> Vec<Value> {
 fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
     let mut events: BTreeMap<HistoryId, Vec<_>> = BTreeMap::new();
     let mut records = Vec::new();
-    for line in parse_lines(path, text) {
+    for line in parse_lines(path, text, Unmigrated::Report) {
         match line {
             HistoryLine::Event(line) => events.entry(line.run_id).or_default().push(line.event),
             HistoryLine::Run(run) => {
@@ -1486,7 +1583,22 @@ fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
     records
 }
 
-fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
+/// Whether a read reports the legacy lines it had to skip. A command reading
+/// the scope it was asked about says so; the index maintenance every run and
+/// watcher does over the whole store (every project's files) does not, since
+/// a warning about a project nobody asked about is noise in the middle of an
+/// unrelated run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unmigrated {
+    Report,
+    Skip,
+}
+
+/// Whether this process has already said that it skipped unmigrated lines —
+/// said once, naming the first file, however many files carry them.
+static UNMIGRATED_REPORTED: AtomicBool = AtomicBool::new(false);
+
+fn parse_lines(path: &Path, text: &str, unmigrated: Unmigrated) -> Vec<HistoryLine> {
     let mut legacy = false;
     let lines = text
         .lines()
@@ -1501,7 +1613,10 @@ fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
             serde_json::from_value(value).ok()
         })
         .collect();
-    if legacy {
+    if legacy
+        && unmigrated == Unmigrated::Report
+        && !UNMIGRATED_REPORTED.swap(true, Ordering::Relaxed)
+    {
         eprintln!(
             "oneharness: warning: skipped unmigrated history lines in `{}`; run `oneharness history migrate`",
             path.display()
@@ -1699,7 +1814,11 @@ mod tests {
                 .unwrap(),
             records[0].history_id
         );
-        let lines = parse_lines(w.path(), &fs::read_to_string(w.path()).unwrap());
+        let lines = parse_lines(
+            w.path(),
+            &fs::read_to_string(w.path()).unwrap(),
+            Unmigrated::Skip,
+        );
         assert!(matches!(lines[0], HistoryLine::Event(_)));
         assert!(matches!(lines[1], HistoryLine::Run(_)));
         assert!(matches!(lines[2], HistoryLine::Run(_)));
@@ -1788,7 +1907,12 @@ mod tests {
             .append_event(writer.begin_run(), "codex", event)
             .unwrap();
         assert_eq!(
-            parse_lines(writer.path(), &fs::read_to_string(writer.path()).unwrap()).len(),
+            parse_lines(
+                writer.path(),
+                &fs::read_to_string(writer.path()).unwrap(),
+                Unmigrated::Skip
+            )
+            .len(),
             3
         );
         let _ = fs::remove_dir_all(&dir);
@@ -1858,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn dangling_events_are_displayed_as_incomplete_but_not_listed() {
+    fn dangling_events_are_displayed_as_incomplete_and_listed_as_running() {
         let dir = temp_dir("dangling");
         let project_dir = dir.join("project");
         fs::create_dir_all(&project_dir).unwrap();
@@ -1883,6 +2007,7 @@ mod tests {
                 status: None,
                 timing_source: None,
             },
+            session_name: None,
         });
         fs::write(
             &path,
@@ -1890,7 +2015,14 @@ mod tests {
         )
         .unwrap();
 
-        assert!(list_sessions(&dir, None).unwrap().is_empty());
+        // Listed as a session still running: no closing record yet, and no
+        // session name on a line written before lines carried one.
+        let listed = list_sessions(&dir, None).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].running);
+        assert_eq!(listed[0].record_count, 0);
+        assert_eq!(listed[0].name, "interrupted");
+        assert_eq!(listed[0].harnesses, ["codex"]);
         let displayed = read_session_display(&path).unwrap();
         assert_eq!(displayed[0]["type"], "incomplete");
         assert_eq!(displayed[0]["run_id"], run_id.to_string());
@@ -1951,6 +2083,7 @@ mod tests {
                 record_count: 1,
                 harnesses: vec!["codex".to_string()],
                 path: format!("/h/{id}.jsonl"),
+                running: false,
             })
             .collect();
         v.sort_by(|a, b| b.started.cmp(&a.started));

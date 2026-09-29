@@ -154,11 +154,19 @@ impl clap::FromArgMatches for StdoutFormat {
 /// those bounded commands cannot accidentally accept an unbounded format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryWatchFormat {
+    /// One typed `HistoryStreamEnvelope` JSON object per line — the default,
+    /// and the stream every program reads.
     Jsonl,
+    /// One readable line per event (`render_event`'s form) and a short block
+    /// per closing record — for a person tailing a run.
+    Text,
 }
 
 fn history_watch_format_parser() -> impl TypedValueParser<Value = HistoryWatchFormat> {
-    PossibleValuesParser::new(["jsonl"]).map(|_| HistoryWatchFormat::Jsonl)
+    PossibleValuesParser::new(["jsonl", "text"]).map(|s| match s.as_str() {
+        "text" => HistoryWatchFormat::Text,
+        _ => HistoryWatchFormat::Jsonl,
+    })
 }
 
 /// Parse `--format` into [`Format`], keeping the possible-value list in the
@@ -519,9 +527,14 @@ pub struct HistoryWatchArgs {
     pub label: Vec<String>,
 
     /// Emit only records from this variant name.
-    // llmlint: ignore[changed_behavior_has_e2e] History watch deliberately exposes only JSONL, not text; compiled-CLI tests cover variant filtering for both record and event JSONL envelopes.
     #[arg(long, value_name = "NAME")]
     pub variant: Option<oneharness_core::domain::config::VariantName>,
+
+    /// Follow only this session: its id (as `history list` prints it), or its
+    /// name — the newest session so named, including one still running, or
+    /// the first to appear if none exists yet.
+    #[arg(long, value_name = "NAME|ID")]
+    pub session: Option<String>,
 
     /// Follow records for this project; defaults to the current directory.
     #[arg(long, value_name = "DIR")]
@@ -536,7 +549,8 @@ pub struct HistoryWatchArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Streaming output format. `jsonl` is currently the only format.
+    /// Streaming output format: `jsonl` (the default) is one typed envelope per
+    /// line for programs; `text` is one readable line per event for a person.
     #[arg(
         long,
         value_parser = history_watch_format_parser(),

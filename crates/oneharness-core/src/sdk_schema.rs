@@ -828,8 +828,7 @@ fn add_v03_condition(value: &mut serde_json::Value) {
                         {"allOf": [event_base, {
                             "type": "object",
                             "properties": {
-                                "kind": {"enum": ["message", "reasoning"], "type": "string"},
-                                "status": {"type": "null"}
+                                "kind": {"enum": ["message", "reasoning"], "type": "string"}
                             }
                         }]}
                     ]

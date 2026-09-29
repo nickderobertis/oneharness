@@ -1263,6 +1263,13 @@
                         ],
                         "type": "string"
                       },
+                      "session_name": {
+                        "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "type": {
                         "const": "event",
                         "type": "string"
@@ -1324,6 +1331,13 @@
                           "1.1"
                         ],
                         "type": "string"
+                      },
+                      "session_name": {
+                        "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "type": {
                         "const": "event",
@@ -2911,6 +2925,10 @@
             "minimum": 0,
             "type": "integer"
           },
+          "running": {
+            "description": "Whether a harness run in this session has written events but not yet\nits closing record \u2014 the run is still going (or ended without one: a\nkilled process leaves the same file). Omitted when false.",
+            "type": "boolean"
+          },
           "started": {
             "description": "The RFC3339 UTC start time (first record's timestamp); empty if unknown.",
             "type": "string"
@@ -4157,9 +4175,6 @@
                             "reasoning"
                           ],
                           "type": "string"
-                        },
-                        "status": {
-                          "type": "null"
                         }
                       },
                       "type": "object"
@@ -4561,9 +4576,6 @@
                                 "reasoning"
                               ],
                               "type": "string"
-                            },
-                            "status": {
-                              "type": "null"
                             }
                           },
                           "type": "object"
@@ -7031,9 +7043,6 @@
                                 "reasoning"
                               ],
                               "type": "string"
-                            },
-                            "status": {
-                              "type": "null"
                             }
                           },
                           "type": "object"
@@ -7435,9 +7444,6 @@
                                     "reasoning"
                                   ],
                                   "type": "string"
-                                },
-                                "status": {
-                                  "type": "null"
                                 }
                               },
                               "type": "object"
@@ -9570,6 +9576,13 @@
                     ],
                     "type": "string"
                   },
+                  "session_name": {
+                    "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "variant": {
                     "type": [
                       "string",
@@ -9626,6 +9639,13 @@
                       "1.1"
                     ],
                     "type": "string"
+                  },
+                  "session_name": {
+                    "description": "The name of the session this line belongs to \u2014 the `name` its run's\nclosing `run` line will carry \u2014 so a run still in progress (events but\nno closing line yet) can be listed and followed by name. Omitted when\nabsent: lines written before it existed carry none, and every reader\nthat predates it ignores it.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "variant": {
                     "type": [
@@ -10197,9 +10217,6 @@
                                 "reasoning"
                               ],
                               "type": "string"
-                            },
-                            "status": {
-                              "type": "null"
                             }
                           },
                           "type": "object"
@@ -10601,9 +10618,6 @@
                                     "reasoning"
                                   ],
                                   "type": "string"
-                                },
-                                "status": {
-                                  "type": "null"
                                 }
                               },
                               "type": "object"
@@ -12631,6 +12645,10 @@
         "type": "boolean"
       },
       "project": {
+        "type": "string"
+      },
+      "session": {
+        "description": "Follow one session: its id, or its name (the newest session so named,\nincluding one still running, or the first to appear).",
         "type": "string"
       },
       "variant": {

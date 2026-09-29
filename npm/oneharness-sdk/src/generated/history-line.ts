@@ -11,6 +11,14 @@ export type HistoryLine =
           harness_id?: string | null | undefined;
           run_id: string;
           schema_version: "1.2" | "1.3" | "1.4" | "1.5" | "1.6" | "1.7" | "1.8" | "1.9";
+          /**
+           * The name of the session this line belongs to — the `name` its run's
+           * closing `run` line will carry — so a run still in progress (events but
+           * no closing line yet) can be listed and followed by name. Omitted when
+           * absent: lines written before it existed carry none, and every reader
+           * that predates it ignores it.
+           */
+          session_name?: string | null | undefined;
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;
@@ -24,6 +32,14 @@ export type HistoryLine =
           harness_id?: string | null | undefined;
           run_id: string;
           schema_version: "1.0" | "1.1";
+          /**
+           * The name of the session this line belongs to — the `name` its run's
+           * closing `run` line will carry — so a run still in progress (events but
+           * no closing line yet) can be listed and followed by name. Omitted when
+           * absent: lines written before it existed carry none, and every reader
+           * that predates it ignores it.
+           */
+          session_name?: string | null | undefined;
           type: "event";
           variant?: string | null | undefined;
           [k: string]: unknown;

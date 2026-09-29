@@ -15977,7 +15977,16 @@ fn history_cli_rejects_mixed_provider_and_observed_timing() {
         ],
         &[],
     ));
-    assert!(listed.as_array().unwrap().is_empty());
+    // The corrupt record is never read: what is left of the session is its
+    // event lines, listed as a run with no closing record.
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["record_count"] == 0 && session["running"] == true),
+        "{listed}"
+    );
 }
 
 #[test]
@@ -16106,7 +16115,17 @@ fn history_cli_rejects_inconsistent_variant_identities_in_run_and_event_lines() 
         &[],
     );
     assert!(listed.status.success());
-    assert!(json_stdout(&listed).as_array().unwrap().is_empty());
+    // The inconsistent record is never read; the session's valid event lines
+    // are all that is listed of it.
+    let listed = json_stdout(&listed);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["record_count"] == 0),
+        "{listed}"
+    );
 
     let (bad_event_dir, bad_event_path) = write_mutated("invalid-variant-event", "event");
     let shown = run(
@@ -33143,12 +33162,12 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
             "a refused invocation prints no report"
         );
     }
-    // `history watch` keeps its own single-valued format: text is NOT one of
-    // its answers, because a stream is not a document.
-    let watch = run(&["history", "watch", "--format", "text"], &[]);
+    // `history watch` keeps its own value list: a stream is not a document, so
+    // `json` is NOT one of its answers — `jsonl` and the readable `text` are.
+    let watch = run(&["history", "watch", "--format", "json"], &[]);
     assert_eq!(watch.status.code(), Some(2));
     assert!(
-        String::from_utf8_lossy(&watch.stderr).contains("[possible values: jsonl]"),
+        String::from_utf8_lossy(&watch.stderr).contains("[possible values: jsonl, text]"),
         "{watch:?}"
     );
 }
@@ -34876,4 +34895,502 @@ fn detect_text_view_says_unknown_when_a_binary_answers_no_version() {
         )),
         "{text}"
     );
+}
+
+/// Keys whose values differ between any two runs of the same recording — ids,
+/// clock readings, the scratch project path — and so say nothing about the
+/// shape of the stream.
+const RUN_VARYING_KEYS: &[&str] = &[
+    "history_id",
+    "run_id",
+    "session",
+    "project",
+    "timestamp",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "model_ms",
+    "tool_ms",
+    "time_to_first_token_ms",
+    "observed_tool_ms",
+];
+
+fn without_run_varying_values(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if RUN_VARYING_KEYS.contains(&key.as_str()) {
+                    *value = Value::Null;
+                } else {
+                    without_run_varying_values(value);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_run_varying_values),
+        _ => {}
+    }
+}
+
+/// Everything a `history watch` child printed, read `lines` deep and then to
+/// its end once it is stopped: the watch never ends by itself, so after the
+/// expected lines it is given a moment to print anything it should not, then
+/// killed (this test started it) and drained.
+fn watch_output(mut watcher: std::process::Child, lines: usize) -> Vec<String> {
+    use std::io::{BufReader, Read};
+    let mut reader = BufReader::new(watcher.stdout.take().expect("piped stdout"));
+    let mut out = Vec::new();
+    for _ in 0..lines {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read a watched line");
+        out.push(line.trim_end_matches('\n').to_string());
+    }
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    watcher.kill().expect("stop the watcher this test started");
+    watcher.wait().expect("reap the watcher");
+    let mut rest = String::new();
+    reader.read_to_string(&mut rest).expect("drain the watcher");
+    out.extend(rest.lines().map(str::to_string));
+    out
+}
+
+fn spawn_watch(args: &[&str]) -> std::process::Child {
+    Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args(["history", "watch"])
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn history watch")
+}
+
+#[test]
+fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
+    // `tests/fixtures/history-watch-v0.17.0-tools-only.jsonl` is the verbatim
+    // stdout of the released v0.17.0 binary's `history watch --events
+    // --all-projects` over a history it wrote for this same recorded
+    // claude-code stream (its tool calls and results only), driven through
+    // this suite's mock. Today's build, given the same run, prints the same
+    // lines — framing, line types, every field — once the values that differ
+    // between any two runs are set aside and the one additive field is
+    // dropped.
+    let golden: Vec<Value> = include_str!("fixtures/history-watch-v0.17.0-tools-only.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let dir = hist_dir("watch-v0-17-0");
+    let project = ScratchDir::new("watch-v0-17-0-project").unwrap();
+    let ds = dir.display().to_string();
+    let seeded = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "tools only",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "tools-only",
+            "--cwd",
+            &project.display().to_string(),
+        ],
+        &[(
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-stream-json-tools-only.jsonl"),
+        )],
+    );
+    assert!(seeded.status.success(), "{seeded:?}");
+    let watched = watch_output(
+        spawn_watch(&["--events", "--all-projects", "--history-dir", &ds]),
+        golden.len(),
+    );
+    let normalize = |mut value: Value| {
+        without_run_varying_values(&mut value);
+        value
+    };
+    let ours: Vec<Value> = watched
+        .iter()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["type"] == "event" {
+                let session_name = value["line"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("session_name");
+                assert_eq!(session_name, Some(Value::from("tools-only")), "{line}");
+            }
+            normalize(value)
+        })
+        .collect();
+    let theirs: Vec<Value> = golden.into_iter().map(normalize).collect();
+    assert_eq!(ours, theirs);
+}
+
+#[test]
+fn a_running_session_is_listed_shown_and_tailed_from_a_second_process() {
+    use std::io::BufReader;
+
+    let mock_profile = mock_profile_redirect();
+    let dir = hist_dir("in-flight");
+    let ds = dir.display().to_string();
+    let mut run_child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", CODEX_EXEC_TURN)
+        // Twelve recorded lines this far apart keep the turn going for
+        // seconds after its first events land.
+        .env("MOCK_STREAM_DELAY_MS", "500")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "tail me",
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+            "--format",
+            "json",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "tail-me",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the running session");
+
+    let scope = ["--all-projects", "--history-dir", ds.as_str()];
+    let list = |format: &str| {
+        run_as_typed(
+            &[&["history", "list", "--format", format][..], &scope[..]].concat(),
+            &[],
+        )
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let listed = loop {
+        let listed = json_stdout(&list("json"));
+        if !listed.as_array().unwrap().is_empty() {
+            break listed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the session never appeared"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(
+        run_child.try_wait().unwrap().is_none(),
+        "the first turn ended before the session could be listed"
+    );
+    let session = &listed[0];
+    assert_eq!(session["name"], "tail-me");
+    assert_eq!(session["running"], true);
+    assert_eq!(session["record_count"], 0);
+    assert_eq!(session["harnesses"], serde_json::json!(["codex"]));
+    assert!(
+        session["started"].as_str().unwrap().ends_with('Z'),
+        "{session}"
+    );
+    let text = String::from_utf8_lossy(&list("text").stdout).to_string();
+    assert!(
+        text.contains("  tail-me  (0 runs, codex) · running\n"),
+        "{text}"
+    );
+
+    let shown = run_as_typed(
+        &[
+            &["history", "show", "tail-me", "--format", "json"][..],
+            &scope[..],
+        ]
+        .concat(),
+        &[],
+    );
+    let shown = json_stdout(&shown);
+    assert_eq!(shown[0]["type"], "incomplete", "{shown}");
+    assert_eq!(shown[0]["events"][0]["kind"], "message", "{shown}");
+    let shown_text = run_as_typed(
+        &[
+            &["history", "show", "tail-me", "--format", "text"][..],
+            &scope[..],
+        ]
+        .concat(),
+        &[],
+    );
+    let shown_text = String::from_utf8_lossy(&shown_text.stdout).to_string();
+    assert!(
+        shown_text.starts_with(&format!(
+            "running  [codex]\n  {}\n",
+            CODEX_EXEC_TURN_TEXT[0]
+        )),
+        "{shown_text}"
+    );
+
+    let mut watcher = spawn_watch(
+        &[
+            &["--session", "tail-me", "--events", "--format", "text"][..],
+            &scope[..],
+        ]
+        .concat(),
+    );
+    let mut reader = BufReader::new(watcher.stdout.take().unwrap());
+    let mut tailed = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read a tailed line");
+        if tailed.is_empty() {
+            assert!(
+                run_child.try_wait().unwrap().is_none(),
+                "the tail started only after the turn ended"
+            );
+        }
+        let line = line.trim_end_matches('\n').to_string();
+        let closed = line.contains("[codex] ok");
+        tailed.push(line);
+        if closed {
+            break;
+        }
+    }
+    watcher.kill().expect("stop the watcher this test started");
+    watcher.wait().expect("reap the watcher");
+    assert!(run_child.wait().unwrap().success());
+    // Every event in `render_event`'s form, in order, then the closing record.
+    assert_eq!(
+        &tailed[..CODEX_EXEC_TURN_TEXT.len()],
+        CODEX_EXEC_TURN_TEXT,
+        "{tailed:#?}"
+    );
+    assert_eq!(tailed.len(), CODEX_EXEC_TURN_TEXT.len() + 1, "{tailed:#?}");
+    assert!(
+        tailed.last().unwrap().ends_with("  [codex] ok"),
+        "{tailed:#?}"
+    );
+
+    // Once the turn closes, the session is an ordinary one again.
+    let closed = json_stdout(&list("json"));
+    assert_eq!(closed[0]["record_count"], 1);
+    assert!(closed[0].get("running").is_none(), "{closed}");
+}
+
+#[test]
+fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_labels() {
+    let dir = hist_dir("watch-session");
+    let ds = dir.display().to_string();
+    let bin = bin_override("codex");
+    let seed = |name: &str, labels: &[&str]| -> Value {
+        let mut args = vec![
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            name,
+            "--bin",
+            bin.as_str(),
+            "--stream",
+            "--history",
+            "--history-dir",
+            ds.as_str(),
+            "--history-name",
+            name,
+            "--bypass",
+        ];
+        for label in labels {
+            args.extend(["--history-label", label]);
+        }
+        let output = run(&args, &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)]);
+        assert!(output.status.success(), "{output:?}");
+        let report = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .last()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .unwrap();
+        raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0)
+    };
+    let alpha = seed("alpha", &[]);
+    let _beta = seed("beta", &[]);
+    let gamma = seed("gamma", &["team=x"]);
+    let _delta = seed("delta", &["team=x"]);
+
+    for (selector, target) in [
+        ("alpha", &alpha),
+        (alpha["session"].as_str().unwrap(), &alpha),
+        ("gamma", &gamma),
+        (gamma["session"].as_str().unwrap(), &gamma),
+    ] {
+        // One `message` event line, then the closing record — and nothing
+        // from the session beside it, whatever it shares with it.
+        let watched = watch_output(
+            spawn_watch(&[
+                "--session",
+                selector,
+                "--events",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+            ]),
+            2,
+        );
+        assert_eq!(watched.len(), 2, "{selector}: {watched:#?}");
+        let event: Value = serde_json::from_str(&watched[0]).unwrap();
+        assert_eq!(event["type"], "event", "{selector}");
+        assert_eq!(event["line"]["run_id"], target["history_id"], "{selector}");
+        assert_eq!(event["line"]["session_name"], target["name"], "{selector}");
+        assert_eq!(event["line"]["event"]["kind"], "message", "{selector}");
+        let record: Value = serde_json::from_str(&watched[1]).unwrap();
+        assert_eq!(record["type"], "record", "{selector}");
+        assert_eq!(record["record"]["session"], target["session"], "{selector}");
+    }
+}
+
+#[test]
+fn agent_messages_and_reasoning_reach_history_for_codex_and_claude() {
+    for (harness, recording, kinds) in [
+        (
+            "codex",
+            CODEX_EXEC_TURN,
+            vec![
+                "message",
+                "reasoning",
+                "tool_call",
+                "tool_call",
+                "tool_call",
+                "message",
+            ],
+        ),
+        (
+            "claude-code",
+            include_str!("fixtures/claude-stream-json-turn.jsonl"),
+            vec![
+                "reasoning",
+                "message",
+                "tool_call",
+                "tool_result",
+                "tool_call",
+                "tool_result",
+                "reasoning",
+                "message",
+            ],
+        ),
+    ] {
+        let dir = hist_dir(&format!("text-events-{harness}"));
+        let ds = dir.display().to_string();
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                harness,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin_override(harness),
+                "--stream",
+                "--history",
+                "--history-dir",
+                &ds,
+            ],
+            &[("MOCK_STDOUT", recording)],
+        );
+        assert!(output.status.success(), "{harness}: {output:?}");
+        let shown = json_stdout(&run(
+            &[
+                "history",
+                "show",
+                "--last",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+            ],
+            &[],
+        ));
+        let events = shown[0]["events"].as_array().unwrap();
+        let got: Vec<&str> = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(got, kinds, "{harness}");
+        for event in events.iter().filter(|event| event["kind"] != "tool_call") {
+            if event["kind"] != "tool_result" {
+                assert!(
+                    !event["output"].as_str().unwrap().trim().is_empty(),
+                    "{harness}: {event}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unmigrated_history_elsewhere_is_never_warned_about_and_in_scope_once() {
+    let dir = hist_dir("unmigrated-scope");
+    let ds = dir.display().to_string();
+    let project = ScratchDir::new("unmigrated-scope-project").unwrap();
+    let canonical = std::fs::canonicalize(&*project).unwrap();
+    let slug = oneharness_core::domain::history::project_slug(&canonical.display().to_string());
+    let legacy =
+        "{\"schema_version\":\"0.3\",\"history_id\":\"0198f0d0-7b31-7000-8000-000000000001\"}\n";
+    let elsewhere = dir.join("Users-someone-else-crozier");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("old-20260101T000000Z-1.jsonl"), legacy).unwrap();
+
+    // A run in this project reads nothing from that one, and says nothing
+    // about it — however many turns it takes.
+    for turn in 0..2 {
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "turn",
+                "--bin",
+                &bin_override("codex"),
+                "--history",
+                "--history-dir",
+                &ds,
+                "--cwd",
+                &canonical.display().to_string(),
+                "--bypass",
+            ],
+            &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+        );
+        assert!(output.status.success(), "{turn}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("unmigrated"), "turn {turn}: {stderr}");
+    }
+
+    // Reading this project's own sessions, two unmigrated files in it are
+    // said once.
+    let own = dir.join(&slug);
+    for name in ["a-20260101T000000Z-1.jsonl", "b-20260101T000000Z-2.jsonl"] {
+        std::fs::write(own.join(name), legacy).unwrap();
+    }
+    let listed = run(
+        &[
+            "history",
+            "list",
+            "--project",
+            &canonical.display().to_string(),
+            "--history-dir",
+            &ds,
+        ],
+        &[],
+    );
+    assert!(listed.status.success(), "{listed:?}");
+    let stderr = String::from_utf8_lossy(&listed.stderr);
+    assert_eq!(
+        stderr.matches("skipped unmigrated history lines").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains(&slug), "{stderr}");
+    // The two turns' sessions; the unreadable files hold none.
+    assert_eq!(json_stdout(&listed).as_array().unwrap().len(), 2);
 }

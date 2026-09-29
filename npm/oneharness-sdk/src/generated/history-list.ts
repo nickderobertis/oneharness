@@ -34,6 +34,12 @@ export interface HistorySessionSummary {
    */
   record_count: number;
   /**
+   * Whether a harness run in this session has written events but not yet
+   * its closing record — the run is still going (or ended without one: a
+   * killed process leaves the same file). Omitted when false.
+   */
+  running?: boolean | undefined;
+  /**
    * The RFC3339 UTC start time (first record's timestamp); empty if unknown.
    */
   started: string;

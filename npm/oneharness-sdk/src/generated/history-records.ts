@@ -61,7 +61,6 @@ export type HistoryRecord =
               })
             | (ActionEvent & {
                 kind?: "message" | "reasoning" | undefined;
-                status?: null | undefined;
                 [k: string]: unknown;
               })
           )[]
@@ -233,7 +232,6 @@ export type HistoryRecord =
               })
             | (ActionEvent & {
                 kind?: "message" | "reasoning" | undefined;
-                status?: null | undefined;
                 [k: string]: unknown;
               })
           ) & {

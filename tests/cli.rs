@@ -35075,21 +35075,43 @@ fn without_run_varying_values(value: &mut Value) {
 /// its end once it is stopped: the watch never ends by itself, so after the
 /// expected lines it is given a moment to print anything it should not, then
 /// killed (this test started it) and drained.
+/// The watcher's first `lines` lines, then whatever else it printed in the
+/// moment after. A watcher that never prints what it was expected to fails the
+/// test at a deadline rather than blocking it forever: it is stopped, and the
+/// lines it did print are in the message.
 fn watch_output(mut watcher: std::process::Child, lines: usize) -> Vec<String> {
-    use std::io::{BufReader, Read};
-    let mut reader = BufReader::new(watcher.stdout.take().expect("piped stdout"));
+    use std::io::BufReader;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let reader = BufReader::new(watcher.stdout.take().expect("piped stdout"));
+    let (sender, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
     let mut out = Vec::new();
-    for _ in 0..lines {
-        let mut line = String::new();
-        reader.read_line(&mut line).expect("read a watched line");
-        out.push(line.trim_end_matches('\n').to_string());
+    while out.len() < lines {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => out.push(line),
+            Err(_) => {
+                watcher.kill().expect("stop the watcher this test started");
+                watcher.wait().expect("reap the watcher");
+                panic!(
+                    "the watcher printed {} of {lines} lines: {out:#?}",
+                    out.len()
+                );
+            }
+        }
     }
-    std::thread::sleep(std::time::Duration::from_millis(400));
+    std::thread::sleep(Duration::from_millis(400));
     watcher.kill().expect("stop the watcher this test started");
     watcher.wait().expect("reap the watcher");
-    let mut rest = String::new();
-    reader.read_to_string(&mut rest).expect("drain the watcher");
-    out.extend(rest.lines().map(str::to_string));
+    out.extend(received.iter());
     out
 }
 
@@ -35410,6 +35432,33 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
         let record: Value = serde_json::from_str(&watched[1]).unwrap();
         assert_eq!(record["type"], "record", "{selector}");
         assert_eq!(record["record"]["session"], target["session"], "{selector}");
+    }
+
+    // A name is non-unique: a second, newer `gamma` under another label. The
+    // labels pick which `gamma` the name follows — each composition selects
+    // exactly its own session, never the newest one filtered to nothing.
+    let gamma_y = seed("gamma", &["team=y"]);
+    assert_ne!(gamma_y["session"], gamma["session"]);
+    for (label, target) in [("team=x", &gamma), ("team=y", &gamma_y)] {
+        let watched = watch_output(
+            spawn_watch(&[
+                "--session",
+                "gamma",
+                "--label",
+                label,
+                "--events",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+            ]),
+            2,
+        );
+        assert_eq!(watched.len(), 2, "{label}: {watched:#?}");
+        let event: Value = serde_json::from_str(&watched[0]).unwrap();
+        assert_eq!(event["line"]["run_id"], target["history_id"], "{label}");
+        let record: Value = serde_json::from_str(&watched[1]).unwrap();
+        assert_eq!(record["record"]["session"], target["session"], "{label}");
+        assert_eq!(record["record"]["labels"]["team"], label[5..], "{label}");
     }
 }
 

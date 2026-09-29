@@ -2262,8 +2262,8 @@ on startup adds missing session records, ignores removed sessions, and truncates
 a partial final index line left by an interrupted writer. Reusing the last
 emitted `history_id` with `--after` resumes without duplication; repeated
 `--label` filters are ANDed. `--session` follows exactly one session, by its id
-or its name (the newest so named, or the first to appear), with or without
-labels; `--format text` prints each event in the renderer's form and a short
+or its name (the newest so named whose labels match every `--label`, or the
+first to appear), with or without labels; `--format text` prints each event in the renderer's form and a short
 block per closing record, so `oneharness history watch --session <name> --events
 --format text` tails a run from another terminal. A session whose run is still
 going — events on disk, no closing record yet — is already listed (marked

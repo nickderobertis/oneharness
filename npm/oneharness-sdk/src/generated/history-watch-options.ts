@@ -24,8 +24,9 @@ export interface HistoryWatchOptions {
   noConfig?: boolean | undefined;
   project?: string | undefined;
   /**
-   * Follow one session: its id, or its name (the newest session so named,
-   * including one still running, or the first to appear).
+   * Follow one session: its id, or its name (the newest session so named
+   * whose labels match every label filter, including one still running, or
+   * the first to appear).
    */
   session?: string | null | undefined;
   /**

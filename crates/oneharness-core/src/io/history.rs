@@ -790,9 +790,12 @@ impl HistoryWatcher {
 
     /// [`open`](Self::open), narrowed to one session when `session` names one:
     /// a session id (its file stem) selects that session; any other value is a
-    /// session name, which selects the newest session carrying it in scope —
-    /// a run still in progress included — or, when none exists yet, the first
-    /// one to appear. Labels and project scope still apply on top.
+    /// session name, which selects the newest session carrying it in scope
+    /// whose labels match `labels` — a run still in its first turn, whose
+    /// labels no record states yet, included — or, when none exists yet, the
+    /// first matching one to appear. A name is non-unique, so the labels pick
+    /// among its sessions rather than filtering only the newest one to nothing.
+    /// Labels and project scope still apply on top.
     pub fn open_session(
         dir: &Path,
         after: Option<HistoryId>,
@@ -809,7 +812,10 @@ impl HistoryWatcher {
             Some(HistorySessionSelector::Name(name)) => {
                 let id = list_sessions(dir, project_slug.as_deref())?
                     .into_iter()
-                    .find(|summary| summary.name == name.as_str())
+                    .find(|summary| {
+                        summary.name == name.as_str()
+                            && (summary.record_count == 0 || summary.labels.matches(&labels))
+                    })
                     .map(|summary| summary.id);
                 Some(SessionFilter {
                     selector: HistorySessionSelector::Name(name.clone()),

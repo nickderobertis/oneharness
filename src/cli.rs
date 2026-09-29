@@ -531,8 +531,8 @@ pub struct HistoryWatchArgs {
     pub variant: Option<oneharness_core::domain::config::VariantName>,
 
     /// Follow only this session: its id (as `history list` prints it), or its
-    /// name — the newest session so named, including one still running, or
-    /// the first to appear if none exists yet.
+    /// name — the newest session so named whose labels match every `--label`,
+    /// including one still running, or the first to appear if none exists yet.
     #[arg(long, value_name = "NAME|ID")]
     pub session: Option<oneharness_core::domain::history::HistorySessionSelector>,
 

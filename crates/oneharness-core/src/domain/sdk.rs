@@ -561,8 +561,9 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub variant: Option<String>,
-    /// Follow one session: its id, or its name (the newest session so named,
-    /// including one still running, or the first to appear).
+    /// Follow one session: its id, or its name (the newest session so named
+    /// whose labels match every label filter, including one still running, or
+    /// the first to appear).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::domain::history::HistorySessionSelector>,
     /// Load configuration from exactly this file, skipping user/project

@@ -1534,6 +1534,150 @@ oh_mode_enforce() {
     note "PASS: $id $mode enforcement"
 }
 
+# Live proof that a CONTINUED turn runs under the same sandbox mode as the turn
+# that opened the session (issue #1372). Two ordinary (non-control)
+# `oneharness run --session` turns under one `--mode`: turn one establishes a
+# word, turn two — the harness's own resume argv (`codex exec resume` for codex)
+# — must actually run, report `session.phase == "continue"`, recall the word,
+# and be asked to `touch` a file. Under a writing mode (`auto`) the file must
+# exist afterwards; under a no-mutation mode (`read-only`, `plan`) it must not.
+# Under `read-only` the turn's normalized tool events must also show the
+# `touch` was ATTEMPTED, so an absent file cannot pass merely because the model
+# declined. The `; echo touch-exit=$?` tail is what makes that visible: codex
+# 0.157's `exec --json` emits no `command_execution` item for a command that
+# exits non-zero on a sandbox denial (observed live under read-only), so the
+# command must itself exit 0 for its attempt — and the sandbox's own
+# `Read-only file system` — to reach the normalized events at all.
+# Only the real CLI can alarm this: an argv test restates what
+# oneharness believes the resume subcommand accepts, and it was wrong once —
+# `exec resume` has no `--sandbox`, so every continued sandboxed turn died at
+# argument parsing while the fresh turn passed.
+#   $1 harness id, $2 mode (auto | read-only | plan)
+oh_resume_mode_enforce() {
+    local id="$1" mode="$2"
+    local bin sandbox store name marker file status phase text refusal
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+
+    sandbox="$(mktemp -d)"
+    sandbox="$(oh_native_path "$sandbox")"
+    oh_sandbox_prepare "$id" "$sandbox"
+    mkdir -p "$sandbox/work"
+    # A real repo: codex refuses to run outside one (`untrusted_directory`)
+    # unless the directory is trusted, and trusting it is not this phase's job.
+    git init -q "$sandbox/work" 2>/dev/null || true
+    store="$sandbox/sessions"
+    name="ohresume${RANDOM}"
+    marker="$(oh_marker_fixed)"
+    file="$(oh_enforce_file "resume-$mode")"
+
+    note "  resume-mode[$mode]: turn one opens session $name ($id)"
+    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
+        "Remember this exact word for the rest of our conversation: $marker. Do not run any tools. Reply with only the word OK." \
+        "$sandbox/first.json" "$sandbox/first.err"
+    status="$(_oh_result_status "$sandbox/first.json")"
+    if [ "$status" = "skipped" ]; then
+        rm -rf "$sandbox"
+        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+    fi
+    if [ "$status" != "ok" ]; then
+        refusal="$(_oh_provider_refusal <"$sandbox/first.json" 2>/dev/null)" || refusal=""
+        if [ -n "$refusal" ]; then
+            rm -rf "$sandbox"
+            not_run "$id: its own provider refused turn one, so the $mode resume was never reached: $refusal"
+        fi
+        _oh_control_evidence "$sandbox/work" "$sandbox/first.json"
+        note "  first turn stderr: $(head -c 800 "$sandbox/first.err" 2>/dev/null || true)"
+        rm -rf "$sandbox"
+        fail "$id: turn one under --mode $mode did not complete (status=${status:-<no report>}) — the fresh turn is not what this phase tests, but without it there is no session to continue"
+    fi
+    if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
+        "$sandbox/first.json" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
+    fi
+
+    note "  resume-mode[$mode]: turn two resumes $name under the same --mode and is asked to touch $file"
+    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
+        "You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation." \
+        "$sandbox/second.json" "$sandbox/second.err" --events
+    status="$(_oh_result_status "$sandbox/second.json")"
+    if [ "$status" != "ok" ]; then
+        refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
+        if [ -n "$refusal" ]; then
+            rm -rf "$sandbox"
+            not_run "$id: its own provider refused the resumed turn under --mode $mode: $refusal"
+        fi
+        note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
+        note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | head -c 800)"
+        note "  second turn oneharness stderr: $(head -c 800 "$sandbox/second.err" 2>/dev/null || true)"
+        rm -rf "$sandbox"
+        fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one"
+    fi
+    if ! jq -e '.results[0].command | index("resume") != null' "$sandbox/second.json" >/dev/null 2>&1; then
+        rm -rf "$sandbox"
+        fail "$id: turn two did not run the resume argv ($(jq -c '.results[0].command' "$sandbox/second.json")) — nothing about a resumed turn was exercised"
+    fi
+    phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
+    if [ "$phase" != "continue" ]; then
+        rm -rf "$sandbox"
+        fail "$id: turn two reported session phase=$phase, not continue — a fresh thread is not a resumed one"
+    fi
+    text="$(jq -r '.results[0].text // ""' "$sandbox/second.json")"
+    case "$text" in
+    *"$marker"*) note "  ok[$mode]: turn two continued the conversation (recalled $marker)" ;;
+    *)
+        note "  second turn text: $(printf '%s' "$text" | head -c 500)"
+        rm -rf "$sandbox"
+        fail "$id: turn two reported phase=continue under --mode $mode but did not recall the word turn one established — the resume carried no conversation"
+        ;;
+    esac
+
+    case "$mode" in
+    auto)
+        if [ ! -e "$sandbox/work/$file" ]; then
+            note "  second turn events: $(jq -c '[(.results[0].events // [])[] | select(.kind == "tool_call") | .input]' "$sandbox/second.json" | head -c 800)"
+            rm -rf "$sandbox"
+            fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had"
+        fi
+        note "  ok[$mode]: the resumed turn wrote to the workspace"
+        ;;
+    *)
+        if [ -e "$sandbox/work/$file" ]; then
+            rm -rf "$sandbox"
+            fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had"
+        fi
+        if [ "$mode" = "read-only" ] && ! jq -e --arg f "$file" \
+            '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
+            "$sandbox/second.json" >/dev/null 2>&1; then
+            note "  second turn events: $(jq -c '.results[0].events' "$sandbox/second.json" | head -c 800)"
+            rm -rf "$sandbox"
+            fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing"
+        fi
+        note "  ok[$mode]: the resumed turn's write was blocked"
+        ;;
+    esac
+
+    rm -rf "$sandbox"
+    note "PASS: $id resumed a session under --mode $mode with the mode's sandbox intact"
+}
+
+# One ordinary (non-control) turn on a named session handle, under `--mode`.
+# Its exit code is not the verdict — the caller reads the report — so it never
+# fails the phase by itself.
+#   $1 id, $2 mode, $3 session name, $4 store dir, $5 cwd, $6 prompt,
+#   $7 report, $8 stderr, $9.. extra run args
+_oh_resume_mode_turn() {
+    local id="$1" mode="$2" name="$3" store="$4" cwd="$5" prompt="$6" report="$7" err="$8"
+    shift 8
+    local model_args=()
+    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+    ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
+        --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
+        --timeout "${OH_TIMEOUT:-300}" --compact \
+        "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
+}
+
 # Live proof that `--mode edit` AUTO-APPROVES file edits — the reliably-testable
 # half of edit's "auto-approve edits, gate shell" contract. The agent is asked to
 # create a file with ONLY its file-writing/editing tool; under `--mode edit` that

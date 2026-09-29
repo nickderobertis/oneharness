@@ -45,6 +45,15 @@ note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce codex read-only
 oh_mode_enforce codex plan
 
+# Resumed turns keep the mode's sandbox (issue #1372): `codex exec resume` has
+# no `--sandbox`, so a continued turn carries it as `-c sandbox_mode=`. Two
+# `--session` turns per mode; turn two must run, recall turn one, and write
+# (auto) or be blocked (read-only / plan) exactly as a fresh turn would.
+note "» resume under a sandbox mode: a continued turn must run and keep the sandbox"
+oh_resume_mode_enforce codex auto
+oh_resume_mode_enforce codex read-only
+oh_resume_mode_enforce codex plan
+
 # Mock enforcement: codex's hooks engine loads project .codex/hooks.json under
 # `exec` and honors the claude-nested `updatedInput` rewrite — but only when
 # the invocation opts in with `-c features.hooks=true` plus the per-run hook

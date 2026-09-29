@@ -641,9 +641,19 @@ impl JsonSchema for HistorySessionName {
 
 /// A session id: a [`HistorySessionName`], then the compact UTC instant and the
 /// pid it was minted with (`<name>-<YYYYMMDDThhmmssZ>-<pid>`, see
-/// [`format_compact_utc`]). Paired with [`SESSION_SELECTOR_FORBIDDEN_PATTERN`],
-/// which already rules out the newline Python's `$` would otherwise admit.
-const SESSION_SELECTOR_PATTERN: &str = "^(?:[a-z0-9-]+|[a-z0-9-]+-[0-9]{8}T[0-9]{6}Z-[0-9]+)$";
+/// [`format_compact_utc`]). The instant is a real proleptic-Gregorian one —
+/// days per month, leap years, hours to 23 and seconds to 59 — exactly what
+/// `session_started_from_id` accepts. Paired with
+/// [`SESSION_SELECTOR_FORBIDDEN_PATTERN`], which already rules out the newline
+/// Python's `$` would otherwise admit.
+const SESSION_SELECTOR_PATTERN: &str = concat!(
+    "^(?:[a-z0-9-]+|[a-z0-9-]+-",
+    "(?:[0-9]{4}(?:(?:0[13578]|1[02])(?:0[1-9]|[12][0-9]|3[01])",
+    "|(?:0[469]|11)(?:0[1-9]|[12][0-9]|30)",
+    "|02(?:0[1-9]|1[0-9]|2[0-8]))",
+    "|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)0229)",
+    "T(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]Z-[0-9]+)$",
+);
 
 /// [`SESSION_NAME_FORBIDDEN_PATTERN`] widened by the upper-case letters an id's
 /// instant carries; [`SESSION_SELECTOR_PATTERN`] confines them to it.
@@ -656,15 +666,51 @@ const SESSION_SELECTOR_FORBIDDEN_PATTERN: &str = "[^A-Za-z0-9-]|^-|-$|--";
 )]
 pub struct HistorySessionSelectorError;
 
+/// A session id in the shape a history writer mints it:
+/// `<name>-<YYYYMMDDThhmmssZ>-<pid>`, where the name is a
+/// [`HistorySessionName`] and the instant a real calendar one. Constructed only
+/// by parsing, so no other text can be held as one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HistorySessionId(String);
+
+impl HistorySessionId {
+    /// The id as text — the session file's stem.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for HistorySessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for HistorySessionId {
+    type Err = HistorySessionSelectorError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let name = value
+            .rsplitn(3, '-')
+            .nth(2)
+            .ok_or(HistorySessionSelectorError)?;
+        if name.parse::<HistorySessionName>().is_err() || session_started_from_id(value).is_none() {
+            return Err(HistorySessionSelectorError);
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+
 /// Which one session to follow: its id — the session file's stem, exactly as
 /// `history list` prints it — or its name. Both shapes are the ones a
 /// [`HistorySessionName`]-based writer mints, so a selector nothing could ever
-/// match (empty, spaced, path-like) is refused where it enters rather than
-/// followed silently forever.
+/// match (empty, spaced, path-like, an impossible instant) is refused where it
+/// enters rather than followed silently forever.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HistorySessionSelector {
     /// A session id: `<name>-<YYYYMMDDThhmmssZ>-<pid>`.
-    Id(String),
+    Id(HistorySessionId),
     /// A session name, matched against the name its lines and records carry.
     Name(HistorySessionName),
 }
@@ -674,7 +720,7 @@ impl HistorySessionSelector {
     #[must_use]
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Id(id) => id,
+            Self::Id(id) => id.as_str(),
             Self::Name(name) => name.as_str(),
         }
     }
@@ -686,31 +732,12 @@ impl fmt::Display for HistorySessionSelector {
     }
 }
 
-/// Whether `value` has the minted session-id shape: a valid name, a dash, the
-/// sixteen-character compact instant, a dash, and a non-empty digit pid.
-fn is_session_id(value: &str) -> bool {
-    let mut parts = value.rsplitn(3, '-');
-    let (Some(pid), Some(stamp), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    let digits = |text: &[u8]| text.iter().all(u8::is_ascii_digit);
-    let stamp = stamp.as_bytes();
-    !pid.is_empty()
-        && digits(pid.as_bytes())
-        && stamp.len() == 16
-        && digits(&stamp[..8])
-        && stamp[8] == b'T'
-        && digits(&stamp[9..15])
-        && stamp[15] == b'Z'
-        && name.parse::<HistorySessionName>().is_ok()
-}
-
 impl FromStr for HistorySessionSelector {
     type Err = HistorySessionSelectorError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        if is_session_id(value) {
-            return Ok(Self::Id(value.to_string()));
+        if let Ok(id) = value.parse() {
+            return Ok(Self::Id(id));
         }
         value
             .parse()
@@ -2454,10 +2481,16 @@ mod tests {
     fn a_session_selector_is_a_minted_id_or_a_sanitized_name() {
         assert_eq!(
             "release-20260929T165809Z-4242".parse(),
-            Ok(HistorySessionSelector::Id(
-                "release-20260929T165809Z-4242".to_string()
-            ))
+            "release-20260929T165809Z-4242"
+                .parse::<HistorySessionId>()
+                .map(HistorySessionSelector::Id)
         );
+        for leap in ["release-20280229T000000Z-1", "release-20000229T235959Z-1"] {
+            assert!(
+                matches!(leap.parse(), Ok(HistorySessionSelector::Id(_))),
+                "{leap}"
+            );
+        }
         assert_eq!(
             "release-check".parse(),
             Ok(HistorySessionSelector::Name(HistorySessionName::sanitize(
@@ -2475,6 +2508,12 @@ mod tests {
             "release-2026092T165809Z-1",
             "release-20260929T165809Z-",
             "-20260929T165809Z-1",
+            "release-20260230T165809Z-1",
+            "release-20260229T165809Z-1",
+            "release-19000229T165809Z-1",
+            "release-20261301T165809Z-1",
+            "release-20260929T245809Z-1",
+            "release-20260929T165860Z-1",
         ] {
             assert_eq!(
                 bad.parse::<HistorySessionSelector>(),

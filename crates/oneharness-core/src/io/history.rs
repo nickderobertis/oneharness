@@ -804,7 +804,7 @@ impl HistoryWatcher {
         let session = match session {
             Some(HistorySessionSelector::Id(id)) => Some(SessionFilter {
                 selector: HistorySessionSelector::Id(id.clone()),
-                id: Some(id.clone()),
+                id: Some(id.to_string()),
             }),
             Some(HistorySessionSelector::Name(name)) => {
                 let id = list_sessions(dir, project_slug.as_deref())?

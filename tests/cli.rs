@@ -6166,7 +6166,10 @@ fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert!(reading.events.is_empty());
+    // No tool ran: the reading holds only the agent's own finished message.
+    assert_eq!(reading.events.len(), 1, "{:?}", reading.events);
+    assert_eq!(reading.events[0].kind, "message");
+    assert_eq!(reading.events[0].output.as_deref(), Some("still working"));
 }
 
 #[cfg(not(windows))]

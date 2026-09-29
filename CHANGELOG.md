@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.17.0](https://github.com/nickderobertis/oneharness/compare/v0.16.2...v0.17.0) - 2026-09-29
+
+### Added
+
+- *(sync)* [**breaking**] sync permission rules into Codex's execpolicy file and hold lists exact with --exact ([#1368](https://github.com/nickderobertis/oneharness/pull/1368))
+
 ## [0.16.2](https://github.com/nickderobertis/oneharness/compare/v0.16.1...v0.16.2) - 2026-09-22
 
 ### Added

@@ -2448,7 +2448,14 @@ WebFetch WebSearch`, which narrows the built-in set to the tools that only read;
 Copilot's `--deny-tool shell/write` — deny beats allow) — and ᵖ behavioral where
 its only mechanism is the plan agent (OpenCode
 `--agent plan`, Qwen `--approval-mode plan`, so `read-only` and `plan` coincide
-there). Cursor's `read-only` is native `--mode ask`. Codex has no *native* plan
+there). Codex's sandbox (`read-only` and `plan` → `read-only`, `auto` →
+`workspace-write`) rides `--sandbox` on a fresh `codex exec`; a continued turn
+(`--resume`/`--session`) carries it as `-c sandbox_mode=<value>` instead, since
+`codex exec resume` has no `--sandbox` option. On a fresh turn codex lets
+`--sandbox` outrank any `-c sandbox_mode=` in `[harness.codex] args`; on a
+continued turn the last `-c` wins, so oneharness restates the mode's override
+after such caller args. Under either spelling the mode governs, and under
+`default` the caller's override does. Cursor's `read-only` is native `--mode ask`. Codex has no *native* plan
 mode in `exec`, so `plan` (ⁱ) is synthesized — the read-only sandbox enforces
 no-mutation and a plan instruction is prepended to the prompt, reproducing
 Codex's own interactive Plan mode (= read-only sandbox + a plan template). Goose

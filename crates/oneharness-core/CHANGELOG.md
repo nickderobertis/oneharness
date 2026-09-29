@@ -23,6 +23,12 @@ file (its own `extends` chain beneath it) overriding the earlier ones.
   `load(&[], …)`; `load_layers` changes the same way.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
+## [0.19.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.19.0...oneharness-core-v0.19.1) - 2026-09-29
+
+### Fixed
+
+- *(codex)* carry the sandbox mode on a resumed exec turn as config ([#1376](https://github.com/nickderobertis/oneharness/pull/1376))
+
 ## [0.19.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.18.0...oneharness-core-v0.19.0) - 2026-09-29
 
 ### Added

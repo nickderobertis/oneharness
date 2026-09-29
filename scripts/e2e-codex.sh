@@ -45,6 +45,24 @@ note "» read-only / plan enforcement: each must block a write"
 oh_mode_enforce codex read-only
 oh_mode_enforce codex plan
 
+# Resumed turns keep the mode's sandbox (issue #1372): `codex exec resume` has
+# no `--sandbox`, so a continued turn carries it as `-c sandbox_mode=`. Two
+# `--session` turns per mode; turn two must run, recall turn one, and write
+# (auto) or be blocked (read-only / plan) exactly as a fresh turn would.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» resume under a sandbox mode: a continued turn must run and keep the sandbox"
+oh_resume_mode_enforce codex auto
+oh_resume_mode_enforce codex read-only
+oh_resume_mode_enforce codex plan
+# Model-free: every spelling of a config override oneharness restates the mode
+# after is one codex applies, last one winning.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» config overrides: codex must apply every -c spelling as one last-wins list"
+oh_codex_config_override_order
+# A caller's own `-c sandbox_mode=` must not outrank the mode on a resumed turn
+# any more than it does on a fresh one, where `--sandbox` beats it.
+oh_resume_mode_enforce codex auto -- -c sandbox_mode=read-only
+
 # Mock enforcement: codex's hooks engine loads project .codex/hooks.json under
 # `exec` and honors the claude-nested `updatedInput` rewrite — but only when
 # the invocation opts in with `-c features.hooks=true` plus the per-run hook

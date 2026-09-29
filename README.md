@@ -2619,10 +2619,15 @@ user starts it, rather than through `oneharness run` (`oh_codex_rules_enforce`):
 scratch `CODEX_HOME` trusts (its `auth.json` copied from the existing login —
 the user's own `~/.codex` is never written), and each half runs one command
 before and after the sync. A synced `denied_tools` `Bash(mkdir <dir>:*)` must refuse
-a `mkdir` that ran before it, and a synced `allowed_tools` `Bash(rm -f <file>:*)` must
-run an `rm -f` Codex's own dangerous-command check refused before it. Neither
+a `mkdir` that ran before it, and a synced `allowed_tools` rule must run a forced
+delete that Codex's own dangerous-command check refused before it — spelled
+`rm -f <file>` on Linux/macOS and `Remove-Item -Force <file>` on Windows, where
+Codex runs commands in PowerShell (whose `rm` alias rejects `-f`) and checks a
+rule against the words it parses the `pwsh -Command` script into. Neither
 half leans on Codex's OS sandbox, so the proof holds on runners without
-unprivileged user namespaces.
+unprivileged user namespaces. A model-free phase (`oh_codex_rules_match`) asks
+`codex execpolicy check` whether the synced rules match both the POSIX argv and
+that Windows argv, so a Linux run proves the Windows match as well.
 
 The live check also proves **hook enforcement** the same way: it syncs a
 `[[hooks]]` entry whose command is `oneharness gate <id>` into the harness's own

@@ -1288,6 +1288,81 @@ _oh_codex_direct() {
     fi
 }
 
+# Model-free proof that the rules `sync` writes match the argv Codex checks on
+# EVERY platform, asked of Codex's own execpolicy engine (`codex execpolicy
+# check`, which takes argv and splits no shell wrapper). On Windows Codex runs a
+# command as `pwsh -Command '<script>'` and checks the words it lowers that
+# script into — `Remove-Item -Force <file>` for the allow half's delete
+# (codex-rs/core/src/exec_policy.rs commands_for_exec_policy_for_platform →
+# codex-rs/shell-command/src/powershell.rs
+# parse_powershell_command_into_plain_commands) — so this is where a Linux run
+# shows the synced rule matching what a Windows Codex asks about.
+oh_codex_rules_match() {
+    local bin scratch cfg out rules file dir argv want got status
+    bin="$(oh_bin)"
+    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+
+    scratch="$(mktemp -d)"
+    file="rules-allow-${RANDOM}${RANDOM}.txt"
+    dir="rules-deny-${RANDOM}${RANDOM}"
+    cfg="$scratch/oneharness.toml"
+    printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+        "$file" "$file" "$dir" >"$cfg"
+    if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
+        --config "$(oh_native_path "$cfg")" --compact 2>&1)"; then
+        printf '%s\n' "$out" >&2
+        rm -rf "$scratch"
+        fail "codex: oneharness sync failed — fix the error above, then rerun \`just live-codex\`"
+    fi
+    rules="$scratch/.codex/rules/oneharness.rules"
+    # One case per line: the decision Codex must reach, then the argv it checks.
+    while IFS=' ' read -r want argv; do
+        status=0
+        # shellcheck disable=SC2086 # argv is space-separated words by construction
+        out="$(codex execpolicy check --rules "$(oh_native_path "$rules")" $argv 2>"$scratch/check.err")" || status=$?
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n' "$out" >&2
+            cat "$scratch/check.err" >&2
+            rm -rf "$scratch"
+            fail "codex-rules-match: \`codex execpolicy check --rules $rules $argv\` exited $status (output above) — if it names the rules file, check that sync wrote $rules; otherwise check that \`codex --version\` still has the \`execpolicy check\` subcommand"
+        fi
+        status=0
+        got="$(printf '%s\n' "$out" | jq -r '.decision // "unmatched"' 2>&1)" || status=$?
+        if [ "$status" -ne 0 ]; then
+            printf '%s\n%s\n' "$out" "$got" >&2
+            rm -rf "$scratch"
+            fail "codex-rules-match: jq exited $status reading \`codex execpolicy check\`'s answer for [$argv] (answer and jq error above) — codex no longer prints its decision as JSON; check \`codex execpolicy check --help\` for the release \`codex --version\` names"
+        fi
+        if [ "$got" != "$want" ]; then
+            sed 's/^/    /' "$rules" >&2
+            rm -rf "$scratch"
+            fail "codex: execpolicy decided '$got' for [$argv] against the synced rules above, expected '$want' — if the file above renders [$argv]'s rule differently, fix the codex rendering in domain::sync; if it renders it as expected, codex's prefix_rule matching changed, so re-read codex-rs/execpolicy for the release \`codex --version\` names"
+        fi
+    done <<CASES
+allow rm -f $file
+allow Remove-Item -Force $file
+forbidden mkdir $dir
+unmatched rm -f other.txt
+CASES
+    # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran, and it names the Windows argv the synced rule was checked against.
+    note "  ok[codex-rules-match]: codex's execpolicy allows [rm -f $file] and the Windows-lowered [Remove-Item -Force $file], forbids [mkdir $dir]"
+    rm -rf "$scratch"
+}
+
+# Print (never run) the forced-delete command for $1, spelled for the shell
+# `codex exec` runs commands in. On Windows that is PowerShell, whose `rm` alias refuses `-f` as ambiguous — a
+# failure that once read as the synced rule not matching, though Codex checks
+# rules against the words it lowers the `pwsh -Command` script into
+# (codex-rs/shell-command/src/powershell.rs,
+# parse_powershell_command_into_plain_commands) and `rm -f` had matched.
+_oh_codex_render_forced_delete() {
+    case "$(uname -s)" in
+        MINGW* | MSYS* | CYGWIN*) printf 'Remove-Item -Force %s' "$1" ;;
+        *) printf 'rm -f %s' "$1" ;;
+    esac
+}
+
 # Live proof that a DIRECTLY started Codex honors the execpolicy rules
 # `oneharness sync` writes to `.codex/rules/oneharness.rules` — the drift alarm
 # for the file's location, its `prefix_rule` dialect, and the project-layer
@@ -1298,15 +1373,16 @@ _oh_codex_direct() {
 # only thing that changed Codex's decision.
 #   * deny:  `mkdir <dir>` runs under --dangerously-bypass-approvals-and-sandbox;
 #            a synced `denied_tools` `Bash(mkdir <dir>:*)` must make Codex refuse it.
-#   * allow: `rm -f <file>` is refused by Codex's own dangerous-command check
-#            (no approval can be asked for under that flag); a synced
-#            `allowed_tools` `Bash(rm -f <file>:*)` must let it run.
+#   * allow: a forced delete of <file> (_oh_codex_render_forced_delete) is refused
+#            by Codex's own dangerous-command check (no approval can be asked
+#            for under that flag); a synced `allowed_tools` rule naming it must
+#            let it run.
 # Neither half leans on Codex's OS sandbox, so the proof holds on a host (or CI
 # runner) without unprivileged user namespaces. Codex reads a scratch
 # CODEX_HOME: auth.json copied from the existing login, and a config.toml that
 # trusts only the scratch project — the user's own ~/.codex is never written.
 oh_codex_rules_enforce() {
-    local bin auth scratch home proj cfg real out rules dir file
+    local bin auth scratch home proj cfg real out rules dir file del
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
     command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
@@ -1326,10 +1402,11 @@ oh_codex_rules_enforce() {
         | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
     dir="rules-deny-${RANDOM}${RANDOM}"
     file="$(oh_enforce_file rules-allow)"
+    del="$(_oh_codex_render_forced_delete "$file")"
     touch "$proj/$file"
     local deny_prompt allow_prompt
     deny_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: mkdir $dir. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not create the directory any other way; reply with the single word DENIED and stop."
-    allow_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: rm -f $file. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not remove the file any other way; reply with the single word DENIED and stop."
+    allow_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: $del. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not remove the file any other way; reply with the single word DENIED and stop."
     local bypass=(--dangerously-bypass-approvals-and-sandbox)
 
     _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
@@ -1343,13 +1420,21 @@ oh_codex_rules_enforce() {
     if [ ! -e "$proj/$file" ]; then
         printf '%s\n' "$_OH_CODEX_OUT" >&2
         rm -rf "$scratch"
-        fail "codex: the control run removed $file with no rule synced, so the allow half would prove nothing — if the transcript shows codex ran rm -f itself, its dangerous-command check no longer refuses it: pick a command codex-rs/shell-command's is_dangerous_command still refuses and use it here"
+        fail "codex: the control run removed $file with no rule synced, so the allow half would prove nothing — if the transcript shows codex ran $del itself, its dangerous-command check no longer refuses it: pick a command codex-rs/shell-command's is_dangerous_command still refuses and use it here"
+    fi
+    # The file surviving is not enough: a delete the SHELL failed (PowerShell
+    # refusing `rm -f`) leaves it too, and then the allow half proves nothing.
+    # The control counts only when Codex itself refused the command.
+    if ! printf '%s\n' "$_OH_CODEX_OUT" | grep -qF 'rejected: '; then
+        printf '%s\n' "$_OH_CODEX_OUT" >&2
+        rm -rf "$scratch"
+        fail "codex: $file survived the control run but codex never refused '$del' — the command failed some other way (read the transcript above), so the allow half would prove nothing; fix the spelling in _oh_codex_render_forced_delete"
     fi
 
     cfg="$scratch/oneharness.toml"
     # Each rule names only the scratch path its half needs.
-    printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-        "$file" "$dir" >"$cfg"
+    printf '[harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+        "$del" "$dir" >"$cfg"
     if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
         --config "$cfg" --compact 2>&1)"; then
         printf '%s\n' "$out" >&2
@@ -1378,10 +1463,10 @@ oh_codex_rules_enforce() {
         printf '%s\n' "$_OH_CODEX_OUT" >&2
         sed 's/^/    /' "$rules" >&2
         rm -rf "$scratch"
-        fail "codex: rm -f $file was still refused with the synced allowed_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> rm -f $file\` whether it matches"
+        fail "codex: $del was still refused with the synced allowed_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> $del\` whether it matches"
     fi
     # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran and passed, and it quotes Codex's own refusal — the evidence that the synced rule, not something else, decided.
-    note "  ok[codex-rules]: before sync mkdir ran and rm -f was refused; after it, mkdir was ${refused:-refused} and rm -f ran"
+    note "  ok[codex-rules]: before sync mkdir ran and $del was refused; after it, mkdir was ${refused:-refused} and $del ran"
     rm -rf "$scratch"
 }
 

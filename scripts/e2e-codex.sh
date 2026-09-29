@@ -26,6 +26,11 @@ oh_assert_echoed codex "$marker"
 # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
 note "» synced rules: a directly started codex must honor .codex/rules/oneharness.rules"
 oh_codex_rules_enforce
+# Model-free: the synced rules match the argv codex checks on every platform —
+# on Windows the words it lowers a `pwsh -Command` script into.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure to a phase in the CI log.
+note "» synced rules: codex's own execpolicy must match them against the POSIX and Windows argv"
+oh_codex_rules_match
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `codex exec -` (stdin sentinel), with the system prepended into that stream —

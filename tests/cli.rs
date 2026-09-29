@@ -35354,13 +35354,28 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
             .unwrap();
         raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0)
     };
-    // An empty selector names no session: refused before anything is read.
-    let empty = run(
-        &["history", "watch", "--session", "", "--history-dir", &ds],
-        &[],
-    );
-    assert_eq!(empty.status.code(), Some(2), "{empty:?}");
-    assert!(empty.stdout.is_empty());
+    // A selector no session could carry — empty, spaced, upper-case or
+    // path-like — names nothing: refused before anything is read, rather than
+    // followed forever.
+    for selector in ["", "Alpha Beta", "Alpha", "../alpha", "alpha-"] {
+        let refused = run(
+            &[
+                "history",
+                "watch",
+                "--session",
+                selector,
+                "--history-dir",
+                &ds,
+            ],
+            &[],
+        );
+        assert_eq!(refused.status.code(), Some(2), "{selector:?}: {refused:?}");
+        assert!(refused.stdout.is_empty(), "{selector:?}");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("must be a session id"),
+            "{selector:?}: {refused:?}"
+        );
+    }
 
     let alpha = seed("alpha", &[]);
     let _beta = seed("beta", &[]);

@@ -27,7 +27,7 @@ export interface HistoryWatchOptions {
    * Follow one session: its id, or its name (the newest session so named,
    * including one still running, or the first to appear).
    */
-  session?: string | undefined;
+  session?: string | null | undefined;
   /**
    * Narrow to one configured harness identity (`claude-code:work`).
    */

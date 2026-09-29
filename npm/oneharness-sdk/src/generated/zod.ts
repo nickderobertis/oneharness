@@ -2660,7 +2660,18 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
-  session: z.string().min(1).optional(),
+  session: z
+    .union([
+      z
+        .string()
+        .min(1)
+        .regex(new RegExp("^(?:[a-z0-9-]+|[a-z0-9-]+-[0-9]{8}T[0-9]{6}Z-[0-9]+)$", "u"))
+        .refine((value) => !new RegExp("[^A-Za-z0-9-]|^-|-$|--", "u").test(value), {
+          message: "Invalid string: must not contain [^A-Za-z0-9-]|^-|-$|--",
+        }),
+      z.null(),
+    ])
+    .optional(),
   variant: z.string().optional(),
 });
 

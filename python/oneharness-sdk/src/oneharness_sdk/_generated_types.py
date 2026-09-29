@@ -78,7 +78,7 @@ class _HistoryWatchOptionsOptional(TypedDict, total=False):
     labels: dict[str, str]
     no_config: bool
     project: str
-    session: str
+    session: Any
     variant: str
 
 

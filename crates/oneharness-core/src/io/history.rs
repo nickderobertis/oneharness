@@ -25,11 +25,11 @@ use fs2::FileExt;
 use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
-    HistoryRunRecord, HistorySessionName, PointerSession,
+    HistoryRunRecord, HistorySessionName, HistorySessionSelector, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
-use crate::domain::sdk::{LiteralFalse, LiteralTrue, NonEmptyString};
+use crate::domain::sdk::{LiteralFalse, LiteralTrue};
 use crate::domain::usage::UtcInstant;
 use crate::errors::OneharnessError;
 
@@ -771,7 +771,7 @@ pub struct HistoryWatcher {
 /// the name is not mixed in.
 #[derive(Debug)]
 struct SessionFilter {
-    needle: String,
+    selector: HistorySessionSelector,
     id: Option<String>,
 }
 
@@ -799,18 +799,20 @@ impl HistoryWatcher {
         labels: HistoryLabels,
         project_slug: Option<String>,
         events: bool,
-        session: Option<&NonEmptyString>,
+        session: Option<&HistorySessionSelector>,
     ) -> Result<Self, OneharnessError> {
-        let session = match session.map(NonEmptyString::as_str) {
-            Some(needle) => {
-                let sessions = list_sessions(dir, project_slug.as_deref())?;
-                let id = sessions
-                    .iter()
-                    .find(|summary| summary.id == needle)
-                    .or_else(|| sessions.iter().find(|summary| summary.name == needle))
-                    .map(|summary| summary.id.clone());
+        let session = match session {
+            Some(HistorySessionSelector::Id(id)) => Some(SessionFilter {
+                selector: HistorySessionSelector::Id(id.clone()),
+                id: Some(id.clone()),
+            }),
+            Some(HistorySessionSelector::Name(name)) => {
+                let id = list_sessions(dir, project_slug.as_deref())?
+                    .into_iter()
+                    .find(|summary| summary.name == name.as_str())
+                    .map(|summary| summary.id);
                 Some(SessionFilter {
-                    needle: needle.to_string(),
+                    selector: HistorySessionSelector::Name(name.clone()),
                     id,
                 })
             }
@@ -963,7 +965,8 @@ impl HistoryWatcher {
             .unwrap_or_default();
         match &filter.id {
             Some(id) => id == stem,
-            None if stem == filter.needle || name == Some(filter.needle.as_str()) => {
+            None if matches!(&filter.selector, HistorySessionSelector::Name(wanted) if name == Some(wanted.as_str())) =>
+            {
                 filter.id = Some(stem.to_string());
                 true
             }

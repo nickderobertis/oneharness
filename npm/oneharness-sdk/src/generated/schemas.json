@@ -4248,8 +4248,15 @@
       },
       "session": {
         "description": "Follow one session: its id, or its name (the newest session so named,\nincluding one still running, or the first to appear).",
-        "type": "string",
-        "minLength": 1
+        "type": [
+          "string",
+          "null"
+        ],
+        "minLength": 1,
+        "not": {
+          "pattern": "[^A-Za-z0-9-]|^-|-$|--"
+        },
+        "pattern": "^(?:[a-z0-9-]+|[a-z0-9-]+-[0-9]{8}T[0-9]{6}Z-[0-9]+)$"
       },
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",

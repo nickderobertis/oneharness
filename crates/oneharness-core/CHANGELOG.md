@@ -35,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `domain::render::{render_event, render_report_text,
   render_history_show_text, printable, indented}`,
   `ActionEvent::is_tool_activity`, `HistoryWatcher::open_session`, and
-  `HistoryWatchOptions::session`.
+  `HistoryWatchOptions::session` — a validated `HistorySessionSelector` (a
+  minted session id or a sanitized session name), so a selector no session
+  could carry is refused at the CLI, SDK and library boundary.
 
 ## [0.19.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.19.0...oneharness-core-v0.19.1) - 2026-09-29
 

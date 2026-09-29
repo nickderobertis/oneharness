@@ -911,6 +911,16 @@
         "historyDir": ".history"
       }
     },
+    {"name": "history watch session by name", "root": "history_watch_options", "accepted": true, "value": {"session": "release-check"}},
+    {"name": "history watch session by id", "root": "history_watch_options", "accepted": true, "value": {"session": "release-check-20260929T165809Z-4242"}},
+    {"name": "history watch rejects an empty session", "root": "history_watch_options", "accepted": false, "value": {"session": ""}},
+    {"name": "history watch rejects a spaced session", "root": "history_watch_options", "accepted": false, "value": {"session": "release check"}},
+    {"name": "history watch rejects an upper-case session name", "root": "history_watch_options", "accepted": false, "value": {"session": "Release"}},
+    {"name": "history watch rejects a path-like session", "root": "history_watch_options", "accepted": false, "value": {"session": "../release"}},
+    {"name": "history watch rejects a newline-terminated session", "root": "history_watch_options", "accepted": false, "value": {"session": "release\n"}},
+    {"name": "history watch rejects a newline-terminated session id", "root": "history_watch_options", "accepted": false, "value": {"session": "release-20260929T165809Z-1\n"}},
+    {"name": "history watch rejects an id instant outside its position", "root": "history_watch_options", "accepted": false, "value": {"session": "releaseT-20260929T165809Z-1"}},
+    {"name": "history watch rejects a truncated id instant", "root": "history_watch_options", "accepted": false, "value": {"session": "release-2026092T165809Z-1"}},
     {
       "name": "history watch malformed cursor",
       "root": "history_watch_options",

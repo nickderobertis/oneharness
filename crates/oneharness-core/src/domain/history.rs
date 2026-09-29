@@ -639,6 +639,125 @@ impl JsonSchema for HistorySessionName {
     }
 }
 
+/// A session id: a [`HistorySessionName`], then the compact UTC instant and the
+/// pid it was minted with (`<name>-<YYYYMMDDThhmmssZ>-<pid>`, see
+/// [`format_compact_utc`]). Paired with [`SESSION_SELECTOR_FORBIDDEN_PATTERN`],
+/// which already rules out the newline Python's `$` would otherwise admit.
+const SESSION_SELECTOR_PATTERN: &str = "^(?:[a-z0-9-]+|[a-z0-9-]+-[0-9]{8}T[0-9]{6}Z-[0-9]+)$";
+
+/// [`SESSION_NAME_FORBIDDEN_PATTERN`] widened by the upper-case letters an id's
+/// instant carries; [`SESSION_SELECTOR_PATTERN`] confines them to it.
+const SESSION_SELECTOR_FORBIDDEN_PATTERN: &str = "[^A-Za-z0-9-]|^-|-$|--";
+
+/// The error returned when text selects no session any writer could mint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error(
+    "must be a session id (`<name>-<YYYYMMDDThhmmssZ>-<pid>`, as `history list` prints it) or a session name of lowercase ASCII letters and digits joined by single dashes"
+)]
+pub struct HistorySessionSelectorError;
+
+/// Which one session to follow: its id — the session file's stem, exactly as
+/// `history list` prints it — or its name. Both shapes are the ones a
+/// [`HistorySessionName`]-based writer mints, so a selector nothing could ever
+/// match (empty, spaced, path-like) is refused where it enters rather than
+/// followed silently forever.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HistorySessionSelector {
+    /// A session id: `<name>-<YYYYMMDDThhmmssZ>-<pid>`.
+    Id(String),
+    /// A session name, matched against the name its lines and records carry.
+    Name(HistorySessionName),
+}
+
+impl HistorySessionSelector {
+    /// The selector as the text it was parsed from.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Id(id) => id,
+            Self::Name(name) => name.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for HistorySessionSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Whether `value` has the minted session-id shape: a valid name, a dash, the
+/// sixteen-character compact instant, a dash, and a non-empty digit pid.
+fn is_session_id(value: &str) -> bool {
+    let mut parts = value.rsplitn(3, '-');
+    let (Some(pid), Some(stamp), Some(name)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let digits = |text: &[u8]| text.iter().all(u8::is_ascii_digit);
+    let stamp = stamp.as_bytes();
+    !pid.is_empty()
+        && digits(pid.as_bytes())
+        && stamp.len() == 16
+        && digits(&stamp[..8])
+        && stamp[8] == b'T'
+        && digits(&stamp[9..15])
+        && stamp[15] == b'Z'
+        && name.parse::<HistorySessionName>().is_ok()
+}
+
+impl FromStr for HistorySessionSelector {
+    type Err = HistorySessionSelectorError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if is_session_id(value) {
+            return Ok(Self::Id(value.to_string()));
+        }
+        value
+            .parse()
+            .map(Self::Name)
+            .map_err(|_| HistorySessionSelectorError)
+    }
+}
+
+impl Serialize for HistorySessionSelector {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for HistorySessionSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for HistorySessionSelector {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistorySessionSelector")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "pattern": SESSION_SELECTOR_PATTERN,
+            "not": { "pattern": SESSION_SELECTOR_FORBIDDEN_PATTERN },
+        })
+    }
+}
+
 /// A validated, deterministically ordered label set attached to every record in
 /// one history session. Keys are portable identifier-like strings; values are
 /// non-empty strings without control characters, bounded in characters (see
@@ -2329,6 +2448,40 @@ mod tests {
             "my-release-v2"
         );
         assert_eq!(HistorySessionName::sanitize("").as_str(), "session");
+    }
+
+    #[test]
+    fn a_session_selector_is_a_minted_id_or_a_sanitized_name() {
+        assert_eq!(
+            "release-20260929T165809Z-4242".parse(),
+            Ok(HistorySessionSelector::Id(
+                "release-20260929T165809Z-4242".to_string()
+            ))
+        );
+        assert_eq!(
+            "release-check".parse(),
+            Ok(HistorySessionSelector::Name(HistorySessionName::sanitize(
+                "release-check"
+            )))
+        );
+        for bad in [
+            "",
+            "Release",
+            "release check",
+            "../release",
+            "release-",
+            "release\n",
+            "Release-20260929T165809Z-1",
+            "release-2026092T165809Z-1",
+            "release-20260929T165809Z-",
+            "-20260929T165809Z-1",
+        ] {
+            assert_eq!(
+                bad.parse::<HistorySessionSelector>(),
+                Err(HistorySessionSelectorError),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

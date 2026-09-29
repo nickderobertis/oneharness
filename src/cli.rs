@@ -533,12 +533,8 @@ pub struct HistoryWatchArgs {
     /// Follow only this session: its id (as `history list` prints it), or its
     /// name — the newest session so named, including one still running, or
     /// the first to appear if none exists yet.
-    #[arg(
-        long,
-        value_name = "NAME|ID",
-        value_parser = StringValueParser::new().try_map(NonEmptyString::try_from)
-    )]
-    pub session: Option<NonEmptyString>,
+    #[arg(long, value_name = "NAME|ID")]
+    pub session: Option<oneharness_core::domain::history::HistorySessionSelector>,
 
     /// Follow records for this project; defaults to the current directory.
     #[arg(long, value_name = "DIR")]

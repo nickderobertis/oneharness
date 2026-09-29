@@ -201,7 +201,7 @@ impl PartialEvent {
 /// "unsupported" from "used no tools" via the absent `events_source`. `fmt` only
 /// labels the source's provenance prefix.
 ///
-/// This is the same fold a streaming run makes line by line ([`EventStream`]),
+/// This is the same fold a streaming run makes line by line (`EventStream`),
 /// so a streamed event and the report's event for the same item carry the same
 /// `index`. Items are ordered by when they finished; a call that started and
 /// never finished (the run timed out or was cancelled mid-call) follows them.

@@ -1337,7 +1337,7 @@ describe("OneHarness", () => {
 		await expect(
 			client.run({
 				prompt: "never spawned",
-				config: "oneharness.toml",
+				config: ["oneharness.toml"],
 				noConfig: true,
 			}),
 		).rejects.toThrow(/`config` and `noConfig` are mutually exclusive/);
@@ -1438,6 +1438,21 @@ describe("OneHarness", () => {
 		expect(report.harnesses.value).toEqual(["codex"]);
 		expect(report.harnesses.source).toContain("oneharness.toml");
 		expect(report.mode.value).toBe("bypass");
+	}, 30_000);
+
+	test("layers each config path as its own --config, later files winning", async () => {
+		const dir = await scratch("config-layers");
+		const defaults = resolve(dir, "defaults.toml");
+		const user = resolve(dir, "user.toml");
+		await writeFile(defaults, 'mode = "read-only"\ntimeout = 9\n');
+		await writeFile(user, 'mode = "auto"\n');
+		const report = await layered().config({
+			cwd: dir,
+			config: [defaults, user],
+		});
+		expect(report.config_files).toEqual([defaults, user]);
+		expect(report.mode).toEqual({ value: "auto", source: user });
+		expect(report.timeout).toEqual({ value: 9, source: defaults });
 	}, 30_000);
 
 	test("reports what a sync would change without writing it", async () => {
@@ -1740,7 +1755,7 @@ describe("OneHarness", () => {
 					all: false,
 					exclude: ["goose"],
 					bins: { codex: "/bin/codex" },
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 					requireAvailable: true,
 				},
@@ -1748,7 +1763,7 @@ describe("OneHarness", () => {
 			[
 				"ConfigOptions",
 				ConfigOptionsSchema,
-				{ cwd: "/tmp", config: "/tmp/oneharness.toml", noConfig: false },
+				{ cwd: "/tmp", config: ["/tmp/oneharness.toml"], noConfig: false },
 			],
 			[
 				"SyncOptions",
@@ -1758,7 +1773,7 @@ describe("OneHarness", () => {
 					harnesses: ["claude-code"],
 					check: true,
 					global: false,
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],
@@ -1777,7 +1792,7 @@ describe("OneHarness", () => {
 					bins: { codex: "/bin/codex" },
 					cwd: "/tmp",
 					timeoutSeconds: 30,
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],
@@ -1819,7 +1834,7 @@ describe("OneHarness", () => {
 					allProjects: false,
 					yes: true,
 					historyDir: "/tmp/history",
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],
@@ -1828,7 +1843,7 @@ describe("OneHarness", () => {
 				HistoryMigrateOptionsSchema,
 				{
 					historyDir: "/tmp/history",
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],
@@ -1845,7 +1860,7 @@ describe("OneHarness", () => {
 					allProjects: false,
 					historyDir: "/tmp/history",
 					variant: "claude-code:work",
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],
@@ -1860,7 +1875,7 @@ describe("OneHarness", () => {
 					historyDir: "/tmp/history",
 					events: true,
 					variant: "claude-code:work",
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],
@@ -1874,7 +1889,7 @@ describe("OneHarness", () => {
 					project: "oneharness",
 					allProjects: false,
 					historyDir: "/tmp/history",
-					config: "/tmp/oneharness.toml",
+					config: ["/tmp/oneharness.toml"],
 					noConfig: false,
 				},
 			],

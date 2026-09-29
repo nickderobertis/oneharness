@@ -190,9 +190,14 @@ pub struct DetectRequest {
     pub exclude: Vec<String>,
     /// `--bin ID=PATH` overrides, in the CLI's own spelling.
     pub bin: Vec<String>,
-    /// Load configuration from exactly this file, skipping discovery.
-    pub config: Option<PathBuf>,
-    /// Ignore every configuration file.
+    /// Load configuration from exactly these files, in order, skipping
+    /// user/project discovery — the repeatable `--config` flag. Each later file
+    /// (its own `extends` chain beneath it) overrides the earlier ones; empty
+    /// means discovery. See [`crate::io::config::load_layers`].
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
+    pub config: Vec<PathBuf>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. Takes
+    /// precedence over `config`: set together, no file is loaded.
     pub no_config: bool,
     /// Where project-config discovery starts. `None` means the process's
     /// current directory, which is what the CLI uses.
@@ -250,7 +255,7 @@ pub fn detect(request: &DetectRequest) -> Result<DetectReport, OneharnessError> 
             &fallback
         }
     };
-    let loaded = crate::io::config::load(request.config.as_deref(), request.no_config, start)?;
+    let loaded = crate::io::config::load(&request.config, request.no_config, start)?;
     for id in request.harness.iter().chain(&request.exclude) {
         if let Some((base, variant)) = id.split_once(':') {
             if loaded.config.variant_for(id).is_none() {

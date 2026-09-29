@@ -301,7 +301,7 @@ fn a_consumer_reads_the_layered_configuration_with_each_value_attributed() {
     // `oneharness config`'s whole output: the effective value plus the file it
     // came from. Loading the layers and explaining them are both library calls.
     let dir = project("config-explain", "model = \"from-project\"\n");
-    let layers = oneharness_core::io::config::load_layers(None, false, &dir)
+    let layers = oneharness_core::io::config::load_layers(&[], false, &dir)
         .expect("the planted layers load");
     let report = config::explain(&layers);
 

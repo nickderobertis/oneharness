@@ -18,7 +18,7 @@ pub fn run(args: &ConfigArgs) -> Result<i32, OneharnessError> {
         Some(dir) => dir.clone(),
         None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
     };
-    let layers = config_io::load_layers(args.config.as_deref(), args.no_config, &project_start)?;
+    let layers = config_io::load_layers(&args.config, args.no_config, &project_start)?;
     let report = domain_config::explain(&layers);
     print_report(&report, args.stdout, render_text)?;
     Ok(0)

@@ -4,7 +4,15 @@
  * Options accepted by the language SDKs' `config()`.
  */
 export interface ConfigOptions {
-  config?: string | undefined;
+  /**
+   * Load configuration from exactly these files, in order, skipping
+   * user/project discovery; each later file overrides the earlier ones.
+   */
+  config?: string[] | undefined;
   cwd?: string | undefined;
+  /**
+   * Ignore every configuration file and `ONEHARNESS_*` override. `true`
+   * beside a non-empty `config` is refused before anything runs.
+   */
   noConfig?: boolean | undefined;
 }

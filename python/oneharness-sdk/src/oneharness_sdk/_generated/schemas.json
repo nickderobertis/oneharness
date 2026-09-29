@@ -5,12 +5,17 @@
     "description": "Options accepted by the language SDKs' `config()`.",
     "properties": {
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "cwd": {
         "type": "string"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       }
     },
@@ -665,7 +670,11 @@
         "type": "object"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "exclude": {
         "items": {
@@ -680,6 +689,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "require_available": {
@@ -784,12 +794,17 @@
         "type": "boolean"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "history_dir": {
         "type": "string"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "project": {
@@ -2944,14 +2959,17 @@
         "type": "boolean"
       },
       "config": {
-        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "history_dir": {
         "type": "string"
       },
       "no_config": {
-        "description": "Ignore every configuration file.",
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "project": {
@@ -2979,8 +2997,11 @@
             "type": "boolean"
           },
           "config": {
-            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-            "type": "string"
+            "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "history_dir": {
             "type": "string"
@@ -2991,7 +3012,7 @@
             "type": "boolean"
           },
           "no_config": {
-            "description": "Ignore every configuration file.",
+            "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
             "type": "boolean"
           },
           "project": {
@@ -3019,8 +3040,11 @@
             "type": "boolean"
           },
           "config": {
-            "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-            "type": "string"
+            "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "history_dir": {
             "type": "string"
@@ -3030,7 +3054,7 @@
             "type": "boolean"
           },
           "no_config": {
-            "description": "Ignore every configuration file.",
+            "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
             "type": "boolean"
           },
           "project": {
@@ -3068,12 +3092,17 @@
     "description": "Options accepted by the language SDKs' `historyMigrate()`.",
     "properties": {
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "history_dir": {
         "type": "string"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       }
     },
@@ -12482,8 +12511,11 @@
         "type": "boolean"
       },
       "config": {
-        "description": "Load configuration from exactly this file, skipping user/project\ndiscovery.",
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "events": {
         "type": "boolean"
@@ -12495,7 +12527,7 @@
         "$ref": "#/$defs/HistoryLabels"
       },
       "no_config": {
-        "description": "Ignore every configuration file.",
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "project": {
@@ -13167,7 +13199,11 @@
         "type": "object"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "control": {
         "description": "Open the out-of-band turn-control socket, so a separate `interrupt()`\ncan abort the in-flight turn without killing this run.",
@@ -13245,6 +13281,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "no_history": {
@@ -15805,7 +15842,11 @@
         "type": "boolean"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "cwd": {
         "type": "string"
@@ -15824,6 +15865,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       }
     },
@@ -16068,7 +16110,11 @@
         "type": "object"
       },
       "config": {
-        "type": "string"
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
       },
       "cwd": {
         "type": "string"
@@ -16086,6 +16132,7 @@
         "type": "array"
       },
       "no_config": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
         "type": "boolean"
       },
       "timeout_seconds": {

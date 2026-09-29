@@ -10357,6 +10357,607 @@ fn a_missing_parent_config_is_a_usage_error_naming_both_files() {
     assert!(stderr.contains(&parent), "{stderr}");
 }
 
+// Repeatable `--config`: each file is its own layer, later files overriding
+// earlier ones, and one or more files replace user/project discovery.
+
+/// A TOML literal string holding `path`, so a config file can name a path
+/// whatever separators the platform spells it with.
+fn toml_path(path: &Path) -> String {
+    format!("'{}'", path.display())
+}
+
+/// `d.toml` (a wrapper's defaults) and `j.toml` (its user's config) in one
+/// fixture whose project `oneharness.toml` (`model = "project"`) an explicit
+/// `--config` must never discover. Returns both paths as the loader names them.
+fn two_configs(tag: &str, d: &str, j: &str) -> (ConfigFixture, String, String) {
+    let fx = ConfigFixture::new(tag, "model = \"project\"\n", "");
+    let (d_path, j_path) = (fx.dir.join("d.toml"), fx.dir.join("j.toml"));
+    std::fs::write(&d_path, d).unwrap();
+    std::fs::write(&j_path, j).unwrap();
+    (
+        fx,
+        d_path.display().to_string(),
+        j_path.display().to_string(),
+    )
+}
+
+/// Top-level `settings` followed by a selection of the mock claude-code, so
+/// only the earlier file of a pair has to say which harness a run drives.
+fn mock_claude_defaults(settings: &str) -> String {
+    format!(
+        "{settings}harnesses = [\"claude-code\"]\n[harness.claude-code]\nbin = {}\n",
+        toml_path(&mock_bin())
+    )
+}
+
+/// The argv the mock recorded in `path`, one argument per line.
+fn received_argv(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .unwrap_or_else(|err| panic!("the harness never ran ({}): {err}", path.display()))
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_later_config_file_that_is_missing_or_invalid_is_a_usage_error_naming_it() {
+    // The earlier file is valid, so only the SECOND file can refuse the run:
+    // it is loaded as strictly as a lone `--config`, never skipped.
+    let (fx, d, j) = two_configs("later-bad", "model = \"d\"\n", "model = [not toml\n");
+    let missing = fx.dir.join("missing.toml").display().to_string();
+    let cwd = fx.cwd();
+    for later in [&missing, &j] {
+        for verb in [
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--print-command",
+            ][..],
+            &["config"][..],
+        ] {
+            let mut args = verb.to_vec();
+            args.extend(["--cwd", &cwd, "--config", &d, "--config", later]);
+            let output = run_with_config(&args, &[], &fx.user_config());
+            assert_eq!(output.status.code(), Some(2), "{args:?}");
+            assert!(output.stdout.is_empty(), "{args:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(later.as_str()), "{args:?}: {stderr}");
+        }
+    }
+}
+
+#[test]
+fn repeated_config_files_layer_in_order_beneath_env_and_flags() {
+    let defaults = mock_claude_defaults("mode = \"read-only\"\n");
+    let cases = [
+        (
+            "the later file's mode wins",
+            "mode = \"auto\"\n",
+            vec![],
+            vec![],
+            "auto",
+            ["--permission-mode", "auto"],
+            false,
+        ),
+        (
+            "the earlier file's mode holds where the later file sets none",
+            "timeout = 60\n",
+            vec![],
+            vec![],
+            "read-only",
+            ["--permission-mode", "bypassPermissions"],
+            true,
+        ),
+        (
+            "ONEHARNESS_MODE beats both files",
+            "mode = \"auto\"\n",
+            vec![("ONEHARNESS_MODE", "plan")],
+            vec![],
+            "plan",
+            ["--permission-mode", "plan"],
+            false,
+        ),
+        (
+            "--mode beats the environment and both files",
+            "mode = \"auto\"\n",
+            vec![("ONEHARNESS_MODE", "plan")],
+            vec!["--mode", "bypass"],
+            "bypass",
+            ["--permission-mode", "bypassPermissions"],
+            false,
+        ),
+    ];
+    for (i, (label, later, envs, flags, mode, pair, read_only_tools)) in
+        cases.into_iter().enumerate()
+    {
+        let (fx, d, j) = two_configs(&format!("layered-mode-{i}"), &defaults, later);
+        let argv_file = fx.dir.join("argv.txt");
+        let argv_arg = argv_file.display().to_string();
+        let cwd = fx.cwd();
+        let mut args = vec![
+            "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j,
+        ];
+        args.extend(flags);
+        let mut envs = envs;
+        envs.push(("MOCK_STDOUT", r#"{"result":"layered"}"#));
+        envs.push(("MOCK_ARGV_FILE", &argv_arg));
+        let output = run_with_config(&args, &envs, &fx.user_config());
+        assert!(
+            output.status.success(),
+            "{label}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["permission_mode"], mode, "{label}");
+        assert_eq!(value["results"][0]["status"], "ok", "{label}");
+        let received = received_argv(&argv_file);
+        assert!(
+            received.windows(2).any(|w| w == pair),
+            "{label}: the harness received {received:?}"
+        );
+        assert_eq!(
+            received.iter().any(|arg| arg == "--tools"),
+            read_only_tools,
+            "{label}: only read-only narrows the tool set: {received:?}"
+        );
+    }
+
+    // Repeating the flag did not loosen its exclusion with --no-config.
+    let (fx, d, j) = two_configs("layered-no-config", &defaults, "");
+    let output = run_with_config(
+        &["config", "--config", &d, "--config", &j, "--no-config"],
+        &[],
+        &fx.user_config(),
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--no-config"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A defaults file and a later file that `extends` a parent of its own. The
+/// parent sets `model`, which `d.toml` also sets: layered where it belongs —
+/// immediately beneath `j.toml`, so above `d.toml` — the parent's model wins,
+/// and layered beneath the first file instead, `d.toml`'s would. Returns the
+/// fixture and every file in layering order.
+fn layered_with_parent(tag: &str) -> (ConfigFixture, [String; 3]) {
+    let (fx, d, j) = two_configs(
+        tag,
+        &mock_claude_defaults("mode = \"read-only\"\nmodel = \"d-model\"\ntimeout = 30\n"),
+        "extends = \"shared/j-base.toml\"\nmode = \"auto\"\n",
+    );
+    std::fs::create_dir_all(fx.dir.join("shared")).unwrap();
+    std::fs::write(
+        fx.dir.join("shared").join("j-base.toml"),
+        "model = \"j-base-model\"\nsystem = \"from j's parent\"\n",
+    )
+    .unwrap();
+    // The parent as the loader names it: `j.toml`'s directory joined with the
+    // `extends` value exactly as written.
+    let parent = fx.dir.join("shared/j-base.toml").display().to_string();
+    (fx, [d, parent, j])
+}
+
+#[test]
+fn config_command_lists_repeated_files_in_layering_order_with_each_value_attributed() {
+    let (fx, [d, parent, j]) = layered_with_parent("layered-explain");
+    let envs = [("ONEHARNESS_MAX_PARALLEL", "3")];
+    let output = run_with_config(
+        &["config", "--config", &d, "--config", &j],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(
+        value["config_files"],
+        serde_json::json!([d, parent, j, "environment"]),
+        "each file after the ones before it, its parent immediately beneath it, \
+         the environment last, and nothing discovered"
+    );
+    assert_eq!(
+        value["mode"],
+        serde_json::json!({"value": "auto", "source": j})
+    );
+    assert_eq!(
+        value["model"],
+        serde_json::json!({"value": "j-base-model", "source": parent})
+    );
+    assert_eq!(
+        value["timeout"],
+        serde_json::json!({"value": 30, "source": d})
+    );
+    assert_eq!(value["system"]["source"], parent.as_str());
+    assert_eq!(
+        value["max_parallel"],
+        serde_json::json!({"value": 3, "source": "environment"})
+    );
+
+    let output = run_with_config(
+        &["config", "--config", &d, "--config", &j, "--format", "text"],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        format!("config files: {d}, {parent}, {j}, environment\n"),
+        format!("mode: auto ({j})\n"),
+        format!("model: j-base-model ({parent})\n"),
+        format!("timeout: 30 ({d})\n"),
+        "max_parallel: 3 (environment)\n".to_string(),
+    ] {
+        assert!(text.contains(&line), "missing {line:?} in:\n{text}");
+    }
+}
+
+#[test]
+fn a_run_reports_repeated_config_files_in_the_order_config_lists_them() {
+    let (fx, [d, parent, j]) = layered_with_parent("layered-run");
+    let envs = [
+        ("ONEHARNESS_MAX_PARALLEL", "3"),
+        ("MOCK_STDOUT", r#"{"result":"layered run"}"#),
+    ];
+    let explained = json_stdout(&run_with_config(
+        &["config", "--config", &d, "--config", &j],
+        &envs,
+        &fx.user_config(),
+    ));
+    let cwd = fx.cwd();
+    let output = run_with_config(
+        &[
+            "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j, "--format",
+            "json",
+        ],
+        &envs,
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(
+        value["config_files"],
+        serde_json::json!([d, parent, j, "environment"])
+    );
+    assert_eq!(value["config_files"], explained["config_files"]);
+    assert_eq!(value["permission_mode"], "auto");
+    assert_eq!(value["results"][0]["status"], "ok");
+    assert_eq!(value["results"][0]["model"], "j-base-model");
+}
+
+/// Every string in `value` with the fixture directory replaced by `<dir>` and
+/// separators spelled `/`, so a report can be compared to a checked-in golden.
+fn with_placeholder_dir(value: &mut Value, dir: &str) {
+    match value {
+        Value::String(s) => *s = s.replace(dir, "<dir>").replace('\\', "/"),
+        Value::Array(items) => items.iter_mut().for_each(|v| with_placeholder_dir(v, dir)),
+        Value::Object(map) => map.values_mut().for_each(|v| with_placeholder_dir(v, dir)),
+        _ => {}
+    }
+}
+
+#[test]
+fn a_single_config_file_explains_exactly_as_before_repeatable_config() {
+    // The golden is the output of the binary before `--config` was repeatable
+    // (oneharness 0.17.0) for this same fixture, so the single-file shape — a flat
+    // `config_files` array and one path string per `source` — is pinned.
+    let fx = ConfigFixture::new("single-golden", "model = \"project\"\n", "");
+    std::fs::write(
+        fx.dir.join("base.toml"),
+        "timeout = 30\n[env]\nSHARED = \"base\"\n",
+    )
+    .unwrap();
+    let single = fx.dir.join("single.toml");
+    std::fs::write(
+        &single,
+        "extends = \"base.toml\"\nmode = \"read-only\"\nmodel = \"m\"\n\
+         harnesses = [\"claude-code\"]\n[env]\nOWN = \"single\"\n\
+         [harness.claude-code]\nmodel = \"hm\"\n",
+    )
+    .unwrap();
+    let output = run_with_config(
+        &["config", "--config", &single.display().to_string()],
+        &[("ONEHARNESS_MAX_PARALLEL", "3")],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut value = json_stdout(&output);
+    with_placeholder_dir(&mut value, &fx.dir.display().to_string());
+    let golden: Value =
+        serde_json::from_str(include_str!("fixtures/config-report-single-file.json")).unwrap();
+    assert_eq!(value, golden);
+}
+
+#[test]
+fn detect_and_usage_honor_repeated_config_files() {
+    // codex's `bin` is set only in the earlier file; claude-code's in both,
+    // where the later file's wins. Every path is absent, so nothing real runs.
+    let (fx, d, j) = two_configs(
+        "layered-detect",
+        "[harness.codex]\nbin = '/nonexistent/d-codex'\n\
+         [harness.claude-code]\nbin = '/nonexistent/d-claude'\n",
+        "[harness.claude-code]\nbin = '/nonexistent/j-claude'\n",
+    );
+    let selection = ["--harness", "claude-code", "--harness", "codex"];
+    let mut args = vec!["detect", "--config", &d, "--config", &j];
+    args.extend(selection);
+    let output = run_with_config(&args, &[], &fx.user_config());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let detected = json_stdout(&output)["detected"].clone();
+    let bins: Vec<(&str, &str)> = detected
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| (h["id"].as_str().unwrap(), h["bin"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        bins,
+        [
+            ("claude-code", "/nonexistent/j-claude"),
+            ("codex", "/nonexistent/d-codex")
+        ]
+    );
+
+    let mut args = vec!["usage", "--config", &d, "--config", &j, "--timeout", "5"];
+    args.extend(selection);
+    let output = run_with_config(&args, &[], &fx.user_config());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let identities = json_stdout(&output)["identities"].clone();
+    let bins: Vec<(&str, &Value)> = identities
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["harness"].as_str().unwrap(), &i["availability"]["reason"]))
+        .collect();
+    assert_eq!(
+        bins,
+        [
+            (
+                "claude-code",
+                &serde_json::json!({"kind": "binary_missing", "bin": "/nonexistent/j-claude"})
+            ),
+            (
+                "codex",
+                &serde_json::json!({"kind": "binary_missing", "bin": "/nonexistent/d-codex"})
+            )
+        ]
+    );
+}
+
+#[test]
+fn sync_honors_repeated_config_files() {
+    // `denied_tools` is set only in the earlier file; `allowed_tools` in both,
+    // where the later file's list replaces the earlier one.
+    let (fx, d, j) = two_configs(
+        "layered-sync",
+        "allowed_tools = [\"Bash(ls)\"]\ndenied_tools = [\"Bash(rm:*)\"]\n",
+        "allowed_tools = [\"Bash(echo layered)\"]\n",
+    );
+    let cwd = fx.cwd();
+    let output = run_with_config(
+        &[
+            "sync",
+            "--harness",
+            "claude-code",
+            "--cwd",
+            &cwd,
+            "--config",
+            &d,
+            "--config",
+            &j,
+        ],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let written: Value = serde_json::from_str(
+        &std::fs::read_to_string(fx.dir.join(".claude").join("settings.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        written["permissions"],
+        serde_json::json!({"allow": ["Bash(echo layered)"], "deny": ["Bash(rm:*)"]})
+    );
+}
+
+#[test]
+fn every_history_verb_honors_repeated_config_files() {
+    let hist = hist_dir("layered-history");
+    let store = hist.store.display().to_string();
+    let empty = hist.store.with_file_name("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let record = |name: &str| {
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--bin",
+                &bin_override("claude-code"),
+                "--prompt",
+                name,
+                "--history",
+                "--history-dir",
+                &store,
+                "--history-name",
+                name,
+                "--bypass",
+            ],
+            &[("MOCK_STDOUT", r#"{"result":"recorded"}"#)],
+        );
+        let path = json_stdout(&output)["history_file"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        first_history_run(Path::new(&path))["history_id"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let first = record("first");
+    let _second = record("second");
+
+    // `history_dir` is the one value these verbs read: first set only in the
+    // earlier file, then in both, pointing the earlier file at an empty store
+    // that must lose to the later file's.
+    // Each case's `watch` lands two more sessions.
+    for (sessions, (label, earlier, later)) in [
+        (
+            "earlier only",
+            format!("history_dir = {}\n", toml_path(&hist.store)),
+            "model = \"unrelated\"\n".to_string(),
+        ),
+        (
+            "set in both",
+            format!("history_dir = {}\n", toml_path(&empty)),
+            format!("history_dir = {}\n", toml_path(&hist.store)),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, case)| (2 + 2 * i, case))
+    {
+        let (fx, d, j) = two_configs(
+            &format!("layered-history-{}", label.replace(' ', "-")),
+            &earlier,
+            &later,
+        );
+        let verb = |args: &[&str]| {
+            let mut full = vec!["history"];
+            full.extend_from_slice(args);
+            full.extend(["--config", &d, "--config", &j]);
+            let output = run_with_config(&full, &[], &fx.user_config());
+            assert!(
+                output.status.success(),
+                "{label}: history {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            json_stdout(&output)
+        };
+        let listed = verb(&["list", "--all-projects"]);
+        assert_eq!(
+            listed.as_array().unwrap().len(),
+            sessions,
+            "{label}: {listed}"
+        );
+        let shown = verb(&["show", "first", "--all-projects"]);
+        assert_eq!(shown[0]["history_id"], first.as_str(), "{label}: {shown}");
+        let cleared = verb(&["clear", "--all-projects"]);
+        assert_eq!(cleared["would_remove"], sessions, "{label}: {cleared}");
+        let migrated = verb(&["migrate"]);
+        assert_eq!(migrated["files_processed"], sessions, "{label}: {migrated}");
+
+        // `watch` resumes after a record only the right store holds, so the
+        // wrong store refuses the cursor at once and prints nothing. The index
+        // follows discovery order rather than creation order, so which record
+        // comes first is not asserted — only that one arrives from this store.
+        let mut watch = Command::new(oneharness_bin());
+        watch.env("ONEHARNESS_CONFIG", fx.user_config());
+        for var in ENV_OVERRIDE_VARS {
+            watch.env_remove(var);
+        }
+        let mut child = watch
+            .args([
+                "history",
+                "watch",
+                "--all-projects",
+                "--after",
+                &first,
+                "--config",
+                &d,
+                "--config",
+                &j,
+            ])
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let tag = label.replace(' ', "-");
+        // A record landing after the watch starts guarantees one follows the
+        // cursor, whatever the index order of the seeded pair.
+        let _ = record(&format!("trigger-{tag}"));
+        let mut line = String::new();
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        reader.read_line(&mut line).unwrap();
+        // Close the pipe and land one more record, so the watcher exits on the
+        // broken pipe rather than being killed (a killed process loses its
+        // coverage profile).
+        drop(reader);
+        let _ = record(&format!("closer-{tag}"));
+        let status = child.wait().unwrap();
+        let envelope: Value = serde_json::from_str(&line)
+            .unwrap_or_else(|err| panic!("{label}: watch printed {line:?}: {err}"));
+        assert_eq!(envelope["type"], "record", "{label}: {envelope}");
+        assert_ne!(envelope["record"]["history_id"], first.as_str(), "{label}");
+        assert!(status.success(), "{label}: watch exit {status:?}");
+    }
+}
+
+#[test]
+fn stream_origin_honors_repeated_config_files() {
+    // A stream selected by config refuses `--format text`, naming the file that
+    // selected it. The earlier file alone selects it; where both set `stream`,
+    // the later file's value — naming it, or turning the stream off — wins.
+    let stdout = r#"{"result":"not streamed"}"#;
+    for (label, later, refused_by) in [
+        ("earlier only", "timeout = 60\n", Some(false)),
+        ("both stream", "stream = true\n", Some(true)),
+        ("the later file turns it off", "stream = false\n", None),
+    ] {
+        let (fx, d, j) = two_configs(
+            &format!("layered-stream-{}", label.replace(' ', "-")),
+            &mock_claude_defaults("stream = true\n"),
+            later,
+        );
+        let cwd = fx.cwd();
+        let output = run_with_config(
+            &[
+                "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j, "--format",
+                "text",
+            ],
+            &[("MOCK_STDOUT", stdout)],
+            &fx.user_config(),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match refused_by {
+            Some(later_named) => {
+                assert_eq!(output.status.code(), Some(2), "{label}: {stderr}");
+                let (named, unnamed) = if later_named { (&j, &d) } else { (&d, &j) };
+                assert!(stderr.contains(named.as_str()), "{label}: {stderr}");
+                assert!(!stderr.contains(unnamed.as_str()), "{label}: {stderr}");
+            }
+            None => assert!(output.status.success(), "{label}: {stderr}"),
+        }
+    }
+}
+
 #[test]
 fn config_command_no_config_shows_pure_defaults() {
     let fx = ConfigFixture::new("cmd-none", "model = \"ignored\"\n", "model = \"ignored\"\n");

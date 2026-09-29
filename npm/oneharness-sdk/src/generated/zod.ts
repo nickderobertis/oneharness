@@ -138,7 +138,7 @@ export const BatchReportSchema: z.ZodType<BatchReport> = z.looseObject({
 export const BatchStrategySchema: z.ZodType<BatchStrategy> = z.union([z.literal("speed"), z.literal("min-tokens")]);
 
 export const ConfigOptionsSchema: z.ZodType<ConfigOptions> = z.strictObject({
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   cwd: z.string().optional(),
   noConfig: z.boolean().optional(),
 });
@@ -240,7 +240,7 @@ export const DetectInfoSchema: z.ZodType<DetectInfo> = z.looseObject({
 export const DetectOptionsSchema: z.ZodType<DetectOptions> = z.strictObject({
   all: z.boolean().optional(),
   bins: z.record(z.string(), z.string()).optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   exclude: z.array(z.string()).optional(),
   harnesses: z.array(z.string()).optional(),
   noConfig: z.boolean().optional(),
@@ -478,7 +478,7 @@ export const HistoryClearDryRunSchema: z.ZodType<HistoryClearDryRun> = z.looseOb
 
 export const HistoryClearOptionsSchema: z.ZodType<HistoryClearOptions> = z.strictObject({
   allProjects: z.boolean().optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
@@ -1330,7 +1330,7 @@ export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => Hi
 
 export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictObject({
   allProjects: z.boolean().optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
@@ -1345,7 +1345,7 @@ export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
 export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.strictObject({
   all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   last: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
   noConfig: z.boolean().optional(),
@@ -1356,7 +1356,7 @@ export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.stric
 export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z.strictObject({
   all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   last: z.boolean().optional(),
   noConfig: z.boolean().optional(),
@@ -1368,7 +1368,7 @@ export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z
 });
 
 export const HistoryMigrateOptionsSchema: z.ZodType<HistoryMigrateOptions> = z.strictObject({
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   noConfig: z.boolean().optional(),
 });
@@ -2597,7 +2597,7 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
     .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .optional(),
   allProjects: z.boolean().optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   events: z.boolean().optional(),
   historyDir: z.string().optional(),
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
@@ -2748,7 +2748,7 @@ export const RunOptionsSchema: z.ZodType<RunOptions> = z.strictObject({
   batchPrompts: z.array(z.string()).optional(),
   batchStrategy: z.lazy(() => BatchStrategySchema).optional(),
   bins: z.record(z.string(), z.string()).optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   control: z.boolean().optional(),
   cwd: z.string().optional(),
   env: z.record(z.string(), z.string()).optional(),
@@ -2903,7 +2903,7 @@ export const StatusSchema: z.ZodType<Status> = z.union([
 
 export const SyncOptionsSchema: z.ZodType<SyncOptions> = z.strictObject({
   check: z.boolean().optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   cwd: z.string().optional(),
   exact: z.boolean().optional(),
   global: z.boolean().optional(),
@@ -3016,7 +3016,7 @@ export const UsageIdentitySchema: z.ZodType<UsageIdentity> = z.looseObject({
 export const UsageOptionsSchema: z.ZodType<UsageOptions> = z.strictObject({
   all: z.boolean().optional(),
   bins: z.record(z.string(), z.string()).optional(),
-  config: z.string().optional(),
+  config: z.array(z.string()).optional(),
   cwd: z.string().optional(),
   exclude: z.array(z.string()).optional(),
   harnesses: z.array(z.string()).optional(),

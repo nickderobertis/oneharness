@@ -351,8 +351,8 @@ const fn bind(option: &'static str, kind: FlagKind) -> OptionBinding {
 //   keeping the narrower one bills a turn to an identity nobody chose.
 // * `systemFile` / `system` (run) — refuse. Two sources for one system prompt;
 //   dropping either sends the agent instructions the caller did not write.
-// * `config` / `noConfig` (every verb that layers config) — refuse. "Layer this
-//   file" and "layer nothing" cannot both hold, and the loser decides which
+// * `config` / `noConfig` (every verb that layers config) — refuse. "Layer these
+//   files" and "layer nothing" cannot both hold, and the loser decides which
 //   model, mode and history store the run uses.
 // * `history` / `noHistory` (run, runStream) — refuse. Recording a run and not
 //   recording it are opposites; the quiet answer is a diagnosis read from a
@@ -438,7 +438,7 @@ const RUN_BINDINGS: &[OptionBinding] = &[
     bind("env", FlagKind::KeyValue("--env")),
     bind("mode", FlagKind::Value("--mode")),
     bind("permitPrompts", FlagKind::Switch("--permit-prompts")),
-    bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+    bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
     bind("noConfig", FlagKind::Switch("--no-config")),
     bind("maxParallel", FlagKind::Value("--max-parallel")),
     bind("batchStrategy", FlagKind::Value("--batch-strategy")),
@@ -540,7 +540,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("all", FlagKind::Switch("--all"), "harnesses"),
             bind("exclude", FlagKind::Repeated("--exclude")),
             bind("bins", FlagKind::KeyValue("--bin")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
             bind("requireAvailable", FlagKind::Switch("--require-available")),
         ],
@@ -556,7 +556,7 @@ pub const CAPABILITIES: &[Capability] = &[
         always: JSON_DOCUMENT,
         bindings: &[
             bind("cwd", FlagKind::Value("--cwd")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -575,7 +575,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("check", FlagKind::Switch("--check")),
             bind("exact", FlagKind::Switch("--exact")),
             bind("global", FlagKind::Switch("--global")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -609,7 +609,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("bins", FlagKind::KeyValue("--bin")),
             bind("cwd", FlagKind::Value("--cwd")),
             bind("timeoutSeconds", FlagKind::Value("--timeout")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -675,7 +675,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -693,7 +693,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -714,7 +714,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind("events", FlagKind::Switch("--events")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -732,7 +732,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("yes", FlagKind::Switch("--yes")),
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],
@@ -747,7 +747,7 @@ pub const CAPABILITIES: &[Capability] = &[
         always: JSON_DOCUMENT,
         bindings: &[
             bind("historyDir", FlagKind::Value("--history-dir")),
-            bind_refuse("config", FlagKind::Value("--config"), "noConfig"),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
         uncovered: &[],

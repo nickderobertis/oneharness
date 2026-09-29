@@ -5995,8 +5995,10 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert_eq!(reading.events.len(), 1);
-    let event = &reading.events[0];
+    // The call's `item/started` and `item/completed` frames make one event.
+    let events = windows_tool_calls(&reading);
+    assert_eq!(events.len(), 1, "{:?}", reading.events);
+    let event = events[0];
     assert_eq!(event.name.as_deref(), Some("command_execution"));
     assert_eq!(
         event.input,
@@ -6004,6 +6006,10 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
             "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'",
             "exit_code": 0
         }))
+    );
+    assert_eq!(
+        event.status,
+        Some(oneharness_core::domain::events::ToolCallStatus::Completed)
     );
     assert_eq!(event.output.as_deref(), Some("OHCAPTURE12345"));
     assert_eq!(
@@ -6083,8 +6089,9 @@ fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives(
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert_eq!(reading.events.len(), 1);
-    let event = &reading.events[0];
+    let events = windows_tool_calls(&reading);
+    assert_eq!(events.len(), 1, "{:?}", reading.events);
+    let event = events[0];
     assert_eq!(event.name.as_deref(), Some("command_execution"));
     assert_eq!(
         event.input,
@@ -6232,9 +6239,23 @@ fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert_eq!(reading.events.len(), 1);
-    assert!(reading.events[0].input.is_none());
-    assert_eq!(reading.events[0].output.as_deref(), Some("OHCAPTURE12345"));
+    let events = windows_tool_calls(&reading);
+    assert_eq!(events.len(), 1, "{:?}", reading.events);
+    assert!(events[0].input.is_none());
+    assert_eq!(events[0].output.as_deref(), Some("OHCAPTURE12345"));
+}
+
+/// The Windows twins' `tool_calls`: the reading's tool calls, beside the
+/// agent's `message`/`reasoning` events a codex turn also carries.
+#[cfg(windows)]
+fn windows_tool_calls(
+    reading: &oneharness_core::domain::events::EventsReading,
+) -> Vec<&oneharness_core::domain::events::ActionEvent> {
+    reading
+        .events
+        .iter()
+        .filter(|event| event.kind == "tool_call")
+        .collect()
 }
 
 #[cfg(not(windows))]

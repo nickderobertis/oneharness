@@ -10349,7 +10349,8 @@ fn config_hooks_on_incapable_harness_fail_at_parse() {
         &fx.user_config(),
     );
     // Loud even though codex isn't selected: the config itself is invalid
-    // (codex has no config file oneharness could sync hooks into).
+    // (codex's sync target is its execpolicy rules file, which has no place
+    // for a raw hooks table).
     assert_eq!(output.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("hooks"), "{stderr}");

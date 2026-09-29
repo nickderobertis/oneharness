@@ -828,7 +828,11 @@ shape. When you add one:
   report (plus a stderr warning) for top-level ones — never a silent drop. The
   sync merge is non-destructive by contract: unrelated keys untouched, lists
   unioned (idempotent re-sync), unparseable files refused and left intact,
-  writes atomic. Keep those properties test-pinned when touching it.
+  writes atomic. Keep those properties test-pinned when touching it. `--exact`
+  (`SyncMode::Exact`) is the one opt-out, and only for the lists at
+  `allow_path`/`deny_path`. A target whose rules are not JSON declares it by
+  its file name (`SyncSpec::format`: Codex's `*.rules`), is owned whole, and
+  translates each rule or reports it in `unmapped_rules` — never widened.
 - Declare `supports_resume` / `supports_fork` and map them in `build_argv`,
   sourced from that CLI's headless docs (never guessed). *Resume* is the
   continuation flag (`--resume`, `--session`, or a subcommand like Codex's `exec

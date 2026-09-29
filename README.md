@@ -68,7 +68,7 @@ how — or whether — it reaches that harness.
 | id | CLI | default binary | auth identity axis | `model` | `system` | `reasoning` | bypass mode requested | synced config file | allow / deny | hooks | output format | `--resume` (continue / fork) | `usage` headroom |
 |----|-----|----------------|--------------------|:-------:|----------|-------------|-----------------------|--------------------|:------------:|:-----:|:-------------:|:---------:|-------------|
 | `claude-code` | Claude Code | `claude` | `CLAUDE_CONFIG_DIR`, `ANTHROPIC_API_KEY` (live-proven) | ✓ | native flag | `--effort` | `--permission-mode bypassPermissions` | `.claude/settings.json` | ✓ / ✓ | ✓ | ✓ | `--resume` + `--fork-session` | `headroom` (`get_usage`) |
-| `codex` | OpenAI Codex CLI | `codex` | `CODEX_HOME`, `CODEX_API_KEY` (live-proven) | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | — | — | — | ✓ | `exec resume <id>` (linear) | `headroom` (app-server) |
+| `codex` | OpenAI Codex CLI | `codex` | `CODEX_HOME`, `CODEX_API_KEY` (live-proven) | ✓ | prepended | `model_reasoning_effort` | `--dangerously-bypass-approvals-and-sandbox` | `.codex/rules/oneharness.rules` | ✓ / ✓ (`Bash` prefix rules) | — | ✓ | `exec resume <id>` (linear) | `headroom` (app-server) |
 | `opencode` | OpenCode | `opencode` | `ANTHROPIC_API_KEY` (live-proven); stored auth (mapped, unproven) | ✓ | prepended | config only | `--dangerously-skip-permissions` | `opencode.json` | via `settings` | — | ✓ | `--session` + `--fork` | no plan quota |
 | `goose` | Goose | `goose` | `GOOSE_PROVIDER` + `OPENAI_API_KEY` (live-proven); stored auth (mapped, unproven) | — | native flag | — | (runs unattended) | — | — | — | — | `--resume --name` (linear)¹ | no plan quota |
 | `qwen` | Qwen Code | `qwen` | `OPENAI_API_KEY` + base URL (live-proven); OAuth/Coding Plan (mapped, unproven) | ✓ | prepended | config only | `--yolo` | `.qwen/settings.json` | ✓ / ✓ (interactive) | — | ✓ | `--resume` (linear) | no reader |
@@ -133,9 +133,11 @@ run fails with a usage error before spawning.
 - **synced config file** — the project-scoped file `oneharness sync` merges the
   unified settings into. Because the policy lands in each harness's *own*
   config, it also governs the tools when used directly — oneharness is not in
-  the loop at run time. Codex and Goose read only user-global config, and
-  Copilot takes permission rules only as flags (deliverable via
-  `[harness.copilot] args`), so they have no sync target.
+  the loop at run time. Codex's target is not a config file but its own
+  execpolicy rules file, which oneharness owns and rewrites whole (Codex reads
+  it once the project is trusted — see *Syncing harness configs*). Goose reads
+  only user-global config, and Copilot takes permission rules only as flags
+  (deliverable via `[harness.copilot] args`), so they have no sync target.
 - **allow / deny** — whether `allowed_tools` / `denied_tools` lists have a
   place in that file, in each harness's own rule syntax: Claude Code, Qwen, and
   Cursor use `permissions.allow` / `permissions.deny`. Qwen's rules govern its
@@ -144,7 +146,10 @@ run fails with a usage error before spawning.
   approval-gated tools), so synced qwen rules protect regular usage, not
   headless runs. Crush uses
   `permissions.allowed_tools`, with deny mapped to `options.disabled_tools`
-  (the tool is hidden entirely — its strongest deny). OpenCode's `permission`
+  (the tool is hidden entirely — its strongest deny). Codex takes the same
+  Claude-dialect lists, translated rule by rule into `prefix_rule(...)`
+  statements (`allow` / `forbidden`); a rule its patterns cannot express is
+  reported per rule in `unmapped_rules`, never widened. OpenCode's `permission`
   is a policy map, not a list, so the lists are rejected for it — express it
   with `[harness.opencode.settings]` instead. A rule aimed at a harness with no
   mapping is a parse error (per-harness fields) or reported `unmapped` (top
@@ -698,8 +703,35 @@ bash = { "git *" = "allow" }
 **`oneharness sync`** merges them into each harness's *own* project config file
 (the *synced config file* column in the matrix). That makes oneharness a
 config-sync dev tool: state the policy once in `oneharness.toml`, run `sync`,
-and it governs Claude Code, Cursor, Qwen, crush, and OpenCode even when they're
-used directly — oneharness is not needed at run time.
+and it governs Claude Code, Codex, Cursor, Qwen, crush, and OpenCode even when
+they're used directly — oneharness is not needed at run time.
+
+**Codex** takes the permission lists into its own execpolicy rules file,
+`.codex/rules/oneharness.rules` under the project. Codex loads
+`<layer>/rules/*.rules` for every active config layer, the project's `.codex/`
+included (Codex 0.80.0 and later; verified against 0.156.1) — but only once the
+project is **trusted** (`[projects."<path>"] trust_level = "trusted"` in the
+user's `config.toml`; a linked worktree inherits its main checkout's trust).
+oneharness owns that file wholly: it starts with a generated-do-not-edit
+comment, and every sync that changes it rewrites it whole, in either mode.
+Nothing else is written under `.codex/` beyond the `[[hooks]]` file below. The
+source stays the Claude-dialect strings; each rule's words are split the way a
+POSIX shell splits them:
+
+| rule | Codex rule |
+|------|------------|
+| `Bash(git status:*)` / `Bash(git status *)` in `allowed_tools` | `prefix_rule(pattern=["git", "status"], decision="allow")` |
+| `Bash(rm -rf:*)` in `denied_tools` | `prefix_rule(pattern=["rm", "-rf"], decision="forbidden")` |
+| `Bash(just check)` (an exact command) | unmapped: a prefix rule cannot bound a command's length, and it is never widened into one |
+| `Bash(git -C * log*)`, `Bash(git status*)` | unmapped: Codex patterns have no wildcards |
+| `Read`, `Edit(...)`, any non-`Bash` rule | unmapped: execpolicy governs shell commands only |
+
+Every unmapped rule is left out of the file and reported, rule by rule, in that
+harness's `unmapped_rules: [{list, rule, reason}]` in the JSON report (and the
+text view), with a stderr warning naming it; a sync whose only gap is unmapped
+rules still succeeds, and `--check` treats the file as in sync when it equals
+the translatable subset. The rules are proven honored by a directly started
+Codex (not through `oneharness run`) by the `oh_codex_rules_enforce` live phase.
 
 Hooks come in two forms. A `[harness.<id>.hooks]` table is written *verbatim*
 in that harness's own hooks schema, so it only reaches harnesses whose hooks
@@ -715,6 +747,8 @@ same gate into **all eight** harnesses. The per-harness install appears under a
 ```console
 oneharness sync                  # write/merge the harness config files in this project
 oneharness sync --check          # CI mode: exit 1 (writing nothing) if out of sync
+oneharness sync --exact          # hold every allow/deny list to exactly the config's
+oneharness sync --check --exact  # CI mode for that: extras in a list are out of sync too
 oneharness sync --harness claude-code --cwd ~/proj
 oneharness sync --global         # install [[hooks]] into the user-global config (~ / $XDG_CONFIG_HOME)
 ```
@@ -724,8 +758,21 @@ installs the normalized `[[hooks]]` into each harness's **user-global** location
 (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.copilot/hooks/…`,
 `$XDG_CONFIG_HOME/crush/crush.json`, `$XDG_CONFIG_HOME/opencode/plugin/…`, etc.),
 so the gate applies to every project. Permission rules and raw `settings` are
-project-scoped only, so configuring them under `--global` is a loud usage error
-rather than a silent half-write.
+project-scoped only (Codex's rules file included), so configuring them under
+`--global` is a loud usage error rather than a silent half-write.
+
+`sync` is **add-only** by default (see the merge rules below): a rule removed
+from `oneharness.toml` stays in the harness's file, and a rule hand-added there
+passes `--check`. **`--exact`** holds the list at each harness's allow/deny
+path to exactly the configured list, in source order — stale and hand-added
+entries are removed — while every other key (hooks, `env`, every
+non-permission setting) is merged exactly as without it. A list the config
+leaves empty is emptied where the file already has one, and never invented
+where it does not. Under `--check --exact` any difference in those lists,
+extras included, exits 1, and each harness's entry in the report names the
+entries in `added_rules` / `removed_rules` (`[{list, rule}]`). The same mode is
+`exact: true` in the Node and Python SDKs and `sync_with(&request,
+SyncMode::Exact)` in `oneharness-core`.
 
 #### The runtime gate (`oneharness gate`)
 
@@ -871,7 +918,9 @@ The merge is deliberately conservative:
   keys oneharness manages are written.
 - **Lists union** — existing entries keep their order and place; missing ones
   are appended. Re-syncing is therefore idempotent (`sync` adds and updates,
-  it never removes — delete by hand or edit the harness file directly).
+  it never removes — run `sync --exact` to hold the allow/deny lists to the
+  config, or delete by hand). The Codex rules file is the exception: it is
+  oneharness's alone, so it is replaced whole in both modes.
 - **Scalars oneharness manages take the config's value** — the unified config
   is the source of truth for the keys you declared, and only those.
 - **Unparseable files are refused, untouched** — a JSONC file with comments,
@@ -880,7 +929,8 @@ The merge is deliberately conservative:
   (crush's `.crush.json`) is merged into rather than shadowed.
 - **Nothing is dropped silently** — a setting with no mapping for a harness is
   a parse error (per-harness fields) or surfaced as `unmapped` in the JSON
-  report plus a stderr warning (top-level fields).
+  report plus a stderr warning (top-level fields); an individual rule a harness
+  cannot express (Codex) is surfaced the same way in `unmapped_rules`.
 
 To opt out: `--config <path>` loads exactly that file and skips discovery (the
 `ONEHARNESS_<FIELD>` overrides still apply on top); `--no-config` (or
@@ -2563,6 +2613,17 @@ control) and the denied one must not. This is the only tier that can prove a
 synced file is *honored*, not merely written; it doubles as the drift alarm
 for the encoded config formats.
 
+For **Codex** the same proof runs against Codex started **directly**, the way a
+user starts it, rather than through `oneharness run` (`oh_codex_rules_enforce`):
+`sync` writes `.codex/rules/oneharness.rules` into a scratch project that a
+scratch `CODEX_HOME` trusts (its `auth.json` copied from the existing login —
+the user's own `~/.codex` is never written), and each half runs one command
+before and after the sync. A synced `denied_tools` `Bash(mkdir:*)` must refuse
+a `mkdir` that ran before it, and a synced `allowed_tools` `Bash(rm -f:*)` must
+run an `rm -f` Codex's own dangerous-command check refused before it. Neither
+half leans on Codex's OS sandbox, so the proof holds on runners without
+unprivileged user namespaces.
+
 The live check also proves **hook enforcement** the same way: it syncs a
 `[[hooks]]` entry whose command is `oneharness gate <id>` into the harness's own
 config, then drives the real CLI under bypass (so the hook is the sole decider)
@@ -2599,7 +2660,7 @@ Each harness needs its CLI installed and that provider's auth in the environment
 | harness | install | auth env var(s) |
 |---------|---------|-----------------|
 | `claude-code` | `npm i -g @anthropic-ai/claude-code` | `CLAUDE_CODE_OAUTH_TOKEN` (or `ANTHROPIC_API_KEY`) |
-| `codex` | `npm i -g @openai/codex` | `OPENAI_API_KEY` |
+| `codex` | `npm i -g @openai/codex` | an existing `codex login`, else `OPENAI_API_KEY` |
 | `opencode` | `npm i -g opencode-ai` | `ANTHROPIC_API_KEY` (or `OPENAI_API_KEY`) |
 | `goose` | [installer](https://block.github.io/goose/docs/getting-started/installation) | `OPENAI_API_KEY` + `GOOSE_PROVIDER`/`GOOSE_MODEL` |
 | `qwen` | `npm i -g @qwen-code/qwen-code` | `OPENAI_API_KEY` (+ optional `OPENAI_BASE_URL`) |

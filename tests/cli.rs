@@ -4325,6 +4325,62 @@ fn a_resumed_codex_turn_is_sandboxed_like_a_fresh_one_over_a_callers_override() 
 }
 
 #[test]
+fn every_spelling_of_a_callers_sandbox_mode_is_outranked_on_a_resumed_codex_turn() {
+    // Codex takes a config override as `-c k=v`, `--config k=v`,
+    // `--config=k=v` or `-ck=v`; each one is a `sandbox_mode` that would win a
+    // resumed turn by coming last, so each must be followed by the mode's own.
+    // A key that only LOOKS like it is left alone, with nothing restated.
+    let cases: [(&[&str], bool); 5] = [
+        (&["-c", "sandbox_mode=danger-full-access"], true),
+        (&["--config", "sandbox_mode=\"danger-full-access\""], true),
+        (&["--config=sandbox_mode=danger-full-access"], true),
+        (&["-csandbox_mode=danger-full-access"], true),
+        (&["-c", "sandbox_mode_extra=x"], false),
+    ];
+    for (caller, restated) in cases {
+        // A JSON array of strings is also a TOML inline array.
+        let project = format!(
+            "[harness.codex]\nargs = {}\n",
+            serde_json::to_string(caller).unwrap()
+        );
+        let fx = ConfigFixture::new("codex-resume-sandbox-spelling", &project, "");
+        let cwd = fx.cwd();
+        let output = run_with_config(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "go",
+                "--cwd",
+                &cwd,
+                "--mode",
+                "auto",
+                "--resume",
+                "th-1",
+                "--print-command",
+                "--compact",
+            ],
+            &[],
+            &fx.user_config(),
+        );
+        assert!(output.status.success(), "{caller:?}: {output:?}");
+        let command: Vec<String> = json_stdout(&output)["results"][0]["command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_str().unwrap().to_string())
+            .collect();
+        let mut tail: Vec<String> = caller.iter().map(|a| a.to_string()).collect();
+        if restated {
+            tail.extend(["-c".to_string(), "sandbox_mode=workspace-write".to_string()]);
+        }
+        assert!(command.ends_with(&tail), "{caller:?}: {command:?}");
+        assert!(!command.iter().any(|t| t == "--sandbox"), "{command:?}");
+    }
+}
+
+#[test]
 fn resume_maps_for_the_text_output_harnesses() {
     // codex: `exec resume <id> <prompt>` (subcommand, id before prompt).
     let codex = print_command_for(&["--harness", "codex", "--resume", "th-1"]);

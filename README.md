@@ -466,8 +466,8 @@ Useful `run` flags:
   so `--bin claude-code=<path>` covers `claude-code:work` and still beats that
   variant's own env key and config-file `bin`.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
-- `--config <path>` (repeatable) / `--no-config` — load exactly the named
-  config files / ignore all config files (see below).
+- `--config <path>` / `--no-config` — choose the config files to load / ignore
+  all config files (see [Configuration](#configuration)).
 - `--format <text|json>` / `--compact` — see the next section.
 
 ### `--format` and `--compact`
@@ -946,9 +946,8 @@ The merge is deliberately conservative:
   report plus a stderr warning (top-level fields); an individual rule a harness
   cannot express (Codex) is surfaced the same way in `unmapped_rules`.
 
-To opt out: `--config <path>` (repeatable, layered as above) loads exactly
-the named files and skips discovery (the `ONEHARNESS_<FIELD>` overrides still
-apply on top); `--no-config` (or
+To opt out: name the files to load with `--config` (see
+[Configuration](#configuration)); `--no-config` (or
 `ONEHARNESS_NO_CONFIG=1` for wrappers and hermetic test suites) ignores every
 config file **and** the env overrides, leaving only flags and defaults. `detect`
 honors the configured `bin`s too, so it probes the same binaries `run` would

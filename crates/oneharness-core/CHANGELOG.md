@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event, then the text report. A stream with no `--format` is still NDJSON in
   this release and warns once that the default becomes text in the next one;
   pass `--format json` to keep the NDJSON protocol.
-- **Breaking (Rust API):** `HistoryEventLine` gains `session_name` (serialized
-  only when set) and `SessionSummary` gains `running` (serialized only when
+- **Breaking (Rust API):** `HistoryEventLine` gains `session_name`, a
+  validated `HistorySessionName` (serialized only when set; a line whose name
+  is empty or not in the sanitized shape is refused on read), and `SessionSummary` gains `running` (serialized only when
   true), so struct literals of either must set them. Added:
   `domain::render::{render_event, render_report_text,
   render_history_show_text, printable, indented}`,

@@ -564,8 +564,8 @@ pub struct HistoryWatchOptions {
     /// Follow one session: its id, or its name (the newest session so named,
     /// including one still running, or the first to appear).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "String")]
-    pub session: Option<String>,
+    #[schemars(with = "NonEmptyString")]
+    pub session: Option<NonEmptyString>,
     /// Load configuration from exactly this file, skipping user/project
     /// discovery.
     #[serde(default, skip_serializing_if = "Option::is_none")]

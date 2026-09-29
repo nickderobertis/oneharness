@@ -2620,7 +2620,7 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
-  session: z.string().optional(),
+  session: z.string().min(1).optional(),
   variant: z.string().optional(),
 });
 

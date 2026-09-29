@@ -29,7 +29,7 @@ use crate::domain::history::{
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
-use crate::domain::sdk::{LiteralFalse, LiteralTrue};
+use crate::domain::sdk::{LiteralFalse, LiteralTrue, NonEmptyString};
 use crate::domain::usage::UtcInstant;
 use crate::errors::OneharnessError;
 
@@ -799,9 +799,9 @@ impl HistoryWatcher {
         labels: HistoryLabels,
         project_slug: Option<String>,
         events: bool,
-        session: Option<&str>,
+        session: Option<&NonEmptyString>,
     ) -> Result<Self, OneharnessError> {
-        let session = match session {
+        let session = match session.map(NonEmptyString::as_str) {
             Some(needle) => {
                 let sessions = list_sessions(dir, project_slug.as_deref())?;
                 let id = sessions

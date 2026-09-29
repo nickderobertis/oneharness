@@ -77,7 +77,7 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
         labels,
         slug,
         args.events,
-        args.session.as_deref(),
+        args.session.as_ref(),
     )?;
     let of_variant = |variant: Option<&str>| {
         args.variant

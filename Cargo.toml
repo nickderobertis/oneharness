@@ -68,6 +68,7 @@ serde_json = { workspace = true }
 # exactly under its own name so `tests/history_compat.rs` proves that what this
 # build writes is still read by the PUBLISHED code, not by this tree's.
 [dev-dependencies]
+# llmlint: ignore[crates_stay_in_one_cargo_workspace] Deliberately the published 0.19.0 from crates.io, not the workspace member: it is the fixed compatibility anchor (oneharness v0.17.0's history reader) that `tests/history_compat.rs` reads this build's history with, which the sibling path crate by definition cannot be. Test-only; the binary still builds against the path member alone.
 oneharness-core-v0-19 = { package = "oneharness-core", version = "=0.19.0" }
 
 # Integration tests drive the binaries directly via the cargo-provided

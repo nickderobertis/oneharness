@@ -35214,6 +35214,14 @@ fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_label
             .unwrap();
         raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0)
     };
+    // An empty selector names no session: refused before anything is read.
+    let empty = run(
+        &["history", "watch", "--session", "", "--history-dir", &ds],
+        &[],
+    );
+    assert_eq!(empty.status.code(), Some(2), "{empty:?}");
+    assert!(empty.stdout.is_empty());
+
     let alpha = seed("alpha", &[]);
     let _beta = seed("beta", &[]);
     let gamma = seed("gamma", &["team=x"]);

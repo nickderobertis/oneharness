@@ -12649,6 +12649,7 @@
       },
       "session": {
         "description": "Follow one session: its id, or its name (the newest session so named,\nincluding one still running, or the first to appear).",
+        "minLength": 1,
         "type": "string"
       },
       "variant": {

@@ -10,5 +10,13 @@ while IFS= read -r name; do
   [[ -z $name ]] || unset "$name"
 done < <(git rev-parse --local-env-vars)
 
+# A push launched by a non-login process (an IDE, a publishing agent) may not
+# have sourced rustup's profile, so the gate would die on `cargo: command not
+# found` before checking anything. Fall back to rustup's own install location.
+cargo_bin=${CARGO_HOME:-$HOME/.cargo}/bin
+if ! command -v cargo >/dev/null 2>&1 && [[ -x $cargo_bin/cargo ]]; then
+  export PATH="$cargo_bin:$PATH"
+fi
+
 echo "pre-push: running complete gate against $remote..." >&2
 just gate "$remote" "${ONEHARNESS_COMPARISON_BASE:-}"

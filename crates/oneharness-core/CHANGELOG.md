@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Migration: repeatable config files
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records the call shapes this release changed from and to, as of this release; it is history a consumer reads when bumping core, not a live copy of the API to keep in step. The source is `io::run`/`io::config`, and the compiler holds every caller to it. -->
+
 Explicit configuration is now a list of files, layered in order with each later
 file (its own `extends` chain beneath it) overriding the earlier ones.
 
@@ -19,6 +21,7 @@ file (its own `extends` chain beneath it) overriding the earlier ones.
 - `io::config::load(Some(&path), no_config, start)` becomes
   `load(&[path], no_config, start)`, and `load(None, …)` becomes
   `load(&[], …)`; `load_layers` changes the same way.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 ## [0.19.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.18.0...oneharness-core-v0.19.0) - 2026-09-29
 

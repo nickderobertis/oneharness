@@ -10260,6 +10260,36 @@ fn received_argv(path: &Path) -> Vec<String> {
 }
 
 #[test]
+fn a_later_config_file_that_is_missing_or_invalid_is_a_usage_error_naming_it() {
+    // The earlier file is valid, so only the SECOND file can refuse the run:
+    // it is loaded as strictly as a lone `--config`, never skipped.
+    let (fx, d, j) = two_configs("later-bad", "model = \"d\"\n", "model = [not toml\n");
+    let missing = fx.dir.join("missing.toml").display().to_string();
+    let cwd = fx.cwd();
+    for later in [&missing, &j] {
+        for verb in [
+            &[
+                "run",
+                "--harness",
+                "claude-code",
+                "--prompt",
+                "hi",
+                "--print-command",
+            ][..],
+            &["config"][..],
+        ] {
+            let mut args = verb.to_vec();
+            args.extend(["--cwd", &cwd, "--config", &d, "--config", later]);
+            let output = run_with_config(&args, &[], &fx.user_config());
+            assert_eq!(output.status.code(), Some(2), "{args:?}");
+            assert!(output.stdout.is_empty(), "{args:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(later.as_str()), "{args:?}: {stderr}");
+        }
+    }
+}
+
+#[test]
 fn repeated_config_files_layer_in_order_beneath_env_and_flags() {
     let defaults = mock_claude_defaults("mode = \"read-only\"\n");
     let cases = [

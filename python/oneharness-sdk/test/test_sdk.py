@@ -86,6 +86,8 @@ INPUT_KEYS = json.loads(
 # A binding with no entry here fails
 # `test_every_bound_option_is_a_field_of_its_options_contract` by name, which is
 # what keeps this table from going stale as the CLI grows flags.
+# `Any`: the values span every option type the verbs take (strings, lists,
+# maps, booleans, numbers); each is checked against its own contract below.
 POPULATED: dict[str, Any] = {
     "after": "0198f0d0-7b31-7000-8000-000000000001",
     "all": True,

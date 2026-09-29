@@ -1672,15 +1672,18 @@ oh_resume_mode_enforce() {
 # host cannot run looks, in the events, exactly like a model that never tried.
 #   $1 harness id, $2 the turn's cwd, $3 its report
 _oh_resume_mode_evidence() {
-    local id="$1" dir="$2" report="$3" sandbox out
+    local id="$1" dir="$2" report="$3" sandbox out rc
     note "  second turn events: $(jq -c '.results[0].events' "$report" | head -c 800)"
     note "  second turn text: $(jq -r '.results[0].text // ""' "$report" | head -c 500)"
     note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$report" | tail -c 800)"
     note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$report" | tail -n 6 | cut -c1-300)"
     [ "$id" = codex ] || return 0
     for sandbox in workspace-write read-only; do
-        out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'touch ohprobe.txt; echo probe-touch-exit=$?' </dev/null 2>&1)"
-        note "  codex sandbox probe ($sandbox, exit $?): $(printf '%s' "$out" | tail -c 600)"
+        # A sandbox that cannot start exits non-zero, which is the evidence
+        # itself — captured, never allowed to end the script under `set -e`.
+        rc=0
+        out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'touch ohprobe.txt; echo probe-touch-exit=$?' </dev/null 2>&1)" || rc=$?
+        note "  codex sandbox probe ($sandbox, exit $rc): $(printf '%s' "$out" | tr -d '\000' | tail -c 600)"
         rm -f "$dir/ohprobe.txt"
     done
 }

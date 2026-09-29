@@ -991,9 +991,13 @@ impl HistoryWatcher {
     }
 }
 
-/// A one-line summary of a session, for `oneharness history list`. Read from the
-/// session's records: `name`/`project`/`started` come from the first record,
-/// `harnesses` is the distinct set across all records.
+/// A one-line summary of a session, for `oneharness history list`, read from
+/// both its closing `run` records and its event lines. `name`/`project`/
+/// `started` come from the first record; a session still in its first turn has
+/// none yet, so they fall back to the events' `session_name`, the project
+/// directory's slug, and the instant in the session id. `harnesses` is the
+/// distinct set across records and events, and `running` says an event's run
+/// has no closing record yet.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 #[schemars(rename = "HistorySessionSummary")]
 pub struct SessionSummary {

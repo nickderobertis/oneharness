@@ -15615,7 +15615,7 @@
         }
       },
       "HistorySessionSummary": {
-        "description": "A one-line summary of a session, for `oneharness history list`. Read from the\nsession's records: `name`/`project`/`started` come from the first record,\n`harnesses` is the distinct set across all records.",
+        "description": "A one-line summary of a session, for `oneharness history list`, read from\nboth its closing `run` records and its event lines. `name`/`project`/\n`started` come from the first record; a session still in its first turn has\nnone yet, so they fall back to the events' `session_name`, the project\ndirectory's slug, and the instant in the session id. `harnesses` is the\ndistinct set across records and events, and `running` says an event's run\nhas no closing record yet.",
         "type": "object",
         "properties": {
           "harnesses": {

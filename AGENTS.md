@@ -215,8 +215,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   nothing has been synced, spawned or interrupted when it is. A streamed run
   prints by `--format` alone, whichever layer (flag, config, env) turned the
   stream on: `json` is the NDJSON protocol, `text` one `render_event` line per
-  event then the text report; with no `--format` it is still NDJSON in this
-  release, with one stderr warning per process that text becomes the default.
+  event then the text report; with no `--format` it is NDJSON plus one
+  stderr deprecation warning per process — keep the two together, since the
+  warning is the only notice a consumer relying on that default gets.
   Every text view a consumer could want to reproduce lives in
   `oneharness_core::domain::render`, never in `src/commands` — the binary
   calls it so an embedder prints what the CLI prints. The live sink and the

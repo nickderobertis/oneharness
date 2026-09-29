@@ -1571,7 +1571,6 @@ oh_resume_mode_enforce() {
     marker="$(oh_marker_fixed)"
     file="$(oh_enforce_file "resume-$mode")"
 
-    note "  resume-mode[$mode]: turn one opens session $name ($id)"
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
         "Remember this exact word for the rest of our conversation: $marker. Do not run any tools. Reply with only the word OK." \
         "$sandbox/first.json" "$sandbox/first.err"
@@ -1597,7 +1596,6 @@ oh_resume_mode_enforce() {
         fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
     fi
 
-    note "  resume-mode[$mode]: turn two resumes $name under the same --mode and is asked to touch $file"
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
         "You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation." \
         "$sandbox/second.json" "$sandbox/second.err" --events
@@ -1625,7 +1623,7 @@ oh_resume_mode_enforce() {
     fi
     text="$(jq -r '.results[0].text // ""' "$sandbox/second.json")"
     case "$text" in
-    *"$marker"*) note "  ok[$mode]: turn two continued the conversation (recalled $marker)" ;;
+    *"$marker"*) ;;
     *)
         note "  second turn text: $(printf '%s' "$text" | head -c 500)"
         rm -rf "$sandbox"
@@ -1640,7 +1638,6 @@ oh_resume_mode_enforce() {
             rm -rf "$sandbox"
             fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had"
         fi
-        note "  ok[$mode]: the resumed turn wrote to the workspace"
         ;;
     *)
         if [ -e "$sandbox/work/$file" ]; then
@@ -1654,12 +1651,11 @@ oh_resume_mode_enforce() {
             rm -rf "$sandbox"
             fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing"
         fi
-        note "  ok[$mode]: the resumed turn's write was blocked"
         ;;
     esac
 
     rm -rf "$sandbox"
-    note "PASS: $id resumed a session under --mode $mode with the mode's sandbox intact"
+    note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
 }
 
 # One ordinary (non-control) turn on a named session handle, under `--mode`.

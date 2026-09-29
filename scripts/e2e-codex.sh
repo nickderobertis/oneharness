@@ -49,6 +49,7 @@ oh_mode_enforce codex plan
 # no `--sandbox`, so a continued turn carries it as `-c sandbox_mode=`. Two
 # `--session` turns per mode; turn two must run, recall turn one, and write
 # (auto) or be blocked (read-only / plan) exactly as a fresh turn would.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
 note "» resume under a sandbox mode: a continued turn must run and keep the sandbox"
 oh_resume_mode_enforce codex auto
 oh_resume_mode_enforce codex read-only

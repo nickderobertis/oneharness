@@ -3363,7 +3363,6 @@ mod tests {
         assert!(!argv.iter().any(|t| t == "--fork"), "{argv:?}");
     }
 
-    /// Codex's argv under `mode`, fresh or continuing `resume`.
     fn codex_argv(mode: PermissionMode, resume: Option<&'static str>) -> Vec<String> {
         let spec = by_id("codex").unwrap();
         (spec.build_argv)(&BuildCtx {

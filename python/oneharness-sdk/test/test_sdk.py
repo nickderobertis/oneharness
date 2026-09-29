@@ -594,16 +594,19 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         settings = project / ".claude" / "settings.json"
         settings.write_text('{"permissions":{"allow":["Bash(curl:*)"]}}\n', encoding="utf-8")
         client = self.layered(project)
-        options: Any = {"cwd": str(project), "harnesses": ["claude-code"]}
+        cwd = str(project)
         with without_ambient_overrides():
-            add_only = await client.sync(cast("Any", {**options, "check": True}))
+            add_only = await client.sync({"cwd": cwd, "harnesses": ["claude-code"], "check": True})
             self.assertNotIn("exact", add_only)
-            checked: Any = await client.sync(cast("Any", {**options, "check": True, "exact": True}))
-            self.assertTrue(checked["exact"])
-            result = [item for item in checked["results"] if item["harness"] == "claude-code"][0]
+            checked = await client.sync(
+                {"cwd": cwd, "harnesses": ["claude-code"], "check": True, "exact": True}
+            )
+            self.assertIs(checked.get("exact"), True)
+            result = checked["results"][0]
             self.assertEqual(result["status"], "updated")
-            self.assertEqual([c["rule"] for c in result["removed_rules"]], ["Bash(curl:*)"])
-            await client.sync(cast("Any", {**options, "exact": True}))
+            removed = [change["rule"] for change in result.get("removed_rules", [])]
+            self.assertEqual(removed, ["Bash(curl:*)"])
+            await client.sync({"cwd": cwd, "harnesses": ["claude-code"], "exact": True})
         written = json.loads(settings.read_text(encoding="utf-8"))
         self.assertEqual(written["permissions"]["allow"], ["Bash(echo:*)"])
 

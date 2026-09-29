@@ -1332,7 +1332,6 @@ oh_codex_rules_enforce() {
     allow_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: rm -f $file. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not remove the file any other way; reply with the single word DENIED and stop."
     local bypass=(--dangerously-bypass-approvals-and-sandbox)
 
-    note "  codex-rules[control]: before any sync, codex runs mkdir and refuses rm -f"
     _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
     if [ ! -d "$proj/$dir" ]; then
         printf '%s\n' "$_OH_CODEX_OUT" >&2
@@ -1346,7 +1345,6 @@ oh_codex_rules_enforce() {
         rm -rf "$scratch"
         fail "codex: the control run removed $file with no rule synced (its dangerous-command check no longer refuses rm -f), so the allow half would prove nothing"
     fi
-    note "  ok[control]: mkdir ran; rm -f was refused"
 
     cfg="$scratch/oneharness.toml"
     printf '[harness.codex]\nallowed_tools = ["Bash(rm -f:*)"]\ndenied_tools = ["Bash(mkdir:*)"]\n' >"$cfg"
@@ -1362,26 +1360,26 @@ oh_codex_rules_enforce() {
         rm -rf "$scratch"
         fail "codex: sync did not create $rules"
     fi
-    note "  sync wrote $rules:"
-    sed 's/^/    /' "$rules" >&2
 
-    note "  codex-rules[deny]: the synced forbidden rule must refuse mkdir"
     _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
     if [ -d "$proj/$dir" ]; then
         printf '%s\n' "$_OH_CODEX_OUT" >&2
+        sed 's/^/    /' "$rules" >&2
         rm -rf "$scratch"
         fail "codex: mkdir $dir ran DESPITE the synced denied_tools rule — the rules file is not honored (location, trust, or dialect drifted)"
     fi
-    note "  ok[deny]: $(printf '%s\n' "$_OH_CODEX_OUT" | grep -o 'rejected: [^"\\]*' | head -n 1 || echo 'mkdir did not run')"
+    local refused
+    refused="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -o 'rejected: [^"\\]*' | head -n 1 || true)"
 
-    note "  codex-rules[allow]: the synced allow rule must let rm -f run"
     _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
     if [ -e "$proj/$file" ]; then
         printf '%s\n' "$_OH_CODEX_OUT" >&2
+        sed 's/^/    /' "$rules" >&2
         rm -rf "$scratch"
         fail "codex: rm -f $file was still refused with the synced allowed_tools rule — the rules file is not honored (location, trust, or dialect drifted)"
     fi
-    note "  ok[allow]: rm -f ran only once the synced rule allowed it"
+    # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran and passed, and it quotes Codex's own refusal — the evidence that the synced rule, not something else, decided.
+    note "  ok[codex-rules]: before sync mkdir ran and rm -f was refused; after it, mkdir was ${refused:-refused} and rm -f ran"
     rm -rf "$scratch"
 }
 

@@ -19,8 +19,6 @@ use oneharness_core::io::sync::{self as sync_io, FileStatus, SyncMode, SyncReque
 pub use oneharness_core::io::sync::{HookFileResult, SyncReport, SyncResult};
 
 pub fn run(args: &SyncArgs) -> Result<i32, OneharnessError> {
-    // Settled before the sync writes anything, so a contradictory flag pair
-    // refuses a run that has not touched a harness config yet.
     let mode = if args.exact {
         SyncMode::Exact
     } else {

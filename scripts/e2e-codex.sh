@@ -23,6 +23,7 @@ oh_assert_echoed codex "$marker"
 # `oneharness run`): `sync` writes .codex/rules/oneharness.rules into a trusted
 # scratch project, and a synced deny must refuse a command that ran before it,
 # and a synced allow must run a command that was refused before it.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
 note "» synced rules: a directly started codex must honor .codex/rules/oneharness.rules"
 oh_codex_rules_enforce
 

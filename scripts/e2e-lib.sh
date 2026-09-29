@@ -1553,6 +1553,17 @@ oh_mode_enforce() {
 # `exec resume` has no `--sandbox`, so every continued sandboxed turn died at
 # argument parsing while the fresh turn passed.
 #
+# Two halves, asserted where each can be. The #1372 half — turn two runs as the
+# resume argv, `ok`, `continue`, recalls the word — is asserted on every host.
+# The sandbox half (the write, the block, the attempt) needs a host where the
+# harness's OS sandbox can START, and some cannot: on GitHub's Linux runner
+# codex's bwrap fails (`bwrap: loopback: Failed RTM_NEWADDR: Operation not
+# permitted`), and on its Windows runner no sandbox backend is enabled, so codex
+# refuses every command (`rejected: blocked by policy`) — fresh or resumed.
+# `_oh_sandbox_starts` asks that of the harness without a model; where it
+# cannot, the phase says `sandbox half NOT PROVEN on this host` with the probe's
+# own output, and neither passes nor fails that half.
+#
 # Extra run args ($3..) ride BOTH turns. e2e-codex.sh passes a caller's own
 # `-- -c sandbox_mode=read-only` under `auto`: on a fresh turn codex's
 # `--sandbox` outranks it, on a resumed one the last `-c` wins, so the resumed
@@ -1562,7 +1573,7 @@ oh_mode_enforce() {
 oh_resume_mode_enforce() {
     local id="$1" mode="$2"
     shift 2
-    local bin sandbox store name marker file status phase text refusal
+    local bin sandbox store name marker file status phase text refusal probe
     bin="$(oh_bin)"
     [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -1573,6 +1584,8 @@ oh_resume_mode_enforce() {
     # A real repo: codex refuses to run outside one (`untrusted_directory`)
     # unless the directory is trusted, and trusting it is not this phase's job.
     git init -q "$sandbox/work" 2>/dev/null || true
+    probe=""
+    _oh_sandbox_starts "$id" "$mode" "$sandbox/work" || probe="$_OH_SANDBOX_PROBE"
     store="$sandbox/sessions"
     name="ohresume${RANDOM}"
     marker="$(oh_marker_fixed)"
@@ -1638,6 +1651,13 @@ oh_resume_mode_enforce() {
         ;;
     esac
 
+    if [ -n "$probe" ]; then
+        rm -rf "$sandbox"
+        note "sandbox half NOT PROVEN on this host: $id's own sandbox for --mode $mode cannot start here, so whether turn two's touch of $file was written or blocked says nothing about the mode ($probe)"
+        note "  (the #1372 half held: turn two ran as the resume argv on session $name, status ok, phase continue, and recalled $marker)"
+        return 0
+    fi
+
     case "$mode" in
     auto)
         if [ ! -e "$sandbox/work/$file" ]; then
@@ -1663,6 +1683,30 @@ oh_resume_mode_enforce() {
 
     rm -rf "$sandbox"
     note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
+}
+
+# Whether the harness's own OS sandbox for `mode` can START on this host,
+# asked without a model. Returns non-zero, with the probe's own words in
+# $_OH_SANDBOX_PROBE, when it cannot. Only codex has a model-free way to ask
+# (`codex sandbox`); any other harness is assumed able, so its sandbox half is
+# asserted in full.
+#   $1 harness id, $2 mode, $3 directory to probe in
+_OH_SANDBOX_PROBE=""
+_oh_sandbox_starts() {
+    local id="$1" mode="$2" dir="$3" sandbox out rc=0
+    _OH_SANDBOX_PROBE=""
+    [ "$id" = codex ] || return 0
+    case "$mode" in
+    auto) sandbox=workspace-write ;;
+    read-only | plan) sandbox=read-only ;;
+    *) return 0 ;;
+    esac
+    out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'echo ohprobe-ran' </dev/null 2>&1)" || rc=$?
+    case "$rc:$out" in
+    0:*ohprobe-ran*) return 0 ;;
+    esac
+    _OH_SANDBOX_PROBE="\`codex sandbox -c sandbox_mode=$sandbox\` exited $rc: $(printf '%s' "$out" | tr -d '\000' | tail -c 400)"
+    return 1
 }
 
 # Why a resumed turn's write came out as it did, for a failure. The turn's own

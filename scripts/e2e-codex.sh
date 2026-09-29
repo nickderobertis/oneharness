@@ -1,19 +1,30 @@
 #!/usr/bin/env bash
 # Live e2e: drive the real OpenAI Codex CLI through oneharness and assert the
-# JSON contract. Auth: OPENAI_API_KEY. Model: $CODEX_E2E_MODEL (default: the
-# CLI's own default).
+# JSON contract. Auth: an existing codex login, else OPENAI_API_KEY. Model:
+# $CODEX_E2E_MODEL (default: the CLI's own default).
 set -euo pipefail
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: codex =="
 need jq
-need_env "OpenAI auth" OPENAI_API_KEY
+# Codex authenticates from its own login (CI makes one from OPENAI_API_KEY with
+# `codex login --with-api-key`), so an existing login is auth enough.
+if [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
+    need_env "OpenAI auth" OPENAI_API_KEY
+fi
 
 export OH_MODEL="${CODEX_E2E_MODEL:-}"
 marker="$(oh_marker)"
 oh_run codex "$(oh_prompt "$marker")"
 oh_assert_echoed codex "$marker"
+
+# Synced permission rules, honored by Codex started DIRECTLY (not through
+# `oneharness run`): `sync` writes .codex/rules/oneharness.rules into a trusted
+# scratch project, and a synced deny must refuse a command that ran before it,
+# and a synced allow must run a command that was refused before it.
+note "» synced rules: a directly started codex must honor .codex/rules/oneharness.rules"
+oh_codex_rules_enforce
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # `codex exec -` (stdin sentinel), with the system prepended into that stream —

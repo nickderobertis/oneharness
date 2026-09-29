@@ -39,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   minted session id or a sanitized session name), so a selector no session
   could carry is refused at the CLI, SDK and library boundary.
 
+## [0.20.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.19.1...oneharness-core-v0.20.0) - 2026-09-29
+
+### Added
+
+- *(config)* [**breaking**] repeatable --config, later files overriding earlier ones ([#1384](https://github.com/nickderobertis/oneharness/pull/1384))
+
 ### Migration: repeatable config files
 
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records the call shapes this release changed from and to, as of this release; it is history a consumer reads when bumping core, not a live copy of the API to keep in step. The source is `io::run`/`io::config`, and the compiler holds every caller to it. -->

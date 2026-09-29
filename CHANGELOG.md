@@ -28,6 +28,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   this release and warns once that the default becomes text in the next one;
   pass `--format json` to keep the NDJSON protocol.
 
+## [0.18.0](https://github.com/nickderobertis/oneharness/compare/v0.17.1...v0.18.0) - 2026-09-29
+
+### Added
+
+- *(config)* [**breaking**] repeatable --config, later files overriding earlier ones ([#1384](https://github.com/nickderobertis/oneharness/pull/1384))
+
 ## [0.17.1](https://github.com/nickderobertis/oneharness/compare/v0.17.0...v0.17.1) - 2026-09-29
 
 ### Fixed

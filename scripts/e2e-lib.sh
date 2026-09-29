@@ -1681,6 +1681,13 @@ oh_resume_mode_enforce() {
             rm -rf "$sandbox"
             fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had; check the resumed argv carries \`-c sandbox_mode=read-only\` last (\`argv_with_caller_args\`) and that codex still honors it"
         fi
+        # The attempt is demanded of `read-only` only. `plan` prepends an
+        # instruction NOT to act, so a model that declines the touch there is
+        # obeying the mode, not dodging the test; its sandbox is the very
+        # `-c sandbox_mode=read-only` that read-only's attempted-and-blocked
+        # write proves live, and the argv unit tests
+        # (`codex_resumed_turn_carries_the_sandbox_as_config_per_mode`) pin the
+        # two modes' resumed sandbox tokens as identical.
         if [ "$mode" = "read-only" ] && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
             _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
             rm -rf "$sandbox"

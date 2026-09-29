@@ -524,8 +524,6 @@ and prints, once per process on stderr:
 oneharness: warning: a streamed run with no --format prints NDJSON today, but the stream default becomes text in the next release; pass --format json to keep the NDJSON protocol (or --format text for the readable stream)
 ```
 
-`history watch` has its own `--format jsonl|text`.
-
 ### Configuration
 
 Most `run` flags have a persistent counterpart in **`oneharness.toml`**, so a
@@ -2270,11 +2268,8 @@ append-only `.index.jsonl` without rescanning the history tree. Reconciliation
 on startup adds missing session records, ignores removed sessions, and truncates
 a partial final index line left by an interrupted writer. Reusing the last
 emitted `history_id` with `--after` resumes without duplication; repeated
-`--label` filters are ANDed. `--session` follows one session and `--format
-text` draws it readably (`oneharness history watch --help` says how each
-resolves), so `oneharness history watch --session <name> --events --format
-text` tails a run from another terminal — even one still in its first turn,
-which `history list` marks `running`. `clear` reports
+`--label` filters are ANDed; `oneharness history watch --help` describes
+`--session`, `--events` and `--format`. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
 non-interactively first.
 

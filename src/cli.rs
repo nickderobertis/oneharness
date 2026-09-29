@@ -1233,6 +1233,62 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_readme_history_synopsis_names_only_real_flags_and_values() {
+        // README.md's `history` synopsis is read against the clap definition
+        // it documents: every `--flag` it shows is that verb's, and every
+        // `--flag a|b` value list is exactly the values the verb accepts.
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let history = cli.find_subcommand("history").expect("the history verb");
+        let readme = include_str!("../README.md").replace("\r\n", "\n");
+        let synopsis: Vec<&str> = readme
+            .lines()
+            .filter(|line| line.starts_with("oneharness history "))
+            .collect();
+        assert!(
+            synopsis
+                .iter()
+                .any(|line| line.starts_with("oneharness history watch ")),
+            "README.md must carry the history watch synopsis"
+        );
+        for line in synopsis {
+            let usage = line.split(" # ").next().unwrap_or(line);
+            let mut words = usage.split_whitespace().skip(2);
+            let verb = words.next().expect("a history subcommand");
+            let command = history
+                .find_subcommand(verb)
+                .unwrap_or_else(|| panic!("README.md names `history {verb}`: {line}"));
+            let words: Vec<&str> = words
+                .map(|word| word.trim_matches(|c| matches!(c, '[' | ']' | '|')))
+                .collect();
+            for (i, word) in words.iter().enumerate() {
+                let Some(long) = word.strip_prefix("--") else {
+                    continue;
+                };
+                let arg = command
+                    .get_arguments()
+                    .find(|arg| arg.get_long() == Some(long))
+                    .unwrap_or_else(|| {
+                        panic!("README.md shows `--{long}` on `history {verb}`: {line}")
+                    });
+                let Some(values) = words
+                    .get(i + 1)
+                    .filter(|value| value.contains('|') && !value.starts_with('<'))
+                else {
+                    continue;
+                };
+                let documented: Vec<&str> = values.split('|').collect();
+                let accepted: Vec<String> = arg
+                    .get_possible_values()
+                    .iter()
+                    .map(|value| value.get_name().to_string())
+                    .collect();
+                assert_eq!(documented, accepted, "`history {verb} --{long}`: {line}");
+            }
+        }
+    }
+
+    #[test]
     fn stdout_format_defaults_to_text_unless_compact_asks_for_json() {
         assert_eq!(
             StdoutFormat::from_flags(None, false).unwrap(),

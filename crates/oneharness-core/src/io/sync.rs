@@ -804,6 +804,103 @@ mod tests {
         assert!(emptied.removed[0].rule.contains("[\"ls\"]"));
     }
 
+    /// The prose that restates this module's contract — the README's matrix
+    /// row, translation table, `--exact` and live-proof sections, AGENTS.md,
+    /// and the parity note — is held to the code here, so a rename or a
+    /// changed translation cannot leave the documents describing the old one.
+    #[test]
+    fn the_documents_restating_the_sync_contract_match_the_code() {
+        use crate::domain::sync::RuleList;
+        let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
+        let agents = include_str!("../../../../AGENTS.md");
+        let parity = include_str!("../../../../docs/sdk-parity.md");
+        let e2e = include_str!("../../../../scripts/e2e-lib.sh");
+        let lane = include_str!("../../../../scripts/e2e-codex.sh");
+
+        // The matrix row names the registry's Codex target.
+        let codex = harness::by_id("codex").unwrap().sync.as_ref().unwrap();
+        let row = readme
+            .lines()
+            .find(|line| line.starts_with("| `codex` | OpenAI Codex CLI |"))
+            .expect("README.md has the codex matrix row");
+        assert!(row.contains(&format!("`{}`", codex.file)), "{row}");
+
+        // Each translation-table row says what the translator does.
+        for (list, rule) in [
+            (RuleList::AllowedTools, "Bash(git status:*)"),
+            (RuleList::AllowedTools, "Bash(git status *)"),
+            (RuleList::DeniedTools, "Bash(rm -rf:*)"),
+        ] {
+            let text = match list {
+                RuleList::AllowedTools => format!("allowed_tools = [{rule:?}]"),
+                RuleList::DeniedTools => format!("denied_tools = [{rule:?}]"),
+            };
+            let rendered = codex_rules(&text).text;
+            let statement = rendered.lines().last().unwrap();
+            assert!(readme.contains(&format!("`{rule}`")), "{rule}");
+            assert!(readme.contains(&format!("`{statement}`")), "{statement}");
+        }
+        for rule in [
+            "Bash(just check)",
+            "Bash(git -C * log*)",
+            "Bash(git status*)",
+            "Read",
+        ] {
+            assert!(sync_domain::exec_policy_pattern(rule).is_err(), "{rule}");
+            assert!(readme.contains(&format!("`{rule}`")), "{rule}");
+        }
+
+        // The report fields every document names are the serialized ones.
+        let mut result = SyncResult::new("codex", None, SyncStatus::Skipped);
+        result.unmapped_rules = vec![UnmappedRule::new(RuleList::AllowedTools, "Read", "r")];
+        result.added_rules = vec![RuleChange::new(Some(RuleList::AllowedTools), "a")];
+        result.removed_rules = vec![RuleChange::new(None, "b")];
+        let mut report = SyncReport::new(Vec::new(), true, vec![result]);
+        report.exact = true;
+        let value = serde_json::to_value(&report).unwrap();
+        assert_eq!(value["exact"], true);
+        for field in ["unmapped_rules", "added_rules", "removed_rules"] {
+            assert!(value["results"][0].get(field).is_some(), "{field}");
+            for (name, document) in [
+                ("README.md", readme.as_str()),
+                ("docs/sdk-parity.md", parity),
+            ] {
+                assert!(document.contains(&format!("`{field}`")), "{name}: {field}");
+            }
+        }
+        assert!(agents.contains("`unmapped_rules`"));
+        assert_eq!(
+            value["results"][0]["unmapped_rules"][0]["list"],
+            "allowed_tools"
+        );
+        assert!(readme.contains("`unmapped_rules: [{list, rule, reason}]`"));
+        assert!(readme.contains("`added_rules` / `removed_rules` (`[{list, rule}]`)"));
+
+        // The Rust spellings the documents give compile, and are the manifest's.
+        let _: fn(&SyncRequest, SyncMode) -> Result<SyncReport, OneharnessError> = sync_with;
+        let _ = (SyncMode::Exact, SyncSpec::format);
+        let manifest = crate::domain::capability::CAPABILITIES
+            .iter()
+            .find(|capability| capability.method == "sync")
+            .unwrap();
+        assert_eq!(manifest.rust, "oneharness_core::io::sync::sync_with");
+        for document in [readme.as_str(), parity] {
+            assert!(document.contains("sync_with(&request"), "sync_with");
+            assert!(document.contains("SyncMode::Exact"), "SyncMode::Exact");
+        }
+        assert!(agents.contains("`SyncMode::Exact`") && agents.contains("`SyncSpec::format`"));
+
+        // The live proof the README describes is the one the lane runs.
+        assert!(lane.contains("\noh_codex_rules_enforce\n"));
+        assert!(e2e.contains("\noh_codex_rules_enforce() {"));
+        assert!(e2e.contains(r#"allowed_tools = ["Bash(rm -f %s:*)"]"#));
+        assert!(e2e.contains(r#"denied_tools = ["Bash(mkdir %s:*)"]"#));
+        assert!(readme.contains("`oh_codex_rules_enforce`"));
+        assert!(
+            readme.contains("`Bash(mkdir <dir>:*)`") && readme.contains("`Bash(rm -f <file>:*)`")
+        );
+    }
+
     #[test]
     fn unparseable_existing_file_is_a_loud_error_and_untouched() {
         let dir = temp_project("jsonc");

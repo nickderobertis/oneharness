@@ -583,14 +583,14 @@ class OneHarness:
         # the union deliberately accepts `{session, last: True}` and resolves it
         # to "the most recent", and the manifest binds `session` with
         # `unless: "last"` so the builder renders only `--last`. The cast names
-        # what `_call` has already validated against `history_records`.
+        # what `_call` has already validated against `history_show_entries`.
         return cast(
             "builtins.list[HistoryShowEntry]",
             await self._call(
                 "history",
                 lookup,
                 "history_lookup",
-                "history_records",
+                "history_show_entries",
                 history=True,
                 options_label="invalid oneharness history options",
                 contract_label="invalid oneharness history contract",

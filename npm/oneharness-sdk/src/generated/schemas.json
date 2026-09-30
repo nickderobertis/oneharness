@@ -997,7 +997,7 @@
         "show"
       ],
       "options": "history_lookup",
-      "output": "history_records",
+      "output": "history_show_entries",
       "stdout": "json",
       "stdin": false,
       "rust": "oneharness_core::io::history::read_session",
@@ -12558,7 +12558,7 @@
       }
     }
   },
-  "history_records": {
+  "history_show_entries": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "Array_of_HistoryShowEntry",
     "type": "array",

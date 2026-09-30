@@ -1484,7 +1484,7 @@ export type Status = "ok" | "nonzero" | "timeout" | "cancelled" | "spawn-error" 
  * [billed]: crate::domain::signals::Usage::reports_billed_work
  */
 export type RunWork = "done" | "none";
-export type HistoryRecords = HistoryShowEntry[];
+export type HistoryShowEntries = HistoryShowEntry[];
 
 /**
  * One normalized action a harness took, harness-agnostic so a single consumer

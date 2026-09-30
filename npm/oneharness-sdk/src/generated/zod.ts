@@ -54,7 +54,7 @@ import type { HistoryMigrateOptions } from "./history-migrate-options.js";
 import type { HistoryMigrateReport, MigrationSummary } from "./history-migrate-report.js";
 import type { HistoryPointer, HistoryPointers } from "./history-pointers.js";
 import type { HistoryPointersOptions } from "./history-pointers-options.js";
-import type { HistoryRecords, HistoryShowEntry, IncompleteHistoryRun } from "./history-records.js";
+import type { HistoryShowEntries, HistoryShowEntry, IncompleteHistoryRun } from "./history-show-entries.js";
 import type { HistoryEventLine, HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./history-watch-options.js";
 import type { InitOptions } from "./init-options.js";
@@ -2617,8 +2617,6 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
   ),
 ) as unknown as z.ZodType<HistoryRecord>;
 
-export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(() => HistoryShowEntrySchema));
-
 export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.looseObject({
   harnesses: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   id: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2633,6 +2631,8 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
   running: z.boolean().optional(),
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const HistoryShowEntriesSchema: z.ZodType<HistoryShowEntries> = z.array(z.lazy(() => HistoryShowEntrySchema));
 
 export const HistoryShowEntrySchema: z.ZodType<HistoryShowEntry> = z.union([
   z.lazy(() => HistoryRecordSchema),

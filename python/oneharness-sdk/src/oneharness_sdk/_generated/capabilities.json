@@ -198,7 +198,7 @@
     ],
     "method": "history",
     "options": "history_lookup",
-    "output": "history_records",
+    "output": "history_show_entries",
     "rust": "oneharness_core::io::history::read_session",
     "stdin": false,
     "stdout": "json",

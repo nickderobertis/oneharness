@@ -157,7 +157,7 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `gate` | `oneharness gate` | `oneharness_core::domain::gate::render_deny` | yes | yes | text (see notes) |
 | `mock` | `oneharness mock` | `oneharness_core::domain::mock::decide` | yes | yes | text (see notes) |
 | `interrupt` | `oneharness interrupt` | `oneharness_core::io::control::send` | yes | yes | `interrupt_response` |
-| `history` | `oneharness history show` | `oneharness_core::io::history::read_session` | yes | yes | `history_records` |
+| `history` | `oneharness history show` | `oneharness_core::io::history::read_session` | yes | yes | `history_show_entries` |
 | `historyList` | `oneharness history list` | `oneharness_core::io::history::list_sessions` | yes | yes | `history_list` |
 | `historyWatch` | `oneharness history watch` | `oneharness_core::io::history::HistoryWatcher` | yes | yes | `history_stream_envelope` (one per line) |
 | `historyClear` | `oneharness history clear` | `oneharness_core::io::history::remove_sessions` | yes | yes | `history_clear_report` |
@@ -475,7 +475,7 @@ caller rather than being dropped.
 | `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 33 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |
-| `history_records` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_model`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `run_id`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `type`, `usage`, `variant`, `work` | 44 | yes | yes | yes |
+| `history_show_entries` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_model`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `run_id`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `type`, `usage`, `variant`, `work` | 44 | yes | yes | yes |
 | `history_list` | `harnesses`, `id`, `labels`, `name`, `path`, `project`, `record_count`, `running`, `started` | 9 | yes | yes | yes |
 | `history_stream_envelope` | `line`, `record`, `type` | 48 | yes | yes | yes |
 | `history_clear_report` | `dry_run`, `files`, `hint`, `removed`, `would_remove` | 5 | yes | yes | yes |

@@ -24,7 +24,10 @@ import type { HistoryMigrateOptions } from "./generated/history-migrate-options.
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryPointers } from "./generated/history-pointers.js";
 import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
-import type { IncompleteHistoryRun } from "./generated/history-records.js";
+import type {
+	HistoryShowEntries,
+	IncompleteHistoryRun,
+} from "./generated/history-show-entries.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { InitOptions } from "./generated/init-options.js";
@@ -53,7 +56,7 @@ import {
 	HistoryMigrateReportSchema,
 	HistoryPointersOptionsSchema,
 	HistoryPointersSchema,
-	HistoryRecordsSchema,
+	HistoryShowEntriesSchema,
 	HistoryStreamEnvelopeSchema,
 	HistoryWatchOptionsSchema,
 	InitOptionsSchema,
@@ -123,10 +126,10 @@ export type {
 } from "./generated/history-pointers.js";
 export type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
 export type {
-	HistoryRecords,
+	HistoryShowEntries,
 	HistoryShowEntry,
 	IncompleteHistoryRun,
-} from "./generated/history-records.js";
+} from "./generated/history-show-entries.js";
 export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 export type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 export type { InitOptions } from "./generated/init-options.js";
@@ -146,6 +149,17 @@ export type {
 	ModeInfo,
 } from "./generated/registry.js";
 export * from "./generated/zod.js";
+
+/**
+ * @deprecated Renamed `HistoryShowEntries`: `history show` answers an
+ * in-flight run as well as finished records.
+ */
+export type HistoryRecords = HistoryShowEntries;
+/**
+ * @deprecated Renamed `HistoryShowEntriesSchema`: `history show` answers an
+ * in-flight run as well as finished records.
+ */
+export const HistoryRecordsSchema = HistoryShowEntriesSchema;
 
 export type OneHarnessOptions = {
 	executable?: string;
@@ -786,7 +800,7 @@ export class OneHarness {
 			"history",
 			lookup,
 			HistoryLookupSchema,
-			HistoryRecordsSchema,
+			HistoryShowEntriesSchema,
 			{
 				history: true,
 				optionsLabel: "invalid oneharness history options",

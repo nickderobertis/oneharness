@@ -104,9 +104,9 @@ const CONTRACT_MODULES = Object.freeze([
 	// name them after their element type; `title` is what keeps the exported
 	// name the one the client imports.
 	{
-		module: "history-records",
-		key: "history_records",
-		type: "HistoryRecords",
+		module: "history-show-entries",
+		key: "history_show_entries",
+		type: "HistoryShowEntries",
 		output: true,
 		title: true,
 	},

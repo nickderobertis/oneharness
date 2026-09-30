@@ -43,7 +43,7 @@ pub struct SdkSchemaBundle {
     pub history_line: Schema,
     pub history_record: Schema,
     pub history_stream_envelope: Schema,
-    pub history_records: Schema,
+    pub history_show_entries: Schema,
     pub history_list: Schema,
     pub list_report: Schema,
     pub detect_report: Schema,
@@ -87,8 +87,7 @@ pub fn bundle() -> SdkSchemaBundle {
         history_line: history_line_schema(schema_for_serialize::<HistoryLine>()),
         history_record: history_schema(schema_for_serialize::<HistoryRecord>()),
         history_stream_envelope: history_stream_schema(),
-        // llmlint: ignore[names_match_behavior] `history_records` is the published SDK root key — the Node SDK exports its type as `HistoryRecords` and the capability manifest and Python client name it — so renaming it for the in-flight entry it now also admits would break every consumer's import to fix a wording.
-        history_records: history_schema(schema_for_serialize::<Vec<HistoryShowEntry>>()),
+        history_show_entries: history_schema(schema_for_serialize::<Vec<HistoryShowEntry>>()),
         history_list: schema_for_serialize::<Vec<SessionSummary>>(),
         list_report: schema_for_serialize::<crate::io::registry::ListReport>(),
         detect_report: schema_for_serialize::<crate::io::detect::DetectReport>(),
@@ -1065,7 +1064,7 @@ mod tests {
     #[test]
     fn history_show_contract_accepts_an_in_flight_run_beside_a_record() {
         use crate::domain::history::{HistoryId, IncompleteHistoryRun};
-        let schema = serde_json::to_value(bundle().history_records).unwrap();
+        let schema = serde_json::to_value(bundle().history_show_entries).unwrap();
         let validator = jsonschema::validator_for(&schema).unwrap();
         let event = json!({
             "kind": "message", "name": null, "input": null, "output": "partial", "index": 0,

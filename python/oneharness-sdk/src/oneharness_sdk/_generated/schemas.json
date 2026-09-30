@@ -6376,7 +6376,7 @@
     ],
     "title": "HistoryRecord"
   },
-  "history_records": {
+  "history_show_entries": {
     "$defs": {
       "ActionEvent": {
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",

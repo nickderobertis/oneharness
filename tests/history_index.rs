@@ -538,6 +538,21 @@ mod measured {
         pub max_rss_kib: i64,
         /// The largest resident size sampled from the command while it ran.
         pub sampled_rss_kib: u64,
+        /// The command's resident size over its life, one sample per
+        /// [`SERIES_EVERY`], beside the length of the request's watched file.
+        pub series: Vec<Sample>,
+    }
+
+    /// How often the helper adds a point to [`Measured::series`].
+    pub const SERIES_EVERY: Duration = Duration::from_millis(100);
+
+    /// One point of a command's life: when, how resident, and how long the
+    /// watched file (the segment it appends to) was at that moment.
+    #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+    pub struct Sample {
+        pub at_ms: u64,
+        pub rss_kib: u64,
+        pub watched_len: u64,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -548,6 +563,8 @@ mod measured {
         pub stdout: PathBuf,
         pub stderr: PathBuf,
         pub limit_ms: u64,
+        /// A file whose length each [`Sample`] records, if any.
+        pub watch: Option<PathBuf>,
     }
 
     #[derive(Serialize, Deserialize)]
@@ -556,6 +573,7 @@ mod measured {
         pub rchar: u64,
         pub max_rss_kib: i64,
         pub sampled_rss_kib: u64,
+        pub series: Vec<Sample>,
         pub timed_out: bool,
     }
 
@@ -597,7 +615,10 @@ mod measured {
         let child = command.spawn().expect("spawn the measured command");
         let pid = child.id();
         let deadline = std::time::Instant::now() + Duration::from_millis(request.limit_ms);
+        let started = std::time::Instant::now();
         let mut sampled_rss_kib = 0;
+        let mut series = Vec::new();
+        let mut next_point = started;
         let mut timed_out = false;
         loop {
             // SAFETY: a zeroed siginfo_t is a valid out-parameter for waitid.
@@ -617,6 +638,18 @@ mod measured {
             }
             if let Some(rss) = vm_rss_kib(pid) {
                 sampled_rss_kib = sampled_rss_kib.max(rss);
+                if std::time::Instant::now() >= next_point {
+                    next_point += SERIES_EVERY;
+                    series.push(Sample {
+                        at_ms: started.elapsed().as_millis() as u64,
+                        rss_kib: rss,
+                        watched_len: request
+                            .watch
+                            .as_ref()
+                            .and_then(|path| std::fs::metadata(path).ok())
+                            .map_or(0, |meta| meta.len()),
+                    });
+                }
             }
             if std::time::Instant::now() >= deadline {
                 // SAFETY: signals this helper's own child, by the pid it spawned.
@@ -636,12 +669,18 @@ mod measured {
             rchar: rchar_of_self() - before,
             max_rss_kib: usage.ru_maxrss,
             sampled_rss_kib,
+            series,
             timed_out,
         }
     }
 
     /// Measure `command` through the helper.
     pub fn measure(command: Command, limit: Duration) -> Measured {
+        measure_watching(command, limit, None)
+    }
+
+    /// [`measure`], also sampling the length of `watch` over the command's life.
+    pub fn measure_watching(command: Command, limit: Duration, watch: Option<&Path>) -> Measured {
         let scratch = ScratchDir::new(&format!(
             "hindex-measure-{}",
             SystemTime::now()
@@ -668,6 +707,7 @@ mod measured {
             stdout: scratch.join("stdout"),
             stderr: scratch.join("stderr"),
             limit_ms: limit.as_millis() as u64,
+            watch: watch.map(Path::to_path_buf),
         };
         let request_file = scratch.join("request.json");
         let report_file = scratch.join("report.json");
@@ -697,6 +737,7 @@ mod measured {
             rchar: report.rchar,
             max_rss_kib: report.max_rss_kib,
             sampled_rss_kib: report.sampled_rss_kib,
+            series: report.series,
         }
     }
 }
@@ -776,7 +817,7 @@ fn recording_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
 /// printing its report as JSON. Run only as the measured child of the test
 /// below, which names the store through the environment.
 #[test]
-#[ignore = "the measured child of recording_reads_nothing_but_its_own_files_however_large_the_store"]
+#[ignore = "the measured child of the recording and long-lived recording tests"]
 fn library_recording_child() {
     use oneharness_core::io::run::{run, RunControls, RunRequest};
     let (Ok(store), Ok(cwd)) = (
@@ -788,27 +829,60 @@ fn library_recording_child() {
              HISTORY_INDEX_CHILD_STORE and HISTORY_INDEX_CHILD_CWD; run those instead"
         );
     };
+    // Set by the long-lived test: stream this many events over the turn's
+    // life instead of a short buffered turn.
+    let events = std::env::var("HISTORY_INDEX_CHILD_EVENTS").ok().map(|n| {
+        n.parse::<usize>()
+            .expect("HISTORY_INDEX_CHILD_EVENTS is a count")
+    });
+    let env = match events {
+        Some(n) => vec![
+            format!("MOCK_STDOUT={}", long_turn_stdout(n)),
+            format!("MOCK_STREAM_DELAY_MS={LONG_TURN_EVENT_GAP_MS}"),
+        ],
+        None => vec![
+            format!("MOCK_STDOUT={CODEX_TELEMETRY}"),
+            "MOCK_SLEEP_MS=400".to_string(),
+        ],
+    };
+    struct Counting(usize);
+    impl oneharness_core::io::run::EventSink for Counting {
+        fn event(
+            &mut self,
+            _harness_id: &str,
+            _event: &ActionEvent,
+        ) -> oneharness_core::io::run::SinkStep {
+            self.0 += 1;
+            oneharness_core::io::run::SinkStep::Continue
+        }
+    }
+    let mut sink = Counting(0);
     let outcome = run(
         &RunRequest {
             harness: vec!["codex".to_string()],
             prompt: vec!["record me".to_string()],
             bin: vec![format!("codex={}", mock_bin().display())],
-            env: vec![
-                format!("MOCK_STDOUT={CODEX_TELEMETRY}"),
-                "MOCK_SLEEP_MS=400".to_string(),
-            ],
+            env,
             no_config: true,
             timeout: Some(60),
             history: Some(true),
             history_dir: Some(PathBuf::from(store)),
             cwd: Some(PathBuf::from(cwd)),
             mode: Some(PermissionMode::Bypass),
+            stream: events.map(|_| true),
             ..RunRequest::default()
         },
-        RunControls::default(),
+        RunControls {
+            events: Some(&mut sink),
+            ..RunControls::default()
+        },
     )
     .expect("a valid hermetic run");
     assert_eq!(outcome.report.results[0].status, report::Status::Ok);
+    if let Some(n) = events {
+        // Each tool call and the closing answer, as they happened.
+        assert_eq!(sink.0, n + 1, "every event reached the library's sink");
+    }
     assert!(
         outcome.report.history_file.is_some(),
         "history was recorded"
@@ -907,6 +981,172 @@ fn recording_reads_nothing_but_its_own_files_however_large_the_store() {
             large_sampled <= small_sampled + 4 * 1024,
             "{recorder:?}: RSS while the run was live grew with the store: \
              {small_sampled} KiB -> {large_sampled} KiB"
+        );
+    }
+}
+
+/// How many tool events the long-lived recording streams, and the gap between
+/// the lines that carry them: a turn of about four seconds (two lines per call)
+/// that appends to the event segment the whole time.
+#[cfg(target_os = "linux")]
+const LONG_TURN_EVENTS: usize = 80;
+const LONG_TURN_EVENT_GAP_MS: u64 = 25;
+
+/// A codex turn of `events` tool calls, one line each, streamed by the mock at
+/// [`LONG_TURN_EVENT_GAP_MS`] per line.
+fn long_turn_stdout(events: usize) -> String {
+    let mut stdout = String::from("{\"type\":\"turn.started\"}\n");
+    for i in 0..events {
+        stdout.push_str(&format!(
+            "{{\"type\":\"item.started\",\"item\":{{\"id\":\"c{i}\",\"type\":\"command_execution\",\
+             \"command\":\"echo {i}\",\"aggregated_output\":\"\",\"exit_code\":null,\"status\":\"in_progress\"}}}}\n\
+             {{\"type\":\"item.completed\",\"item\":{{\"id\":\"c{i}\",\"type\":\"command_execution\",\
+             \"command\":\"echo {i}\",\"aggregated_output\":\"{i}\",\"exit_code\":0,\"status\":\"completed\"}}}}\n"
+        ));
+    }
+    stdout.push_str(concat!(
+        "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"indexed\"}}\n",
+        "{\"type\":\"turn.completed\"}\n",
+    ));
+    stdout
+}
+
+/// A long-lived streaming recording through the CLI or `io::run`.
+#[cfg(target_os = "linux")]
+fn long_lived_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
+    let mut command = match recorder {
+        Recorder::CliStreaming => {
+            let mut command = recording_command(Recorder::CliStreaming, crowd);
+            command
+                .env_remove("MOCK_SLEEP_MS")
+                .env("MOCK_STDOUT", long_turn_stdout(LONG_TURN_EVENTS))
+                .env("MOCK_STREAM_DELAY_MS", LONG_TURN_EVENT_GAP_MS.to_string());
+            command
+        }
+        Recorder::Library => recording_command(Recorder::Library, crowd),
+        Recorder::Cli => unreachable!("a buffered run appends its events only as it closes"),
+    };
+    command.env("HISTORY_INDEX_CHILD_EVENTS", LONG_TURN_EVENTS.to_string());
+    command
+}
+
+/// A recording run that lives for seconds and appends an event entry the whole
+/// time holds no parsed index and no set of indexed ids at any point of that
+/// life: its resident size, sampled every [`measured::SERIES_EVERY`] while the
+/// event segment grows, neither climbs as it appends nor differs between a
+/// store and one ten times larger. An index loaded lazily after open — on the
+/// first event, the tenth, or the last — or a set grown per appended entry
+/// would show in the samples taken after it, on the larger store first.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
+    for recorder in [Recorder::CliStreaming, Recorder::Library] {
+        let mut lives = Vec::new();
+        for (size, sessions) in [("small", 200), ("large", 2000)] {
+            let crowd = CrowdedStore::new(&format!("long-{recorder:?}-{size}"), sessions);
+            let before = crowd.untouched();
+            let events_segment = crowd
+                .store
+                .join(".index.d")
+                .join(format!("events-{}.ndjson", today()));
+            let segment_before = std::fs::metadata(&events_segment).unwrap().len();
+            let measured = measured::measure_watching(
+                long_lived_command(recorder, &crowd),
+                Duration::from_secs(60),
+                Some(&events_segment),
+            );
+            let stderr = String::from_utf8_lossy(&measured.output.stderr).into_owned();
+            assert!(
+                measured.output.status.success(),
+                "{recorder:?}/{size}: {stderr}"
+            );
+            assert!(
+                !stderr.contains("warning"),
+                "{recorder:?}/{size}: history was not recorded cleanly: {stderr}"
+            );
+            assert_eq!(crowd.untouched(), before, "{recorder:?}/{size}");
+
+            // Every streamed event landed as one entry of today's segment,
+            // and resolves to its event line in the run's own session file.
+            let file = recorded_history_file(&measured.output.stdout);
+            let appended = std::fs::read(&events_segment).unwrap();
+            let entries = entries_of(&appended[segment_before as usize..]);
+            // One per tool call, and one for the closing answer.
+            assert_eq!(entries.len(), LONG_TURN_EVENTS + 1, "{recorder:?}/{size}");
+            let run_id = history::read_session(&file).unwrap()[0].history_id;
+            for (i, entry) in entries.iter().enumerate() {
+                let HistoryIndexEntry::Event(entry) = entry else {
+                    panic!("{recorder:?}/{size}: a run entry in the events segment");
+                };
+                assert_eq!(entry.run_id, run_id, "{recorder:?}/{size}");
+                let session = std::fs::read(crowd.store.join(entry.session_path.as_str())).unwrap();
+                let span = entry.span.expect("a streamed event entry names its line");
+                let start = span.offset as usize;
+                let line = &session[start..start + span.length.get() as usize];
+                match serde_json::from_slice(&line[..line.len() - 1]).unwrap() {
+                    HistoryLine::Event(line) => {
+                        assert_eq!((line.run_id, line.event.index), (run_id, i));
+                    }
+                    other => panic!("{recorder:?}/{size}: {other:?} is not event {i}"),
+                }
+            }
+
+            // The run really was long-lived and appending while it was sampled:
+            // many samples, spread over seconds, across which the segment kept
+            // growing rather than taking every entry as the run closed.
+            let series = measured.series;
+            let life_ms = series.last().map_or(0, |sample| sample.at_ms);
+            assert!(
+                life_ms >= 3_000 && series.len() >= 25,
+                "{recorder:?}/{size}: {} samples over {life_ms} ms",
+                series.len()
+            );
+            let appending: Vec<_> = series
+                .iter()
+                .filter(|sample| {
+                    sample.watched_len > segment_before
+                        && sample.watched_len < appended.len() as u64
+                })
+                .copied()
+                .collect();
+            let growth_steps = appending
+                .windows(2)
+                .filter(|pair| pair[1].watched_len > pair[0].watched_len)
+                .count();
+            assert!(
+                appending.len() >= 20 && growth_steps >= 15,
+                "{recorder:?}/{size}: the segment was not appended to across the run's life: \
+                 {series:?}"
+            );
+
+            // It holds no more memory at the end of that life than at the
+            // start of it: the first sample after the first entry landed is
+            // the baseline every later one is held to.
+            let baseline = appending[0].rss_kib;
+            let late = appending.iter().map(|sample| sample.rss_kib).max().unwrap();
+            assert!(
+                late <= baseline + 2 * 1024,
+                "{recorder:?}/{size}: RSS climbed while the run appended events: \
+                 {baseline} KiB -> {late} KiB over {series:?}"
+            );
+            lives.push((measured.rchar, late, measured.max_rss_kib));
+        }
+        let (small_read, small_late, small_peak) = lives[0];
+        let (large_read, large_late, large_peak) = lives[1];
+        // The larger store — 32 MiB more of today's segments, 115 MiB more
+        // legacy index, 1800 more session files — moves none of it.
+        assert!(
+            large_read <= small_read + 64 * 1024,
+            "{recorder:?}: bytes read grew with the store: {small_read} -> {large_read}"
+        );
+        assert!(
+            large_late <= small_late + 4 * 1024,
+            "{recorder:?}: RSS while appending grew with the store: \
+             {small_late} KiB -> {large_late} KiB"
+        );
+        assert!(
+            large_peak <= small_peak + 4 * 1024,
+            "{recorder:?}: peak RSS grew with the store: {small_peak} KiB -> {large_peak} KiB"
         );
     }
 }

@@ -203,6 +203,13 @@ pub struct HistoryEventLine {
     // llmlint: ignore[invalid_states_unrepresentable] This field is optional specifically to read v1.0 event lines; current writers always derive it with base/variant from one composed id, and event-stream integration coverage asserts all three.
     pub harness_id: Option<String>,
     pub event: ActionEvent,
+    /// The name of the session this line belongs to — the `name` its run's
+    /// closing `run` line will carry — so a run still in progress (events but
+    /// no closing line yet) can be listed and followed by name. Omitted when
+    /// absent: lines written before it existed carry none, and every reader
+    /// that predates it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<HistorySessionName>,
 }
 
 impl HistoryEventLine {
@@ -542,6 +549,238 @@ impl JsonSchema for HistoryId {
             "minLength": UUID_LEN,
             "maxLength": UUID_LEN,
             "pattern": UUID_PATTERN,
+        })
+    }
+}
+
+/// A non-empty character run outside the sanitized session-name alphabet, or a
+/// dash that leads, trails, or doubles — the shapes [`sanitize_name`] never
+/// produces. Stated as a forbidden unanchored search (see
+/// [`LABEL_KEY_FORBIDDEN_PATTERN`]) so every SDK regex engine agrees.
+const SESSION_NAME_FORBIDDEN_PATTERN: &str = "[^a-z0-9-]|^-|-$|--";
+
+/// The error returned when text is not a sanitized [`HistorySessionName`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error(
+    "must be a non-empty session name of lowercase ASCII letters and digits joined by single dashes"
+)]
+pub struct HistorySessionNameError;
+
+/// A session name in exactly the shape [`sanitize_name`] and [`session_name`]
+/// produce: lowercase ASCII alphanumeric words joined by single dashes. It is
+/// read back from history files and used to select a session, so text that no
+/// writer could have produced — empty, upper-case, spaced, or path-like — is
+/// refused at the boundary rather than matched.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[serde(transparent)]
+pub struct HistorySessionName(String);
+
+impl HistorySessionName {
+    /// Sanitize arbitrary text (a `--history-name`, or a derived name) into a
+    /// valid session name; see [`sanitize_name`].
+    #[must_use]
+    pub fn sanitize(raw: &str) -> Self {
+        Self(sanitize_name(raw))
+    }
+
+    /// The name as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for HistorySessionName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for HistorySessionName {
+    type Err = HistorySessionNameError;
+
+    /// Accept exactly the fixed points of [`sanitize_name`] other than its
+    /// empty-input fallback — what the JSON Schema's forbidden pattern plus a
+    /// minimum length of one also accepts.
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.is_empty() || sanitize_name(value) != value {
+            return Err(HistorySessionNameError);
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+
+impl<'de> Deserialize<'de> for HistorySessionName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for HistorySessionName {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistorySessionName")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "not": { "pattern": SESSION_NAME_FORBIDDEN_PATTERN },
+        })
+    }
+}
+
+/// A session id: a [`HistorySessionName`], then the compact UTC instant and the
+/// pid it was minted with (`<name>-<YYYYMMDDThhmmssZ>-<pid>`, see
+/// [`format_compact_utc`]). The instant is a real proleptic-Gregorian one —
+/// days per month, leap years, hours to 23 and seconds to 59 — exactly what
+/// `session_started_from_id` accepts. Paired with
+/// [`SESSION_SELECTOR_FORBIDDEN_PATTERN`], which already rules out the newline
+/// Python's `$` would otherwise admit.
+const SESSION_SELECTOR_PATTERN: &str = concat!(
+    "^(?:[a-z0-9-]+|[a-z0-9-]+-",
+    "(?:[0-9]{4}(?:(?:0[13578]|1[02])(?:0[1-9]|[12][0-9]|3[01])",
+    "|(?:0[469]|11)(?:0[1-9]|[12][0-9]|30)",
+    "|02(?:0[1-9]|1[0-9]|2[0-8]))",
+    "|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)0229)",
+    "T(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]Z-[0-9]+)$",
+);
+
+/// [`SESSION_NAME_FORBIDDEN_PATTERN`] widened by the upper-case letters an id's
+/// instant carries; [`SESSION_SELECTOR_PATTERN`] confines them to it.
+const SESSION_SELECTOR_FORBIDDEN_PATTERN: &str = "[^A-Za-z0-9-]|^-|-$|--";
+
+/// The error returned when text selects no session any writer could mint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error(
+    "must be a session id (`<name>-<YYYYMMDDThhmmssZ>-<pid>`, as `history list` prints it) or a session name of lowercase ASCII letters and digits joined by single dashes"
+)]
+pub struct HistorySessionSelectorError;
+
+/// A session id in the shape a history writer mints it:
+/// `<name>-<YYYYMMDDThhmmssZ>-<pid>`, where the name is a
+/// [`HistorySessionName`] and the instant a real calendar one. Constructed only
+/// by parsing, so no other text can be held as one.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HistorySessionId(String);
+
+impl HistorySessionId {
+    /// The id as text — the session file's stem.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for HistorySessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for HistorySessionId {
+    type Err = HistorySessionSelectorError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let name = value
+            .rsplitn(3, '-')
+            .nth(2)
+            .ok_or(HistorySessionSelectorError)?;
+        if name.parse::<HistorySessionName>().is_err() || session_started_from_id(value).is_none() {
+            return Err(HistorySessionSelectorError);
+        }
+        Ok(Self(value.to_string()))
+    }
+}
+
+/// Which one session to follow: its id — the session file's stem, exactly as
+/// `history list` prints it — or its name. Both shapes are the ones a
+/// [`HistorySessionName`]-based writer mints, so a selector nothing could ever
+/// match (empty, spaced, path-like, an impossible instant) is refused where it
+/// enters rather than followed silently forever.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum HistorySessionSelector {
+    /// A session id: `<name>-<YYYYMMDDThhmmssZ>-<pid>`.
+    Id(HistorySessionId),
+    /// A session name, matched against the name its lines and records carry.
+    Name(HistorySessionName),
+}
+
+impl HistorySessionSelector {
+    /// The selector as the text it was parsed from.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Id(id) => id.as_str(),
+            Self::Name(name) => name.as_str(),
+        }
+    }
+}
+
+impl fmt::Display for HistorySessionSelector {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for HistorySessionSelector {
+    type Err = HistorySessionSelectorError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Ok(id) = value.parse() {
+            return Ok(Self::Id(id));
+        }
+        value
+            .parse()
+            .map(Self::Name)
+            .map_err(|_| HistorySessionSelectorError)
+    }
+}
+
+impl Serialize for HistorySessionSelector {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for HistorySessionSelector {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl JsonSchema for HistorySessionSelector {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("HistorySessionSelector")
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "pattern": SESSION_SELECTOR_PATTERN,
+            "not": { "pattern": SESSION_SELECTOR_FORBIDDEN_PATTERN },
         })
     }
 }
@@ -2097,10 +2336,71 @@ pub fn format_compact_utc(secs: i64) -> String {
     format!("{y:04}{mo:02}{d:02}T{h:02}{mi:02}{s:02}Z")
 }
 
+/// The RFC 3339 instant a session id records its start at: the id is minted
+/// as `<name>-<YYYYMMDDThhmmssZ>-<pid>` ([`format_compact_utc`]), so a session
+/// with no closing record yet still has a start to sort by. `None` for an id
+/// not in that shape — never a guessed instant.
+pub(crate) fn session_started_from_id(id: &str) -> Option<String> {
+    let mut parts = id.rsplitn(3, '-');
+    let pid = parts.next()?;
+    let stamp = parts.next()?;
+    parts.next()?;
+    let digits = |range: std::ops::Range<usize>| {
+        stamp
+            .get(range)
+            .filter(|part| part.bytes().all(|byte| byte.is_ascii_digit()))
+    };
+    if pid.is_empty()
+        || !pid.bytes().all(|byte| byte.is_ascii_digit())
+        || stamp.len() != 16
+        || stamp.as_bytes()[8] != b'T'
+        || stamp.as_bytes()[15] != b'Z'
+    {
+        return None;
+    }
+    let text = format!(
+        "{}-{}-{}T{}:{}:{}Z",
+        digits(0..4)?,
+        digits(4..6)?,
+        digits(6..8)?,
+        digits(9..11)?,
+        digits(11..13)?,
+        digits(13..15)?
+    );
+    // Only a real calendar instant: parsed, then formatted back unchanged, so
+    // a month 13 or a February 30th (which the parse would roll over) is none.
+    crate::domain::usage::normalize_timestamp(&text)
+        .filter(|instant| instant.as_str() == text)
+        .map(|_| text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::report::OutputFormat;
+
+    #[test]
+    fn a_session_id_carries_its_start_instant() {
+        let id = format!("fix-the-bug-{}-4242", format_compact_utc(1_790_700_180));
+        assert_eq!(
+            session_started_from_id(&id).as_deref(),
+            Some(format_rfc3339(1_790_700_180).as_str())
+        );
+        for foreign in [
+            "",
+            "name",
+            "x-20260929T165809Z",
+            "x-2026092T165809Z-1",
+            "x-20260929T16580aZ-1",
+            "x-20260929T165809Z-p",
+            "x-20261329T165809Z-1",
+            "x-20260230T165809Z-1",
+            "x-20260929T245809Z-1",
+            "x-20260929T166009Z-1",
+        ] {
+            assert_eq!(session_started_from_id(foreign), None, "{foreign}");
+        }
+    }
 
     #[test]
     fn slug_sanitizes_and_collapses() {
@@ -2147,6 +2447,108 @@ mod tests {
         assert_eq!(sanitize_name("My Release v2!"), "my-release-v2");
         assert_eq!(sanitize_name("   "), "session");
         assert_eq!(sanitize_name("---"), "session");
+    }
+
+    #[test]
+    fn session_name_type_accepts_only_what_a_writer_produces() {
+        for name in [
+            "session",
+            "fix-login-v2",
+            &session_name("Refactor!! the (parser)."),
+        ] {
+            assert_eq!(
+                name.parse::<HistorySessionName>().map(|n| n.to_string()),
+                Ok(name.to_string())
+            );
+        }
+        for name in [
+            "", "Name", "my name", "../name", "my--name", "-name", "name-", "name\n",
+        ] {
+            assert_eq!(
+                name.parse::<HistorySessionName>(),
+                Err(HistorySessionNameError),
+                "{name:?}"
+            );
+        }
+        assert_eq!(
+            HistorySessionName::sanitize("My Release v2!").as_str(),
+            "my-release-v2"
+        );
+        assert_eq!(HistorySessionName::sanitize("").as_str(), "session");
+    }
+
+    #[test]
+    fn a_session_selector_is_a_minted_id_or_a_sanitized_name() {
+        assert_eq!(
+            "release-20260929T165809Z-4242".parse(),
+            "release-20260929T165809Z-4242"
+                .parse::<HistorySessionId>()
+                .map(HistorySessionSelector::Id)
+        );
+        for leap in ["release-20280229T000000Z-1", "release-20000229T235959Z-1"] {
+            assert!(
+                matches!(leap.parse(), Ok(HistorySessionSelector::Id(_))),
+                "{leap}"
+            );
+        }
+        assert_eq!(
+            "release-check".parse(),
+            Ok(HistorySessionSelector::Name(HistorySessionName::sanitize(
+                "release-check"
+            )))
+        );
+        for bad in [
+            "",
+            "Release",
+            "release check",
+            "../release",
+            "release-",
+            "release\n",
+            "Release-20260929T165809Z-1",
+            "release-2026092T165809Z-1",
+            "release-20260929T165809Z-",
+            "-20260929T165809Z-1",
+            "release-20260230T165809Z-1",
+            "release-20260229T165809Z-1",
+            "release-19000229T165809Z-1",
+            "release-20261301T165809Z-1",
+            "release-20260929T245809Z-1",
+            "release-20260929T165860Z-1",
+        ] {
+            assert_eq!(
+                bad.parse::<HistorySessionSelector>(),
+                Err(HistorySessionSelectorError),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_line_with_an_unsanitized_session_name_is_refused() {
+        let line = |name: &str| {
+            serde_json::json!({
+                "type": "event", "schema_version": "1.1",
+                "run_id": "0198f0d0-7b31-7000-8000-00000000003c",
+                "harness": "codex", "harness_id": "codex",
+                "event": {"kind": "message", "name": null, "input": null, "output": "On it.",
+                          "index": 0, "tool_call_id": null},
+                "session_name": name,
+            })
+        };
+        let accepted = serde_json::from_value::<HistoryLine>(line("fix-login")).unwrap();
+        let HistoryLine::Event(event) = accepted else {
+            panic!("an event line parses as an event")
+        };
+        assert_eq!(
+            event.session_name.as_ref().map(HistorySessionName::as_str),
+            Some("fix-login")
+        );
+        for bad in ["", "Fix Login", "../fix"] {
+            assert!(
+                serde_json::from_value::<HistoryLine>(line(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

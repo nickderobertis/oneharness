@@ -4,18 +4,20 @@
 //! [`RunReport`] and publishes streamed events to a caller-supplied sink. All
 //! that is left here is the CLI's own three jobs: turn the clap arguments into a
 //! [`RunRequest`], own stdout (the buffered report as JSON or `--format text`,
-//! or the NDJSON stream protocol), and map the outcome to a process exit code.
+//! or a streamed run's events — the NDJSON stream protocol, or one readable
+//! line each under `--format text`), and map the outcome to a process exit
+//! code.
 
-use oneharness_core::domain::config;
 use oneharness_core::domain::events::ActionEvent;
 use oneharness_core::domain::mode::PermissionMode;
-use oneharness_core::domain::report::{RunReport, RunResult, RunStreamEnvelope};
-use oneharness_core::errors::{JsonOnlySelection, OneharnessError, StreamOrigin};
+use oneharness_core::domain::render::{render_event, render_report_text};
+use oneharness_core::domain::report::{RunReport, RunStreamEnvelope};
+use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::cancel::CancelToken;
 use oneharness_core::io::run::{EventSink, Resume, RunControls, RunRequest, SinkStep};
 
 use crate::cli::{RunArgs, StdoutFormat};
-use crate::commands::{indented, or_null, print_report, printable};
+use crate::commands::{print_report, print_text};
 
 /// Collapse a clap-exclusive `--x` / `--no-x` pair into the single override the
 /// engine takes: `None` when neither was passed (the config layer still
@@ -32,23 +34,8 @@ fn toggle(yes: bool, no: bool) -> Option<bool> {
 }
 
 pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
-    // Refused before anything spawns: a run that ran and then exited 2 over
-    // its flags would have billed a turn for nothing. A streaming run is the
-    // one whose stdout `--format` cannot render — it is the NDJSON protocol
-    // from the first event — so an explicit `text` beside it is the same kind
-    // of contradiction `--compact` is (which clap refused while parsing
-    // `StdoutFormat`), and refused the same way, whether the stream came from
-    // the flag or from the `stream` config/ONEHARNESS_STREAM layer — and the
-    // refusal says which.
-    if args.stdout == StdoutFormat::Text {
-        if let Some(origin) = stream_origin(args)? {
-            return Err(OneharnessError::FormatConflict {
-                selection: JsonOnlySelection::Stream(origin),
-            });
-        }
-    }
     let request = RunRequest::from(args);
-    let mut sink = StdoutEvents;
+    let mut sink = StdoutEvents::new(StreamView::of(args.stdout));
     let outcome = oneharness_core::io::run::run(
         &request,
         RunControls {
@@ -65,14 +52,28 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
         },
     )?;
 
-    // A streaming run's stdout is the NDJSON protocol: its consumer has been
-    // reading `event` lines all along, and the terminal `result` line is the
-    // envelope that closes them (an explicit `--format text` was refused
-    // above, so nothing is dropped here).
     if outcome.streamed {
-        emit_stream_result(&outcome.report)?;
+        match sink.view {
+            // A person has been reading one line per event; the text report
+            // closes the run the way it closes a buffered one.
+            StreamView::Text => {
+                if sink.drew_any {
+                    print_text("\n")?;
+                }
+                print_report(&outcome.report, args.stdout, render_report_text)?;
+            }
+            // The NDJSON protocol: its consumer has been reading `event` lines
+            // all along, and the terminal `result` line is the envelope that
+            // closes them.
+            StreamView::Ndjson { deprecated_default } => {
+                if deprecated_default {
+                    warn_stream_default_changes();
+                }
+                emit_stream_result(&outcome.report)?;
+            }
+        }
     } else {
-        print_report(&outcome.report, args.stdout, render_text)?;
+        print_report(&outcome.report, args.stdout, render_report_text)?;
     }
     if let Some(summary) = &outcome.failure_summary {
         eprintln!("{summary}");
@@ -80,62 +81,99 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
     Ok(outcome.exit_code)
 }
 
-/// Where this run's streaming was selected, if it will stream — resolved
-/// exactly as the engine resolves it: the `--stream`/`--no-stream` flag, else
-/// the `stream` value of the config layers (files and `ONEHARNESS_STREAM`)
-/// discovered from `--cwd`, attributed to its layer by the same
-/// [`config::explain`] the `config` verb reports provenance with. Read here
-/// only to refuse `--format text` before a turn is spent: the engine loads the
-/// same layers again for the run, and a config it cannot load fails here with
-/// the error it would have raised there. Skips the load when the flag settles
-/// it, so an ordinary run reads its config once.
-fn stream_origin(args: &RunArgs) -> Result<Option<StreamOrigin>, OneharnessError> {
-    match toggle(args.stream, args.no_stream) {
-        Some(true) => return Ok(Some(StreamOrigin::Flag)),
-        Some(false) => return Ok(None),
-        None => {}
-    }
-    let project_start = match &args.cwd {
-        Some(dir) => dir.clone(),
-        None => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-    };
-    let layers =
-        oneharness_core::io::config::load_layers(&args.config, args.no_config, &project_start)?;
-    let stream = config::explain(&layers).stream;
-    Ok(match (stream.value, stream.source) {
-        (Some(true), Some(source)) if source == config::ENV_SOURCE => {
-            Some(StreamOrigin::Environment)
-        }
-        (Some(true), Some(path)) => Some(StreamOrigin::ConfigFile {
-            path: std::path::PathBuf::from(path),
-        }),
-        _ => None,
-    })
+/// What a streamed run's stdout is, decided by `--format` alone — never by
+/// where the streaming came from (`--stream`, config `stream`, or
+/// `ONEHARNESS_STREAM`), so every route to a stream reads the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StreamView {
+    /// An explicit `--format text`: one [`render_event`] line per event.
+    Text,
+    /// The `RunStreamEnvelope` NDJSON protocol. `deprecated_default` when no
+    /// `--format` chose it: this release keeps NDJSON as the stream default
+    /// and says, once, that the next one makes it text.
+    Ndjson { deprecated_default: bool },
 }
 
-/// The CLI's event sink: each normalized event as one NDJSON
+impl StreamView {
+    fn of(format: StdoutFormat) -> Self {
+        match format {
+            StdoutFormat::Text => StreamView::Text,
+            StdoutFormat::Json { .. } => StreamView::Ndjson {
+                deprecated_default: false,
+            },
+            StdoutFormat::DefaultText => StreamView::Ndjson {
+                deprecated_default: true,
+            },
+        }
+    }
+}
+
+/// What a stream with no `--format` says on stderr. `README.md` quotes it.
+const STREAM_DEFAULT_WARNING: &str = "oneharness: warning: a streamed run with no --format \
+     prints NDJSON today, but the stream default becomes text in the next release; pass \
+     --format json to keep the NDJSON protocol (or --format text for the readable stream)";
+
+/// Say — once per process, however many runs or events reach it — that a
+/// stream with no `--format` will print text from the next release.
+fn warn_stream_default_changes() {
+    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("{STREAM_DEFAULT_WARNING}");
+    }
+}
+
+/// The CLI's event sink. Under the NDJSON view each normalized event is one
 /// `{"type":"event","event":{…}}` line on stdout, the streaming protocol a
-/// consumer reads to short-circuit mid-turn.
+/// consumer reads to short-circuit mid-turn; under the text view it is the
+/// event's [`render_event`] form, and an event that view does not draw prints
+/// nothing.
 ///
 /// A failed write is that consumer closing the stream, and answering
 /// [`SinkStep::Stop`] is what turns it into the run's own teardown of the
 /// harness — the documented short-circuit, not an error to report.
-struct StdoutEvents;
+struct StdoutEvents {
+    view: StreamView,
+    /// Whether any event line reached stdout, so the text report that follows
+    /// is set off from them by a blank line only when there is something above.
+    drew_any: bool,
+}
+
+impl StdoutEvents {
+    fn new(view: StreamView) -> Self {
+        StdoutEvents {
+            view,
+            drew_any: false,
+        }
+    }
+}
 
 impl EventSink for StdoutEvents {
     fn event(&mut self, _harness_id: &str, event: &ActionEvent) -> SinkStep {
         use std::io::Write;
-        let envelope = RunStreamEnvelope::Event {
-            event: event.clone(),
+        let line = match self.view {
+            StreamView::Text => match render_event(event) {
+                Some(line) => line,
+                None => return SinkStep::Continue,
+            },
+            StreamView::Ndjson { deprecated_default } => {
+                if deprecated_default {
+                    warn_stream_default_changes();
+                }
+                let envelope = RunStreamEnvelope::Event {
+                    event: event.clone(),
+                };
+                match serde_json::to_string(&envelope) {
+                    Ok(line) => line,
+                    Err(_) => return SinkStep::Stop,
+                }
+            }
         };
         let mut out = std::io::stdout().lock();
-        let written = serde_json::to_string(&envelope)
-            .map_err(|_| ())
-            .and_then(|line| writeln!(out, "{line}").map_err(|_| ()))
-            .and_then(|()| out.flush().map_err(|_| ()));
+        let written = writeln!(out, "{line}").and_then(|()| out.flush());
         if written.is_err() {
             SinkStep::Stop
         } else {
+            self.drew_any = true;
             SinkStep::Continue
         }
     }
@@ -154,261 +192,6 @@ fn emit_stream_result(report: &RunReport) -> Result<(), OneharnessError> {
     // not an error; any other write failure on the terminal line is non-fatal.
     let _ = writeln!(std::io::stdout(), "{line}");
     Ok(())
-}
-
-/// The report for a person at a terminal: the run's own settings first (what
-/// was asked, the mode, the session handle, the batch/fallback blocks), then
-/// one block per result. Every value is the JSON's own — a `null` there is said
-/// to be null here, with the `text_source` that explains it — and every string
-/// a harness wrote is flattened before it is drawn.
-fn render_text(report: &RunReport) -> String {
-    let mut out = String::new();
-    out.push_str(&format!(
-        "prompt: {}\n",
-        printable(first_line(&report.prompt))
-    ));
-    out.push_str(&format!(
-        "mode: {}{}\n",
-        report.permission_mode.as_str(),
-        if report.dry_run { " · dry run" } else { "" }
-    ));
-    if let Some(models) = &report.models {
-        out.push_str(&format!("models: {}\n", printable(&models.join(", "))));
-    } else if let Some(model) = &report.model {
-        out.push_str(&format!("model: {}\n", printable(model)));
-    }
-    if let Some(resume) = &report.resume {
-        out.push_str(&format!(
-            "resume: {}{}\n",
-            printable(resume),
-            if report.fork { " (forked)" } else { "" }
-        ));
-    }
-    if let Some(session) = &report.session {
-        out.push_str(&format!(
-            "session: {} ({}) · token {} · store {}\n",
-            printable(&session.name),
-            session.phase.as_str(),
-            or_null(session.token.as_deref()),
-            or_null(session.store_file.as_deref()),
-        ));
-    }
-    if let Some(batch) = &report.batch {
-        out.push_str(&format!(
-            "batch: {} · {} prompts · forked {}\n",
-            batch.strategy.as_str(),
-            batch.prompt_count,
-            if batch.forked { "yes" } else { "no" }
-        ));
-    }
-    if report.schema.is_some() {
-        out.push_str(&format!(
-            "schema: applied · max retries {}\n",
-            report
-                .schema_max_retries
-                .map_or_else(|| "null".to_string(), |n| n.to_string())
-        ));
-    }
-    if let Some(fallback) = &report.fallback {
-        out.push_str(&format!(
-            "fallback: ran {}{}\n",
-            or_null(fallback.ran.as_deref()),
-            if fallback.stopped_without_work {
-                " (stopped without work evidence)"
-            } else {
-                ""
-            }
-        ));
-        for fell in &fallback.fell_through {
-            out.push_str(&format!(
-                "  fell through {}: {}{}\n",
-                printable(&fell.harness),
-                fell.reason.as_str(),
-                fell.detail
-                    .as_deref()
-                    .map_or_else(String::new, |d| format!(" — {}", printable(d)))
-            ));
-        }
-    }
-    if let Some(control) = &report.control {
-        out.push_str(&format!(
-            "control: {} · socket {} · {} interrupt{}\n",
-            control.mechanism.as_str(),
-            printable(&control.socket.to_string()),
-            control.interrupts.len(),
-            if control.interrupts.len() == 1 {
-                ""
-            } else {
-                "s"
-            }
-        ));
-    }
-    if let Some(file) = &report.history_file {
-        out.push_str(&format!("history: {}\n", printable(file)));
-    }
-    if let Some(file) = &report.spy_file {
-        out.push_str(&format!("spy log: {}\n", printable(file)));
-    }
-    for result in &report.results {
-        out.push('\n');
-        out.push_str(&render_result(result, report.batch.is_some()));
-    }
-    out
-}
-
-/// One result block: the candidate and its envelope on the first line, then
-/// what it produced and, when it failed, why.
-fn render_result(result: &RunResult, batch: bool) -> String {
-    let mut out = format!(
-        "{candidate}{model}: {status} · exit {exit} · {duration}\n",
-        candidate = printable(&result.harness_id),
-        model = result
-            .model
-            .as_deref()
-            .map_or_else(String::new, |m| format!(" [model {}]", printable(m))),
-        status = result.status.as_str(),
-        exit = result
-            .exit_code
-            .map_or_else(|| "null".to_string(), |c| c.to_string()),
-        duration = result
-            .duration_ms
-            .map_or_else(|| "not run".to_string(), |ms| format!("{ms} ms")),
-    );
-    if let Some(observed) = &result.observed_model {
-        out.push_str(&format!("  observed model: {}\n", printable(observed)));
-    }
-    if batch {
-        out.push_str(&format!(
-            "  prompt: {}\n",
-            or_null(result.prompt.as_deref().map(first_line))
-        ));
-    }
-    if result.status == oneharness_core::domain::report::Status::Planned {
-        out.push_str(&format!(
-            "  command: {}\n",
-            printable(&shell_words(&result.command))
-        ));
-    }
-    match &result.text {
-        Some(text) => {
-            out.push_str(&format!(
-                "  text ({}):\n",
-                or_null(result.text_source.as_deref())
-            ));
-            out.push_str(&indented(text, "    "));
-        }
-        None => out.push_str(&format!(
-            "  text: null ({})\n",
-            result
-                .text_source
-                .as_deref()
-                .map_or_else(|| text_absence(result), printable)
-        )),
-    }
-    if result.schema_valid.is_some() || result.structured.is_some() {
-        out.push_str(&format!(
-            "  structured: {} · attempts {}\n",
-            match result.schema_valid {
-                Some(true) => "valid",
-                Some(false) => "invalid",
-                None => "not validated",
-            },
-            result
-                .schema_attempts
-                .map_or_else(|| "null".to_string(), |n| n.to_string())
-        ));
-        if let Some(value) = &result.structured {
-            out.push_str(&indented(
-                &serde_json::to_string_pretty(value).unwrap_or_default(),
-                "    ",
-            ));
-        } else {
-            out.push_str("    null (no JSON value could be extracted)\n");
-        }
-        if let Some(error) = &result.schema_error {
-            out.push_str(&format!("  schema error: {}\n", printable(error)));
-        }
-    }
-    if let Some(kind) = result.failure_kind {
-        out.push_str(&format!(
-            "  failure: {}{}\n",
-            kind.as_str(),
-            result
-                .failure_kind_source
-                .as_deref()
-                .map_or_else(String::new, |s| format!(" (from {})", printable(s)))
-        ));
-    }
-    if let Some(work) = result.work {
-        out.push_str(&format!("  work evidence: {}\n", work.as_str()));
-    }
-    if let Some(error) = &result.error {
-        out.push_str(&format!("  error: {}\n", printable(error)));
-    }
-    if let Some(id) = &result.session_id {
-        out.push_str(&format!("  session id: {}\n", printable(id)));
-    }
-    if result.usage_source.is_some() {
-        out.push_str(&format!(
-            "  usage: in {} · out {} · cache read {} · cache write {} · cost {}\n",
-            count(result.usage.input_tokens),
-            count(result.usage.output_tokens),
-            count(result.usage.cache_read_tokens),
-            count(result.usage.cache_write_tokens),
-            result
-                .usage
-                .cost_usd
-                .map_or_else(|| "null".to_string(), |c| format!("${c}")),
-        ));
-    }
-    if let Some(events) = &result.events {
-        out.push_str(&format!(
-            "  events: {} ({})\n",
-            events.len(),
-            or_null(result.events_source.as_deref())
-        ));
-    }
-    out
-}
-
-/// Why a result carries no `text` when it also carries no `text_source`: the
-/// envelope says whether the harness ran at all.
-fn text_absence(result: &RunResult) -> String {
-    use oneharness_core::domain::report::Status;
-    match result.status {
-        Status::Planned => "dry run, nothing executed".to_string(),
-        Status::Skipped => "not run".to_string(),
-        Status::SpawnError => "the harness could not be spawned".to_string(),
-        _ => "no extraction was possible from the harness's output".to_string(),
-    }
-}
-
-fn count(value: Option<u64>) -> String {
-    value.map_or_else(|| "null".to_string(), |n| n.to_string())
-}
-
-/// The first line of a prompt, so a multi-line prompt stays one row.
-fn first_line(text: &str) -> &str {
-    text.lines().next().unwrap_or("")
-}
-
-/// An argv as one line, each word single-quoted when it carries whitespace or
-/// a quote — for reading, not for re-executing (the JSON has the exact argv).
-fn shell_words(argv: &[String]) -> String {
-    argv.iter()
-        .map(|word| {
-            if word.is_empty()
-                || word
-                    .chars()
-                    .any(|c| c.is_whitespace() || c == '\'' || c == '"')
-            {
-                format!("'{}'", word.replace('\'', "'\\''"))
-            } else {
-                word.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 impl From<&RunArgs> for RunRequest {
@@ -477,230 +260,14 @@ impl From<&RunArgs> for RunRequest {
 mod tests {
     use super::*;
     use clap::Parser;
-    use oneharness_core::domain::fallback::{FallThroughReason, RunWork};
-    use oneharness_core::domain::report::{
-        FallThrough, FallbackReport, OutputFormat, SessionReport, Status,
-    };
-    use oneharness_core::domain::session::SessionPhase;
-    use oneharness_core::domain::signals::{FailureKind, Usage};
-
-    fn result(id: &str, status: Status) -> RunResult {
-        RunResult {
-            harness: id.to_string(),
-            variant: None,
-            harness_id: id.to_string(),
-            bin: id.to_string(),
-            available: true,
-            status,
-            prompt: None,
-            model: None,
-            observed_model: None,
-            exit_code: None,
-            duration_ms: None,
-            telemetry: None,
-            command: vec![id.to_string(), "-p".to_string(), "say hi".to_string()],
-            output_format: OutputFormat::Json,
-            text: None,
-            text_source: None,
-            usage: Usage::default(),
-            usage_source: None,
-            session_id: None,
-            events: None,
-            events_source: None,
-            structured: None,
-            schema_valid: None,
-            schema_attempts: None,
-            schema_error: None,
-            failure_kind: None,
-            work: None,
-            failure_kind_source: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            error: None,
-        }
-    }
-
-    fn report(results: Vec<RunResult>) -> RunReport {
-        RunReport {
-            schema_version: "test".to_string(),
-            oneharness_version: "test".to_string(),
-            prompt: "say hi\nsecond line".to_string(),
-            model: None,
-            models: None,
-            resume: None,
-            fork: false,
-            session: None,
-            permission_mode: PermissionMode::Default,
-            bypass_permissions: false,
-            dry_run: false,
-            schema: None,
-            schema_max_retries: None,
-            batch: None,
-            fallback: None,
-            mock_rules: None,
-            spy_file: None,
-            history_file: None,
-            config_files: vec![],
-            control: None,
-            results,
-        }
-    }
 
     #[test]
-    fn text_view_lays_out_a_completed_result_with_its_answer_and_signals() {
-        let mut ok = result("claude-code", Status::Ok);
-        ok.model = Some("opus".to_string());
-        ok.exit_code = Some(0);
-        ok.duration_ms = Some(1234);
-        ok.text = Some("pong\u{1b}[31m\nline two".to_string());
-        ok.text_source = Some("json:result".to_string());
-        ok.session_id = Some("sess-1".to_string());
-        ok.usage = Usage {
-            input_tokens: Some(10),
-            output_tokens: Some(2),
-            cache_read_tokens: None,
-            cache_write_tokens: None,
-            cost_usd: Some(0.01),
-        };
-        ok.usage_source = Some("json".to_string());
-        let text = render_text(&report(vec![ok]));
-
+    fn the_readme_quotes_the_stream_default_warning() {
+        let readme = include_str!("../../README.md").replace("\r\n", "\n");
         assert!(
-            text.starts_with("prompt: say hi\nmode: default\n"),
-            "{text}"
+            readme.contains(&format!("```text\n{STREAM_DEFAULT_WARNING}\n```")),
+            "README.md must quote the stream-default warning verbatim:\n{STREAM_DEFAULT_WARNING}"
         );
-        assert!(
-            text.contains("claude-code [model opus]: ok · exit 0 · 1234 ms\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("  text (json:result):\n    pong [31m\n    line two\n"),
-            "the answer is indented under its label with the escape flattened:\n{text}"
-        );
-        assert!(text.contains("  session id: sess-1\n"), "{text}");
-        assert!(
-            text.contains(
-                "  usage: in 10 · out 2 · cache read null · cache write null · cost $0.01\n"
-            ),
-            "{text}"
-        );
-        assert!(
-            serde_json::from_str::<serde_json::Value>(&text).is_err(),
-            "the text view is not a JSON document"
-        );
-    }
-
-    #[test]
-    fn text_view_says_why_text_is_null_and_names_a_failure() {
-        let mut failed = result("codex", Status::Nonzero);
-        failed.exit_code = Some(1);
-        failed.duration_ms = Some(5);
-        failed.failure_kind = Some(FailureKind::Auth);
-        failed.failure_kind_source = Some("stderr".to_string());
-        failed.error = Some("codex exited 1: 401\r".to_string());
-        let mut skipped = result("goose", Status::Skipped);
-        skipped.available = false;
-        let mut unclassified = result("crush", Status::Timeout);
-        unclassified.work = Some(RunWork::None);
-        let text = render_text(&report(vec![failed, skipped, unclassified]));
-
-        assert!(text.contains("codex: nonzero · exit 1 · 5 ms\n"), "{text}");
-        assert!(
-            text.contains("  text: null (no extraction was possible from the harness's output)\n"),
-            "{text}"
-        );
-        assert!(text.contains("  failure: auth (from stderr)\n"), "{text}");
-        assert!(text.contains("  error: codex exited 1: 401 \n"), "{text}");
-        assert!(
-            text.contains("goose: skipped · exit null · not run\n"),
-            "{text}"
-        );
-        assert!(text.contains("  text: null (not run)\n"), "{text}");
-        assert!(text.contains("  work evidence: none\n"), "{text}");
-    }
-
-    #[test]
-    fn text_view_carries_the_session_fallback_batch_and_schema_blocks() {
-        let mut rep = report(vec![]);
-        rep.session = Some(SessionReport {
-            name: "chat".to_string(),
-            phase: SessionPhase::Continue,
-            token: Some("tok".to_string()),
-            store_file: None,
-        });
-        rep.fallback = Some(FallbackReport {
-            ran: Some("codex".to_string()),
-            fell_through: vec![FallThrough {
-                harness: "claude-code".to_string(),
-                reason: FallThroughReason::Auth,
-                detail: Some("claude-code exited 1: 401".to_string()),
-            }],
-            stopped_without_work: false,
-        });
-        rep.batch = Some(oneharness_core::domain::report::BatchReport {
-            strategy: oneharness_core::domain::batch::BatchStrategy::Speed,
-            prompt_count: 2,
-            forked: false,
-        });
-        rep.schema = Some(serde_json::json!({"type": "object"}));
-        rep.schema_max_retries = Some(2);
-        rep.models = Some(vec!["a".to_string(), "b".to_string()]);
-        let mut structured = result("codex", Status::Ok);
-        structured.prompt = Some("second prompt".to_string());
-        structured.structured = Some(serde_json::json!({"name": "x"}));
-        structured.schema_valid = Some(false);
-        structured.schema_attempts = Some(3);
-        structured.schema_error = Some("missing `age`".to_string());
-        rep.results = vec![structured];
-        let text = render_text(&rep);
-
-        assert!(text.contains("models: a, b\n"), "{text}");
-        assert!(
-            text.contains("session: chat (continue) · token tok · store null\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("batch: speed · 2 prompts · forked no\n"),
-            "{text}"
-        );
-        assert!(text.contains("schema: applied · max retries 2\n"), "{text}");
-        assert!(text.contains("fallback: ran codex\n"), "{text}");
-        assert!(
-            text.contains("  fell through claude-code: auth — claude-code exited 1: 401\n"),
-            "{text}"
-        );
-        assert!(text.contains("  prompt: second prompt\n"), "{text}");
-        assert!(
-            text.contains("  structured: invalid · attempts 3\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("    {\n      \"name\": \"x\"\n    }\n"),
-            "{text}"
-        );
-        assert!(text.contains("  schema error: missing `age`\n"), "{text}");
-    }
-
-    #[test]
-    fn text_view_shows_each_planned_command_under_a_dry_run() {
-        let mut rep = report(vec![result("claude-code", Status::Planned)]);
-        rep.dry_run = true;
-        let text = render_text(&rep);
-        assert!(text.contains("mode: default · dry run\n"), "{text}");
-        assert!(
-            text.contains("  command: claude-code -p 'say hi'\n"),
-            "{text}"
-        );
-        assert!(
-            text.contains("  text: null (dry run, nothing executed)\n"),
-            "{text}"
-        );
-    }
-
-    #[test]
-    fn shell_words_quotes_only_what_needs_it() {
-        let argv = ["a", "b c", "", "it's"].map(String::from);
-        assert_eq!(shell_words(&argv), "a 'b c' '' 'it'\\''s'");
     }
 
     /// Parse a `run` command line into its args, exactly as `main` does.

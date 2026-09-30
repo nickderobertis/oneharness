@@ -72,6 +72,52 @@ fn run_as_typed(args: &[&str], envs: &[(&str, &str)]) -> Output {
     cmd.output().expect("failed to run oneharness")
 }
 
+/// [`run`], but a child still running at `limit` is killed and the test fails
+/// there, naming the args — for a journey whose regression would otherwise be
+/// a process that never exits (a `history watch` that follows instead of
+/// refusing), so it fails fast rather than hanging the suite.
+fn run_within(args: &[&str], envs: &[(&str, &str)], limit: std::time::Duration) -> Output {
+    use std::io::Read;
+    let json_args = with_format_json(args);
+    let redirect = mock_profile_redirect();
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_NO_CONFIG", "1")
+        .args(with_mock_profile_redirect(&json_args, &redirect))
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().expect("failed to run oneharness");
+    let drain = |mut pipe: Box<dyn Read + Send>| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).ok();
+            bytes
+        })
+    };
+    let stdout = drain(Box::new(child.stdout.take().expect("piped stdout")));
+    let stderr = drain(Box::new(child.stderr.take().expect("piped stderr")));
+    let deadline = std::time::Instant::now() + limit;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll the child") {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("stop the child this test started");
+            child.wait().expect("reap the child");
+            panic!("oneharness {args:?} was still running after {limit:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    Output {
+        status,
+        stdout: stdout.join().expect("stdout reader"),
+        stderr: stderr.join().expect("stderr reader"),
+    }
+}
+
 /// Every verb path whose stdout is a JSON document, read off the clap tree
 /// itself: a (sub)command carrying a `--format` whose values include `json`.
 /// The one source the format journeys below and the `run` helper share, so a
@@ -5100,14 +5146,17 @@ fn codex_collaboration_and_web_search_events_flow_through_stream_and_history() {
         .filter(|value| value["type"] == "event")
         .map(|value| &value["event"])
         .collect::<Vec<_>>();
-    assert_eq!(streamed.len(), 4);
+    // Each call once, at completion — never its started record as well —
+    // then the agent's closing message.
+    assert_eq!(streamed.len(), 3);
     assert_eq!(streamed[0]["name"], "spawn_agent");
     assert_eq!(streamed[0]["input"]["prompt"], "inspect tests");
     assert_eq!(streamed[0]["input"]["receiver_thread_ids"][0], "thread-2");
-    assert_eq!(streamed[1]["name"], "spawn_agent");
-    assert_eq!(streamed[2]["name"], "web_search");
-    assert_eq!(streamed[2]["input"]["query"], "Rust docs");
-    assert_eq!(streamed[3]["name"], "web_search");
+    assert_eq!(streamed[0]["status"], "completed");
+    assert_eq!(streamed[1]["name"], "web_search");
+    assert_eq!(streamed[1]["input"]["query"], "Rust docs");
+    assert_eq!(streamed[2]["kind"], "message");
+    assert_eq!(streamed[2]["output"], "done");
 
     let report = &envelopes.last().unwrap()["report"];
     let raw_lines = std::fs::read_to_string(report["history_file"].as_str().unwrap()).unwrap();
@@ -5115,18 +5164,17 @@ fn codex_collaboration_and_web_search_events_flow_through_stream_and_history() {
         .lines()
         .map(|line| serde_json::from_str::<Value>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(raw_lines.len(), 5);
-    for (index, line) in raw_lines.iter().take(4).enumerate() {
+    assert_eq!(raw_lines.len(), 4);
+    for (index, line) in raw_lines.iter().take(3).enumerate() {
         assert_eq!(line["type"], "event");
         assert_eq!(line["event"]["index"], index);
     }
-    assert_eq!(raw_lines[4]["type"], "run");
-    assert!(raw_lines[4].get("events").is_none());
+    assert_eq!(raw_lines[3]["type"], "run");
+    assert!(raw_lines[3].get("events").is_none());
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["events"][0]["name"], "spawn_agent");
-    assert_eq!(record["events"][1]["name"], "spawn_agent");
-    assert_eq!(record["events"][2]["name"], "web_search");
-    assert_eq!(record["events"][3]["name"], "web_search");
+    assert_eq!(record["events"][1]["name"], "web_search");
+    assert_eq!(record["events"][2]["kind"], "message");
     assert_eq!(record["usage"]["input_tokens"], 8);
 }
 
@@ -5535,69 +5583,20 @@ bin = "{bin}"
         "--no-stream lost to ONEHARNESS_STREAM"
     );
 
-    // An explicit `--format text` beside a run that will stream is refused
-    // before anything spawns, whichever layer selected the stream — the flag
-    // (`a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is`),
-    // config, or the environment — naming both, never a silent drop of the
-    // flag and never a turn billed for a report that was never printable.
-    // The stream half is named as the caller selected it (the file that set
-    // `stream = true`, or `ONEHARNESS_STREAM`), since neither is `--stream`
-    // and the way out of each is `--no-stream` — which beside it settles the
-    // question the other way.
-    let project_file = |cwd: &str| Path::new(cwd).join("oneharness.toml");
-    for (label, cwd, envs, user_config, names) in [
-        (
-            "config",
-            fx.cwd(),
-            vec![],
-            fx.user_config(),
-            vec![
-                "stream = true".to_string(),
-                project_file(&fx.cwd()).display().to_string(),
-            ],
-        ),
+    // `--no-stream` beside `--format text` settles a stream either layer
+    // switched on back to the buffered text report. (What each format prints
+    // WHILE streaming is `every_route_to_a_stream_prints_by_format_alone`.)
+    for (label, cwd, envs, user_config) in [
+        ("config", fx.cwd(), vec![], fx.user_config()),
         (
             "ONEHARNESS_STREAM",
             env_only.cwd(),
             vec![("ONEHARNESS_STREAM", "true")],
             env_only.user_config(),
-            vec!["ONEHARNESS_STREAM".to_string()],
         ),
     ] {
         let mut envs = envs;
         envs.push(("MOCK_STDOUT", stdout));
-        // The mock appends to this log the moment it starts; a refused run
-        // must leave it unwritten.
-        let spawned = Path::new(&cwd).join("spawned.log");
-        let spawned_arg = spawned.display().to_string();
-        let mut refused_envs = envs.clone();
-        refused_envs.push(("MOCK_LOG_FILE", &spawned_arg));
-        let refused = run_with_config(
-            &["run", "--prompt", "hi", "--cwd", &cwd, "--format", "text"],
-            &refused_envs,
-            &user_config,
-        );
-        assert_eq!(refused.status.code(), Some(2), "{label}: {refused:?}");
-        assert!(refused.stdout.is_empty(), "{label}: a refused run printed");
-        assert!(
-            !spawned.exists(),
-            "{label}: the harness was spawned before the flags were refused"
-        );
-        let stderr = String::from_utf8_lossy(&refused.stderr);
-        assert!(
-            stderr.contains("--format text") && stderr.contains("--stream"),
-            "{label}: the refusal must name both flags: {stderr}"
-        );
-        for name in &names {
-            assert!(
-                stderr.contains(name),
-                "{label}: the refusal must say where the stream was selected ({name}): {stderr}"
-            );
-        }
-        assert!(
-            stderr.contains("--no-stream"),
-            "{label}: the refusal must offer --no-stream as the way out: {stderr}"
-        );
         let settled = run_with_config(
             &[
                 "run",
@@ -5996,14 +5995,21 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert_eq!(reading.events.len(), 1);
-    let event = &reading.events[0];
+    // The call's `item/started` and `item/completed` frames make one event.
+    let events = windows_tool_calls(&reading);
+    assert_eq!(events.len(), 1, "{:?}", reading.events);
+    let event = events[0];
     assert_eq!(event.name.as_deref(), Some("command_execution"));
     assert_eq!(
         event.input,
         Some(serde_json::json!({
-            "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"
+            "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'",
+            "exit_code": 0
         }))
+    );
+    assert_eq!(
+        event.status,
+        Some(oneharness_core::domain::events::ToolCallStatus::Completed)
     );
     assert_eq!(event.output.as_deref(), Some("OHCAPTURE12345"));
     assert_eq!(
@@ -6048,13 +6054,17 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
     let value = json_stdout(&output);
     let result = &value["results"][0];
     assert_eq!(result["events_source"], "json:codex-app-server-items");
-    let events = result["events"].as_array().unwrap();
+    let events = tool_calls(result);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["name"], "command_execution");
     assert_eq!(
         events[0]["input"],
-        serde_json::json!({"command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"})
+        serde_json::json!({
+            "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'",
+            "exit_code": 0
+        })
     );
+    assert_eq!(events[0]["status"], "completed");
     assert_eq!(events[0]["output"], "OHCAPTURE12345");
     assert_eq!(
         events[0]["tool_call_id"],
@@ -6079,8 +6089,9 @@ fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives(
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert_eq!(reading.events.len(), 1);
-    let event = &reading.events[0];
+    let events = windows_tool_calls(&reading);
+    assert_eq!(events.len(), 1, "{:?}", reading.events);
+    let event = events[0];
     assert_eq!(event.name.as_deref(), Some("command_execution"));
     assert_eq!(
         event.input,
@@ -6132,7 +6143,7 @@ fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives(
     let value = json_stdout(&output);
     let result = &value["results"][0];
     assert_eq!(result["events_source"], "json:codex-app-server-items");
-    let events = result["events"].as_array().unwrap();
+    let events = tool_calls(result);
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["name"], "command_execution");
     assert_eq!(
@@ -6147,12 +6158,12 @@ fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives(
 }
 
 #[test]
-fn controlled_codex_without_tools_reports_an_empty_app_server_reading() {
-    assert_controlled_codex_without_tools_reports_an_empty_app_server_reading();
+fn controlled_codex_without_tools_reports_only_its_message_from_the_app_server() {
+    assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_server();
 }
 
 #[cfg(windows)]
-fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+fn assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_server() {
     // The mock's tool-free controlled turn emits this app-server agent item;
     // exercise the production extractor directly where no control socket exists.
     let raw = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"item_1","text":"still working"}}}"#;
@@ -6162,11 +6173,14 @@ fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert!(reading.events.is_empty());
+    // No tool ran: the reading holds only the agent's own finished message.
+    assert_eq!(reading.events.len(), 1, "{:?}", reading.events);
+    assert_eq!(reading.events[0].kind, "message");
+    assert_eq!(reading.events[0].output.as_deref(), Some("still working"));
 }
 
 #[cfg(not(windows))]
-fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
+fn assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_server() {
     let session_dir = control_store_dir("cn");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
@@ -6200,7 +6214,13 @@ fn assert_controlled_codex_without_tools_reports_an_empty_app_server_reading() {
     let value = json_stdout(&output);
     let result = &value["results"][0];
     assert_eq!(result["events_source"], "json:codex-app-server-items");
-    assert_eq!(result["events"], serde_json::json!([]));
+    // No tool ran: the reading holds only the agent's own finished message.
+    assert!(tool_calls(result).is_empty(), "{result}");
+    let events = result["events"].as_array().unwrap();
+    assert!(
+        events.iter().all(|event| event["kind"] == "message"),
+        "{result}"
+    );
 }
 
 #[test]
@@ -6219,9 +6239,23 @@ fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
     )
     .unwrap();
     assert_eq!(reading.source, "json:codex-app-server-items");
-    assert_eq!(reading.events.len(), 1);
-    assert!(reading.events[0].input.is_none());
-    assert_eq!(reading.events[0].output.as_deref(), Some("OHCAPTURE12345"));
+    let events = windows_tool_calls(&reading);
+    assert_eq!(events.len(), 1, "{:?}", reading.events);
+    assert!(events[0].input.is_none());
+    assert_eq!(events[0].output.as_deref(), Some("OHCAPTURE12345"));
+}
+
+/// The Windows twins' `tool_calls`: the reading's tool calls, beside the
+/// agent's `message`/`reasoning` events a codex turn also carries.
+#[cfg(windows)]
+fn windows_tool_calls(
+    reading: &oneharness_core::domain::events::EventsReading,
+) -> Vec<&oneharness_core::domain::events::ActionEvent> {
+    reading
+        .events
+        .iter()
+        .filter(|event| event.kind == "tool_call")
+        .collect()
 }
 
 #[cfg(not(windows))]
@@ -6261,7 +6295,7 @@ fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
     let value = json_stdout(&output);
     let result = &value["results"][0];
     assert_eq!(result["events_source"], "json:codex-app-server-items");
-    let events = result["events"].as_array().unwrap();
+    let events = tool_calls(result);
     assert_eq!(events.len(), 1);
     assert!(events[0]["input"].is_null());
     assert_eq!(events[0]["output"], "OHCAPTURE12345");
@@ -10922,39 +10956,91 @@ fn every_history_verb_honors_repeated_config_files() {
 
 #[test]
 fn stream_origin_honors_repeated_config_files() {
-    // A stream selected by config refuses `--format text`, naming the file that
-    // selected it. The earlier file alone selects it; where both set `stream`,
-    // the later file's value — naming it, or turning the stream off — wins.
-    let stdout = r#"{"result":"not streamed"}"#;
-    for (label, later, refused_by) in [
-        ("earlier only", "timeout = 60\n", Some(false)),
-        ("both stream", "stream = true\n", Some(true)),
-        ("the later file turns it off", "stream = false\n", None),
+    // A stream selected by config prints by `--format` alone, and `stream` is
+    // layered like any field: the earlier file alone turns it on, a later
+    // file's `stream = true` turns it on over an earlier one that is silent,
+    // and a later `stream = false` turns off what the earlier file set. With
+    // no `--format` a stream is NDJSON plus the one notice that its default is
+    // changing; an explicit `--format text` is the readable stream.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let codex = |settings: &str| {
+        format!("{settings}harnesses = [\"codex\"]\n[harness.codex]\nbin = \"{bin}\"\n")
+    };
+    let turn = codex_exec_turn_with_update();
+    let text_lines = CODEX_EXEC_TURN_TEXT.join("\n");
+    for (label, earlier, later, streams) in [
+        ("earlier only", "stream = true\n", "timeout = 60\n", true),
+        ("the later file turns it on", "", "stream = true\n", true),
+        (
+            "the later file turns it off",
+            "stream = true\n",
+            "stream = false\n",
+            false,
+        ),
     ] {
         let (fx, d, j) = two_configs(
             &format!("layered-stream-{}", label.replace(' ', "-")),
-            &mock_claude_defaults("stream = true\n"),
+            &codex(earlier),
             later,
         );
         let cwd = fx.cwd();
-        let output = run_with_config(
-            &[
-                "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j, "--format",
-                "text",
-            ],
-            &[("MOCK_STDOUT", stdout)],
-            &fx.user_config(),
-        );
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        match refused_by {
-            Some(later_named) => {
-                assert_eq!(output.status.code(), Some(2), "{label}: {stderr}");
-                let (named, unnamed) = if later_named { (&j, &d) } else { (&d, &j) };
-                assert!(stderr.contains(named.as_str()), "{label}: {stderr}");
-                assert!(!stderr.contains(unnamed.as_str()), "{label}: {stderr}");
-            }
-            None => assert!(output.status.success(), "{label}: {stderr}"),
+        let invoke = |format: &[&str]| {
+            let args: Vec<&str> = [
+                "run", "--prompt", "hi", "--cwd", &cwd, "--config", &d, "--config", &j,
+            ]
+            .into_iter()
+            .chain(format.iter().copied())
+            .collect();
+            let output = run_with_config_as_typed(
+                &args,
+                &[("MOCK_STDOUT", turn.as_str())],
+                &fx.user_config(),
+            );
+            assert!(output.status.success(), "{label} {format:?}: {output:?}");
+            output
+        };
+
+        let unchosen = invoke(&[]);
+        let stdout = String::from_utf8_lossy(&unchosen.stdout);
+        if streams {
+            let lines: Vec<RunStreamEnvelope> = stdout
+                .lines()
+                .map(|line| serde_json::from_str(line).expect("each line is a stream envelope"))
+                .collect();
+            let events = lines
+                .iter()
+                .filter(|line| matches!(line, RunStreamEnvelope::Event { .. }))
+                .count();
+            assert_eq!(events, CODEX_EXEC_TURN_TEXT.len(), "{label}: {stdout}");
+            assert!(
+                matches!(lines.last(), Some(RunStreamEnvelope::Result { .. })),
+                "{label}: {stdout}"
+            );
+            assert_eq!(
+                stream_default_warnings(&unchosen),
+                1,
+                "{label}: {unchosen:?}"
+            );
+        } else {
+            // Not streamed: the buffered text report, with no stream notice.
+            assert!(stdout.starts_with("prompt: hi\n"), "{label}: {stdout}");
+            assert_eq!(
+                stream_default_warnings(&unchosen),
+                0,
+                "{label}: {unchosen:?}"
+            );
         }
+
+        let text = invoke(&["--format", "text"]);
+        let stdout = String::from_utf8_lossy(&text.stdout);
+        let report = if streams {
+            format!("{text_lines}\n\nprompt: hi\n")
+        } else {
+            "prompt: hi\n".to_string()
+        };
+        assert!(stdout.starts_with(&report), "{label}: {stdout}");
+        assert!(stdout.contains("codex: ok · exit 0"), "{label}: {stdout}");
+        assert_eq!(stream_default_warnings(&text), 0, "{label}: {text:?}");
     }
 }
 
@@ -14557,6 +14643,30 @@ fn first_history_run(path: &Path) -> Value {
     materialized_history(path).into_iter().next().unwrap()
 }
 
+/// A session file's raw `run` lines, in order — skipping the `event` lines a
+/// run's `message`/`reasoning`/tool events are written as before it.
+fn raw_run_lines(path: impl AsRef<Path>) -> Vec<Value> {
+    std::fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|line| line["type"] == "run")
+        .collect()
+}
+
+/// A record's `tool_call` events, in order — without the agent's `message`
+/// and `reasoning` events that now sit among them.
+fn tool_calls(record: &Value) -> Vec<Value> {
+    record["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|event| event["kind"] == "tool_call")
+        .cloned()
+        .collect()
+}
+
 const HISTORY_CODEX_TELEMETRY: &str = concat!(
     "{\"type\":\"turn.started\"}\n",
     "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"x\"}}\n",
@@ -14991,10 +15101,9 @@ fn history_records_a_failure_whose_telemetry_could_not_be_measured() {
         );
         if interrupted_tool {
             // Whatever partial telemetry the failure left is kept.
-            assert_eq!(record["events"][0]["kind"], "tool_call", "{tag}");
-            assert_eq!(record["events"][0]["status"], "interrupted", "{tag}");
+            assert_eq!(tool_calls(&record)[0]["status"], "interrupted", "{tag}");
         } else {
-            assert!(record["events"].is_null(), "{tag}");
+            assert!(tool_calls(&record).is_empty(), "{tag}");
         }
         // `history show` serves the failed run like any other record.
         let shown = json_stdout(&run(
@@ -15713,7 +15822,7 @@ fn history_normalizes_codex_mcp_failure_and_interruption() {
     assert!(failed.status.success());
     let report = json_stdout(&failed);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    let calls = record["events"].as_array().unwrap();
+    let calls = tool_calls(&record);
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0]["name"], "count");
     assert_eq!(calls[0]["tool_call_id"], "mcp-1");
@@ -15756,7 +15865,7 @@ fn history_normalizes_codex_mcp_failure_and_interruption() {
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
     assert_eq!(record["status"], "timeout");
     assert!(record["time_to_first_token_ms"].as_u64().unwrap() >= 200);
-    let call = &record["events"][0];
+    let call = &tool_calls(&record)[0];
     assert_eq!(call["tool_call_id"], "mcp-open");
     assert_eq!(call["status"], "timeout");
     assert!(call["finished_at"].is_null());
@@ -15806,8 +15915,8 @@ fn history_validates_codex_terminal_tool_states_without_guessing() {
         assert!(output.status.success(), "{tag}");
         let report = json_stdout(&output);
         let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-        assert_eq!(record["events"][0]["status"], expected, "{tag}");
-        assert!(record["events"][0]["duration_ms"].as_u64().unwrap() > 0);
+        assert_eq!(tool_calls(&record)[0]["status"], expected, "{tag}");
+        assert!(tool_calls(&record)[0]["duration_ms"].as_u64().unwrap() > 0);
     }
 
     for (tag, tool_records) in [
@@ -16493,15 +16602,9 @@ fn history_records_every_harness_in_one_session() {
         .as_str()
         .unwrap()
         .to_string();
-    let text = std::fs::read_to_string(&hf).unwrap();
-    let harnesses: Vec<String> = text
-        .lines()
-        .map(|l| {
-            serde_json::from_str::<Value>(l).unwrap()["harness"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+    let harnesses: Vec<String> = raw_run_lines(&hf)
+        .iter()
+        .map(|line| line["harness"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(
         harnesses,
@@ -16555,15 +16658,9 @@ fn history_batch_records_one_record_per_prompt() {
         .as_str()
         .unwrap()
         .to_string();
-    let text = std::fs::read_to_string(&hf).unwrap();
-    let prompts: Vec<String> = text
-        .lines()
-        .map(|l| {
-            serde_json::from_str::<Value>(l).unwrap()["prompt"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+    let prompts: Vec<String> = raw_run_lines(&hf)
+        .iter()
+        .map(|line| line["prompt"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(
         prompts,
@@ -16743,7 +16840,16 @@ fn history_cli_rejects_mixed_provider_and_observed_timing() {
         ],
         &[],
     ));
-    assert!(listed.as_array().unwrap().is_empty());
+    // The corrupt record is never read: what is left of the session is its
+    // event lines, listed as a run with no closing record.
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["record_count"] == 0 && session["running"] == true),
+        "{listed}"
+    );
 }
 
 #[test]
@@ -16872,7 +16978,17 @@ fn history_cli_rejects_inconsistent_variant_identities_in_run_and_event_lines() 
         &[],
     );
     assert!(listed.status.success());
-    assert!(json_stdout(&listed).as_array().unwrap().is_empty());
+    // The inconsistent record is never read; the session's valid event lines
+    // are all that is listed of it.
+    let listed = json_stdout(&listed);
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|session| session["record_count"] == 0),
+        "{listed}"
+    );
 
     let (bad_event_dir, bad_event_path) = write_mutated("invalid-variant-event", "event");
     let shown = run(
@@ -16962,8 +17078,15 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
 
     let dir = hist_dir("interrupted-stream");
     let ds = dir.display().to_string();
+    // Each call is published once it completes, so the killed run's history
+    // holds the calls that finished before the kill.
     let lines: Vec<String> = (0..5)
-        .map(|i| format!(r#"{{"type":"item.started","item":{{"id":"call-{i}","type":"command_execution","command":"step {i}","status":"in_progress"}}}}"#))
+        .flat_map(|i| {
+            [
+                format!(r#"{{"type":"item.started","item":{{"id":"call-{i}","type":"command_execution","command":"step {i}","status":"in_progress"}}}}"#),
+                format!(r#"{{"type":"item.completed","item":{{"id":"call-{i}","type":"command_execution","command":"step {i}","aggregated_output":"","exit_code":0,"status":"completed"}}}}"#),
+            ]
+        })
         .collect();
     let mut child = Command::new(oneharness_bin())
         .env("ONEHARNESS_NO_CONFIG", "1")
@@ -17705,14 +17828,7 @@ fn history_watch_scopes_to_explicit_and_current_project() {
             .as_str()
             .unwrap()
             .to_string();
-        let value: Value = serde_json::from_str(
-            std::fs::read_to_string(path)
-                .unwrap()
-                .lines()
-                .next()
-                .unwrap(),
-        )
-        .unwrap();
+        let value = raw_run_lines(path).remove(0);
         value["history_id"].as_str().unwrap().to_string()
     };
 
@@ -18943,14 +19059,7 @@ fn history_records_a_failed_run_and_shows_by_id() {
         .to_str()
         .unwrap()
         .to_string();
-    let rec: Value = serde_json::from_str(
-        std::fs::read_to_string(&hf)
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap(),
-    )
-    .unwrap();
+    let rec = raw_run_lines(&hf).remove(0);
     assert_eq!(rec["status"], "nonzero");
     assert_eq!(rec["failure_kind"], "auth");
     // `show` resolves by the exact session id (not just name).
@@ -19958,16 +20067,9 @@ fn multiple_models_history_records_each_pair_model() {
     );
     let v = json_stdout(&output);
     let hist_file = v["history_file"].as_str().expect("history recorded");
-    let text = std::fs::read_to_string(hist_file).unwrap();
-    let models: Vec<String> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            serde_json::from_str::<Value>(l).unwrap()["model"]
-                .as_str()
-                .unwrap()
-                .to_string()
-        })
+    let models: Vec<String> = raw_run_lines(hist_file)
+        .iter()
+        .map(|line| line["model"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(models, vec!["opus".to_string(), "sonnet".to_string()]);
 }
@@ -33923,12 +34025,12 @@ fn every_json_verb_refuses_an_unknown_format_with_a_usage_error() {
             "a refused invocation prints no report"
         );
     }
-    // `history watch` keeps its own single-valued format: text is NOT one of
-    // its answers, because a stream is not a document.
-    let watch = run(&["history", "watch", "--format", "text"], &[]);
+    // `history watch` keeps its own value list: a stream is not a document, so
+    // `json` is NOT one of its answers — `jsonl` and the readable `text` are.
+    let watch = run(&["history", "watch", "--format", "json"], &[]);
     assert_eq!(watch.status.code(), Some(2));
     assert!(
-        String::from_utf8_lossy(&watch.stderr).contains("[possible values: jsonl]"),
+        String::from_utf8_lossy(&watch.stderr).contains("[possible values: jsonl, text]"),
         "{watch:?}"
     );
 }
@@ -34534,7 +34636,7 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
     // lines all along, so the terminal envelope is not the place to switch. A
     // bare `--stream` and `--format json --stream` (and `--compact --stream`,
     // the SDKs' spelling) are the same lines; an explicit `--format text` beside
-    // it is refused up front, naming both flags, before any harness spawns.
+    // it is the readable stream instead.
     let stdout = concat!(
         r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
         "\n",
@@ -34580,34 +34682,383 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
         let ours = parse(&output);
         assert_eq!(ours, theirs, "`{}` changed the stream", extra.join(" "));
     }
+    // Only a stream no `--format` chose carries the notice that its default
+    // changes: `--format json` and `--compact` asked for NDJSON by name.
+    for extra in [&["--format", "json"][..], &["--compact"][..]] {
+        let output = run_as_typed(&[&args[..], extra].concat(), &envs);
+        assert_eq!(
+            stream_default_warnings(&output),
+            0,
+            "`{}` warned: {output:?}",
+            extra.join(" ")
+        );
+    }
     let bare = run_as_typed(&args, &envs);
     assert!(bare.status.success(), "{bare:?}");
     assert_eq!(parse(&bare), theirs, "a bare --stream changed the stream");
+    assert_eq!(stream_default_warnings(&bare), 1, "{bare:?}");
 
-    // Refused before anything spawns: the mock appends to this log the moment
-    // it starts, and a run that ran and then exited 2 over its flags would
-    // have billed a turn for nothing.
-    let store = ScratchDir::new("format-text-stream").unwrap();
-    let spawned = store.join("spawned.log");
-    let spawned_arg = spawned.display().to_string();
-    let refused = run_as_typed(
-        &[&args[..], &["--format", "text"]].concat(),
-        &[("MOCK_STDOUT", stdout), ("MOCK_LOG_FILE", &spawned_arg)],
-    );
-    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    // An explicit `--format text` is no longer refused: it is the readable
+    // stream, one line per drawn event, then the text report.
+    let text = run_as_typed(&[&args[..], &["--format", "text"]].concat(), &envs);
+    assert!(text.status.success(), "{text:?}");
+    let stdout = String::from_utf8_lossy(&text.stdout);
+    assert!(stdout.starts_with("$ echo hi\n\nprompt: hi\n"), "{stdout}");
+    assert_eq!(stream_default_warnings(&text), 0, "{text:?}");
+}
+
+/// How many times a run's stderr says the stream default is changing.
+fn stream_default_warnings(output: &Output) -> usize {
+    String::from_utf8_lossy(&output.stderr)
+        .matches("the stream default becomes text in the next release")
+        .count()
+}
+
+/// The recorded `codex exec --json` turn (codex-cli 0.157.1): an agent
+/// message, a reasoning item, a command, a file change, a failing command and
+/// the final message.
+const CODEX_EXEC_TURN: &str = include_str!("fixtures/codex-exec-turn.jsonl");
+
+/// [`CODEX_EXEC_TURN`] with an `item.updated` record for its first command
+/// spliced in after that command's `item.started` — built from the recording's
+/// own started record — since that CLI emits `item.updated` for plan items but
+/// never for a command, and a call's whole started/updated/completed lifecycle
+/// is what a once-per-call property has to survive.
+fn codex_exec_turn_with_update() -> String {
+    let mut lines: Vec<String> = CODEX_EXEC_TURN.lines().map(str::to_string).collect();
+    let started = lines
+        .iter()
+        .position(|line| line.contains(r#""type":"item.started""#))
+        .expect("the recording starts a command");
+    let mut update: Value = serde_json::from_str(&lines[started]).unwrap();
+    update["type"] = Value::from("item.updated");
+    update["item"]["aggregated_output"] = Value::from("hel");
+    lines.insert(started + 1, update.to_string());
+    lines.join("\n")
+}
+
+/// What `--format text` draws for [`CODEX_EXEC_TURN`], one line per event.
+const CODEX_EXEC_TURN_TEXT: &[&str] = &[
+    "› I’ll compare the products, read and update `note.txt`, then run the requested directory check.",
+    "(thinking) **Proceeding with 391–399**",
+    "$ cat note.txt",
+    "✎ /work/note.txt",
+    "$ ls does-not-exist ✗ exit 2: ls: cannot access 'does-not-exist': No such file or directory",
+    "› 19×21 = 399 exceeds 17×23 = 391; I read `note.txt`, added `world` as its second line, and ran `ls does-not-exist`, which failed because the path is missing; no todo/plan tool was available.",
+];
+
+#[test]
+fn a_text_stream_prints_each_event_as_it_happens_then_the_text_report() {
+    use std::io::{BufRead, BufReader};
+    use std::process::Stdio;
+
+    let mock_profile = mock_profile_redirect();
+    let mut child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", codex_exec_turn_with_update())
+        // Long enough that the run is demonstrably still going when its first
+        // line has already been printed.
+        .env("MOCK_STREAM_DELAY_MS", "250")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+            "--format",
+            "text",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn oneharness --stream --format text");
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut first = String::new();
+    reader.read_line(&mut first).expect("read the first line");
+    assert_eq!(first.trim_end_matches('\n'), CODEX_EXEC_TURN_TEXT[0]);
     assert!(
-        !spawned.exists(),
-        "the harness was spawned before the flags were refused"
+        child.try_wait().expect("poll the run").is_none(),
+        "the first line only arrived once the run had ended"
     );
-    let stderr = String::from_utf8_lossy(&refused.stderr);
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut reader, &mut rest).expect("read the rest");
+    let output = child.wait_with_output().expect("the run ends");
+    assert!(output.status.success(), "{output:?}");
+    let expected = format!("{}\n\nprompt: hi\n", CODEX_EXEC_TURN_TEXT[1..].join("\n"));
+    assert!(rest.starts_with(&expected), "{rest}");
     assert!(
-        stderr.contains("--format text") && stderr.contains("--stream"),
-        "the refusal must name both flags: {stderr}"
+        rest.contains("codex: ok · exit 0"),
+        "the text report follows the event lines: {rest}"
     );
     assert!(
-        refused.stdout.is_empty(),
-        "a refused run printed: {refused:?}"
+        !rest.contains("\u{1b}") && !rest.contains(r#""type":"event""#),
+        "a text stream carries no escapes and no NDJSON: {rest}"
     );
+    assert_eq!(stream_default_warnings(&output), 0, "{output:?}");
+}
+
+/// [`run_with_config`] with `args` exactly as typed: no `--format` added.
+fn run_with_config_as_typed(
+    args: &[&str],
+    envs: &[(&str, &str)],
+    user_config: &std::path::Path,
+) -> Output {
+    let mut cmd = Command::new(oneharness_bin());
+    cmd.env("ONEHARNESS_CONFIG", user_config);
+    for var in ENV_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+    let redirect = mock_profile_redirect();
+    cmd.args(with_mock_profile_redirect(args, &redirect));
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to run oneharness")
+}
+
+#[test]
+fn every_route_to_a_stream_prints_by_format_alone() {
+    // Whether streaming came from `--stream`, `stream = true` in a config
+    // file, or ONEHARNESS_STREAM, stdout is decided by `--format` alone: none
+    // is NDJSON plus one notice that the default is changing, `json` is the
+    // same NDJSON with no notice, and `text` is the readable stream.
+    let bin = mock_bin().display().to_string().replace('\\', "\\\\");
+    let config = |stream: bool| {
+        format!(
+            "harnesses = [\"codex\"]\n{}[harness.codex]\nbin = \"{bin}\"\n",
+            if stream { "stream = true\n" } else { "" }
+        )
+    };
+    let from_flag = ConfigFixture::new("stream-route-flag", &config(false), "");
+    let from_file = ConfigFixture::new("stream-route-file", &config(true), "");
+    let from_env = ConfigFixture::new("stream-route-env", &config(false), "");
+    let turn = codex_exec_turn_with_update();
+    let text_lines = CODEX_EXEC_TURN_TEXT.join("\n");
+    for (route, fx, extra_args, extra_env) in [
+        ("--stream", &from_flag, vec!["--stream"], vec![]),
+        ("config `stream`", &from_file, vec![], vec![]),
+        (
+            "ONEHARNESS_STREAM",
+            &from_env,
+            vec![],
+            vec![("ONEHARNESS_STREAM", "1")],
+        ),
+    ] {
+        let cwd = fx.cwd();
+        let mut envs = extra_env.clone();
+        envs.push(("MOCK_STDOUT", turn.as_str()));
+        let invoke = |format: &[&str]| {
+            let args: Vec<&str> = ["run", "--prompt", "hi", "--cwd", cwd.as_str()]
+                .into_iter()
+                .chain(extra_args.iter().copied())
+                .chain(format.iter().copied())
+                .collect();
+            let output = run_with_config_as_typed(&args, &envs, &fx.user_config());
+            assert!(output.status.success(), "{route} {format:?}: {output:?}");
+            output
+        };
+        let ndjson = |output: &Output| -> Vec<Value> {
+            String::from_utf8_lossy(&output.stdout)
+                .lines()
+                .map(|line| {
+                    let envelope: RunStreamEnvelope =
+                        serde_json::from_str(line).expect("each line is a stream envelope");
+                    // The closing report carries per-run clock readings, so it
+                    // is compared by the events it reports, not byte for byte.
+                    match envelope {
+                        RunStreamEnvelope::Event { event } => {
+                            serde_json::json!({"type": "event", "event": event})
+                        }
+                        RunStreamEnvelope::Result { report } => serde_json::json!({
+                            "type": "result",
+                            "kinds": report.results[0]
+                                .events
+                                .iter()
+                                .flatten()
+                                .map(|event| event.kind.clone())
+                                .collect::<Vec<_>>(),
+                        }),
+                    }
+                })
+                .collect()
+        };
+
+        let unchosen = invoke(&[]);
+        let lines = ndjson(&unchosen);
+        let kinds: Vec<&str> = lines
+            .iter()
+            .filter(|line| line["type"] == "event")
+            .map(|line| line["event"]["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                "message",
+                "reasoning",
+                "tool_call",
+                "tool_call",
+                "tool_call",
+                "message"
+            ],
+            "{route}"
+        );
+        assert_eq!(lines.last().unwrap()["type"], "result", "{route}");
+        assert_eq!(
+            stream_default_warnings(&unchosen),
+            1,
+            "{route}: {unchosen:?}"
+        );
+
+        let json = invoke(&["--format", "json"]);
+        assert_eq!(
+            ndjson(&json),
+            lines,
+            "{route}: --format json changed the stream"
+        );
+        assert_eq!(stream_default_warnings(&json), 0, "{route}: {json:?}");
+
+        let text = invoke(&["--format", "text"]);
+        let stdout = String::from_utf8_lossy(&text.stdout);
+        assert!(
+            stdout.starts_with(&format!("{text_lines}\n\nprompt: hi\n")),
+            "{route}: {stdout}"
+        );
+        assert_eq!(stream_default_warnings(&text), 0, "{route}: {text:?}");
+    }
+}
+
+#[test]
+fn a_streamed_turn_publishes_each_call_once_and_one_event_per_finished_item() {
+    // The NDJSON sink against recorded streams: codex's call lifecycle
+    // (started/updated/completed) is published once, at completion, with the
+    // same count the report carries; and a stream full of token deltas —
+    // codex app-server `item/agentMessage/delta`, claude-code `stream_event`
+    // text/thinking deltas — publishes one event per finished item.
+    let cases = [
+        (
+            "codex",
+            codex_exec_turn_with_update(),
+            vec![
+                "message",
+                "reasoning",
+                "tool_call",
+                "tool_call",
+                "tool_call",
+                "message",
+            ],
+        ),
+        (
+            "codex",
+            include_str!("fixtures/codex-app-server-turn.jsonl").to_string(),
+            vec!["message", "tool_call", "tool_call", "message"],
+        ),
+        (
+            "claude-code",
+            include_str!("fixtures/claude-stream-json-turn.jsonl").to_string(),
+            vec![
+                "reasoning",
+                "message",
+                "tool_call",
+                "tool_result",
+                "tool_call",
+                "tool_result",
+                "reasoning",
+                "message",
+            ],
+        ),
+    ];
+    for (harness, recording, expected) in cases {
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                harness,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin_override(harness),
+                "--stream",
+            ],
+            &[("MOCK_STDOUT", recording.as_str())],
+        );
+        assert!(output.status.success(), "{harness}: {output:?}");
+        let envelopes: Vec<RunStreamEnvelope> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("each line is a stream envelope"))
+            .collect();
+        let (streamed, report): (Vec<_>, Vec<_>) = envelopes
+            .into_iter()
+            .partition(|envelope| matches!(envelope, RunStreamEnvelope::Event { .. }));
+        let streamed: Vec<ActionEvent> = streamed
+            .into_iter()
+            .map(|envelope| match envelope {
+                RunStreamEnvelope::Event { event } => event,
+                RunStreamEnvelope::Result { .. } => unreachable!(),
+            })
+            .collect();
+        let kinds: Vec<&str> = streamed.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(kinds, expected, "{harness}");
+        let call_ids: Vec<_> = streamed
+            .iter()
+            .filter(|event| event.kind == "tool_call")
+            .map(|event| {
+                event
+                    .tool_call_id
+                    .clone()
+                    .expect("a recorded call has an id")
+            })
+            .collect();
+        let mut unique = call_ids.clone();
+        unique.dedup();
+        assert_eq!(call_ids, unique, "{harness}: a call was published twice");
+        let [RunStreamEnvelope::Result { report }] = report.as_slice() else {
+            panic!("{harness}: one closing report");
+        };
+        let reported = report.results[0]
+            .events
+            .as_ref()
+            .expect("the report has events");
+        assert_eq!(
+            reported
+                .iter()
+                .filter(|event| event.kind == "tool_call")
+                .count(),
+            call_ids.len(),
+            "{harness}: the live count of calls is the report's"
+        );
+        assert_eq!(reported.len(), streamed.len(), "{harness}");
+        for (live, closing) in streamed.iter().zip(reported) {
+            assert_eq!(
+                (
+                    &live.kind,
+                    live.index,
+                    &live.tool_call_id,
+                    &live.output,
+                    &live.input
+                ),
+                (
+                    &closing.kind,
+                    closing.index,
+                    &closing.tool_call_id,
+                    &closing.output,
+                    &closing.input
+                ),
+                "{harness}: the live event and the report disagree"
+            );
+            // A codex call is published at completion carrying its terminal
+            // status, the one the report gives it. A claude `tool_call` is
+            // published before its result exists, so only the report (from
+            // the observed `tool_result`) can know how it ended.
+            if harness == "codex" {
+                assert_eq!(live.status, closing.status, "{harness}: {live:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -35017,7 +35468,8 @@ fn history_clear_and_migrate_text_views_say_what_was_or_would_be_done() {
     assert_eq!(
         text,
         format!(
-            "migrated 1 session file\n  {migrated}: 0 records migrated, 1 already current, 0 skipped\n"
+            // Two current lines: the run's `message` event, then its run line.
+            "migrated 1 session file\n  {migrated}: 0 records migrated, 2 already current, 0 skipped\n"
         )
     );
 
@@ -35306,4 +35758,796 @@ fn detect_text_view_says_unknown_when_a_binary_answers_no_version() {
         )),
         "{text}"
     );
+}
+
+/// Keys whose values differ between any two runs of the same recording — ids,
+/// clock readings, the scratch project path — and so say nothing about the
+/// shape of the stream.
+const RUN_VARYING_KEYS: &[&str] = &[
+    "history_id",
+    "run_id",
+    "session",
+    "project",
+    "timestamp",
+    "started_at",
+    "finished_at",
+    "duration_ms",
+    "model_ms",
+    "tool_ms",
+    "time_to_first_token_ms",
+    "observed_tool_ms",
+];
+
+fn without_run_varying_values(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, value) in map.iter_mut() {
+                if RUN_VARYING_KEYS.contains(&key.as_str()) {
+                    *value = Value::Null;
+                } else {
+                    without_run_varying_values(value);
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_run_varying_values),
+        _ => {}
+    }
+}
+
+/// Everything a `history watch` child printed, read `lines` deep and then to
+/// its end once it is stopped: the watch never ends by itself, so after the
+/// expected lines it is given a moment to print anything it should not, then
+/// killed (this test started it) and drained. A watcher that never prints what
+/// it was expected to fails the test at a deadline rather than blocking it
+/// forever: it is stopped, and the lines it did print are in the message.
+fn watch_output(mut watcher: std::process::Child, lines: usize) -> Vec<String> {
+    use std::io::BufReader;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+    let reader = BufReader::new(watcher.stdout.take().expect("piped stdout"));
+    let (sender, received) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            if sender.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut out = Vec::new();
+    while out.len() < lines {
+        match received.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+            Ok(line) => out.push(line),
+            Err(_) => {
+                watcher.kill().expect("stop the watcher this test started");
+                watcher.wait().expect("reap the watcher");
+                panic!(
+                    "the watcher printed {} of {lines} lines: {out:#?}",
+                    out.len()
+                );
+            }
+        }
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    watcher.kill().expect("stop the watcher this test started");
+    watcher.wait().expect("reap the watcher");
+    out.extend(received.iter());
+    out
+}
+
+fn spawn_watch(args: &[&str]) -> std::process::Child {
+    Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args(["history", "watch"])
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn history watch")
+}
+
+#[test]
+fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
+    // `tests/fixtures/history-watch-v0.17.0-tools-only.jsonl` is the verbatim
+    // stdout of the released v0.17.0 binary's `history watch --events
+    // --all-projects` over a history it wrote for this same recorded
+    // claude-code stream (its tool calls and results only), driven through
+    // this suite's mock. Today's build, given the same run, prints the same
+    // lines — framing, line types, every field — once the values that differ
+    // between any two runs are set aside and the one additive field is
+    // dropped.
+    let golden: Vec<Value> = include_str!("fixtures/history-watch-v0.17.0-tools-only.jsonl")
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let dir = hist_dir("watch-v0-17-0");
+    let project = ScratchDir::new("watch-v0-17-0-project").unwrap();
+    let ds = dir.display().to_string();
+    let seeded = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "tools only",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "tools-only",
+            "--cwd",
+            &project.display().to_string(),
+        ],
+        &[(
+            "MOCK_STDOUT",
+            include_str!("fixtures/claude-stream-json-tools-only.jsonl"),
+        )],
+    );
+    assert!(seeded.status.success(), "{seeded:?}");
+    let watched = watch_output(
+        spawn_watch(&["--events", "--all-projects", "--history-dir", &ds]),
+        golden.len(),
+    );
+    let normalize = |mut value: Value| {
+        without_run_varying_values(&mut value);
+        value
+    };
+    let ours: Vec<Value> = watched
+        .iter()
+        .map(|line| {
+            let mut value: Value = serde_json::from_str(line).unwrap();
+            if value["type"] == "event" {
+                let session_name = value["line"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("session_name");
+                assert_eq!(session_name, Some(Value::from("tools-only")), "{line}");
+            }
+            normalize(value)
+        })
+        .collect();
+    let theirs: Vec<Value> = golden.into_iter().map(normalize).collect();
+    assert_eq!(ours, theirs);
+}
+
+#[test]
+fn a_running_session_is_listed_shown_and_tailed_from_a_second_process() {
+    use std::io::BufReader;
+
+    let mock_profile = mock_profile_redirect();
+    let dir = hist_dir("in-flight");
+    let ds = dir.display().to_string();
+    let mut run_child = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", CODEX_EXEC_TURN)
+        // Twelve recorded lines this far apart keep the turn going for
+        // seconds after its first events land.
+        .env("MOCK_STREAM_DELAY_MS", "500")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "tail me",
+            "--bin",
+            &bin_override("codex"),
+            "--stream",
+            "--format",
+            "json",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "tail-me",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the running session");
+
+    let scope = ["--all-projects", "--history-dir", ds.as_str()];
+    let list = |format: &str| {
+        run_as_typed(
+            &[&["history", "list", "--format", format][..], &scope[..]].concat(),
+            &[],
+        )
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let listed = loop {
+        let listed = json_stdout(&list("json"));
+        if !listed.as_array().unwrap().is_empty() {
+            break listed;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the session never appeared"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert!(
+        run_child.try_wait().unwrap().is_none(),
+        "the first turn ended before the session could be listed"
+    );
+    let session = &listed[0];
+    assert_eq!(session["name"], "tail-me");
+    assert_eq!(session["running"], true);
+    assert_eq!(session["record_count"], 0);
+    assert_eq!(session["harnesses"], serde_json::json!(["codex"]));
+    assert!(
+        session["started"].as_str().unwrap().ends_with('Z'),
+        "{session}"
+    );
+    let text = String::from_utf8_lossy(&list("text").stdout).to_string();
+    assert!(
+        text.contains("  tail-me  (0 runs, codex) · running\n"),
+        "{text}"
+    );
+
+    let shown = run_as_typed(
+        &[
+            &["history", "show", "tail-me", "--format", "json"][..],
+            &scope[..],
+        ]
+        .concat(),
+        &[],
+    );
+    let shown = json_stdout(&shown);
+    assert_eq!(shown[0]["type"], "incomplete", "{shown}");
+    assert_eq!(shown[0]["events"][0]["kind"], "message", "{shown}");
+    let shown_text = run_as_typed(
+        &[
+            &["history", "show", "tail-me", "--format", "text"][..],
+            &scope[..],
+        ]
+        .concat(),
+        &[],
+    );
+    let shown_text = String::from_utf8_lossy(&shown_text.stdout).to_string();
+    assert!(
+        shown_text.starts_with(&format!(
+            "running  [codex]\n  {}\n",
+            CODEX_EXEC_TURN_TEXT[0]
+        )),
+        "{shown_text}"
+    );
+
+    let mut watcher = spawn_watch(
+        &[
+            &["--session", "tail-me", "--events", "--format", "text"][..],
+            &scope[..],
+        ]
+        .concat(),
+    );
+    let mut reader = BufReader::new(watcher.stdout.take().unwrap());
+    let mut tailed = Vec::new();
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("read a tailed line");
+        if tailed.is_empty() {
+            assert!(
+                run_child.try_wait().unwrap().is_none(),
+                "the tail started only after the turn ended"
+            );
+        }
+        let line = line.trim_end_matches('\n').to_string();
+        let closed = line.contains("[codex] ok");
+        tailed.push(line);
+        if closed {
+            break;
+        }
+    }
+    watcher.kill().expect("stop the watcher this test started");
+    watcher.wait().expect("reap the watcher");
+    assert!(run_child.wait().unwrap().success());
+    // Every event in `render_event`'s form, in order, then the closing record.
+    assert_eq!(
+        &tailed[..CODEX_EXEC_TURN_TEXT.len()],
+        CODEX_EXEC_TURN_TEXT,
+        "{tailed:#?}"
+    );
+    assert_eq!(tailed.len(), CODEX_EXEC_TURN_TEXT.len() + 1, "{tailed:#?}");
+    assert!(
+        tailed.last().unwrap().ends_with("  [codex] ok"),
+        "{tailed:#?}"
+    );
+
+    // Once the turn closes, the session is an ordinary one again.
+    let closed = json_stdout(&list("json"));
+    assert_eq!(closed[0]["record_count"], 1);
+    assert!(closed[0].get("running").is_none(), "{closed}");
+}
+
+#[test]
+fn history_watch_session_selects_one_session_by_name_or_id_with_or_without_labels() {
+    // Every child this journey starts is bounded: a seed run or a refusal
+    // still going at the limit fails the test rather than hanging it, as the
+    // watchers `watch_output` reads already do.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let dir = hist_dir("watch-session");
+    let ds = dir.display().to_string();
+    let bin = bin_override("codex");
+    let seed = |name: &str, labels: &[&str]| -> Value {
+        let mut args = vec![
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            name,
+            "--bin",
+            bin.as_str(),
+            "--stream",
+            "--history",
+            "--history-dir",
+            ds.as_str(),
+            "--history-name",
+            name,
+            "--bypass",
+        ];
+        for label in labels {
+            args.extend(["--history-label", label]);
+        }
+        let output = run_within(&args, &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)], LIMIT);
+        assert!(output.status.success(), "{output:?}");
+        let report = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .last()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .unwrap();
+        raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0)
+    };
+    // A selector no session could carry — empty, spaced, upper-case or
+    // path-like — names nothing: refused before anything is read, rather than
+    // followed forever.
+    for selector in ["", "Alpha Beta", "Alpha", "../alpha", "alpha-"] {
+        let refused = run_within(
+            &[
+                "history",
+                "watch",
+                "--session",
+                selector,
+                "--history-dir",
+                &ds,
+            ],
+            &[],
+            LIMIT,
+        );
+        assert_eq!(refused.status.code(), Some(2), "{selector:?}: {refused:?}");
+        assert!(refused.stdout.is_empty(), "{selector:?}");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("must be a session id"),
+            "{selector:?}: {refused:?}"
+        );
+    }
+
+    let alpha = seed("alpha", &[]);
+    let _beta = seed("beta", &[]);
+    let gamma = seed("gamma", &["team=x"]);
+    let _delta = seed("delta", &["team=x"]);
+
+    for (selector, target) in [
+        ("alpha", &alpha),
+        (alpha["session"].as_str().unwrap(), &alpha),
+        ("gamma", &gamma),
+        (gamma["session"].as_str().unwrap(), &gamma),
+    ] {
+        // One `message` event line, then the closing record — and nothing
+        // from the session beside it, whatever it shares with it.
+        let watched = watch_output(
+            spawn_watch(&[
+                "--session",
+                selector,
+                "--events",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+            ]),
+            2,
+        );
+        assert_eq!(watched.len(), 2, "{selector}: {watched:#?}");
+        let event: Value = serde_json::from_str(&watched[0]).unwrap();
+        assert_eq!(event["type"], "event", "{selector}");
+        assert_eq!(event["line"]["run_id"], target["history_id"], "{selector}");
+        assert_eq!(event["line"]["session_name"], target["name"], "{selector}");
+        assert_eq!(event["line"]["event"]["kind"], "message", "{selector}");
+        let record: Value = serde_json::from_str(&watched[1]).unwrap();
+        assert_eq!(record["type"], "record", "{selector}");
+        assert_eq!(record["record"]["session"], target["session"], "{selector}");
+    }
+
+    // A name is non-unique: a second, newer `gamma` under another label. The
+    // labels pick which `gamma` the name follows — each composition selects
+    // exactly its own session, never the newest one filtered to nothing.
+    let gamma_y = seed("gamma", &["team=y"]);
+    assert_ne!(gamma_y["session"], gamma["session"]);
+    for (label, target) in [("team=x", &gamma), ("team=y", &gamma_y)] {
+        let watched = watch_output(
+            spawn_watch(&[
+                "--session",
+                "gamma",
+                "--label",
+                label,
+                "--events",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+            ]),
+            2,
+        );
+        assert_eq!(watched.len(), 2, "{label}: {watched:#?}");
+        let event: Value = serde_json::from_str(&watched[0]).unwrap();
+        assert_eq!(event["line"]["run_id"], target["history_id"], "{label}");
+        let record: Value = serde_json::from_str(&watched[1]).unwrap();
+        assert_eq!(record["record"]["session"], target["session"], "{label}");
+        assert_eq!(record["record"]["labels"]["team"], label[5..], "{label}");
+    }
+}
+
+#[test]
+fn history_watch_session_labels_pick_a_running_session_by_name() {
+    // A name plus labels resolves a session still in its first turn — no
+    // closing record states its labels yet — and never pins one whose labels
+    // differ: an older, closed `gamma` under `team=x` beside a newer `gamma`
+    // still running under `team=y`, each composition following its own.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let mock_profile = mock_profile_redirect();
+    let dir = hist_dir("watch-session-running-labels");
+    let ds = dir.display().to_string();
+    let bin = bin_override("codex");
+    let closed = run_within(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "gamma",
+            "--bin",
+            &bin,
+            "--stream",
+            "--format",
+            "json",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "gamma",
+            "--history-label",
+            "team=x",
+            "--bypass",
+        ],
+        &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+        LIMIT,
+    );
+    assert!(closed.status.success(), "{closed:?}");
+    let closed_session = String::from_utf8_lossy(&closed.stdout)
+        .lines()
+        .last()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .map(|report| raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0))
+        .unwrap();
+
+    // Sessions order newest first by their start second: the running `gamma`
+    // starts in a later one, so it is the name's newest session.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let mut running = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .env("MOCK_STDOUT", CODEX_EXEC_TURN)
+        // Six recorded events this far apart keep the turn going for seconds
+        // after its first event lands.
+        .env("MOCK_STREAM_DELAY_MS", "500")
+        .args([
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "gamma",
+            "--bin",
+            &bin,
+            "--stream",
+            "--format",
+            "json",
+            "--history",
+            "--history-dir",
+            &ds,
+            "--history-name",
+            "gamma",
+            "--history-label",
+            "team=y",
+            "--env",
+            mock_profile.as_str(),
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn the running session");
+    let scope = ["--all-projects", "--history-dir", ds.as_str()];
+    let deadline = std::time::Instant::now() + LIMIT;
+    let running_id = loop {
+        let listed = json_stdout(&run_within(
+            &[&["history", "list", "--format", "json"][..], &scope[..]].concat(),
+            &[],
+            LIMIT,
+        ));
+        if let Some(session) = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["running"] == true)
+        {
+            break session["id"].as_str().unwrap().to_string();
+        }
+        if std::time::Instant::now() >= deadline {
+            running.kill().expect("stop the run this test started");
+            running.wait().expect("reap the run");
+            panic!("the running session never appeared: {listed}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    assert_ne!(running_id, closed_session["session"].as_str().unwrap());
+
+    let watch = |label: &str| {
+        spawn_watch(
+            &[
+                &["--session", "gamma", "--label", label, "--events"][..],
+                &scope[..],
+            ]
+            .concat(),
+        )
+    };
+    // Both watchers resolve the name while the newer `gamma` is running.
+    let older = watch("team=x");
+    let newer = watch("team=y");
+    assert!(
+        running.try_wait().unwrap().is_none(),
+        "the turn ended before the watchers resolved the name"
+    );
+
+    // `team=x` follows the closed session: its one event, then its record —
+    // nothing from the running `gamma` beside it.
+    let watched = watch_output(older, 2);
+    assert_eq!(watched.len(), 2, "{watched:#?}");
+    let event: Value = serde_json::from_str(&watched[0]).unwrap();
+    assert_eq!(event["line"]["run_id"], closed_session["history_id"]);
+    let record: Value = serde_json::from_str(&watched[1]).unwrap();
+    assert_eq!(record["record"]["session"], closed_session["session"]);
+
+    // `team=y` follows the running session: every event of its turn, then the
+    // closing record that states the labels it was resolved by.
+    let watched = watch_output(newer, CODEX_EXEC_TURN_TEXT.len() + 1);
+    assert!(running.wait().unwrap().success());
+    assert_eq!(
+        watched.len(),
+        CODEX_EXEC_TURN_TEXT.len() + 1,
+        "{watched:#?}"
+    );
+    let lines: Vec<Value> = watched
+        .iter()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let (record, events) = lines.split_last().unwrap();
+    for event in events {
+        assert_eq!(event["type"], "event", "{event}");
+        assert_eq!(event["line"]["session_name"], "gamma", "{event}");
+        assert_ne!(event["line"]["run_id"], closed_session["history_id"]);
+    }
+    assert_eq!(record["type"], "record", "{record}");
+    assert_eq!(record["record"]["session"], running_id.as_str());
+    assert_eq!(record["record"]["labels"]["team"], "y");
+}
+
+#[test]
+fn history_watch_session_name_follows_the_first_matching_session_to_appear() {
+    // A name no session carries yet is awaited, not refused: the watcher
+    // follows the first `late` session to appear — its event, then its record
+    // — and nothing from a second `late` reusing the name after it. Had the
+    // watcher opened after both existed it would resolve the newest one, so a
+    // pass cannot come from the already-present path.
+    const LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let dir = hist_dir("watch-session-awaited");
+    let ds = dir.display().to_string();
+    let bin = bin_override("codex");
+    let watcher = spawn_watch(&[
+        "--session",
+        "late",
+        "--events",
+        "--all-projects",
+        "--history-dir",
+        &ds,
+    ]);
+    // Give the watcher time to open before any `late` session exists.
+    std::thread::sleep(std::time::Duration::from_millis(1000));
+    let seed = || -> Value {
+        let output = run_within(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "late",
+                "--bin",
+                bin.as_str(),
+                "--stream",
+                "--format",
+                "json",
+                "--history",
+                "--history-dir",
+                ds.as_str(),
+                "--history-name",
+                "late",
+                "--bypass",
+            ],
+            &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+            LIMIT,
+        );
+        assert!(output.status.success(), "{output:?}");
+        let report = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .last()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .unwrap();
+        raw_run_lines(report["report"]["history_file"].as_str().unwrap()).remove(0)
+    };
+    let first = seed();
+    let second = seed();
+    assert_ne!(first["session"], second["session"]);
+
+    let watched = watch_output(watcher, 2);
+    assert_eq!(watched.len(), 2, "{watched:#?}");
+    let event: Value = serde_json::from_str(&watched[0]).unwrap();
+    assert_eq!(event["type"], "event", "{event}");
+    assert_eq!(event["line"]["run_id"], first["history_id"], "{event}");
+    assert_eq!(event["line"]["session_name"], "late", "{event}");
+    let record: Value = serde_json::from_str(&watched[1]).unwrap();
+    assert_eq!(record["type"], "record", "{record}");
+    assert_eq!(record["record"]["session"], first["session"], "{record}");
+}
+
+#[test]
+fn agent_messages_and_reasoning_reach_history_for_codex_and_claude() {
+    for (harness, recording, kinds) in [
+        (
+            "codex",
+            CODEX_EXEC_TURN,
+            vec![
+                "message",
+                "reasoning",
+                "tool_call",
+                "tool_call",
+                "tool_call",
+                "message",
+            ],
+        ),
+        (
+            "claude-code",
+            include_str!("fixtures/claude-stream-json-turn.jsonl"),
+            vec![
+                "reasoning",
+                "message",
+                "tool_call",
+                "tool_result",
+                "tool_call",
+                "tool_result",
+                "reasoning",
+                "message",
+            ],
+        ),
+    ] {
+        let dir = hist_dir(&format!("text-events-{harness}"));
+        let ds = dir.display().to_string();
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                harness,
+                "--prompt",
+                "hi",
+                "--bin",
+                &bin_override(harness),
+                "--stream",
+                "--history",
+                "--history-dir",
+                &ds,
+            ],
+            &[("MOCK_STDOUT", recording)],
+        );
+        assert!(output.status.success(), "{harness}: {output:?}");
+        let shown = json_stdout(&run(
+            &[
+                "history",
+                "show",
+                "--last",
+                "--all-projects",
+                "--history-dir",
+                &ds,
+            ],
+            &[],
+        ));
+        let events = shown[0]["events"].as_array().unwrap();
+        let got: Vec<&str> = events
+            .iter()
+            .map(|event| event["kind"].as_str().unwrap())
+            .collect();
+        assert_eq!(got, kinds, "{harness}");
+        for event in events.iter().filter(|event| event["kind"] != "tool_call") {
+            if event["kind"] != "tool_result" {
+                assert!(
+                    !event["output"].as_str().unwrap().trim().is_empty(),
+                    "{harness}: {event}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unmigrated_history_elsewhere_is_never_warned_about_and_in_scope_once() {
+    let dir = hist_dir("unmigrated-scope");
+    let ds = dir.display().to_string();
+    let project = ScratchDir::new("unmigrated-scope-project").unwrap();
+    let canonical = std::fs::canonicalize(&*project).unwrap();
+    let slug = oneharness_core::domain::history::project_slug(&canonical.display().to_string());
+    let legacy =
+        "{\"schema_version\":\"0.3\",\"history_id\":\"0198f0d0-7b31-7000-8000-000000000001\"}\n";
+    let elsewhere = dir.join("Users-someone-else-crozier");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("old-20260101T000000Z-1.jsonl"), legacy).unwrap();
+
+    // A run in this project reads nothing from that one, and says nothing
+    // about it — however many turns it takes.
+    for turn in 0..2 {
+        let output = run(
+            &[
+                "run",
+                "--harness",
+                "codex",
+                "--prompt",
+                "turn",
+                "--bin",
+                &bin_override("codex"),
+                "--history",
+                "--history-dir",
+                &ds,
+                "--cwd",
+                &canonical.display().to_string(),
+                "--bypass",
+            ],
+            &[("MOCK_STDOUT", HISTORY_CODEX_TELEMETRY)],
+        );
+        assert!(output.status.success(), "{turn}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("unmigrated"), "turn {turn}: {stderr}");
+    }
+
+    // Reading this project's own sessions, two unmigrated files in it are
+    // said once.
+    let own = dir.join(&slug);
+    for name in ["a-20260101T000000Z-1.jsonl", "b-20260101T000000Z-2.jsonl"] {
+        std::fs::write(own.join(name), legacy).unwrap();
+    }
+    let listed = run(
+        &[
+            "history",
+            "list",
+            "--project",
+            &canonical.display().to_string(),
+            "--history-dir",
+            &ds,
+        ],
+        &[],
+    );
+    assert!(listed.status.success(), "{listed:?}");
+    let stderr = String::from_utf8_lossy(&listed.stderr);
+    assert_eq!(
+        stderr.matches("skipped unmigrated history lines").count(),
+        1,
+        "{stderr}"
+    );
+    assert!(stderr.contains(&slug), "{stderr}");
+    // The two turns' sessions; the unreadable files hold none.
+    assert_eq!(json_stdout(&listed).as_array().unwrap().len(), 2);
 }

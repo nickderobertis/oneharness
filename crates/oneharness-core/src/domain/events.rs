@@ -51,9 +51,13 @@ use crate::domain::report::{OutputFormat, OutputObservation, Status};
 /// absent) so the shape is stable, mirroring the `usage` contract.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ActionEvent {
-    /// The kind of event: `tool_call` (the model invoked a tool) or
-    /// `tool_result` (the observation returned to the model). Left open for
-    /// future kinds rather than an enum, so a new shape never breaks the field.
+    /// The kind of event: `tool_call` (the model invoked a tool),
+    /// `tool_result` (the observation returned to the model), `message` (the
+    /// agent's own text, in `output`) or `reasoning` (its reasoning text, in
+    /// `output`). A `message` or `reasoning` event is one finished item, never
+    /// a token delta. Left open for future kinds rather than an enum, so a new
+    /// shape never breaks the field — a consumer counting tool calls filters on
+    /// it (see [`ActionEvent::is_tool_activity`]).
     pub kind: String,
     /// Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` for a
     /// `tool_result`, or when the harness did not name the tool.
@@ -64,8 +68,10 @@ pub struct ActionEvent {
     pub input: Option<Value>,
     /// The result/observation text, when the trace exposes it; `null` otherwise.
     pub output: Option<String>,
-    /// Position of this event within the run, so "≤ N tool calls" and "did X
-    /// before Y" are expressible from a stable ordering (also array order).
+    /// Position of this event within the run, so "did X before Y" is
+    /// expressible from a stable ordering (also array order). It counts every
+    /// kind, so tool calls interleaved with `message`/`reasoning` events do not
+    /// carry contiguous indexes; count tool calls by `kind`, not by `index`.
     pub index: usize,
     /// Stable call identity within the session. Present on tool calls and their
     /// matching results when the provider exposes an identity; history fills a
@@ -82,6 +88,15 @@ pub struct ActionEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     // llmlint: ignore[invalid_states_unrepresentable] ActionEvent is a stable additive wire shape shared by live in-progress and terminal events; lifecycle combinations are necessarily optional and producer/history validation governs which fields are available at each phase.
     pub timing_source: Option<TimingSource>,
+}
+
+impl ActionEvent {
+    /// Whether this event records tool activity (`tool_call` / `tool_result`)
+    /// rather than the agent's own `message` or `reasoning` text.
+    #[must_use]
+    pub fn is_tool_activity(&self) -> bool {
+        matches!(self.kind.as_str(), "tool_call" | "tool_result")
+    }
 }
 
 /// How a normalized tool interval was obtained.
@@ -112,17 +127,44 @@ pub struct EventsReading {
     pub source: String,
 }
 
+/// Where a recognized record sits in its item's lifecycle: `Open` is a start or
+/// an update of an item still running (codex `item.started` / `item.updated`,
+/// an opencode part still `running`), `Finished` is the record that ends it.
+/// Only a finished item is delivered; an open one is held so its fields can
+/// fill in whatever the finishing record leaves out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Open,
+    Finished,
+}
+
 /// One event before it is assigned its ordering index; the recognizers produce
-/// these and [`extract_events`] numbers them in document order.
+/// these and [`EventStream`] numbers them in the order they finish.
+#[derive(Debug)]
 struct PartialEvent {
     kind: &'static str,
     name: Option<String>,
     input: Option<Value>,
     output: Option<String>,
     tool_call_id: Option<String>,
+    status: Option<ToolCallStatus>,
+    phase: Phase,
 }
 
 impl PartialEvent {
+    /// A finished `message` or `reasoning` item carrying `text`.
+    fn text(kind: &'static str, text: String) -> Self {
+        PartialEvent {
+            kind,
+            name: None,
+            input: None,
+            output: Some(text),
+            tool_call_id: None,
+            status: None,
+            phase: Phase::Finished,
+        }
+    }
+
     fn into_event(self, index: usize) -> ActionEvent {
         ActionEvent {
             kind: self.kind.to_string(),
@@ -134,59 +176,138 @@ impl PartialEvent {
             started_at: None,
             finished_at: None,
             duration_ms: None,
-            status: None,
+            status: self.status,
             timing_source: None,
         }
     }
-}
 
-/// Best-effort normalized tool events from a harness's stdout. Scans every JSON
-/// candidate (the whole document, each array element, or each parseable line) in
-/// order, collecting events from whichever known shape each candidate matches.
-/// `None` when no candidate yields an event, so the consumer can distinguish
-/// "unsupported" from "used no tools" via the absent `events_source`. `fmt` only
-/// labels the source's provenance prefix.
-pub fn extract_events(stdout: &str, fmt: OutputFormat) -> Option<EventsReading> {
-    let mut events: Vec<PartialEvent> = Vec::new();
-    let mut recognizer: Option<&'static str> = None;
-    for value in json_candidates(stdout) {
-        if let Some((label, mut partials)) = recognize(&value) {
-            recognizer.get_or_insert(label);
-            if matches!(
-                label,
-                "opencode-parts" | "codex-items" | "codex-app-server-items"
-            ) {
-                for partial in partials {
-                    merge_tool_update(&mut events, partial);
-                }
-            } else {
-                events.append(&mut partials);
-            }
+    /// `self` (the later record) with every field it left empty filled from
+    /// `earlier`, the open record of the same call.
+    fn over(self, earlier: PartialEvent) -> PartialEvent {
+        PartialEvent {
+            name: self.name.or(earlier.name),
+            input: self.input.or(earlier.input),
+            output: self.output.or(earlier.output),
+            status: self.status.or(earlier.status),
+            ..self
         }
     }
-    let recognizer = recognizer?;
+}
+
+/// Best-effort normalized events from a harness's stdout. Scans every JSON
+/// candidate (the whole document, each array element, or each parseable line) in
+/// order, collecting events from whichever known shape each candidate matches.
+/// `None` when no candidate is recognized, so the consumer can distinguish
+/// "unsupported" from "used no tools" via the absent `events_source`. `fmt` only
+/// labels the source's provenance prefix.
+///
+/// This is the same fold a streaming run makes line by line (`EventStream`),
+/// so a streamed event and the report's event for the same item carry the same
+/// `index`. Items are ordered by when they finished; a call that started and
+/// never finished (the run timed out or was cancelled mid-call) follows them.
+pub fn extract_events(stdout: &str, fmt: OutputFormat) -> Option<EventsReading> {
+    let mut stream = EventStream::default();
+    let mut events = Vec::new();
+    for value in json_candidates(stdout) {
+        events.extend(stream.push(&value));
+    }
+    let recognizer = stream.recognizer?;
+    events.extend(stream.finish());
     Some(EventsReading {
         source: format!("{}:{recognizer}", format_prefix(fmt)),
-        events: events
-            .into_iter()
-            .enumerate()
-            .map(|(i, pe)| pe.into_event(i))
-            .collect(),
+        events,
     })
 }
 
-/// Extract normalized events from a single already-parsed JSON value (one stream
-/// line or document), numbering them from `start_index`. The streaming path calls
-/// this per line as output arrives; [`extract_events`] is the batch counterpart.
-/// Empty when the value carries no recognizable tool event.
+/// Extract the **finished** normalized events from a single already-parsed JSON
+/// value (one stream line or document), numbering them from `start_index`.
+/// Empty when the value carries no recognizable finished event — including an
+/// open lifecycle record such as codex's `item.started`, whose call is
+/// delivered once, by the record that completes it. A caller that also wants
+/// an open record's fields merged into its completion folds lines through
+/// [`extract_events`] instead.
 pub fn events_from_value(value: &Value, start_index: usize) -> Vec<ActionEvent> {
     match recognize(value) {
         Some((_, partials)) => partials
             .into_iter()
+            .filter(|partial| partial.phase == Phase::Finished)
             .enumerate()
             .map(|(i, pe)| pe.into_event(start_index + i))
             .collect(),
         None => Vec::new(),
+    }
+}
+
+/// The incremental extractor behind both a streaming run's live events and
+/// [`extract_events`]: each line is pushed as it arrives and yields the events
+/// it *finished*, numbered in delivery order. An open item (a codex call's
+/// `item.started`) is held by its call id until the record that completes it
+/// arrives, so a consumer relaying every event sees each call once.
+#[derive(Debug, Default)]
+pub(crate) struct EventStream {
+    open: Vec<PartialEvent>,
+    next_index: usize,
+    recognizer: Option<&'static str>,
+}
+
+impl EventStream {
+    /// Feed one JSON line; returns the events it finished, already numbered.
+    pub(crate) fn push(&mut self, value: &Value) -> Vec<ActionEvent> {
+        let Some((label, partials)) = recognize(value) else {
+            return Vec::new();
+        };
+        self.recognizer.get_or_insert(label);
+        let mut finished = Vec::new();
+        for partial in partials {
+            match partial.phase {
+                Phase::Open => self.hold(partial),
+                Phase::Finished => {
+                    let partial = self.release(partial);
+                    finished.push(self.number(partial));
+                }
+            }
+        }
+        finished
+    }
+
+    /// The calls that were started and never finished, numbered after every
+    /// delivered event. A streaming run never delivers these live; they reach
+    /// the report (and history) only.
+    pub(crate) fn finish(mut self) -> Vec<ActionEvent> {
+        let open = std::mem::take(&mut self.open);
+        open.into_iter()
+            .map(|partial| self.number(partial))
+            .collect()
+    }
+
+    fn number(&mut self, partial: PartialEvent) -> ActionEvent {
+        let event = partial.into_event(self.next_index);
+        self.next_index += 1;
+        event
+    }
+
+    fn position(&self, partial: &PartialEvent) -> Option<usize> {
+        let id = partial.tool_call_id.as_deref()?;
+        self.open
+            .iter()
+            .position(|open| open.kind == partial.kind && open.tool_call_id.as_deref() == Some(id))
+    }
+
+    fn hold(&mut self, update: PartialEvent) {
+        match self.position(&update) {
+            Some(at) => {
+                let earlier = self.open.remove(at);
+                self.open.insert(at, update.over(earlier));
+            }
+            None => self.open.push(update),
+        }
+    }
+
+    fn release(&mut self, finished: PartialEvent) -> PartialEvent {
+        match self.position(&finished) {
+            Some(at) => finished.over(self.open.remove(at)),
+            None => finished,
+        }
     }
 }
 
@@ -203,8 +324,9 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     if let Some(pe) = cursor_tool_call(value) {
         return Some(("cursor-tool-calls", vec![pe]));
     }
-    // Codex executable item lifecycle; repeated updates collapse by item id.
-    if let Some(pe) = codex_tool_item(value) {
+    // Codex executable, message and reasoning items; a call's lifecycle
+    // records share its item id and are delivered once, on completion.
+    if let Some(pe) = codex_item(value) {
         return Some(("codex-items", vec![pe]));
     }
     // A controlled Codex turn uses app-server JSON-RPC notifications instead
@@ -213,7 +335,8 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     if let Some(pe) = codex_app_server_item(value) {
         return Some(("codex-app-server-items", pe.into_iter().collect()));
     }
-    // Anthropic content blocks (Claude Code / Qwen): tool_use + tool_result.
+    // Anthropic content blocks (Claude Code / Qwen): tool_use + tool_result,
+    // and an assistant message's text and thinking blocks.
     let blocks = content_block_events(value);
     if !blocks.is_empty() {
         return Some(("content-blocks", blocks));
@@ -221,29 +344,19 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     None
 }
 
-fn merge_tool_update(events: &mut Vec<PartialEvent>, update: PartialEvent) {
-    let existing = update.tool_call_id.as_deref().and_then(|id| {
-        events
-            .iter_mut()
-            .find(|event| event.kind == "tool_call" && event.tool_call_id.as_deref() == Some(id))
-    });
-    if let Some(existing) = existing {
-        existing.name = update.name.or_else(|| existing.name.take());
-        existing.input = update.input.or_else(|| existing.input.take());
-        existing.output = update.output.or_else(|| existing.output.take());
-    } else {
-        events.push(update);
-    }
-}
-
 /// One OpenCode `tool` part → a single `tool_call` event carrying its input and
-/// output. `None` for any other part (`text`, `step-start`, `reasoning`, …).
+/// output. A part still `pending`/`running` is open; any other state (or none)
+/// finishes it. `None` for any other part (`text`, `step-start`, `reasoning`, …).
 fn opencode_tool_event(value: &Value) -> Option<PartialEvent> {
     let part = value.get("part").and_then(Value::as_object)?;
     if part.get("type").and_then(Value::as_str) != Some("tool") {
         return None;
     }
     let state = part.get("state").and_then(Value::as_object);
+    let phase = match state.and_then(|s| s.get("status")).and_then(Value::as_str) {
+        Some("pending" | "running") => Phase::Open,
+        _ => Phase::Finished,
+    };
     Some(PartialEvent {
         kind: "tool_call",
         name: part.get("tool").and_then(Value::as_str).map(str::to_string),
@@ -257,21 +370,35 @@ fn opencode_tool_event(value: &Value) -> Option<PartialEvent> {
             .or_else(|| part.get("id"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        status: None,
+        phase,
     })
 }
 
-/// Anthropic-style content blocks (Claude Code / Cursor `stream-json`): a message
-/// whose `content` array (under `message.content`, or top-level `content`) holds
-/// `tool_use` blocks (→ `tool_call`) and `tool_result` blocks (→ `tool_result`).
-/// Empty when the value is not such a message or carries no tool block.
+/// Anthropic-style content blocks (Claude Code / Qwen / Cursor `stream-json`): a
+/// message whose `content` array (under `message.content`, or top-level
+/// `content`) holds `tool_use` blocks (→ `tool_call`), `tool_result` blocks (→
+/// `tool_result`) and, on an **assistant** message, non-empty `text` (→
+/// `message`) and `thinking` (→ `reasoning`) blocks. Each such line is a
+/// finished content block — the token deltas stream as separate `stream_event`
+/// lines, which carry no `content` array and are never an event. Empty when the
+/// value is not such a message or carries no recognized block.
 fn content_block_events(value: &Value) -> Vec<PartialEvent> {
-    let blocks = value
-        .get("message")
+    let message = value.get("message");
+    let blocks = message
         .and_then(|m| m.get("content"))
         .or_else(|| value.get("content"))
         .and_then(Value::as_array);
     let Some(blocks) = blocks else {
         return Vec::new();
+    };
+    let assistant = value.get("type").and_then(Value::as_str) == Some("assistant")
+        || message.and_then(|m| m.get("role")).and_then(Value::as_str) == Some("assistant");
+    let block_text = |obj: &serde_json::Map<String, Value>, key: &str| {
+        obj.get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .map(str::to_string)
     };
     let mut out = Vec::new();
     for block in blocks {
@@ -285,6 +412,8 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                 input: obj.get("input").cloned(),
                 output: None,
                 tool_call_id: obj.get("id").and_then(Value::as_str).map(str::to_string),
+                status: None,
+                phase: Phase::Finished,
             }),
             Some("tool_result") => out.push(PartialEvent {
                 kind: "tool_result",
@@ -295,7 +424,19 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                     .get("tool_use_id")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                status: None,
+                phase: Phase::Finished,
             }),
+            Some("text") if assistant => {
+                if let Some(text) = block_text(obj, "text") {
+                    out.push(PartialEvent::text("message", text));
+                }
+            }
+            Some("thinking") if assistant => {
+                if let Some(text) = block_text(obj, "thinking") {
+                    out.push(PartialEvent::text("reasoning", text));
+                }
+            }
             _ => {}
         }
     }
@@ -345,35 +486,56 @@ fn cursor_tool_call(value: &Value) -> Option<PartialEvent> {
             .or_else(|| tool_call.get("toolCallId"))
             .and_then(Value::as_str)
             .map(str::to_string),
+        status: None,
+        phase: Phase::Finished,
     })
 }
 
-/// Codex `exec --json` executable items. Started, updated, and completed records
-/// share `item.id`; [`extract_events`] folds them into one normalized call. The
-/// allow-list follows Codex's typed exec interface. `file_change` items are
-/// included: codex-cli 0.145.0 emits them with both `item.started` (status
-/// `in_progress`) and `item.completed` (status `completed`), so they carry a real
-/// execution boundary. A `file_change` seen only as `item.completed` (an older,
+/// Codex `exec --json` items. A tool item's started, updated, and completed
+/// records share `item.id`; the started/updated ones are open and only the
+/// completed one finishes the call, carrying its terminal `status` and — for a
+/// command — the `exit_code` codex reported, inside `input`. The allow-list
+/// follows Codex's typed exec interface. `file_change` items are included:
+/// codex-cli 0.145.0 emits them with both `item.started` (status `in_progress`)
+/// and `item.completed` (status `completed`), so they carry a real execution
+/// boundary. A `file_change` seen only as `item.completed` (an older,
 /// completion-only shape) still normalizes but lacks a start, so timing stays
-/// honestly incomplete rather than being fabricated.
-fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
+/// honestly incomplete rather than being fabricated. A completed
+/// `agent_message` is a `message` event and a completed `reasoning` item a
+/// `reasoning` event (codex exec emits both only on completion).
+fn codex_item(value: &Value) -> Option<PartialEvent> {
     let obj = value.as_object()?;
-    if !matches!(
-        obj.get("type").and_then(Value::as_str),
-        Some("item.started" | "item.updated" | "item.completed")
-    ) {
-        return None;
-    }
+    let phase = match obj.get("type").and_then(Value::as_str) {
+        Some("item.started" | "item.updated") => Phase::Open,
+        Some("item.completed") => Phase::Finished,
+        _ => return None,
+    };
     let item = obj.get("item").and_then(Value::as_object)?;
     let item_type = item.get("type").and_then(Value::as_str)?;
+    if let Some(kind) = codex_text_kind(item_type) {
+        if phase == Phase::Open {
+            return None;
+        }
+        let text = item
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())?;
+        return Some(PartialEvent::text(kind, text.to_string()));
+    }
     if !is_codex_tool_type(item_type) {
         return None;
     }
     let (name, input, output) = match item_type {
         "command_execution" => (
             "command_execution".to_string(),
-            item.get("command")
-                .map(|command| serde_json::json!({ "command": command.clone() })),
+            item.get("command").map(|command| {
+                command_input(
+                    command.clone(),
+                    (phase == Phase::Finished)
+                        .then(|| item.get("exit_code"))
+                        .flatten(),
+                )
+            }),
             item.get("aggregated_output")
                 .and_then(Value::as_str)
                 .map(str::to_string),
@@ -428,40 +590,98 @@ fn codex_tool_item(value: &Value) -> Option<PartialEvent> {
         input,
         output,
         tool_call_id: item.get("id").and_then(Value::as_str).map(str::to_string),
+        status: (phase == Phase::Finished)
+            .then(|| codex_tool_status(item))
+            .flatten(),
+        phase,
     })
 }
 
-/// Codex app-server item notifications captured from a real controlled turn
-/// (`tests/fixtures/codex-app-server-command-execution.jsonl`). The protocol
-/// spells both the lifecycle method and item type differently from `exec
-/// --json`; the normalized event intentionally matches that sibling reading.
+/// A command's normalized `input`: `{"command": …}`, plus the `exit_code` the
+/// harness reported for it once it finished (never a guessed one).
+fn command_input(command: Value, exit_code: Option<&Value>) -> Value {
+    let mut input = serde_json::json!({ "command": command });
+    if let Some(code) = exit_code.filter(|code| code.is_i64()) {
+        input["exit_code"] = code.clone();
+    }
+    input
+}
+
+/// The event kind a codex text item becomes, in either protocol's spelling.
+fn codex_text_kind(item_type: &str) -> Option<&'static str> {
+    match item_type {
+        "agent_message" | "agentMessage" => Some("message"),
+        "reasoning" => Some("reasoning"),
+        _ => None,
+    }
+}
+
+/// Codex app-server item notifications captured from real controlled turns
+/// (`tests/fixtures/codex-app-server-*.jsonl`). The protocol spells both the
+/// lifecycle method and item type differently from `exec --json`; the
+/// normalized event intentionally matches that sibling reading. A message's
+/// token deltas arrive as separate `item/agentMessage/delta` notifications,
+/// which are not item records and never an event: the `item/completed` record
+/// carries the finished text once.
 fn codex_app_server_item(value: &Value) -> Option<Option<PartialEvent>> {
     let obj = value.as_object()?;
-    if !matches!(
-        obj.get("method").and_then(Value::as_str),
-        Some("item/started" | "item/completed")
-    ) {
-        return None;
-    }
+    let phase = match obj.get("method").and_then(Value::as_str) {
+        Some("item/started") => Phase::Open,
+        Some("item/completed") => Phase::Finished,
+        _ => return None,
+    };
     let item = obj
         .get("params")
         .and_then(|params| params.get("item"))
         .and_then(Value::as_object)?;
-    if item.get("type").and_then(Value::as_str) != Some("commandExecution") {
+    let item_type = item.get("type").and_then(Value::as_str);
+    if let Some(kind) = item_type.and_then(codex_text_kind) {
+        if phase == Phase::Open {
+            return Some(None);
+        }
+        let text = match kind {
+            "message" => item.get("text").and_then(Value::as_str).map(str::to_string),
+            // A reasoning item carries its summary and raw content as lists of
+            // strings; the summary is what a reader is shown when both exist.
+            _ => ["summary", "content"].iter().find_map(|key| {
+                let joined = item
+                    .get(*key)
+                    .and_then(Value::as_array)?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                (!joined.trim().is_empty()).then_some(joined)
+            }),
+        };
+        return Some(
+            text.filter(|text| !text.trim().is_empty())
+                .map(|text| PartialEvent::text(kind, text)),
+        );
+    }
+    if item_type != Some("commandExecution") {
         return Some(None);
     }
     Some(Some(PartialEvent {
         kind: "tool_call",
         name: Some("command_execution".to_string()),
-        input: item
-            .get("command")
-            .and_then(Value::as_str)
-            .map(|command| serde_json::json!({"command": command})),
+        input: item.get("command").and_then(Value::as_str).map(|command| {
+            command_input(
+                Value::String(command.to_string()),
+                (phase == Phase::Finished)
+                    .then(|| item.get("exitCode"))
+                    .flatten(),
+            )
+        }),
         output: item
             .get("aggregatedOutput")
             .and_then(Value::as_str)
             .map(str::to_string),
         tool_call_id: item.get("id").and_then(Value::as_str).map(str::to_string),
+        status: (phase == Phase::Finished)
+            .then(|| codex_tool_status(item))
+            .flatten(),
+        phase,
     }))
 }
 
@@ -924,8 +1144,15 @@ fn codex_tool_status(item: &serde_json::Map<String, Value>) -> Option<ToolCallSt
     if matches!(status, Some("completed" | "success" | "succeeded")) {
         return Some(ToolCallStatus::Completed);
     }
-    if item.get("type").and_then(Value::as_str) == Some("command_execution") {
-        return match item.get("exit_code").and_then(Value::as_i64) {
+    if matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("command_execution" | "commandExecution")
+    ) {
+        return match item
+            .get("exit_code")
+            .or_else(|| item.get("exitCode"))
+            .and_then(Value::as_i64)
+        {
             Some(0) => Some(ToolCallStatus::Completed),
             Some(_) => Some(ToolCallStatus::Failed),
             None => None,
@@ -1123,16 +1350,19 @@ mod tests {
         );
         let got = extract_events(raw, OutputFormat::StreamJson).unwrap();
         assert_eq!(got.source, "stream-json:content-blocks");
-        assert_eq!(got.events.len(), 2);
-        assert_eq!(got.events[0].kind, "tool_call");
-        assert_eq!(got.events[0].name.as_deref(), Some("Bash"));
-        assert_eq!(got.events[0].input, Some(json!({"command": "echo hi"})));
-        assert_eq!(got.events[0].output, None);
-        assert_eq!(got.events[1].kind, "tool_result");
-        assert_eq!(got.events[1].name, None);
-        assert_eq!(got.events[1].input, None);
-        assert_eq!(got.events[1].output.as_deref(), Some("hi\n"));
-        assert_eq!(got.events[1].index, 1);
+        assert_eq!(got.events.len(), 3);
+        // The assistant's own text block precedes its tool call, in block order.
+        assert_eq!(got.events[0].kind, "message");
+        assert_eq!(got.events[0].output.as_deref(), Some("ok"));
+        assert_eq!(got.events[1].kind, "tool_call");
+        assert_eq!(got.events[1].name.as_deref(), Some("Bash"));
+        assert_eq!(got.events[1].input, Some(json!({"command": "echo hi"})));
+        assert_eq!(got.events[1].output, None);
+        assert_eq!(got.events[2].kind, "tool_result");
+        assert_eq!(got.events[2].name, None);
+        assert_eq!(got.events[2].input, None);
+        assert_eq!(got.events[2].output.as_deref(), Some("hi\n"));
+        assert_eq!(got.events[2].index, 2);
     }
 
     #[test]
@@ -1197,14 +1427,217 @@ mod tests {
         );
         let got = extract_events(raw, OutputFormat::Json).unwrap();
         assert_eq!(got.source, "json:codex-items");
-        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events.len(), 2);
         assert_eq!(got.events[0].kind, "tool_call");
         assert_eq!(got.events[0].name.as_deref(), Some("command_execution"));
         assert_eq!(
             got.events[0].input,
-            Some(json!({"command": "/bin/bash -lc 'echo hi'"}))
+            Some(json!({"command": "/bin/bash -lc 'echo hi'", "exit_code": 0}))
         );
         assert_eq!(got.events[0].output.as_deref(), Some("hi\n"));
+        assert_eq!(got.events[0].status, Some(ToolCallStatus::Completed));
+        assert_eq!(got.events[1].kind, "message");
+        assert_eq!(got.events[1].output.as_deref(), Some("I ran it."));
+    }
+
+    /// Every line of `raw` pushed through one [`EventStream`], as a streaming
+    /// run pushes them: each line's delivered events, in order, and the
+    /// never-finished remainder the report appends.
+    fn stream_lines(raw: &str) -> (Vec<Vec<ActionEvent>>, Vec<ActionEvent>) {
+        let mut stream = EventStream::default();
+        let per_line = raw
+            .lines()
+            .map(|line| stream.push(&serde_json::from_str(line).expect("recorded line is JSON")))
+            .collect();
+        (per_line, stream.finish())
+    }
+
+    fn kinds(events: &[ActionEvent]) -> Vec<&str> {
+        events.iter().map(|event| event.kind.as_str()).collect()
+    }
+
+    /// The real `codex exec --json` recording (codex-cli 0.157.1), with an
+    /// `item.updated` record for its first command spliced in after that
+    /// command's `item.started` — built from the recording's own started record
+    /// plus its first output — because that CLI emits `item.updated` for plan
+    /// items but not for a command, and the property under test is what a
+    /// call's full started/updated/completed lifecycle delivers.
+    fn codex_exec_turn_with_update() -> String {
+        let raw = include_str!("../../../../tests/fixtures/codex-exec-turn.jsonl");
+        let mut lines: Vec<String> = raw.lines().map(str::to_string).collect();
+        let started = lines
+            .iter()
+            .position(|line| line.contains(r#""type":"item.started""#))
+            .expect("the recording starts a command");
+        let mut update: Value = serde_json::from_str(&lines[started]).unwrap();
+        update["type"] = json!("item.updated");
+        update["item"]["aggregated_output"] = json!("hel");
+        lines.insert(started + 1, update.to_string());
+        lines.join("\n")
+    }
+
+    #[test]
+    fn recorded_codex_turn_delivers_each_call_once_at_completion() {
+        let raw = codex_exec_turn_with_update();
+        let (per_line, unfinished) = stream_lines(&raw);
+        // The started and updated records of a call deliver nothing; only the
+        // completing record does.
+        for (line, delivered) in raw.lines().zip(&per_line) {
+            if line.contains(r#""type":"item.started""#)
+                || line.contains(r#""type":"item.updated""#)
+            {
+                assert!(delivered.is_empty(), "{line} delivered {delivered:?}");
+            }
+        }
+        assert!(unfinished.is_empty());
+        let live: Vec<ActionEvent> = per_line.into_iter().flatten().collect();
+        assert_eq!(
+            kinds(&live),
+            [
+                "message",
+                "reasoning",
+                "tool_call",
+                "tool_call",
+                "tool_call",
+                "message"
+            ]
+        );
+        // One event per call, never repeated under the same id.
+        let ids: Vec<_> = live
+            .iter()
+            .filter(|event| event.kind == "tool_call")
+            .map(|event| event.tool_call_id.clone().unwrap())
+            .collect();
+        assert_eq!(ids, ["item_2", "item_3", "item_4"]);
+        // The live fold is the report's reading, index for index.
+        let report = extract_events(&raw, OutputFormat::Json).unwrap();
+        assert_eq!(report.events, live);
+        assert_eq!(
+            live.iter().map(|event| event.index).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4, 5]
+        );
+        // The completed command carries its terminal status and exit code.
+        let failed = &live[4];
+        assert_eq!(failed.status, Some(ToolCallStatus::Failed));
+        assert_eq!(
+            failed.input,
+            Some(json!({"command": "/usr/bin/bash -lc 'ls does-not-exist'", "exit_code": 2}))
+        );
+        assert_eq!(live[2].status, Some(ToolCallStatus::Completed));
+        assert_eq!(live[2].output.as_deref(), Some("hello\n"));
+        assert_eq!(
+            live[1].output.as_deref(),
+            Some("**Proceeding with 391–399**")
+        );
+        assert!(live[0]
+            .output
+            .as_deref()
+            .unwrap()
+            .starts_with("I’ll compare"));
+    }
+
+    #[test]
+    fn a_call_cut_short_reaches_the_report_but_never_the_live_stream() {
+        let raw = concat!(
+            r#"{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"sleep 99","aggregated_output":"","exit_code":null,"status":"in_progress"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"waiting"}}"#,
+            "\n",
+        );
+        let (per_line, unfinished) = stream_lines(raw);
+        assert_eq!(kinds(&per_line.concat()), ["message"]);
+        assert_eq!(kinds(&unfinished), ["tool_call"]);
+        assert_eq!(unfinished[0].index, 1);
+        assert_eq!(unfinished[0].input, Some(json!({"command": "sleep 99"})));
+        let report = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(kinds(&report.events), ["message", "tool_call"]);
+        // A stateless reading of the started record alone delivers nothing.
+        let started: Value = serde_json::from_str(raw.lines().next().unwrap()).unwrap();
+        assert!(events_from_value(&started, 0).is_empty());
+    }
+
+    #[test]
+    fn recorded_codex_app_server_deltas_become_one_message_per_item() {
+        let raw = include_str!("../../../../tests/fixtures/codex-app-server-turn.jsonl");
+        let deltas = raw
+            .lines()
+            .filter(|line| line.contains(r#""method":"item/agentMessage/delta""#))
+            .count();
+        assert!(deltas > 10, "the recording streams its message as deltas");
+        let (per_line, unfinished) = stream_lines(raw);
+        for (line, delivered) in raw.lines().zip(&per_line) {
+            if !line.contains(r#""method":"item/completed""#) {
+                assert!(delivered.is_empty(), "{line} delivered {delivered:?}");
+            }
+        }
+        assert!(unfinished.is_empty());
+        let live: Vec<ActionEvent> = per_line.into_iter().flatten().collect();
+        assert_eq!(
+            kinds(&live),
+            ["message", "tool_call", "tool_call", "message"]
+        );
+        assert_eq!(
+            live[0].output.as_deref(),
+            Some("I’ll compare the products, then run both commands.")
+        );
+        assert!(live[3]
+            .output
+            .as_deref()
+            .unwrap()
+            .starts_with("19 × 21 = 399"));
+        assert_eq!(live[2].status, Some(ToolCallStatus::Failed));
+        assert_eq!(live[2].input.as_ref().unwrap()["exit_code"], json!(2));
+        assert_eq!(
+            extract_events(raw, OutputFormat::Json).unwrap().events,
+            live
+        );
+    }
+
+    #[test]
+    fn recorded_claude_deltas_become_one_event_per_finished_block() {
+        let raw = include_str!("../../../../tests/fixtures/claude-stream-json-turn.jsonl");
+        for delta in ["thinking_delta", "text_delta"] {
+            assert!(
+                raw.matches(&format!(r#""type":"{delta}""#)).count() > 5,
+                "the recording streams {delta}s"
+            );
+        }
+        let (per_line, unfinished) = stream_lines(raw);
+        for (line, delivered) in raw.lines().zip(&per_line) {
+            if line.starts_with(r#"{"type":"stream_event""#) {
+                assert!(delivered.is_empty(), "{line} delivered {delivered:?}");
+            }
+        }
+        assert!(unfinished.is_empty());
+        let live: Vec<ActionEvent> = per_line.into_iter().flatten().collect();
+        assert_eq!(
+            kinds(&live),
+            [
+                "reasoning",
+                "message",
+                "tool_call",
+                "tool_result",
+                "tool_call",
+                "tool_result",
+                "reasoning",
+                "message"
+            ]
+        );
+        assert!(live[0]
+            .output
+            .as_deref()
+            .unwrap()
+            .starts_with("The user is asking me to:"));
+        assert_eq!(
+            live[2].input.as_ref().unwrap()["command"],
+            json!("cat note.txt")
+        );
+        assert_eq!(
+            extract_events(raw, OutputFormat::StreamJson)
+                .unwrap()
+                .events,
+            live
+        );
     }
 
     #[test]
@@ -1217,17 +1650,31 @@ mod tests {
         assert_eq!(got.events[0].name.as_deref(), Some("command_execution"));
         assert_eq!(
             got.events[0].input,
-            Some(json!({"command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'"}))
+            Some(json!({
+                "command": "/usr/bin/bash -lc 'printf OHCAPTURE12345'",
+                "exit_code": 0
+            }))
         );
         assert_eq!(got.events[0].output.as_deref(), Some("OHCAPTURE12345"));
+        assert_eq!(got.events[0].status, Some(ToolCallStatus::Completed));
     }
 
     #[test]
     fn codex_app_server_tool_free_item_is_an_empty_reading() {
-        let raw = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"message-1","text":"done"}}}"#;
+        let raw = r#"{"method":"item/completed","params":{"item":{"type":"userMessage","id":"user-1","content":[]}}}"#;
         let got = extract_events(raw, OutputFormat::Json).unwrap();
         assert_eq!(got.source, "json:codex-app-server-items");
         assert!(got.events.is_empty());
+    }
+
+    #[test]
+    fn codex_app_server_agent_message_is_one_message_event() {
+        let raw = r#"{"method":"item/completed","params":{"item":{"type":"agentMessage","id":"message-1","text":"done"}}}"#;
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].kind, "message");
+        assert_eq!(got.events[0].output.as_deref(), Some("done"));
+        assert_eq!(got.events[0].tool_call_id, None);
     }
 
     #[test]
@@ -1328,14 +1775,17 @@ mod tests {
         // Claude Code's single-document `json` result carries no transcript, so
         // there is nothing to extract — events stays absent, never fabricated.
         assert!(extract_events(r#"{"type":"result","result":"hi"}"#, OutputFormat::Json).is_none());
-        // A text-only turn (no tool parts/blocks) is likewise empty.
-        let text_only = concat!(
-            r#"{"type":"text","part":{"type":"text","text":"just prose"}}"#,
-            "\n",
-            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#,
-            "\n",
-        );
-        assert!(extract_events(text_only, OutputFormat::Json).is_none());
+        // An opencode text part is not (yet) an event, so a turn made only of
+        // them is still absent — while a Claude assistant text block is a
+        // `message` event and no longer an absent reading.
+        let opencode_prose = r#"{"type":"text","part":{"type":"text","text":"just prose"}}"#;
+        assert!(extract_events(opencode_prose, OutputFormat::Json).is_none());
+        let claude_prose =
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        let got = extract_events(claude_prose, OutputFormat::Json).unwrap();
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].kind, "message");
+        assert!(!got.events[0].is_tool_activity());
         assert!(extract_events("not json", OutputFormat::Text).is_none());
         assert!(extract_events("", OutputFormat::Json).is_none());
     }

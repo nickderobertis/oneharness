@@ -2900,17 +2900,18 @@ fn stream_one_harness(
     use serde_json::Value;
 
     let harness_id = unit.harness_id;
-    let mut next_index = 0usize;
+    // The same fold `extract_events` makes over the captured stdout, so each
+    // event streamed here carries the index the report gives it — which is
+    // what lets the closing history record skip exactly the ones already
+    // persisted. An open item (a codex call's `item.started`) yields nothing
+    // until the record that completes it arrives.
+    let mut stream = events::EventStream::default();
     let mut persisted_event_indexes = BTreeSet::new();
     let capture = runner::run_job_streaming_supervised(unit.job, controlled, spawn, |line| {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return StreamStep::Continue;
         };
-        let evs = events::events_from_value(&value, next_index);
-        if evs.is_empty() {
-            return StreamStep::Continue;
-        }
-        next_index += evs.len();
+        let evs = stream.push(&value);
         for ev in &evs {
             if let Some((writer, run_id)) = history {
                 match writer.append_event_tracked(run_id, harness_id, ev.clone()) {
@@ -4681,7 +4682,7 @@ fn is_server_overloaded_without_work(plan: &HarnessPlan, capture: &Capture) -> b
     let billed_work = signals::extract_usage(&capture.stdout)
         .is_some_and(|reading| reading.usage.reports_billed_work());
     let used_tools = events::extract_events(&capture.stdout, plan.output_format)
-        .is_some_and(|reading| !reading.events.is_empty());
+        .is_some_and(|reading| reading.events.iter().any(ActionEvent::is_tool_activity));
     // On Codex, normalized text comes only from an agent-message item; the
     // terminal overload object's diagnostic is not an answer. Retrying after
     // an emitted answer could repeat work even when usage was not reported.

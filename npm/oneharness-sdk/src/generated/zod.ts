@@ -524,6 +524,17 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.union([
         z.literal("1.9"),
       ])
       .refine((value) => value !== undefined, { message: "Required" }),
+    session_name: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => !new RegExp("[^a-z0-9-]|^-|-$|--", "u").test(value), {
+            message: "Invalid string: must not contain [^a-z0-9-]|^-|-$|--",
+          }),
+        z.null(),
+      ])
+      .optional(),
     variant: z.union([z.string(), z.null()]).optional(),
   }),
   z.looseObject({
@@ -548,6 +559,17 @@ export const HistoryEventLineSchema: z.ZodType<HistoryEventLine> = z.union([
     schema_version: z
       .union([z.literal("1.0"), z.literal("1.1")])
       .refine((value) => value !== undefined, { message: "Required" }),
+    session_name: z
+      .union([
+        z
+          .string()
+          .min(1)
+          .refine((value) => !new RegExp("[^a-z0-9-]|^-|-$|--", "u").test(value), {
+            message: "Invalid string: must not contain [^a-z0-9-]|^-|-$|--",
+          }),
+        z.null(),
+      ])
+      .optional(),
     variant: z.union([z.string(), z.null()]).optional(),
   }),
 ]);
@@ -595,6 +617,17 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
           z.literal("1.9"),
         ])
         .refine((value) => value !== undefined, { message: "Required" }),
+      session_name: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => !new RegExp("[^a-z0-9-]|^-|-$|--", "u").test(value), {
+              message: "Invalid string: must not contain [^a-z0-9-]|^-|-$|--",
+            }),
+          z.null(),
+        ])
+        .optional(),
       type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
       variant: z.union([z.string(), z.null()]).optional(),
     }),
@@ -620,6 +653,17 @@ export const HistoryLineSchema: z.ZodType<HistoryLine> = z.union([
       schema_version: z
         .union([z.literal("1.0"), z.literal("1.1")])
         .refine((value) => value !== undefined, { message: "Required" }),
+      session_name: z
+        .union([
+          z
+            .string()
+            .min(1)
+            .refine((value) => !new RegExp("[^a-z0-9-]|^-|-$|--", "u").test(value), {
+              message: "Invalid string: must not contain [^a-z0-9-]|^-|-$|--",
+            }),
+          z.null(),
+        ])
+        .optional(),
       type: z.literal("event").refine((value) => value !== undefined, { message: "Required" }),
       variant: z.union([z.string(), z.null()]).optional(),
     }),
@@ -1513,6 +1557,12 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                           kind: z.literal("tool_result").optional(),
                         }),
                       ),
+                      z.intersection(
+                        z.lazy(() => ActionEventSchema),
+                        z.looseObject({
+                          kind: z.union([z.literal("message"), z.literal("reasoning")]).optional(),
+                        }),
+                      ),
                     ]),
                   ),
                   z.null(),
@@ -1684,6 +1734,12 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
                           z.lazy(() => ActionEventSchema),
                           z.looseObject({
                             kind: z.literal("tool_result").optional(),
+                          }),
+                        ),
+                        z.intersection(
+                          z.lazy(() => ActionEventSchema),
+                          z.looseObject({
+                            kind: z.union([z.literal("message"), z.literal("reasoning")]).optional(),
                           }),
                         ),
                       ]),
@@ -2573,6 +2629,7 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
     .int()
     .gte(0)
     .refine((value) => value !== undefined, { message: "Required" }),
+  running: z.boolean().optional(),
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
@@ -2603,6 +2660,23 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
   labels: z.lazy(() => HistoryLabelsSchema).optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
+  session: z
+    .union([
+      z
+        .string()
+        .min(1)
+        .regex(
+          new RegExp(
+            "^(?:[a-z0-9-]+|[a-z0-9-]+-(?:[0-9]{4}(?:(?:0[13578]|1[02])(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)(?:0[1-9]|[12][0-9]|30)|02(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)0229)T(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]Z-[0-9]+)$",
+            "u",
+          ),
+        )
+        .refine((value) => !new RegExp("[^A-Za-z0-9-]|^-|-$|--", "u").test(value), {
+          message: "Invalid string: must not contain [^A-Za-z0-9-]|^-|-$|--",
+        }),
+      z.null(),
+    ])
+    .optional(),
   variant: z.string().optional(),
 });
 

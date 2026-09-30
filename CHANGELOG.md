@@ -6,6 +6,32 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is history a consumer reads when upgrading, not a live copy of the stream, event, history or Rust API contracts to keep in step. Their sources are `ActionEvent`'s doc comments (generated into the SDK schemas), `domain::render`, `commands::run`'s `StreamView` and `HistoryEventLine`, each pinned by its own tests and `just sdk-check`. -->
+
+### Changed
+
+- **Breaking:** `events` — on the live `EventSink`, in `RunReport.events` (and
+  so the `--stream` NDJSON event records) and in history — now carries non-tool
+  kinds beside `tool_call` / `tool_result`: `message` (the agent's own text) and
+  `reasoning`, each with its text in `output`, one event per finished item
+  (codex `agent_message` / `reasoning` items, Claude Code assistant `text` /
+  `thinking` blocks), never a token delta. A consumer that treats every entry as
+  a tool call must filter on `kind` (`ActionEvent::is_tool_activity`). Because
+  `ActionEvent.index` numbers every kind, it is no longer contiguous across tool
+  calls — count tool calls by `kind`, not by `index`.
+- **Breaking:** a codex tool call reaches the event sink (and the `--stream`
+  NDJSON, and history) once, when it completes, instead of once per lifecycle
+  record; that event carries its terminal `status`, and a command's `input`
+  carries the `exit_code` codex reported. Live events and the report's now share
+  one numbering, so the live count of calls equals the report's.
+- `run --stream --format text` (streaming from `--stream`, config `stream`, or
+  `ONEHARNESS_STREAM`) is no longer refused: it prints one readable line per
+  event, then the text report. A stream with no `--format` is still NDJSON in
+  this release and warns once that the default becomes text in the next one;
+  pass `--format json` to keep the NDJSON protocol.
+
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
+
 ## [0.18.0](https://github.com/nickderobertis/oneharness/compare/v0.17.1...v0.18.0) - 2026-09-29
 
 ### Added

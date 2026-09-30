@@ -12,6 +12,7 @@ use crate::cli::{
 };
 use crate::commands::{print_report, printable};
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
+use oneharness_core::domain::render::{render_event, render_history_show_text};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
@@ -62,94 +63,120 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     let labels = history::parse_labels(args.label.iter().map(String::as_str))
         .map_err(OneharnessError::HistoryLabelInvalid)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut watcher = history_io::HistoryWatcher::open(&dir, after, labels, slug, args.events)?;
+    let mut watcher = history_io::HistoryWatcher::open_session(
+        &dir,
+        after,
+        labels,
+        slug,
+        args.events,
+        args.session.as_ref(),
+    )?;
+    let of_variant = |variant: Option<&str>| {
+        args.variant
+            .as_ref()
+            .is_none_or(|wanted| variant == Some(wanted.as_str()))
+    };
 
-    match args.format {
-        HistoryWatchFormat::Jsonl => loop {
-            let events: Vec<_> = watcher
-                .drain_events()
-                .into_iter()
-                .filter(|line| {
-                    args.variant
-                        .as_ref()
-                        .is_none_or(|variant| line.variant.as_deref() == Some(variant.as_str()))
-                })
-                .collect();
-            if args.events && !write_watch_events(&events)? {
+    loop {
+        let events: Vec<_> = watcher
+            .drain_events()
+            .into_iter()
+            .filter(|line| of_variant(line.variant.as_deref()))
+            .collect();
+        if args.events && !write_watch_events(args.format, &events)? {
+            return Ok(EXIT_OK);
+        }
+        let records: Vec<_> = watcher
+            .drain_available()
+            .into_iter()
+            .filter(|record| of_variant(record.variant.as_deref()))
+            .collect();
+        if !write_watch_records(args.format, &records)? {
+            return Ok(EXIT_OK);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let records: Vec<_> = watcher
+            .poll()?
+            .into_iter()
+            .filter(|record| of_variant(record.variant.as_deref()))
+            .collect();
+        let events: Vec<_> = watcher
+            .drain_events()
+            .into_iter()
+            .filter(|line| of_variant(line.variant.as_deref()))
+            .collect();
+        if args.events && !write_watch_events(args.format, &events)? {
+            return Ok(EXIT_OK);
+        }
+        for record in records {
+            if !write_watch_records(args.format, &[record])? {
                 return Ok(EXIT_OK);
             }
-            let records: Vec<_> = watcher
-                .drain_available()
-                .into_iter()
-                .filter(|record| {
-                    args.variant
-                        .as_ref()
-                        .is_none_or(|variant| record.variant.as_deref() == Some(variant.as_str()))
-                })
-                .collect();
-            if !write_watch_records(&records)? {
-                return Ok(EXIT_OK);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-            let records: Vec<_> = watcher
-                .poll()?
-                .into_iter()
-                .filter(|record| {
-                    args.variant
-                        .as_ref()
-                        .is_none_or(|variant| record.variant.as_deref() == Some(variant.as_str()))
-                })
-                .collect();
-            let events: Vec<_> = watcher
-                .drain_events()
-                .into_iter()
-                .filter(|line| {
-                    args.variant
-                        .as_ref()
-                        .is_none_or(|variant| line.variant.as_deref() == Some(variant.as_str()))
-                })
-                .collect();
-            if args.events && !write_watch_events(&events)? {
-                return Ok(EXIT_OK);
-            }
-            for record in records {
-                if !write_watch_records(&[record])? {
-                    return Ok(EXIT_OK);
-                }
-            }
-        },
+        }
     }
 }
 
 fn write_watch_events(
+    format: HistoryWatchFormat,
     events: &[oneharness_core::domain::history::HistoryEventLine],
 ) -> Result<bool, OneharnessError> {
-    write_watch_envelopes(
-        events
-            .iter()
-            .cloned()
-            .map(|line| HistoryStreamEnvelope::Event { line }),
-    )
+    match format {
+        HistoryWatchFormat::Jsonl => write_watch_lines(
+            events
+                .iter()
+                .cloned()
+                .map(|line| serde_json::to_string(&HistoryStreamEnvelope::Event { line }))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        // The event's readable form; one this view does not draw (a tool
+        // result, whose call was already drawn) prints nothing.
+        HistoryWatchFormat::Text => write_watch_lines(
+            events
+                .iter()
+                .filter_map(|line| render_event(&line.event))
+                .collect(),
+        ),
+    }
 }
 
-fn write_watch_records(records: &[HistoryRecord]) -> Result<bool, OneharnessError> {
-    write_watch_envelopes(
-        records
-            .iter()
-            .cloned()
-            .map(|record| HistoryStreamEnvelope::Record { record }),
-    )
-}
-
-fn write_watch_envelopes(
-    envelopes: impl IntoIterator<Item = HistoryStreamEnvelope>,
+fn write_watch_records(
+    format: HistoryWatchFormat,
+    records: &[HistoryRecord],
 ) -> Result<bool, OneharnessError> {
+    match format {
+        HistoryWatchFormat::Jsonl => write_watch_lines(
+            records
+                .iter()
+                .cloned()
+                .map(|record| serde_json::to_string(&HistoryStreamEnvelope::Record { record }))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        // A closing record as `history show` draws it. Its events are not in
+        // it (the watcher streams those on their own), so nothing is drawn
+        // twice.
+        HistoryWatchFormat::Text => {
+            let values = records
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()?;
+            if values.is_empty() {
+                return Ok(true);
+            }
+            write_watch_lines(vec![render_history_show_text(&values)
+                .trim_end_matches('\n')
+                .to_string()])
+        }
+    }
+}
+
+/// Write each line to stdout, then flush. `false` once the reader has gone (a
+/// broken pipe): the watch's documented way to end.
+fn write_watch_lines(lines: Vec<String>) -> Result<bool, OneharnessError> {
     use std::io::Write;
 
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
-    for envelope in envelopes {
-        let line = serde_json::to_string(&envelope)?;
+    for line in lines {
         if let Err(error) = writeln!(out, "{line}") {
             return if error.kind() == std::io::ErrorKind::BrokenPipe {
                 Ok(false)
@@ -303,7 +330,7 @@ fn render_record_values(
     format: StdoutFormat,
     records: &[serde_json::Value],
 ) -> Result<i32, OneharnessError> {
-    print_report(&records, format, |r| render_show_text(r))?;
+    print_report(&records, format, |r| render_history_show_text(r))?;
     Ok(EXIT_OK)
 }
 
@@ -422,7 +449,7 @@ fn render_list_text(sessions: &[SessionSummary]) -> String {
     let mut out = String::new();
     for s in sessions {
         out.push_str(&printable(&format!(
-            "{started}  {name}  ({records} run{plural}, {harnesses})\n  id: {id}\n  project: {project}\n",
+            "{started}  {name}  ({records} run{plural}, {harnesses}){running}\n  id: {id}\n  project: {project}\n",
             started = if s.started.is_empty() { "?" } else { &s.started },
             name = s.name,
             records = s.record_count,
@@ -434,40 +461,10 @@ fn render_list_text(sessions: &[SessionSummary]) -> String {
             },
             id = s.id,
             project = s.project,
+            running = if s.running { " · running" } else { "" },
         )));
     }
     out
-}
-
-/// A readable dump for `history show --format text`: one block per record.
-fn render_show_text(records: &[serde_json::Value]) -> String {
-    if records.is_empty() {
-        return "no records\n".to_string();
-    }
-    let mut out = String::new();
-    for r in records {
-        let get = |key: &str| r.get(key).and_then(|value| value.as_str()).unwrap_or("");
-        let status = get("status");
-        out.push_str(&printable(&format!(
-            "{ts}  [{harness}] {status}\n",
-            ts = get("timestamp"),
-            harness = get("harness"),
-        )));
-        let prompt = get("prompt");
-        if !prompt.is_empty() {
-            out.push_str(&format!("  prompt: {}\n", printable(first_line(prompt))));
-        }
-        if let Some(text) = r.get("text").and_then(|value| value.as_str()) {
-            out.push_str(&format!("  text: {}\n", printable(first_line(text))));
-        }
-        out.push('\n');
-    }
-    out
-}
-
-/// The first line of a string, so a multi-line prompt/answer stays one row.
-fn first_line(s: &str) -> &str {
-    s.lines().next().unwrap_or("")
 }
 
 #[cfg(test)]
@@ -484,6 +481,7 @@ mod tests {
             record_count: harnesses.len(),
             harnesses: harnesses.iter().map(|s| s.to_string()).collect(),
             path: format!("/h/{id}.jsonl"),
+            running: false,
         }
     }
 
@@ -509,27 +507,15 @@ mod tests {
         assert!(text.contains("2 runs"));
         assert!(text.contains("claude-code, codex"));
         assert!(text.contains("id: fix-bug-20260101T000000Z-1"));
-    }
-
-    #[test]
-    fn show_text_renders_first_lines() {
-        let records = vec![serde_json::json!({
-            "timestamp": "2026-01-01T00:00:00Z",
-            "harness": "codex",
-            "status": "ok",
-            "prompt": "line one\nline two",
-            "text": "answer\nmore",
-        })];
-        let text = render_show_text(&records);
-        assert!(text.contains("[codex] ok"));
-        assert!(text.contains("prompt: line one"));
-        assert!(!text.contains("line two"));
-        assert!(text.contains("text: answer"));
-    }
-
-    #[test]
-    fn show_text_empty_is_labeled() {
-        assert_eq!(render_show_text(&[]), "no records\n");
+        assert!(!text.contains("running"));
+        let mut live = summary("fix-bug-20260101T000000Z-2", "fix-bug", "", &["codex"]);
+        live.record_count = 0;
+        live.running = true;
+        let text = render_list_text(&[live]);
+        assert!(
+            text.contains("  fix-bug  (0 runs, codex) · running\n"),
+            "{text}"
+        );
     }
 
     #[test]

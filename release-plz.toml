@@ -89,6 +89,12 @@ name = "oneharness-core"
 git_tag_name = "oneharness-core-v{{ version }}"
 git_release_enable = false
 
+# Test-only workspace member (`publish = false`) holding the v0.17.0 history
+# compatibility test; it never releases, tags or keeps a changelog.
+[[package]]
+name = "oneharness-history-compat"
+release = false
+
 # Keep-a-Changelog-style grouping. The version bump is computed from the
 # conventional-commit *type* (pre-1.0 follows Cargo's 0.x rules: feat/fix/perf ->
 # patch, `!`/BREAKING -> minor), independent of these display groups — so

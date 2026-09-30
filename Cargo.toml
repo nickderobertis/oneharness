@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/oneharness-core"]
+members = ["crates/oneharness-core", "crates/history-compat"]
 
 # Metadata both crates share, inherited with `.workspace = true`. `version` and
 # `description` stay per-crate: the binary and the engine release on their own

@@ -1025,7 +1025,12 @@ describe("OneHarness", () => {
 		// field real while pinning the one thing this test turns on.
 		const olderFile = older.history_file;
 		if (!olderFile) throw new Error("run --history recorded no history file");
-		const [line] = (await readFile(olderFile, "utf8")).trim().split("\n");
+		// The run's closing `run` line; the run's events (its agent `message`
+		// among them) are written as `event` lines before it.
+		const line = (await readFile(olderFile, "utf8"))
+			.trim()
+			.split("\n")
+			.find((candidate) => JSON.parse(candidate).type === "run");
 		if (!line) throw new Error(`history file ${olderFile} recorded no run`);
 		await writeFile(
 			resolve(dirname(olderFile), "newer-session-id.jsonl"),

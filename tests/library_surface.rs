@@ -666,14 +666,16 @@ fn a_consumer_lists_reads_and_clears_the_run_history_it_recorded() {
         )
         .expect("the event is durable");
 
-    // An in-flight run is not a listed session yet: `list_sessions` counts
-    // completed run records, and only events have landed so far.
+    // An in-flight run is already a listed session, marked running: only its
+    // events have landed, so it has no completed record yet.
+    let listed = history::list_sessions(&dir, None).expect("the store lists");
+    assert_eq!(listed.len(), 1, "{listed:?}");
     assert!(
-        history::list_sessions(&dir, None)
-            .expect("the store lists")
-            .is_empty(),
-        "a run with no terminal record is not a session to list"
+        listed[0].running,
+        "a run with no terminal record is running"
     );
+    assert_eq!(listed[0].record_count, 0);
+    assert_eq!(listed[0].name, "a-recorded-run");
 
     writer
         .append_streamed(

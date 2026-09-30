@@ -154,11 +154,19 @@ impl clap::FromArgMatches for StdoutFormat {
 /// those bounded commands cannot accidentally accept an unbounded format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryWatchFormat {
+    /// One typed `HistoryStreamEnvelope` JSON object per line — the default,
+    /// and the stream every program reads.
     Jsonl,
+    /// One readable line per event (`render_event`'s form) and a short block
+    /// per closing record — for a person tailing a run.
+    Text,
 }
 
 fn history_watch_format_parser() -> impl TypedValueParser<Value = HistoryWatchFormat> {
-    PossibleValuesParser::new(["jsonl"]).map(|_| HistoryWatchFormat::Jsonl)
+    PossibleValuesParser::new(["jsonl", "text"]).map(|s| match s.as_str() {
+        "text" => HistoryWatchFormat::Text,
+        _ => HistoryWatchFormat::Jsonl,
+    })
 }
 
 /// Parse `--format` into [`Format`], keeping the possible-value list in the
@@ -525,9 +533,14 @@ pub struct HistoryWatchArgs {
     pub label: Vec<String>,
 
     /// Emit only records from this variant name.
-    // llmlint: ignore[changed_behavior_has_e2e] History watch deliberately exposes only JSONL, not text; compiled-CLI tests cover variant filtering for both record and event JSONL envelopes.
     #[arg(long, value_name = "NAME")]
     pub variant: Option<oneharness_core::domain::config::VariantName>,
+
+    /// Follow only this session: its id (as `history list` prints it), or its
+    /// name — the newest session so named whose labels match every `--label`,
+    /// including one still running, or the first to appear if none exists yet.
+    #[arg(long, value_name = "NAME|ID")]
+    pub session: Option<oneharness_core::domain::history::HistorySessionSelector>,
 
     /// Follow records for this project; defaults to the current directory.
     #[arg(long, value_name = "DIR")]
@@ -542,7 +555,8 @@ pub struct HistoryWatchArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
-    /// Streaming output format. `jsonl` is currently the only format.
+    /// Streaming output format: `jsonl` (the default) is one typed envelope per
+    /// line for programs; `text` is one readable line per event for a person.
     #[arg(
         long,
         value_parser = history_watch_format_parser(),
@@ -1217,6 +1231,62 @@ pub struct DetectArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_readme_history_synopsis_names_only_real_flags_and_values() {
+        // README.md's `history` synopsis is read against the clap definition
+        // it documents: every `--flag` it shows is that verb's, and every
+        // `--flag a|b` value list is exactly the values the verb accepts.
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let history = cli.find_subcommand("history").expect("the history verb");
+        let readme = include_str!("../README.md").replace("\r\n", "\n");
+        let synopsis: Vec<&str> = readme
+            .lines()
+            .filter(|line| line.starts_with("oneharness history "))
+            .collect();
+        assert!(
+            synopsis
+                .iter()
+                .any(|line| line.starts_with("oneharness history watch ")),
+            "README.md must carry the history watch synopsis"
+        );
+        for line in synopsis {
+            let usage = line.split(" # ").next().unwrap_or(line);
+            let mut words = usage.split_whitespace().skip(2);
+            let verb = words.next().expect("a history subcommand");
+            let command = history
+                .find_subcommand(verb)
+                .unwrap_or_else(|| panic!("README.md names `history {verb}`: {line}"));
+            let words: Vec<&str> = words
+                .map(|word| word.trim_matches(|c| matches!(c, '[' | ']' | '|')))
+                .collect();
+            for (i, word) in words.iter().enumerate() {
+                let Some(long) = word.strip_prefix("--") else {
+                    continue;
+                };
+                let arg = command
+                    .get_arguments()
+                    .find(|arg| arg.get_long() == Some(long))
+                    .unwrap_or_else(|| {
+                        panic!("README.md shows `--{long}` on `history {verb}`: {line}")
+                    });
+                let Some(values) = words
+                    .get(i + 1)
+                    .filter(|value| value.contains('|') && !value.starts_with('<'))
+                else {
+                    continue;
+                };
+                let documented: Vec<&str> = values.split('|').collect();
+                let accepted: Vec<String> = arg
+                    .get_possible_values()
+                    .iter()
+                    .map(|value| value.get_name().to_string())
+                    .collect();
+                assert_eq!(documented, accepted, "`history {verb} --{long}`: {line}");
+            }
+        }
+    }
 
     #[test]
     fn stdout_format_defaults_to_text_unless_compact_asks_for_json() {

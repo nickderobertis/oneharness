@@ -710,6 +710,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("after", FlagKind::Value("--after")),
             bind("labels", FlagKind::KeyValue("--label")),
             bind("variant", FlagKind::Value("--variant")),
+            bind("session", FlagKind::Value("--session")),
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),

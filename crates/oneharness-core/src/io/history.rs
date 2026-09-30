@@ -26,7 +26,7 @@ use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
     HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector,
-    IncompleteHistoryRun, IncompleteRunType, PointerSession,
+    IncompleteHistoryRun, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
@@ -1134,14 +1134,11 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
             }
         }
     }
-    for (run_id, (harness, mut events)) in dangling {
-        events.sort_by_key(|event| event.index);
-        values.push(serde_json::to_value(IncompleteHistoryRun {
-            kind: IncompleteRunType::Incomplete,
-            run_id,
-            harness,
-            events,
-        })?);
+    for (run_id, (harness, events)) in dangling {
+        // Every dangling run was entered by reading one of its events.
+        if let Some(run) = IncompleteHistoryRun::new(run_id, harness, events) {
+            values.push(serde_json::to_value(run)?);
+        }
     }
     Ok(values)
 }

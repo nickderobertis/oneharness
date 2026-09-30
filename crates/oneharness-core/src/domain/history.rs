@@ -1039,19 +1039,59 @@ pub struct HistoryRecord {
 
 /// A run `history show` reads before its closing record has landed: the events
 /// its event lines have published so far, under the run they belong to. It is a
-/// display entry, never a store line: once the run's
-/// closing record lands the same run is shown as a [`HistoryRecord`] instead.
+/// display entry, never a store line: once the run's closing record lands the
+/// same run is shown as a [`HistoryRecord`] instead. It exists only because an
+/// event line was read, so it always carries at least one event.
 #[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct IncompleteHistoryRun {
     /// Always `incomplete`: what tells this entry apart from a record.
     #[serde(rename = "type")]
-    pub kind: IncompleteRunType,
+    kind: IncompleteRunType,
     /// The id the run's closing record will carry as its `history_id`.
-    pub run_id: HistoryId,
+    run_id: HistoryId,
     /// The harness the event lines name.
-    pub harness: String,
+    // llmlint: ignore[invalid_states_unrepresentable] Copied verbatim from `HistoryEventLine::harness`, a legacy-compatible wire string (v1.0 lines predate the composed identity); this display entry repeats what the line says rather than re-deriving an identity the line may not carry.
+    harness: String,
     /// The events published so far, in `index` order.
-    pub events: Vec<ActionEvent>,
+    #[schemars(length(min = 1))]
+    events: Vec<ActionEvent>,
+}
+
+impl IncompleteHistoryRun {
+    /// The in-flight entry for `run_id`, with `events` put in `index` order;
+    /// `None` when there are no events, since a run nothing was read for is not
+    /// in flight as far as the store can tell.
+    #[must_use]
+    pub fn new(run_id: HistoryId, harness: String, mut events: Vec<ActionEvent>) -> Option<Self> {
+        if events.is_empty() {
+            return None;
+        }
+        events.sort_by_key(|event| event.index);
+        Some(Self {
+            kind: IncompleteRunType::Incomplete,
+            run_id,
+            harness,
+            events,
+        })
+    }
+
+    /// The id the run's closing record will carry as its `history_id`.
+    #[must_use]
+    pub fn run_id(&self) -> HistoryId {
+        self.run_id
+    }
+
+    /// The harness the event lines name.
+    #[must_use]
+    pub fn harness(&self) -> &str {
+        &self.harness
+    }
+
+    /// The events published so far, in `index` order; never empty.
+    #[must_use]
+    pub fn events(&self) -> &[ActionEvent] {
+        &self.events
+    }
 }
 
 /// The discriminator of an [`IncompleteHistoryRun`].

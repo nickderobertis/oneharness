@@ -15445,7 +15445,7 @@
         ]
       },
       "IncompleteHistoryRun": {
-        "description": "A run `history show` reads before its closing record has landed: the events\nits event lines have published so far, under the run they belong to. It is a\ndisplay entry, never a store line: once the run's\nclosing record lands the same run is shown as a [`HistoryRecord`] instead.",
+        "description": "A run `history show` reads before its closing record has landed: the events\nits event lines have published so far, under the run they belong to. It is a\ndisplay entry, never a store line: once the run's closing record lands the\nsame run is shown as a [`HistoryRecord`] instead. It exists only because an\nevent line was read, so it always carries at least one event.",
         "type": "object",
         "properties": {
           "events": {
@@ -15453,7 +15453,8 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/ActionEvent"
-            }
+            },
+            "minItems": 1
           },
           "harness": {
             "description": "The harness the event lines name.",

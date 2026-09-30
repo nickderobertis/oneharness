@@ -366,6 +366,85 @@ impl fmt::Display for SessionPath {
     }
 }
 
+/// A session file's path relative to the store as an older core wrote it to
+/// the legacy index: one project directory, then one `<session>.jsonl` file.
+/// Looser than [`SessionPath`] only where released cores were: their
+/// reconcile indexed every `<subdir>/*.jsonl` it found, so a legacy line can
+/// name the `.index.d` project (the slug of a project at `/.index.d`) or a
+/// file whose name holds `:`. Each part must still be one plain path
+/// component on this platform — never empty, `.`, `..`, a root or a drive
+/// prefix — so no legacy path reaches outside the store. Every
+/// [`SessionPath`] is one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LegacySessionPath {
+    project_slug: String,
+    session: String,
+}
+
+impl LegacySessionPath {
+    /// The project slug and the session id (file stem) it names.
+    #[must_use]
+    pub fn parts(&self) -> (&str, &str) {
+        (&self.project_slug, &self.session)
+    }
+
+    /// The session file this path names under the store `dir`, joined one
+    /// component at a time (see [`SessionPath::under`]).
+    #[must_use]
+    pub fn under(&self, dir: &std::path::Path) -> std::path::PathBuf {
+        dir.join(&self.project_slug)
+            .join(format!("{}.{SESSION_FILE_EXT}", self.session))
+    }
+}
+
+impl From<&SessionPath> for LegacySessionPath {
+    fn from(path: &SessionPath) -> Self {
+        let (project_slug, session) = path.parts();
+        Self {
+            project_slug: project_slug.to_string(),
+            session: session.to_string(),
+        }
+    }
+}
+
+impl FromStr for LegacySessionPath {
+    type Err = SessionPathError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let one_component = |part: &str| {
+            let mut components = std::path::Path::new(part).components();
+            matches!(
+                (components.next(), components.next()),
+                (Some(std::path::Component::Normal(_)), None)
+            )
+        };
+        let mut parts = value.split(['/', '\\']);
+        let (Some(project), Some(file), None) = (parts.next(), parts.next(), parts.next()) else {
+            return Err(SessionPathError);
+        };
+        let session = file
+            .strip_suffix(SESSION_FILE_EXT)
+            .and_then(|stem| stem.strip_suffix('.'))
+            .filter(|stem| !stem.is_empty())
+            .ok_or(SessionPathError)?;
+        if !one_component(project) || !one_component(file) {
+            return Err(SessionPathError);
+        }
+        Ok(Self {
+            project_slug: project.to_string(),
+            session: session.to_string(),
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for LegacySessionPath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// One closing run line, indexed. Every field is bounded by what names the
 /// run — never by its prompt, output or events.
 ///
@@ -688,6 +767,47 @@ mod tests {
             assert!(!valid_session_path(bad), "{bad}");
         }
         assert_eq!(session_path("p", "s"), "p/s.jsonl");
+    }
+
+    #[test]
+    fn a_legacy_session_path_takes_what_released_cores_indexed_and_stays_in_the_store() {
+        let parts = |text: &str| {
+            text.parse::<LegacySessionPath>()
+                .ok()
+                .map(|path| (path.parts().0.to_string(), path.parts().1.to_string()))
+        };
+        let owned = |slug: &str, stem: &str| Some((slug.to_string(), stem.to_string()));
+        assert_eq!(parts("proj/s.jsonl"), owned("proj", "s"));
+        assert_eq!(parts("proj\\s.jsonl"), owned("proj", "s"));
+        assert_eq!(parts(".index.d/s.jsonl"), owned(".index.d", "s"));
+        assert_eq!(parts("proj/..jsonl"), owned("proj", "."));
+        // A `:` is part of a name on Unix and a drive prefix on Windows, where
+        // it would re-root the join; there no released core could name one.
+        if cfg!(windows) {
+            assert_eq!(parts("C:/s.jsonl"), None);
+            assert_eq!(parts("proj/C:s.jsonl"), None);
+        } else {
+            assert_eq!(parts("proj/a:b.jsonl"), owned("proj", "a:b"));
+            assert_eq!(parts("C:/s.jsonl"), owned("C:", "s"));
+        }
+        for bad in [
+            "",
+            "s.jsonl",
+            "../s.jsonl",
+            "./s.jsonl",
+            "proj/../s.jsonl",
+            "proj/sub/s.jsonl",
+            "/proj/s.jsonl",
+            "proj/.jsonl",
+            "proj/s.ndjson",
+        ] {
+            assert_eq!(parts(bad), None, "{bad}");
+        }
+        let dated: SessionPath = "proj/s.jsonl".parse().unwrap();
+        assert_eq!(
+            LegacySessionPath::from(&dated),
+            "proj/s.jsonl".parse().unwrap()
+        );
     }
 
     #[test]

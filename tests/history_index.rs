@@ -2223,6 +2223,79 @@ fn a_store_an_older_core_wrote_is_read_by_id_all_time_by_pointer_and_by_session_
     );
 }
 
+/// Paths a released core's reconcile indexed that the dated entries' stricter
+/// `SessionPath` refuses: v0.19.1's `rebuild_index_locked` walked every
+/// `<subdir>/*.jsonl` of the store, so a project at `/.index.d` (whose slug is
+/// `.index.d`) and — where a file name may hold one — a hand-placed session
+/// whose name holds `:` both reached `.index.jsonl`.
+fn legacy_paths_released_cores_indexed() -> Vec<(&'static str, &'static str)> {
+    let mut paths = vec![(".index.d", "legacy-20240101T000000Z-1")];
+    if cfg!(unix) {
+        paths.push(("proj", "copied:in-20240101T000000Z-2"));
+    }
+    paths
+}
+
+#[test]
+fn an_all_time_lookup_reads_legacy_paths_a_session_path_refuses() {
+    let scratch = ScratchDir::new("hindex-legacy-paths").unwrap();
+    let store = scratch.join("store");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut index = String::new();
+    let mut runs = Vec::new();
+    for (n, (slug, stem)) in legacy_paths_released_cores_indexed()
+        .into_iter()
+        .enumerate()
+    {
+        let id = id_at(1_704_067_200, n as u64 + 1);
+        let recorded = seed_run(&scratch.join("source"), &project, "legacy", id, "legacy");
+        let session = store.join(slug).join(format!("{stem}.jsonl"));
+        std::fs::create_dir_all(session.parent().unwrap()).unwrap();
+        std::fs::copy(&recorded, &session).unwrap();
+        index.push_str(&legacy_index_line(&store, &session, id));
+        runs.push((id, session));
+    }
+    std::fs::write(store.join(".index.jsonl"), &index).unwrap();
+    std::fs::write(store.join(".event-index.jsonl"), "").unwrap();
+    let before = snapshot(&store);
+    for (id, session) in &runs {
+        let shown = history_verb(&store, &["show", &id.to_string(), "--all-time"]);
+        assert!(
+            shown.status.success(),
+            "{}: exit {:?}\nstderr: {}",
+            session.display(),
+            shown.status.code(),
+            String::from_utf8_lossy(&shown.stderr)
+        );
+        assert_eq!(json(&shown)[0]["history_id"], id.to_string());
+    }
+    let listed = json(&history_verb(
+        &store,
+        &["list", "--all-projects", "--all-time"],
+    ));
+    let listed: BTreeSet<String> = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|session| session["path"].as_str().unwrap().to_string())
+        .collect();
+    for (_, session) in &runs {
+        let canonical = std::fs::canonicalize(session).unwrap();
+        assert!(
+            listed.contains(&session.display().to_string())
+                || listed.contains(&canonical.display().to_string()),
+            "{} missing from {listed:?}",
+            session.display()
+        );
+    }
+    assert_eq!(
+        snapshot(&store),
+        before,
+        "no file was created, modified or removed"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_all_time_lookup_streams_the_legacy_index_in_bounded_memory() {

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/nickderobertis/oneharness/compare/v0.20.0...v0.21.0) - 2026-09-30
+
+### Fixed
+
+- *(sdk)* [**breaking**] accept the in-flight session entry history show prints ([#1393](https://github.com/nickderobertis/oneharness/pull/1393))
+
 ## [0.20.0](https://github.com/nickderobertis/oneharness/compare/v0.19.1...v0.20.0) - 2026-09-30
 
 ### Added

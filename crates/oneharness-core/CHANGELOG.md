@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.22.0...oneharness-core-v0.23.0) - 2026-09-30
+
+### Fixed
+
+- *(sdk)* [**breaking**] accept the in-flight session entry history show prints ([#1393](https://github.com/nickderobertis/oneharness/pull/1393))
+
 ## [0.22.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.21.0...oneharness-core-v0.22.0) - 2026-09-30
 
 ### Added

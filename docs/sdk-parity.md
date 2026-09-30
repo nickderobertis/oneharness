@@ -84,8 +84,9 @@ tables below:
   consuming the contract has no use for, and saying `json` on every call is
   what let the CLI's default move to that view without any SDK noticing
   (`--compact` alone also selects `json`, so either flag would do; both are
-  sent). `runStream` sends neither `--format`: a stream is its own NDJSON
-  protocol, which the flag never changes.
+  sent). `runStream` sends both too: a stream with no `--format` is the
+  readable text view, so the NDJSON protocol the SDK parses is asked for by
+  name.
 * **`--bypass` / `--no-bypass`** are shorthands for `--mode`. One setting with
   two spellings is how a caller ends up passing both, which clap then refuses.
 
@@ -232,6 +233,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--stream` | _(always sent)_ | fixed |
 | `--prompt` | `prompt` | `--flag VALUE` |
 | `--prompt` | `batchPrompts` | `--flag VALUE` per element |
@@ -280,7 +282,6 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--bypass` | **deliberately none** | `mode: "bypass"` is the same request |
 | `--no-bypass` | **deliberately none** | `mode: "default"` is the same request |
 | `--no-stream` | **deliberately none** | this method streams by definition, so the negative half cannot apply |
-| `--format` | **deliberately none** | a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes |
 
 #### `list` — `oneharness list`
 

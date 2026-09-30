@@ -313,6 +313,8 @@
       "rust": "oneharness_core::io::run::run",
       "always": [
         "--compact",
+        "--format",
+        "json",
         "--stream"
       ],
       "bindings": [
@@ -597,10 +599,6 @@
         {
           "flag": "--no-stream",
           "reason": "this method streams by definition, so the negative half cannot apply"
-        },
-        {
-          "flag": "--format",
-          "reason": "a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes"
         }
       ]
     },
@@ -2533,7 +2531,7 @@
   "run_stream_envelope": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "RunStreamEnvelope",
-    "description": "One line of `oneharness run --stream` output.\n\nEvent lines carry normalized actions as they arrive. Exactly one terminal\nresult line carries the complete report unless the consumer closes the\nstream early. This is an output contract, so deserialization deliberately\ntolerates additive fields from newer producers.",
+    "description": "One line of `oneharness run --stream --format json` output (a bare `--stream`\nprints the readable text view instead).\n\nEvent lines carry normalized actions as they arrive. Exactly one terminal\nresult line carries the complete report unless the consumer closes the\nstream early. This is an output contract, so deserialization deliberately\ntolerates additive fields from newer producers.",
     "oneOf": [
       {
         "description": "A normalized action observed while the harness is still running.",

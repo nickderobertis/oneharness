@@ -497,10 +497,11 @@ contract), and beside an explicit `--format text` it is a usage error (exit 2)
 naming both flags.
 
 A **streaming run** prints by `--format` alone, whichever route turned the
-stream on (`--stream`, `stream = true` in config, or `ONEHARNESS_STREAM`):
-`--format json` (or `--compact`) is the NDJSON event/result protocol
-([Streaming](#streaming-events)); `--format text` is the readable stream — one
-line per event as it happens, then the text report:
+stream on (`--stream`, `stream = true` in config, or `ONEHARNESS_STREAM`). By
+default — and under `--format text` — it is the readable stream a person
+watches: one line per event as it happens, then the text report. A program
+that reads the stream asks for the NDJSON event/result protocol by name with
+`--format json` (or `--compact`) ([Streaming](#streaming-events)).
 
 ```text
 › I'll compare the products, then run both commands.
@@ -517,12 +518,8 @@ Each line is what the public
 [`oneharness_core::domain::render::render_event`](https://docs.rs/oneharness-core/latest/oneharness_core/domain/render/fn.render_event.html)
 returns for that event — its documentation is the one statement of the form,
 and the example above is test-pinned to it — so an embedder prints exactly
-what the CLI does. With no `--format`, a stream stays NDJSON in this release
-and prints, once per process on stderr:
-
-```text
-oneharness: warning: a streamed run with no --format prints NDJSON today, but the stream default becomes text in the next release; pass --format json to keep the NDJSON protocol (or --format text for the readable stream)
-```
+what the CLI does. Earlier releases printed NDJSON for a stream with no
+`--format`; a program that parses the stream passes `--format json`.
 
 ### Configuration
 
@@ -1177,7 +1174,8 @@ invalidating earlier ones):
   emit only decorative TUI text headlessly (confirmed by probing the live CLIs),
   so `events` stays `null` for them — the honest answer, not a gap.
 
-  **Streaming** (`oneharness run --stream <one harness> --format json`) emits
+  **Streaming** (`oneharness run --stream <one harness> --format json` — without
+  `--format json` a stream is the readable text view instead) emits
   each event as an NDJSON `{"type":"event","event":{…}}` line as it finishes,
   then a terminal `{"type":"result","report":{…}}` line with the full envelope. A
   consumer can **short-circuit** the moment it sees a disallowed action by
@@ -1263,8 +1261,9 @@ parse `stdout` themselves.
 
 #### Streaming events
 
-The CLI already emits the normalized events incrementally with `run --stream`,
-using the Rust-owned `RunStreamEnvelope` contract described above. Non-streaming
+The CLI already emits the normalized events incrementally with `run --stream
+--format json`, using the Rust-owned `RunStreamEnvelope` contract described
+above (a bare `run --stream` prints the same events as readable text lines). Non-streaming
 runs still return the same events at the end in `RunReport.results[].events`. It
 composes with [`--run-mode fallback`](#fallback-mode-first-that-runs-wins), so a
 consumer that needs a chain surviving a subscription limit does not have to give

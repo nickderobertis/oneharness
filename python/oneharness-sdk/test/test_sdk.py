@@ -424,6 +424,9 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(entry["events"][1]["input"]["command"], "echo hi")
             self.assertEqual(entry["events"][2]["output"], "still going")
         finally:
+            # `run_stream` is typed as an `AsyncIterator`, which declares no
+            # `aclose`; the generator it returns has one, and closing it ends
+            # the still-running subprocess.
             await cast("Any", stream).aclose()
 
     async def test_history_watch_filters_records_and_closes(self) -> None:

@@ -836,6 +836,8 @@ describe("OneHarness", () => {
 		expect(records[0]?.prompt).toBe("history sdk");
 		expect(records[0]?.name).toBe("node-session");
 		expect(records[0]?.status).toBe("ok");
+		// This session's run has finished, so its entry is a record; the cast
+		// only drops the in-flight half of `history()`'s return type.
 		const historyId = records[0]?.history_id as string | undefined;
 		if (!historyId) throw new Error("history record had no exact id");
 		const exact = await client.history({ session: historyId, historyDir });
@@ -987,6 +989,8 @@ describe("OneHarness", () => {
 				env: { MOCK_STDOUT: historyTrace },
 				bins: { codex: mock },
 			});
+			// Each run above has finished, so every entry is a record; the cast
+			// only drops the in-flight half of `history()`'s return type.
 			records.push(
 				...((await client.history({
 					session: name,

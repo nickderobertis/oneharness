@@ -582,7 +582,8 @@ class OneHarness:
         # The `--last`-suppresses-a-name rule is declared, not re-derived here:
         # the union deliberately accepts `{session, last: True}` and resolves it
         # to "the most recent", and the manifest binds `session` with
-        # `unless: "last"` so the builder renders only `--last`.
+        # `unless: "last"` so the builder renders only `--last`. The cast names
+        # what `_call` has already validated against `history_records`.
         return cast(
             "builtins.list[HistoryShowEntry]",
             await self._call(

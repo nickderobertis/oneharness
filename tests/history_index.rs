@@ -333,9 +333,7 @@ fn sparse(path: &Path, first_line: &str, size: u64) {
         .unwrap();
 }
 
-// ---------------------------------------------------------------------------
 // The contract document is pinned to the entry types.
-// ---------------------------------------------------------------------------
 
 /// The fields a `docs/history-index.md` table documents: every `` `name` `` in
 /// its first column, `a` / `b` rows naming two.
@@ -415,9 +413,7 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
     assert!(doc.contains(&format!("(`{INDEX_SCHEMA_VERSION}`)")));
 }
 
-// ---------------------------------------------------------------------------
 // Recording reads nothing but its own files, however large the store.
-// ---------------------------------------------------------------------------
 
 /// A store crowded with everything a recording run must not touch: a legacy
 /// index and event index and lock (mode `000`, sparse — sized with the store),
@@ -719,6 +715,10 @@ fn measure_helper() {
     let request: measured::Request =
         serde_json::from_slice(&std::fs::read(request).unwrap()).unwrap();
     let report = measured::serve(&request);
+    assert!(
+        report.max_rss_kib > 0,
+        "wait4 reported no peak RSS for the measured command"
+    );
     std::fs::write(out, serde_json::to_vec(&report).unwrap()).unwrap();
 }
 
@@ -802,6 +802,11 @@ fn library_recording_child() {
         RunControls::default(),
     )
     .expect("a valid hermetic run");
+    assert_eq!(outcome.report.results[0].status, report::Status::Ok);
+    assert!(
+        outcome.report.history_file.is_some(),
+        "history was recorded"
+    );
     println!("{}", serde_json::to_string(&outcome.report).unwrap());
 }
 
@@ -900,9 +905,7 @@ fn recording_reads_nothing_but_its_own_files_however_large_the_store() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // The writer: no lock, one write, a torn tail never swallows the next entry.
-// ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 fn flock_exclusive(path: &Path) -> std::fs::File {
@@ -1034,9 +1037,7 @@ fn concurrent_writers_each_land_one_whole_entry_and_a_torn_tail_swallows_none() 
     assert_eq!(lines[0], torn.as_slice());
 }
 
-// ---------------------------------------------------------------------------
 // An entry's size never depends on what it points at.
-// ---------------------------------------------------------------------------
 
 /// An entry with the fields that name its session (whose length follows the
 /// clock and the pid, not the content) and its span (whose digits follow the
@@ -1140,9 +1141,7 @@ fn an_entry_is_the_same_size_for_a_one_mebibyte_prompt_or_event_as_for_a_short_o
     );
 }
 
-// ---------------------------------------------------------------------------
 // Past runs over two UTC dates stay found; nothing rewrites what was there.
-// ---------------------------------------------------------------------------
 
 struct DatedStore {
     _scratch: ScratchDir,
@@ -1277,10 +1276,8 @@ fn past_runs_on_two_utc_dates_stay_found_and_nothing_rewrites_the_store() {
     let _ = &dated.project;
 }
 
-// ---------------------------------------------------------------------------
 // A watcher across a new UTC date's segment, a late closing line, and a
 // record an older core appends to the legacy index.
-// ---------------------------------------------------------------------------
 
 struct Watch {
     child: std::process::Child,
@@ -1498,9 +1495,82 @@ fn legacy_index_line(store: &Path, session: &Path, id: HistoryId) -> String {
     )
 }
 
-// ---------------------------------------------------------------------------
+#[test]
+fn a_watch_starts_from_since_or_from_all_time_instead_of_today() {
+    let scratch = ScratchDir::new("hindex-watch-start").unwrap();
+    let store = scratch.join("store");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let old = id_at(now - 20 * 86_400, 1);
+    let current = id_at(now, 2);
+    seed_run(&store, &project, "old", old, "old");
+    seed_run(&store, &project, "current", current, "current");
+    // A run only the legacy index an older core kept names.
+    let legacy = id_at(now - 30 * 86_400, 3);
+    std::fs::write(
+        store.join(".index.jsonl"),
+        seed_legacy_only(&store, &project, legacy),
+    )
+    .unwrap();
+    let since = today().add_days(-20).to_string();
+
+    // --since: every segment from that date on, from its first entry; the
+    // legacy index only from its size at open.
+    let watch = Watch::start(&store, &["--since", &since, "--events"]);
+    let mut seen = watch.until_records(&[old, current]);
+    let later = id_at(now, 4);
+    seed_run(&store, &project, "later", later, "later");
+    seen.extend(watch.until_records(&[later]));
+    std::thread::sleep(Duration::from_millis(400));
+    seen.extend(watch.lines.try_iter());
+    let mut records = records_in(&seen);
+    records.sort();
+    let mut expected = vec![old.to_string(), current.to_string(), later.to_string()];
+    expected.sort();
+    assert_eq!(records, expected, "--since");
+    assert!(
+        event_runs_in(&seen).contains(&old.to_string()),
+        "--since --events"
+    );
+    drop(watch);
+
+    // --all-time: every segment and the legacy index from its first byte.
+    let watch = Watch::start(&store, &["--all-time"]);
+    let mut seen = watch.until_records(&[old, current, later, legacy]);
+    std::thread::sleep(Duration::from_millis(400));
+    seen.extend(watch.lines.try_iter());
+    let mut records = records_in(&seen);
+    records.sort();
+    let mut expected = vec![
+        old.to_string(),
+        current.to_string(),
+        later.to_string(),
+        legacy.to_string(),
+    ];
+    expected.sort();
+    assert_eq!(records, expected, "--all-time, each once");
+    drop(watch);
+
+    // A start and a cursor are two answers to one question.
+    let mut command = oneharness();
+    command
+        .args([
+            "history",
+            "watch",
+            "--all-time",
+            "--after",
+            &current.to_string(),
+        ])
+        .args(["--history-dir", &store.display().to_string()]);
+    let refused = run_within(command, Duration::from_secs(30));
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+}
+
 // Each reader reads only the segments the contract names for it.
-// ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 #[test]
@@ -1689,9 +1759,7 @@ fn each_reader_opens_only_the_segments_its_window_names() {
     }
 }
 
-// ---------------------------------------------------------------------------
 // A store an older core wrote: readable with no conversion.
-// ---------------------------------------------------------------------------
 
 struct LegacyStore {
     _scratch: ScratchDir,
@@ -1846,9 +1914,7 @@ fn an_all_time_lookup_streams_the_legacy_index_in_bounded_memory() {
     );
 }
 
-// ---------------------------------------------------------------------------
 // reindex: sessions copied in from another store become findable, once.
-// ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 #[test]

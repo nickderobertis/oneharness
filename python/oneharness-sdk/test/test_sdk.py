@@ -16,6 +16,7 @@ from typing import Any, cast
 
 from oneharness_sdk import (
     ContractError,
+    HistoryListOptions,
     HistoryNotFoundError,
     OneHarness,
     OneHarnessProcessError,
@@ -896,13 +897,13 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reindexed["entries_added"], 0)
         self.assertEqual(reindexed["files_read"], 1)
         self.assertEqual(reindexed["unreadable"], [])
-        for window, expected in (
-            ({"since": "2000-01-01"}, 1),
-            ({"all_time": True}, 1),
-            ({"since": "9999-12-31"}, 0),
-        ):
-            listed = await client.history_list(cast("Any", {"history_dir": history_dir, **window}))
-            self.assertEqual(len(listed), expected, window)
+        windows: list[tuple[HistoryListOptions, int]] = [
+            ({"history_dir": history_dir, "since": "2000-01-01"}, 1),
+            ({"history_dir": history_dir, "all_time": True}, 1),
+            ({"history_dir": history_dir, "since": "9999-12-31"}, 0),
+        ]
+        for options, expected in windows:
+            self.assertEqual(len(await client.history_list(options)), expected, options)
 
         dry = await client.history_clear({"history_dir": history_dir})
         self.assertIs(dry["dry_run"], True)

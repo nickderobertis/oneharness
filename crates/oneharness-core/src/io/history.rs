@@ -2051,25 +2051,26 @@ mod tests {
         fs::create_dir_all(&project_dir).unwrap();
         let path = project_dir.join("interrupted.jsonl");
         let run_id = HistoryId::from_uuid(uuid::Uuid::now_v7());
+        let event = crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: Some("partial".to_string()),
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+            timing_source: None,
+        };
         let line = HistoryLine::Event(HistoryEventLine {
             schema_version: history::SCHEMA_VERSION.to_string(),
             run_id,
             harness: "codex".to_string(),
             variant: None,
             harness_id: Some("codex".to_string()),
-            event: crate::domain::events::ActionEvent {
-                kind: "message".to_string(),
-                name: None,
-                input: None,
-                output: Some("partial".to_string()),
-                index: 0,
-                tool_call_id: None,
-                started_at: None,
-                finished_at: None,
-                duration_ms: None,
-                status: None,
-                timing_source: None,
-            },
+            event: event.clone(),
             session_name: None,
         });
         fs::write(
@@ -2086,13 +2087,11 @@ mod tests {
         assert_eq!(listed[0].record_count, 0);
         assert_eq!(listed[0].name, "interrupted");
         assert_eq!(listed[0].harnesses, ["codex"]);
-        let displayed = read_session_display(&path).unwrap();
-        let [HistoryShowEntry::Incomplete(in_flight)] = displayed.as_slice() else {
-            panic!("expected one in-flight entry, got {displayed:?}");
-        };
-        assert_eq!(in_flight.run_id(), run_id);
-        assert_eq!(in_flight.harness(), "codex");
-        assert_eq!(in_flight.events()[0].output.as_deref(), Some("partial"));
+        let expected = IncompleteHistoryRun::new(run_id, "codex".to_string(), vec![event]);
+        assert_eq!(
+            read_session_display(&path).unwrap(),
+            [HistoryShowEntry::Incomplete(expected.unwrap())]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

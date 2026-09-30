@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.23.0...oneharness-core-v0.24.0) - 2026-09-30
+
+### Added
+
+- *(history)* [**breaking**] dated pointer index segments, no implicit scans ([#1394](https://github.com/nickderobertis/oneharness/pull/1394))
+
 ## [0.23.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.22.0...oneharness-core-v0.23.0) - 2026-09-30
 
 ### Fixed

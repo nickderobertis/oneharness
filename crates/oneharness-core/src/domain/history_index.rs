@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::fmt;
+use std::num::NonZeroU32;
 use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator};
@@ -193,8 +194,8 @@ impl JsonSchema for UtcDate {
 /// Which dates of the index a listing reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryWindow {
-    /// The last `days` UTC days, today included (`0` and `1` both mean today).
-    Recent { days: u32 },
+    /// The last `days` UTC days, today included (`1` means today alone).
+    Recent { days: NonZeroU32 },
     /// Every date from this one on.
     Since(UtcDate),
     /// Every segment, plus the legacy index files an older core keeps.
@@ -204,9 +205,15 @@ pub enum HistoryWindow {
 impl Default for HistoryWindow {
     /// The last 7 UTC days, today included.
     fn default() -> Self {
-        HistoryWindow::Recent { days: 7 }
+        HistoryWindow::Recent { days: WEEK }
     }
 }
+
+/// The default window's length, the one place a non-zero day count is spelt.
+const WEEK: NonZeroU32 = match NonZeroU32::new(7) {
+    Some(days) => days,
+    None => unreachable!(),
+};
 
 impl HistoryWindow {
     /// The earliest segment date this window reads, given today's UTC date;
@@ -214,9 +221,7 @@ impl HistoryWindow {
     #[must_use]
     pub fn earliest(self, today: UtcDate) -> Option<UtcDate> {
         match self {
-            HistoryWindow::Recent { days } => {
-                Some(today.add_days(-i64::from(days.saturating_sub(1))))
-            }
+            HistoryWindow::Recent { days } => Some(today.add_days(1 - i64::from(days.get()))),
             HistoryWindow::Since(date) => Some(date),
             HistoryWindow::AllTime => None,
         }
@@ -603,7 +608,10 @@ mod tests {
             Some("2026-09-23")
         );
         assert_eq!(
-            earliest(HistoryWindow::Recent { days: 0 }).as_deref(),
+            earliest(HistoryWindow::Recent {
+                days: NonZeroU32::MIN
+            })
+            .as_deref(),
             Some("2026-09-29")
         );
         assert_eq!(

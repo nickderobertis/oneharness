@@ -714,7 +714,10 @@ fn measure_helper() {
         std::env::var("HISTORY_INDEX_MEASURE"),
         std::env::var("HISTORY_INDEX_MEASURE_OUT"),
     ) else {
-        return;
+        panic!(
+            "measure_helper is entered only by measured::measure, which sets \
+             HISTORY_INDEX_MEASURE and HISTORY_INDEX_MEASURE_OUT; run the tests that call it"
+        );
     };
     let request: measured::Request =
         serde_json::from_slice(&std::fs::read(request).unwrap()).unwrap();
@@ -784,7 +787,10 @@ fn library_recording_child() {
         std::env::var("HISTORY_INDEX_CHILD_STORE"),
         std::env::var("HISTORY_INDEX_CHILD_CWD"),
     ) else {
-        return;
+        panic!(
+            "library_recording_child is entered only by the recording tests, which set \
+             HISTORY_INDEX_CHILD_STORE and HISTORY_INDEX_CHILD_CWD; run those instead"
+        );
     };
     let outcome = run(
         &RunRequest {

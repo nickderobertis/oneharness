@@ -21,6 +21,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::num::NonZeroU32;
 use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -1677,7 +1678,9 @@ impl HistoryWatcher {
                 (Some(date), HistoryWindow::Since(date))
             }
             None => {
-                let window = window.unwrap_or(HistoryWindow::Recent { days: 1 });
+                let window = window.unwrap_or(HistoryWindow::Recent {
+                    days: NonZeroU32::MIN,
+                });
                 (window.earliest(today), window)
             }
         };

@@ -101,6 +101,15 @@ if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${B
       echo '  --> src/commands/history.rs:15:37'
       echo 'error: could not compile `oneharness` (lib) due to 1 previous error'
       echo 'error: failed to verify package tarball'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == cached-package-unrelated ]]; then
+      # The unpacked package on a warm cache failing for its OWN reason: the
+      # location matches the transition, the diagnostic names no core item.
+      echo '   Verifying oneharness v0.19.1 (/repo)'
+      echo '   Compiling oneharness v0.19.1 (/repo/target/package/oneharness-0.19.1)'
+      echo 'error[E0425]: cannot find value `typo` in this scope'
+      echo '  --> src/commands/history.rs:15:37'
+      echo 'error: could not compile `oneharness` (lib) due to 1 previous error'
+      echo 'error: failed to verify package tarball'
     elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == cached-workspace-source ]]; then
       # The same warm cache with the binary compiled from the WORKSPACE, not
       # the package directory: no core line at all, and the binary's own bug.
@@ -350,6 +359,16 @@ if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=cached-core just package
   fail "a cached-core failure with no pending core release unexpectedly passed"
 fi
 assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
+
+# Compiling from the unpacked package is not enough on its own: with a core
+# release pending, a compile error there that names no unresolved core item is
+# the binary's own bug and must be refused like any other.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=cached-package-unrelated COMMIT_KIND=fix \
+  just package-crates >"$work/out" 2>&1; then
+  fail "an unrelated compile failure in the unpacked package unexpectedly read as the registry transition"
+fi
+assert_contains "failed for a reason other than its registry-resolved oneharness-core transition" "$work/out"
+assert_contains 'cannot find value' "$work/out"
 
 # A warm cache must not widen what reads as the transition: a binary compiled
 # from the workspace is its own bug, even with a core release pending.

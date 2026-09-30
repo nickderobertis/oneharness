@@ -78,6 +78,10 @@ sed -E "s/${esc}\[[0-9;]*[a-zA-Z]//g" "$output_file" >"$plain_output"
 # under `package/oneharness-<version>`, whose manifest carries no path, so the
 # core it links is the registry's whatever the cache holds. The binary itself
 # is always rebuilt there when it fails, since a failed build caches nothing.
+# That location alone would excuse ANY compile error in the packaged binary, so
+# the arm also requires rustc's own name-resolution error (unresolved import,
+# failed to resolve, cannot find) for an item under `oneharness_core::` — the
+# one shape a core API the registry lacks produces.
 core_version_unpublished=false
 registry_core_mismatch=false
 if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$plain_output" &&
@@ -96,6 +100,7 @@ elif grep -Eq '^[[:space:]]*Compiling oneharness-core v[0-9]+\.[0-9]+\.[0-9]+[[:
   grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
 elif grep -Eq '^[[:space:]]*Compiling oneharness v[0-9]+\.[0-9]+\.[0-9]+ \(.*[/\\]package[/\\]oneharness-[0-9]+\.[0-9]+\.[0-9]+\)[[:space:]]*$' "$plain_output" &&
+  grep -Eq '^error\[E0(412|422|425|432|433|531)\]: .*`oneharness_core::' "$plain_output" &&
   grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
 fi

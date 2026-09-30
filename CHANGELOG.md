@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.1](https://github.com/nickderobertis/oneharness/compare/v0.19.0...v0.19.1) - 2026-09-30
+
+### Fixed
+
+- *(release)* read each published crate's version from its own manifest ([#1391](https://github.com/nickderobertis/oneharness/pull/1391))
+
 ## [0.19.0](https://github.com/nickderobertis/oneharness/compare/v0.18.0...v0.19.0) - 2026-09-30
 
 ### Added

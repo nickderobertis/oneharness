@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a streamed `oneharness run` (streaming turned on by `--stream`,
+  `stream = true` in config, or `ONEHARNESS_STREAM`) with no `--format` now
+  prints the readable text stream — one line per event, then the text report,
+  exactly what `--format text` prints — instead of NDJSON, and the warning the
+  previous release printed is gone. **Migration:** a consumer that parses
+  `oneharness run`'s streamed output must pass `--format json`, which keeps the
+  NDJSON event/result protocol unchanged. The Node and Python SDKs'
+  `runStream` / `run_stream` already pass it.
+
 ## [0.19.1](https://github.com/nickderobertis/oneharness/compare/v0.19.0...v0.19.1) - 2026-09-30
 
 ### Fixed

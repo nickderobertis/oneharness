@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.21.0...oneharness-core-v0.22.0) - 2026-09-30
+
+### Added
+
+- *(stream)* [**breaking**] stream readable text by default, NDJSON by an explicit --format json ([#1395](https://github.com/nickderobertis/oneharness/pull/1395))
+
 ## [0.21.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.20.0...oneharness-core-v0.21.0) - 2026-09-30
 
 ### Added

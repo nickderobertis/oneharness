@@ -1844,7 +1844,7 @@ impl HistoryWatcher {
         {
             return;
         }
-        let path = self.dir.join(&entry.session_path);
+        let path = entry.session_path.under(&self.dir);
         if let Ok(Some(run)) = find_run_line(&path, entry.history_id, entry.span) {
             self.seen.insert(entry.history_id);
             self.pending.push_back(run.materialize(Vec::new()));
@@ -1860,7 +1860,7 @@ impl HistoryWatcher {
             || !self.in_project(slug)
             || !record.labels.matches(&self.labels)
             || !self.in_session(stem, Some(&record.name))
-            || !self.dir.join(&entry.session_path).is_file()
+            || !session_file(&self.dir, slug, stem).is_file()
         {
             return;
         }
@@ -1879,7 +1879,7 @@ impl HistoryWatcher {
         {
             return;
         }
-        let path = self.dir.join(&entry.session_path);
+        let path = entry.session_path.under(&self.dir);
         if let Ok(Some(line)) = find_event_line(&path, entry.run_id, entry.event_index, entry.span)
         {
             self.pending_events.push_back(line);
@@ -1903,7 +1903,7 @@ impl HistoryWatcher {
                     .as_ref()
                     .map(HistorySessionName::as_str),
             )
-            || !self.dir.join(&entry.session_path).is_file()
+            || !session_file(&self.dir, slug, stem).is_file()
         {
             return;
         }
@@ -2106,7 +2106,7 @@ fn collect_sessions(
             continue;
         }
         let (slug, stem) = session_path.parts();
-        let path = dir.join(&session_path);
+        let path = session_path.under(dir);
         // An entry whose session was cleared is skipped here, at one `stat`.
         if !path.is_file() {
             continue;
@@ -2276,7 +2276,7 @@ pub fn find_session_path(
                 return ControlFlow::Continue(());
             };
             if entry.session_path().parts().1 == id {
-                found = Some(dir.join(entry.session_path()));
+                found = Some(entry.session_path().under(dir));
                 ControlFlow::Break(())
             } else {
                 ControlFlow::Continue(())
@@ -2368,6 +2368,13 @@ pub fn find_record_by_id_in(
     Err(not_found())
 }
 
+/// The session file `stem` names under project `slug` of the store `dir`, one
+/// component at a time — how every index path, current or legacy, is opened
+/// (see [`index::SessionPath::under`] for why never by joining its text).
+fn session_file(dir: &Path, slug: &str, stem: &str) -> PathBuf {
+    dir.join(slug).join(format!("{stem}.{SESSION_EXT}"))
+}
+
 /// The record `id` names in the session file an entry points at, with its
 /// events; `None` when the path is not a session path, the file is gone, or it
 /// holds no such record.
@@ -2376,10 +2383,10 @@ fn record_in_session(
     session_path: &str,
     id: HistoryId,
 ) -> Result<Option<HistoryRecord>, OneharnessError> {
-    if !index::valid_session_path(session_path) {
+    let Some((slug, stem)) = index::session_path_parts(session_path) else {
         return Ok(None);
-    }
-    match read_session(&dir.join(session_path)) {
+    };
+    match read_session(&session_file(dir, slug, stem)) {
         Ok(records) => Ok(records.into_iter().find(|record| record.history_id == id)),
         Err(OneharnessError::HistoryIo { source, .. })
             if source.kind() == std::io::ErrorKind::NotFound =>
@@ -3701,6 +3708,10 @@ mod tests {
     #[test]
     fn a_session_is_found_by_its_ids_date_or_by_name_under_a_project() {
         let dir = temp_dir("find-session");
+        // The writer records under the canonical store (`/private/var/...` on
+        // macOS, a `\\?\` verbatim path on Windows), and a lookup answers
+        // under the directory it is handed, so the two are compared as one.
+        let dir = fs::canonicalize(&dir).unwrap();
         let project = temp_dir("find-session-project");
         let session = closed_run(&dir, &project, "findable", id_at(now_secs(), 1), &[]);
         let stem = session.file_stem().unwrap().to_str().unwrap();

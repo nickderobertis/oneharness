@@ -348,9 +348,15 @@ impl<'de> Deserialize<'de> for SessionPath {
     }
 }
 
-impl AsRef<std::path::Path> for SessionPath {
-    fn as_ref(&self) -> &std::path::Path {
-        std::path::Path::new(&self.0)
+impl SessionPath {
+    /// The session file this path names under the store `dir`, joined one
+    /// component at a time. Never `dir.join` of the `/`-spelled text: under a
+    /// Windows verbatim (`\\?\`) directory — what canonicalizing gives — a
+    /// `/` is not a separator, so the joined path names no file.
+    #[must_use]
+    pub fn under(&self, dir: &std::path::Path) -> std::path::PathBuf {
+        let (slug, stem) = self.parts();
+        dir.join(slug).join(format!("{stem}.{SESSION_FILE_EXT}"))
     }
 }
 

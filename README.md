@@ -2264,19 +2264,11 @@ oneharness history clear [--all-projects] [--yes]            # dry-run unless --
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 **Index.** Beside the sessions, `<history_dir>/.index.d/` holds a dated,
-append-only index of small pointer entries — `runs-YYYY-MM-DD.ndjson` and
-`events-YYYY-MM-DD.ndjson`, by UTC date — so recording a run appends one line
-and reads nothing else, however large the store grows, and nothing ever deletes
-or rewrites a segment. The readers read only the dates their window names:
-`list`, `show <name>` and `show --last` read the last 7 UTC days unless
-`--since` or `--all-time` says otherwise; `show <history-id>` reads the one
-segment its id's date names; `watch` starts at the current UTC day (or after
-`--after`). Only `history reindex`, `migrate`, `clear` and `--all-time` read the
-whole store, and none runs implicitly. A store an older oneharness wrote (its
-runs are in the legacy `.index.jsonl`, not a segment) stays readable: `show
-<history-id> --all-time` finds any of its runs, `history show <session-id>
---project <dir>` and a pointer line's `history_file` open a session by name with
-no index, and one `history reindex` makes them all findable by id and by date.
+append-only index of small pointer entries, one segment per UTC date, so
+recording a run costs the same however large the store grows and nothing ever
+rewrites or deletes history. The readers read recent dates unless `--since` or
+`--all-time` widens them, and `history reindex` indexes a store an older
+oneharness wrote, or session files copied in from another store.
 <!-- llmlint: ignore-block[no_redundant_instruction_pointers] The task this section implements requires the README's history section to point at the one contract declaration rather than restate it; README.md is read by people and SDK consumers, not loaded as agent instructions, so AGENTS.md naming the same file does not reach them. -->
 The layout, the entry fields, which segments each reader reads and how an older
 core sharing the directory behaves are declared in

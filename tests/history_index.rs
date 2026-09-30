@@ -42,6 +42,24 @@ fn mock_bin() -> PathBuf {
     path
 }
 
+/// `--env` for the mock harness a `run` drives: sends its coverage profile
+/// somewhere `just coverage` does not collect from.
+///
+/// A harness torn down after the TERM grace (which a loaded parallel suite
+/// reaches often enough to be a race, not a property of one test) never
+/// finishes its profile, and one truncated `.profraw` in the target directory
+/// fails the whole `llvm-profdata merge`. Same redirect `tests/cli.rs` applies
+/// to every run; the binary under test keeps its own coverage, since `--env`
+/// reaches only the harness process. Harmless when nothing is instrumented.
+fn mock_profile_redirect() -> String {
+    format!(
+        "LLVM_PROFILE_FILE={}",
+        std::env::temp_dir()
+            .join("oneharness-killed-mock-%p.profraw")
+            .display()
+    )
+}
+
 const CODEX_TELEMETRY: &str = concat!(
     "{\"type\":\"turn.started\"}\n",
     "{\"type\":\"item.completed\",\"item\":{\"id\":\"m1\",\"type\":\"agent_message\",\"text\":\"indexed\"}}\n",
@@ -789,6 +807,7 @@ fn recording_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
                 .env("MOCK_SLEEP_MS", "400")
                 .args(["run", "--harness", "codex", "--prompt", "record me"])
                 .args(["--bin", &format!("codex={}", mock_bin().display())])
+                .args(["--env", &mock_profile_redirect()])
                 .args(["--history", "--history-dir", &store, "--cwd", &project])
                 .args(["--bypass", "--format", "json"]);
             if matches!(recorder, Recorder::CliStreaming) {
@@ -839,10 +858,12 @@ fn library_recording_child() {
         Some(n) => vec![
             format!("MOCK_STDOUT={}", long_turn_stdout(n)),
             format!("MOCK_STREAM_DELAY_MS={LONG_TURN_EVENT_GAP_MS}"),
+            mock_profile_redirect(),
         ],
         None => vec![
             format!("MOCK_STDOUT={CODEX_TELEMETRY}"),
             "MOCK_SLEEP_MS=400".to_string(),
+            mock_profile_redirect(),
         ],
     };
     struct Counting(usize);
@@ -1204,6 +1225,7 @@ fn recording_takes_no_lock_while_another_process_holds_every_lock_file() {
             .env("MOCK_STDOUT", CODEX_TELEMETRY)
             .args(["run", "--harness", "codex", "--prompt", "unlocked"])
             .args(["--bin", &format!("codex={}", mock_bin().display())])
+            .args(["--env", &mock_profile_redirect()])
             .args(["--history", "--history-dir", &store.display().to_string()])
             .args(["--cwd", &project.display().to_string(), "--bypass"])
             .args(["--format", "json"]);
@@ -1249,6 +1271,7 @@ fn concurrent_writers_each_land_one_whole_entry_and_a_torn_tail_swallows_none() 
                 .env("MOCK_STDOUT", CODEX_TELEMETRY)
                 .args(["run", "--harness", "codex", "--prompt", "concurrent"])
                 .args(["--bin", &format!("codex={}", mock_bin().display())])
+                .args(["--env", &mock_profile_redirect()])
                 .args(["--history", "--history-dir", &store.display().to_string()])
                 .args(["--history-name", &format!("writer-{index}")])
                 .args(["--cwd", &project.display().to_string(), "--bypass"])
@@ -1323,6 +1346,7 @@ fn an_entry_is_the_same_size_for_a_one_mebibyte_prompt_or_event_as_for_a_short_o
             .args(["run", "--harness", "codex"])
             .args(["--prompt-file", &prompt_file.display().to_string()])
             .args(["--bin", &format!("codex={}", mock_bin().display())])
+            .args(["--env", &mock_profile_redirect()])
             .args(["--history", "--history-dir", &store.display().to_string()])
             .args([
                 "--history-name",
@@ -1537,6 +1561,12 @@ impl Watch {
     fn start(store: &Path, extra: &[&str]) -> Watch {
         use std::io::BufRead;
         let mut child = oneharness()
+            // Stopped with SIGKILL when dropped, so it never writes a complete
+            // coverage profile: keep the truncated one out of the collector.
+            .env(
+                "LLVM_PROFILE_FILE",
+                std::env::temp_dir().join("oneharness-killed-%p.profraw"),
+            )
             .args(["history", "watch", "--all-projects", "--format", "jsonl"])
             .args(["--history-dir", &store.display().to_string()])
             .args(extra)

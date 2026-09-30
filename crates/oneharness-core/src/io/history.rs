@@ -813,6 +813,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), OneharnessError> {
 /// closing record. Read only — by the all-time readers and a watcher's tail.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LegacyIndexEntry {
+    // llmlint: ignore[invalid_states_unrepresentable] this is the text an older core wrote, and released cores (v0.19.1's `rebuild_index_locked` walk) indexed any `<subdir>/<file>.jsonl` in the store, so a legacy line can name paths `SessionPath` refuses: `.index.d/<session>.jsonl` (the slug a released core minted for a project at `/.index.d`, now the segment directory), or a hand-placed file whose name holds `:`. Every reader validates it at use (`index::session_path_parts`) before opening anything.
     session_path: String,
     record: HistoryRunRecord,
 }
@@ -820,6 +821,7 @@ struct LegacyIndexEntry {
 /// The entry shape an older core writes to [`LEGACY_EVENT_INDEX_FILE`].
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LegacyEventIndexEntry {
+    // llmlint: ignore[invalid_states_unrepresentable] this is the text an older core wrote, and released cores (v0.19.1's `rebuild_index_locked` walk) indexed any `<subdir>/<file>.jsonl` in the store, so a legacy line can name paths `SessionPath` refuses: `.index.d/<session>.jsonl` (the slug a released core minted for a project at `/.index.d`, now the segment directory), or a hand-placed file whose name holds `:`. Every reader validates it at use (`index::session_path_parts`) before opening anything.
     session_path: String,
     labels: HistoryLabels,
     line: HistoryEventLine,

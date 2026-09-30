@@ -76,9 +76,7 @@ pub enum Format {
 pub enum StdoutFormat {
     /// Neither flag: the text view, the default.
     DefaultText,
-    /// `--format text`, said outright. Reads as the default everywhere but
-    /// where something else claims stdout — a `run` that streams refuses it,
-    /// and streams under the default.
+    /// `--format text`, said outright. Reads exactly as the default.
     Text,
     /// `--format json`, or `--compact` alone (which implies it): the JSON
     /// document, pretty unless `compact`.
@@ -925,10 +923,10 @@ pub struct RunArgs {
     /// the one that runs publishes, and the chain selects the same candidate a
     /// buffered run would. Also settable via `stream` in config or
     /// ONEHARNESS_STREAM — most naturally in the config of a consumer that always
-    /// reads events, so no wrapper has to inject the flag per invocation. A
-    /// streaming run keeps its NDJSON protocol whether or not `--format json`
-    /// is named; an explicit `--format text` beside one (however the stream was
-    /// selected) is a usage error.
+    /// reads events, so no wrapper has to inject the flag per invocation.
+    /// However the stream was selected, stdout is the readable text stream (one
+    /// line per event, then the text report) unless `--format json` asks for
+    /// the NDJSON event/result protocol a program reads.
     // llmlint: ignore[invalid_states_unrepresentable] clap's `conflicts_with` makes both-true unreachable at the only boundary that constructs RunArgs, and this is the established spelling of a config-overriding toggle here (`--history`/`--no-history`); a lone Option<bool> would break that symmetry and clap's own `--no-` flag rendering.
     #[arg(long, conflicts_with = "no_stream")]
     pub stream: bool,

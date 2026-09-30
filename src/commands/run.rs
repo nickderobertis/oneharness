@@ -4,8 +4,8 @@
 //! [`RunReport`] and publishes streamed events to a caller-supplied sink. All
 //! that is left here is the CLI's own three jobs: turn the clap arguments into a
 //! [`RunRequest`], own stdout (the buffered report as JSON or `--format text`,
-//! or a streamed run's events — the NDJSON stream protocol, or one readable
-//! line each under `--format text`), and map the outcome to a process exit
+//! or a streamed run's events — one readable line each by default, or the
+//! NDJSON stream protocol under `--format json`), and map the outcome to a process exit
 //! code.
 
 use oneharness_core::domain::events::ActionEvent;
@@ -65,12 +65,7 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
             // The NDJSON protocol: its consumer has been reading `event` lines
             // all along, and the terminal `result` line is the envelope that
             // closes them.
-            StreamView::Ndjson { deprecated_default } => {
-                if deprecated_default {
-                    warn_stream_default_changes();
-                }
-                emit_stream_result(&outcome.report)?;
-            }
+            StreamView::Ndjson => emit_stream_result(&outcome.report)?,
         }
     } else {
         print_report(&outcome.report, args.stdout, render_report_text)?;
@@ -86,39 +81,20 @@ pub fn run(args: &RunArgs) -> Result<i32, OneharnessError> {
 /// `ONEHARNESS_STREAM`), so every route to a stream reads the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StreamView {
-    /// An explicit `--format text`: one [`render_event`] line per event.
+    /// No `--format`, or `--format text`: one [`render_event`] line per event,
+    /// then the text report — the same default every other stdout has.
     Text,
-    /// The `RunStreamEnvelope` NDJSON protocol. `deprecated_default` when no
-    /// `--format` chose it: this release keeps NDJSON as the stream default
-    /// and says, once, that the next one makes it text.
-    Ndjson { deprecated_default: bool },
+    /// `--format json` (or `--compact`, which implies it): the
+    /// `RunStreamEnvelope` NDJSON protocol, asked for by name.
+    Ndjson,
 }
 
 impl StreamView {
     fn of(format: StdoutFormat) -> Self {
         match format {
-            StdoutFormat::Text => StreamView::Text,
-            StdoutFormat::Json { .. } => StreamView::Ndjson {
-                deprecated_default: false,
-            },
-            StdoutFormat::DefaultText => StreamView::Ndjson {
-                deprecated_default: true,
-            },
+            StdoutFormat::DefaultText | StdoutFormat::Text => StreamView::Text,
+            StdoutFormat::Json { .. } => StreamView::Ndjson,
         }
-    }
-}
-
-/// What a stream with no `--format` says on stderr. `README.md` quotes it.
-const STREAM_DEFAULT_WARNING: &str = "oneharness: warning: a streamed run with no --format \
-     prints NDJSON today, but the stream default becomes text in the next release; pass \
-     --format json to keep the NDJSON protocol (or --format text for the readable stream)";
-
-/// Say — once per process, however many runs or events reach it — that a
-/// stream with no `--format` will print text from the next release.
-fn warn_stream_default_changes() {
-    static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        eprintln!("{STREAM_DEFAULT_WARNING}");
     }
 }
 
@@ -155,10 +131,7 @@ impl EventSink for StdoutEvents {
                 Some(line) => line,
                 None => return SinkStep::Continue,
             },
-            StreamView::Ndjson { deprecated_default } => {
-                if deprecated_default {
-                    warn_stream_default_changes();
-                }
+            StreamView::Ndjson => {
                 let envelope = RunStreamEnvelope::Event {
                     event: event.clone(),
                 };
@@ -260,15 +233,6 @@ impl From<&RunArgs> for RunRequest {
 mod tests {
     use super::*;
     use clap::Parser;
-
-    #[test]
-    fn the_readme_quotes_the_stream_default_warning() {
-        let readme = include_str!("../../README.md").replace("\r\n", "\n");
-        assert!(
-            readme.contains(&format!("```text\n{STREAM_DEFAULT_WARNING}\n```")),
-            "README.md must quote the stream-default warning verbatim:\n{STREAM_DEFAULT_WARNING}"
-        );
-    }
 
     /// Parse a `run` command line into its args, exactly as `main` does.
     fn args_of(argv: &[&str]) -> RunArgs {

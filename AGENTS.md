@@ -197,8 +197,8 @@ Use the `just` recipes; do not hand-roll equivalents.
   orchestration lives in `oneharness_core::io::run` behind
   `run(&RunRequest, RunControls) -> Result<RunOutcome, _>`, which **returns** the
   report; `src/commands/run.rs` only converts clap's `RunArgs` into `RunRequest`,
-  owns stdout (the buffered report, or the NDJSON stream protocol through its
-  `EventSink`), and maps the outcome to an exit code. So **nothing under
+  owns stdout (the buffered report, or the streamed events — text lines, or the
+  NDJSON protocol under `--format json` — through its `EventSink`), and maps the outcome to an exit code. So **nothing under
   `io::run` may write to stdout** — a `println!` there is a bug in a consumer's
   own contract — and a new `run` flag is three edits, not one: the clap field,
   the `RunRequest` field, and the `From<&RunArgs>` conversion (a field dropped
@@ -214,9 +214,9 @@ Use the `just` recipes; do not hand-roll equivalents.
   --compact` is refused there (exit 2, naming both) before any verb runs —
   nothing has been synced, spawned or interrupted when it is. A streamed run's
   stdout is chosen by `--format` alone, whichever layer turned streaming on
-  (`commands::run`'s `StreamView`); its no-`--format` default ships with
-  `STREAM_DEFAULT_WARNING`, never without it, since that warning is the only
-  notice its consumers get. Text views live in `oneharness_core::domain::render`,
+  (`commands::run`'s `StreamView`): text by default like every other stdout,
+  NDJSON only under `--format json`, so every in-repo stream reader (the SDKs'
+  `always` argv, tests, `oh_stream_assert`) names `--format json`. Text views live in `oneharness_core::domain::render`,
   never in `src/commands`, so an embedder prints what the CLI prints. Number
   live events only through `events::EventStream`: history's closing record
   skips the events already persisted by the `index` it shares with the report.

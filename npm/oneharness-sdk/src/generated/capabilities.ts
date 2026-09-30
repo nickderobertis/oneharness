@@ -353,7 +353,7 @@ export const CAPABILITIES = {
 		stdout: "jsonl",
 		stdin: false,
 		rust: "oneharness_core::io::run::run",
-		always: ["--compact", "--stream"],
+		always: ["--compact", "--format", "json", "--stream"],
 		bindings: [
 			{
 				option: "prompt",
@@ -637,11 +637,6 @@ export const CAPABILITIES = {
 				flag: "--no-stream",
 				reason:
 					"this method streams by definition, so the negative half cannot apply",
-			},
-			{
-				flag: "--format",
-				reason:
-					"a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes",
 			},
 		],
 	},

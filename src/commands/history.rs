@@ -309,12 +309,13 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
         return Ok(EXIT_NOT_FOUND);
     }
 
-    // Read the chosen sessions' records (newest first, already ordered).
-    let mut records = Vec::new();
+    // Read the chosen sessions' finished and in-flight runs (newest first,
+    // already ordered).
+    let mut entries = Vec::new();
     for s in &chosen {
-        records.extend(history_io::read_session_display(Path::new(&s.path))?);
+        entries.extend(history_io::read_session_display(Path::new(&s.path))?);
     }
-    render_entries(args.stdout, &records)
+    render_entries(args.stdout, &entries)
 }
 
 fn render_records(format: StdoutFormat, records: &[HistoryRecord]) -> Result<i32, OneharnessError> {

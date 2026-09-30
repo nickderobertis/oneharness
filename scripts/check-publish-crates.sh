@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Deterministic contract coverage for scripts/publish-crates.sh. Registry and
-# cargo responses are simulated because a real public publish is irreversible.
+# cargo responses are simulated because a real public publish is irreversible;
+# the last case hands version resolution to the real toolchain over this
+# workspace, doubling only the crates.io query and `cargo publish`.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+real_cargo="$(command -v cargo)"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -14,14 +18,22 @@ cat >"$work/bin/cargo" <<'EOF'
 set -euo pipefail
 case "$1" in
   pkgid)
-    if [[ " $* " == *" --package ${PKGID_FAILURE:-__never__} "* ]]; then
-      exit 101
-    fi
     case " $* " in
-      *" --package oneharness-core "*) printf 'path+file:///repo/crates/oneharness-core#%s\n' "${CORE_VERSION:-0.4.4}" ;;
-      *" --package oneharness "*) printf 'path+file:///repo#oneharness@%s\n' "${CLI_VERSION:-0.3.21}" ;;
+      *" --manifest-path crates/oneharness-core/Cargo.toml "*) package=oneharness-core ;;
+      *" --manifest-path Cargo.toml "*) package=oneharness ;;
       *) exit 2 ;;
     esac
+    if [ "$package" = "${PKGID_FAILURE:-}" ]; then
+      echo 'error: simulated unreadable manifest' >&2
+      exit 101
+    fi
+    if [ -n "${PKGID_NAME:-}" ]; then
+      printf 'path+file:///repo#%s@1.0.0\n' "$PKGID_NAME"
+    elif [ "$package" = oneharness-core ]; then
+      printf 'path+file:///repo/crates/oneharness-core#%s\n' "${CORE_VERSION:-0.4.4}"
+    else
+      printf 'path+file:///repo#oneharness@%s\n' "${CLI_VERSION:-0.3.21}"
+    fi
     ;;
   publish)
     printf '%s\n' "$*" >>"$PUBLISH_LOG"
@@ -50,6 +62,7 @@ if [ "$user_agent" != "$expected_user_agent" ]; then
   exit 2
 fi
 url="${*: -1}"
+printf '%s\n' "$url" >>"$QUERY_LOG"
 case "$url" in
   */oneharness-core/*) status="${CORE_HTTP:-200}" ;;
   */oneharness/*) status="${CLI_HTTP:-200}" ;;
@@ -63,11 +76,12 @@ EOF
 
 chmod +x "$work/bin/cargo" "$work/bin/curl"
 export PATH="$work/bin:$PATH"
-export PUBLISH_LOG="$work/published"
+export PUBLISH_LOG="$work/published" QUERY_LOG="$work/queried"
 
 reset_case() {
   : >"$PUBLISH_LOG"
-  unset CORE_VERSION CLI_VERSION GITHUB_REF_NAME PKGID_FAILURE PUBLISH_FAILURE
+  : >"$QUERY_LOG"
+  unset CORE_VERSION CLI_VERSION GITHUB_REF_NAME PKGID_FAILURE PKGID_NAME PUBLISH_FAILURE
   export CORE_HTTP=200 CLI_HTTP=200
 }
 
@@ -145,6 +159,14 @@ expect_no_publish "a mismatched release tag"
 reset_case
 expect_failure "publish-crates: cannot validate oneharness-core's version in crates/oneharness-core/Cargo.toml; run 'cargo metadata --no-deps' and fix the manifest" env PKGID_FAILURE=oneharness-core scripts/publish-crates.sh
 expect_no_publish "a cargo pkgid failure"
+grep -Fq 'error: simulated unreadable manifest' "$work/stderr" || {
+  echo "check-publish-crates: cargo's own pkgid error was discarded; keep cargo pkgid's stderr in manifest_version's failure message" >&2
+  exit 1
+}
+
+reset_case
+expect_failure "publish-crates: crates/oneharness-core/Cargo.toml declares package 'other', not oneharness-core" env PKGID_NAME=other scripts/publish-crates.sh
+expect_no_publish "a manifest naming another package"
 
 reset_case
 expect_failure "crates.io returned HTTP 503" env CORE_HTTP=503 scripts/publish-crates.sh
@@ -157,5 +179,41 @@ expect_no_publish "a registry connection error"
 reset_case
 expect_failure "cargo returned an invalid version" env CLI_VERSION=not-a-version scripts/publish-crates.sh
 expect_no_publish "an invalid manifest version"
+
+# Real toolchain over this workspace. history-compat resolves the published
+# oneharness-core beside the member, the state that made a `--package` spec
+# ambiguous and failed the v0.19.0 release; the precondition keeps this case
+# proving that state rather than an easier one.
+manifest_package_version() {
+  sed -n '/^\[package\]/,/^\[/s/^version = "\(.*\)"$/\1/p' "$1"
+}
+core_manifest_version="$(manifest_package_version crates/oneharness-core/Cargo.toml)"
+cli_manifest_version="$(manifest_package_version Cargo.toml)"
+if ! grep -A1 -Fx 'name = "oneharness-core"' Cargo.lock | grep -Fxq 'version = "0.19.0"'; then
+  echo 'check-publish-crates: the workspace no longer resolves the published oneharness-core 0.19.0; the real-toolchain case no longer proves the ambiguous-name release, so restate it' >&2
+  exit 1
+fi
+
+reset_case
+cat >"$work/bin/cargo" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\$1" = publish ]; then
+  printf '%s\\n' "\$*" >>"\$PUBLISH_LOG"
+  exit 0
+fi
+exec "$real_cargo" "\$@"
+EOF
+CORE_HTTP=404 CLI_HTTP=404 CLI_VERSION="$cli_manifest_version" GITHUB_REF_NAME="v$cli_manifest_version" \
+  scripts/publish-crates.sh
+expect_publish_order
+expected_queries="https://crates.io/api/v1/crates/oneharness-core/$core_manifest_version
+https://crates.io/api/v1/crates/oneharness/$cli_manifest_version"
+if [ "$(cat "$QUERY_LOG")" != "$expected_queries" ]; then
+  printf 'check-publish-crates: expected the real toolchain to resolve core %s then CLI %s; fix manifest_version in scripts/publish-crates.sh (run it by hand with cargo pkgid over this workspace). Queried:\n' \
+    "$core_manifest_version" "$cli_manifest_version" >&2
+  cat "$QUERY_LOG" >&2
+  exit 1
+fi
 
 echo "check-publish-crates: ok"

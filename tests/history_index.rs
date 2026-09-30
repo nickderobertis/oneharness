@@ -1031,12 +1031,15 @@ fn long_lived_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
 }
 
 /// A recording run that lives for seconds and appends an event entry the whole
-/// time holds no parsed index and no set of indexed ids at any point of that
-/// life: its resident size, sampled every [`measured::SERIES_EVERY`] while the
-/// event segment grows, neither climbs as it appends nor differs between a
-/// store and one ten times larger. An index loaded lazily after open — on the
-/// first event, the tenth, or the last — or a set grown per appended entry
-/// would show in the samples taken after it, on the larger store first.
+/// time holds nothing derived from the store at any point of that life — no
+/// parsed index, no set of indexed ids, no cache of either. The run's own work
+/// is held fixed and the store is varied tenfold: its resident size, sampled
+/// every [`measured::SERIES_EVERY`] while the event segment grows, must trace
+/// the same profile against both, phase by phase of the turn. An index loaded
+/// lazily after open — on the first event, the tenth, or the last — is ten
+/// times larger on the larger store, so it shows in every phase after it.
+/// Memory the run spends on its own events is the same on both stores, and
+/// this test does not ask it to be absent.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
@@ -1119,33 +1122,42 @@ fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
                  {series:?}"
             );
 
-            // It holds no more memory at the end of that life than at the
-            // start of it: the first sample after the first entry landed is
-            // the baseline every later one is held to.
-            let baseline = appending[0].rss_kib;
-            let late = appending.iter().map(|sample| sample.rss_kib).max().unwrap();
-            assert!(
-                late <= baseline + 2 * 1024,
-                "{recorder:?}/{size}: RSS climbed while the run appended events: \
-                 {baseline} KiB -> {late} KiB over {series:?}"
-            );
-            lives.push((measured.rchar, late, measured.max_rss_kib));
+            // Its memory profile over that life: the resident size of the
+            // first sample to see each further eighth of the turn's entries
+            // in the segment.
+            let turn_bytes = appended.len() as u64 - segment_before;
+            let profile: Vec<u64> = (1..8u64)
+                .map(|eighth| {
+                    series
+                        .iter()
+                        .find(|sample| sample.watched_len - segment_before >= turn_bytes * eighth / 8)
+                        .unwrap_or_else(|| {
+                            panic!("{recorder:?}/{size}: no sample saw {eighth}/8 of the turn: {series:?}")
+                        })
+                        .rss_kib
+                })
+                .collect();
+            lives.push((measured.rchar, profile, measured.max_rss_kib));
         }
-        let (small_read, small_late, small_peak) = lives[0];
-        let (large_read, large_late, large_peak) = lives[1];
-        // The larger store — 32 MiB more of today's segments, 115 MiB more
-        // legacy index, 1800 more session files — moves none of it.
+        let (small_read, small_profile, small_peak) = &lives[0];
+        let (large_read, large_profile, large_peak) = &lives[1];
+        // The tenfold store — today's segments 3 MiB -> 31 MiB, the legacy
+        // index 12 MiB -> 125 MiB, 200 -> 2000 other sessions' files — moves
+        // none of it.
         assert!(
-            large_read <= small_read + 64 * 1024,
+            *large_read <= small_read + 64 * 1024,
             "{recorder:?}: bytes read grew with the store: {small_read} -> {large_read}"
         );
+        for (eighth, (small, large)) in small_profile.iter().zip(large_profile).enumerate() {
+            assert!(
+                *large <= small + 4 * 1024,
+                "{recorder:?}: {}/8 through the turn, RSS was {small} KiB on the small store \
+                 and {large} KiB on the tenfold one: {small_profile:?} vs {large_profile:?}",
+                eighth + 1
+            );
+        }
         assert!(
-            large_late <= small_late + 4 * 1024,
-            "{recorder:?}: RSS while appending grew with the store: \
-             {small_late} KiB -> {large_late} KiB"
-        );
-        assert!(
-            large_peak <= small_peak + 4 * 1024,
+            *large_peak <= small_peak + 4 * 1024,
             "{recorder:?}: peak RSS grew with the store: {small_peak} KiB -> {large_peak} KiB"
         );
     }

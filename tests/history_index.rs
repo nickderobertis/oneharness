@@ -239,11 +239,11 @@ fn seed_run(store: &Path, project: &Path, name: &str, id: HistoryId, prompt: &st
     writer.path().to_path_buf()
 }
 
-/// Every file under `dir` with its bytes (or, for one this test cannot read,
-/// its length and modification time).
 /// A file's length, modification time, and bytes when readable and small.
 type FileState = (u64, Option<SystemTime>, Option<Vec<u8>>);
 
+/// Every file under `dir` with its bytes (or, for one this test cannot read,
+/// its length and modification time).
 fn snapshot(dir: &Path) -> BTreeMap<PathBuf, FileState> {
     let mut files = BTreeMap::new();
     let mut stack = vec![dir.to_path_buf()];
@@ -375,7 +375,7 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
     let labels = HistoryLabels::new(BTreeMap::from([("k".to_string(), "v".to_string())])).unwrap();
     let span = Some(LineSpan {
         offset: 0,
-        length: 1,
+        length: std::num::NonZeroU64::MIN,
     });
     // Fully populated, so every optional field is on the wire.
     let run = HistoryIndexEntry::Run(RunIndexEntry {
@@ -1103,7 +1103,7 @@ fn an_entry_is_the_same_size_for_a_one_mebibyte_prompt_or_event_as_for_a_short_o
                     HistoryIndexEntry::Event(event) => (event.span.unwrap(), &session_bytes),
                 };
                 let start = span.offset as usize;
-                let line = &file[start..start + span.length as usize];
+                let line = &file[start..start + span.length.get() as usize];
                 let parsed: HistoryLine = serde_json::from_slice(&line[..line.len() - 1])
                     .unwrap_or_else(|error| panic!("{name}: the span is not a line: {error}"));
                 match (&entry, parsed) {

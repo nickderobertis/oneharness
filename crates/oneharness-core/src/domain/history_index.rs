@@ -273,8 +273,9 @@ impl SegmentKind {
 pub struct LineSpan {
     /// The byte offset the line starts at.
     pub offset: u64,
-    /// The line's length in bytes, its newline included.
-    pub length: u64,
+    /// The line's length in bytes, its newline included — never zero, so an
+    /// entry naming an empty span does not parse.
+    pub length: std::num::NonZeroU64,
 }
 
 /// One closing run line, indexed. Every field is bounded by what names the

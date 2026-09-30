@@ -439,7 +439,9 @@ impl SessionFile {
         let length = bytes.len() as u64;
         Ok(LineSpan {
             offset: end.saturating_sub(length),
-            length,
+            // The serialized line and its newline: at least one byte.
+            length: std::num::NonZeroU64::new(length)
+                .ok_or_else(|| std::io::Error::other("an empty session line"))?,
         })
     }
 }
@@ -887,11 +889,11 @@ fn segment_path(dir: &Path, kind: SegmentKind, date: UtcDate) -> PathBuf {
 /// allocated for it.
 fn read_span(path: &Path, span: LineSpan) -> Option<HistoryLine> {
     let mut file = File::open(path).ok()?;
-    let end = span.offset.checked_add(span.length)?;
-    if span.length == 0 || end > file.metadata().ok()?.len() {
+    let end = span.offset.checked_add(span.length.get())?;
+    if end > file.metadata().ok()?.len() {
         return None;
     }
-    let length = usize::try_from(span.length).ok()?;
+    let length = usize::try_from(span.length.get()).ok()?;
     file.seek(SeekFrom::Start(span.offset)).ok()?;
     let mut bytes = vec![0u8; length];
     file.read_exact(&mut bytes).ok()?;
@@ -1201,10 +1203,11 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
         if read == 0 || line.last() != Some(&b'\n') {
             return Ok(unmigrated);
         }
-        let span = LineSpan {
-            offset,
-            length: read as u64,
+        // `read` counts the newline just checked for, so it is never zero.
+        let Some(length) = std::num::NonZeroU64::new(read as u64) else {
+            continue;
         };
+        let span = LineSpan { offset, length };
         offset += read as u64;
         let (entry, fallback) = match serde_json::from_slice::<HistoryLine>(&line) {
             Ok(HistoryLine::Run(run)) => {
@@ -2540,7 +2543,7 @@ mod tests {
             }
             .unwrap();
             let start = span.offset as usize;
-            let line = &session[start..start + span.length as usize];
+            let line = &session[start..start + span.length.get() as usize];
             let parsed: HistoryLine = serde_json::from_slice(&line[..line.len() - 1]).unwrap();
             match (entry, parsed) {
                 (HistoryIndexEntry::Run(run), HistoryLine::Run(line)) => {
@@ -3015,15 +3018,11 @@ mod tests {
         for bad in [
             LineSpan {
                 offset: good.offset,
-                length: u64::MAX / 2,
+                length: std::num::NonZeroU64::new(u64::MAX / 2).unwrap(),
             },
             LineSpan {
                 offset: u64::MAX,
-                length: 1,
-            },
-            LineSpan {
-                offset: 0,
-                length: 0,
+                length: std::num::NonZeroU64::MIN,
             },
         ] {
             assert!(read_span(writer.path(), bad).is_none(), "{bad:?}");
@@ -3032,6 +3031,13 @@ mod tests {
                 .expect("the session file itself still answers");
             assert_eq!(found.prompt, "spanned");
         }
+        let zero = r#"{"schema_version":"1.0","kind":"event","run_id":"0192b2a0-0000-7000-8000-000000000001","event_index":0,"session_path":"p/s.jsonl","project_slug":"p","harness_id":"codex","labels":{},"offset":0,"length":0}"#;
+        assert!(serde_json::from_str::<HistoryIndexEntry>(zero)
+            .map(|entry| match entry {
+                HistoryIndexEntry::Event(event) => event.span.is_none(),
+                HistoryIndexEntry::Run(_) => false,
+            })
+            .unwrap_or(true));
     }
 
     #[test]

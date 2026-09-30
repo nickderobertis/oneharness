@@ -690,8 +690,10 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             await client.history_list(cast("Any", {"all_project": True}))
         # A `since` window is a real calendar date, as the CLI parses it, and a
         # window is one value: a since-date beside a day count, an empty day
-        # count, or the separate keys a window replaced, are refused.
-        bad_windows: list[Any] = [
+        # count, or the separate keys a window replaced, are refused. Each is
+        # typed as the plain JSON it is and cast only at the call, since the
+        # point is to pass `history_list` what its typed options forbid.
+        bad_windows: list[dict[str, object]] = [
             {"window": {"since": "2026-02-30"}},
             {"window": {"since": "2026-01-01\n"}},
             {"window": {"since": "2026-01-01", "recent": {"days": 3}}},
@@ -704,7 +706,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(bad=bad), self.assertRaisesRegex(
                 ContractError, "invalid oneharness history list options"
             ):
-                await client.history_list(bad)
+                await client.history_list(cast("Any", bad))
         with self.assertRaisesRegex(ContractError, "invalid oneharness history watch options"):
             client.history_watch(cast("Any", {"all_project": True}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness detect options"):

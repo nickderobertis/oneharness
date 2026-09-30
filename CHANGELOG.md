@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/nickderobertis/oneharness/compare/v0.19.1...v0.20.0) - 2026-09-30
+
+### Added
+
+- *(stream)* [**breaking**] stream readable text by default, NDJSON by an explicit --format json ([#1395](https://github.com/nickderobertis/oneharness/pull/1395))
+
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is the migration note a consumer reads when upgrading, not a live copy of the stream contract to keep in step. That contract's source is `commands::run`'s `StreamView`, pinned by the `tests/cli.rs` stream journeys, and the SDKs' argv by the capability table and `just sdk-check`. -->
 
 ### Changed

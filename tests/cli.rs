@@ -5853,6 +5853,8 @@ fn stream_short_circuit_tears_down_the_child_when_the_consumer_closes() {
             "--bin",
             &bin_override("opencode"),
             "--stream",
+            "--format",
+            "json",
             "--env",
             mock_profile.as_str(),
         ])
@@ -7432,6 +7434,8 @@ fn a_host_signal_cancels_a_streaming_run_and_still_terminates_the_stream() {
             "--timeout",
             "60",
             "--stream",
+            "--format",
+            "json",
             "--env",
             mock_profile.as_str(),
         ])
@@ -10960,8 +10964,8 @@ fn stream_origin_honors_repeated_config_files() {
     // layered like any field: the earlier file alone turns it on, a later
     // file's `stream = true` turns it on over an earlier one that is silent,
     // and a later `stream = false` turns off what the earlier file set. With
-    // no `--format` a stream is NDJSON plus the one notice that its default is
-    // changing; an explicit `--format text` is the readable stream.
+    // no `--format`, as with `--format text`, a stream is the readable text
+    // stream; `--format json` is the NDJSON protocol.
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let codex = |settings: &str| {
         format!("{settings}harnesses = [\"codex\"]\n[harness.codex]\nbin = \"{bin}\"\n")
@@ -11000,8 +11004,8 @@ fn stream_origin_honors_repeated_config_files() {
             output
         };
 
-        let unchosen = invoke(&[]);
-        let stdout = String::from_utf8_lossy(&unchosen.stdout);
+        let json = invoke(&["--format", "json"]);
+        let stdout = String::from_utf8_lossy(&json.stdout);
         if streams {
             let lines: Vec<RunStreamEnvelope> = stdout
                 .lines()
@@ -11016,31 +11020,33 @@ fn stream_origin_honors_repeated_config_files() {
                 matches!(lines.last(), Some(RunStreamEnvelope::Result { .. })),
                 "{label}: {stdout}"
             );
-            assert_eq!(
-                stream_default_warnings(&unchosen),
-                1,
-                "{label}: {unchosen:?}"
-            );
         } else {
-            // Not streamed: the buffered text report, with no stream notice.
-            assert!(stdout.starts_with("prompt: hi\n"), "{label}: {stdout}");
-            assert_eq!(
-                stream_default_warnings(&unchosen),
-                0,
-                "{label}: {unchosen:?}"
-            );
+            // Not streamed: the buffered JSON report, one document.
+            let report: Value = serde_json::from_str(&stdout)
+                .unwrap_or_else(|err| panic!("{label}: {err}: {stdout}"));
+            assert_eq!(report["results"][0]["status"], "ok", "{label}");
         }
+        assert_eq!(stream_default_warnings(&json), 0, "{label}: {json:?}");
 
-        let text = invoke(&["--format", "text"]);
-        let stdout = String::from_utf8_lossy(&text.stdout);
         let report = if streams {
             format!("{text_lines}\n\nprompt: hi\n")
         } else {
             "prompt: hi\n".to_string()
         };
-        assert!(stdout.starts_with(&report), "{label}: {stdout}");
-        assert!(stdout.contains("codex: ok · exit 0"), "{label}: {stdout}");
-        assert_eq!(stream_default_warnings(&text), 0, "{label}: {text:?}");
+        for format in [&[][..], &["--format", "text"][..]] {
+            let text = invoke(format);
+            let stdout = String::from_utf8_lossy(&text.stdout);
+            assert!(stdout.starts_with(&report), "{label} {format:?}: {stdout}");
+            assert!(
+                stdout.contains("codex: ok · exit 0"),
+                "{label} {format:?}: {stdout}"
+            );
+            assert_eq!(
+                stream_default_warnings(&text),
+                0,
+                "{label} {format:?}: {text:?}"
+            );
+        }
     }
 }
 
@@ -17112,6 +17118,8 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
             "--bin",
             &bin_override("codex"),
             "--stream",
+            "--format",
+            "json",
             "--history",
             "--history-dir",
             &ds,
@@ -28447,6 +28455,8 @@ fn control_works_alongside_streaming_so_a_supervisor_can_watch_and_interrupt() {
             "claude-code",
             "--control",
             "--stream",
+            "--format",
+            "json",
             "--session",
             "streamed",
             "--session-dir",
@@ -30198,6 +30208,8 @@ fn a_streamed_controlled_run_publishes_the_protocol_turns_own_signals() {
             "copilot",
             "--control",
             "--stream",
+            "--format",
+            "json",
             "--session",
             "acps",
             "--session-dir",
@@ -34699,12 +34711,11 @@ fn run_text_view_shows_each_command_under_print_command() {
 }
 
 #[test]
-fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
-    // `--stream` is its own stdout protocol: a consumer has been reading event
-    // lines all along, so the terminal envelope is not the place to switch. A
-    // bare `--stream` and `--format json --stream` (and `--compact --stream`,
-    // the SDKs' spelling) are the same lines; an explicit `--format text` beside
-    // it is the readable stream instead.
+fn a_streaming_run_is_text_by_default_and_ndjson_by_name() {
+    // A bare `--stream` is the readable stream a person watches — the same
+    // bytes an explicit `--format text` prints — and the NDJSON protocol is
+    // what `--format json` (or `--compact`, the SDKs' spelling beside it) asks
+    // for by name. Neither says anything on stderr about the default.
     let stdout = concat!(
         r#"{"type":"tool_use","part":{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi"}}}"#,
         "\n",
@@ -34722,7 +34733,7 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
         "--stream",
     ];
     let envs = [("MOCK_STDOUT", stdout)];
-    let baseline = run(&args, &envs);
+    let baseline = run_as_typed(&[&args[..], &["--format", "json"]].concat(), &envs);
     assert!(baseline.status.success(), "{baseline:?}");
     let parse = |output: &Output| -> Vec<Value> {
         String::from_utf8_lossy(&output.stdout)
@@ -34744,16 +34755,16 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
     assert_eq!(theirs.len(), 2, "{baseline:?}");
     assert_eq!(theirs[0]["type"], "event");
     assert_eq!(theirs[1]["type"], "result");
-    for extra in [&["--format", "json"][..], &["--compact"][..]] {
+    assert_eq!(stream_default_warnings(&baseline), 0, "{baseline:?}");
+    for extra in [&["--compact"][..], &["--compact", "--format", "json"][..]] {
         let output = run_as_typed(&[&args[..], extra].concat(), &envs);
         assert!(output.status.success(), "{output:?}");
-        let ours = parse(&output);
-        assert_eq!(ours, theirs, "`{}` changed the stream", extra.join(" "));
-    }
-    // Only a stream no `--format` chose carries the notice that its default
-    // changes: `--format json` and `--compact` asked for NDJSON by name.
-    for extra in [&["--format", "json"][..], &["--compact"][..]] {
-        let output = run_as_typed(&[&args[..], extra].concat(), &envs);
+        assert_eq!(
+            parse(&output),
+            theirs,
+            "`{}` changed the stream",
+            extra.join(" ")
+        );
         assert_eq!(
             stream_default_warnings(&output),
             0,
@@ -34761,24 +34772,42 @@ fn a_streaming_run_keeps_its_ndjson_protocol_whatever_the_default_is() {
             extra.join(" ")
         );
     }
-    let bare = run_as_typed(&args, &envs);
-    assert!(bare.status.success(), "{bare:?}");
-    assert_eq!(parse(&bare), theirs, "a bare --stream changed the stream");
-    assert_eq!(stream_default_warnings(&bare), 1, "{bare:?}");
 
-    // An explicit `--format text` is no longer refused: it is the readable
-    // stream, one line per drawn event, then the text report.
+    // With no `--format`, and with `--format text`, it is the readable
+    // stream: one line per drawn event, then the text report.
+    let bare = run_as_typed(&args, &envs);
     let text = run_as_typed(&[&args[..], &["--format", "text"]].concat(), &envs);
-    assert!(text.status.success(), "{text:?}");
-    let stdout = String::from_utf8_lossy(&text.stdout);
-    assert!(stdout.starts_with("$ echo hi\n\nprompt: hi\n"), "{stdout}");
-    assert_eq!(stream_default_warnings(&text), 0, "{text:?}");
+    for (label, output) in [("bare --stream", &bare), ("--format text", &text)] {
+        assert!(output.status.success(), "{label}: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.starts_with("$ echo hi\n\nprompt: hi\n"),
+            "{label}: {stdout}"
+        );
+        assert!(
+            !stdout.contains(r#""type":"#),
+            "{label} printed NDJSON: {stdout}"
+        );
+        assert_eq!(stream_default_warnings(output), 0, "{label}: {output:?}");
+    }
+    assert_eq!(
+        String::from_utf8_lossy(&bare.stdout)
+            .lines()
+            .take_while(|line| !line.starts_with("prompt:"))
+            .collect::<Vec<_>>(),
+        String::from_utf8_lossy(&text.stdout)
+            .lines()
+            .take_while(|line| !line.starts_with("prompt:"))
+            .collect::<Vec<_>>(),
+        "a bare --stream draws what --format text draws"
+    );
 }
 
-/// How many times a run's stderr says the stream default is changing.
+/// How many times a run's stderr talks about the stream default — which no
+/// run does any more: the notice that it would become text went when it did.
 fn stream_default_warnings(output: &Output) -> usize {
     String::from_utf8_lossy(&output.stderr)
-        .matches("the stream default becomes text in the next release")
+        .matches("stream default")
         .count()
 }
 
@@ -34893,8 +34922,8 @@ fn run_with_config_as_typed(
 fn every_route_to_a_stream_prints_by_format_alone() {
     // Whether streaming came from `--stream`, `stream = true` in a config
     // file, or ONEHARNESS_STREAM, stdout is decided by `--format` alone: none
-    // is NDJSON plus one notice that the default is changing, `json` is the
-    // same NDJSON with no notice, and `text` is the readable stream.
+    // and `text` are the same readable stream, and `json` is the NDJSON
+    // protocol. None of them says anything on stderr about the default.
     let bin = mock_bin().display().to_string().replace('\\', "\\\\");
     let config = |stream: bool| {
         format!(
@@ -34956,8 +34985,8 @@ fn every_route_to_a_stream_prints_by_format_alone() {
                 .collect()
         };
 
-        let unchosen = invoke(&[]);
-        let lines = ndjson(&unchosen);
+        let json = invoke(&["--format", "json"]);
+        let lines = ndjson(&json);
         let kinds: Vec<&str> = lines
             .iter()
             .filter(|line| line["type"] == "event")
@@ -34976,27 +35005,25 @@ fn every_route_to_a_stream_prints_by_format_alone() {
             "{route}"
         );
         assert_eq!(lines.last().unwrap()["type"], "result", "{route}");
-        assert_eq!(
-            stream_default_warnings(&unchosen),
-            1,
-            "{route}: {unchosen:?}"
-        );
-
-        let json = invoke(&["--format", "json"]);
-        assert_eq!(
-            ndjson(&json),
-            lines,
-            "{route}: --format json changed the stream"
-        );
         assert_eq!(stream_default_warnings(&json), 0, "{route}: {json:?}");
 
-        let text = invoke(&["--format", "text"]);
-        let stdout = String::from_utf8_lossy(&text.stdout);
-        assert!(
-            stdout.starts_with(&format!("{text_lines}\n\nprompt: hi\n")),
-            "{route}: {stdout}"
-        );
-        assert_eq!(stream_default_warnings(&text), 0, "{route}: {text:?}");
+        for format in [&[][..], &["--format", "text"][..]] {
+            let text = invoke(format);
+            let stdout = String::from_utf8_lossy(&text.stdout);
+            assert!(
+                stdout.starts_with(&format!("{text_lines}\n\nprompt: hi\n")),
+                "{route} {format:?}: {stdout}"
+            );
+            assert!(
+                stdout.contains("codex: ok · exit 0"),
+                "{route} {format:?}: the text report closes the stream: {stdout}"
+            );
+            assert_eq!(
+                stream_default_warnings(&text),
+                0,
+                "{route} {format:?}: {text:?}"
+            );
+        }
     }
 }
 

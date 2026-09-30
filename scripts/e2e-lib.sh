@@ -992,7 +992,8 @@ oh_events_assert() {
     note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source' (marker present in event input/output)"
 }
 
-# Live proof of the STREAMING path: `oneharness run --stream` must emit at least
+# Live proof of the STREAMING path: `oneharness run --stream --format json` (the
+# NDJSON protocol; a bare --stream is the text view) must emit at least
 # one incremental `{"type":"event",...}` line for a tool-using turn, then a
 # terminal `{"type":"result",...}` line — the end-to-end drift alarm for
 # streaming + the consumer short-circuit contract. Extra args ($2..) are
@@ -1013,7 +1014,7 @@ oh_stream_assert() {
     note "  stream: a --stream run must emit event lines then a result line"
     out="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
         --prompt "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then confirm." \
-        --stream --mode bypass --timeout "${OH_TIMEOUT:-120}" \
+        --stream --format json --mode bypass --timeout "${OH_TIMEOUT:-120}" \
         "${model_args[@]+"${model_args[@]}"}" "$@" 2>/dev/null)" || true
 
     if [ -z "$out" ]; then

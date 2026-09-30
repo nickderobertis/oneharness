@@ -1038,6 +1038,17 @@
           "unless": null
         },
         {
+          "option": "window",
+          "flag": "",
+          "kind": "window",
+          "unless": null,
+          "window": {
+            "days": "--days",
+            "since": "--since",
+            "allTime": "--all-time"
+          }
+        },
+        {
           "option": "historyDir",
           "flag": "--history-dir",
           "kind": "value",
@@ -1096,6 +1107,17 @@
           "unless": null
         },
         {
+          "option": "window",
+          "flag": "",
+          "kind": "window",
+          "unless": null,
+          "window": {
+            "days": "--days",
+            "since": "--since",
+            "allTime": "--all-time"
+          }
+        },
+        {
           "option": "historyDir",
           "flag": "--history-dir",
           "kind": "value",
@@ -1137,7 +1159,8 @@
           "option": "after",
           "flag": "--after",
           "kind": "value",
-          "unless": null
+          "unless": "window",
+          "unless_resolution": "refuse"
         },
         {
           "option": "labels",
@@ -1181,6 +1204,17 @@
           "flag": "--events",
           "kind": "switch",
           "unless": null
+        },
+        {
+          "option": "window",
+          "flag": "",
+          "kind": "window",
+          "unless": null,
+          "window": {
+            "days": "--days",
+            "since": "--since",
+            "allTime": "--all-time"
+          }
         },
         {
           "option": "config",
@@ -1267,6 +1301,45 @@
       "stdout": "json",
       "stdin": false,
       "rust": "oneharness_core::io::history::migrate",
+      "always": [
+        "--compact",
+        "--format",
+        "json"
+      ],
+      "bindings": [
+        {
+          "option": "historyDir",
+          "flag": "--history-dir",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "config",
+          "flag": "--config",
+          "kind": "repeated",
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
+        },
+        {
+          "option": "noConfig",
+          "flag": "--no-config",
+          "kind": "switch",
+          "unless": null
+        }
+      ],
+      "uncovered": []
+    },
+    {
+      "method": "historyReindex",
+      "argv": [
+        "history",
+        "reindex"
+      ],
+      "options": "history_reindex_options",
+      "output": "history_reindex_report",
+      "stdout": "json",
+      "stdin": false,
+      "rust": "oneharness_core::io::history::reindex",
       "always": [
         "--compact",
         "--format",
@@ -4138,6 +4211,17 @@
           "session": {
             "description": "A name may accompany `last: true` — it is what the caller would have\nlooked up otherwise — but `last` takes priority, so it never selects.\nIt is therefore unconstrained: an empty name is meaningless here rather\nthan invalid, so `{\"session\": \"\", \"last\": true}` stays accepted.",
             "type": "string"
+          },
+          "window": {
+            "description": "Which dates of the index to read: the last `days` UTC days, from a\nUTC date on, or all time (every dated segment plus the legacy index an\nolder oneharness kept). Omitted, the last 7 UTC days.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HistoryWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
@@ -4181,11 +4265,73 @@
             "description": "The oneharness-derived session name recorded by `run --history`. This is\nthe name that selects, so it must be non-empty.",
             "type": "string",
             "minLength": 1
+          },
+          "window": {
+            "description": "Which dates of the index to read: the last `days` UTC days, from a\nUTC date on, or all time (every dated segment plus the legacy index an\nolder oneharness kept). Omitted, the last 7 UTC days.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HistoryWindow"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false,
         "required": [
           "session"
+        ]
+      },
+      "HistoryWindow": {
+        "description": "Which dates of the index a listing reads.\n\nIt is also the one value an SDK history lookup, listing or watch takes as\nits `window`, so \"from this date\" and \"from the beginning\" cannot both be\nstated. On the wire it is externally tagged in camelCase —\n`{\"recent\": {\"days\": 3}}`, `{\"since\": \"2026-01-05\"}`, or `\"allTime\"` — and\nrenders to the CLI's `--days`, `--since` or `--all-time`.",
+        "oneOf": [
+          {
+            "description": "The last `days` UTC days, today included (`1` means today alone).",
+            "type": "object",
+            "properties": {
+              "recent": {
+                "type": "object",
+                "properties": {
+                  "days": {
+                    "description": "How many UTC days, today included; at least one.",
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "days"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "recent"
+            ]
+          },
+          {
+            "description": "Every date from this one on.",
+            "type": "object",
+            "properties": {
+              "since": {
+                "type": "string",
+                "maxLength": 10,
+                "minLength": 10,
+                "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "since"
+            ]
+          },
+          {
+            "description": "Every segment, plus the legacy index files an older core keeps.",
+            "type": "string",
+            "const": "allTime"
+          }
         ]
       }
     }
@@ -4219,9 +4365,73 @@
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
+      },
+      "window": {
+        "description": "Which dates of the index to read: the last `days` UTC days, from a\nUTC date on, or all time (every dated segment plus the legacy index an\nolder oneharness kept). Omitted, the last 7 UTC days.",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HistoryWindow"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     },
-    "additionalProperties": false
+    "additionalProperties": false,
+    "$defs": {
+      "HistoryWindow": {
+        "description": "Which dates of the index a listing reads.\n\nIt is also the one value an SDK history lookup, listing or watch takes as\nits `window`, so \"from this date\" and \"from the beginning\" cannot both be\nstated. On the wire it is externally tagged in camelCase —\n`{\"recent\": {\"days\": 3}}`, `{\"since\": \"2026-01-05\"}`, or `\"allTime\"` — and\nrenders to the CLI's `--days`, `--since` or `--all-time`.",
+        "oneOf": [
+          {
+            "description": "The last `days` UTC days, today included (`1` means today alone).",
+            "type": "object",
+            "properties": {
+              "recent": {
+                "type": "object",
+                "properties": {
+                  "days": {
+                    "description": "How many UTC days, today included; at least one.",
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "days"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "recent"
+            ]
+          },
+          {
+            "description": "Every date from this one on.",
+            "type": "object",
+            "properties": {
+              "since": {
+                "type": "string",
+                "maxLength": 10,
+                "minLength": 10,
+                "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "since"
+            ]
+          },
+          {
+            "description": "Every segment, plus the legacy index files an older core keeps.",
+            "type": "string",
+            "const": "allTime"
+          }
+        ]
+      }
+    }
   },
   "history_watch_options": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -4276,6 +4486,17 @@
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
+      },
+      "window": {
+        "description": "Where the watch starts when no `after` cursor is given: the beginning\nof the last `days` UTC days, of a UTC date, or of all time (the legacy\nindex an older oneharness kept included). Omitted, the current UTC\nday. Refused beside `after`, the other answer to where a watch begins.",
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HistoryWindow"
+          },
+          {
+            "type": "null"
+          }
+        ]
       }
     },
     "additionalProperties": false,
@@ -4298,6 +4519,57 @@
           },
           "pattern": "^[A-Za-z0-9]"
         }
+      },
+      "HistoryWindow": {
+        "description": "Which dates of the index a listing reads.\n\nIt is also the one value an SDK history lookup, listing or watch takes as\nits `window`, so \"from this date\" and \"from the beginning\" cannot both be\nstated. On the wire it is externally tagged in camelCase —\n`{\"recent\": {\"days\": 3}}`, `{\"since\": \"2026-01-05\"}`, or `\"allTime\"` — and\nrenders to the CLI's `--days`, `--since` or `--all-time`.",
+        "oneOf": [
+          {
+            "description": "The last `days` UTC days, today included (`1` means today alone).",
+            "type": "object",
+            "properties": {
+              "recent": {
+                "type": "object",
+                "properties": {
+                  "days": {
+                    "description": "How many UTC days, today included; at least one.",
+                    "type": "integer",
+                    "format": "uint32",
+                    "minimum": 1
+                  }
+                },
+                "additionalProperties": false,
+                "required": [
+                  "days"
+                ]
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "recent"
+            ]
+          },
+          {
+            "description": "Every date from this one on.",
+            "type": "object",
+            "properties": {
+              "since": {
+                "type": "string",
+                "maxLength": 10,
+                "minLength": 10,
+                "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "since"
+            ]
+          },
+          {
+            "description": "Every segment, plus the legacy index files an older core keeps.",
+            "type": "string",
+            "const": "allTime"
+          }
+        ]
       }
     }
   },
@@ -18054,6 +18326,113 @@
           "records_migrated",
           "skipped",
           "already_current"
+        ]
+      }
+    }
+  },
+  "history_reindex_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryReindexOptions",
+    "description": "Options accepted by the language SDKs' `historyReindex()`.",
+    "type": "object",
+    "properties": {
+      "config": {
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "noConfig": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "history_reindex_report": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryReindexReport",
+    "description": "The `oneharness history reindex` output contract.",
+    "type": "object",
+    "properties": {
+      "entries_added": {
+        "description": "The sum of `segments[].added`.",
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0
+      },
+      "files_read": {
+        "description": "How many session files were read.",
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0
+      },
+      "segments": {
+        "description": "One row per segment this run appended to, in file-name order; a\nsegment that already held every entry is not listed.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/SegmentReindexSummary"
+        }
+      },
+      "unreadable": {
+        "description": "Every session file (or project directory) that could not be read,\nwith why. The rest are indexed regardless.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/UnreadableSessionFile"
+        }
+      }
+    },
+    "required": [
+      "segments",
+      "entries_added",
+      "files_read",
+      "unreadable"
+    ],
+    "$defs": {
+      "SegmentReindexSummary": {
+        "description": "What [`reindex`] appended to one segment.",
+        "type": "object",
+        "properties": {
+          "added": {
+            "description": "How many entries this run appended to it.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "path": {
+            "description": "The segment's path, as a display string.",
+            "type": "string"
+          },
+          "segment": {
+            "description": "The segment's file name (`runs-YYYY-MM-DD.ndjson` or\n`events-YYYY-MM-DD.ndjson`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment",
+          "path",
+          "added"
+        ]
+      },
+      "UnreadableSessionFile": {
+        "description": "A session file [`reindex`] could not read.",
+        "type": "object",
+        "properties": {
+          "error": {
+            "description": "Why it could not be read, as the operating system said it.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "error"
         ]
       }
     }

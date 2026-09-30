@@ -452,6 +452,11 @@ pub struct HistoryLookupByLast {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Which dates of the index to read: the last `days` UTC days, from a
+    /// UTC date on, or all time (every dated segment plus the legacy index an
+    /// older oneharness kept). Omitted, the last 7 UTC days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Show every record in the session rather than the run summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
@@ -493,6 +498,11 @@ pub struct HistoryLookupBySession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Which dates of the index to read: the last `days` UTC days, from a
+    /// UTC date on, or all time (every dated segment plus the legacy index an
+    /// older oneharness kept). Omitted, the last 7 UTC days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Show every record in the session rather than the run summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
@@ -524,6 +534,11 @@ pub struct HistoryListOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
+    /// Which dates of the index to read: the last `days` UTC days, from a
+    /// UTC date on, or all time (every dated segment plus the legacy index an
+    /// older oneharness kept). Omitted, the last 7 UTC days.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Narrow to one configured harness identity (`claude-code:work`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
@@ -568,6 +583,13 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub events: Option<bool>,
+    /// Where the watch starts when no `after` cursor is given: the beginning
+    /// of the last `days` UTC days, of a UTC date, or of all time (the legacy
+    /// index an older oneharness kept included). Omitted, the current UTC
+    /// day. Refused beside `after`, the other answer to where a watch begins.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] `after` is a released SDK field every existing watch caller passes, and manager ruling 1 fixes this window as a bare `HistoryWindow`; folding both into one union would break those callers, so the pair is refused at the boundary instead (capability `bind_refuse("after", …, "window")`, clap `conflicts_with`) and the library takes one `WatchStart`.
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Narrow to one configured harness identity (`claude-code:work`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
@@ -832,6 +854,27 @@ pub struct HistoryPointersOptions {
     pub file: NonEmptyString,
 }
 
+/// Options accepted by the language SDKs' `historyReindex()`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryReindexOptions")]
+pub struct HistoryReindexOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub history_dir: Option<String>,
+    /// Load configuration from exactly these files, in order, skipping
+    /// user/project discovery; each later file overrides the earlier ones.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Vec<String>")]
+    // llmlint: ignore[invalid_states_unrepresentable] shape fixed by manager ruling 1; the config/no_config pair predates this change, the SDKs refuse both together and the library gives no_config precedence.
+    pub config: Option<Vec<String>>,
+    /// Ignore every configuration file and `ONEHARNESS_*` override. `true`
+    /// beside a non-empty `config` is refused before anything runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub no_config: Option<bool>,
+}
+
 /// Options accepted by the language SDKs' `historyMigrate()`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1066,6 +1109,7 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
+            window: None,
             all: None,
             config: None,
             no_config: None,
@@ -1091,6 +1135,7 @@ mod tests {
             project: Some("oneharness".to_string()),
             all_projects: None,
             history_dir: None,
+            window: None,
             all: None,
             config: None,
             no_config: None,
@@ -1131,6 +1176,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1145,6 +1191,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1168,6 +1215,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1186,6 +1234,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1208,6 +1257,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1294,6 +1344,7 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
+            window: None,
             variant: None,
             config: None,
             no_config: None,
@@ -1319,6 +1370,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
+                window: None,
                 variant: None,
                 config: None,
                 no_config: None,

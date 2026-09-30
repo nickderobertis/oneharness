@@ -1,6 +1,19 @@
 /* Generated from oneharness-core. Do not edit. */
 export type FlagKind =
-	"positional" | "value" | "repeated" | "switch" | "key-value" | "trailing";
+	| "positional"
+	| "value"
+	| "repeated"
+	| "switch"
+	| "key-value"
+	| "trailing"
+	| "window";
+
+/** The three spellings a `window` binding renders exactly one of. */
+export type WindowFlags = {
+	readonly days: string;
+	readonly since: string;
+	readonly allTime: string;
+};
 
 /**
  * What both members of a suppressed pair rendering an argument means.
@@ -21,6 +34,8 @@ export type OptionBinding = {
 	readonly unless: string | null;
 	/** Only present beside an `unless`, which it says how to resolve. */
 	readonly unless_resolution?: UnlessResolution;
+	/** Only present on a `window` binding: the flag each window renders. */
+	readonly window?: WindowFlags;
 };
 
 /** How a verb's stdout reaches a caller. */
@@ -1027,6 +1042,17 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "window",
+				flag: "",
+				kind: "window",
+				unless: null,
+				window: {
+					days: "--days",
+					since: "--since",
+					allTime: "--all-time",
+				},
+			},
+			{
 				option: "historyDir",
 				flag: "--history-dir",
 				kind: "value",
@@ -1078,6 +1104,17 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "window",
+				flag: "",
+				kind: "window",
+				unless: null,
+				window: {
+					days: "--days",
+					since: "--since",
+					allTime: "--all-time",
+				},
+			},
+			{
 				option: "historyDir",
 				flag: "--history-dir",
 				kind: "value",
@@ -1113,7 +1150,8 @@ export const CAPABILITIES = {
 				option: "after",
 				flag: "--after",
 				kind: "value",
-				unless: null,
+				unless: "window",
+				unless_resolution: "refuse",
 			},
 			{
 				option: "labels",
@@ -1157,6 +1195,17 @@ export const CAPABILITIES = {
 				flag: "--events",
 				kind: "switch",
 				unless: null,
+			},
+			{
+				option: "window",
+				flag: "",
+				kind: "window",
+				unless: null,
+				window: {
+					days: "--days",
+					since: "--since",
+					allTime: "--all-time",
+				},
 			},
 			{
 				option: "config",
@@ -1233,6 +1282,38 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::history::migrate",
+		always: ["--compact", "--format", "json"],
+		bindings: [
+			{
+				option: "historyDir",
+				flag: "--history-dir",
+				kind: "value",
+				unless: null,
+			},
+			{
+				option: "config",
+				flag: "--config",
+				kind: "repeated",
+				unless: "noConfig",
+				unless_resolution: "refuse",
+			},
+			{
+				option: "noConfig",
+				flag: "--no-config",
+				kind: "switch",
+				unless: null,
+			},
+		],
+		uncovered: [],
+	},
+	historyReindex: {
+		method: "historyReindex",
+		argv: ["history", "reindex"],
+		options: "history_reindex_options",
+		output: "history_reindex_report",
+		stdout: "json",
+		stdin: false,
+		rust: "oneharness_core::io::history::reindex",
 		always: ["--compact", "--format", "json"],
 		bindings: [
 			{

@@ -1,26 +1,35 @@
 //! Streaming, reading, and managing the standardized run history on disk. This
 //! is the I/O half of the feature: it reads the clock (to mint session ids and
 //! record timestamps), resolves the platform state directory, and writes/reads
-//! the JSONL history files. The record *shape* and all string formatting stay
-//! pure in `src/domain/history.rs`.
+//! the JSONL history files. The record *shape*, the index entry shape and all
+//! string formatting stay pure in `src/domain/history.rs` and
+//! `src/domain/history_index.rs`.
 //!
 //! Layout: `<dir>/<project-slug>/<session>.jsonl`. One file per `oneharness run`
 //! invocation (the "session"), partitioned by a slug of the project directory, so
 //! runs from different projects never interleave. Each line is one
 //! [`crate::domain::history::HistoryRecord`], appended as a harness run finalizes.
+//!
+//! Beside the sessions, `<dir>/.index.d/` holds the dated, append-only index:
+//! one small pointer entry per session line, in the segment named for the UTC
+//! date its run's id was minted on. Recording a run appends to one segment and
+//! reads nothing else; a reader reads only the segments its window names; and
+//! only [`reindex`], [`migrate`], [`remove_sessions`] and the
+//! [`HistoryWindow::AllTime`] readers ever read the whole store. The contract is
+//! `docs/history-index.md`.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::num::NonZeroU32;
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-
-use fs2::FileExt;
 
 use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
@@ -28,6 +37,12 @@ use crate::domain::history::{
     HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector,
     HistoryShowEntry, IncompleteHistoryRun, PointerSession,
 };
+use crate::domain::history_index::{
+    self as index, EventIndexEntry, HistoryIndexEntry, IndexKey, LegacyEntryPath,
+    LegacySessionPath, LineSpan, RunIndexEntry, SegmentKind, INDEX_DIR, INDEX_SCHEMA_VERSION,
+    LEGACY_EVENT_INDEX_FILE, LEGACY_INDEX_FILE,
+};
+pub use crate::domain::history_index::{HistoryWindow, UtcDate};
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
 use crate::domain::sdk::{LiteralFalse, LiteralTrue};
@@ -37,9 +52,6 @@ use crate::errors::OneharnessError;
 /// The file extension for every session log (line-delimited JSON) — the one
 /// the pointer line's `history_file` is checked against.
 const SESSION_EXT: &str = history::SESSION_FILE_EXT;
-const INDEX_FILE: &str = ".index.jsonl";
-const INDEX_LOCK_FILE: &str = ".index.lock";
-const EVENT_INDEX_FILE: &str = ".event-index.jsonl";
 
 /// Seconds since the UNIX epoch, UTC. The single clock read the history feature
 /// makes — kept here in the I/O layer so `domain::history` stays pure.
@@ -50,6 +62,11 @@ fn now_epoch_secs() -> i64 {
         // A clock before 1970 is implausible; fall back to the epoch rather than
         // panic — history is a best-effort side channel.
         .unwrap_or(0)
+}
+
+/// Today's UTC date: what a default window and a cursor-less watch start from.
+fn today() -> UtcDate {
+    UtcDate::from_epoch_secs(now_epoch_secs())
 }
 
 /// The per-user state directory, resolved like [`crate::io::config`]'s config
@@ -81,14 +98,18 @@ pub fn resolve_dir(configured: Option<&str>) -> Option<PathBuf> {
 
 /// A handle to one session's history file, opened once per run and appended to as
 /// each harness result finalizes.
+///
+/// It holds nothing whose size depends on the store: no parsed index and no
+/// set of indexed ids, for any part of its life.
 pub struct HistoryWriter {
     dir: PathBuf,
     path: PathBuf,
-    relative_path: String,
+    relative_path: index::SessionPath,
     session: String,
     name: HistorySessionName,
     labels: HistoryLabels,
     project: String,
+    project_slug: String,
     /// The run's pointer file, when one was named: every harness run this
     /// writer begins appends one [`HistoryPointer`] line to it.
     pointer_file: Option<PathBuf>,
@@ -212,17 +233,8 @@ impl HistoryWriter {
             event,
             session_name: Some(self.name.clone()),
         };
-        let mut file = open_session_for_append(&self.path)?;
-        write_session_line(&mut file, &HistoryLine::Event(line.clone()))?;
-        let index_error = append_event_index_entry(
-            &self.dir,
-            &HistoryEventIndexEntry {
-                session_path: self.relative_path.clone(),
-                labels: self.labels.clone(),
-                line,
-            },
-        )
-        .err();
+        let span = SessionFile::open(&self.path)?.append(&HistoryLine::Event(line.clone()))?;
+        let index_error = self.append_index(&self.event_entry(&line, span)).err();
         Ok(EventAppendOutcome { index_error })
     }
 
@@ -231,6 +243,10 @@ impl HistoryWriter {
     /// so concurrent runs never collide: `<name>-<YYYYMMDDThhmmssZ>-<pid>`. The
     /// project subdirectory is created now; the file itself is created on the
     /// first [`append`](Self::append).
+    ///
+    /// Opening reads no index and walks no directory: the only thing it
+    /// touches beyond canonicalizing its two paths is its own project
+    /// directory, which it creates.
     pub fn open(
         dir: &Path,
         project: &Path,
@@ -251,20 +267,21 @@ impl HistoryWriter {
         let project_dir = dir.join(&slug);
         fs::create_dir_all(&project_dir)?;
         let path = project_dir.join(format!("{session}.{SESSION_EXT}"));
-        let relative_path = path
-            .strip_prefix(&dir)
-            .unwrap_or(&path)
-            .display()
-            .to_string();
-        reconcile_index(&dir).map_err(history_error_to_io)?;
+        let relative_path = index::SessionPath::new(&slug, &session).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("`{slug}/{session}` cannot name a session file in the store"),
+            )
+        })?;
         Ok(HistoryWriter {
+            relative_path,
             dir,
             path,
-            relative_path,
             session,
             name,
             labels,
             project: project_display,
+            project_slug: slug,
             pointer_file: None,
             pointer_warned: AtomicBool::new(false),
         })
@@ -340,50 +357,155 @@ impl HistoryWriter {
             lines.retain(|event| !persisted.contains(&event.index));
         }
         lines.sort_by_key(|event| event.index);
-        let mut file = open_session_for_append(&self.path)?;
+        let mut file = SessionFile::open(&self.path)?;
+        let mut entries = Vec::with_capacity(lines.len() + 1);
         for event in lines {
-            write_session_line(
-                &mut file,
-                &HistoryLine::Event(HistoryEventLine {
-                    schema_version: history::SCHEMA_VERSION.to_string(),
-                    run_id: run.history_id,
-                    harness: run.harness.clone(),
-                    variant: run.variant.clone(),
-                    harness_id: run.harness_id.clone(),
-                    event,
-                    session_name: Some(self.name.clone()),
-                }),
-            )?;
+            let line = HistoryEventLine {
+                schema_version: history::SCHEMA_VERSION.to_string(),
+                run_id: run.history_id,
+                harness: run.harness.clone(),
+                variant: run.variant.clone(),
+                harness_id: run.harness_id.clone(),
+                event,
+                session_name: Some(self.name.clone()),
+            };
+            let span = file.append(&HistoryLine::Event(line.clone()))?;
+            entries.push(self.event_entry(&line, span));
         }
-        write_session_line(&mut file, &HistoryLine::Run(run))?;
-        append_index_entry(
-            &self.dir,
-            &HistoryIndexEntry {
-                session_path: self.relative_path.clone(),
-                record: HistoryRunRecord::from_record(&record),
-            },
-        )
+        let run_entry = RunIndexEntry {
+            schema_version: INDEX_SCHEMA_VERSION.to_string(),
+            history_id: run.history_id,
+            session_path: self.relative_path.clone(),
+            session: self.session.clone(),
+            name: self.name.as_str().to_string(),
+            project_slug: self.project_slug.clone(),
+            harness_id: record.harness_id.clone(),
+            labels: self.labels.clone(),
+            recorded_at: record.timestamp.parse().map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{error}"))
+            })?,
+            span: None,
+        };
+        let span = file.append(&HistoryLine::Run(run))?;
+        entries.push(HistoryIndexEntry::Run(RunIndexEntry {
+            span: Some(span),
+            ..run_entry
+        }));
+        for entry in &entries {
+            self.append_index(entry)?;
+        }
+        Ok(())
+    }
+
+    fn event_entry(&self, line: &HistoryEventLine, span: LineSpan) -> HistoryIndexEntry {
+        HistoryIndexEntry::Event(EventIndexEntry {
+            schema_version: INDEX_SCHEMA_VERSION.to_string(),
+            run_id: line.run_id,
+            event_index: line.event.index,
+            session_path: self.relative_path.clone(),
+            project_slug: self.project_slug.clone(),
+            harness_id: line
+                .harness_id
+                .clone()
+                .unwrap_or_else(|| line.harness.clone()),
+            labels: self.labels.clone(),
+            span: Some(span),
+        })
+    }
+
+    /// Append one entry to the segment its id's date names — the only index
+    /// file a recording run ever touches.
+    fn append_index(&self, entry: &HistoryIndexEntry) -> std::io::Result<()> {
+        append_index_entry(&self.dir, entry, Some(today()))
     }
 }
 
-fn write_session_line(file: &mut File, line: &HistoryLine) -> std::io::Result<()> {
-    let mut bytes = serde_json::to_vec(line)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    bytes.push(b'\n');
-    file.write_all(&bytes)?;
-    file.flush()
+/// A run's own session file, opened for append. Only this process's writer
+/// appends to it, so reading its last byte is the whole of what a torn tail
+/// costs: a line an interrupted write left without its newline is closed off
+/// before the next one goes out, so the next is never read as its tail.
+struct SessionFile {
+    file: File,
 }
 
-fn open_session_for_append(path: &Path) -> std::io::Result<File> {
-    let mut file = OpenOptions::new()
+impl SessionFile {
+    fn open(path: &Path) -> std::io::Result<SessionFile> {
+        let mut file = open_for_append(path)?;
+        if ends_torn(&mut file)? {
+            file.write_all(b"\n")?;
+        }
+        Ok(SessionFile { file })
+    }
+
+    /// Write one line and say where it landed: the span a reader checks
+    /// before trusting it, so a position the platform reports differently
+    /// costs a reread rather than a wrong answer.
+    fn append(&mut self, line: &HistoryLine) -> std::io::Result<LineSpan> {
+        let mut bytes = serde_json::to_vec(line)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        bytes.push(b'\n');
+        self.file.write_all(&bytes)?;
+        self.file.flush()?;
+        let end = self.file.stream_position()?;
+        let length = bytes.len() as u64;
+        Ok(LineSpan {
+            offset: end.saturating_sub(length),
+            // The serialized line and its newline: at least one byte.
+            length: std::num::NonZeroU64::new(length)
+                .ok_or_else(|| std::io::Error::other("an empty session line"))?,
+        })
+    }
+}
+
+fn open_for_append(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
         .create(true)
-        .truncate(false)
         .read(true)
-        .write(true)
-        .open(path)?;
-    recover_partial_tail_io(&mut file)?;
-    file.seek(SeekFrom::End(0))?;
-    Ok(file)
+        .append(true)
+        .open(path)
+}
+
+/// Whether a file's last byte is something other than a newline: a line an
+/// interrupted writer left unfinished. Reads that one byte and nothing else.
+fn ends_torn(file: &mut File) -> std::io::Result<bool> {
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(false);
+    }
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::Start(len - 1))?;
+    file.read_exact(&mut last)?;
+    Ok(last[0] != b'\n')
+}
+
+/// Append one index entry to its segment: the segment named for the UTC date
+/// the entry's id was minted on (else `fallback`), created by its date's first
+/// append. One append-mode write of one complete line, after reading at most
+/// the segment's last byte — so no lock, no duplicate check and no other read —
+/// and a torn tail left by an interrupted writer is closed off in that same
+/// write rather than swallowing this entry.
+fn append_index_entry(
+    dir: &Path,
+    entry: &HistoryIndexEntry,
+    fallback: Option<UtcDate>,
+) -> std::io::Result<()> {
+    let (kind, date) = entry.segment(fallback).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "an index entry with no date to name its segment",
+        )
+    })?;
+    let segments = dir.join(INDEX_DIR);
+    fs::create_dir_all(&segments)?;
+    let mut file = open_for_append(&segments.join(kind.file_name(date)))?;
+    let mut bytes = Vec::new();
+    if ends_torn(&mut file)? {
+        bytes.push(b'\n');
+    }
+    serde_json::to_writer(&mut bytes, entry)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    bytes.push(b'\n');
+    write_whole_line(&mut file, &bytes)
 }
 
 /// Append one pointer line as ONE write: the file is opened for append (so the
@@ -493,21 +615,6 @@ pub fn read_pointers(path: &Path) -> Result<HistoryPointers, OneharnessError> {
     Ok(read)
 }
 
-/// One append-only index entry. The session JSONL remains authoritative; the
-/// relative path lets reconciliation suppress entries whose session was cleared.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct HistoryIndexEntry {
-    session_path: String,
-    record: HistoryRunRecord,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct HistoryEventIndexEntry {
-    session_path: String,
-    labels: HistoryLabels,
-    line: HistoryEventLine,
-}
-
 /// Outcome for one session file processed by [`migrate`]. Counts refer to
 /// whole legacy records and current v1.0 lines; unreadable lines are preserved
 /// byte-for-byte and reported as skipped.
@@ -607,31 +714,12 @@ impl HistoryClearReport {
     }
 }
 
-/// Rewrite every legacy session in a history store to v1.0 and rebuild its
-/// index. Each session and the index are replaced from a fully flushed sibling
-/// temp file, so a failed conversion never leaves a partially written target.
+/// Rewrite every legacy session in a history store to v1.0. Each session is
+/// replaced from a fully flushed sibling temp file, so a failed conversion never
+/// leaves a partially written target. Session files are all it writes: no
+/// segment and no legacy index file is touched (a migrated legacy run reaches
+/// the dated index through [`reindex`]).
 pub fn migrate(dir: &Path) -> Result<Vec<MigrationSummary>, OneharnessError> {
-    if !dir.exists() {
-        return Ok(Vec::new());
-    }
-    let lock_path = dir.join(INDEX_LOCK_FILE);
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|source| history_io_error(&lock_path, source))?;
-    FileExt::lock_exclusive(&lock).map_err(|source| history_io_error(&lock_path, source))?;
-    let result = migrate_locked(dir);
-    let unlock = FileExt::unlock(&lock).map_err(|source| history_io_error(&lock_path, source));
-    match (result, unlock) {
-        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        (Ok(summaries), Ok(())) => Ok(summaries),
-    }
-}
-
-fn migrate_locked(dir: &Path) -> Result<Vec<MigrationSummary>, OneharnessError> {
     let mut summaries = Vec::new();
     for project_dir in read_subdirs_if_present(dir)? {
         for path in read_session_files(&project_dir)? {
@@ -639,7 +727,6 @@ fn migrate_locked(dir: &Path) -> Result<Vec<MigrationSummary>, OneharnessError> 
         }
     }
     summaries.sort_by(|a, b| a.path.cmp(&b.path));
-    rebuild_index_locked(dir)?;
     Ok(summaries)
 }
 
@@ -722,46 +809,812 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), OneharnessError> {
     result.map_err(|source| history_io_error(path, source))
 }
 
-fn rebuild_index_locked(dir: &Path) -> Result<(), OneharnessError> {
-    let mut bytes = Vec::new();
-    for project_dir in read_subdirs_if_present(dir)? {
-        for path in read_session_files(&project_dir)? {
-            let session_path = path
-                .strip_prefix(dir)
-                .unwrap_or(&path)
-                .display()
-                .to_string();
-            for record in read_run_lines(&path)? {
-                append_json_line(
-                    &mut bytes,
-                    &HistoryIndexEntry {
-                        session_path: session_path.clone(),
-                        record,
-                    },
-                )?;
+/// The entry shape an older core writes to [`LEGACY_INDEX_FILE`]: the whole
+/// closing record. Read only — by the all-time readers and a watcher's tail.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct LegacyIndexEntry {
+    session_path: LegacyEntryPath,
+    record: HistoryRunRecord,
+}
+
+/// The entry shape an older core writes to [`LEGACY_EVENT_INDEX_FILE`].
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct LegacyEventIndexEntry {
+    session_path: LegacyEntryPath,
+    labels: HistoryLabels,
+    line: HistoryEventLine,
+}
+
+/// The session file a legacy entry names — or, for one pointing into the
+/// index directory, which no released core wrote, an error naming the path it
+/// gives, the way an unreadable segment fails a read: refused, never skipped.
+fn legacy_session<'a>(
+    dir: &Path,
+    path: &'a LegacyEntryPath,
+) -> Result<&'a LegacySessionPath, OneharnessError> {
+    match path {
+        LegacyEntryPath::Session(session) => Ok(session),
+        LegacyEntryPath::IntoIndexDir(text) => Err(history_io_error(
+            &dir.join(text),
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "a legacy index entry names this path inside `{INDEX_DIR}/`, which holds \
+                     index segments and no session a released core wrote; it is refused"
+                ),
+            ),
+        )),
+    }
+}
+
+/// Stream the complete lines of an index file from byte `offset`, handing each
+/// non-blank one to `each` until it breaks. Returns the offset just past the
+/// last complete line read — bytes after it with no newline yet are a write
+/// still in flight (or a torn tail) and are left for the next read — or `None`
+/// when the file does not exist. The file is opened read-only, and memory is
+/// bounded by one line whatever the file's size. A file that exists and cannot
+/// be read is an error naming its path.
+fn stream_lines(
+    path: &Path,
+    offset: u64,
+    mut each: impl FnMut(&[u8]) -> ControlFlow<()>,
+) -> Result<Option<u64>, OneharnessError> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => return Err(history_io_error(path, source)),
+    };
+    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    reader
+        .seek(SeekFrom::Start(offset))
+        .map_err(|source| history_io_error(path, source))?;
+    let mut position = offset;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(|source| history_io_error(path, source))?;
+        if read == 0 || line.last() != Some(&b'\n') {
+            return Ok(Some(position));
+        }
+        position += read as u64;
+        let body = &line[..line.len() - 1];
+        if body.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        if each(body).is_break() {
+            return Ok(Some(position));
+        }
+    }
+}
+
+/// Every segment in the store's index directory, by date then kind. One
+/// directory listing; a store with no index yet has none.
+fn list_segments(dir: &Path) -> Result<Vec<(UtcDate, SegmentKind, PathBuf)>, OneharnessError> {
+    let segments = dir.join(INDEX_DIR);
+    let entries = match fs::read_dir(&segments) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(source) => return Err(history_io_error(&segments, source)),
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| history_io_error(&segments, source))?;
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if let Some((kind, date)) = SegmentKind::parse_file_name(&name) {
+            found.push((date, kind, entry.path()));
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+
+fn segment_path(dir: &Path, kind: SegmentKind, date: UtcDate) -> PathBuf {
+    dir.join(INDEX_DIR).join(kind.file_name(date))
+}
+
+/// Read the one line a span names and parse it, when it is a whole line. The
+/// span is read from disk, so it is trusted only as far as the session file
+/// reaches — one that runs past the file's end is refused — and its `length`
+/// is never allocated up front: the bytes are parsed as they are read, so what
+/// is held is what the file actually holds there, and a span that does not
+/// open on a record fails at its first byte however long it claims to be.
+fn read_span(path: &Path, span: LineSpan) -> Option<HistoryLine> {
+    let mut file = File::open(path).ok()?;
+    let end = span.offset.checked_add(span.length.get())?;
+    if end > file.metadata().ok()?.len() {
+        return None;
+    }
+    file.seek(SeekFrom::Start(end - 1)).ok()?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last).ok()?;
+    if last != *b"\n" {
+        return None;
+    }
+    file.seek(SeekFrom::Start(span.offset)).ok()?;
+    // The closing newline is JSON whitespace, and anything past the one value
+    // the span holds — part of a neighbouring line — is refused as trailing.
+    serde_json::from_reader(BufReader::new(file.take(span.length.get()))).ok()
+}
+
+/// Find one line of a session file: at its span when the span holds it, else
+/// by reading that one session file line by line. `None` when the file is gone
+/// or holds no such line.
+fn find_session_line(
+    path: &Path,
+    span: Option<LineSpan>,
+    wanted: impl Fn(&HistoryLine) -> bool,
+) -> Result<Option<HistoryLine>, OneharnessError> {
+    if let Some(line) = span.and_then(|span| read_span(path, span)) {
+        if wanted(&line) {
+            return Ok(Some(line));
+        }
+    }
+    let mut found = None;
+    stream_lines(path, 0, |raw| {
+        match serde_json::from_slice::<HistoryLine>(raw) {
+            Ok(line) if wanted(&line) => {
+                found = Some(line);
+                ControlFlow::Break(())
+            }
+            _ => ControlFlow::Continue(()),
+        }
+    })?;
+    Ok(found)
+}
+
+fn find_run_line(
+    path: &Path,
+    id: HistoryId,
+    span: Option<LineSpan>,
+) -> Result<Option<HistoryRunRecord>, OneharnessError> {
+    Ok(find_session_line(
+        path,
+        span,
+        |line| matches!(line, HistoryLine::Run(run) if run.history_id == id),
+    )?
+    .and_then(|line| match line {
+        HistoryLine::Run(run) => Some(run),
+        HistoryLine::Event(_) => None,
+    }))
+}
+
+fn find_event_line(
+    path: &Path,
+    run_id: HistoryId,
+    event_index: usize,
+    span: Option<LineSpan>,
+) -> Result<Option<HistoryEventLine>, OneharnessError> {
+    Ok(find_session_line(path, span, |line| {
+        matches!(line, HistoryLine::Event(event) if event.run_id == run_id && event.event.index == event_index)
+    })?
+    .and_then(|line| match line {
+        HistoryLine::Event(event) => Some(event),
+        HistoryLine::Run(_) => None,
+    }))
+}
+
+/// A reindex spill: the candidate entries for one segment, kept on disk until
+/// their segment is reconciled, so memory never holds the store's entries.
+struct Spill {
+    root: crate::io::scratch::ScratchDir,
+    open: HashMap<(SegmentKind, UtcDate), BufWriter<File>>,
+}
+
+impl Spill {
+    /// At most this many spill files stay open at once; the rest are reopened
+    /// on demand, so a store spanning years never exhausts descriptors.
+    const OPEN_LIMIT: usize = 64;
+
+    fn new() -> std::io::Result<Spill> {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let tag = format!(
+            "reindex-{}-{}",
+            now_epoch_secs(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        Ok(Spill {
+            root: crate::io::scratch::ScratchDir::new(&tag)?,
+            open: HashMap::new(),
+        })
+    }
+
+    fn path(&self, kind: SegmentKind, date: UtcDate) -> PathBuf {
+        self.root.path().join(kind.file_name(date))
+    }
+
+    fn push(
+        &mut self,
+        kind: SegmentKind,
+        date: UtcDate,
+        entry: &HistoryIndexEntry,
+    ) -> std::io::Result<()> {
+        if !self.open.contains_key(&(kind, date)) {
+            if self.open.len() >= Self::OPEN_LIMIT {
+                for (_, mut writer) in self.open.drain() {
+                    writer.flush()?;
+                }
+            }
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(self.path(kind, date))?;
+            self.open.insert((kind, date), BufWriter::new(file));
+        }
+        let writer = self
+            .open
+            .get_mut(&(kind, date))
+            .expect("the spill writer was just opened");
+        serde_json::to_writer(&mut *writer, entry)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        writer.write_all(b"\n")
+    }
+
+    /// Close every writer and name each spilled segment, in name order.
+    fn finish(&mut self) -> std::io::Result<Vec<(SegmentKind, UtcDate)>> {
+        for (_, mut writer) in self.open.drain() {
+            writer.flush()?;
+        }
+        let mut spilled = Vec::new();
+        for entry in fs::read_dir(self.root.path())? {
+            let name = entry?.file_name();
+            if let Some(segment) = name.to_str().and_then(SegmentKind::parse_file_name) {
+                spilled.push(segment);
+            }
+        }
+        spilled.sort_by_key(|(kind, date)| kind.file_name(*date));
+        Ok(spilled)
+    }
+}
+
+/// What [`reindex`] appended to one segment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct SegmentReindexSummary {
+    /// The segment's file name (`runs-YYYY-MM-DD.ndjson` or
+    /// `events-YYYY-MM-DD.ndjson`).
+    pub segment: String,
+    /// The segment's path, as a display string.
+    // llmlint: ignore[invalid_states_unrepresentable] An output projection for a JSON/SDK consumer, like `SessionSummary::path`; reindex appends through the typed path it built, never through this string.
+    pub path: String,
+    /// How many entries this run appended to it.
+    pub added: usize,
+}
+
+/// A session file [`reindex`] could not read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct UnreadableSessionFile {
+    // llmlint: ignore[invalid_states_unrepresentable] The unreadable file's portable display string, reported to a JSON/SDK consumer; nothing reads a file back through it.
+    pub path: String,
+    /// Why it could not be read, as the operating system said it.
+    pub error: String,
+}
+
+/// The `oneharness history reindex` output contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+pub struct HistoryReindexReport {
+    /// One row per segment this run appended to, in file-name order; a
+    /// segment that already held every entry is not listed.
+    pub segments: Vec<SegmentReindexSummary>,
+    /// The sum of `segments[].added`.
+    pub entries_added: usize,
+    /// How many session files were read.
+    pub files_read: usize,
+    /// Every session file (or project directory) that could not be read,
+    /// with why. The rest are indexed regardless.
+    pub unreadable: Vec<UnreadableSessionFile>,
+}
+
+/// Index every session line the index lacks: stream every session file in the
+/// store, and append one entry for each run or event line its date's segment
+/// does not hold yet. The only code path that walks the session tree to build
+/// index entries, and never called implicitly.
+///
+/// Idempotent — a second run appends nothing — and append-only: a segment's
+/// existing bytes stay its leading bytes, and no legacy index file or session
+/// file is written. A line's date is its run id's; a legacy UUIDv5 id, which
+/// carries none, takes the date in its session id (else, for a run line, its
+/// record's `timestamp`). A file that cannot be read is named in the report and
+/// skipped, never failing the rest.
+///
+/// Memory does not grow with the store: candidates are spilled to a scratch
+/// directory per segment, then each segment is reconciled against the keys it
+/// already holds by an external sort, one date at a time — so a date holding
+/// ten times the sessions costs ten times the scratch space, not the memory.
+pub fn reindex(dir: &Path) -> Result<HistoryReindexReport, OneharnessError> {
+    let mut report = HistoryReindexReport {
+        segments: Vec::new(),
+        entries_added: 0,
+        files_read: 0,
+        unreadable: Vec::new(),
+    };
+    if !dir.exists() {
+        return Ok(report);
+    }
+    let scratch_error = |source| history_io_error(&std::env::temp_dir(), source);
+    let mut spill = Spill::new().map_err(scratch_error)?;
+    for project_dir in read_subdirs(dir)? {
+        let unreadable_dir = |source: std::io::Error| UnreadableSessionFile {
+            path: project_dir.display().to_string(),
+            error: source.to_string(),
+        };
+        // Streamed rather than collected, so a directory's size costs no memory.
+        let files = match fs::read_dir(&project_dir) {
+            Ok(files) => files,
+            Err(source) => {
+                report.unreadable.push(unreadable_dir(source));
+                continue;
+            }
+        };
+        let Some(slug) = project_dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        for file in files {
+            let path = match file {
+                Ok(file) => file.path(),
+                Err(source) => {
+                    report.unreadable.push(unreadable_dir(source));
+                    break;
+                }
+            };
+            if path.extension().and_then(|ext| ext.to_str()) != Some(SESSION_EXT) {
+                continue;
+            }
+            match spill_session(&path, slug, &mut spill) {
+                Ok(unmigrated) => {
+                    report.files_read += 1;
+                    if unmigrated && !UNMIGRATED_REPORTED.swap(true, Ordering::Relaxed) {
+                        eprintln!(
+                            "oneharness: warning: skipped unmigrated history lines in `{}`; run `oneharness history migrate`",
+                            path.display()
+                        );
+                    }
+                }
+                Err(SpillError::Session(source)) => report.unreadable.push(UnreadableSessionFile {
+                    path: path.display().to_string(),
+                    error: source.to_string(),
+                }),
+                Err(SpillError::Scratch(source)) => return Err(scratch_error(source)),
             }
         }
     }
-    atomic_write(&dir.join(INDEX_FILE), &bytes)
+    report.unreadable.sort_by(|a, b| a.path.cmp(&b.path));
+    for (kind, date) in spill.finish().map_err(scratch_error)? {
+        let added = reconcile_segment(dir, kind, date, &spill.path(kind, date), spill.root.path())?;
+        if added > 0 {
+            report.entries_added += added;
+            report.segments.push(SegmentReindexSummary {
+                segment: kind.file_name(date),
+                path: segment_path(dir, kind, date).display().to_string(),
+                added,
+            });
+        }
+    }
+    Ok(report)
 }
 
-struct ReconciledIndex {
-    entries: Vec<HistoryIndexEntry>,
-    active_ids: BTreeSet<HistoryId>,
-    offset: u64,
+/// The UTC date a record's `timestamp` names. It is read from a session file,
+/// so it is validated as an RFC 3339 UTC instant first; anything else names
+/// no date.
+fn timestamp_date(timestamp: &str) -> Option<UtcDate> {
+    timestamp
+        .parse::<UtcInstant>()
+        .ok()
+        .and_then(|instant| UtcDate::of_instant(&instant))
 }
 
-/// A reconciled, resumable reader over the append-only index. Opening performs
-/// the only full history-tree scan; [`poll`](Self::poll) tails the index file by
-/// byte offset and never scans the tree again.
+enum SpillError {
+    /// The session file could not be read: report it and go on.
+    Session(std::io::Error),
+    /// The scratch space could not be written: nothing can go on.
+    Scratch(std::io::Error),
+}
+
+/// Spill one session file's candidate entries, saying whether it holds
+/// unmigrated legacy lines (which are not indexed). Its labels live on its run
+/// lines, which follow the events they label, so the first run line is found
+/// first; then every complete line is streamed with its span.
+fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, SpillError> {
+    let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+        return Ok(false);
+    };
+    let open = || File::open(path).map(|file| BufReader::with_capacity(64 * 1024, file));
+    let mut labels = HistoryLabels::default();
+    let mut first_run_date = None;
+    let mut unmigrated = false;
+    let mut reader = open().map_err(SpillError::Session)?;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(SpillError::Session)?
+            == 0
+        {
+            break;
+        }
+        if let Ok(HistoryLine::Run(run)) = serde_json::from_slice::<HistoryLine>(&line) {
+            first_run_date = timestamp_date(&run.timestamp);
+            labels = run.labels;
+            break;
+        }
+    }
+    let Some(session_path) = index::SessionPath::new(slug, stem) else {
+        return Ok(false);
+    };
+    let session_date = index::session_date_from_id(stem);
+    let event_fallback = session_date.or(first_run_date);
+    let mut reader = open().map_err(SpillError::Session)?;
+    let mut offset = 0u64;
+    loop {
+        line.clear();
+        let read = reader
+            .read_until(b'\n', &mut line)
+            .map_err(SpillError::Session)?;
+        if read == 0 || line.last() != Some(&b'\n') {
+            return Ok(unmigrated);
+        }
+        // `read` counts the newline just checked for, so it is never zero.
+        let Some(length) = std::num::NonZeroU64::new(read as u64) else {
+            continue;
+        };
+        let span = LineSpan { offset, length };
+        offset += read as u64;
+        let (entry, fallback) = match serde_json::from_slice::<HistoryLine>(&line) {
+            Ok(HistoryLine::Run(run)) => {
+                // A closing line whose timestamp is not an instant names no
+                // time it was recorded at; it is left out rather than guessed.
+                let Ok(recorded_at) = run.timestamp.parse::<UtcInstant>() else {
+                    continue;
+                };
+                let fallback = session_date.or_else(|| UtcDate::of_instant(&recorded_at));
+                let harness_id = run.harness_id.clone().unwrap_or_else(|| {
+                    run.variant.as_ref().map_or(run.harness.clone(), |variant| {
+                        format!("{}:{variant}", run.harness)
+                    })
+                });
+                (
+                    HistoryIndexEntry::Run(RunIndexEntry {
+                        schema_version: INDEX_SCHEMA_VERSION.to_string(),
+                        history_id: run.history_id,
+                        session_path: session_path.clone(),
+                        session: stem.to_string(),
+                        name: run.name,
+                        project_slug: slug.to_string(),
+                        harness_id,
+                        labels: run.labels,
+                        recorded_at,
+                        span: Some(span),
+                    }),
+                    fallback,
+                )
+            }
+            Ok(HistoryLine::Event(event)) => (
+                HistoryIndexEntry::Event(EventIndexEntry {
+                    schema_version: INDEX_SCHEMA_VERSION.to_string(),
+                    run_id: event.run_id,
+                    event_index: event.event.index,
+                    session_path: session_path.clone(),
+                    project_slug: slug.to_string(),
+                    harness_id: event.harness_id.unwrap_or(event.harness),
+                    labels: labels.clone(),
+                    span: Some(span),
+                }),
+                event_fallback,
+            ),
+            Err(_) => {
+                unmigrated |= serde_json::from_slice::<Value>(&line)
+                    .is_ok_and(|value| value.is_object() && value.get("type").is_none());
+                continue;
+            }
+        };
+        if let Some((kind, date)) = entry.segment(fallback) {
+            spill
+                .push(kind, date, &entry)
+                .map_err(SpillError::Scratch)?;
+        }
+    }
+}
+
+/// Append to one segment every spilled entry it lacks, returning how many
+/// went out. The segment's keys and the spilled candidates are merged by an
+/// external sort under `scratch`, so memory holds one sort chunk however many
+/// entries the date has; the segment's bytes are never rewritten. Its new
+/// entries go out in key order.
+fn reconcile_segment(
+    dir: &Path,
+    kind: SegmentKind,
+    date: UtcDate,
+    spilled: &Path,
+    scratch: &Path,
+) -> Result<usize, OneharnessError> {
+    let target = segment_path(dir, kind, date);
+    let scratch_error = |source| history_io_error(scratch, source);
+    let mut sort = ExternalSort::new(scratch, ExternalSort::CHUNK_BYTES, ExternalSort::FAN_IN)
+        .map_err(scratch_error)?;
+    let mut sort_failure = None;
+    for (path, held) in [(target.as_path(), true), (spilled, false)] {
+        stream_lines(path, 0, |line| {
+            let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) else {
+                return ControlFlow::Continue(());
+            };
+            let pushed = sort.push(entry.key(), if held { None } else { Some(line) });
+            match pushed {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(source) => {
+                    sort_failure = Some(source);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        if let Some(source) = sort_failure.take() {
+            return Err(scratch_error(source));
+        }
+    }
+    let mut writer: Option<File> = None;
+    let mut added = 0usize;
+    let mut write_failure = None;
+    let mut current = [0u8; SORT_KEY_LEN];
+    let mut settled = false;
+    sort.finish(|record| {
+        let (key, rest) = record.split_at(SORT_KEY_LEN);
+        if key != current {
+            current.copy_from_slice(key);
+            settled = false;
+        }
+        // The segment's own record sorts first within a key, so a key it holds
+        // settles before any candidate for it is seen.
+        if settled {
+            return ControlFlow::Continue(());
+        }
+        settled = true;
+        let Some((&SORT_CANDIDATE, line)) = rest.split_first() else {
+            return ControlFlow::Continue(());
+        };
+        let written = (|| {
+            let file = match &mut writer {
+                Some(file) => file,
+                None => {
+                    fs::create_dir_all(dir.join(INDEX_DIR))?;
+                    let mut file = open_for_append(&target)?;
+                    if ends_torn(&mut file)? {
+                        write_whole_line(&mut file, b"\n")?;
+                    }
+                    writer.insert(file)
+                }
+            };
+            let mut bytes = line.to_vec();
+            bytes.push(b'\n');
+            write_whole_line(file, &bytes)
+        })();
+        match written {
+            Ok(()) => {
+                added += 1;
+                ControlFlow::Continue(())
+            }
+            Err(source) => {
+                write_failure = Some(source);
+                ControlFlow::Break(())
+            }
+        }
+    })
+    .map_err(scratch_error)?;
+    match write_failure {
+        Some(source) => Err(history_io_error(&target, source)),
+        None => Ok(added),
+    }
+}
+
+/// The width of a sort record's key: a kind byte, the hyphenated id, and a
+/// zero-padded event index (zero for a run), so every key is one width.
+const SORT_KEY_LEN: usize = 1 + 36 + 20;
+/// The byte after the key marking a key the segment already holds; it sorts
+/// before [`SORT_CANDIDATE`].
+const SORT_HELD: u8 = b'0';
+/// The byte after the key marking a spilled candidate, followed by its line.
+const SORT_CANDIDATE: u8 = b'1';
+
+fn sort_key(key: IndexKey) -> String {
+    match key {
+        IndexKey::Run(id) => format!("r{id}{:020}", 0),
+        IndexKey::Event(id, index) => format!("e{id}{index:020}"),
+    }
+}
+
+/// A bounded-memory external sort of reindex records: `<key><0>` for a key a
+/// segment holds, `<key><1><entry line>` for a candidate. Records are sorted in
+/// memory up to `chunk_bytes`, written out as a sorted run, and runs are merged
+/// `fan_in` at a time level by level, so memory holds one chunk plus `fan_in`
+/// read buffers however many records go in.
+struct ExternalSort {
+    root: crate::io::scratch::ScratchDir,
+    chunk_bytes: usize,
+    fan_in: usize,
+    buffer: Vec<Vec<u8>>,
+    buffered: usize,
+    /// Sorted runs by level; a level reaching `fan_in` merges into the next.
+    levels: Vec<Vec<PathBuf>>,
+    written: usize,
+}
+
+impl ExternalSort {
+    const CHUNK_BYTES: usize = 4 << 20;
+    const FAN_IN: usize = 16;
+    /// What one buffered record costs beyond its bytes: its `Vec` header and
+    /// allocation.
+    const RECORD_OVERHEAD: usize = 48;
+
+    fn new(parent: &Path, chunk_bytes: usize, fan_in: usize) -> std::io::Result<ExternalSort> {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let tag = format!("sort-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+        Ok(ExternalSort {
+            root: crate::io::scratch::ScratchDir::under(parent, &tag)?,
+            chunk_bytes,
+            fan_in: fan_in.max(2),
+            buffer: Vec::new(),
+            buffered: 0,
+            levels: Vec::new(),
+            written: 0,
+        })
+    }
+
+    fn push(&mut self, key: IndexKey, line: Option<&[u8]>) -> std::io::Result<()> {
+        let key = sort_key(key);
+        let mut record = Vec::with_capacity(SORT_KEY_LEN + 1 + line.map_or(0, <[u8]>::len));
+        record.extend_from_slice(key.as_bytes());
+        match line {
+            None => record.push(SORT_HELD),
+            Some(line) => {
+                record.push(SORT_CANDIDATE);
+                record.extend_from_slice(line);
+            }
+        }
+        self.buffered += record.len() + Self::RECORD_OVERHEAD;
+        self.buffer.push(record);
+        if self.buffered >= self.chunk_bytes {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn next_path(&mut self) -> PathBuf {
+        self.written += 1;
+        self.root.path().join(format!("run-{}", self.written))
+    }
+
+    /// Write the buffer out as one sorted run at level zero, cascading any
+    /// level that reaches `fan_in` into one run at the next.
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        self.buffer.sort_unstable();
+        let path = self.next_path();
+        let mut out = BufWriter::new(File::create(&path)?);
+        for record in self.buffer.drain(..) {
+            out.write_all(&record)?;
+            out.write_all(b"\n")?;
+        }
+        out.flush()?;
+        self.buffered = 0;
+        self.buffer = Vec::new();
+        let mut level = 0;
+        let mut run = path;
+        loop {
+            if self.levels.len() == level {
+                self.levels.push(Vec::new());
+            }
+            self.levels[level].push(run);
+            if self.levels[level].len() < self.fan_in {
+                return Ok(());
+            }
+            let inputs = std::mem::take(&mut self.levels[level]);
+            run = self.merge_to_file(&inputs)?;
+            level += 1;
+        }
+    }
+
+    fn merge_to_file(&mut self, inputs: &[PathBuf]) -> std::io::Result<PathBuf> {
+        let path = self.next_path();
+        let mut out = BufWriter::new(File::create(&path)?);
+        let mut failure = None;
+        merge_runs(inputs, |record| {
+            match out.write_all(record).and_then(|()| out.write_all(b"\n")) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(error) => {
+                    failure = Some(error);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        out.flush()?;
+        for input in inputs {
+            fs::remove_file(input)?;
+        }
+        Ok(path)
+    }
+
+    /// Hand every record to `each` in sorted order, merging at most `fan_in`
+    /// runs at once.
+    fn finish(mut self, each: impl FnMut(&[u8]) -> ControlFlow<()>) -> std::io::Result<()> {
+        self.flush()?;
+        let mut runs: VecDeque<PathBuf> = self.levels.drain(..).flatten().collect();
+        while runs.len() > self.fan_in {
+            let inputs: Vec<PathBuf> = runs.drain(..self.fan_in).collect();
+            let merged = self.merge_to_file(&inputs)?;
+            runs.push_back(merged);
+        }
+        merge_runs(runs.make_contiguous(), each)
+    }
+}
+
+/// A k-way merge of sorted runs of newline-terminated records.
+fn merge_runs(
+    inputs: &[PathBuf],
+    mut each: impl FnMut(&[u8]) -> ControlFlow<()>,
+) -> std::io::Result<()> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let next = |reader: &mut BufReader<File>| -> std::io::Result<Option<Vec<u8>>> {
+        let mut record = Vec::new();
+        if reader.read_until(b'\n', &mut record)? == 0 {
+            return Ok(None);
+        }
+        if record.last() == Some(&b'\n') {
+            record.pop();
+        }
+        Ok(Some(record))
+    };
+    let mut readers = Vec::with_capacity(inputs.len());
+    let mut heap = BinaryHeap::with_capacity(inputs.len());
+    for (source, path) in inputs.iter().enumerate() {
+        let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
+        if let Some(record) = next(&mut reader)? {
+            heap.push(Reverse((record, source)));
+        }
+        readers.push(reader);
+    }
+    while let Some(Reverse((record, source))) = heap.pop() {
+        if each(&record).is_break() {
+            return Ok(());
+        }
+        if let Some(record) = next(&mut readers[source])? {
+            heap.push(Reverse((record, source)));
+        }
+    }
+    Ok(())
+}
+
+/// A resumable reader over the dated index. It reads the segments dated from
+/// its start on — its cursor's date, its window's first date, or today — and
+/// on each [`poll`](Self::poll) lists the index directory once and tails every
+/// such segment by byte offset, a segment created after it opened included.
+/// The day before its start is tailed from its size at open, so a run begun
+/// just before midnight UTC that closes after the watcher opened is still
+/// followed. While the legacy index files exist it tails them from their size
+/// at open (from the beginning under [`HistoryWindow::AllTime`]), so what an
+/// older core appends is followed too; a record reached both ways is emitted
+/// once. Its memory grows only with the records it has emitted.
 pub struct HistoryWatcher {
-    index_path: PathBuf,
-    offset: u64,
+    dir: PathBuf,
+    /// The first date whose segments it reads from the beginning; `None`
+    /// reads every segment.
+    earliest: Option<UtcDate>,
+    /// The date before `earliest`, tailed from its size at open.
+    lookback: Option<UtcDate>,
+    offsets: BTreeMap<(SegmentKind, UtcDate), u64>,
+    legacy_offsets: [u64; 2],
+    events: bool,
+    /// Events of runs begun at or before the cursor were emitted before it.
+    events_after: Option<HistoryId>,
     pending: VecDeque<HistoryRecord>,
-    event_index_path: Option<PathBuf>,
-    event_offset: u64,
     pending_events: VecDeque<HistoryEventLine>,
-    seen: BTreeSet<HistoryId>,
+    seen: HashSet<HistoryId>,
     labels: HistoryLabels,
     project_slug: Option<String>,
     session: Option<SessionFilter>,
@@ -776,9 +1629,22 @@ enum SessionFilter {
     Awaiting(HistorySessionName),
 }
 
+/// Where a [`HistoryWatcher`] begins: strictly after a record it already
+/// emitted, or from the beginning of a window. The two are one answer, so a
+/// watch cannot be asked to start at both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchStart {
+    /// Resume strictly after this record, from its date's runs segment.
+    After(HistoryId),
+    /// Start at the beginning of this window's earliest date.
+    Window(HistoryWindow),
+}
+
 impl HistoryWatcher {
-    /// Reconcile the index and prepare to emit records strictly after `after`.
-    /// Without a cursor, every active indexed record is initially pending.
+    /// Prepare to emit records strictly after `after` — the entries after the
+    /// cursor in its date's segment, and every later-dated segment — or, with
+    /// no cursor, every record of the current UTC day so far. A cursor its
+    /// date's segment does not hold is [`OneharnessError::HistoryNotFound`].
     pub fn open(
         dir: &Path,
         after: Option<HistoryId>,
@@ -786,7 +1652,14 @@ impl HistoryWatcher {
         project_slug: Option<String>,
         events: bool,
     ) -> Result<Self, OneharnessError> {
-        Self::open_session(dir, after, labels, project_slug, events, None)
+        Self::open_in(
+            dir,
+            after.map(WatchStart::After),
+            labels,
+            project_slug,
+            events,
+            None,
+        )
     }
 
     /// [`open`](Self::open), narrowed to one session when `session` names one:
@@ -805,35 +1678,104 @@ impl HistoryWatcher {
         events: bool,
         session: Option<&HistorySessionSelector>,
     ) -> Result<Self, OneharnessError> {
+        Self::open_in(
+            dir,
+            after.map(WatchStart::After),
+            labels,
+            project_slug,
+            events,
+            session,
+        )
+    }
+
+    /// [`open_session`](Self::open_session), starting where `start` says:
+    /// after a cursor, or from the beginning of a window's first date
+    /// ([`HistoryWindow::AllTime`] reads every segment, and the legacy index
+    /// files from their first byte). `None` starts at the current UTC day.
+    pub fn open_in(
+        dir: &Path,
+        start: Option<WatchStart>,
+        labels: HistoryLabels,
+        project_slug: Option<String>,
+        events: bool,
+        session: Option<&HistorySessionSelector>,
+    ) -> Result<Self, OneharnessError> {
+        let today = today();
+        let mut offsets = BTreeMap::new();
+        let after = match start {
+            Some(WatchStart::After(cursor)) => Some(cursor),
+            _ => None,
+        };
+        let (earliest, window) = match start {
+            Some(WatchStart::After(cursor)) => {
+                let not_found = || OneharnessError::HistoryNotFound {
+                    id: cursor.to_string(),
+                };
+                let date = UtcDate::of_history_id(cursor).ok_or_else(not_found)?;
+                let mut found = false;
+                let path = segment_path(dir, SegmentKind::Runs, date);
+                let end = stream_lines(&path, 0, |line| {
+                    match serde_json::from_slice::<HistoryIndexEntry>(line) {
+                        Ok(HistoryIndexEntry::Run(run)) if run.history_id == cursor => {
+                            found = true;
+                            ControlFlow::Break(())
+                        }
+                        _ => ControlFlow::Continue(()),
+                    }
+                })?;
+                let after_cursor = end.filter(|_| found).ok_or_else(not_found)?;
+                offsets.insert((SegmentKind::Runs, date), after_cursor);
+                (Some(date), HistoryWindow::Since(date))
+            }
+            Some(WatchStart::Window(window)) => (window.earliest(today), window),
+            None => {
+                let window = HistoryWindow::Recent {
+                    days: NonZeroU32::MIN,
+                };
+                (window.earliest(today), window)
+            }
+        };
+        let lookback = earliest.map(|date| date.add_days(-1));
+        if let Some(date) = lookback {
+            for kind in [SegmentKind::Runs, SegmentKind::Events] {
+                if let Ok(meta) = fs::metadata(segment_path(dir, kind, date)) {
+                    offsets.insert((kind, date), meta.len());
+                }
+            }
+        }
+        let legacy_start = |name: &str| {
+            if window.reads_legacy() {
+                0
+            } else {
+                fs::metadata(dir.join(name)).map_or(0, |meta| meta.len())
+            }
+        };
         let session = match session {
             Some(HistorySessionSelector::Id(id)) => Some(SessionFilter::Following(id.clone())),
             Some(HistorySessionSelector::Name(name)) => {
-                // A session still in its first turn has no closing record to
-                // state its labels yet; its event-index entries carry them.
-                let mut running_labels: Option<BTreeMap<String, HistoryLabels>> = None;
                 let mut id = None;
-                for summary in list_sessions(dir, project_slug.as_deref())? {
-                    if summary.name != name.as_str() {
+                for found in collect_sessions(dir, project_slug.as_deref(), window)? {
+                    if found.summary.name != name.as_str() {
                         continue;
                     }
                     // A file stem no writer could have minted names no
                     // session this watcher can follow.
-                    let Ok(summary_id) = summary.id.parse::<HistorySessionId>() else {
+                    let Ok(found_id) = found.summary.id.parse::<HistorySessionId>() else {
                         continue;
                     };
-                    let matched = if summary.record_count == 0 {
-                        if running_labels.is_none() {
-                            running_labels = Some(event_index_labels(dir)?);
-                        }
-                        running_labels
+                    let matched = if found.summary.record_count == 0 {
+                        // A session still in its first turn has no closing
+                        // record to state its labels yet; its event entries
+                        // carry them.
+                        found
+                            .event_labels
                             .as_ref()
-                            .and_then(|known| known.get(&summary.id))
                             .is_none_or(|known| known.matches(&labels))
                     } else {
-                        summary.labels.matches(&labels)
+                        found.summary.labels.matches(&labels)
                     };
                     if matched {
-                        id = Some(summary_id);
+                        id = Some(found_id);
                         break;
                     }
                 }
@@ -844,48 +1786,25 @@ impl HistoryWatcher {
             }
             None => None,
         };
-        let reconciled = reconcile_index(dir)?;
-        let start = match after {
-            Some(cursor) => reconciled
-                .entries
-                .iter()
-                .position(|entry| entry.record.history_id == cursor)
-                .map(|index| index + 1)
-                .ok_or_else(|| OneharnessError::HistoryNotFound {
-                    id: cursor.to_string(),
-                })?,
-            None => 0,
-        };
-
         let mut watcher = Self {
-            index_path: dir.join(INDEX_FILE),
-            offset: reconciled.offset,
+            dir: dir.to_path_buf(),
+            earliest,
+            lookback,
+            offsets,
+            legacy_offsets: [
+                legacy_start(LEGACY_EVENT_INDEX_FILE),
+                legacy_start(LEGACY_INDEX_FILE),
+            ],
+            events,
+            events_after: after,
             pending: VecDeque::new(),
-            event_index_path: events.then(|| dir.join(EVENT_INDEX_FILE)),
-            event_offset: 0,
             pending_events: VecDeque::new(),
-            seen: reconciled
-                .entries
-                .iter()
-                .take(start)
-                .map(|entry| entry.record.history_id)
-                .collect(),
+            seen: HashSet::new(),
             labels,
             project_slug,
             session,
         };
-        if events {
-            let (event_entries, event_offset) = reconcile_event_index(dir)?;
-            watcher.event_offset = event_offset;
-            for entry in event_entries {
-                watcher.accept_event(entry);
-            }
-        }
-        for entry in reconciled.entries.into_iter().skip(start) {
-            if reconciled.active_ids.contains(&entry.record.history_id) {
-                watcher.accept(entry);
-            }
-        }
+        watcher.scan()?;
         Ok(watcher)
     }
 
@@ -901,95 +1820,171 @@ impl HistoryWatcher {
     /// Read newly appended complete index lines. A concurrent partial write is
     /// retained at the current offset and retried only after its newline lands.
     pub fn poll(&mut self) -> Result<Vec<HistoryRecord>, OneharnessError> {
-        self.poll_events()?;
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&self.index_path)
-            .map_err(|source| history_io_error(&self.index_path, source))?;
-        file.seek(SeekFrom::Start(self.offset))
-            .map_err(|source| history_io_error(&self.index_path, source))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|source| history_io_error(&self.index_path, source))?;
-        let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-            return Ok(Vec::new());
-        };
-        let complete = &bytes[..=last_newline];
-        self.offset += complete.len() as u64;
-        for line in complete.split(|byte| *byte == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            if let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) {
-                self.accept(entry);
-            }
-        }
+        self.scan()?;
         Ok(self.drain_available())
     }
 
-    fn poll_events(&mut self) -> Result<(), OneharnessError> {
-        let Some(path) = self.event_index_path.clone() else {
-            return Ok(());
-        };
-        let mut file = OpenOptions::new()
-            .read(true)
-            .open(&path)
-            .map_err(|source| history_io_error(&path, source))?;
-        file.seek(SeekFrom::Start(self.event_offset))
-            .map_err(|source| history_io_error(&path, source))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|source| history_io_error(&path, source))?;
-        let Some(last_newline) = bytes.iter().rposition(|byte| *byte == b'\n') else {
-            return Ok(());
-        };
-        let complete = &bytes[..=last_newline];
-        self.event_offset += complete.len() as u64;
-        for line in complete
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-        {
-            if let Ok(entry) = serde_json::from_slice::<HistoryEventIndexEntry>(line) {
-                self.accept_event(entry);
+    /// One pass: list the index directory once, tail every segment this
+    /// watcher reads — events before runs, so a run's events precede its
+    /// record — then the legacy files.
+    fn scan(&mut self) -> Result<(), OneharnessError> {
+        let segments = list_segments(&self.dir)?;
+        for wanted in [SegmentKind::Events, SegmentKind::Runs] {
+            if wanted == SegmentKind::Events && !self.events {
+                continue;
             }
+            for (date, kind, path) in &segments {
+                if *kind != wanted {
+                    continue;
+                }
+                let tailed = self.earliest.is_none_or(|earliest| *date >= earliest)
+                    || Some(*date) == self.lookback;
+                if !tailed {
+                    continue;
+                }
+                let start = self.offsets.get(&(*kind, *date)).copied().unwrap_or(0);
+                let end = stream_lines(path, start, |line| {
+                    if let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) {
+                        match entry {
+                            HistoryIndexEntry::Run(run) => self.accept_run(run),
+                            HistoryIndexEntry::Event(event) => self.accept_event(event),
+                        }
+                    }
+                    ControlFlow::Continue(())
+                })?;
+                self.offsets.insert((*kind, *date), end.unwrap_or(start));
+            }
+        }
+        if self.events {
+            let path = self.dir.join(LEGACY_EVENT_INDEX_FILE);
+            let start = self.legacy_offsets[0];
+            let mut refused = None;
+            let end = stream_lines(&path, start, |line| {
+                if let Ok(entry) = serde_json::from_slice::<LegacyEventIndexEntry>(line) {
+                    if let Err(error) = self.accept_legacy_event(entry) {
+                        refused = Some(error);
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            })?;
+            if let Some(error) = refused {
+                return Err(error);
+            }
+            if let Some(end) = end {
+                self.legacy_offsets[0] = end;
+            }
+        }
+        let path = self.dir.join(LEGACY_INDEX_FILE);
+        let start = self.legacy_offsets[1];
+        let mut refused = None;
+        let end = stream_lines(&path, start, |line| {
+            if let Ok(entry) = serde_json::from_slice::<LegacyIndexEntry>(line) {
+                if let Err(error) = self.accept_legacy_run(entry) {
+                    refused = Some(error);
+                    return ControlFlow::Break(());
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(error) = refused {
+            return Err(error);
+        }
+        if let Some(end) = end {
+            self.legacy_offsets[1] = end;
         }
         Ok(())
     }
 
-    fn accept_event(&mut self, entry: HistoryEventIndexEntry) {
-        let in_project = self.project_slug.as_ref().is_none_or(|slug| {
-            Path::new(&entry.session_path)
-                .components()
-                .next()
-                .is_some_and(|component| component.as_os_str() == slug.as_str())
-        });
-        if in_project
-            && entry.labels.matches(&self.labels)
-            && self.in_session(
-                &entry.session_path,
+    fn in_project(&self, slug: &str) -> bool {
+        self.project_slug
+            .as_deref()
+            .is_none_or(|wanted| wanted == slug)
+    }
+
+    fn accept_run(&mut self, entry: RunIndexEntry) {
+        let (slug, stem) = entry.session_path.parts();
+        if self.seen.contains(&entry.history_id)
+            || !self.in_project(slug)
+            || !entry.labels.matches(&self.labels)
+            || !self.in_session(stem, Some(&entry.name))
+        {
+            return;
+        }
+        let path = entry.session_path.under(&self.dir);
+        if let Ok(Some(run)) = find_run_line(&path, entry.history_id, entry.span) {
+            self.seen.insert(entry.history_id);
+            self.pending.push_back(run.materialize(Vec::new()));
+        }
+    }
+
+    fn accept_legacy_run(&mut self, entry: LegacyIndexEntry) -> Result<(), OneharnessError> {
+        let session = legacy_session(&self.dir, &entry.session_path)?;
+        let (slug, stem) = session.parts();
+        let record = entry.record;
+        if self.seen.contains(&record.history_id)
+            || !self.in_project(slug)
+            || !record.labels.matches(&self.labels)
+            || !self.in_session(stem, Some(&record.name))
+            || !session.under(&self.dir).is_file()
+        {
+            return Ok(());
+        }
+        self.seen.insert(record.history_id);
+        self.pending.push_back(record.materialize(Vec::new()));
+        Ok(())
+    }
+
+    fn accept_event(&mut self, entry: EventIndexEntry) {
+        let (slug, stem) = entry.session_path.parts();
+        if self
+            .events_after
+            .is_some_and(|cursor| entry.run_id <= cursor)
+            || !self.in_project(slug)
+            || !entry.labels.matches(&self.labels)
+            || !self.in_session(stem, index::session_name_from_id(stem))
+        {
+            return;
+        }
+        let path = entry.session_path.under(&self.dir);
+        if let Ok(Some(line)) = find_event_line(&path, entry.run_id, entry.event_index, entry.span)
+        {
+            self.pending_events.push_back(line);
+        }
+    }
+
+    fn accept_legacy_event(&mut self, entry: LegacyEventIndexEntry) -> Result<(), OneharnessError> {
+        let session = legacy_session(&self.dir, &entry.session_path)?;
+        let (slug, stem) = session.parts();
+        if self
+            .events_after
+            .is_some_and(|cursor| entry.line.run_id <= cursor)
+            || !self.in_project(slug)
+            || !entry.labels.matches(&self.labels)
+            || !self.in_session(
+                stem,
                 entry
                     .line
                     .session_name
                     .as_ref()
                     .map(HistorySessionName::as_str),
             )
+            || !session.under(&self.dir).is_file()
         {
-            self.pending_events.push_back(entry.line);
+            return Ok(());
         }
+        self.pending_events.push_back(entry.line);
+        Ok(())
     }
 
     /// Whether an in-scope entry belongs to the followed session (always, when
     /// none is). The first entry a still-unresolved name matches pins the
     /// session to that entry's id — only when its file stem is a session id a
     /// writer could have minted, since the index is read from disk.
-    fn in_session(&mut self, session_path: &str, name: Option<&str>) -> bool {
+    fn in_session(&mut self, stem: &str, name: Option<&str>) -> bool {
         let Some(filter) = &mut self.session else {
             return true;
         };
-        let stem = Path::new(session_path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or_default();
         match filter {
             SessionFilter::Following(id) => id.as_str() == stem,
             SessionFilter::Awaiting(wanted) if name == Some(wanted.as_str()) => {
@@ -1002,22 +1997,6 @@ impl HistoryWatcher {
                 }
             }
             SessionFilter::Awaiting(_) => false,
-        }
-    }
-
-    fn accept(&mut self, entry: HistoryIndexEntry) {
-        let in_project = self.project_slug.as_ref().is_none_or(|slug| {
-            Path::new(&entry.session_path)
-                .components()
-                .next()
-                .is_some_and(|component| component.as_os_str() == slug.as_str())
-        });
-        if self.seen.insert(entry.record.history_id)
-            && in_project
-            && entry.record.labels.matches(&self.labels)
-            && self.in_session(&entry.session_path, Some(entry.record.name.as_str()))
-        {
-            self.pending.push_back(entry.record.materialize(Vec::new()));
         }
     }
 }
@@ -1056,36 +2035,241 @@ pub struct SessionSummary {
     pub running: bool,
 }
 
-/// List the sessions under `dir`, newest first. When `project_slug` is `Some`,
-/// only that project's subdirectory is scanned; `None` scans every project. A
-/// missing `dir` is not an error — it just means no history yet (empty list).
-pub fn list_sessions(
+/// A session as a listing collects it from the index, before its summary is
+/// finished. `event_labels` are what a record-less session's event entries
+/// carry — how a watcher resolves a running session by name and labels.
+struct CollectedSession {
+    summary: SessionSummary,
+    event_labels: Option<HistoryLabels>,
+}
+
+/// The first closing record a listing met for a session: an index entry (its
+/// project is on the session line it points at) or a legacy entry (which
+/// carries the whole record).
+enum FirstRun {
+    Entry(RunIndexEntry),
+    Legacy(Box<HistoryRunRecord>),
+}
+
+impl FirstRun {
+    fn id(&self) -> HistoryId {
+        match self {
+            FirstRun::Entry(entry) => entry.history_id,
+            FirstRun::Legacy(record) => record.history_id,
+        }
+    }
+}
+
+#[derive(Default)]
+struct SessionAccumulator {
+    first: Option<FirstRun>,
+    closed: HashSet<HistoryId>,
+    event_runs: HashSet<HistoryId>,
+    harnesses: Vec<String>,
+    event_labels: Option<HistoryLabels>,
+}
+
+impl SessionAccumulator {
+    fn touch(&mut self, harness_id: &str) {
+        if !self.harnesses.iter().any(|known| known == harness_id) {
+            self.harnesses.push(harness_id.to_string());
+        }
+    }
+
+    fn close(&mut self, first: FirstRun, harness_id: &str) {
+        let id = first.id();
+        if !self.closed.insert(id) {
+            return;
+        }
+        self.touch(harness_id);
+        if self.first.as_ref().is_none_or(|known| id < known.id()) {
+            self.first = Some(first);
+        }
+    }
+}
+
+/// Collect the sessions a window's index entries name, keyed by session path.
+/// Reads the segments dated inside the window — every segment, plus the legacy
+/// index files, for [`HistoryWindow::AllTime`] — and never the session tree.
+fn collect_sessions(
     dir: &Path,
     project_slug: Option<&str>,
-) -> Result<Vec<SessionSummary>, OneharnessError> {
-    let mut sessions = Vec::new();
-    if !dir.exists() {
-        return Ok(sessions);
-    }
-    let project_dirs: Vec<PathBuf> = match project_slug {
-        Some(slug) => vec![dir.join(slug)],
-        None => read_subdirs(dir)?,
+    window: HistoryWindow,
+) -> Result<Vec<CollectedSession>, OneharnessError> {
+    let earliest = window.earliest(today());
+    // Keyed by the looser legacy path, which every dated one also is.
+    let mut sessions: BTreeMap<LegacySessionPath, SessionAccumulator> = BTreeMap::new();
+    let in_scope = |session_path: &LegacySessionPath| {
+        project_slug.is_none_or(|wanted| wanted == session_path.parts().0)
     };
-    for pdir in project_dirs {
-        if !pdir.is_dir() {
+    for (date, _, path) in list_segments(dir)? {
+        if earliest.is_some_and(|earliest| date < earliest) {
             continue;
         }
-        for path in read_session_files(&pdir)? {
-            let summary = summarize(&path)?;
-            if summary.record_count > 0 || summary.running {
-                sessions.push(summary);
+        stream_lines(&path, 0, |line| {
+            match serde_json::from_slice::<HistoryIndexEntry>(line) {
+                Ok(HistoryIndexEntry::Run(run)) => {
+                    let session_path = LegacySessionPath::from(&run.session_path);
+                    if !in_scope(&session_path) {
+                        return ControlFlow::Continue(());
+                    }
+                    let harness_id = run.harness_id.clone();
+                    sessions
+                        .entry(session_path)
+                        .or_default()
+                        .close(FirstRun::Entry(run), &harness_id);
+                }
+                Ok(HistoryIndexEntry::Event(event)) => {
+                    let session_path = LegacySessionPath::from(&event.session_path);
+                    if !in_scope(&session_path) {
+                        return ControlFlow::Continue(());
+                    }
+                    let session = sessions.entry(session_path).or_default();
+                    session.event_runs.insert(event.run_id);
+                    session.touch(&event.harness_id);
+                    session.event_labels.get_or_insert(event.labels);
+                }
+                _ => {}
             }
+            ControlFlow::Continue(())
+        })?;
+    }
+    if window.reads_legacy() {
+        let mut refused = None;
+        stream_lines(&dir.join(LEGACY_INDEX_FILE), 0, |line| {
+            if let Ok(entry) = serde_json::from_slice::<LegacyIndexEntry>(line) {
+                let session_path = match legacy_session(dir, &entry.session_path) {
+                    Ok(session_path) => session_path.clone(),
+                    Err(error) => {
+                        refused = Some(error);
+                        return ControlFlow::Break(());
+                    }
+                };
+                if in_scope(&session_path) {
+                    let record = entry.record;
+                    let harness_id = record.harness_id.clone().unwrap_or(record.harness.clone());
+                    sessions
+                        .entry(session_path)
+                        .or_default()
+                        .close(FirstRun::Legacy(Box::new(record)), &harness_id);
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(error) = refused {
+            return Err(error);
         }
+        stream_lines(&dir.join(LEGACY_EVENT_INDEX_FILE), 0, |line| {
+            if let Ok(entry) = serde_json::from_slice::<LegacyEventIndexEntry>(line) {
+                let session_path = match legacy_session(dir, &entry.session_path) {
+                    Ok(session_path) => session_path.clone(),
+                    Err(error) => {
+                        refused = Some(error);
+                        return ControlFlow::Break(());
+                    }
+                };
+                if in_scope(&session_path) {
+                    let session = sessions.entry(session_path).or_default();
+                    session.event_runs.insert(entry.line.run_id);
+                    session.touch(
+                        entry
+                            .line
+                            .harness_id
+                            .as_ref()
+                            .unwrap_or(&entry.line.harness),
+                    );
+                    session.event_labels.get_or_insert(entry.labels);
+                }
+            }
+            ControlFlow::Continue(())
+        })?;
+        if let Some(error) = refused {
+            return Err(error);
+        }
+    }
+    let mut collected = Vec::new();
+    for (session_path, found) in sessions {
+        let running = found
+            .event_runs
+            .iter()
+            .any(|run| !found.closed.contains(run));
+        if found.closed.is_empty() && !running {
+            continue;
+        }
+        let (slug, stem) = session_path.parts();
+        let path = session_path.under(dir);
+        // An entry whose session was cleared is skipped here, at one `stat`.
+        if !path.is_file() {
+            continue;
+        }
+        let (name, labels, project, started) = match &found.first {
+            Some(FirstRun::Legacy(record)) => (
+                record.name.clone(),
+                record.labels.clone(),
+                record.project.clone(),
+                record.timestamp.clone(),
+            ),
+            Some(FirstRun::Entry(entry)) => {
+                let project = find_run_line(&path, entry.history_id, entry.span)?
+                    .map_or_else(|| slug.to_string(), |run| run.project);
+                (
+                    entry.name.clone(),
+                    entry.labels.clone(),
+                    project,
+                    entry.recorded_at.as_str().to_string(),
+                )
+            }
+            None => (
+                index::session_name_from_id(stem)
+                    .unwrap_or(stem)
+                    .to_string(),
+                HistoryLabels::default(),
+                slug.to_string(),
+                history::session_started_from_id(stem).unwrap_or_default(),
+            ),
+        };
+        collected.push(CollectedSession {
+            summary: SessionSummary {
+                id: stem.to_string(),
+                name,
+                labels,
+                project,
+                started,
+                record_count: found.closed.len(),
+                harnesses: found.harnesses,
+                path: path.display().to_string(),
+                running,
+            },
+            event_labels: found.event_labels,
+        });
     }
     // Newest first. RFC3339 sorts lexically as chronologically; a session with no
     // readable timestamp (empty `started`) sorts last.
-    sessions.sort_by(|a, b| b.started.cmp(&a.started).then(a.id.cmp(&b.id)));
-    Ok(sessions)
+    collected.sort_by(|a, b| {
+        b.summary
+            .started
+            .cmp(&a.summary.started)
+            .then(a.summary.id.cmp(&b.summary.id))
+    });
+    Ok(collected)
+}
+
+/// List the sessions a window's index entries name, newest first. When
+/// `project_slug` is `Some`, only that project's sessions are listed. Reads the
+/// segments dated inside `window` (and, for [`HistoryWindow::AllTime`], the
+/// legacy index files an older core keeps) — never the session tree — plus,
+/// for each session listed, the one line of its file that says its project. A
+/// session's counts are those of its entries inside the window, and a session
+/// file that is gone is skipped. A missing `dir` lists nothing.
+pub fn list_sessions(
+    dir: &Path,
+    project_slug: Option<&str>,
+    window: HistoryWindow,
+) -> Result<Vec<SessionSummary>, OneharnessError> {
+    Ok(collect_sessions(dir, project_slug, window)?
+        .into_iter()
+        .map(|found| found.summary)
+        .collect())
 }
 
 /// The sessions whose id OR name equals `needle`, newest first (a name is
@@ -1116,7 +2300,7 @@ pub fn read_session_display(path: &Path) -> Result<Vec<HistoryShowEntry>, Onehar
     })?;
     let mut dangling: BTreeMap<HistoryId, (String, Vec<_>)> = BTreeMap::new();
     let mut values = Vec::new();
-    for line in parse_lines(path, &text, Unmigrated::Report) {
+    for line in parse_lines(path, &text) {
         match line {
             HistoryLine::Event(line) => {
                 dangling
@@ -1144,303 +2328,148 @@ pub fn read_session_display(path: &Path) -> Result<Vec<HistoryShowEntry>, Onehar
     Ok(values)
 }
 
-/// Resolve a session by its file id alone, for an id `history list` did not
-/// surface (a file whose every line was unreadable).
+/// Whether text can name one file directly under a directory: not empty, not
+/// `.`/`..`, no separator and no drive prefix. A lookup key is caller input,
+/// so one that could reach elsewhere names nothing.
+fn plain_file_component(text: &str) -> bool {
+    !text.is_empty() && text != "." && text != ".." && !text.contains(['/', '\\', ':'])
+}
+
+/// Resolve a session by its id (file stem) — for a run a listing did not
+/// surface: outside the listing's window, never indexed, or a file whose every
+/// line was unreadable. With a project slug it opens `<dir>/<slug>/<id>.jsonl`
+/// by name, needing no index; without one it reads the segments for the date
+/// the session id embeds.
 pub fn find_session_path(
     dir: &Path,
     project_slug: Option<&str>,
     id: &str,
 ) -> Result<Option<PathBuf>, OneharnessError> {
-    let project_dirs = match project_slug {
-        Some(slug) => vec![dir.join(slug)],
-        None => read_subdirs_if_present(dir)?,
-    };
-    for project_dir in project_dirs {
-        if !project_dir.is_dir() {
-            continue;
+    if !plain_file_component(id) {
+        return Ok(None);
+    }
+    if let Some(slug) = project_slug {
+        if !plain_file_component(slug) || slug == INDEX_DIR {
+            return Ok(None);
         }
-        if let Some(path) = read_session_files(&project_dir)?
-            .into_iter()
-            .find(|path| path.file_stem().and_then(|stem| stem.to_str()) == Some(id))
-        {
+        let path = dir.join(slug).join(format!("{id}.{SESSION_EXT}"));
+        return Ok(path.is_file().then_some(path));
+    }
+    let Some(date) = index::session_date_from_id(id) else {
+        return Ok(None);
+    };
+    let mut found = None;
+    for kind in [SegmentKind::Runs, SegmentKind::Events] {
+        stream_lines(&segment_path(dir, kind, date), 0, |line| {
+            let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) else {
+                return ControlFlow::Continue(());
+            };
+            if entry.session_path().parts().1 == id {
+                found = Some(entry.session_path().under(dir));
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
+            }
+        })?;
+        if let Some(path) = found.take().filter(|path| path.is_file()) {
             return Ok(Some(path));
         }
     }
     Ok(None)
 }
 
-/// Find exactly one history record by its UUID, across all projects. A missing
-/// id is a typed error so library callers need not parse diagnostics.
+/// Find exactly one history record by its UUID, across all projects: the one
+/// runs segment for the date the id was minted on, then that entry's session
+/// file. A miss — an id no segment of its date holds, or a legacy id with no
+/// date — is [`OneharnessError::HistoryNotFound`]; there is no fallback read
+/// of the legacy index (see [`find_record_by_id_in`] for the all-time lookup).
 pub fn find_record_by_id(dir: &Path, id: HistoryId) -> Result<HistoryRecord, OneharnessError> {
-    let reconciled = reconcile_index(dir)?;
-    if reconciled.active_ids.contains(&id) {
-        if let Some(entry) = reconciled
-            .entries
-            .into_iter()
-            .find(|entry| entry.record.history_id == id)
-        {
-            let path = dir.join(&entry.session_path);
-            if let Some(record) = read_session(&path)?
-                .into_iter()
-                .find(|record| record.history_id == id)
-            {
-                return Ok(record);
-            }
-        }
-    }
-    Err(OneharnessError::HistoryNotFound { id: id.to_string() })
+    find_record_by_id_in(dir, id, HistoryWindow::default())
 }
 
-fn reconcile_index(dir: &Path) -> Result<ReconciledIndex, OneharnessError> {
-    fs::create_dir_all(dir).map_err(|source| history_io_error(dir, source))?;
-    let lock_path = dir.join(INDEX_LOCK_FILE);
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|source| history_io_error(&lock_path, source))?;
-    FileExt::lock_exclusive(&lock).map_err(|source| history_io_error(&lock_path, source))?;
-    let result = reconcile_index_locked(dir);
-    let unlock = FileExt::unlock(&lock).map_err(|source| history_io_error(&lock_path, source));
-    match (result, unlock) {
-        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        (Ok(index), Ok(())) => Ok(index),
-    }
-}
-
-fn reconcile_index_locked(dir: &Path) -> Result<ReconciledIndex, OneharnessError> {
-    let index_path = dir.join(INDEX_FILE);
-    let mut index = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&index_path)
-        .map_err(|source| history_io_error(&index_path, source))?;
-    recover_partial_tail(&mut index, &index_path)?;
-
-    index
-        .seek(SeekFrom::Start(0))
-        .map_err(|source| history_io_error(&index_path, source))?;
-    let mut bytes = Vec::new();
-    index
-        .read_to_end(&mut bytes)
-        .map_err(|source| history_io_error(&index_path, source))?;
-    let mut entries = parse_index_entries(&bytes);
-    let mut indexed_ids: BTreeSet<HistoryId> = entries
-        .iter()
-        .map(|entry| entry.record.history_id)
-        .collect();
-    let mut active_ids = BTreeSet::new();
-    let mut missing = Vec::new();
-
-    for project_dir in read_subdirs_if_present(dir)? {
-        for path in read_session_files(&project_dir)? {
-            let relative_path = path
-                .strip_prefix(dir)
-                .unwrap_or(&path)
-                .display()
-                .to_string();
-            for record in read_run_lines(&path)? {
-                active_ids.insert(record.history_id);
-                if indexed_ids.insert(record.history_id) {
-                    missing.push(HistoryIndexEntry {
-                        session_path: relative_path.clone(),
-                        record,
-                    });
-                }
-            }
-        }
-    }
-
-    index
-        .seek(SeekFrom::End(0))
-        .map_err(|source| history_io_error(&index_path, source))?;
-    for entry in &missing {
-        write_index_line(&mut index, &index_path, entry)?;
-    }
-    index
-        .flush()
-        .map_err(|source| history_io_error(&index_path, source))?;
-    entries.extend(missing);
-    let offset = index
-        .stream_position()
-        .map_err(|source| history_io_error(&index_path, source))?;
-    Ok(ReconciledIndex {
-        entries,
-        active_ids,
-        offset,
-    })
-}
-
-fn append_index_entry(dir: &Path, entry: &HistoryIndexEntry) -> std::io::Result<()> {
-    let lock_path = dir.join(INDEX_LOCK_FILE);
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)?;
-    FileExt::lock_exclusive(&lock)?;
-    let result = (|| {
-        let index_path = dir.join(INDEX_FILE);
-        let mut index = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(index_path)?;
-        recover_partial_tail_io(&mut index)?;
-        index.seek(SeekFrom::Start(0))?;
-        let mut existing = Vec::new();
-        index.read_to_end(&mut existing)?;
-        if parse_index_entries(&existing)
-            .iter()
-            .any(|indexed| indexed.record.history_id == entry.record.history_id)
-        {
-            return Ok(());
-        }
-        index.seek(SeekFrom::End(0))?;
-        let mut line = serde_json::to_vec(entry)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        line.push(b'\n');
-        index.write_all(&line)?;
-        index.flush()
-    })();
-    let unlock = FileExt::unlock(&lock);
-    result.and(unlock)
-}
-
-fn append_event_index_entry(dir: &Path, entry: &HistoryEventIndexEntry) -> std::io::Result<()> {
-    let lock_path = dir.join(INDEX_LOCK_FILE);
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)?;
-    FileExt::lock_exclusive(&lock)?;
-    let result = (|| {
-        let path = dir.join(EVENT_INDEX_FILE);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(path)?;
-        recover_partial_tail_io(&mut file)?;
-        file.seek(SeekFrom::End(0))?;
-        let mut bytes = serde_json::to_vec(entry)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        bytes.push(b'\n');
-        file.write_all(&bytes)?;
-        file.flush()
-    })();
-    let unlock = FileExt::unlock(&lock);
-    result.and(unlock)
-}
-
-/// The labels each session's event lines were indexed under, by session id
-/// (the session file's stem).
-fn event_index_labels(dir: &Path) -> Result<BTreeMap<String, HistoryLabels>, OneharnessError> {
-    let (entries, _) = reconcile_event_index(dir)?;
-    Ok(entries
-        .into_iter()
-        .filter_map(|entry| {
-            let stem = Path::new(&entry.session_path)
-                .file_stem()?
-                .to_str()?
-                .to_string();
-            Some((stem, entry.labels))
-        })
-        .collect())
-}
-
-fn reconcile_event_index(
+/// [`find_record_by_id`], with the reach stated. Under
+/// [`HistoryWindow::AllTime`] it reads every runs segment and then streams the
+/// legacy `.index.jsonl` line by line — opened read-only, in memory bounded by
+/// one line — stopping at the first entry with the id and opening the session
+/// file it names; that is how a run recorded before the dated index, and never
+/// reindexed, is found. Any other window reads the one segment the id's date
+/// names.
+pub fn find_record_by_id_in(
     dir: &Path,
-) -> Result<(Vec<HistoryEventIndexEntry>, u64), OneharnessError> {
-    let lock_path = dir.join(INDEX_LOCK_FILE);
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&lock_path)
-        .map_err(|source| history_io_error(&lock_path, source))?;
-    FileExt::lock_exclusive(&lock).map_err(|source| history_io_error(&lock_path, source))?;
-    let result = (|| {
-        let path = dir.join(EVENT_INDEX_FILE);
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .map_err(|source| history_io_error(&path, source))?;
-        recover_partial_tail(&mut file, &path)?;
-        file.seek(SeekFrom::Start(0))
-            .map_err(|source| history_io_error(&path, source))?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
-            .map_err(|source| history_io_error(&path, source))?;
-        let entries = bytes
-            .split(|byte| *byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .filter_map(|line| serde_json::from_slice(line).ok())
-            .filter(|entry: &HistoryEventIndexEntry| dir.join(&entry.session_path).is_file())
-            .collect();
-        let offset = file
-            .stream_position()
-            .map_err(|source| history_io_error(&path, source))?;
-        Ok((entries, offset))
-    })();
-    let unlock = FileExt::unlock(&lock).map_err(|source| history_io_error(&lock_path, source));
-    match (result, unlock) {
-        (Err(error), _) | (Ok(_), Err(error)) => Err(error),
-        (Ok(entries), Ok(())) => Ok(entries),
+    id: HistoryId,
+    window: HistoryWindow,
+) -> Result<HistoryRecord, OneharnessError> {
+    let not_found = || OneharnessError::HistoryNotFound { id: id.to_string() };
+    let segments: Vec<PathBuf> = if window.reads_legacy() {
+        list_segments(dir)?
+            .into_iter()
+            .rev()
+            .filter(|(_, kind, _)| *kind == SegmentKind::Runs)
+            .map(|(_, _, path)| path)
+            .collect()
+    } else {
+        let date = UtcDate::of_history_id(id).ok_or_else(not_found)?;
+        vec![segment_path(dir, SegmentKind::Runs, date)]
+    };
+    for path in segments {
+        let mut session_path = None;
+        stream_lines(&path, 0, |line| match serde_json::from_slice(line) {
+            Ok(HistoryIndexEntry::Run(run)) if run.history_id == id => {
+                session_path = Some(run.session_path.under(dir));
+                ControlFlow::Break(())
+            }
+            _ => ControlFlow::Continue(()),
+        })?;
+        if let Some(record) = match session_path {
+            Some(path) => record_in_session(&path, id)?,
+            None => None,
+        } {
+            return Ok(record);
+        }
     }
-}
-
-fn recover_partial_tail(file: &mut File, path: &Path) -> Result<(), OneharnessError> {
-    recover_partial_tail_io(file).map_err(|source| history_io_error(path, source))
-}
-
-fn recover_partial_tail_io(file: &mut File) -> std::io::Result<()> {
-    file.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    if bytes.last().is_some_and(|byte| *byte != b'\n') {
-        let valid_len = bytes
-            .iter()
-            .rposition(|byte| *byte == b'\n')
-            .map_or(0, |index| index + 1);
-        file.set_len(valid_len as u64)?;
+    if window.reads_legacy() {
+        let needle = id.to_string();
+        let mut session_path = None;
+        stream_lines(&dir.join(LEGACY_INDEX_FILE), 0, |line| {
+            // The id's text is on the line of any entry that is its; checking
+            // for it first spares parsing every other run's whole record.
+            if !line
+                .windows(needle.len())
+                .any(|window| window == needle.as_bytes())
+            {
+                return ControlFlow::Continue(());
+            }
+            match serde_json::from_slice::<LegacyIndexEntry>(line) {
+                Ok(entry) if entry.record.history_id == id => {
+                    session_path =
+                        Some(legacy_session(dir, &entry.session_path).map(|path| path.under(dir)));
+                    ControlFlow::Break(())
+                }
+                _ => ControlFlow::Continue(()),
+            }
+        })?;
+        if let Some(record) = match session_path.transpose()? {
+            Some(path) => record_in_session(&path, id)?,
+            None => None,
+        } {
+            return Ok(record);
+        }
     }
-    Ok(())
+    Err(not_found())
 }
 
-fn parse_index_entries(bytes: &[u8]) -> Vec<HistoryIndexEntry> {
-    let mut seen = BTreeSet::new();
-    bytes
-        .split(|byte| *byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .filter_map(|line| serde_json::from_slice::<HistoryIndexEntry>(line).ok())
-        .filter(|entry| seen.insert(entry.record.history_id))
-        .collect()
-}
-
-fn write_index_line(
-    index: &mut File,
-    path: &Path,
-    entry: &HistoryIndexEntry,
-) -> Result<(), OneharnessError> {
-    let mut line = serde_json::to_vec(entry).map_err(OneharnessError::Serialize)?;
-    line.push(b'\n');
-    index
-        .write_all(&line)
-        .map_err(|source| history_io_error(path, source))
+/// The record `id` names in the session file an entry points at, with its
+/// events; `None` when the file is gone or holds no such record.
+fn record_in_session(path: &Path, id: HistoryId) -> Result<Option<HistoryRecord>, OneharnessError> {
+    match read_session(path) {
+        Ok(records) => Ok(records.into_iter().find(|record| record.history_id == id)),
+        Err(OneharnessError::HistoryIo { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn history_io_error(path: &Path, source: std::io::Error) -> OneharnessError {
@@ -1450,29 +2479,33 @@ fn history_io_error(path: &Path, source: std::io::Error) -> OneharnessError {
     }
 }
 
-fn history_error_to_io(error: OneharnessError) -> std::io::Error {
-    std::io::Error::other(error)
+/// The session files [`remove_sessions`] would delete under `dir` (optionally
+/// restricted to one project slug), sorted — what a dry-run `history clear`
+/// reports. A missing `dir` names none.
+pub fn list_session_files(
+    dir: &Path,
+    project_slug: Option<&str>,
+) -> Result<Vec<String>, OneharnessError> {
+    let mut files = Vec::new();
+    for pdir in project_dirs(dir, project_slug)? {
+        for path in read_session_files(&pdir)? {
+            files.push(path.display().to_string());
+        }
+    }
+    files.sort();
+    Ok(files)
 }
 
 /// Delete every session file under `dir` (optionally restricted to one project
 /// slug), returning the paths removed. Empty project subdirectories left behind
-/// are pruned. A missing `dir` removes nothing.
+/// are pruned. A missing `dir` removes nothing. Session files are all it
+/// deletes: the index directory, its segments and the legacy index files stay.
 pub fn remove_sessions(
     dir: &Path,
     project_slug: Option<&str>,
 ) -> Result<Vec<String>, OneharnessError> {
     let mut removed = Vec::new();
-    if !dir.exists() {
-        return Ok(removed);
-    }
-    let project_dirs: Vec<PathBuf> = match project_slug {
-        Some(slug) => vec![dir.join(slug)],
-        None => read_subdirs(dir)?,
-    };
-    for pdir in project_dirs {
-        if !pdir.is_dir() {
-            continue;
-        }
+    for pdir in project_dirs(dir, project_slug)? {
         for path in read_session_files(&pdir)? {
             fs::remove_file(&path).map_err(|source| OneharnessError::HistoryIo {
                 path: path.display().to_string(),
@@ -1489,15 +2522,34 @@ pub fn remove_sessions(
     Ok(removed)
 }
 
-/// The immediate subdirectories of `dir` (the project slugs).
+/// The project directories a clear reaches: the one named, or every one.
+fn project_dirs(dir: &Path, project_slug: Option<&str>) -> Result<Vec<PathBuf>, OneharnessError> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+    Ok(match project_slug {
+        Some(slug) if plain_file_component(slug) && slug != INDEX_DIR => {
+            vec![dir.join(slug)]
+        }
+        Some(_) => Vec::new(),
+        None => read_subdirs(dir)?,
+    }
+    .into_iter()
+    .filter(|pdir| pdir.is_dir())
+    .collect())
+}
+
+/// The immediate subdirectories of `dir` (the project slugs) — never the index
+/// directory, which holds no sessions.
 fn read_subdirs(dir: &Path) -> Result<Vec<PathBuf>, OneharnessError> {
     let mut dirs = Vec::new();
     for entry in read_dir(dir)? {
         let path = entry.path();
-        if path.is_dir() {
+        if path.is_dir() && entry.file_name() != INDEX_DIR {
             dirs.push(path);
         }
     }
+    dirs.sort();
     Ok(dirs)
 }
 
@@ -1534,93 +2586,6 @@ fn read_dir(dir: &Path) -> Result<Vec<fs::DirEntry>, OneharnessError> {
         })
 }
 
-/// Build a [`SessionSummary`] by reading a session file. Robust to a partial or
-/// empty file: fields the records don't supply fall back to what the event
-/// lines say (a run still in progress has only those), then to the file stem /
-/// the slug / the start the session id records.
-fn summarize(path: &Path) -> Result<SessionSummary, OneharnessError> {
-    let id = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let slug = path
-        .parent()
-        .and_then(|p| p.file_name())
-        .and_then(|s| s.to_str())
-        .unwrap_or_default()
-        .to_string();
-    let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
-        path: path.display().to_string(),
-        source,
-    })?;
-    let mut records = Vec::new();
-    let mut events = Vec::new();
-    for line in parse_lines(path, &text, Unmigrated::Report) {
-        match line {
-            HistoryLine::Run(run) => records.push(run),
-            HistoryLine::Event(event) => events.push(event),
-        }
-    }
-    let closed: BTreeSet<HistoryId> = records.iter().map(|record| record.history_id).collect();
-    let running = events.iter().any(|event| !closed.contains(&event.run_id));
-
-    let mut harnesses: Vec<String> = Vec::new();
-    let touched = records
-        .iter()
-        .map(|record| record.harness_id.as_ref().unwrap_or(&record.harness))
-        .chain(
-            events
-                .iter()
-                .map(|event| event.harness_id.as_ref().unwrap_or(&event.harness)),
-        );
-    for harness_id in touched {
-        if !harnesses.iter().any(|x| x == harness_id) {
-            harnesses.push(harness_id.clone());
-        }
-    }
-    let first = records.first();
-    Ok(SessionSummary {
-        name: first
-            .map(|record| record.name.clone())
-            .or_else(|| {
-                events
-                    .iter()
-                    .find_map(|event| event.session_name.as_ref().map(ToString::to_string))
-            })
-            .unwrap_or_else(|| id.clone()),
-        labels: first
-            .map(|record| record.labels.clone())
-            .unwrap_or_default(),
-        project: first.map_or(slug, |record| record.project.clone()),
-        started: first
-            .map(|record| record.timestamp.clone())
-            .or_else(|| history::session_started_from_id(&id))
-            .unwrap_or_default(),
-        record_count: records.len(),
-        harnesses,
-        path: path.display().to_string(),
-        id,
-        running,
-    })
-}
-
-/// The closing `run` lines of a session file, for index maintenance over the
-/// whole store — which is why a legacy line here is skipped without a word.
-fn read_run_lines(path: &Path) -> Result<Vec<HistoryRunRecord>, OneharnessError> {
-    let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
-        path: path.display().to_string(),
-        source,
-    })?;
-    Ok(parse_lines(path, &text, Unmigrated::Skip)
-        .into_iter()
-        .filter_map(|line| match line {
-            HistoryLine::Run(run) => Some(run),
-            HistoryLine::Event(_) => None,
-        })
-        .collect())
-}
-
 /// Parse a JSONL blob into values, skipping malformed or partial lines.
 #[cfg(test)]
 fn parse_values(text: &str) -> Vec<Value> {
@@ -1633,7 +2598,7 @@ fn parse_values(text: &str) -> Vec<Value> {
 fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
     let mut events: BTreeMap<HistoryId, Vec<_>> = BTreeMap::new();
     let mut records = Vec::new();
-    for line in parse_lines(path, text, Unmigrated::Report) {
+    for line in parse_lines(path, text) {
         match line {
             HistoryLine::Event(line) => events.entry(line.run_id).or_default().push(line.event),
             HistoryLine::Run(run) => {
@@ -1646,22 +2611,11 @@ fn parse_records(path: &Path, text: &str) -> Vec<HistoryRecord> {
     records
 }
 
-/// Whether a read reports the legacy lines it had to skip. A command reading
-/// the scope it was asked about says so; the index maintenance every run and
-/// watcher does over the whole store (every project's files) does not, since
-/// a warning about a project nobody asked about is noise in the middle of an
-/// unrelated run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Unmigrated {
-    Report,
-    Skip,
-}
-
 /// Whether this process has already said that it skipped unmigrated lines —
 /// said once, naming the first file, however many files carry them.
 static UNMIGRATED_REPORTED: AtomicBool = AtomicBool::new(false);
 
-fn parse_lines(path: &Path, text: &str, unmigrated: Unmigrated) -> Vec<HistoryLine> {
+fn parse_lines(path: &Path, text: &str) -> Vec<HistoryLine> {
     let mut legacy = false;
     let lines = text
         .lines()
@@ -1676,10 +2630,7 @@ fn parse_lines(path: &Path, text: &str, unmigrated: Unmigrated) -> Vec<HistoryLi
             serde_json::from_value(value).ok()
         })
         .collect();
-    if legacy
-        && unmigrated == Unmigrated::Report
-        && !UNMIGRATED_REPORTED.swap(true, Ordering::Relaxed)
-    {
+    if legacy && !UNMIGRATED_REPORTED.swap(true, Ordering::Relaxed) {
         eprintln!(
             "oneharness: warning: skipped unmigrated history lines in `{}`; run `oneharness history migrate`",
             path.display()
@@ -1694,6 +2645,32 @@ mod tests {
     use crate::domain::report::{ExecutionTelemetry, OutputFormat, Status};
     use crate::domain::signals::{FailureKind, Usage};
     use crate::io::scratch::ScratchDir;
+    use std::collections::BTreeSet;
+
+    /// Every entry in every segment of `dir`, in segment then line order.
+    fn segment_entries(dir: &Path) -> Vec<HistoryIndexEntry> {
+        let mut entries = Vec::new();
+        for (_, _, path) in list_segments(dir).unwrap() {
+            stream_lines(&path, 0, |line| {
+                if let Ok(entry) = serde_json::from_slice(line) {
+                    entries.push(entry);
+                }
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        }
+        entries
+    }
+
+    fn run_entries(dir: &Path) -> Vec<RunIndexEntry> {
+        segment_entries(dir)
+            .into_iter()
+            .filter_map(|entry| match entry {
+                HistoryIndexEntry::Run(run) => Some(run),
+                HistoryIndexEntry::Event(_) => None,
+            })
+            .collect()
+    }
 
     fn temp_dir(tag: &str) -> ScratchDir {
         ScratchDir::new(&format!("hist-{tag}-{}", now_epoch_secs())).unwrap()
@@ -1877,16 +2854,38 @@ mod tests {
                 .unwrap(),
             records[0].history_id
         );
-        let lines = parse_lines(
-            w.path(),
-            &fs::read_to_string(w.path()).unwrap(),
-            Unmigrated::Skip,
-        );
+        let lines = parse_lines(w.path(), &fs::read_to_string(w.path()).unwrap());
         assert!(matches!(lines[0], HistoryLine::Event(_)));
         assert!(matches!(lines[1], HistoryLine::Run(_)));
         assert!(matches!(lines[2], HistoryLine::Run(_)));
-        let index = fs::read(dir.join(INDEX_FILE)).unwrap();
-        assert_eq!(parse_index_entries(&index).len(), 2);
+        // One entry per session line: the event, then each closing run line,
+        // each pointing back at the line it indexes.
+        let entries = segment_entries(&dir);
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        assert_eq!(run_entries(&dir).len(), 2);
+        let session = fs::read(w.path()).unwrap();
+        for entry in &entries {
+            let span = match entry {
+                HistoryIndexEntry::Run(run) => run.span,
+                HistoryIndexEntry::Event(event) => event.span,
+            }
+            .unwrap();
+            let start = span.offset as usize;
+            let line = &session[start..start + span.length.get() as usize];
+            let parsed: HistoryLine = serde_json::from_slice(&line[..line.len() - 1]).unwrap();
+            match (entry, parsed) {
+                (HistoryIndexEntry::Run(run), HistoryLine::Run(line)) => {
+                    assert_eq!(run.history_id, line.history_id);
+                }
+                (HistoryIndexEntry::Event(event), HistoryLine::Event(line)) => {
+                    assert_eq!(
+                        (event.run_id, event.event_index),
+                        (line.run_id, line.event.index)
+                    );
+                }
+                other => panic!("an entry pointing at the wrong kind of line: {other:?}"),
+            }
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1944,7 +2943,10 @@ mod tests {
         let dir = temp_dir("live-index-failure");
         let project = temp_dir("live-index-project");
         let writer = HistoryWriter::open(&dir, &project, "live", HistoryLabels::default()).unwrap();
-        fs::create_dir(dir.join(EVENT_INDEX_FILE)).unwrap();
+        // A directory where today's events segment would go: the session line
+        // lands, the index append does not.
+        let blocked = segment_path(&dir, SegmentKind::Events, today());
+        fs::create_dir_all(&blocked).unwrap();
         let event = crate::domain::events::ActionEvent {
             kind: "message".to_string(),
             name: None,
@@ -1965,17 +2967,12 @@ mod tests {
         assert!(writer
             .append_event(writer.begin_run(), "codex", event.clone())
             .is_err());
-        fs::remove_dir(dir.join(EVENT_INDEX_FILE)).unwrap();
+        fs::remove_dir(&blocked).unwrap();
         writer
             .append_event(writer.begin_run(), "codex", event)
             .unwrap();
         assert_eq!(
-            parse_lines(
-                writer.path(),
-                &fs::read_to_string(writer.path()).unwrap(),
-                Unmigrated::Skip
-            )
-            .len(),
+            parse_lines(writer.path(), &fs::read_to_string(writer.path()).unwrap(),).len(),
             3
         );
         let _ = fs::remove_dir_all(&dir);
@@ -2020,7 +3017,12 @@ mod tests {
             ),
         )
         .unwrap();
-        let all = list_sessions(&dir, None).unwrap();
+        // Hand-written session files are not indexed until `reindex` says so.
+        assert!(list_sessions(&dir, None, HistoryWindow::default())
+            .unwrap()
+            .is_empty());
+        reindex(&dir).unwrap();
+        let all = list_sessions(&dir, None, HistoryWindow::default()).unwrap();
         assert_eq!(all.len(), 2);
         // Newest first.
         assert_eq!(all[0].name, "new");
@@ -2028,7 +3030,7 @@ mod tests {
         assert_eq!(all[0].harnesses, vec!["claude-code", "codex"]);
         assert_eq!(all[1].name, "old");
         // Project filter restricts to one subdir.
-        let just_a = list_sessions(&dir, Some("proj-a")).unwrap();
+        let just_a = list_sessions(&dir, Some("proj-a"), HistoryWindow::default()).unwrap();
         assert_eq!(just_a.len(), 1);
         assert_eq!(just_a[0].name, "old");
         let _ = fs::remove_dir_all(&dir);
@@ -2039,7 +3041,8 @@ mod tests {
         let dir = temp_dir("emptyfile");
         fs::create_dir_all(dir.join("some-proj")).unwrap();
         fs::write(dir.join("some-proj").join("stub-1.jsonl"), "\n").unwrap();
-        let sessions = list_sessions(&dir, None).unwrap();
+        reindex(&dir).unwrap();
+        let sessions = list_sessions(&dir, None, HistoryWindow::AllTime).unwrap();
         assert!(sessions.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -2081,7 +3084,8 @@ mod tests {
 
         // Listed as a session still running: no closing record yet, and no
         // session name on a line written before lines carried one.
-        let listed = list_sessions(&dir, None).unwrap();
+        reindex(&dir).unwrap();
+        let listed = list_sessions(&dir, None, HistoryWindow::default()).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(listed[0].running);
         assert_eq!(listed[0].record_count, 0);
@@ -2113,8 +3117,12 @@ mod tests {
     fn missing_dir_lists_nothing() {
         let dir = std::env::temp_dir().join("oneharness-hist-absent-does-not-exist-xyz");
         let _ = fs::remove_dir_all(&dir);
-        assert!(list_sessions(&dir, None).unwrap().is_empty());
+        assert!(list_sessions(&dir, None, HistoryWindow::AllTime)
+            .unwrap()
+            .is_empty());
         assert!(remove_sessions(&dir, None).unwrap().is_empty());
+        assert_eq!(reindex(&dir).unwrap().entries_added, 0);
+        assert!(!dir.exists(), "a reindex of no store creates none");
     }
 
     #[test]
@@ -2163,12 +3171,25 @@ mod tests {
         let w = HistoryWriter::open(&dir, &project, "s", HistoryLabels::default()).unwrap();
         w.append(PermissionMode::Default, None, "p", &result("codex"))
             .unwrap();
-        assert_eq!(list_sessions(&dir, None).unwrap().len(), 1);
+        assert_eq!(
+            list_sessions(&dir, None, HistoryWindow::default())
+                .unwrap()
+                .len(),
+            1
+        );
+        let segments_before = segment_entries(&dir);
+        assert_eq!(list_session_files(&dir, None).unwrap().len(), 1);
         let removed = remove_sessions(&dir, None).unwrap();
         assert_eq!(removed.len(), 1);
-        assert!(list_sessions(&dir, None).unwrap().is_empty());
-        // The now-empty project subdir was pruned.
-        assert!(list_sessions(&dir, None).unwrap().is_empty());
+        // The session's entries stay; the listing skips an entry whose
+        // session file is gone.
+        assert_eq!(segment_entries(&dir), segments_before);
+        assert!(list_sessions(&dir, None, HistoryWindow::default())
+            .unwrap()
+            .is_empty());
+        // The now-empty project subdir was pruned; the index directory stayed.
+        assert!(!project.exists());
+        assert!(dir.join(INDEX_DIR).is_dir());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2211,14 +3232,12 @@ mod tests {
             thread.join().unwrap();
         }
 
-        let bytes = fs::read(dir.join(INDEX_FILE)).unwrap();
-        assert!(bytes.ends_with(b"\n"));
-        let entries = parse_index_entries(&bytes);
+        let entries = run_entries(&dir);
         assert_eq!(entries.len(), 12);
         assert_eq!(
             entries
                 .iter()
-                .map(|entry| entry.record.history_id)
+                .map(|entry| entry.history_id)
                 .collect::<BTreeSet<_>>()
                 .len(),
             12
@@ -2275,33 +3294,640 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_recovers_a_partial_final_index_line() {
+    fn a_torn_final_segment_line_never_swallows_the_next_writers_entry() {
         let dir = temp_dir("partial-index");
         let project = temp_dir("partial-project");
         let writer =
             HistoryWriter::open(&dir, &project, "partial", HistoryLabels::default()).unwrap();
         writer
-            .append(PermissionMode::Default, None, "prompt", &result("codex"))
+            .append(PermissionMode::Default, None, "torn", &result("codex"))
             .unwrap();
-        let index_path = dir.join(INDEX_FILE);
-        let len = fs::metadata(&index_path).unwrap().len();
+        // An interrupted writer: half of the entry, no newline.
+        let segment = segment_path(&dir, SegmentKind::Runs, today());
+        let len = fs::metadata(&segment).unwrap().len();
         OpenOptions::new()
             .write(true)
-            .open(&index_path)
+            .open(&segment)
             .unwrap()
             .set_len(len / 2)
             .unwrap();
+        let torn = fs::read(&segment).unwrap();
 
+        writer
+            .append(PermissionMode::Default, None, "next", &result("codex"))
+            .unwrap();
+        let bytes = fs::read(&segment).unwrap();
+        assert!(
+            bytes.starts_with(&torn),
+            "the torn bytes are never rewritten"
+        );
+        assert!(bytes.ends_with(b"\n"));
+        let entries = run_entries(&dir);
+        assert_eq!(entries.len(), 1, "only the whole entry reads: {entries:?}");
         let mut watcher =
             HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, false).unwrap();
         let recovered = watcher.drain_available();
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].prompt, "prompt");
-        let repaired = fs::read(&index_path).unwrap();
-        assert!(repaired.ends_with(b"\n"));
-        assert_eq!(parse_index_entries(&repaired).len(), 1);
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_dir_all(&project);
+        assert_eq!(recovered[0].prompt, "next");
+        assert_eq!(recovered[0].history_id, entries[0].history_id);
+    }
+
+    #[test]
+    fn a_span_the_session_file_cannot_hold_is_refused_and_the_file_read_instead() {
+        let dir = temp_dir("span-bound");
+        let project = temp_dir("span-bound-project");
+        let writer = HistoryWriter::open(&dir, &project, "span", HistoryLabels::default()).unwrap();
+        writer
+            .append(PermissionMode::Default, None, "spanned", &result("codex"))
+            .unwrap();
+        let run = run_entries(&dir).remove(0);
+        let good = run.span.unwrap();
+        assert!(read_span(writer.path(), good).is_some());
+        // A length no file this size holds — a corrupt or hostile entry — is
+        // refused before anything is allocated for it.
+        for bad in [
+            LineSpan {
+                offset: good.offset,
+                length: std::num::NonZeroU64::new(u64::MAX / 2).unwrap(),
+            },
+            LineSpan {
+                offset: u64::MAX,
+                length: std::num::NonZeroU64::MIN,
+            },
+        ] {
+            assert!(read_span(writer.path(), bad).is_none(), "{bad:?}");
+            let found = find_run_line(writer.path(), run.history_id, Some(bad))
+                .unwrap()
+                .expect("the session file itself still answers");
+            assert_eq!(found.prompt, "spanned");
+        }
+        let zero = r#"{"schema_version":"1.0","kind":"event","run_id":"0192b2a0-0000-7000-8000-000000000001","event_index":0,"session_path":"p/s.jsonl","project_slug":"p","harness_id":"codex","labels":{},"offset":0,"length":0}"#;
+        assert!(serde_json::from_str::<HistoryIndexEntry>(zero)
+            .map(|entry| match entry {
+                HistoryIndexEntry::Event(event) => event.span.is_none(),
+                HistoryIndexEntry::Run(_) => false,
+            })
+            .unwrap_or(true));
+    }
+
+    // A sparse file is how a span can claim far more bytes than memory holds
+    // while still fitting its file; Windows would write every one of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_span_over_bytes_that_hold_no_record_is_refused_without_allocating_its_length() {
+        let dir = temp_dir("span-sparse");
+        let project = temp_dir("span-sparse-project");
+        let writer =
+            HistoryWriter::open(&dir, &project, "sparse", HistoryLabels::default()).unwrap();
+        writer
+            .append(PermissionMode::Default, None, "sparse", &result("codex"))
+            .unwrap();
+        let run = run_entries(&dir).remove(0);
+        let good = run.span.unwrap();
+        let recorded = fs::metadata(writer.path()).unwrap().len();
+        // 64 GiB of holes closed by one newline: a span over them fits the
+        // file, so only reading it as it parses keeps this from allocating it.
+        let claimed: u64 = 64 << 30;
+        let file = OpenOptions::new().write(true).open(writer.path()).unwrap();
+        file.set_len(recorded + claimed - 1).unwrap();
+        drop(file);
+        OpenOptions::new()
+            .append(true)
+            .open(writer.path())
+            .unwrap()
+            .write_all(b"\n")
+            .unwrap();
+        let hole = LineSpan {
+            offset: recorded,
+            length: std::num::NonZeroU64::new(claimed).unwrap(),
+        };
+        assert!(read_span(writer.path(), hole).is_none());
+        // A span that starts inside the record rather than at it is refused
+        // too, even though it ends on that record's newline.
+        let inside = LineSpan {
+            offset: good.offset + 1,
+            length: std::num::NonZeroU64::new(good.length.get() - 1).unwrap(),
+        };
+        assert!(read_span(writer.path(), inside).is_none());
+        assert!(read_span(writer.path(), good).is_some());
+        let found = find_run_line(writer.path(), run.history_id, Some(hole))
+            .unwrap()
+            .expect("the record ahead of the holes still answers");
+        assert_eq!(found.prompt, "sparse");
+    }
+
+    fn id_at(secs: u64, counter: u16) -> HistoryId {
+        let at = uuid::Timestamp::from_unix(uuid::NoContext, secs, u32::from(counter));
+        HistoryId::from_uuid(uuid::Uuid::new_v7(at))
+    }
+
+    fn now_secs() -> u64 {
+        now_epoch_secs() as u64
+    }
+
+    fn event_at(index: usize) -> crate::domain::events::ActionEvent {
+        crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: Some(format!("event {index}")),
+            index,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+            timing_source: None,
+        }
+    }
+
+    /// Record one closed run under a chosen id in its own session; returns the
+    /// session file.
+    fn closed_run(
+        dir: &Path,
+        project: &Path,
+        name: &str,
+        id: HistoryId,
+        labels: &[&str],
+    ) -> PathBuf {
+        let writer = HistoryWriter::open(
+            dir,
+            project,
+            name,
+            history::parse_labels(labels.iter().copied()).unwrap(),
+        )
+        .unwrap();
+        writer.append_event(id, "codex", event_at(0)).unwrap();
+        writer
+            .append_streamed(
+                id,
+                PermissionMode::Default,
+                None,
+                name,
+                &result("codex"),
+                &BTreeSet::from([0]),
+            )
+            .unwrap();
+        writer.path().to_path_buf()
+    }
+
+    /// The legacy index line an older core's reconcile writes for a run.
+    fn legacy_run_line(dir: &Path, session: &Path, id: HistoryId) -> String {
+        let text = fs::read_to_string(session).unwrap();
+        let run = parse_lines(session, &text)
+            .into_iter()
+            .find_map(|line| match line {
+                HistoryLine::Run(run) if run.history_id == id => Some(run),
+                _ => None,
+            })
+            .unwrap();
+        let relative = session.strip_prefix(dir).unwrap().display().to_string();
+        format!(
+            "{}\n",
+            serde_json::json!({"session_path": relative, "record": run})
+        )
+    }
+
+    fn legacy_event_line(dir: &Path, session: &Path, id: HistoryId, labels: &str) -> String {
+        let relative = session.strip_prefix(dir).unwrap().display().to_string();
+        let line = HistoryEventLine {
+            schema_version: history::PREVIOUS_CURRENT_SCHEMA_VERSION.to_string(),
+            run_id: id,
+            harness: "codex".to_string(),
+            variant: None,
+            harness_id: Some("codex".to_string()),
+            event: event_at(7),
+            session_name: None,
+        };
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_path": relative,
+                "labels": serde_json::from_str::<Value>(labels).unwrap(),
+                "line": line,
+            })
+        )
+    }
+
+    /// Move a run's session into a store's project directory with no index
+    /// entry for it, as an older core would have left it.
+    fn unindexed_copy(dir: &Path, source: &Path) -> PathBuf {
+        let slug = source.parent().unwrap().file_name().unwrap();
+        let target = dir.join(slug).join(source.file_name().unwrap());
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source, &target).unwrap();
+        target
+    }
+
+    #[test]
+    fn a_watcher_tails_the_legacy_files_from_their_size_at_open_and_everything_under_all_time() {
+        let dir = temp_dir("watch-legacy");
+        let other = temp_dir("watch-legacy-source");
+        let project = temp_dir("watch-legacy-project");
+        let dir = fs::canonicalize(&dir).unwrap();
+        let other = fs::canonicalize(&other).unwrap();
+        let before_open = id_at(now_secs() - 3 * 86_400, 1);
+        let early = unindexed_copy(
+            &dir,
+            &closed_run(&other, &project, "early", before_open, &["k=v"]),
+        );
+        fs::write(
+            dir.join(LEGACY_INDEX_FILE),
+            legacy_run_line(&dir, &early, before_open),
+        )
+        .unwrap();
+        fs::write(
+            dir.join(LEGACY_EVENT_INDEX_FILE),
+            legacy_event_line(&dir, &early, before_open, r#"{"k":"v"}"#),
+        )
+        .unwrap();
+
+        // Today's start: what the legacy files held at open is never read.
+        let mut watcher =
+            HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, true).unwrap();
+        assert!(watcher.drain_available().is_empty());
+        assert!(watcher.drain_events().is_empty());
+        let appended = id_at(now_secs() - 86_400 * 2, 2);
+        let late = unindexed_copy(
+            &dir,
+            &closed_run(&other, &project, "appended", appended, &[]),
+        );
+        let mut legacy = OpenOptions::new()
+            .append(true)
+            .open(dir.join(LEGACY_INDEX_FILE))
+            .unwrap();
+        legacy
+            .write_all(legacy_run_line(&dir, &late, appended).as_bytes())
+            .unwrap();
+        // A line naming a path outside the store, or a session that is gone,
+        // is skipped.
+        legacy
+            .write_all(b"{\"session_path\":\"../escape.jsonl\",\"record\":{}}\n")
+            .unwrap();
+        let mut events = OpenOptions::new()
+            .append(true)
+            .open(dir.join(LEGACY_EVENT_INDEX_FILE))
+            .unwrap();
+        events
+            .write_all(legacy_event_line(&dir, &late, appended, "{}").as_bytes())
+            .unwrap();
+        events
+            .write_all(b"{\"session_path\":\"../escape.jsonl\",\"labels\":{},\"line\":{}}\n")
+            .unwrap();
+        let records = watcher.poll().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![appended]
+        );
+        assert_eq!(watcher.drain_events().len(), 1);
+        // Re-appended by a later reconcile: emitted once.
+        legacy
+            .write_all(legacy_run_line(&dir, &late, appended).as_bytes())
+            .unwrap();
+        assert!(watcher.poll().unwrap().is_empty());
+
+        // All time: every line from the first byte, labels and project applied.
+        let mut all = HistoryWatcher::open_in(
+            &dir,
+            Some(WatchStart::Window(HistoryWindow::AllTime)),
+            history::parse_labels(["k=v"]).unwrap(),
+            None,
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            all.drain_available()
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![before_open]
+        );
+        assert_eq!(all.drain_events().len(), 1);
+        let mut elsewhere = HistoryWatcher::open_in(
+            &dir,
+            Some(WatchStart::Window(HistoryWindow::AllTime)),
+            HistoryLabels::default(),
+            Some("another-project".to_string()),
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(elsewhere.drain_available().is_empty());
+        assert!(elsewhere.drain_events().is_empty());
+    }
+
+    #[test]
+    fn a_watcher_tails_the_day_before_its_start_from_its_end_and_nothing_earlier() {
+        let dir = temp_dir("watch-lookback");
+        let project = temp_dir("watch-lookback-project");
+        let now = now_secs();
+        let yesterday = id_at(now - 86_400, 1);
+        let older = id_at(now - 3 * 86_400, 2);
+        closed_run(&dir, &project, "yesterday", yesterday, &[]);
+        closed_run(&dir, &project, "older", older, &[]);
+        let mut watcher =
+            HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, true).unwrap();
+        assert!(watcher.drain_available().is_empty());
+        assert!(watcher.drain_events().is_empty());
+        // A run begun yesterday that closes now lands in yesterday's segment.
+        let closing = id_at(now - 86_400 + 1, 3);
+        closed_run(&dir, &project, "closing", closing, &[]);
+        // One begun three days ago does not reach a watcher that started today.
+        closed_run(&dir, &project, "stale", id_at(now - 3 * 86_400 + 1, 4), &[]);
+        assert_eq!(
+            watcher
+                .poll()
+                .unwrap()
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![closing]
+        );
+        assert_eq!(watcher.drain_events().len(), 1);
+        // A cursor with no date, or none its date's segment holds, is not found.
+        for cursor in [HistoryId::legacy(b"old"), id_at(now, 9)] {
+            assert!(matches!(
+                HistoryWatcher::open(&dir, Some(cursor), HistoryLabels::default(), None, false),
+                Err(OneharnessError::HistoryNotFound { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn a_watched_session_name_resolves_to_the_newest_matching_session_running_ones_included() {
+        let dir = temp_dir("watch-name");
+        let project = temp_dir("watch-name-project");
+        let now = now_secs();
+        closed_run(&dir, &project, "named", id_at(now - 10, 1), &["team=a"]);
+        // A second session so named, still in its first turn: only its events
+        // carry its labels.
+        let running = HistoryWriter::open(
+            &dir,
+            &project,
+            "named-again",
+            history::parse_labels(["team=b"]).unwrap(),
+        )
+        .unwrap();
+        let running_id = id_at(now - 5, 2);
+        running
+            .append_event(running_id, "codex", event_at(0))
+            .unwrap();
+        let selector = |name: &str| HistorySessionSelector::Name(name.parse().unwrap());
+        let open = |name: &str, labels: &[&str]| {
+            HistoryWatcher::open_session(
+                &dir,
+                None,
+                history::parse_labels(labels.iter().copied()).unwrap(),
+                None,
+                true,
+                Some(&selector(name)),
+            )
+            .unwrap()
+        };
+        let mut by_label = open("named-again", &["team=b"]);
+        assert_eq!(by_label.drain_events().len(), 1);
+        let mut closed = open("named", &["team=a"]);
+        assert_eq!(closed.drain_available().len(), 1);
+        // A name nothing carries yet waits for the first session that does.
+        let mut awaiting = open("not-yet", &[]);
+        assert!(awaiting.drain_available().is_empty());
+        let later = id_at(now, 3);
+        closed_run(&dir, &project, "not-yet", later, &[]);
+        assert_eq!(
+            awaiting
+                .poll()
+                .unwrap()
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![later]
+        );
+        // Following an id: nothing from any other session.
+        let id: HistorySessionId = running
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut following = HistoryWatcher::open_session(
+            &dir,
+            None,
+            HistoryLabels::default(),
+            None,
+            true,
+            Some(&HistorySessionSelector::Id(id)),
+        )
+        .unwrap();
+        assert!(following.drain_available().is_empty());
+        assert_eq!(following.drain_events().len(), 1);
+    }
+
+    #[test]
+    fn an_all_time_listing_reads_the_legacy_index_and_skips_what_it_cannot_resolve() {
+        let dir = temp_dir("list-legacy");
+        let other = temp_dir("list-legacy-source");
+        let project = temp_dir("list-legacy-project");
+        let dir = fs::canonicalize(&dir).unwrap();
+        let other = fs::canonicalize(&other).unwrap();
+        let id = id_at(1_700_000_000, 1);
+        let session = unindexed_copy(&dir, &closed_run(&other, &project, "legacy", id, &["k=v"]));
+        let running = id_at(1_700_000_100, 2);
+        let mut index = legacy_run_line(&dir, &session, id);
+        index.push_str(&legacy_run_line(&dir, &session, id));
+        index.push_str("{\"session_path\":\"../escape.jsonl\",\"record\":{}}\n");
+        fs::write(dir.join(LEGACY_INDEX_FILE), index).unwrap();
+        let mut events = legacy_event_line(&dir, &session, running, r#"{"k":"v"}"#);
+        events.push_str("{\"session_path\":\"x\",\"labels\":{},\"line\":{}}\n");
+        fs::write(dir.join(LEGACY_EVENT_INDEX_FILE), events).unwrap();
+
+        assert!(list_sessions(&dir, None, HistoryWindow::default())
+            .unwrap()
+            .is_empty());
+        let listed = list_sessions(&dir, None, HistoryWindow::AllTime).unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(
+            listed[0].record_count, 1,
+            "one record, however often indexed"
+        );
+        assert!(listed[0].running, "an event of a run with no record");
+        assert_eq!(listed[0].name, "legacy");
+        assert_eq!(listed[0].labels.as_map().get("k").unwrap(), "v");
+        assert!(
+            list_sessions(&dir, Some("elsewhere"), HistoryWindow::AllTime)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            find_record_by_id_in(&dir, id, HistoryWindow::AllTime)
+                .unwrap()
+                .history_id,
+            id
+        );
+        // Gone from disk: the lookup skips it rather than failing.
+        fs::remove_file(&session).unwrap();
+        assert!(list_sessions(&dir, None, HistoryWindow::AllTime)
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            find_record_by_id_in(&dir, id, HistoryWindow::AllTime),
+            Err(OneharnessError::HistoryNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn a_session_is_found_by_its_ids_date_or_by_name_under_a_project() {
+        let dir = temp_dir("find-session");
+        // The writer records under the canonical store (`/private/var/...` on
+        // macOS, a `\\?\` verbatim path on Windows), and a lookup answers
+        // under the directory it is handed, so the two are compared as one.
+        let dir = fs::canonicalize(&dir).unwrap();
+        let project = temp_dir("find-session-project");
+        let session = closed_run(&dir, &project, "findable", id_at(now_secs(), 1), &[]);
+        let stem = session.file_stem().unwrap().to_str().unwrap();
+        let slug = session
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            find_session_path(&dir, None, stem).unwrap(),
+            Some(session.clone())
+        );
+        assert_eq!(
+            find_session_path(&dir, Some(slug), stem).unwrap(),
+            Some(dir.join(slug).join(format!("{stem}.jsonl")))
+        );
+        for (slug, id) in [
+            (None, "../escape"),
+            (None, ""),
+            (Some(".index.d"), stem),
+            (Some("../up"), stem),
+            (None, "no-date-in-it"),
+            (None, "absent-20200101T000000Z-1"),
+        ] {
+            assert_eq!(
+                find_session_path(&dir, slug, id).unwrap(),
+                None,
+                "{slug:?} {id}"
+            );
+        }
+        assert!(remove_sessions(&dir, Some("../up")).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reindex_names_what_it_cannot_read_and_dates_what_carries_no_timestamp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("reindex-edges");
+        let project = temp_dir("reindex-edges-project");
+        let other = temp_dir("reindex-edges-source");
+        // A legacy 0.1-style run: a UUIDv5 id and a session stem with no date,
+        // so its date is its record's timestamp.
+        let minted = id_at(now_secs(), 1);
+        let source = closed_run(&other, &project, "undated", minted, &[]);
+        let text = fs::read_to_string(&source).unwrap();
+        let v5 = HistoryId::legacy(b"undated");
+        let rewritten = text.replace(&minted.to_string(), &v5.to_string());
+        let slug_dir = dir.join("legacy-project");
+        fs::create_dir_all(&slug_dir).unwrap();
+        fs::write(slug_dir.join("undated.jsonl"), &rewritten).unwrap();
+        // Unmigrated whole-record lines are not indexed, and said once.
+        fs::write(
+            slug_dir.join("unmigrated.jsonl"),
+            "{\"schema_version\":\"0.3\",\"name\":\"old\"}\n",
+        )
+        .unwrap();
+        // An unreadable file and an unreadable project directory.
+        let unreadable = slug_dir.join("locked-20260101T000000Z-1.jsonl");
+        fs::write(&unreadable, "{}\n").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        let locked_dir = dir.join("locked-project");
+        fs::create_dir_all(&locked_dir).unwrap();
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).unwrap();
+        // SAFETY: geteuid has no preconditions. Root reads a mode-000 file.
+        let root = unsafe { libc::geteuid() } == 0;
+
+        let report = reindex(&dir).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        if !root {
+            assert_eq!(report.unreadable.len(), 2, "{report:?}");
+        }
+        let record_date = UtcDate::from_epoch_secs(now_epoch_secs()).to_string();
+        assert!(report
+            .segments
+            .iter()
+            .any(|segment| segment.segment == format!("runs-{record_date}.ndjson")));
+        assert_eq!(
+            find_record_by_id_in(&dir, v5, HistoryWindow::AllTime)
+                .unwrap()
+                .history_id,
+            v5
+        );
+        assert!(matches!(
+            find_record_by_id(&dir, v5),
+            Err(OneharnessError::HistoryNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn the_reindex_sort_merges_many_runs_into_one_order_keeping_held_keys_first() {
+        let scratch = temp_dir("reindex-sort");
+        // A tiny chunk and a fan-in of two: every few records is a run, runs
+        // cascade through several levels, and finishing merges what is left.
+        let mut sort = ExternalSort::new(scratch.path(), 256, 2).unwrap();
+        let ids: Vec<HistoryId> = (0..40u16).map(|n| id_at(now_secs(), n + 1)).collect();
+        for (n, id) in ids.iter().enumerate().rev() {
+            sort.push(
+                IndexKey::Event(*id, n),
+                Some(format!("candidate-{n}").as_bytes()),
+            )
+            .unwrap();
+            if n % 3 == 0 {
+                sort.push(IndexKey::Event(*id, n), None).unwrap();
+            }
+            sort.push(IndexKey::Run(*id), Some(b"run")).unwrap();
+        }
+        let mut records = Vec::new();
+        sort.finish(|record| {
+            records.push(record.to_vec());
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+        assert_eq!(records.len(), 40 * 2 + 14);
+        assert!(records.windows(2).all(|pair| pair[0] <= pair[1]));
+        for (n, id) in ids.iter().enumerate() {
+            let key = sort_key(IndexKey::Event(*id, n));
+            let group: Vec<&Vec<u8>> = records
+                .iter()
+                .filter(|record| record.starts_with(key.as_bytes()))
+                .collect();
+            if n % 3 == 0 {
+                assert_eq!(group[0][SORT_KEY_LEN], SORT_HELD);
+            }
+            assert!(group
+                .last()
+                .unwrap()
+                .ends_with(format!("candidate-{n}").as_bytes()));
+        }
+        // A consumer that stops is handed no further record.
+        let mut sort = ExternalSort::new(scratch.path(), 256, 2).unwrap();
+        sort.push(IndexKey::Run(ids[0]), None).unwrap();
+        let mut stopped = 0;
+        sort.finish(|_| {
+            stopped += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+        assert_eq!(stopped, 1);
     }
 
     #[test]
@@ -2364,10 +3990,7 @@ mod tests {
             assert_eq!(pointer.history_file(), writer.path().display().to_string());
             assert_eq!(pointer.history_dir(), writer.dir.display().to_string());
             assert_eq!(pointer.history_session(), writer.session);
-            assert_eq!(
-                pointer.history_project(),
-                writer.relative_path.split(['/', '\\']).next().unwrap()
-            );
+            assert_eq!(pointer.history_project(), writer.relative_path.parts().0);
             assert_eq!(
                 Path::new(&pointer.history_dir())
                     .join(pointer.history_project())

@@ -13,6 +13,7 @@ pub mod fallback;
 pub mod gate;
 pub mod harness;
 pub mod history;
+pub mod history_index;
 pub mod hooks;
 pub mod http;
 pub mod mock;

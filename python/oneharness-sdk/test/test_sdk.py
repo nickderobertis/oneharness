@@ -9,16 +9,21 @@ import re
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from oneharness_sdk import (
     ContractError,
+    HistoryListOptions,
+    HistoryLookup,
     HistoryNotFoundError,
+    HistoryWatchOptions,
     OneHarness,
     OneHarnessProcessError,
+    RunReport,
 )
 from oneharness_sdk._client import (
     _CAPABILITIES,
@@ -103,6 +108,7 @@ POPULATED: dict[str, Any] = {
     "env": {"MOCK_STDOUT": "hi"},
     "event": "{}",
     "events": True,
+    "exact": True,
     "exclude": ["goose"],
     "file": "/nowhere/pointers.jsonl",
     "force": True,
@@ -150,6 +156,7 @@ POPULATED: dict[str, Any] = {
     "systemFile": "/nowhere/system.txt",
     "timeoutSeconds": 30,
     "variant": "claude-code:work",
+    "window": {"since": "2026-01-01"},
     "yes": True,
 }
 
@@ -467,6 +474,150 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(envelope["record"]["history_id"], records[0]["history_id"])
         await cast("Any", watch).aclose()
 
+    async def test_history_lookup_and_watch_read_exactly_the_window_named(self) -> None:
+        """Find a dated record inside its lookup or watch window and never outside it."""
+        client = self.client()
+
+        async def record_today(history_dir: str, name: str) -> RunReport:
+            return await client.run(
+                {
+                    "prompt": name,
+                    "harnesses": ["codex"],
+                    "mode": "bypass",
+                    "history": True,
+                    "history_name": name,
+                    "history_dir": history_dir,
+                    "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                    "bins": {"codex": str(MOCK)},
+                }
+            )
+
+        # One real run supplies the closing line every dated fixture copies, so
+        # only the id, name and timestamp this test turns on are hand-set.
+        template = await record_today(str(scratch(self, "window-template")), "template")
+        template_file = Path(template["history_file"])
+        line = next(
+            json.loads(candidate)
+            for candidate in template_file.read_text(encoding="utf-8").splitlines()
+            if json.loads(candidate)["type"] == "run"
+        )
+        history_dir = str(scratch(self, "window"))
+        slug = template_file.parent.name
+        (Path(history_dir) / slug).mkdir()
+
+        def record_at(name: str, day: str, seq: int) -> tuple[dict[str, object], str]:
+            # A UUIDv7 minted at `day`, so the dated index files it under that date.
+            instant = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            hex_ms = f"{int(instant.timestamp() * 1000):012x}"
+            stem = f"{name}-{day.replace('-', '')}T000000Z-00000{seq}"
+            record = {
+                **line,
+                "history_id": f"{hex_ms[:8]}-{hex_ms[8:]}-7000-8000-00000000000{seq}",
+                "session": stem,
+                "name": name,
+                "prompt": name,
+                "timestamp": f"{day}T00:00:00Z",
+            }
+            (Path(history_dir) / slug / f"{stem}.jsonl").write_text(
+                json.dumps(record) + "\n", encoding="utf-8"
+            )
+            return record, f"{slug}/{stem}.jsonl"
+
+        # Two runs on dates of their own, both older than the default 7 days,
+        # and one two UTC days ago: inside the default week and a 3-day window,
+        # outside a 2-day one...
+        record_at("win-a", "2020-01-05", 1)
+        record_at("win-b", "2020-01-15", 2)
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        record_at("win-recent", (now - timedelta(days=2)).strftime("%Y-%m-%d"), 4)
+        reindexed = await client.history_reindex({"history_dir": history_dir})
+        self.assertEqual(reindexed["entries_added"], 3)
+        # ...and the newest one known only to the legacy index an older core
+        # kept, which only the all-time window reads.
+        legacy, legacy_path = record_at("win-c", "2020-02-01", 3)
+        legacy_record = {key: value for key, value in legacy.items() if key != "type"}
+        (Path(history_dir) / ".index.jsonl").write_text(
+            json.dumps({"session_path": legacy_path, "record": legacy_record}) + "\n",
+            encoding="utf-8",
+        )
+
+        def since(date: str) -> dict[str, object]:
+            return {"since": date}
+
+        def recent(days: int) -> dict[str, object]:
+            return {"recent": {"days": days}}
+
+        lookups: list[tuple[HistoryLookup, Optional[str]]] = [
+            # By name: a `since` window reads from its date on, inclusive, and
+            # never the legacy index; a `recent` one the last N UTC days, today
+            # included; the default window (the last 7) reaches no 2020 date.
+            ({"session": "win-a", "history_dir": history_dir}, None),
+            ({"session": "win-recent", "history_dir": history_dir}, "win-recent"),
+            ({"session": "win-a", "history_dir": history_dir, "window": since("2020-01-05")}, "win-a"),
+            ({"session": "win-a", "history_dir": history_dir, "window": since("2020-01-06")}, None),
+            ({"session": "win-b", "history_dir": history_dir, "window": since("2020-01-06")}, "win-b"),
+            ({"session": "win-c", "history_dir": history_dir, "window": since("2020-01-01")}, None),
+            ({"session": "win-recent", "history_dir": history_dir, "window": recent(3)}, "win-recent"),
+            ({"session": "win-recent", "history_dir": history_dir, "window": recent(2)}, None),
+            ({"session": "win-b", "history_dir": history_dir, "window": recent(3)}, None),
+            ({"session": "win-a", "history_dir": history_dir, "window": "allTime"}, "win-a"),
+            ({"session": "win-c", "history_dir": history_dir, "window": "allTime"}, "win-c"),
+            # By last: the newest session inside the window, never beyond it.
+            ({"last": True, "history_dir": history_dir}, "win-recent"),
+            ({"last": True, "history_dir": history_dir, "window": since("2020-01-01")}, "win-recent"),
+            ({"last": True, "history_dir": history_dir, "window": since(today)}, None),
+            ({"last": True, "history_dir": history_dir, "window": recent(3)}, "win-recent"),
+            ({"last": True, "history_dir": history_dir, "window": recent(2)}, None),
+            ({"last": True, "history_dir": history_dir, "window": "allTime"}, "win-recent"),
+        ]
+        for lookup, expected in lookups:
+            with self.subTest(lookup=lookup):
+                try:
+                    found: Optional[str] = (await client.history(lookup))[0]["name"]
+                except HistoryNotFoundError:
+                    found = None
+                self.assertEqual(found, expected)
+
+        # A run recorded now lands in today's segment: what every watch window
+        # reaches, and so the proof a window opened at all.
+        await record_today(history_dir, "win-today")
+        # A watch emits its whole opening read before anything newer, so a run
+        # recorded once the first record arrives marks where that read ended:
+        # what came before it is exactly the range the window read.
+        windows: list[tuple[HistoryWatchOptions, list[str]]] = [
+            ({}, ["win-today"]),
+            ({"window": recent(1)}, ["win-today"]),
+            ({"window": recent(3)}, ["win-recent", "win-today"]),
+            ({"window": since("2020-01-06")}, ["win-b", "win-recent", "win-today"]),
+            ({"window": "allTime"}, ["win-a", "win-b", "win-c", "win-recent", "win-today"]),
+        ]
+        for index, (options, names) in enumerate(windows):
+            # A session name is recorded as a lowercase slug, so the marker is one.
+            marker = f"end-{index}"
+            watch = client.history_watch(
+                {**options, "all_projects": True, "history_dir": history_dir}
+            )
+            seen: list[str] = []
+            marked = False
+            try:
+                async for envelope in watch:
+                    name = envelope["record"]["name"]
+                    if name == marker:
+                        break
+                    # An earlier window's marker is today's too; it is not a fixture.
+                    if not name.startswith("end-"):
+                        seen.append(name)
+                    if not marked:
+                        marked = True
+                        await record_today(history_dir, marker)
+            finally:
+                # The client builds its iterator as an async generator; asserting
+                # that narrows the type to one `aclose` is declared on.
+                assert isinstance(watch, AsyncGenerator)
+                await watch.aclose()
+            self.assertEqual(sorted(seen), names, options)
+
     async def test_history_label_precedence_crosses_the_cli_boundary(self) -> None:
         """Apply CLI labels over environment and project configuration."""
         directory = scratch(self, "labels")
@@ -537,6 +688,25 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             await client.history(cast("Any", {}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness history list options"):
             await client.history_list(cast("Any", {"all_project": True}))
+        # A `since` window is a real calendar date, as the CLI parses it, and a
+        # window is one value: a since-date beside a day count, an empty day
+        # count, or the separate keys a window replaced, are refused. Each is
+        # typed as the plain JSON it is and cast only at the call, since the
+        # point is to pass `history_list` what its typed options forbid.
+        bad_windows: list[dict[str, object]] = [
+            {"window": {"since": "2026-02-30"}},
+            {"window": {"since": "2026-01-01\n"}},
+            {"window": {"since": "2026-01-01", "recent": {"days": 3}}},
+            {"window": {"recent": {"days": 0}}},
+            {"window": "all_time"},
+            {"since": "2026-01-01"},
+            {"all_time": True},
+        ]
+        for bad in bad_windows:
+            with self.subTest(bad=bad), self.assertRaisesRegex(
+                ContractError, "invalid oneharness history list options"
+            ):
+                await client.history_list(cast("Any", bad))
         with self.assertRaisesRegex(ContractError, "invalid oneharness history watch options"):
             client.history_watch(cast("Any", {"all_project": True}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness detect options"):
@@ -942,6 +1112,19 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
         migrated = await client.history_migrate({"history_dir": history_dir})
         self.assertIsInstance(migrated["files_processed"], int)
+        # The run this client recorded is already in the dated index, so a
+        # reindex finds nothing to add; the windows read it back.
+        reindexed = await client.history_reindex({"history_dir": history_dir})
+        self.assertEqual(reindexed["entries_added"], 0)
+        self.assertEqual(reindexed["files_read"], 1)
+        self.assertEqual(reindexed["unreadable"], [])
+        windows: list[tuple[HistoryListOptions, int]] = [
+            ({"history_dir": history_dir, "window": {"since": "2000-01-01"}}, 1),
+            ({"history_dir": history_dir, "window": "allTime"}, 1),
+            ({"history_dir": history_dir, "window": {"since": "9999-12-31"}}, 0),
+        ]
+        for options, expected in windows:
+            self.assertEqual(len(await client.history_list(options)), expected, options)
 
         dry = await client.history_clear({"history_dir": history_dir})
         self.assertIs(dry["dry_run"], True)

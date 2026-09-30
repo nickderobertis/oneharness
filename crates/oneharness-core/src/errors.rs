@@ -400,7 +400,7 @@ pub enum OneharnessError {
         selected: String,
     },
 
-    #[error("history record `{id}` was not found")]
+    #[error("history record `{id}` was not found in the index segment for its date; a run the dated index does not hold (recorded by an older oneharness, or copied in from another store) is found with `--all-time`, or indexed for good by `oneharness history reindex`")]
     HistoryNotFound { id: String },
 
     #[error("invalid history label: {0}")]

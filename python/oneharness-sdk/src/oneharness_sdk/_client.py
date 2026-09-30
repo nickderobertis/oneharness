@@ -31,6 +31,9 @@ from ._generated_types import (
     HistoryMigrateReport,
     HistoryPointers,
     HistoryPointersOptions,
+    HistoryRecord,
+    HistoryReindexOptions,
+    HistoryReindexReport,
     HistoryShowEntry,
     HistoryStreamEnvelope,
     HistoryWatchOptions,
@@ -101,6 +104,22 @@ def _input(root: str, value: Any, label: str) -> dict[str, Any]:
 def _text(value: Any) -> str:
     """Render one scalar the way the CLI reads it back off the command line."""
     return json.dumps(value) if isinstance(value, bool) else str(value)
+
+
+def _window_arguments(binding: Mapping[str, Any], window: Any) -> list[str]:
+    """The one flag a history window renders: ``--days N``, ``--since D``, or
+    ``--all-time``.
+
+    ``window`` has already been validated against ``HistoryWindow`` — exactly
+    one of ``{"recent": {"days": N}}``, ``{"since": D}`` or ``"allTime"`` — so
+    exactly one of the three is ever sent.
+    """
+    flags = binding["window"]
+    if window == "allTime":
+        return [flags["allTime"]]
+    if "since" in window:
+        return [flags["since"], _text(window["since"])]
+    return [flags["days"], _text(window["recent"]["days"])]
 
 
 def _renders_argument(binding: Mapping[str, Any], value: Any) -> bool:
@@ -225,6 +244,8 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
         elif kind == "key-value":
             for key, item in cast("Mapping[str, Any]", value).items():
                 args.extend((flag, f"{key}={_text(item)}"))
+        elif kind == "window":
+            args.extend(_window_arguments(binding, value))
         else:  # trailing
             trailing.extend(_text(item) for item in value)
     args.extend(positional)
@@ -643,6 +664,27 @@ class OneHarness:
                 options or {},
                 "history_migrate_options",
                 "history_migrate_report",
+            ),
+        )
+
+    async def history_reindex(
+        self, options: Optional[HistoryReindexOptions] = None
+    ) -> HistoryReindexReport:
+        """Index every session line the dated history index lacks.
+
+        Appends one entry per run or event line its date's segment does not
+        hold yet. Idempotent and append-only; the report names what was added
+        per segment and every file that could not be read.
+        """
+        # `_call` validated the document against `history_reindex_report`, so
+        # the cast names what the schema already established.
+        return cast(
+            "HistoryReindexReport",
+            await self._call(
+                "historyReindex",
+                options or {},
+                "history_reindex_options",
+                "history_reindex_report",
             ),
         )
 

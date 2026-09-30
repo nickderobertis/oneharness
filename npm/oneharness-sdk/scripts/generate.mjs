@@ -195,6 +195,17 @@ const CONTRACT_MODULES = Object.freeze([
 		output: true,
 	},
 	{
+		module: "history-reindex-options",
+		key: "history_reindex_options",
+		type: "HistoryReindexOptions",
+	},
+	{
+		module: "history-reindex-report",
+		key: "history_reindex_report",
+		type: "HistoryReindexReport",
+		output: true,
+	},
+	{
 		module: "history-pointers-options",
 		key: "history_pointers_options",
 		type: "HistoryPointersOptions",
@@ -282,7 +293,15 @@ export type FlagKind =
 	| "repeated"
 	| "switch"
 	| "key-value"
-	| "trailing";
+	| "trailing"
+	| "window";
+
+/** The three spellings a \`window\` binding renders exactly one of. */
+export type WindowFlags = {
+	readonly days: string;
+	readonly since: string;
+	readonly allTime: string;
+};
 
 /**
  * What both members of a suppressed pair rendering an argument means.
@@ -303,6 +322,8 @@ export type OptionBinding = {
 	readonly unless: string | null;
 	/** Only present beside an \`unless\`, which it says how to resolve. */
 	readonly unless_resolution?: UnlessResolution;
+	/** Only present on a \`window\` binding: the flag each window renders. */
+	readonly window?: WindowFlags;
 };
 
 /** How a verb's stdout reaches a caller. */

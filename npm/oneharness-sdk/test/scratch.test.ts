@@ -56,13 +56,15 @@ function runFixture(name: string): string {
  * can ignore that, because a non-zero status is all its callers ever want.
  */
 function runSlowCleanupFixture(): { elapsed: number; output: string } {
-	const started = Date.now();
+	// Monotonic, because a wall clock stepped mid-run once read 5963ms across a
+	// fixture that had slept 6000ms of it.
+	const started = performance.now();
 	const run = spawnSync(
 		"bun",
 		["test", resolve(here, "scratch-slow.fixture.ts")],
 		{ cwd: here, encoding: "utf8" },
 	);
-	const elapsed = Date.now() - started;
+	const elapsed = performance.now() - started;
 	const output = `${run.stdout}${run.stderr}`;
 	if (run.status !== 0) {
 		throw new Error(`the guarded cleanup fixture did not pass:\n${output}`);

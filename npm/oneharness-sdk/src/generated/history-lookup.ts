@@ -26,6 +26,28 @@
  * non-empty.
  */
 export type HistoryLookup = HistoryLookupByLast | HistoryLookupBySession;
+/**
+ * Which dates of the index a listing reads.
+ *
+ * It is also the one value an SDK history lookup, listing or watch takes as
+ * its `window`, so "from this date" and "from the beginning" cannot both be
+ * stated. On the wire it is externally tagged in camelCase —
+ * `{"recent": {"days": 3}}`, `{"since": "2026-01-05"}`, or `"allTime"` — and
+ * renders to the CLI's `--days`, `--since` or `--all-time`.
+ */
+export type HistoryWindow =
+  | {
+      recent: {
+        /**
+         * How many UTC days, today included; at least one.
+         */
+        days: number;
+      };
+    }
+  | {
+      since: string;
+    }
+  | "allTime";
 
 /**
  * Select the most recent session.
@@ -60,6 +82,12 @@ export interface HistoryLookupByLast {
    * than invalid, so `{"session": "", "last": true}` stays accepted.
    */
   session?: string | undefined;
+  /**
+   * Which dates of the index to read: the last `days` UTC days, from a
+   * UTC date on, or all time (every dated segment plus the legacy index an
+   * older oneharness kept). Omitted, the last 7 UTC days.
+   */
+  window?: HistoryWindow | null | undefined;
 }
 /**
  * Select the session named by `session`.
@@ -94,4 +122,10 @@ export interface HistoryLookupBySession {
    * the name that selects, so it must be non-empty.
    */
   session: string;
+  /**
+   * Which dates of the index to read: the last `days` UTC days, from a
+   * UTC date on, or all time (every dated segment plus the legacy index an
+   * older oneharness kept). Omitted, the last 7 UTC days.
+   */
+  window?: HistoryWindow | null | undefined;
 }

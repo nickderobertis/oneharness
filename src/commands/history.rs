@@ -1,14 +1,15 @@
 //! `oneharness history` — view and manage the standardized run history that
-//! `run --history` streams to disk. Every bounded subcommand prints JSON to
-//! stdout by default (the programmatic contract every other subcommand upholds)
-//! and offers an opt-in `--format text` human view; `clear` deletes sessions
-//! (dry-run unless `--yes`).
+//! `run --history` streams to disk. Every bounded subcommand prints a text view
+//! by default and the JSON contract under `--format json`; `clear` deletes
+//! sessions (dry-run unless `--yes`). The readers read the dated index for the
+//! window they are given; only `reindex`, `migrate`, `clear` and `--all-time`
+//! read the whole store, and each only when asked.
 
 use std::path::{Path, PathBuf};
 
 use crate::cli::{
     HistoryClearArgs, HistoryCommand, HistoryListArgs, HistoryMigrateArgs, HistoryPointersArgs,
-    HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
+    HistoryReindexArgs, HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
 };
 use crate::commands::{print_report, printable};
 use oneharness_core::domain::history::{
@@ -18,7 +19,8 @@ use oneharness_core::domain::render::{render_event, render_history_show_text};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
-use oneharness_core::io::history::SessionSummary;
+use oneharness_core::io::history::{HistoryWindow, SessionSummary, UtcDate};
+use std::num::NonZeroU32;
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;
@@ -31,6 +33,7 @@ pub fn run(args: &crate::cli::HistoryArgs) -> Result<i32, OneharnessError> {
         HistoryCommand::Watch(a) => watch(a),
         HistoryCommand::Clear(a) => clear(a),
         HistoryCommand::Migrate(a) => migrate(a),
+        HistoryCommand::Reindex(a) => reindex(a),
         HistoryCommand::Pointers(a) => pointers(a),
     }
 }
@@ -50,6 +53,34 @@ fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
     Ok(EXIT_OK)
 }
 
+/// The window a `--days` / `--since` / `--all-time` choice names, or `None`
+/// when none is given; clap refuses any two at once.
+fn chosen_window(
+    days: Option<NonZeroU32>,
+    since: Option<UtcDate>,
+    all_time: bool,
+) -> Option<HistoryWindow> {
+    if all_time {
+        Some(HistoryWindow::AllTime)
+    } else if let Some(date) = since {
+        Some(HistoryWindow::Since(date))
+    } else {
+        days.map(|days| HistoryWindow::Recent { days })
+    }
+}
+
+/// A listing's window: the one chosen, else the last 7 UTC days.
+fn window(days: Option<NonZeroU32>, since: Option<UtcDate>, all_time: bool) -> HistoryWindow {
+    chosen_window(days, since, all_time).unwrap_or_default()
+}
+
+fn reindex(args: &HistoryReindexArgs) -> Result<i32, OneharnessError> {
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
+    let report = history_io::reindex(&dir)?;
+    print_report(&report, args.stdout, render_reindex_text)?;
+    Ok(EXIT_OK)
+}
+
 fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     use std::time::Duration;
 
@@ -65,9 +96,12 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     let labels = history::parse_labels(args.label.iter().map(String::as_str))
         .map_err(OneharnessError::HistoryLabelInvalid)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut watcher = history_io::HistoryWatcher::open_session(
+    let start = after.map(history_io::WatchStart::After).or_else(|| {
+        chosen_window(args.days, args.since, args.all_time).map(history_io::WatchStart::Window)
+    });
+    let mut watcher = history_io::HistoryWatcher::open_in(
         &dir,
-        after,
+        start,
         labels,
         slug,
         args.events,
@@ -241,7 +275,11 @@ fn project_slug(all_projects: bool, project: Option<&Path>) -> Option<String> {
 fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
     let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut sessions = history_io::list_sessions(&dir, slug.as_deref())?;
+    let mut sessions = history_io::list_sessions(
+        &dir,
+        slug.as_deref(),
+        window(args.days, args.since, args.all_time),
+    )?;
     if let Some(variant) = &args.variant {
         let suffix = format!(":{variant}");
         sessions.retain(|session| {
@@ -257,18 +295,19 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
 
 fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
+    let window = window(args.days, args.since, args.all_time);
     // A UUID is an exact record lookup, independent of session names and project
     // scoping. Preserve the existing id-or-name session lookup for every other
     // spelling.
     if !args.last {
         let needle = args.session.as_deref().unwrap_or_default();
         if let Ok(id) = needle.parse::<HistoryId>() {
-            match history_io::find_record_by_id(&dir, id) {
+            match history_io::find_record_by_id_in(&dir, id, window) {
                 Ok(record) => {
                     return render_records(args.stdout, &[record]);
                 }
-                Err(OneharnessError::HistoryNotFound { .. }) => {
-                    eprintln!("oneharness: history record `{id}` was not found");
+                Err(error @ OneharnessError::HistoryNotFound { .. }) => {
+                    eprintln!("oneharness: {error}");
                     return Ok(EXIT_NOT_FOUND);
                 }
                 Err(error) => return Err(error),
@@ -277,7 +316,15 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     }
 
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
+    // A session id under a named project is a file name: open it directly,
+    // with no index — how a pointer line's session is read at any age.
+    if !args.last && slug.is_some() {
+        let needle = args.session.as_deref().unwrap_or_default();
+        if let Some(path) = history_io::find_session_path(&dir, slug.as_deref(), needle)? {
+            return render_entries(args.stdout, &history_io::read_session_display(&path)?);
+        }
+    }
+    let sessions = history_io::list_sessions(&dir, slug.as_deref(), window)?;
 
     // Which session file(s) to read: --last is the newest in scope; otherwise
     // resolve the id-or-name needle (newest match, or every match with --all).
@@ -352,8 +399,10 @@ fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
         history_io::HistoryClearReport::removed(history_io::remove_sessions(&dir, slug.as_deref())?)
     } else {
         // Dry run: report what *would* be removed, delete nothing.
-        let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
-        history_io::HistoryClearReport::dry_run(sessions.iter().map(|s| s.path.clone()).collect())
+        history_io::HistoryClearReport::dry_run(history_io::list_session_files(
+            &dir,
+            slug.as_deref(),
+        )?)
     };
     print_report(&report, args.stdout, render_clear_text)?;
     Ok(EXIT_OK)
@@ -408,6 +457,39 @@ fn render_migrate_text(report: &history_io::HistoryMigrateReport) -> String {
             plural(file.records_migrated),
             file.already_current,
             file.skipped,
+        ));
+    }
+    out
+}
+
+/// What `history reindex` appended: one row per segment it added to, then
+/// every file it could not read.
+fn render_reindex_text(report: &history_io::HistoryReindexReport) -> String {
+    let mut out = format!(
+        "reindexed {} session file{}: added {} entr{} to {} segment{}\n",
+        report.files_read,
+        plural(report.files_read),
+        report.entries_added,
+        if report.entries_added == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        report.segments.len(),
+        plural(report.segments.len()),
+    );
+    for segment in &report.segments {
+        out.push_str(&format!(
+            "  {}: {} added\n",
+            printable(&segment.segment),
+            segment.added
+        ));
+    }
+    for unreadable in &report.unreadable {
+        out.push_str(&format!(
+            "  could not read {}: {}\n",
+            printable(&unreadable.path),
+            printable(&unreadable.error)
         ));
     }
     out
@@ -578,6 +660,53 @@ mod tests {
         assert_eq!(
             render_pointers_text(&history_io::HistoryPointers::default()),
             "no pointers\n"
+        );
+    }
+
+    #[test]
+    fn reindex_text_names_each_segment_and_every_unreadable_file() {
+        let report = history_io::HistoryReindexReport {
+            segments: vec![history_io::SegmentReindexSummary {
+                segment: "runs-2026-01-01.ndjson".to_string(),
+                path: "/h/.index.d/runs-2026-01-01.ndjson".to_string(),
+                added: 1,
+            }],
+            entries_added: 1,
+            files_read: 2,
+            unreadable: vec![history_io::UnreadableSessionFile {
+                path: "/h/p/s.jsonl".to_string(),
+                error: "Permission denied (os error 13)".to_string(),
+            }],
+        };
+        assert_eq!(
+            render_reindex_text(&report),
+            "reindexed 2 session files: added 1 entry to 1 segment\n  \
+             runs-2026-01-01.ndjson: 1 added\n  \
+             could not read /h/p/s.jsonl: Permission denied (os error 13)\n"
+        );
+        let empty = history_io::HistoryReindexReport {
+            segments: vec![],
+            entries_added: 0,
+            files_read: 0,
+            unreadable: vec![],
+        };
+        assert_eq!(
+            render_reindex_text(&empty),
+            "reindexed 0 session files: added 0 entries to 0 segments\n"
+        );
+    }
+
+    #[test]
+    fn a_window_follows_days_since_and_all_time() {
+        assert_eq!(window(None, None, false), HistoryWindow::default());
+        assert_eq!(chosen_window(None, None, false), None);
+        assert_eq!(window(None, None, true), HistoryWindow::AllTime);
+        let date: UtcDate = "2026-01-01".parse().unwrap();
+        assert_eq!(window(None, Some(date), false), HistoryWindow::Since(date));
+        let days = NonZeroU32::new(3).unwrap();
+        assert_eq!(
+            window(Some(days), None, false),
+            HistoryWindow::Recent { days }
         );
     }
 

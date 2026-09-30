@@ -2251,26 +2251,36 @@ later. The `oneharness history` verb views and manages the store — a human
 view on stdout by default, `--format json` (or `--compact`) for the programmatic
 contract, on every bounded subcommand:
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This synopsis has a drift gate: `cli::tests::the_readme_history_synopsis_names_only_real_flags_and_values` reads every `oneharness history` line here against the clap definition and fails on a verb, flag or value clap does not accept. -->
 ```bash
-oneharness history list [--project <dir> | --all-projects]   # sessions, newest first
-oneharness history show <session-id-or-name> [--last] [--all] # a session's records
-oneharness history show <history-id>                          # one exact record
-oneharness history watch [--session <name|id>] [--label key=value] [--after <history-id>] [--events] [--format jsonl|text]
+oneharness history list [--project <dir> | --all-projects] [--days <N> | --since <YYYY-MM-DD> | --all-time]  # sessions, newest first
+oneharness history show <session-id-or-name> [--last] [--all] [--days <N> | --since <YYYY-MM-DD> | --all-time] # a session's records
+oneharness history show <history-id> [--all-time]            # one exact record
+oneharness history watch [--session <name|id>] [--label key=value] [--after <history-id> | --days <N> | --since <YYYY-MM-DD> | --all-time] [--events] [--format jsonl|text]
+oneharness history reindex                                    # index what the dated index lacks
 oneharness history clear [--all-projects] [--yes]            # dry-run unless --yes
 ```
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
+
+**Index.** Beside the sessions, `<history_dir>/.index.d/` holds a dated,
+append-only index, so recording a run costs the same however large the store
+grows. Run `history reindex` after copying session files in from another store
+or upgrading from an older oneharness.
+<!-- llmlint: ignore-block[no_redundant_instruction_pointers] The task this section implements requires the README's history section to point at the one contract declaration rather than restate it; README.md is read by people and SDK consumers, not loaded as agent instructions, so AGENTS.md naming the same file does not reach them. -->
+The layout, the entry fields, which segments each reader reads and how an older
+core sharing the directory behaves are declared in
+[`docs/history-index.md`](docs/history-index.md).
+<!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 
 `show` resolves its argument against a session **id or name** (name is
 non-unique — the newest match wins, or `--all` shows every match); a UUID
 `history_id` instead performs an exact record lookup across projects. `watch`
-first emits matching records after its optional cursor, then follows the locked,
-append-only `.index.jsonl` without rescanning the history tree. Reconciliation
-on startup adds missing session records, ignores removed sessions, and truncates
-a partial final index line left by an interrupted writer. Reusing the last
-emitted `history_id` with `--after` resumes without duplication; repeated
-`--label` filters are ANDed; `oneharness history watch --help` describes
-`--session`, `--events` and `--format`. `clear` reports
+first emits matching records after its optional cursor, then follows the index
+as it grows. Reusing the last emitted `history_id` with `--after` resumes
+without duplication; repeated `--label` filters are ANDed; `oneharness history
+watch --help` describes `--session`, `--events` and `--format`. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
-non-interactively first.
+non-interactively first; it deletes session files only, never the index.
 
 **Pointer file.** `history_file` reaches only the process that ran that one
 turn. A consumer that starts many runs — an orchestrator fanning out agents,
@@ -2325,8 +2335,12 @@ setting already follows. Read it back typed, never by parsing the JSONL:
 
 ```bash
 oneharness history pointers run/pointers.jsonl [--format json]
-oneharness history show <history-id>            # open a session from a line
+oneharness history show <history_session> --project <project> --history-dir <history_dir>  # a line's session, any age, no index
+oneharness history show <history-id>            # a run the dated index holds
 ```
+
+Opening a line's session by name reads that one file and no index, so it works
+for a run of any age — recorded before the dated index, or never reindexed.
 
 `oneharness_core::io::history::read_pointers(path)` is the same read for a Rust
 consumer (`historyPointers()` / `history_pointers()` in the SDKs): the lines in

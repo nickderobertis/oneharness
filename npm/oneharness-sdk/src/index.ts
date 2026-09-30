@@ -18,12 +18,17 @@ import type { HistoryRecord } from "./generated/history.js";
 import type { HistoryClearOptions } from "./generated/history-clear-options.js";
 import type { HistoryClearReport } from "./generated/history-clear-report.js";
 import type { HistorySessionSummary } from "./generated/history-list.js";
-import type { HistoryListOptions } from "./generated/history-list-options.js";
+import type {
+	HistoryListOptions,
+	HistoryWindow,
+} from "./generated/history-list-options.js";
 import type { HistoryLookup } from "./generated/history-lookup.js";
 import type { HistoryMigrateOptions } from "./generated/history-migrate-options.js";
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryPointers } from "./generated/history-pointers.js";
 import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
+import type { HistoryReindexOptions } from "./generated/history-reindex-options.js";
+import type { HistoryReindexReport } from "./generated/history-reindex-report.js";
 import type {
 	HistoryShowEntries,
 	HistoryShowEntry,
@@ -58,6 +63,8 @@ import {
 	HistoryPointersOptionsSchema,
 	HistoryPointersSchema,
 	HistoryRecordSchema,
+	HistoryReindexOptionsSchema,
+	HistoryReindexReportSchema,
 	HistoryShowEntriesSchema,
 	HistoryStreamEnvelopeSchema,
 	HistoryWatchOptionsSchema,
@@ -114,7 +121,10 @@ export type {
 	HistoryList,
 	HistorySessionSummary,
 } from "./generated/history-list.js";
-export type { HistoryListOptions } from "./generated/history-list-options.js";
+export type {
+	HistoryListOptions,
+	HistoryWindow,
+} from "./generated/history-list-options.js";
 export type {
 	HistoryLookup,
 	HistoryLookupByLast,
@@ -127,6 +137,12 @@ export type {
 	HistoryPointers,
 } from "./generated/history-pointers.js";
 export type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
+export type { HistoryReindexOptions } from "./generated/history-reindex-options.js";
+export type {
+	HistoryReindexReport,
+	SegmentReindexSummary,
+	UnreadableSessionFile,
+} from "./generated/history-reindex-report.js";
 export type {
 	HistoryShowEntries,
 	HistoryShowEntry,
@@ -458,6 +474,27 @@ function statesAChoice(binding: OptionBinding, value: unknown): boolean {
 }
 
 /**
+ * The one flag a history window renders: `--days N`, `--since D`, or
+ * `--all-time`. The window is a single validated value, so exactly one of the
+ * three is ever sent.
+ */
+function windowArguments(
+	binding: OptionBinding,
+	window: HistoryWindow,
+): string[] {
+	// `FlagKind::Window` serializes its spellings beside the binding, so a
+	// window binding without them is a manifest this client cannot render.
+	const flags = binding.window;
+	if (flags === undefined)
+		throw new Error(
+			`the capability manifest's \`${binding.option}\` window binding names no flags`,
+		);
+	if (window === "allTime") return [flags.allTime];
+	if ("since" in window) return [flags.since, window.since];
+	return [flags.days, String(window.recent.days)];
+}
+
+/**
  * Render one capability's argv from its declared bindings.
  *
  * The client lists no flags of its own: `CAPABILITIES` says which option
@@ -533,6 +570,12 @@ function capabilityArguments(
 				break;
 			case "trailing":
 				trailing.push(...(value as unknown[]).map(String));
+				break;
+			case "window":
+				// A `window` binding only ever names an option the contract types as
+				// `HistoryWindow`, and Zod validated this value against that contract
+				// before it reached here, so the assertion restates a checked shape.
+				args.push(...windowArguments(binding, value as HistoryWindow));
 				break;
 		}
 	}
@@ -856,6 +899,25 @@ export class OneHarness {
 			options,
 			HistoryMigrateOptionsSchema,
 			HistoryMigrateReportSchema,
+		);
+	}
+
+	/**
+	 * Index every session line the dated history index lacks: append one entry
+	 * per run or event line its date's segment does not hold yet.
+	 *
+	 * Idempotent and append-only, and the only verb that reads every session
+	 * file to build the index. The report names what was added per segment and
+	 * every file that could not be read.
+	 */
+	async historyReindex(
+		options: HistoryReindexOptions = {},
+	): Promise<HistoryReindexReport> {
+		return await this.call(
+			"historyReindex",
+			options,
+			HistoryReindexOptionsSchema,
+			HistoryReindexReportSchema,
 		);
 	}
 

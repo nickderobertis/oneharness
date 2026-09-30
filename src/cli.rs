@@ -457,26 +457,40 @@ pub struct HistoryArgs {
 #[derive(Subcommand, Debug)]
 pub enum HistoryCommand {
     /// List recorded sessions, newest first: id, name, project, start time,
-    /// harnesses, and record count.
+    /// harnesses, and record count. Reads the dated index for the last 7 UTC
+    /// days unless --since or --all-time says otherwise.
     List(HistoryListArgs),
     /// Print the normalized records of one session, resolved by id or name (name
-    /// is non-unique — the newest match wins unless --all is given).
+    /// is non-unique — the newest match wins unless --all is given), or one
+    /// record by its history id.
     Show(HistoryShowArgs),
-    /// Follow normalized history records continuously. Existing records are
-    /// emitted first (or only records after --after), then new records as they
-    /// are indexed. Output is one tagged JSON envelope per line.
+    /// Follow normalized history records continuously. Today's records are
+    /// emitted first (or only records after --after, or from --since /
+    /// --all-time), then new records as they are indexed. Output is one tagged
+    /// JSON envelope per line.
     Watch(HistoryWatchArgs),
     /// Delete recorded sessions. Reports (`--format json` for the contract) what it
     /// WOULD remove and removes nothing unless --yes is given (so it is safe to
     /// run non-interactively first).
     Clear(HistoryClearArgs),
     /// Rewrite legacy 0.1/0.2/0.3 whole-record stores into the event-sourced
-    /// 1.0 line format and rebuild the history index; reports each file rewritten
-    /// (`--format json` for the contract).
+    /// 1.0 line format; reports each file rewritten (`--format json` for the
+    /// contract). It writes session files only — `history reindex` indexes what
+    /// it migrated.
     Migrate(HistoryMigrateArgs),
+    /// Index every session line the dated index lacks: read every session file
+    /// in the store and append one entry for each run or event line its date's
+    /// segment does not hold yet. Idempotent and append-only — it never
+    /// rewrites a segment, a legacy index file or a session file — and never
+    /// run implicitly. Reports what it added to each segment and names every
+    /// file it could not read (`--format json` for the contract).
+    Reindex(HistoryReindexArgs),
     /// Read a run's pointer file (`run --history-pointer-file`): one line per
     /// harness run begun with history on, naming its session's store, project,
-    /// session id and file. Open one with `oneharness history show <history-id>`.
+    /// session id and file. `oneharness history show <history_session>
+    /// --project <project> --history-dir <history_dir>` opens a line's session
+    /// file by name, for a run of any age; `history show <history-id>` finds a
+    /// run the dated index holds.
     /// A missing file reads as empty; a torn or foreign line is counted as
     /// skipped, never an error.
     Pointers(HistoryPointersArgs),
@@ -516,15 +530,61 @@ pub struct HistoryMigrateArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct HistoryReindexArgs {
+    /// History directory to reindex (default: config `history_dir`,
+    /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
+    #[arg(long, value_name = "DIR")]
+    pub history_dir: Option<PathBuf>,
+
+    // llmlint: ignore-block[invalid_states_unrepresentable] the same `--config`/`--no-config` pair every other history verb takes; clap's `conflicts_with` makes both unreachable at the only boundary that constructs this struct, and `resolve_dir` reads them as one source.
+    /// Load configuration from these files only, skipping user/project
+    /// discovery. Repeatable: files layer in the order given, each later file
+    /// (and its own `extends` chain beneath it) overriding the earlier ones.
+    #[arg(long, value_name = "PATH", conflicts_with = "no_config")]
+    pub config: Vec<PathBuf>,
+
+    /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
+    #[arg(long)]
+    pub no_config: bool,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
+    /// `--format <text|json>` and `--compact`: how the report reaches stdout.
+    #[command(flatten)]
+    pub stdout: StdoutFormat,
+}
+
+#[derive(Args, Debug)]
 pub struct HistoryWatchArgs {
     /// Stream action event lines as they arrive, in addition to closing records.
     #[arg(long)]
     pub events: bool,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] clap's derive cannot build one enum from several named flags, and `--since`/`--all-time`/`--days` are the CLI contract; `conflicts_with` makes every combination unreachable at the only boundary that constructs this struct, and `commands::history::chosen_window` folds the survivor into one `HistoryWindow` before any read. `--after` joins them because a cursor is the other answer to where a watch starts; the command folds all four into one `WatchStart`.
     /// Resume strictly after this history record UUID, without duplicating it.
     #[arg(long, value_name = "CURSOR")]
     pub after: Option<String>,
 
+    /// Start from this UTC date's index segments rather than today's.
+    #[arg(
+        long,
+        value_name = "YYYY-MM-DD",
+        conflicts_with_all = ["after", "all_time"]
+    )]
+    pub since: Option<oneharness_core::io::history::UtcDate>,
+
+    /// Start from the first record the index holds: every dated segment, and
+    /// the legacy index an older oneharness kept.
+    #[arg(long, conflicts_with = "after")]
+    pub all_time: bool,
+
+    /// Start from the beginning of the last N UTC days, today included
+    /// (`--days 1` is today, the default start).
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with_all = ["after", "since", "all_time"]
+    )]
+    pub days: Option<std::num::NonZeroU32>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// Emit only records carrying this exact KEY=VALUE label (repeatable; all
     /// filters must match).
     #[arg(long = "label", value_name = "KEY=VALUE")]
@@ -587,6 +647,22 @@ pub struct HistoryListArgs {
     #[arg(long, conflicts_with = "project")]
     pub all_projects: bool,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] clap's derive cannot build one enum from several named flags, and `--since`/`--all-time`/`--days` are the CLI contract; `conflicts_with` makes every combination unreachable at the only boundary that constructs this struct, and `commands::history::chosen_window` folds the survivor into one `HistoryWindow` before any read.
+    /// List sessions with runs indexed on or after this UTC date, instead of
+    /// the last 7 UTC days.
+    #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "all_time")]
+    pub since: Option<oneharness_core::io::history::UtcDate>,
+
+    /// List from every dated index segment, plus the legacy index an older
+    /// oneharness kept, instead of the last 7 UTC days.
+    #[arg(long)]
+    pub all_time: bool,
+
+    /// List sessions with runs indexed in the last N UTC days, today included,
+    /// instead of the last 7.
+    #[arg(long, value_name = "N", conflicts_with_all = ["since", "all_time"])]
+    pub days: Option<std::num::NonZeroU32>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// History directory to read (default: config `history_dir`,
     /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
     #[arg(long, value_name = "DIR")]
@@ -609,7 +685,8 @@ pub struct HistoryListArgs {
 
 #[derive(Args, Debug)]
 pub struct HistoryShowArgs {
-    /// The session id or name to show. Optional with --last (the newest session).
+    /// The session id or name to show, or one record's history id (a UUID).
+    /// Optional with --last (the newest session).
     #[arg(value_name = "SESSION", required_unless_present = "last")]
     pub session: Option<String>,
 
@@ -632,6 +709,23 @@ pub struct HistoryShowArgs {
     #[arg(long, conflicts_with = "project")]
     pub all_projects: bool,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] clap's derive cannot build one enum from several named flags, and `--since`/`--all-time`/`--days` are the CLI contract; `conflicts_with` makes every combination unreachable at the only boundary that constructs this struct, and `commands::history::chosen_window` folds the survivor into one `HistoryWindow` before any read.
+    /// Resolve a session name or --last among runs indexed on or after this
+    /// UTC date, instead of the last 7 UTC days.
+    #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "all_time")]
+    pub since: Option<oneharness_core::io::history::UtcDate>,
+
+    /// Resolve across every dated index segment plus the legacy index an older
+    /// oneharness kept — which also finds a <history-id> the dated index does
+    /// not hold.
+    #[arg(long)]
+    pub all_time: bool,
+
+    /// Resolve a session name or --last among runs indexed in the last N UTC
+    /// days, today included, instead of the last 7.
+    #[arg(long, value_name = "N", conflicts_with_all = ["since", "all_time"])]
+    pub days: Option<std::num::NonZeroU32>,
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// History directory to read (default: config `history_dir`,
     /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
     #[arg(long, value_name = "DIR")]

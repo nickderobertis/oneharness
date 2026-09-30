@@ -42,7 +42,33 @@ pub enum FlagKind {
     KeyValue(&'static str),
     /// Every array element appended verbatim after a `--` separator.
     Trailing,
+    /// A [`HistoryWindow`](crate::domain::history_index::HistoryWindow) value,
+    /// rendered as exactly one of its flags: `{"recent": {"days": N}}` as
+    /// `--days N`, `{"since": D}` as `--since D`, and `"allTime"` as
+    /// `--all-time`. One option carrying the whole window is what keeps a
+    /// since-date and all-time from being stated together.
+    Window(WindowFlags),
 }
+
+/// The three CLI spellings a [`FlagKind::Window`] option renders one of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowFlags {
+    /// Rendered with the day count of a `recent` window.
+    pub days: &'static str,
+    /// Rendered with the date of a `since` window.
+    pub since: &'static str,
+    /// Rendered alone for the `allTime` window.
+    pub all_time: &'static str,
+}
+
+/// The history verbs' window flags, one spelling on every verb that reads a
+/// window.
+pub const HISTORY_WINDOW_FLAGS: WindowFlags = WindowFlags {
+    days: "--days",
+    since: "--since",
+    all_time: "--all-time",
+};
 
 impl FlagKind {
     /// The CLI spelling this binding renders, or `None` when it renders a bare
@@ -51,7 +77,7 @@ impl FlagKind {
     #[must_use]
     pub const fn flag(self) -> Option<&'static str> {
         match self {
-            FlagKind::Positional | FlagKind::Trailing => None,
+            FlagKind::Positional | FlagKind::Trailing | FlagKind::Window(_) => None,
             FlagKind::Value(flag)
             | FlagKind::Repeated(flag)
             | FlagKind::Switch(flag)
@@ -69,6 +95,17 @@ impl FlagKind {
             FlagKind::Switch(_) => "switch",
             FlagKind::KeyValue(_) => "key-value",
             FlagKind::Trailing => "trailing",
+            FlagKind::Window(_) => "window",
+        }
+    }
+
+    /// Every CLI spelling this binding can render: its one flag, or each of a
+    /// window's three. What the clap reconciliation counts as decided.
+    #[must_use]
+    pub fn spellings(self) -> Vec<&'static str> {
+        match self {
+            FlagKind::Window(flags) => vec![flags.days, flags.since, flags.all_time],
+            other => other.flag().into_iter().collect(),
         }
     }
 }
@@ -183,7 +220,11 @@ impl Serialize for OptionBinding {
     /// so a binding without one serializes byte for byte as it always has.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let fields = 4 + usize::from(self.unless.is_some());
+        let window = match self.kind {
+            FlagKind::Window(flags) => Some(flags),
+            _ => None,
+        };
+        let fields = 4 + usize::from(self.unless.is_some()) + usize::from(window.is_some());
         let mut out = serializer.serialize_struct("OptionBinding", fields)?;
         out.serialize_field("option", self.option)?;
         out.serialize_field("flag", self.flag())?;
@@ -191,6 +232,11 @@ impl Serialize for OptionBinding {
         out.serialize_field("unless", &self.unless.map(|unless| unless.option))?;
         if let Some(unless) = self.unless {
             out.serialize_field("unless_resolution", &unless.resolution)?;
+        }
+        // Additive like `unless_resolution`: only a window binding carries the
+        // three spellings it chooses among, so every other binding is unchanged.
+        if let Some(flags) = window {
+            out.serialize_field("window", &flags)?;
         }
         out.end()
     }
@@ -360,6 +406,10 @@ const fn bind(option: &'static str, kind: FlagKind) -> OptionBinding {
 // * `project` / `allProjects` (history show, list, watch, clear) — refuse. One
 //   project's store or every project's; `historyClear` makes the wrong answer
 //   destructive, and the rest hand back records from a store nobody asked for.
+// * `after` / `window` (history watch) — refuse. A cursor and a start are two
+//   answers to where a watch begins, and the CLI refuses each pair. The
+//   window's own three answers (`--days`, `--since`, `--all-time`) need no
+//   pair at all: they are one `HistoryWindow` value, so no call can hold two.
 // * `session` / `last` (history show) — prefer. The lookup union deliberately
 //   accepts `{session, last: true}` and defines it as "the most recent", so the
 //   request has one meaning and `--last` is it. This is the pair the mechanism
@@ -672,6 +722,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("all", FlagKind::Switch("--all")),
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind("window", FlagKind::Window(HISTORY_WINDOW_FLAGS)),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
@@ -690,6 +741,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("variant", FlagKind::Value("--variant")),
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind("window", FlagKind::Window(HISTORY_WINDOW_FLAGS)),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
@@ -705,7 +757,7 @@ pub const CAPABILITIES: &[Capability] = &[
         rust: "oneharness_core::io::history::HistoryWatcher",
         always: &["--format", "jsonl"],
         bindings: &[
-            bind("after", FlagKind::Value("--after")),
+            bind_refuse("after", FlagKind::Value("--after"), "window"),
             bind("labels", FlagKind::KeyValue("--label")),
             bind("variant", FlagKind::Value("--variant")),
             bind("session", FlagKind::Value("--session")),
@@ -713,6 +765,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind("events", FlagKind::Switch("--events")),
+            bind("window", FlagKind::Window(HISTORY_WINDOW_FLAGS)),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
@@ -743,6 +796,21 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("history_migrate_report"),
         stdin: false,
         rust: "oneharness_core::io::history::migrate",
+        always: JSON_DOCUMENT,
+        bindings: &[
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
+        ],
+        uncovered: &[],
+    },
+    Capability {
+        method: "historyReindex",
+        argv: &["history", "reindex"],
+        options: Some("history_reindex_options"),
+        stdout: StdoutShape::Json("history_reindex_report"),
+        stdin: false,
+        rust: "oneharness_core::io::history::reindex",
         always: JSON_DOCUMENT,
         bindings: &[
             bind("historyDir", FlagKind::Value("--history-dir")),

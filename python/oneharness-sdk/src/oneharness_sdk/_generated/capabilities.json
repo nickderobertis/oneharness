@@ -177,6 +177,17 @@
         "unless": null
       },
       {
+        "flag": "",
+        "kind": "window",
+        "option": "window",
+        "unless": null,
+        "window": {
+          "allTime": "--all-time",
+          "days": "--days",
+          "since": "--since"
+        }
+      },
+      {
         "flag": "--history-dir",
         "kind": "value",
         "option": "historyDir",
@@ -293,6 +304,17 @@
         "unless": null
       },
       {
+        "flag": "",
+        "kind": "window",
+        "option": "window",
+        "unless": null,
+        "window": {
+          "allTime": "--all-time",
+          "days": "--days",
+          "since": "--since"
+        }
+      },
+      {
         "flag": "--history-dir",
         "kind": "value",
         "option": "historyDir",
@@ -385,6 +407,45 @@
     "stdout": "json",
     "uncovered": []
   },
+  "historyReindex": {
+    "always": [
+      "--compact",
+      "--format",
+      "json"
+    ],
+    "argv": [
+      "history",
+      "reindex"
+    ],
+    "bindings": [
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "repeated",
+        "option": "config",
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "historyReindex",
+    "options": "history_reindex_options",
+    "output": "history_reindex_report",
+    "rust": "oneharness_core::io::history::reindex",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
   "historyWatch": {
     "always": [
       "--format",
@@ -399,7 +460,8 @@
         "flag": "--after",
         "kind": "value",
         "option": "after",
-        "unless": null
+        "unless": "window",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--label",
@@ -443,6 +505,17 @@
         "kind": "switch",
         "option": "events",
         "unless": null
+      },
+      {
+        "flag": "",
+        "kind": "window",
+        "option": "window",
+        "unless": null,
+        "window": {
+          "allTime": "--all-time",
+          "days": "--days",
+          "since": "--since"
+        }
       },
       {
         "flag": "--config",

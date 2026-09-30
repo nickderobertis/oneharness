@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ZodType, z } from "zod";
 import {
@@ -43,6 +43,7 @@ import {
 	HistoryStreamEnvelopeSchema,
 	type HistoryWatchOptions,
 	HistoryWatchOptionsSchema,
+	type HistoryWindow,
 	InitOptionsSchema,
 	InterruptOptionsSchema,
 	isIncompleteHistoryRun,
@@ -172,6 +173,7 @@ const bundle = JSON.parse(
 const PATTERNED: Array<[RegExp, string]> = [
 	[/T\(\[01\]/u, "2026-08-11T00:00:00.000Z"],
 	[/\{8\}-/u, "0198f0d0-7b31-7000-8000-000000000001"],
+	[/-02-29/u, "2026-09-29"],
 ];
 
 /**
@@ -669,6 +671,18 @@ describe("OneHarness", () => {
 		await runRejects({ prompt: 42 });
 		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
 		await listRejects({ project: 42 });
+		// A `since` window is a real calendar date, as the CLI parses it: a
+		// rolled-over day or a trailing newline is refused before anything
+		// spawns.
+		await listRejects({ window: { since: "2026-02-30" } });
+		await listRejects({ window: { since: "2026-01-01\n" } });
+		// A window is one value: a since-date beside a day count or all-time,
+		// or an empty day count, is no window at all.
+		await listRejects({ window: { since: "2026-01-01", recent: { days: 3 } } });
+		await listRejects({ window: { recent: { days: 0 } } });
+		await listRejects({ window: "all_time" });
+		await listRejects({ since: "2026-01-01" });
+		await listRejects({ allTime: true });
 		await listRejects({ allProjects: "yes" });
 		await historyRejects({ session: 42 });
 		await historyRejects({ last: "yes" });
@@ -1111,16 +1125,22 @@ describe("OneHarness", () => {
 			.split("\n")
 			.find((candidate) => JSON.parse(candidate).type === "run");
 		if (!line) throw new Error(`history file ${olderFile} recorded no run`);
+		// A record of its own needs an id of its own: a UUIDv7 minted now, so
+		// the dated index files it under today.
+		const now = Date.now().toString(16).padStart(12, "0");
 		await writeFile(
 			resolve(dirname(olderFile), "newer-session-id.jsonl"),
 			`${JSON.stringify({
 				...JSON.parse(line),
+				history_id: `${now.slice(0, 8)}-${now.slice(8)}-7000-8000-000000000abc`,
 				session: "newer-session-id",
 				name: "newer-session",
 				prompt: "the newer session",
 				timestamp: "2099-01-01T00:00:00Z",
 			})}\n`,
 		);
+		// A session file written by hand is findable once reindexed.
+		expect((await client.historyReindex({ historyDir })).entries_added).toBe(1);
 
 		// `last: true` selects the most recent session even though the lookup also
 		// carries an older name: `last` has priority, and the name rides along
@@ -1172,6 +1192,171 @@ describe("OneHarness", () => {
 			)[0]?.name,
 		).toBe("older-session");
 	});
+
+	test("reads a history lookup and a watch over exactly the window each names", async () => {
+		const client = sdk();
+		// One real run supplies the closing line every dated fixture copies, so
+		// only the id, name and timestamp this test turns on are hand-set.
+		const template = await client.run({
+			prompt: "window template",
+			harnesses: ["codex"],
+			mode: "bypass",
+			history: true,
+			historyDir: await scratch("window-template"),
+			env: { MOCK_STDOUT: historyTrace },
+			bins: { codex: mock },
+		});
+		const templateFile = template.history_file;
+		if (!templateFile)
+			throw new Error("run --history recorded no history file");
+		const line = (await readFile(templateFile, "utf8"))
+			.trim()
+			.split("\n")
+			.find((candidate) => JSON.parse(candidate).type === "run");
+		if (!line) throw new Error(`history file ${templateFile} recorded no run`);
+		const historyDir = await scratch("window");
+		const slug = basename(dirname(templateFile));
+		await mkdir(resolve(historyDir, slug));
+		// A UUIDv7 minted at `day`, so the dated index files it under that date.
+		const recordAt = async (name: string, day: string, seq: number) => {
+			const hex = Date.parse(`${day}T00:00:00Z`).toString(16).padStart(12, "0");
+			const stem = `${name}-${day.replaceAll("-", "")}T000000Z-00000${seq}`;
+			const record = {
+				...JSON.parse(line),
+				history_id: `${hex.slice(0, 8)}-${hex.slice(8)}-7000-8000-00000000000${seq}`,
+				session: stem,
+				name,
+				prompt: name,
+				timestamp: `${day}T00:00:00Z`,
+			};
+			await writeFile(
+				resolve(historyDir, slug, `${stem}.jsonl`),
+				`${JSON.stringify(record)}\n`,
+			);
+			return { record, sessionPath: `${slug}/${stem}.jsonl` };
+		};
+		// Two runs on dates of their own, both older than the default 7 days,
+		// and one two UTC days ago: inside the default week and a 3-day
+		// window, outside a 2-day one...
+		await recordAt("win-a", "2020-01-05", 1);
+		await recordAt("win-b", "2020-01-15", 2);
+		const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000)
+			.toISOString()
+			.slice(0, 10);
+		await recordAt("win-recent", twoDaysAgo, 4);
+		const today = new Date().toISOString().slice(0, 10);
+		expect((await client.historyReindex({ historyDir })).entries_added).toBe(3);
+		// ...and the newest one known only to the legacy index an older core
+		// kept, which only the all-time window reads.
+		const legacy = await recordAt("win-c", "2020-02-01", 3);
+		const { type: _type, ...legacyRecord } = legacy.record;
+		await writeFile(
+			resolve(historyDir, ".index.jsonl"),
+			`${JSON.stringify({ session_path: legacy.sessionPath, record: legacyRecord })}\n`,
+		);
+
+		const found = async (lookup: HistoryLookup) =>
+			client.history(lookup).then(
+				(records) => records[0]?.name,
+				(error: unknown) => {
+					if (error instanceof HistoryNotFoundError) return null;
+					throw error;
+				},
+			);
+		const since = (date: string): HistoryWindow => ({ since: date });
+		const recent = (days: number): HistoryWindow => ({ recent: { days } });
+		// By name: a `since` window reads from its date on, inclusive, and never
+		// the legacy index; a `recent` one the last N UTC days, today included;
+		// the default window (the last 7) reaches none of the 2020 dates.
+		for (const [lookup, name] of [
+			[{ session: "win-a", historyDir }, null],
+			[{ session: "win-recent", historyDir }, "win-recent"],
+			[{ session: "win-a", historyDir, window: since("2020-01-05") }, "win-a"],
+			[{ session: "win-a", historyDir, window: since("2020-01-06") }, null],
+			[{ session: "win-b", historyDir, window: since("2020-01-06") }, "win-b"],
+			[{ session: "win-c", historyDir, window: since("2020-01-01") }, null],
+			[{ session: "win-recent", historyDir, window: recent(3) }, "win-recent"],
+			[{ session: "win-recent", historyDir, window: recent(2) }, null],
+			[{ session: "win-b", historyDir, window: recent(3) }, null],
+			[{ session: "win-a", historyDir, window: "allTime" }, "win-a"],
+			[{ session: "win-c", historyDir, window: "allTime" }, "win-c"],
+			// By last: the newest session inside the window, never beyond it.
+			[{ last: true, historyDir }, "win-recent"],
+			[{ last: true, historyDir, window: since("2020-01-01") }, "win-recent"],
+			[{ last: true, historyDir, window: since(today) }, null],
+			[{ last: true, historyDir, window: recent(3) }, "win-recent"],
+			[{ last: true, historyDir, window: recent(2) }, null],
+			[{ last: true, historyDir, window: "allTime" }, "win-recent"],
+		] satisfies Array<[HistoryLookup, string | null]>) {
+			expect([lookup, await found(lookup)]).toEqual([lookup, name]);
+		}
+
+		// A run recorded now lands in today's segment: what every watch window
+		// reaches, and so the proof a window opened at all.
+		const recordToday = (name: string) =>
+			client.run({
+				prompt: name,
+				harnesses: ["codex"],
+				mode: "bypass",
+				history: true,
+				historyName: name,
+				historyDir,
+				env: { MOCK_STDOUT: historyTrace },
+				bins: { codex: mock },
+			});
+		await recordToday("win-today");
+		// A watch emits its whole opening read before anything newer, so a run
+		// recorded once the first record arrives marks where that read ended:
+		// what came before it is exactly the range the window read.
+		const windows: Array<[HistoryWatchOptions, string[]]> = [
+			[{}, ["win-today"]],
+			[{ window: recent(1) }, ["win-today"]],
+			[{ window: recent(3) }, ["win-recent", "win-today"]],
+			[{ window: since("2020-01-06") }, ["win-b", "win-recent", "win-today"]],
+			[
+				{ window: "allTime" },
+				["win-a", "win-b", "win-c", "win-recent", "win-today"],
+			],
+		];
+		for (const [index, [options, names]] of windows.entries()) {
+			// A session name is recorded as a lowercase slug, so the marker is one.
+			const marker = `end-${index}`;
+			const watch = client.historyWatch({
+				...options,
+				allProjects: true,
+				historyDir,
+			});
+			const seen: string[] = [];
+			let marked = false;
+			try {
+				for (
+					let next = await watch.next();
+					!next.done;
+					next = await watch.next()
+				) {
+					// HistoryRecord's version-gated union is too large for TypeScript
+					// to narrow, so the name is read by runtime checks, not a cast.
+					const record: unknown = next.value.record;
+					const name =
+						typeof record === "object" && record !== null && "name" in record
+							? record.name
+							: undefined;
+					if (typeof name !== "string")
+						throw new Error(`a watched record without a name: ${String(name)}`);
+					if (name === marker) break;
+					// An earlier window's marker is today's too; it is not a fixture.
+					if (!name.startsWith("end-")) seen.push(name);
+					if (!marked) {
+						marked = true;
+						await recordToday(marker);
+					}
+				}
+			} finally {
+				await watch.return(undefined);
+			}
+			expect([options, seen.sort()]).toEqual([options, names]);
+		}
+	}, 60_000);
 
 	test("continues a native session with the new user message", async () => {
 		const argvFile = resolve(await scratch("resume"), "argv");
@@ -1741,6 +1926,23 @@ describe("OneHarness", () => {
 		expect(await client.historyMigrate({ historyDir })).toMatchObject({
 			files_processed: expect.any(Number),
 		});
+		// The run this client recorded is already in the dated index, so a
+		// reindex finds nothing to add; the windows read it back.
+		expect(await client.historyReindex({ historyDir })).toMatchObject({
+			entries_added: 0,
+			files_read: 1,
+			segments: [],
+			unreadable: [],
+		});
+		expect(
+			await client.historyList({ historyDir, window: { since: "2000-01-01" } }),
+		).toHaveLength(1);
+		expect(
+			await client.historyList({ historyDir, window: "allTime" }),
+		).toHaveLength(1);
+		expect(
+			await client.historyList({ historyDir, window: { since: "9999-12-31" } }),
+		).toHaveLength(0);
 
 		// A dry run reports what it *would* remove and deletes nothing, which
 		// the following list still seeing the session is what proves.

@@ -349,13 +349,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   the harness — headless harnesses expose only an opaque `session_id` (already
   captured per record), never a readable title; don't fabricate one. The report
   echoes the session file as `history_file` (the programmatic handle). The
-  `oneharness history list/show/watch/clear` verb views/manages the store: a
+  `oneharness history list/show/watch/reindex/clear` verb views/manages the store: a
   text view by default, `--format json` (the contract) for programs; `show` resolves a
   record UUID exactly before its back-compatible session id/name lookup; `watch`
   emits typed JSONL envelopes with label filters and `--after` cursor resume.
-  Its process-locked append-only `.index.jsonl` is reconciled once on startup
-  (including partial-tail recovery), then followed by byte offset without repeated
-  tree scans. `clear` is a dry run until `--yes`. History paths are canonicalized
+  The index is dated and append-only; its layout and which reader reads what
+  are declared once in `docs/history-index.md`. **Never add an implicit
+  whole-store read** — nothing but an explicit verb may scan. A test writing
+  session files by hand runs `history reindex` before reading them back. `clear` is a dry run until `--yes`. History paths are canonicalized
   before writing so `cwd=..` remains discoverable. The **pointer file**
   (`--history-pointer-file`, layered like `history_dir`) is how a consumer finds
   a run's sessions without scanning the store. Three constraints are

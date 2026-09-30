@@ -10912,6 +10912,11 @@ fn every_history_verb_honors_repeated_config_files() {
         assert_eq!(cleared["would_remove"], sessions, "{label}: {cleared}");
         let migrated = verb(&["migrate"]);
         assert_eq!(migrated["files_processed"], sessions, "{label}: {migrated}");
+        // Every session was recorded with its entries, so reindex adds none;
+        // what shows the store it resolved is how many session files it read.
+        let reindexed = verb(&["reindex"]);
+        assert_eq!(reindexed["files_read"], sessions, "{label}: {reindexed}");
+        assert_eq!(reindexed["entries_added"], 0, "{label}: {reindexed}");
 
         // `watch` resumes after a record only the right store holds, so the
         // wrong store refuses the cursor at once and prints nothing. The index
@@ -14628,6 +14633,41 @@ impl AsRef<Path> for HistDir {
     }
 }
 
+/// Every entry in a store's dated index segments, in segment then line order.
+fn index_entries(store: &Path) -> Vec<Value> {
+    let mut paths: Vec<PathBuf> = match std::fs::read_dir(store.join(".index.d")) {
+        Ok(entries) => entries.map(|entry| entry.unwrap().path()).collect(),
+        Err(_) => Vec::new(),
+    };
+    paths.sort();
+    paths
+        .iter()
+        .flat_map(|path| {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// `history reindex` over a store, asserting it succeeded: how a session file
+/// written or copied in by hand becomes findable.
+fn reindex_store(store: &Path) -> Value {
+    let output = run(
+        &[
+            "history",
+            "reindex",
+            "--history-dir",
+            &store.display().to_string(),
+        ],
+        &[],
+    );
+    assert!(output.status.success(), "{output:?}");
+    json_stdout(&output)
+}
+
 fn hist_dir(tag: &str) -> HistDir {
     let scratch = ScratchDir::new(&format!("histtest-{tag}")).unwrap();
     let store = scratch.join("store");
@@ -16413,7 +16453,24 @@ fn history_readers_skip_unmigrated_files_with_a_migration_notice() {
     );
     assert!(output.status.success());
     assert!(json_stdout(&output).as_array().unwrap().is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    // A listing reads the index, never a session file, so it has nothing to
+    // say about one; the verb that reads every session file says it.
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("unmigrated"),
+        "{output:?}"
+    );
+    let reindexed = run(
+        &[
+            "history",
+            "reindex",
+            "--history-dir",
+            &dir.display().to_string(),
+        ],
+        &[],
+    );
+    assert!(reindexed.status.success());
+    assert_eq!(json_stdout(&reindexed)["entries_added"], 0);
+    let stderr = String::from_utf8_lossy(&reindexed.stderr);
     assert!(
         stderr.contains("skipped unmigrated history lines"),
         "{stderr}"
@@ -16433,7 +16490,7 @@ fn history_migrate_converts_every_legacy_store_and_is_idempotent() {
         )
         .unwrap();
     }
-    // A stale index must be replaced, not merely appended to.
+    // The legacy index is never rewritten, whatever it holds.
     std::fs::write(dir.join(".index.jsonl"), "not-json\n").unwrap();
     let ds = dir.display().to_string();
 
@@ -16465,15 +16522,20 @@ fn history_migrate_converts_every_legacy_store_and_is_idempotent() {
         assert!(matches!(lines[0], HistoryLine::Event(_)));
         assert!(matches!(lines[1], HistoryLine::Run(_)));
     }
-    let index_lines = std::fs::read_to_string(dir.join(".index.jsonl")).unwrap();
-    assert_eq!(index_lines.lines().count(), 3);
-    assert!(!index_lines.contains("not-json"));
+    assert_eq!(
+        std::fs::read_to_string(dir.join(".index.jsonl")).unwrap(),
+        "not-json\n"
+    );
+    assert!(index_entries(&dir).is_empty(), "migrate writes no segment");
 
+    // What migrate rewrote reaches the dated index through reindex.
+    assert_eq!(reindex_store(&dir)["entries_added"], 6);
     let listed = json_stdout(&run(
         &[
             "history",
             "list",
             "--all-projects",
+            "--all-time",
             "--history-dir",
             &ds,
             "--compact",
@@ -16487,6 +16549,7 @@ fn history_migrate_converts_every_legacy_store_and_is_idempotent() {
             "show",
             "legacy-03",
             "--all-projects",
+            "--all-time",
             "--history-dir",
             &ds,
             "--compact",
@@ -16767,6 +16830,8 @@ fn history_cli_reads_v1_0_records_without_variant_identity_fields() {
         serde_json::from_str::<HistoryLine>(line).unwrap();
     }
     let session = legacy_path.file_stem().unwrap().to_string_lossy();
+    // A session copied in from another store is found once reindexed.
+    reindex_store(&legacy_dir);
     let shown = run(
         &[
             "history",
@@ -16833,7 +16898,14 @@ fn history_cli_rejects_mixed_provider_and_observed_timing() {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    std::fs::write(&path, format!("{corrupted}\n")).unwrap();
+    // The corrupt session, copied into a store of its own and indexed there.
+    let copy = hist_dir("history-mixed-timing-copy");
+    let copied = copy
+        .join("project")
+        .join(Path::new(&path).file_name().unwrap());
+    std::fs::create_dir_all(copied.parent().unwrap()).unwrap();
+    std::fs::write(&copied, format!("{corrupted}\n")).unwrap();
+    reindex_store(&copy);
 
     let listed = json_stdout(&run(
         &[
@@ -16841,7 +16913,7 @@ fn history_cli_rejects_mixed_provider_and_observed_timing() {
             "list",
             "--all-projects",
             "--history-dir",
-            &dir.display().to_string(),
+            &copy.display().to_string(),
             "--compact",
         ],
         &[],
@@ -16972,6 +17044,7 @@ fn history_cli_rejects_inconsistent_variant_identities_in_run_and_event_lines() 
     };
 
     let (bad_run_dir, _) = write_mutated("invalid-variant-run", "run");
+    reindex_store(&bad_run_dir);
     let listed = run(
         &[
             "history",
@@ -16997,19 +17070,32 @@ fn history_cli_rejects_inconsistent_variant_identities_in_run_and_event_lines() 
     );
 
     let (bad_event_dir, bad_event_path) = write_mutated("invalid-variant-event", "event");
+    // No line of this session parses, so nothing indexes it: it is opened by
+    // name, under the project it is filed in.
+    let project_dir = std::fs::canonicalize(&*bad_event_dir).unwrap();
+    let slug = oneharness_core::domain::history::project_slug(&project_dir.display().to_string());
+    std::fs::create_dir_all(bad_event_dir.join(&slug)).unwrap();
+    std::fs::rename(
+        &bad_event_path,
+        bad_event_dir
+            .join(&slug)
+            .join(bad_event_path.file_name().unwrap()),
+    )
+    .unwrap();
     let shown = run(
         &[
             "history",
             "show",
             &bad_event_path.file_stem().unwrap().to_string_lossy(),
-            "--all-projects",
+            "--project",
+            &project_dir.display().to_string(),
             "--history-dir",
             &bad_event_dir.display().to_string(),
             "--compact",
         ],
         &[],
     );
-    assert!(shown.status.success());
+    assert!(shown.status.success(), "{shown:?}");
     let records = json_stdout(&shown);
     assert!(records.as_array().unwrap().is_empty());
 
@@ -17144,7 +17230,7 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
     let project_dir = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(Result::ok)
-        .find(|entry| entry.path().is_dir())
+        .find(|entry| entry.path().is_dir() && entry.file_name() != ".index.d")
         .expect("history project directory")
         .path();
     let session = std::fs::read_dir(project_dir)
@@ -17223,6 +17309,37 @@ fn history_show_orders_an_in_flight_runs_events_by_index() {
         .concat(),
     )
     .unwrap();
+    // A hand-written session is findable by name only once `reindex` has given
+    // its events index entries, and its run id is dated 2024, so the default
+    // 7-day window does not reach it.
+    let reindexed = run(&["history", "reindex", "--history-dir", &ds], &[]);
+    assert!(reindexed.status.success(), "{reindexed:?}");
+
+    // An in-flight run has no run entry, only event entries, so a window
+    // reaches it by its events' date (the run id's, 2024-10-08) — the default
+    // window and a later `--since` do not, that date's `--since` does.
+    let in_window = |window: &[&str]| {
+        let scope = ["--all-projects", "--history-dir", &ds, "--compact"];
+        let listed = run(&[&["history", "list"][..], window, &scope].concat(), &[]);
+        let listed = json_stdout(&listed);
+        let shown = run(
+            &[&["history", "show", "in-flight"][..], window, &scope].concat(),
+            &[],
+        );
+        let listed = listed.as_array().unwrap();
+        if listed.is_empty() {
+            assert!(!shown.status.success(), "{window:?}: {shown:?}");
+            false
+        } else {
+            assert_eq!(listed[0]["running"], true, "{window:?}: {listed:?}");
+            assert_eq!(json_stdout(&shown)[0]["type"], "incomplete", "{window:?}");
+            true
+        }
+    };
+    assert!(!in_window(&[]), "the default window reaches back to 2024");
+    assert!(!in_window(&["--since", "2024-10-09"]));
+    assert!(in_window(&["--since", "2024-10-08"]));
+    assert!(in_window(&["--all-time"]));
 
     let shown = run(
         &[
@@ -17230,6 +17347,7 @@ fn history_show_orders_an_in_flight_runs_events_by_index() {
             "show",
             "in-flight",
             "--all-projects",
+            "--all-time",
             "--history-dir",
             &ds,
             "--compact",
@@ -17995,17 +18113,20 @@ fn concurrent_processes_append_complete_history_index_lines() {
         );
     }
 
-    let lines: Vec<Value> = std::fs::read_to_string(dir.join(".index.jsonl"))
-        .unwrap()
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
+    let lines: Vec<Value> = index_entries(&dir)
+        .into_iter()
+        .filter(|entry| entry["kind"] == "run")
         .collect();
     assert_eq!(lines.len(), 8);
     let ids: std::collections::BTreeSet<&str> = lines
         .iter()
-        .map(|line| line["record"]["history_id"].as_str().unwrap())
+        .map(|line| line["history_id"].as_str().unwrap())
         .collect();
     assert_eq!(ids.len(), 8);
+    assert!(
+        !dir.join(".index.jsonl").exists() && !dir.join(".index.lock").exists(),
+        "a recording run creates no legacy index file"
+    );
 }
 
 /// Hold one pointer line to the session the store actually wrote: every
@@ -26861,11 +26982,22 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
     let socket = store.join("control").join("watched.sock");
     wait_until("the control socket to appear", || socket.exists());
-    // 0600: the socket is a lever over a running agent.
+    // Owner-only: the socket is a lever over a running agent. The kernel creates
+    // it at `bind` under the umask and `bind` narrows it to 0600 an instant
+    // later, so the directory — narrowed to 0700 BEFORE the bind — is what
+    // guards that window, and the socket's own mode is waited for rather than
+    // read at the first sight of the file.
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "control socket must be owner-only");
+        let mode_of = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode_of(socket.parent().unwrap()),
+            0o700,
+            "control socket directory must be owner-only"
+        );
+        wait_until("the control socket to be owner-only (0600)", || {
+            mode_of(&socket) == 0o600
+        });
     }
     // The turn is genuinely in flight once the harness has the prompt frame.
     wait_until("the turn to start", || {
@@ -34152,7 +34284,9 @@ fn json_document_verbs(history_dir: &str) -> Vec<Vec<String>> {
             ["sync"] => vec!["--check"],
             ["usage"] => vec!["--harness", "cursor", "--bin", &cursor],
             ["interrupt"] => vec!["--session", "ghost", "--session-dir", history_dir],
-            ["history", "list" | "clear" | "migrate"] => vec!["--history-dir", history_dir],
+            ["history", "list" | "clear" | "migrate" | "reindex"] => {
+                vec!["--history-dir", history_dir]
+            }
             ["history", "show"] => vec!["--last", "--history-dir", history_dir],
             ["history", "pointers"] => vec![&pointer_file],
             other => panic!(
@@ -34190,6 +34324,7 @@ fn every_json_verb_documents_the_format_flag_with_text_as_its_default() {
             "history show",
             "history clear",
             "history migrate",
+            "history reindex",
             "history pointers",
             "usage",
             "interrupt",
@@ -36618,8 +36753,9 @@ fn unmigrated_history_elsewhere_is_never_warned_about_and_in_scope_once() {
         assert!(!stderr.contains("unmigrated"), "turn {turn}: {stderr}");
     }
 
-    // Reading this project's own sessions, two unmigrated files in it are
-    // said once.
+    // A listing reads the index, never a session file, so two unmigrated files
+    // in this project are said nothing about there; the verb that reads every
+    // session file says so once, naming the first it met.
     let own = dir.join(&slug);
     for name in ["a-20260101T000000Z-1.jsonl", "b-20260101T000000Z-2.jsonl"] {
         std::fs::write(own.join(name), legacy).unwrap();
@@ -36636,13 +36772,18 @@ fn unmigrated_history_elsewhere_is_never_warned_about_and_in_scope_once() {
         &[],
     );
     assert!(listed.status.success(), "{listed:?}");
-    let stderr = String::from_utf8_lossy(&listed.stderr);
+    assert!(
+        !String::from_utf8_lossy(&listed.stderr).contains("unmigrated"),
+        "{listed:?}"
+    );
+    // The two turns' sessions; the unreadable files hold none.
+    assert_eq!(json_stdout(&listed).as_array().unwrap().len(), 2);
+    let reindexed = run(&["history", "reindex", "--history-dir", &ds], &[]);
+    assert!(reindexed.status.success(), "{reindexed:?}");
+    let stderr = String::from_utf8_lossy(&reindexed.stderr);
     assert_eq!(
         stderr.matches("skipped unmigrated history lines").count(),
         1,
         "{stderr}"
     );
-    assert!(stderr.contains(&slug), "{stderr}");
-    // The two turns' sessions; the unreadable files hold none.
-    assert_eq!(json_stdout(&listed).as_array().unwrap().len(), 2);
 }

@@ -536,6 +536,7 @@ pub struct HistoryReindexArgs {
     #[arg(long, value_name = "DIR")]
     pub history_dir: Option<PathBuf>,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] the same `--config`/`--no-config` pair every other history verb takes; clap's `conflicts_with` makes both unreachable at the only boundary that constructs this struct, and `resolve_dir` reads them as one source.
     /// Load configuration from these files only, skipping user/project
     /// discovery. Repeatable: files layer in the order given, each later file
     /// (and its own `extends` chain beneath it) overriding the earlier ones.
@@ -545,7 +546,7 @@ pub struct HistoryReindexArgs {
     /// Ignore all configuration files (also via ONEHARNESS_NO_CONFIG=1).
     #[arg(long)]
     pub no_config: bool,
-
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// `--format <text|json>` and `--compact`: how the report reaches stdout.
     #[command(flatten)]
     pub stdout: StdoutFormat,
@@ -557,6 +558,7 @@ pub struct HistoryWatchArgs {
     #[arg(long)]
     pub events: bool,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] clap's derive cannot build one enum from several named flags, and `--since`/`--all-time`/`--days` are the CLI contract; `conflicts_with` makes every combination unreachable at the only boundary that constructs this struct, and `commands::history::chosen_window` folds the survivor into one `HistoryWindow` before any read. `--after` joins them because a cursor is the other answer to where a watch starts; the command folds all four into one `WatchStart`.
     /// Resume strictly after this history record UUID, without duplicating it.
     #[arg(long, value_name = "CURSOR")]
     pub after: Option<String>,
@@ -582,7 +584,7 @@ pub struct HistoryWatchArgs {
         conflicts_with_all = ["after", "since", "all_time"]
     )]
     pub days: Option<std::num::NonZeroU32>,
-
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// Emit only records carrying this exact KEY=VALUE label (repeatable; all
     /// filters must match).
     #[arg(long = "label", value_name = "KEY=VALUE")]
@@ -645,6 +647,7 @@ pub struct HistoryListArgs {
     #[arg(long, conflicts_with = "project")]
     pub all_projects: bool,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] clap's derive cannot build one enum from several named flags, and `--since`/`--all-time`/`--days` are the CLI contract; `conflicts_with` makes every combination unreachable at the only boundary that constructs this struct, and `commands::history::chosen_window` folds the survivor into one `HistoryWindow` before any read.
     /// List sessions with runs indexed on or after this UTC date, instead of
     /// the last 7 UTC days.
     #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "all_time")]
@@ -659,7 +662,7 @@ pub struct HistoryListArgs {
     /// instead of the last 7.
     #[arg(long, value_name = "N", conflicts_with_all = ["since", "all_time"])]
     pub days: Option<std::num::NonZeroU32>,
-
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// History directory to read (default: config `history_dir`,
     /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
     #[arg(long, value_name = "DIR")]
@@ -706,6 +709,7 @@ pub struct HistoryShowArgs {
     #[arg(long, conflicts_with = "project")]
     pub all_projects: bool,
 
+    // llmlint: ignore-block[invalid_states_unrepresentable] clap's derive cannot build one enum from several named flags, and `--since`/`--all-time`/`--days` are the CLI contract; `conflicts_with` makes every combination unreachable at the only boundary that constructs this struct, and `commands::history::chosen_window` folds the survivor into one `HistoryWindow` before any read.
     /// Resolve a session name or --last among runs indexed on or after this
     /// UTC date, instead of the last 7 UTC days.
     #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "all_time")]
@@ -721,7 +725,7 @@ pub struct HistoryShowArgs {
     /// days, today included, instead of the last 7.
     #[arg(long, value_name = "N", conflicts_with_all = ["since", "all_time"])]
     pub days: Option<std::num::NonZeroU32>,
-
+    // llmlint: ignore-end[invalid_states_unrepresentable]
     /// History directory to read (default: config `history_dir`,
     /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
     #[arg(long, value_name = "DIR")]

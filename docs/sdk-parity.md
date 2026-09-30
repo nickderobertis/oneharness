@@ -232,6 +232,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
 | `--stream` | _(always sent)_ | fixed |
 | `--prompt` | `prompt` | `--flag VALUE` |
 | `--prompt` | `batchPrompts` | `--flag VALUE` per element |
@@ -280,7 +281,6 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--bypass` | **deliberately none** | `mode: "bypass"` is the same request |
 | `--no-bypass` | **deliberately none** | `mode: "default"` is the same request |
 | `--no-stream` | **deliberately none** | this method streams by definition, so the negative half cannot apply |
-| `--format` | **deliberately none** | a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes |
 
 #### `list` — `oneharness list`
 

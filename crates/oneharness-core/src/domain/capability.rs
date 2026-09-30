@@ -478,10 +478,6 @@ const RUN_STREAM_UNCOVERED: &[UncoveredFlag] = &[
         "--no-stream",
         "this method streams by definition, so the negative half cannot apply",
     ),
-    skip(
-        "--format",
-        "a stream is its own NDJSON protocol (event lines, then the result envelope), which `--format` never changes",
-    ),
 ];
 
 /// Every capability this CLI exposes, and how each consumer surface reaches it.
@@ -510,7 +506,9 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Jsonl("run_stream_envelope"),
         stdin: false,
         rust: "oneharness_core::io::run::run",
-        always: &["--compact", "--stream"],
+        // A stream prints text unless JSON is asked for by name, so the SDK
+        // asks: it parses the NDJSON protocol, never the view a person reads.
+        always: &["--compact", "--format", "json", "--stream"],
         bindings: RUN_BINDINGS,
         uncovered: RUN_STREAM_UNCOVERED,
     },

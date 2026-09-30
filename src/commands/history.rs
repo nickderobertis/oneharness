@@ -18,6 +18,7 @@ use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
 use oneharness_core::io::history::{HistoryWindow, SessionSummary, UtcDate};
+use std::num::NonZeroU32;
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;
@@ -50,13 +51,25 @@ fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
     Ok(EXIT_OK)
 }
 
-/// The window a `--since` / `--all-time` pair names; clap refuses both at once.
-fn window(since: Option<UtcDate>, all_time: bool) -> HistoryWindow {
-    match (since, all_time) {
-        (_, true) => HistoryWindow::AllTime,
-        (Some(date), false) => HistoryWindow::Since(date),
-        (None, false) => HistoryWindow::default(),
+/// The window a `--days` / `--since` / `--all-time` choice names, or `None`
+/// when none is given; clap refuses any two at once.
+fn chosen_window(
+    days: Option<NonZeroU32>,
+    since: Option<UtcDate>,
+    all_time: bool,
+) -> Option<HistoryWindow> {
+    if all_time {
+        Some(HistoryWindow::AllTime)
+    } else if let Some(date) = since {
+        Some(HistoryWindow::Since(date))
+    } else {
+        days.map(|days| HistoryWindow::Recent { days })
     }
+}
+
+/// A listing's window: the one chosen, else the last 7 UTC days.
+fn window(days: Option<NonZeroU32>, since: Option<UtcDate>, all_time: bool) -> HistoryWindow {
+    chosen_window(days, since, all_time).unwrap_or_default()
 }
 
 fn reindex(args: &HistoryReindexArgs) -> Result<i32, OneharnessError> {
@@ -81,7 +94,7 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     let labels = history::parse_labels(args.label.iter().map(String::as_str))
         .map_err(OneharnessError::HistoryLabelInvalid)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let start = (args.since.is_some() || args.all_time).then(|| window(args.since, args.all_time));
+    let start = chosen_window(args.days, args.since, args.all_time);
     let mut watcher = history_io::HistoryWatcher::open_in(
         &dir,
         after,
@@ -259,8 +272,11 @@ fn project_slug(all_projects: bool, project: Option<&Path>) -> Option<String> {
 fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
     let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut sessions =
-        history_io::list_sessions(&dir, slug.as_deref(), window(args.since, args.all_time))?;
+    let mut sessions = history_io::list_sessions(
+        &dir,
+        slug.as_deref(),
+        window(args.days, args.since, args.all_time),
+    )?;
     if let Some(variant) = &args.variant {
         let suffix = format!(":{variant}");
         sessions.retain(|session| {
@@ -276,7 +292,7 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
 
 fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
-    let window = window(args.since, args.all_time);
+    let window = window(args.days, args.since, args.all_time);
     // A UUID is an exact record lookup, independent of session names and project
     // scoping. Preserve the existing id-or-name session lookup for every other
     // spelling.
@@ -672,11 +688,17 @@ mod tests {
     }
 
     #[test]
-    fn a_window_follows_since_and_all_time() {
-        assert_eq!(window(None, false), HistoryWindow::default());
-        assert_eq!(window(None, true), HistoryWindow::AllTime);
+    fn a_window_follows_days_since_and_all_time() {
+        assert_eq!(window(None, None, false), HistoryWindow::default());
+        assert_eq!(chosen_window(None, None, false), None);
+        assert_eq!(window(None, None, true), HistoryWindow::AllTime);
         let date: UtcDate = "2026-01-01".parse().unwrap();
-        assert_eq!(window(Some(date), false), HistoryWindow::Since(date));
+        assert_eq!(window(None, Some(date), false), HistoryWindow::Since(date));
+        let days = NonZeroU32::new(3).unwrap();
+        assert_eq!(
+            window(Some(days), None, false),
+            HistoryWindow::Recent { days }
+        );
     }
 
     #[test]

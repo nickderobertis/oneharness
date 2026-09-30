@@ -1580,6 +1580,104 @@ fn a_watch_starts_from_since_or_from_all_time_instead_of_today() {
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
 }
 
+#[test]
+fn days_reads_the_last_n_utc_days_on_list_show_and_watch() {
+    let scratch = ScratchDir::new("hindex-days").unwrap();
+    let store = scratch.join("store");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let old = id_at(now - 20 * 86_400, 1);
+    let two = id_at(now - 2 * 86_400, 2);
+    seed_run(&store, &project, "old", old, "old");
+    seed_run(&store, &project, "two", two, "two");
+    let listed = |days: &str| {
+        let output = history_verb(&store, &["list", "--all-projects", "--days", days]);
+        assert!(output.status.success(), "--days {days}: {output:?}");
+        listed_ids(&output, &store)
+    };
+    // `--days N` is the last N UTC days, today included: 2 days ago is inside
+    // three days and outside two, and 20 days ago is inside 21 alone.
+    assert_eq!(listed("2"), BTreeSet::new());
+    assert_eq!(listed("3"), BTreeSet::from([two]));
+    assert_eq!(listed("20"), BTreeSet::from([two]));
+    assert_eq!(listed("21"), BTreeSet::from([old, two]));
+
+    let shown = |args: &[&str]| {
+        let mut args = args.to_vec();
+        args.push("--all-projects");
+        let output = history_verb(&store, &args);
+        match output.status.code() {
+            Some(0) => json(&output)[0]["history_id"].as_str().map(str::to_string),
+            Some(1) => None,
+            _ => panic!("{args:?}: {output:?}"),
+        }
+    };
+    assert_eq!(shown(&["show", "two", "--days", "2"]), None);
+    assert_eq!(
+        shown(&["show", "two", "--days", "3"]),
+        Some(two.to_string())
+    );
+    assert_eq!(shown(&["show", "old", "--days", "20"]), None);
+    assert_eq!(
+        shown(&["show", "old", "--days", "21"]),
+        Some(old.to_string())
+    );
+    assert_eq!(shown(&["show", "--last", "--days", "2"]), None);
+    assert_eq!(
+        shown(&["show", "--last", "--days", "3"]),
+        Some(two.to_string())
+    );
+
+    // A watch starts at the beginning of the last N UTC days: what it emits
+    // before a run recorded once it is open is exactly its opening read.
+    let opening = |days: &str, counter: u64| {
+        let watch = Watch::start(&store, &["--days", days]);
+        let marker = id_at(now, counter);
+        seed_run(&store, &project, "marker", marker, "marker");
+        let seen = watch.until_records(&[marker]);
+        let mut read: BTreeSet<String> = records_in(&seen).into_iter().collect();
+        read.remove(&marker.to_string());
+        (read, marker)
+    };
+    let (read, first_marker) = opening("1", 10);
+    assert_eq!(read, BTreeSet::new(), "--days 1 is today alone");
+    let (read, _) = opening("3", 11);
+    assert_eq!(
+        read,
+        BTreeSet::from([two.to_string(), first_marker.to_string()]),
+        "--days 3"
+    );
+
+    // One window at a time: a day count beside a date, all time or a cursor
+    // is refused, and so is an empty day count.
+    for refused in [
+        vec!["list", "--days", "3", "--since", "2026-01-01"],
+        vec!["list", "--days", "3", "--all-time"],
+        vec!["show", "--last", "--days", "3", "--all-time"],
+        vec!["list", "--days", "0"],
+    ] {
+        let output = history_verb(&store, &refused);
+        assert_eq!(output.status.code(), Some(2), "{refused:?}: {output:?}");
+    }
+    let mut command = oneharness();
+    command
+        .args([
+            "history",
+            "watch",
+            "--days",
+            "3",
+            "--after",
+            &two.to_string(),
+        ])
+        .args(["--history-dir", &store.display().to_string()]);
+    let refused = run_within(command, Duration::from_secs(30));
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+}
+
 // Each reader reads only the segments the contract names for it.
 
 #[cfg(unix)]

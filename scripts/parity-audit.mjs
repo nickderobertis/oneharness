@@ -101,11 +101,13 @@ function flagTables(declared) {
 			out.push(`| \`${fragment}\` | _(always sent)_ | fixed |`);
 		}
 		for (const binding of capability.bindings) {
-			const flag = binding.flag
-				? `\`${binding.flag}\``
-				: binding.kind === "trailing"
-					? "_(after `--`)_"
-					: "_(positional)_";
+			const flag = binding.window
+				? `\`${binding.window.days}\` / \`${binding.window.since}\` / \`${binding.window.allTime}\``
+				: binding.flag
+					? `\`${binding.flag}\``
+					: binding.kind === "trailing"
+						? "_(after `--`)_"
+						: "_(positional)_";
 			const how = {
 				positional: "positional argument",
 				value: "`--flag VALUE`",
@@ -113,6 +115,8 @@ function flagTables(declared) {
 				switch: "`--flag` when true",
 				"key-value": "`--flag KEY=VALUE` per entry",
 				trailing: "appended verbatim",
+				window:
+					'one of them: `{"recent": {"days": N}}` as `--days N`, `{"since": D}` as `--since D`, `"allTime"` as `--all-time`',
 			}[binding.kind];
 			// A pair reads differently depending on what both halves mean: one is
 			// precedence a caller can rely on, the other a call the SDKs end.

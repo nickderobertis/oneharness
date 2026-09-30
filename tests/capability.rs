@@ -74,7 +74,7 @@ fn decided_flags(capability: &Capability) -> BTreeSet<String> {
     capability
         .bindings
         .iter()
-        .filter_map(|binding| binding.kind.flag())
+        .flat_map(|binding| binding.kind.spellings())
         .map(str::to_string)
         .chain(
             capability

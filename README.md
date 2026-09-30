@@ -2253,10 +2253,10 @@ contract, on every bounded subcommand:
 
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This synopsis has a drift gate: `cli::tests::the_readme_history_synopsis_names_only_real_flags_and_values` reads every `oneharness history` line here against the clap definition and fails on a verb, flag or value clap does not accept. -->
 ```bash
-oneharness history list [--project <dir> | --all-projects] [--since <YYYY-MM-DD> | --all-time]  # sessions, newest first
-oneharness history show <session-id-or-name> [--last] [--all] [--since <YYYY-MM-DD> | --all-time] # a session's records
+oneharness history list [--project <dir> | --all-projects] [--days <N> | --since <YYYY-MM-DD> | --all-time]  # sessions, newest first
+oneharness history show <session-id-or-name> [--last] [--all] [--days <N> | --since <YYYY-MM-DD> | --all-time] # a session's records
 oneharness history show <history-id> [--all-time]            # one exact record
-oneharness history watch [--session <name|id>] [--label key=value] [--after <history-id> | --since <YYYY-MM-DD> | --all-time] [--events] [--format jsonl|text]
+oneharness history watch [--session <name|id>] [--label key=value] [--after <history-id> | --days <N> | --since <YYYY-MM-DD> | --all-time] [--events] [--format jsonl|text]
 oneharness history reindex                                    # index what the dated index lacks
 oneharness history clear [--all-projects] [--yes]            # dry-run unless --yes
 ```
@@ -2265,8 +2265,9 @@ oneharness history clear [--all-projects] [--yes]            # dry-run unless --
 **Index.** Beside the sessions, `<history_dir>/.index.d/` holds a dated,
 append-only index of small pointer entries, one segment per UTC date, so
 recording a run costs the same however large the store grows and nothing ever
-rewrites or deletes history. The readers read recent dates unless `--since` or
-`--all-time` widens them, and `history reindex` indexes a store an older
+rewrites or deletes history. The readers read recent dates unless `--days`,
+`--since` or `--all-time` names another window — one `window` value in the
+SDKs — and `history reindex` indexes a store an older
 oneharness wrote, or session files copied in from another store.
 <!-- llmlint: ignore-block[no_redundant_instruction_pointers] The task this section implements requires the README's history section to point at the one contract declaration rather than restate it; README.md is read by people and SDK consumers, not loaded as agent instructions, so AGENTS.md naming the same file does not reach them. -->
 The layout, the entry fields, which segments each reader reads and how an older

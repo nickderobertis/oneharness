@@ -119,8 +119,8 @@ whose session file is gone is skipped at read (one `stat`).
 | id lookup — `find_record_by_id`, `history show <uuid>` | the one runs segment for the id's date, then that entry's session file. A miss is not-found, naming `history reindex` and `--all-time`; there is no fallback read of the legacy index |
 | all-time id lookup — `find_record_by_id_in(…, HistoryWindow::AllTime)`, `history show <uuid> --all-time` | every runs segment, then `.index.jsonl` streamed line by line (opened read-only, memory bounded by one line), stopping at the first entry with the id and opening the session file it names. It writes, renames and rebuilds nothing, and runs only when `--all-time` is named |
 | pointer-path read — `read_pointers`, `read_session` / `read_session_display` on a pointer's `history_file`, `history show <session-id> --project <dir>` | no index: the session file is opened by name, so every run whose session file exists stays readable, whatever its age |
-| listing — `list_sessions`, `history list`, `history show <name>`, `history show --last` | the segments dated inside a `HistoryWindow`: by default the last 7 UTC days, today included; `--since YYYY-MM-DD` from that date on; `--all-time` every segment plus the legacy index files — never the session tree. For each session listed it reads the one line of its file that names its project |
-| watch — `HistoryWatcher::open`, `history watch` | from its cursor's date on (after the cursor, in that date's segment), or with no `--after` from the beginning of the current UTC day's segment (`--since` / `--all-time` start earlier). Each poll lists `.index.d/` once and tails by byte offset every segment dated on or after its start — an earlier-dated segment that still receives a closing run line after a later one exists included — plus the day before its start from that segment's size at open. While the legacy index files exist it tails them from their size at open, never reading their earlier bytes (from the beginning under `--all-time`), so what an older core appends is still followed. Records are de-duplicated by id; its memory grows only with the records it has emitted |
+| listing — `list_sessions`, `history list`, `history show <name>`, `history show --last` | the segments dated inside a `HistoryWindow`: by default the last 7 UTC days, today included; `--days N` the last N UTC days, today included; `--since YYYY-MM-DD` from that date on; `--all-time` every segment plus the legacy index files — never the session tree. For each session listed it reads the one line of its file that names its project |
+| watch — `HistoryWatcher::open`, `history watch` | from its cursor's date on (after the cursor, in that date's segment), or with no `--after` from the beginning of the current UTC day's segment (`--days N` starts at the beginning of the last N UTC days, `--since` / `--all-time` earlier). Each poll lists `.index.d/` once and tails by byte offset every segment dated on or after its start — an earlier-dated segment that still receives a closing run line after a later one exists included — plus the day before its start from that segment's size at open. While the legacy index files exist it tails them from their size at open, never reading their earlier bytes (from the beginning under `--all-time`), so what an older core appends is still followed. Records are de-duplicated by id; its memory grows only with the records it has emitted |
 | session by id — `find_session_path` | with a project slug, that one file by name; without one, the segments for the date the session id embeds |
 
 ## Verbs that read everything
@@ -141,7 +141,9 @@ None of these runs implicitly: no writer, lookup or watch calls any of them.
   whose chunks and merge fan-in are fixed. New entries are appended in key
   order.
 - **`--all-time`** on `history list`, `history show` and `history watch` reads
-  every segment and the legacy index files.
+  every segment and the legacy index files. The SDKs take the window as one
+  `HistoryWindow` value — `{"recent": {"days": N}}`, `{"since": "YYYY-MM-DD"}`
+  or `"allTime"` — rendered as `--days`, `--since` or `--all-time`.
 - **`history migrate`** rewrites legacy session files to the 1.0 line format. It
   no longer rebuilds `.index.jsonl` and writes no segment; `history reindex`
   indexes what it rewrote.

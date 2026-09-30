@@ -2977,15 +2977,64 @@
     "type": "array"
   },
   "history_list_options": {
+    "$defs": {
+      "HistoryWindow": {
+        "description": "Which dates of the index a listing reads.\n\nIt is also the one value an SDK history lookup, listing or watch takes as\nits `window`, so \"from this date\" and \"from the beginning\" cannot both be\nstated. On the wire it is externally tagged in camelCase \u2014\n`{\"recent\": {\"days\": 3}}`, `{\"since\": \"2026-01-05\"}`, or `\"allTime\"` \u2014 and\nrenders to the CLI's `--days`, `--since` or `--all-time`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The last `days` UTC days, today included (`1` means today alone).",
+            "properties": {
+              "recent": {
+                "additionalProperties": false,
+                "properties": {
+                  "days": {
+                    "description": "How many UTC days, today included; at least one.",
+                    "format": "uint32",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "days"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "recent"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Every date from this one on.",
+            "properties": {
+              "since": {
+                "maxLength": 10,
+                "minLength": 10,
+                "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "since"
+            ],
+            "type": "object"
+          },
+          {
+            "const": "allTime",
+            "description": "Every segment, plus the legacy index files an older core keeps.",
+            "type": "string"
+          }
+        ]
+      }
+    },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "additionalProperties": false,
     "description": "Options accepted by `OneHarness.historyList()` in the published Node SDK.",
     "properties": {
       "all_projects": {
-        "type": "boolean"
-      },
-      "all_time": {
-        "description": "Read every dated index segment plus the legacy index an older\noneharness kept, rather than the last 7 UTC days.",
         "type": "boolean"
       },
       "config": {
@@ -3005,19 +3054,20 @@
       "project": {
         "type": "string"
       },
-      "since": {
-        "description": "Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than\nthe last 7 UTC days. Refused beside a true `allTime`.",
-        "maxLength": 10,
-        "minLength": 10,
-        "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
+      },
+      "window": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HistoryWindow"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Which dates of the index to read: the last `days` UTC days, from a\nUTC date on, or all time (every dated segment plus the legacy index an\nolder oneharness kept). Omitted, the last 7 UTC days."
       }
     },
     "title": "HistoryListOptions",
@@ -3034,10 +3084,6 @@
             "type": "boolean"
           },
           "all_projects": {
-            "type": "boolean"
-          },
-          "all_time": {
-            "description": "Read every dated index segment plus the legacy index an older\noneharness kept, rather than the last 7 UTC days.",
             "type": "boolean"
           },
           "config": {
@@ -3066,15 +3112,16 @@
             "description": "A name may accompany `last: true` \u2014 it is what the caller would have\nlooked up otherwise \u2014 but `last` takes priority, so it never selects.\nIt is therefore unconstrained: an empty name is meaningless here rather\nthan invalid, so `{\"session\": \"\", \"last\": true}` stays accepted.",
             "type": "string"
           },
-          "since": {
-            "description": "Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than\nthe last 7 UTC days. Refused beside a true `allTime`.",
-            "maxLength": 10,
-            "minLength": 10,
-            "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-            "type": [
-              "string",
-              "null"
-            ]
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HistoryWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which dates of the index to read: the last `days` UTC days, from a\nUTC date on, or all time (every dated segment plus the legacy index an\nolder oneharness kept). Omitted, the last 7 UTC days."
           }
         },
         "required": [
@@ -3091,10 +3138,6 @@
             "type": "boolean"
           },
           "all_projects": {
-            "type": "boolean"
-          },
-          "all_time": {
-            "description": "Read every dated index segment plus the legacy index an older\noneharness kept, rather than the last 7 UTC days.",
             "type": "boolean"
           },
           "config": {
@@ -3123,21 +3166,73 @@
             "minLength": 1,
             "type": "string"
           },
-          "since": {
-            "description": "Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than\nthe last 7 UTC days. Refused beside a true `allTime`.",
-            "maxLength": 10,
-            "minLength": 10,
-            "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-            "type": [
-              "string",
-              "null"
-            ]
+          "window": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/HistoryWindow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Which dates of the index to read: the last `days` UTC days, from a\nUTC date on, or all time (every dated segment plus the legacy index an\nolder oneharness kept). Omitted, the last 7 UTC days."
           }
         },
         "required": [
           "session"
         ],
         "type": "object"
+      },
+      "HistoryWindow": {
+        "description": "Which dates of the index a listing reads.\n\nIt is also the one value an SDK history lookup, listing or watch takes as\nits `window`, so \"from this date\" and \"from the beginning\" cannot both be\nstated. On the wire it is externally tagged in camelCase \u2014\n`{\"recent\": {\"days\": 3}}`, `{\"since\": \"2026-01-05\"}`, or `\"allTime\"` \u2014 and\nrenders to the CLI's `--days`, `--since` or `--all-time`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The last `days` UTC days, today included (`1` means today alone).",
+            "properties": {
+              "recent": {
+                "additionalProperties": false,
+                "properties": {
+                  "days": {
+                    "description": "How many UTC days, today included; at least one.",
+                    "format": "uint32",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "days"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "recent"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Every date from this one on.",
+            "properties": {
+              "since": {
+                "maxLength": 10,
+                "minLength": 10,
+                "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "since"
+            ],
+            "type": "object"
+          },
+          {
+            "const": "allTime",
+            "description": "Every segment, plus the legacy index files an older core keeps.",
+            "type": "string"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12806,6 +12901,57 @@
           "type": "string"
         },
         "type": "object"
+      },
+      "HistoryWindow": {
+        "description": "Which dates of the index a listing reads.\n\nIt is also the one value an SDK history lookup, listing or watch takes as\nits `window`, so \"from this date\" and \"from the beginning\" cannot both be\nstated. On the wire it is externally tagged in camelCase \u2014\n`{\"recent\": {\"days\": 3}}`, `{\"since\": \"2026-01-05\"}`, or `\"allTime\"` \u2014 and\nrenders to the CLI's `--days`, `--since` or `--all-time`.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "The last `days` UTC days, today included (`1` means today alone).",
+            "properties": {
+              "recent": {
+                "additionalProperties": false,
+                "properties": {
+                  "days": {
+                    "description": "How many UTC days, today included; at least one.",
+                    "format": "uint32",
+                    "minimum": 1,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "days"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "recent"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Every date from this one on.",
+            "properties": {
+              "since": {
+                "maxLength": 10,
+                "minLength": 10,
+                "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+                "type": "string"
+              }
+            },
+            "required": [
+              "since"
+            ],
+            "type": "object"
+          },
+          {
+            "const": "allTime",
+            "description": "Every segment, plus the legacy index files an older core keeps.",
+            "type": "string"
+          }
+        ]
       }
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -12819,10 +12965,6 @@
         "type": "string"
       },
       "all_projects": {
-        "type": "boolean"
-      },
-      "all_time": {
-        "description": "Start from the first record the index holds, the legacy index an\nolder oneharness kept included. Refused beside `after`.",
         "type": "boolean"
       },
       "config": {
@@ -12860,19 +13002,20 @@
           "null"
         ]
       },
-      "since": {
-        "description": "Start from this UTC date's index segments (`YYYY-MM-DD`) rather than\ntoday's. Refused beside `after` or a true `allTime`.",
-        "maxLength": 10,
-        "minLength": 10,
-        "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-        "type": [
-          "string",
-          "null"
-        ]
-      },
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
         "type": "string"
+      },
+      "window": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HistoryWindow"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Where the watch starts when no `after` cursor is given: the beginning\nof the last `days` UTC days, of a UTC date, or of all time (the legacy\nindex an older oneharness kept included). Omitted, the current UTC\nday. Refused beside `after`, the other answer to where a watch begins."
       }
     },
     "title": "HistoryWatchOptions",

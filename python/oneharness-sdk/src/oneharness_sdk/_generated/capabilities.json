@@ -177,17 +177,15 @@
         "unless": null
       },
       {
-        "flag": "--since",
-        "kind": "value",
-        "option": "since",
-        "unless": "allTime",
-        "unless_resolution": "refuse"
-      },
-      {
-        "flag": "--all-time",
-        "kind": "switch",
-        "option": "allTime",
-        "unless": null
+        "flag": "",
+        "kind": "window",
+        "option": "window",
+        "unless": null,
+        "window": {
+          "allTime": "--all-time",
+          "days": "--days",
+          "since": "--since"
+        }
       },
       {
         "flag": "--history-dir",
@@ -306,17 +304,15 @@
         "unless": null
       },
       {
-        "flag": "--since",
-        "kind": "value",
-        "option": "since",
-        "unless": "allTime",
-        "unless_resolution": "refuse"
-      },
-      {
-        "flag": "--all-time",
-        "kind": "switch",
-        "option": "allTime",
-        "unless": null
+        "flag": "",
+        "kind": "window",
+        "option": "window",
+        "unless": null,
+        "window": {
+          "allTime": "--all-time",
+          "days": "--days",
+          "since": "--since"
+        }
       },
       {
         "flag": "--history-dir",
@@ -464,7 +460,7 @@
         "flag": "--after",
         "kind": "value",
         "option": "after",
-        "unless": "since",
+        "unless": "window",
         "unless_resolution": "refuse"
       },
       {
@@ -511,18 +507,15 @@
         "unless": null
       },
       {
-        "flag": "--since",
-        "kind": "value",
-        "option": "since",
-        "unless": "allTime",
-        "unless_resolution": "refuse"
-      },
-      {
-        "flag": "--all-time",
-        "kind": "switch",
-        "option": "allTime",
-        "unless": "after",
-        "unless_resolution": "refuse"
+        "flag": "",
+        "kind": "window",
+        "option": "window",
+        "unless": null,
+        "window": {
+          "allTime": "--all-time",
+          "days": "--days",
+          "since": "--since"
+        }
       },
       {
         "flag": "--config",

@@ -192,10 +192,21 @@ impl JsonSchema for UtcDate {
 }
 
 /// Which dates of the index a listing reads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// It is also the one value an SDK history lookup, listing or watch takes as
+/// its `window`, so "from this date" and "from the beginning" cannot both be
+/// stated. On the wire it is externally tagged in camelCase —
+/// `{"recent": {"days": 3}}`, `{"since": "2026-01-05"}`, or `"allTime"` — and
+/// renders to the CLI's `--days`, `--since` or `--all-time`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "HistoryWindow")]
 pub enum HistoryWindow {
     /// The last `days` UTC days, today included (`1` means today alone).
-    Recent { days: NonZeroU32 },
+    Recent {
+        /// How many UTC days, today included; at least one.
+        days: NonZeroU32,
+    },
     /// Every date from this one on.
     Since(UtcDate),
     /// Every segment, plus the legacy index files an older core keeps.

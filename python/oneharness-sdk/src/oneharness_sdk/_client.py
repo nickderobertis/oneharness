@@ -105,6 +105,22 @@ def _text(value: Any) -> str:
     return json.dumps(value) if isinstance(value, bool) else str(value)
 
 
+def _window_arguments(binding: Mapping[str, Any], window: Any) -> list[str]:
+    """The one flag a history window renders: ``--days N``, ``--since D``, or
+    ``--all-time``.
+
+    ``window`` has already been validated against ``HistoryWindow`` — exactly
+    one of ``{"recent": {"days": N}}``, ``{"since": D}`` or ``"allTime"`` — so
+    exactly one of the three is ever sent.
+    """
+    flags = binding["window"]
+    if window == "allTime":
+        return [flags["allTime"]]
+    if "since" in window:
+        return [flags["since"], _text(window["since"])]
+    return [flags["days"], _text(window["recent"]["days"])]
+
+
 def _renders_argument(binding: Mapping[str, Any], value: Any) -> bool:
     """Does this binding put anything on the argv for ``value``?
 
@@ -227,6 +243,8 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
         elif kind == "key-value":
             for key, item in cast("Mapping[str, Any]", value).items():
                 args.extend((flag, f"{key}={_text(item)}"))
+        elif kind == "window":
+            args.extend(_window_arguments(binding, value))
         else:  # trailing
             trailing.extend(_text(item) for item in value)
     args.extend(positional)

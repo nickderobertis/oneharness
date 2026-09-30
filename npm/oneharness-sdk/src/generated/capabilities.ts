@@ -1,6 +1,19 @@
 /* Generated from oneharness-core. Do not edit. */
 export type FlagKind =
-	"positional" | "value" | "repeated" | "switch" | "key-value" | "trailing";
+	| "positional"
+	| "value"
+	| "repeated"
+	| "switch"
+	| "key-value"
+	| "trailing"
+	| "window";
+
+/** The three spellings a `window` binding renders exactly one of. */
+export type WindowFlags = {
+	readonly days: string;
+	readonly since: string;
+	readonly allTime: string;
+};
 
 /**
  * What both members of a suppressed pair rendering an argument means.
@@ -21,6 +34,8 @@ export type OptionBinding = {
 	readonly unless: string | null;
 	/** Only present beside an `unless`, which it says how to resolve. */
 	readonly unless_resolution?: UnlessResolution;
+	/** Only present on a `window` binding: the flag each window renders. */
+	readonly window?: WindowFlags;
 };
 
 /** How a verb's stdout reaches a caller. */
@@ -1027,17 +1042,15 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
-				option: "since",
-				flag: "--since",
-				kind: "value",
-				unless: "allTime",
-				unless_resolution: "refuse",
-			},
-			{
-				option: "allTime",
-				flag: "--all-time",
-				kind: "switch",
+				option: "window",
+				flag: "",
+				kind: "window",
 				unless: null,
+				window: {
+					days: "--days",
+					since: "--since",
+					allTime: "--all-time",
+				},
 			},
 			{
 				option: "historyDir",
@@ -1091,17 +1104,15 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
-				option: "since",
-				flag: "--since",
-				kind: "value",
-				unless: "allTime",
-				unless_resolution: "refuse",
-			},
-			{
-				option: "allTime",
-				flag: "--all-time",
-				kind: "switch",
+				option: "window",
+				flag: "",
+				kind: "window",
 				unless: null,
+				window: {
+					days: "--days",
+					since: "--since",
+					allTime: "--all-time",
+				},
 			},
 			{
 				option: "historyDir",
@@ -1139,7 +1150,7 @@ export const CAPABILITIES = {
 				option: "after",
 				flag: "--after",
 				kind: "value",
-				unless: "since",
+				unless: "window",
 				unless_resolution: "refuse",
 			},
 			{
@@ -1186,18 +1197,15 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
-				option: "since",
-				flag: "--since",
-				kind: "value",
-				unless: "allTime",
-				unless_resolution: "refuse",
-			},
-			{
-				option: "allTime",
-				flag: "--all-time",
-				kind: "switch",
-				unless: "after",
-				unless_resolution: "refuse",
+				option: "window",
+				flag: "",
+				kind: "window",
+				unless: null,
+				window: {
+					days: "--days",
+					since: "--since",
+					allTime: "--all-time",
+				},
 			},
 			{
 				option: "config",

@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, cast
 
@@ -97,7 +97,6 @@ POPULATED: dict[str, Any] = {
     "after": "0198f0d0-7b31-7000-8000-000000000001",
     "all": True,
     "allProjects": False,
-    "allTime": True,
     "batchPrompts": ["first", "second"],
     "batchStrategy": "speed",
     "bins": {"codex": "/bin/codex"},
@@ -152,12 +151,12 @@ POPULATED: dict[str, Any] = {
     "serverOverloadedMaxRetries": 3,
     "session": "work",
     "sessionDir": "/nowhere/sessions",
-    "since": "2026-01-01",
     "spyFile": "/nowhere/spy.jsonl",
     "system": "be terse",
     "systemFile": "/nowhere/system.txt",
     "timeoutSeconds": 30,
     "variant": "claude-code:work",
+    "window": {"since": "2026-01-01"},
     "yes": True,
 }
 
@@ -468,11 +467,16 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             )
             return record, f"{slug}/{stem}.jsonl"
 
-        # Two runs on dates of their own, both older than the default 7 days...
+        # Two runs on dates of their own, both older than the default 7 days,
+        # and one two UTC days ago: inside the default week and a 3-day window,
+        # outside a 2-day one...
         record_at("win-a", "2020-01-05", 1)
         record_at("win-b", "2020-01-15", 2)
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
+        record_at("win-recent", (now - timedelta(days=2)).strftime("%Y-%m-%d"), 4)
         reindexed = await client.history_reindex({"history_dir": history_dir})
-        self.assertEqual(reindexed["entries_added"], 2)
+        self.assertEqual(reindexed["entries_added"], 3)
         # ...and the newest one known only to the legacy index an older core
         # kept, which only the all-time window reads.
         legacy, legacy_path = record_at("win-c", "2020-02-01", 3)
@@ -482,21 +486,34 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             encoding="utf-8",
         )
 
+        def since(date: str) -> dict[str, object]:
+            return {"since": date}
+
+        def recent(days: int) -> dict[str, object]:
+            return {"recent": {"days": days}}
+
         lookups: list[tuple[HistoryLookup, Optional[str]]] = [
-            # By name: `since` reads from its date on, inclusive, and never the
-            # legacy index; the default window reaches none of these dates.
+            # By name: a `since` window reads from its date on, inclusive, and
+            # never the legacy index; a `recent` one the last N UTC days, today
+            # included; the default window (the last 7) reaches no 2020 date.
             ({"session": "win-a", "history_dir": history_dir}, None),
-            ({"session": "win-a", "history_dir": history_dir, "since": "2020-01-05"}, "win-a"),
-            ({"session": "win-a", "history_dir": history_dir, "since": "2020-01-06"}, None),
-            ({"session": "win-b", "history_dir": history_dir, "since": "2020-01-06"}, "win-b"),
-            ({"session": "win-c", "history_dir": history_dir, "since": "2020-01-01"}, None),
-            ({"session": "win-a", "history_dir": history_dir, "all_time": True}, "win-a"),
-            ({"session": "win-c", "history_dir": history_dir, "all_time": True}, "win-c"),
+            ({"session": "win-recent", "history_dir": history_dir}, "win-recent"),
+            ({"session": "win-a", "history_dir": history_dir, "window": since("2020-01-05")}, "win-a"),
+            ({"session": "win-a", "history_dir": history_dir, "window": since("2020-01-06")}, None),
+            ({"session": "win-b", "history_dir": history_dir, "window": since("2020-01-06")}, "win-b"),
+            ({"session": "win-c", "history_dir": history_dir, "window": since("2020-01-01")}, None),
+            ({"session": "win-recent", "history_dir": history_dir, "window": recent(3)}, "win-recent"),
+            ({"session": "win-recent", "history_dir": history_dir, "window": recent(2)}, None),
+            ({"session": "win-b", "history_dir": history_dir, "window": recent(3)}, None),
+            ({"session": "win-a", "history_dir": history_dir, "window": "allTime"}, "win-a"),
+            ({"session": "win-c", "history_dir": history_dir, "window": "allTime"}, "win-c"),
             # By last: the newest session inside the window, never beyond it.
-            ({"last": True, "history_dir": history_dir}, None),
-            ({"last": True, "history_dir": history_dir, "since": "2020-01-01"}, "win-b"),
-            ({"last": True, "history_dir": history_dir, "since": "2020-01-16"}, None),
-            ({"last": True, "history_dir": history_dir, "all_time": True}, "win-c"),
+            ({"last": True, "history_dir": history_dir}, "win-recent"),
+            ({"last": True, "history_dir": history_dir, "window": since("2020-01-01")}, "win-recent"),
+            ({"last": True, "history_dir": history_dir, "window": since(today)}, None),
+            ({"last": True, "history_dir": history_dir, "window": recent(3)}, "win-recent"),
+            ({"last": True, "history_dir": history_dir, "window": recent(2)}, None),
+            ({"last": True, "history_dir": history_dir, "window": "allTime"}, "win-recent"),
         ]
         for lookup, expected in lookups:
             with self.subTest(lookup=lookup):
@@ -514,8 +531,10 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         # what came before it is exactly the range the window read.
         windows: list[tuple[HistoryWatchOptions, list[str]]] = [
             ({}, ["win-today"]),
-            ({"since": "2020-01-06"}, ["win-b", "win-today"]),
-            ({"all_time": True}, ["win-a", "win-b", "win-c", "win-today"]),
+            ({"window": recent(1)}, ["win-today"]),
+            ({"window": recent(3)}, ["win-recent", "win-today"]),
+            ({"window": since("2020-01-06")}, ["win-b", "win-recent", "win-today"]),
+            ({"window": "allTime"}, ["win-a", "win-b", "win-c", "win-recent", "win-today"]),
         ]
         for index, (options, names) in enumerate(windows):
             # A session name is recorded as a lowercase slug, so the marker is one.
@@ -613,10 +632,23 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             await client.history(cast("Any", {}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness history list options"):
             await client.history_list(cast("Any", {"all_project": True}))
-        # `since` is a real calendar date, as the CLI parses it.
-        for since in ("2026-02-30", "2026-01-01\n"):
-            with self.assertRaisesRegex(ContractError, "invalid oneharness history list options"):
-                await client.history_list({"since": since})
+        # A `since` window is a real calendar date, as the CLI parses it, and a
+        # window is one value: a since-date beside a day count, an empty day
+        # count, or the separate keys a window replaced, are refused.
+        bad_windows: list[Any] = [
+            {"window": {"since": "2026-02-30"}},
+            {"window": {"since": "2026-01-01\n"}},
+            {"window": {"since": "2026-01-01", "recent": {"days": 3}}},
+            {"window": {"recent": {"days": 0}}},
+            {"window": "all_time"},
+            {"since": "2026-01-01"},
+            {"all_time": True},
+        ]
+        for bad in bad_windows:
+            with self.subTest(bad=bad), self.assertRaisesRegex(
+                ContractError, "invalid oneharness history list options"
+            ):
+                await client.history_list(bad)
         with self.assertRaisesRegex(ContractError, "invalid oneharness history watch options"):
             client.history_watch(cast("Any", {"all_project": True}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness detect options"):
@@ -1029,9 +1061,9 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reindexed["files_read"], 1)
         self.assertEqual(reindexed["unreadable"], [])
         windows: list[tuple[HistoryListOptions, int]] = [
-            ({"history_dir": history_dir, "since": "2000-01-01"}, 1),
-            ({"history_dir": history_dir, "all_time": True}, 1),
-            ({"history_dir": history_dir, "since": "9999-12-31"}, 0),
+            ({"history_dir": history_dir, "window": {"since": "2000-01-01"}}, 1),
+            ({"history_dir": history_dir, "window": "allTime"}, 1),
+            ({"history_dir": history_dir, "window": {"since": "9999-12-31"}}, 0),
         ]
         for options, expected in windows:
             self.assertEqual(len(await client.history_list(options)), expected, options)

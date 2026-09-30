@@ -58,13 +58,12 @@ class RunOptions(_RunOptionsOptional):
 
 class _HistoryListOptionsOptional(TypedDict, total=False):
     all_projects: bool
-    all_time: bool
     config: Sequence[str]
     history_dir: str
     no_config: bool
     project: str
-    since: Any
     variant: str
+    window: Any
 
 
 class HistoryListOptions(_HistoryListOptionsOptional):
@@ -74,7 +73,6 @@ class HistoryListOptions(_HistoryListOptionsOptional):
 class _HistoryWatchOptionsOptional(TypedDict, total=False):
     after: str
     all_projects: bool
-    all_time: bool
     config: Sequence[str]
     events: bool
     history_dir: str
@@ -82,8 +80,8 @@ class _HistoryWatchOptionsOptional(TypedDict, total=False):
     no_config: bool
     project: str
     session: Any
-    since: Any
     variant: str
+    window: Any
 
 
 class HistoryWatchOptions(_HistoryWatchOptionsOptional):

@@ -29,25 +29,29 @@
   },
   "history_list_options": {
     "all_projects": "allProjects",
-    "all_time": "allTime",
     "config": "config",
+    "days": "days",
     "history_dir": "historyDir",
     "no_config": "noConfig",
     "project": "project",
+    "recent": "recent",
     "since": "since",
-    "variant": "variant"
+    "variant": "variant",
+    "window": "window"
   },
   "history_lookup": {
     "all": "all",
     "all_projects": "allProjects",
-    "all_time": "allTime",
     "config": "config",
+    "days": "days",
     "history_dir": "historyDir",
     "last": "last",
     "no_config": "noConfig",
     "project": "project",
+    "recent": "recent",
     "session": "session",
-    "since": "since"
+    "since": "since",
+    "window": "window"
   },
   "history_migrate_options": {
     "config": "config",
@@ -65,16 +69,18 @@
   "history_watch_options": {
     "after": "after",
     "all_projects": "allProjects",
-    "all_time": "allTime",
     "config": "config",
+    "days": "days",
     "events": "events",
     "history_dir": "historyDir",
     "labels": "labels",
     "no_config": "noConfig",
     "project": "project",
+    "recent": "recent",
     "session": "session",
     "since": "since",
-    "variant": "variant"
+    "variant": "variant",
+    "window": "window"
   },
   "init_options": {
     "force": "force",

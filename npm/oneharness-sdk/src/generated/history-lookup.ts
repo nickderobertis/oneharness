@@ -26,6 +26,28 @@
  * non-empty.
  */
 export type HistoryLookup = HistoryLookupByLast | HistoryLookupBySession;
+/**
+ * Which dates of the index a listing reads.
+ *
+ * It is also the one value an SDK history lookup, listing or watch takes as
+ * its `window`, so "from this date" and "from the beginning" cannot both be
+ * stated. On the wire it is externally tagged in camelCase —
+ * `{"recent": {"days": 3}}`, `{"since": "2026-01-05"}`, or `"allTime"` — and
+ * renders to the CLI's `--days`, `--since` or `--all-time`.
+ */
+export type HistoryWindow =
+  | {
+      recent: {
+        /**
+         * How many UTC days, today included; at least one.
+         */
+        days: number;
+      };
+    }
+  | {
+      since: string;
+    }
+  | "allTime";
 
 /**
  * Select the most recent session.
@@ -36,11 +58,6 @@ export interface HistoryLookupByLast {
    */
   all?: boolean | undefined;
   allProjects?: boolean | undefined;
-  /**
-   * Read every dated index segment plus the legacy index an older
-   * oneharness kept, rather than the last 7 UTC days.
-   */
-  allTime?: boolean | undefined;
   /**
    * Load configuration from exactly these files, in order, skipping
    * user/project discovery; each later file overrides the earlier ones.
@@ -66,10 +83,11 @@ export interface HistoryLookupByLast {
    */
   session?: string | undefined;
   /**
-   * Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
-   * the last 7 UTC days. Refused beside a true `allTime`.
+   * Which dates of the index to read: the last `days` UTC days, from a
+   * UTC date on, or all time (every dated segment plus the legacy index an
+   * older oneharness kept). Omitted, the last 7 UTC days.
    */
-  since?: string | null | undefined;
+  window?: HistoryWindow | null | undefined;
 }
 /**
  * Select the session named by `session`.
@@ -80,11 +98,6 @@ export interface HistoryLookupBySession {
    */
   all?: boolean | undefined;
   allProjects?: boolean | undefined;
-  /**
-   * Read every dated index segment plus the legacy index an older
-   * oneharness kept, rather than the last 7 UTC days.
-   */
-  allTime?: boolean | undefined;
   /**
    * Load configuration from exactly these files, in order, skipping
    * user/project discovery; each later file overrides the earlier ones.
@@ -110,8 +123,9 @@ export interface HistoryLookupBySession {
    */
   session: string;
   /**
-   * Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
-   * the last 7 UTC days. Refused beside a true `allTime`.
+   * Which dates of the index to read: the last `days` UTC days, from a
+   * UTC date on, or all time (every dated segment plus the legacy index an
+   * older oneharness kept). Omitted, the last 7 UTC days.
    */
-  since?: string | null | undefined;
+  window?: HistoryWindow | null | undefined;
 }

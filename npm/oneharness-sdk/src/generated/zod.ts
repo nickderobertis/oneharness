@@ -49,7 +49,7 @@ import type { HistoryClearDryRun, HistoryClearRemoved, HistoryClearReport } from
 import type { HistoryLine } from "./history-line.js";
 import type { HistoryList, HistorySessionSummary } from "./history-list.js";
 import type { HistoryListOptions } from "./history-list-options.js";
-import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession } from "./history-lookup.js";
+import type { HistoryLookup, HistoryLookupByLast, HistoryLookupBySession, HistoryWindow } from "./history-lookup.js";
 import type { HistoryMigrateOptions } from "./history-migrate-options.js";
 import type { HistoryMigrateReport, MigrationSummary } from "./history-migrate-report.js";
 import type { HistoryPointer, HistoryPointers } from "./history-pointers.js";
@@ -1376,27 +1376,12 @@ export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => Hi
 
 export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictObject({
   allProjects: z.boolean().optional(),
-  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
-  since: z
-    .union([
-      z
-        .string()
-        .min(10)
-        .regex(
-          new RegExp(
-            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-            "u",
-          ),
-        )
-        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
-      z.null(),
-    ])
-    .optional(),
   variant: z.string().optional(),
+  window: z.union([z.lazy(() => HistoryWindowSchema), z.null()]).optional(),
 });
 
 export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
@@ -1407,34 +1392,18 @@ export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
 export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.strictObject({
   all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
-  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   last: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
   session: z.string().optional(),
-  since: z
-    .union([
-      z
-        .string()
-        .min(10)
-        .regex(
-          new RegExp(
-            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-            "u",
-          ),
-        )
-        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
-      z.null(),
-    ])
-    .optional(),
+  window: z.union([z.lazy(() => HistoryWindowSchema), z.null()]).optional(),
 });
 
 export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z.strictObject({
   all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
-  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   last: z.boolean().optional(),
@@ -1444,21 +1413,7 @@ export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z
     .string()
     .min(1)
     .refine((value) => value !== undefined, { message: "Required" }),
-  since: z
-    .union([
-      z
-        .string()
-        .min(10)
-        .regex(
-          new RegExp(
-            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-            "u",
-          ),
-        )
-        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
-      z.null(),
-    ])
-    .optional(),
+  window: z.union([z.lazy(() => HistoryWindowSchema), z.null()]).optional(),
 });
 
 export const HistoryMigrateOptionsSchema: z.ZodType<HistoryMigrateOptions> = z.strictObject({
@@ -2727,7 +2682,6 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
     .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .optional(),
   allProjects: z.boolean().optional(),
-  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   events: z.boolean().optional(),
   historyDir: z.string().optional(),
@@ -2751,23 +2705,36 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
       z.null(),
     ])
     .optional(),
-  since: z
-    .union([
-      z
-        .string()
-        .min(10)
-        .regex(
-          new RegExp(
-            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
-            "u",
-          ),
-        )
-        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
-      z.null(),
-    ])
-    .optional(),
   variant: z.string().optional(),
+  window: z.union([z.lazy(() => HistoryWindowSchema), z.null()]).optional(),
 });
+
+export const HistoryWindowSchema: z.ZodType<HistoryWindow> = z.union([
+  z.strictObject({
+    recent: z
+      .strictObject({
+        days: z
+          .int()
+          .gte(1)
+          .refine((value) => value !== undefined, { message: "Required" }),
+      })
+      .refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.strictObject({
+    since: z
+      .string()
+      .min(10)
+      .regex(
+        new RegExp(
+          "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+          "u",
+        ),
+      )
+      .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" })
+      .refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.literal("allTime"),
+]);
 
 export const HookEntrySchema: z.ZodType<HookEntry> = z.strictObject({
   command: z.string().refine((value) => value !== undefined, { message: "Required" }),

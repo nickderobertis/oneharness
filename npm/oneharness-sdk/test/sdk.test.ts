@@ -41,6 +41,7 @@ import {
 	HistoryStreamEnvelopeSchema,
 	type HistoryWatchOptions,
 	HistoryWatchOptionsSchema,
+	type HistoryWindow,
 	InitOptionsSchema,
 	InterruptOptionsSchema,
 	type ListReport,
@@ -665,10 +666,18 @@ describe("OneHarness", () => {
 		await runRejects({ prompt: 42 });
 		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
 		await listRejects({ project: 42 });
-		// `since` is a real calendar date, as the CLI parses it: a rolled-over
-		// day or a trailing newline is refused before anything spawns.
-		await listRejects({ since: "2026-02-30" });
-		await listRejects({ since: "2026-01-01\n" });
+		// A `since` window is a real calendar date, as the CLI parses it: a
+		// rolled-over day or a trailing newline is refused before anything
+		// spawns.
+		await listRejects({ window: { since: "2026-02-30" } });
+		await listRejects({ window: { since: "2026-01-01\n" } });
+		// A window is one value: a since-date beside a day count or all-time,
+		// or an empty day count, is no window at all.
+		await listRejects({ window: { since: "2026-01-01", recent: { days: 3 } } });
+		await listRejects({ window: { recent: { days: 0 } } });
+		await listRejects({ window: "all_time" });
+		await listRejects({ since: "2026-01-01" });
+		await listRejects({ allTime: true });
 		await listRejects({ allProjects: "yes" });
 		await historyRejects({ session: 42 });
 		await historyRejects({ last: "yes" });
@@ -1147,10 +1156,17 @@ describe("OneHarness", () => {
 			);
 			return { record, sessionPath: `${slug}/${stem}.jsonl` };
 		};
-		// Two runs on dates of their own, both older than the default 7 days...
+		// Two runs on dates of their own, both older than the default 7 days,
+		// and one two UTC days ago: inside the default week and a 3-day
+		// window, outside a 2-day one...
 		await recordAt("win-a", "2020-01-05", 1);
 		await recordAt("win-b", "2020-01-15", 2);
-		expect((await client.historyReindex({ historyDir })).entries_added).toBe(2);
+		const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000)
+			.toISOString()
+			.slice(0, 10);
+		await recordAt("win-recent", twoDaysAgo, 4);
+		const today = new Date().toISOString().slice(0, 10);
+		expect((await client.historyReindex({ historyDir })).entries_added).toBe(3);
 		// ...and the newest one known only to the legacy index an older core
 		// kept, which only the all-time window reads.
 		const legacy = await recordAt("win-c", "2020-02-01", 3);
@@ -1168,21 +1184,30 @@ describe("OneHarness", () => {
 					throw error;
 				},
 			);
-		// By name: `since` reads from its date on, inclusive, and never the
-		// legacy index; the default window reaches none of these dates.
+		const since = (date: string): HistoryWindow => ({ since: date });
+		const recent = (days: number): HistoryWindow => ({ recent: { days } });
+		// By name: a `since` window reads from its date on, inclusive, and never
+		// the legacy index; a `recent` one the last N UTC days, today included;
+		// the default window (the last 7) reaches none of the 2020 dates.
 		for (const [lookup, name] of [
 			[{ session: "win-a", historyDir }, null],
-			[{ session: "win-a", historyDir, since: "2020-01-05" }, "win-a"],
-			[{ session: "win-a", historyDir, since: "2020-01-06" }, null],
-			[{ session: "win-b", historyDir, since: "2020-01-06" }, "win-b"],
-			[{ session: "win-c", historyDir, since: "2020-01-01" }, null],
-			[{ session: "win-a", historyDir, allTime: true }, "win-a"],
-			[{ session: "win-c", historyDir, allTime: true }, "win-c"],
+			[{ session: "win-recent", historyDir }, "win-recent"],
+			[{ session: "win-a", historyDir, window: since("2020-01-05") }, "win-a"],
+			[{ session: "win-a", historyDir, window: since("2020-01-06") }, null],
+			[{ session: "win-b", historyDir, window: since("2020-01-06") }, "win-b"],
+			[{ session: "win-c", historyDir, window: since("2020-01-01") }, null],
+			[{ session: "win-recent", historyDir, window: recent(3) }, "win-recent"],
+			[{ session: "win-recent", historyDir, window: recent(2) }, null],
+			[{ session: "win-b", historyDir, window: recent(3) }, null],
+			[{ session: "win-a", historyDir, window: "allTime" }, "win-a"],
+			[{ session: "win-c", historyDir, window: "allTime" }, "win-c"],
 			// By last: the newest session inside the window, never beyond it.
-			[{ last: true, historyDir }, null],
-			[{ last: true, historyDir, since: "2020-01-01" }, "win-b"],
-			[{ last: true, historyDir, since: "2020-01-16" }, null],
-			[{ last: true, historyDir, allTime: true }, "win-c"],
+			[{ last: true, historyDir }, "win-recent"],
+			[{ last: true, historyDir, window: since("2020-01-01") }, "win-recent"],
+			[{ last: true, historyDir, window: since(today) }, null],
+			[{ last: true, historyDir, window: recent(3) }, "win-recent"],
+			[{ last: true, historyDir, window: recent(2) }, null],
+			[{ last: true, historyDir, window: "allTime" }, "win-recent"],
 		] satisfies Array<[HistoryLookup, string | null]>) {
 			expect([lookup, await found(lookup)]).toEqual([lookup, name]);
 		}
@@ -1206,8 +1231,13 @@ describe("OneHarness", () => {
 		// what came before it is exactly the range the window read.
 		const windows: Array<[HistoryWatchOptions, string[]]> = [
 			[{}, ["win-today"]],
-			[{ since: "2020-01-06" }, ["win-b", "win-today"]],
-			[{ allTime: true }, ["win-a", "win-b", "win-c", "win-today"]],
+			[{ window: recent(1) }, ["win-today"]],
+			[{ window: recent(3) }, ["win-recent", "win-today"]],
+			[{ window: since("2020-01-06") }, ["win-b", "win-recent", "win-today"]],
+			[
+				{ window: "allTime" },
+				["win-a", "win-b", "win-c", "win-recent", "win-today"],
+			],
 		];
 		for (const [index, [options, names]] of windows.entries()) {
 			// A session name is recorded as a lowercase slug, so the marker is one.
@@ -1826,13 +1856,13 @@ describe("OneHarness", () => {
 			unreadable: [],
 		});
 		expect(
-			await client.historyList({ historyDir, since: "2000-01-01" }),
+			await client.historyList({ historyDir, window: { since: "2000-01-01" } }),
 		).toHaveLength(1);
 		expect(
-			await client.historyList({ historyDir, allTime: true }),
+			await client.historyList({ historyDir, window: "allTime" }),
 		).toHaveLength(1);
 		expect(
-			await client.historyList({ historyDir, since: "9999-12-31" }),
+			await client.historyList({ historyDir, window: { since: "9999-12-31" } }),
 		).toHaveLength(0);
 
 		// A dry run reports what it *would* remove and deletes nothing, which

@@ -574,6 +574,15 @@ pub struct HistoryWatchArgs {
     #[arg(long, conflicts_with = "after")]
     pub all_time: bool,
 
+    /// Start from the beginning of the last N UTC days, today included
+    /// (`--days 1` is today, the default start).
+    #[arg(
+        long,
+        value_name = "N",
+        conflicts_with_all = ["after", "since", "all_time"]
+    )]
+    pub days: Option<std::num::NonZeroU32>,
+
     /// Emit only records carrying this exact KEY=VALUE label (repeatable; all
     /// filters must match).
     #[arg(long = "label", value_name = "KEY=VALUE")]
@@ -646,6 +655,11 @@ pub struct HistoryListArgs {
     #[arg(long)]
     pub all_time: bool,
 
+    /// List sessions with runs indexed in the last N UTC days, today included,
+    /// instead of the last 7.
+    #[arg(long, value_name = "N", conflicts_with_all = ["since", "all_time"])]
+    pub days: Option<std::num::NonZeroU32>,
+
     /// History directory to read (default: config `history_dir`,
     /// ONEHARNESS_HISTORY_DIR, else the platform state dir).
     #[arg(long, value_name = "DIR")]
@@ -702,6 +716,11 @@ pub struct HistoryShowArgs {
     /// not hold.
     #[arg(long)]
     pub all_time: bool,
+
+    /// Resolve a session name or --last among runs indexed in the last N UTC
+    /// days, today included, instead of the last 7.
+    #[arg(long, value_name = "N", conflicts_with_all = ["since", "all_time"])]
+    pub days: Option<std::num::NonZeroU32>,
 
     /// History directory to read (default: config `history_dir`,
     /// ONEHARNESS_HISTORY_DIR, else the platform state dir).

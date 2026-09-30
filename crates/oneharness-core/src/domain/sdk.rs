@@ -452,16 +452,11 @@ pub struct HistoryLookupByLast {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
-    /// Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
-    /// the last 7 UTC days. Refused beside a true `allTime`.
+    /// Which dates of the index to read: the last `days` UTC days, from a
+    /// UTC date on, or all time (every dated segment plus the legacy index an
+    /// older oneharness kept). Omitted, the last 7 UTC days.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
-    pub since: Option<crate::domain::history_index::UtcDate>,
-    /// Read every dated index segment plus the legacy index an older
-    /// oneharness kept, rather than the last 7 UTC days.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    pub all_time: Option<bool>,
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Show every record in the session rather than the run summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
@@ -503,16 +498,11 @@ pub struct HistoryLookupBySession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
-    /// Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
-    /// the last 7 UTC days. Refused beside a true `allTime`.
+    /// Which dates of the index to read: the last `days` UTC days, from a
+    /// UTC date on, or all time (every dated segment plus the legacy index an
+    /// older oneharness kept). Omitted, the last 7 UTC days.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
-    pub since: Option<crate::domain::history_index::UtcDate>,
-    /// Read every dated index segment plus the legacy index an older
-    /// oneharness kept, rather than the last 7 UTC days.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    pub all_time: Option<bool>,
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Show every record in the session rather than the run summaries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
@@ -544,16 +534,11 @@ pub struct HistoryListOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub history_dir: Option<String>,
-    /// Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
-    /// the last 7 UTC days. Refused beside a true `allTime`.
+    /// Which dates of the index to read: the last `days` UTC days, from a
+    /// UTC date on, or all time (every dated segment plus the legacy index an
+    /// older oneharness kept). Omitted, the last 7 UTC days.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
-    pub since: Option<crate::domain::history_index::UtcDate>,
-    /// Read every dated index segment plus the legacy index an older
-    /// oneharness kept, rather than the last 7 UTC days.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    pub all_time: Option<bool>,
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Narrow to one configured harness identity (`claude-code:work`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
@@ -598,16 +583,12 @@ pub struct HistoryWatchOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub events: Option<bool>,
-    /// Start from this UTC date's index segments (`YYYY-MM-DD`) rather than
-    /// today's. Refused beside `after` or a true `allTime`.
+    /// Where the watch starts when no `after` cursor is given: the beginning
+    /// of the last `days` UTC days, of a UTC date, or of all time (the legacy
+    /// index an older oneharness kept included). Omitted, the current UTC
+    /// day. Refused beside `after`, the other answer to where a watch begins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` (and `--after`) flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
-    pub since: Option<crate::domain::history_index::UtcDate>,
-    /// Start from the first record the index holds, the legacy index an
-    /// older oneharness kept included. Refused beside `after`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(with = "bool")]
-    pub all_time: Option<bool>,
+    pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Narrow to one configured harness identity (`claude-code:work`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
@@ -1127,8 +1108,7 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
-            since: None,
-            all_time: None,
+            window: None,
             all: None,
             config: None,
             no_config: None,
@@ -1154,8 +1134,7 @@ mod tests {
             project: Some("oneharness".to_string()),
             all_projects: None,
             history_dir: None,
-            since: None,
-            all_time: None,
+            window: None,
             all: None,
             config: None,
             no_config: None,
@@ -1196,8 +1175,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
-                since: None,
-                all_time: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1212,8 +1190,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
-                since: None,
-                all_time: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1237,8 +1214,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
-                since: None,
-                all_time: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1257,8 +1233,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
-                since: None,
-                all_time: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1281,8 +1256,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
-                since: None,
-                all_time: None,
+                window: None,
                 all: None,
                 config: None,
                 no_config: None,
@@ -1369,8 +1343,7 @@ mod tests {
             project: None,
             all_projects: Some(true),
             history_dir: Some("/tmp/oneharness-history".to_string()),
-            since: None,
-            all_time: None,
+            window: None,
             variant: None,
             config: None,
             no_config: None,
@@ -1396,8 +1369,7 @@ mod tests {
                 project: None,
                 all_projects: None,
                 history_dir: None,
-                since: None,
-                all_time: None,
+                window: None,
                 variant: None,
                 config: None,
                 no_config: None,

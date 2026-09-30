@@ -389,8 +389,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all` | `all` | `--flag` when true |
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
-| `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
-| `--all-time` | `allTime` | `--flag` when true |
+| `--days` / `--since` / `--all-time` | `window` | one of them: `{"recent": {"days": N}}` as `--days N`, `{"since": D}` as `--since D`, `"allTime"` as `--all-time` |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
@@ -404,8 +403,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--variant` | `variant` | `--flag VALUE` |
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
-| `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
-| `--all-time` | `allTime` | `--flag` when true |
+| `--days` / `--since` / `--all-time` | `window` | one of them: `{"recent": {"days": N}}` as `--days N`, `{"since": D}` as `--since D`, `"allTime"` as `--all-time` |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
@@ -415,7 +413,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--format` | _(always sent)_ | fixed |
-| `--after` | `after` | `--flag VALUE` (refused beside `since`) |
+| `--after` | `after` | `--flag VALUE` (refused beside `window`) |
 | `--label` | `labels` | `--flag KEY=VALUE` per entry |
 | `--variant` | `variant` | `--flag VALUE` |
 | `--session` | `session` | `--flag VALUE` |
@@ -423,8 +421,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--events` | `events` | `--flag` when true |
-| `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
-| `--all-time` | `allTime` | `--flag` when true (refused beside `after`) |
+| `--days` / `--since` / `--all-time` | `window` | one of them: `{"recent": {"days": N}}` as `--days N`, `{"since": D}` as `--since D`, `"allTime"` as `--all-time` |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 

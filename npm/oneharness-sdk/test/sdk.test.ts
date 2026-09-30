@@ -879,7 +879,7 @@ describe("OneHarness", () => {
 				events: [
 					{
 						kind: "tool_call",
-						name: "command_execution",
+						name: "shell",
 						input: {},
 						output: null,
 						index: 0,
@@ -894,7 +894,7 @@ describe("OneHarness", () => {
 				events: [
 					{
 						kind: "tool_call",
-						name: "command_execution",
+						name: "shell",
 						input: {},
 						output: null,
 						index: 0,

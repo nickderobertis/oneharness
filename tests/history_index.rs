@@ -381,20 +381,20 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
     let run = HistoryIndexEntry::Run(RunIndexEntry {
         schema_version: INDEX_SCHEMA_VERSION.to_string(),
         history_id: id,
-        session_path: "p/s.jsonl".to_string(),
+        session_path: "p/s.jsonl".parse().unwrap(),
         session: "s".to_string(),
         name: "s".to_string(),
         project_slug: "p".to_string(),
         harness_id: "codex".to_string(),
         labels: labels.clone(),
-        recorded_at: "2026-01-01T00:00:00Z".to_string(),
+        recorded_at: "2026-01-01T00:00:00Z".parse().unwrap(),
         span,
     });
     let event = HistoryIndexEntry::Event(EventIndexEntry {
         schema_version: INDEX_SCHEMA_VERSION.to_string(),
         run_id: id,
         event_index: 0,
-        session_path: "p/s.jsonl".to_string(),
+        session_path: "p/s.jsonl".parse().unwrap(),
         project_slug: "p".to_string(),
         harness_id: "codex".to_string(),
         labels,
@@ -1095,7 +1095,7 @@ fn an_entry_is_the_same_size_for_a_one_mebibyte_prompt_or_event_as_for_a_short_o
                 let (span, file) = match &entry {
                     HistoryIndexEntry::Run(run) => (run.span.unwrap(), &session_bytes),
                     HistoryIndexEntry::Event(event)
-                        if Path::new(&event.session_path).file_name()
+                        if Path::new(event.session_path.as_str()).file_name()
                             == writer.path().file_name() =>
                     {
                         (event.span.unwrap(), &events_bytes)

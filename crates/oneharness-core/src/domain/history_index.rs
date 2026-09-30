@@ -278,25 +278,101 @@ pub struct LineSpan {
     pub length: std::num::NonZeroU64,
 }
 
+/// A session file's path relative to the store, as an entry names it: exactly
+/// `<project-slug>/<session>.jsonl` (see [`valid_session_path`]). Validated
+/// wherever it is parsed — an entry is read from disk, so one naming a path
+/// that climbs out of the store does not parse at all.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[serde(transparent)]
+pub struct SessionPath(String);
+
+/// The error returned when text is not a store-relative session path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[error("must be `<project-slug>/<session>.jsonl`, relative to the history store")]
+pub struct SessionPathError;
+
+impl SessionPath {
+    /// The session path for a session id under a project slug, spelled with
+    /// `/` on every platform; `None` when either could name another place.
+    #[must_use]
+    pub fn new(project_slug: &str, session: &str) -> Option<Self> {
+        session_path(project_slug, session).parse().ok()
+    }
+
+    /// The path as text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// The project slug and the session id (file stem) it names.
+    #[must_use]
+    pub fn parts(&self) -> (&str, &str) {
+        session_path_parts(&self.0).expect("a SessionPath is valid by construction")
+    }
+}
+
+impl FromStr for SessionPath {
+    type Err = SessionPathError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if valid_session_path(value) {
+            Ok(Self(value.to_string()))
+        } else {
+            Err(SessionPathError)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SessionPath {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+impl AsRef<std::path::Path> for SessionPath {
+    fn as_ref(&self) -> &std::path::Path {
+        std::path::Path::new(&self.0)
+    }
+}
+
+impl fmt::Display for SessionPath {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// One closing run line, indexed. Every field is bounded by what names the
 /// run — never by its prompt, output or events.
+///
+/// `session`, `name`, `project_slug` and `harness_id` are copied verbatim from
+/// the session line the entry points at, so a listing built from the index
+/// says exactly what the record says; they stay text because a record migrated
+/// from a 0.x store carries names and ids no current type accepts (`legacy
+/// 0.3`), and reindexing one must not drop it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunIndexEntry {
     // llmlint: ignore[invalid_states_unrepresentable] The index is read from disk and written by more than one release, so its version stays the wire string every other history contract uses; a reader accepts any entry that parses.
     pub schema_version: String,
     pub history_id: HistoryId,
     /// The session file, relative to the store: `<project-slug>/<session>.jsonl`.
-    pub session_path: String,
+    pub session_path: SessionPath,
     /// The session id — the session file's stem.
+    // llmlint: ignore[invalid_states_unrepresentable] Copied verbatim from the record this entry points at (see the type's doc): a reindexed 0.x store's session ids are not in the shape a current writer mints, and refusing them here would drop those runs from the index.
     pub session: String,
     /// The session's name.
+    // llmlint: ignore[invalid_states_unrepresentable] Copied verbatim from the record (see the type's doc); a migrated 0.x record's name, such as `legacy 0.3`, is not a sanitized session name.
     pub name: String,
+    // llmlint: ignore[invalid_states_unrepresentable] The slug is also `session_path`'s first component, which is the validated one every reader uses; this copy is the contract's filterable field.
     pub project_slug: String,
+    // llmlint: ignore[invalid_states_unrepresentable] Copied verbatim from the record's `harness_id`, so a filter on the index agrees with the record; a harness id a later release no longer registers must still index.
     pub harness_id: String,
     #[serde(default, skip_serializing_if = "HistoryLabels::is_empty")]
     pub labels: HistoryLabels,
     /// The record's `timestamp`: when its closing line was written.
-    pub recorded_at: String,
+    pub recorded_at: UtcInstant,
     #[serde(default, flatten, skip_serializing_if = "Option::is_none")]
     pub span: Option<LineSpan>,
 }
@@ -311,8 +387,10 @@ pub struct EventIndexEntry {
     pub run_id: HistoryId,
     /// The event's `index` within its run.
     pub event_index: usize,
-    pub session_path: String,
+    pub session_path: SessionPath,
+    // llmlint: ignore[invalid_states_unrepresentable] As on `RunIndexEntry`: `session_path`'s validated first component is what readers use; this is the contract's filterable copy.
     pub project_slug: String,
+    // llmlint: ignore[invalid_states_unrepresentable] As on `RunIndexEntry`: copied verbatim from the event line so the index agrees with it.
     pub harness_id: String,
     #[serde(default)]
     pub labels: HistoryLabels,
@@ -345,7 +423,7 @@ impl HistoryIndexEntry {
 
     /// The session file this entry points at, relative to the store.
     #[must_use]
-    pub fn session_path(&self) -> &str {
+    pub fn session_path(&self) -> &SessionPath {
         match self {
             HistoryIndexEntry::Run(run) => &run.session_path,
             HistoryIndexEntry::Event(event) => &event.session_path,
@@ -603,7 +681,7 @@ mod tests {
             schema_version: INDEX_SCHEMA_VERSION.to_string(),
             run_id: id,
             event_index: 3,
-            session_path: "p/s.jsonl".to_string(),
+            session_path: "p/s.jsonl".parse().unwrap(),
             project_slug: "p".to_string(),
             harness_id: "codex".to_string(),
             labels: HistoryLabels::default(),

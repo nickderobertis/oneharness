@@ -37,7 +37,8 @@ use crate::domain::history::{
 };
 use crate::domain::history_index::{
     self as index, EventIndexEntry, HistoryIndexEntry, IndexKey, LineSpan, RunIndexEntry,
-    SegmentKind, INDEX_DIR, INDEX_SCHEMA_VERSION, LEGACY_EVENT_INDEX_FILE, LEGACY_INDEX_FILE,
+    SegmentKind, SessionPath, INDEX_DIR, INDEX_SCHEMA_VERSION, LEGACY_EVENT_INDEX_FILE,
+    LEGACY_INDEX_FILE,
 };
 pub use crate::domain::history_index::{HistoryWindow, UtcDate};
 use crate::domain::mode::PermissionMode;
@@ -101,7 +102,7 @@ pub fn resolve_dir(configured: Option<&str>) -> Option<PathBuf> {
 pub struct HistoryWriter {
     dir: PathBuf,
     path: PathBuf,
-    relative_path: String,
+    relative_path: index::SessionPath,
     session: String,
     name: HistorySessionName,
     labels: HistoryLabels,
@@ -264,8 +265,14 @@ impl HistoryWriter {
         let project_dir = dir.join(&slug);
         fs::create_dir_all(&project_dir)?;
         let path = project_dir.join(format!("{session}.{SESSION_EXT}"));
+        let relative_path = index::SessionPath::new(&slug, &session).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("`{slug}/{session}` cannot name a session file in the store"),
+            )
+        })?;
         Ok(HistoryWriter {
-            relative_path: index::session_path(&slug, &session),
+            relative_path,
             dir,
             path,
             session,
@@ -372,7 +379,9 @@ impl HistoryWriter {
             project_slug: self.project_slug.clone(),
             harness_id: record.harness_id.clone(),
             labels: self.labels.clone(),
-            recorded_at: record.timestamp.clone(),
+            recorded_at: record.timestamp.parse().map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{error}"))
+            })?,
             span: None,
         };
         let span = file.append(&HistoryLine::Run(run))?;
@@ -1190,7 +1199,9 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
             break;
         }
     }
-    let session_path = index::session_path(slug, stem);
+    let Some(session_path) = index::SessionPath::new(slug, stem) else {
+        return Ok(false);
+    };
     let session_date = index::session_date_from_id(stem);
     let event_fallback = session_date.or(first_run_date);
     let mut reader = open().map_err(SpillError::Session)?;
@@ -1211,7 +1222,12 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
         offset += read as u64;
         let (entry, fallback) = match serde_json::from_slice::<HistoryLine>(&line) {
             Ok(HistoryLine::Run(run)) => {
-                let fallback = session_date.or_else(|| timestamp_date(&run.timestamp));
+                // A closing line whose timestamp is not an instant names no
+                // time it was recorded at; it is left out rather than guessed.
+                let Ok(recorded_at) = run.timestamp.parse::<UtcInstant>() else {
+                    continue;
+                };
+                let fallback = session_date.or_else(|| UtcDate::of_instant(&recorded_at));
                 let harness_id = run.harness_id.clone().unwrap_or_else(|| {
                     run.variant.as_ref().map_or(run.harness.clone(), |variant| {
                         format!("{}:{variant}", run.harness)
@@ -1227,7 +1243,7 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
                         project_slug: slug.to_string(),
                         harness_id,
                         labels: run.labels,
-                        recorded_at: run.timestamp,
+                        recorded_at,
                         span: Some(span),
                     }),
                     fallback,
@@ -1587,9 +1603,7 @@ impl HistoryWatcher {
     }
 
     fn accept_run(&mut self, entry: RunIndexEntry) {
-        let Some((slug, stem)) = index::session_path_parts(&entry.session_path) else {
-            return;
-        };
+        let (slug, stem) = entry.session_path.parts();
         if self.seen.contains(&entry.history_id)
             || !self.in_project(slug)
             || !entry.labels.matches(&self.labels)
@@ -1622,9 +1636,7 @@ impl HistoryWatcher {
     }
 
     fn accept_event(&mut self, entry: EventIndexEntry) {
-        let Some((slug, stem)) = index::session_path_parts(&entry.session_path) else {
-            return;
-        };
+        let (slug, stem) = entry.session_path.parts();
         if self
             .events_after
             .is_some_and(|cursor| entry.run_id <= cursor)
@@ -1785,11 +1797,9 @@ fn collect_sessions(
     window: HistoryWindow,
 ) -> Result<Vec<CollectedSession>, OneharnessError> {
     let earliest = window.earliest(today());
-    let mut sessions: BTreeMap<String, SessionAccumulator> = BTreeMap::new();
-    let in_scope = |session_path: &str| {
-        index::session_path_parts(session_path)
-            .filter(|(slug, _)| project_slug.is_none_or(|wanted| wanted == *slug))
-            .is_some()
+    let mut sessions: BTreeMap<SessionPath, SessionAccumulator> = BTreeMap::new();
+    let in_scope = |session_path: &SessionPath| {
+        project_slug.is_none_or(|wanted| wanted == session_path.parts().0)
     };
     for (date, _, path) in list_segments(dir)? {
         if earliest.is_some_and(|earliest| date < earliest) {
@@ -1818,11 +1828,14 @@ fn collect_sessions(
     if window.reads_legacy() {
         stream_lines(&dir.join(LEGACY_INDEX_FILE), 0, |line| {
             if let Ok(entry) = serde_json::from_slice::<LegacyIndexEntry>(line) {
-                if in_scope(&entry.session_path) {
+                let Ok(session_path) = entry.session_path.parse::<SessionPath>() else {
+                    return ControlFlow::Continue(());
+                };
+                if in_scope(&session_path) {
                     let record = entry.record;
                     let harness_id = record.harness_id.clone().unwrap_or(record.harness.clone());
                     sessions
-                        .entry(entry.session_path)
+                        .entry(session_path)
                         .or_default()
                         .close(FirstRun::Legacy(Box::new(record)), &harness_id);
                 }
@@ -1831,8 +1844,11 @@ fn collect_sessions(
         })?;
         stream_lines(&dir.join(LEGACY_EVENT_INDEX_FILE), 0, |line| {
             if let Ok(entry) = serde_json::from_slice::<LegacyEventIndexEntry>(line) {
-                if in_scope(&entry.session_path) {
-                    let session = sessions.entry(entry.session_path).or_default();
+                let Ok(session_path) = entry.session_path.parse::<SessionPath>() else {
+                    return ControlFlow::Continue(());
+                };
+                if in_scope(&session_path) {
+                    let session = sessions.entry(session_path).or_default();
                     session.event_runs.insert(entry.line.run_id);
                     session.touch(
                         entry
@@ -1856,9 +1872,7 @@ fn collect_sessions(
         if found.closed.is_empty() && !running {
             continue;
         }
-        let Some((slug, stem)) = index::session_path_parts(&session_path) else {
-            continue;
-        };
+        let (slug, stem) = session_path.parts();
         let path = dir.join(&session_path);
         // An entry whose session was cleared is skipped here, at one `stat`.
         if !path.is_file() {
@@ -1878,7 +1892,7 @@ fn collect_sessions(
                     entry.name.clone(),
                     entry.labels.clone(),
                     project,
-                    entry.recorded_at.clone(),
+                    entry.recorded_at.as_str().to_string(),
                 )
             }
             None => (
@@ -2028,12 +2042,11 @@ pub fn find_session_path(
             let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) else {
                 return ControlFlow::Continue(());
             };
-            match index::session_path_parts(entry.session_path()) {
-                Some((_, stem)) if stem == id => {
-                    found = Some(dir.join(entry.session_path()));
-                    ControlFlow::Break(())
-                }
-                _ => ControlFlow::Continue(()),
+            if entry.session_path().parts().1 == id {
+                found = Some(dir.join(entry.session_path()));
+                ControlFlow::Break(())
+            } else {
+                ControlFlow::Continue(())
             }
         })?;
         if let Some(path) = found.take().filter(|path| path.is_file()) {
@@ -2080,7 +2093,7 @@ pub fn find_record_by_id_in(
         let mut session_path = None;
         stream_lines(&path, 0, |line| match serde_json::from_slice(line) {
             Ok(HistoryIndexEntry::Run(run)) if run.history_id == id => {
-                session_path = Some(run.session_path);
+                session_path = Some(run.session_path.as_str().to_string());
                 ControlFlow::Break(())
             }
             _ => ControlFlow::Continue(()),
@@ -3100,10 +3113,7 @@ mod tests {
             assert_eq!(pointer.history_file(), writer.path().display().to_string());
             assert_eq!(pointer.history_dir(), writer.dir.display().to_string());
             assert_eq!(pointer.history_session(), writer.session);
-            assert_eq!(
-                pointer.history_project(),
-                writer.relative_path.split(['/', '\\']).next().unwrap()
-            );
+            assert_eq!(pointer.history_project(), writer.relative_path.parts().0);
             assert_eq!(
                 Path::new(&pointer.history_dir())
                     .join(pointer.history_project())

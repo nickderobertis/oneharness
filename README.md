@@ -2252,6 +2252,7 @@ later. The `oneharness history` verb views and manages the store — a human
 view on stdout by default, `--format json` (or `--compact`) for the programmatic
 contract, on every bounded subcommand:
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This synopsis has a drift gate: `cli::tests::the_readme_history_synopsis_names_only_real_flags_and_values` reads every `oneharness history` line here against the clap definition and fails on a verb, flag or value clap does not accept. -->
 ```bash
 oneharness history list [--project <dir> | --all-projects] [--since <YYYY-MM-DD> | --all-time]  # sessions, newest first
 oneharness history show <session-id-or-name> [--last] [--all] [--since <YYYY-MM-DD> | --all-time] # a session's records
@@ -2260,6 +2261,7 @@ oneharness history watch [--session <name|id>] [--label key=value] [--after <his
 oneharness history reindex                                    # index what the dated index lacks
 oneharness history clear [--all-projects] [--yes]            # dry-run unless --yes
 ```
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 **Index.** Beside the sessions, `<history_dir>/.index.d/` holds a dated,
 append-only index of small pointer entries — `runs-YYYY-MM-DD.ndjson` and

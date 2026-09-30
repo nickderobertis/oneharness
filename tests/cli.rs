@@ -17310,6 +17310,32 @@ fn history_show_orders_an_in_flight_runs_events_by_index() {
     let reindexed = run(&["history", "reindex", "--history-dir", &ds], &[]);
     assert!(reindexed.status.success(), "{reindexed:?}");
 
+    // An in-flight run has no run entry, only event entries, so a window
+    // reaches it by its events' date (the run id's, 2024-10-08) — the default
+    // window and a later `--since` do not, that date's `--since` does.
+    let in_window = |window: &[&str]| {
+        let scope = ["--all-projects", "--history-dir", &ds, "--compact"];
+        let listed = run(&[&["history", "list"][..], window, &scope].concat(), &[]);
+        let listed = json_stdout(&listed);
+        let shown = run(
+            &[&["history", "show", "in-flight"][..], window, &scope].concat(),
+            &[],
+        );
+        let listed = listed.as_array().unwrap();
+        if listed.is_empty() {
+            assert!(!shown.status.success(), "{window:?}: {shown:?}");
+            false
+        } else {
+            assert_eq!(listed[0]["running"], true, "{window:?}: {listed:?}");
+            assert_eq!(json_stdout(&shown)[0]["type"], "incomplete", "{window:?}");
+            true
+        }
+    };
+    assert!(!in_window(&[]), "the default window reaches back to 2024");
+    assert!(!in_window(&["--since", "2024-10-09"]));
+    assert!(in_window(&["--since", "2024-10-08"]));
+    assert!(in_window(&["--all-time"]));
+
     let shown = run(
         &[
             "history",

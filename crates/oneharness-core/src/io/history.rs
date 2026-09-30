@@ -3053,6 +3053,466 @@ mod tests {
             .unwrap_or(true));
     }
 
+    fn id_at(secs: u64, counter: u16) -> HistoryId {
+        let at = uuid::Timestamp::from_unix(uuid::NoContext, secs, u32::from(counter));
+        HistoryId::from_uuid(uuid::Uuid::new_v7(at))
+    }
+
+    fn now_secs() -> u64 {
+        now_epoch_secs() as u64
+    }
+
+    fn event_at(index: usize) -> crate::domain::events::ActionEvent {
+        crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: Some(format!("event {index}")),
+            index,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+            timing_source: None,
+        }
+    }
+
+    /// Record one closed run under a chosen id in its own session; returns the
+    /// session file.
+    fn closed_run(
+        dir: &Path,
+        project: &Path,
+        name: &str,
+        id: HistoryId,
+        labels: &[&str],
+    ) -> PathBuf {
+        let writer = HistoryWriter::open(
+            dir,
+            project,
+            name,
+            history::parse_labels(labels.iter().copied()).unwrap(),
+        )
+        .unwrap();
+        writer.append_event(id, "codex", event_at(0)).unwrap();
+        writer
+            .append_streamed(
+                id,
+                PermissionMode::Default,
+                None,
+                name,
+                &result("codex"),
+                &BTreeSet::from([0]),
+            )
+            .unwrap();
+        writer.path().to_path_buf()
+    }
+
+    /// The legacy index line an older core's reconcile writes for a run.
+    fn legacy_run_line(dir: &Path, session: &Path, id: HistoryId) -> String {
+        let text = fs::read_to_string(session).unwrap();
+        let run = parse_lines(session, &text)
+            .into_iter()
+            .find_map(|line| match line {
+                HistoryLine::Run(run) if run.history_id == id => Some(run),
+                _ => None,
+            })
+            .unwrap();
+        let relative = session.strip_prefix(dir).unwrap().display().to_string();
+        format!(
+            "{}\n",
+            serde_json::json!({"session_path": relative, "record": run})
+        )
+    }
+
+    fn legacy_event_line(dir: &Path, session: &Path, id: HistoryId, labels: &str) -> String {
+        let relative = session.strip_prefix(dir).unwrap().display().to_string();
+        let line = HistoryEventLine {
+            schema_version: history::PREVIOUS_CURRENT_SCHEMA_VERSION.to_string(),
+            run_id: id,
+            harness: "codex".to_string(),
+            variant: None,
+            harness_id: Some("codex".to_string()),
+            event: event_at(7),
+            session_name: None,
+        };
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "session_path": relative,
+                "labels": serde_json::from_str::<Value>(labels).unwrap(),
+                "line": line,
+            })
+        )
+    }
+
+    /// Move a run's session into a store's project directory with no index
+    /// entry for it, as an older core would have left it.
+    fn unindexed_copy(dir: &Path, source: &Path) -> PathBuf {
+        let slug = source.parent().unwrap().file_name().unwrap();
+        let target = dir.join(slug).join(source.file_name().unwrap());
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source, &target).unwrap();
+        target
+    }
+
+    #[test]
+    fn a_watcher_tails_the_legacy_files_from_their_size_at_open_and_everything_under_all_time() {
+        let dir = temp_dir("watch-legacy");
+        let other = temp_dir("watch-legacy-source");
+        let project = temp_dir("watch-legacy-project");
+        let dir = fs::canonicalize(&dir).unwrap();
+        let other = fs::canonicalize(&other).unwrap();
+        let before_open = id_at(now_secs() - 3 * 86_400, 1);
+        let early = unindexed_copy(
+            &dir,
+            &closed_run(&other, &project, "early", before_open, &["k=v"]),
+        );
+        fs::write(
+            dir.join(LEGACY_INDEX_FILE),
+            legacy_run_line(&dir, &early, before_open),
+        )
+        .unwrap();
+        fs::write(
+            dir.join(LEGACY_EVENT_INDEX_FILE),
+            legacy_event_line(&dir, &early, before_open, r#"{"k":"v"}"#),
+        )
+        .unwrap();
+
+        // Today's start: what the legacy files held at open is never read.
+        let mut watcher =
+            HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, true).unwrap();
+        assert!(watcher.drain_available().is_empty());
+        assert!(watcher.drain_events().is_empty());
+        let appended = id_at(now_secs() - 86_400 * 2, 2);
+        let late = unindexed_copy(
+            &dir,
+            &closed_run(&other, &project, "appended", appended, &[]),
+        );
+        let mut legacy = OpenOptions::new()
+            .append(true)
+            .open(dir.join(LEGACY_INDEX_FILE))
+            .unwrap();
+        legacy
+            .write_all(legacy_run_line(&dir, &late, appended).as_bytes())
+            .unwrap();
+        // A line naming a path outside the store, or a session that is gone,
+        // is skipped.
+        legacy
+            .write_all(b"{\"session_path\":\"../escape.jsonl\",\"record\":{}}\n")
+            .unwrap();
+        let mut events = OpenOptions::new()
+            .append(true)
+            .open(dir.join(LEGACY_EVENT_INDEX_FILE))
+            .unwrap();
+        events
+            .write_all(legacy_event_line(&dir, &late, appended, "{}").as_bytes())
+            .unwrap();
+        events
+            .write_all(b"{\"session_path\":\"../escape.jsonl\",\"labels\":{},\"line\":{}}\n")
+            .unwrap();
+        let records = watcher.poll().unwrap();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![appended]
+        );
+        assert_eq!(watcher.drain_events().len(), 1);
+        // Re-appended by a later reconcile: emitted once.
+        legacy
+            .write_all(legacy_run_line(&dir, &late, appended).as_bytes())
+            .unwrap();
+        assert!(watcher.poll().unwrap().is_empty());
+
+        // All time: every line from the first byte, labels and project applied.
+        let mut all = HistoryWatcher::open_in(
+            &dir,
+            None,
+            history::parse_labels(["k=v"]).unwrap(),
+            None,
+            true,
+            None,
+            Some(HistoryWindow::AllTime),
+        )
+        .unwrap();
+        assert_eq!(
+            all.drain_available()
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![before_open]
+        );
+        assert_eq!(all.drain_events().len(), 1);
+        let mut elsewhere = HistoryWatcher::open_in(
+            &dir,
+            None,
+            HistoryLabels::default(),
+            Some("another-project".to_string()),
+            true,
+            None,
+            Some(HistoryWindow::AllTime),
+        )
+        .unwrap();
+        assert!(elsewhere.drain_available().is_empty());
+        assert!(elsewhere.drain_events().is_empty());
+    }
+
+    #[test]
+    fn a_watcher_tails_the_day_before_its_start_from_its_end_and_nothing_earlier() {
+        let dir = temp_dir("watch-lookback");
+        let project = temp_dir("watch-lookback-project");
+        let now = now_secs();
+        let yesterday = id_at(now - 86_400, 1);
+        let older = id_at(now - 3 * 86_400, 2);
+        closed_run(&dir, &project, "yesterday", yesterday, &[]);
+        closed_run(&dir, &project, "older", older, &[]);
+        let mut watcher =
+            HistoryWatcher::open(&dir, None, HistoryLabels::default(), None, true).unwrap();
+        assert!(watcher.drain_available().is_empty());
+        assert!(watcher.drain_events().is_empty());
+        // A run begun yesterday that closes now lands in yesterday's segment.
+        let closing = id_at(now - 86_400 + 1, 3);
+        closed_run(&dir, &project, "closing", closing, &[]);
+        // One begun three days ago does not reach a watcher that started today.
+        closed_run(&dir, &project, "stale", id_at(now - 3 * 86_400 + 1, 4), &[]);
+        assert_eq!(
+            watcher
+                .poll()
+                .unwrap()
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![closing]
+        );
+        assert_eq!(watcher.drain_events().len(), 1);
+        // A cursor with no date, or none its date's segment holds, is not found.
+        for cursor in [HistoryId::legacy(b"old"), id_at(now, 9)] {
+            assert!(matches!(
+                HistoryWatcher::open(&dir, Some(cursor), HistoryLabels::default(), None, false),
+                Err(OneharnessError::HistoryNotFound { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn a_watched_session_name_resolves_to_the_newest_matching_session_running_ones_included() {
+        let dir = temp_dir("watch-name");
+        let project = temp_dir("watch-name-project");
+        let now = now_secs();
+        closed_run(&dir, &project, "named", id_at(now - 10, 1), &["team=a"]);
+        // A second session so named, still in its first turn: only its events
+        // carry its labels.
+        let running = HistoryWriter::open(
+            &dir,
+            &project,
+            "named-again",
+            history::parse_labels(["team=b"]).unwrap(),
+        )
+        .unwrap();
+        let running_id = id_at(now - 5, 2);
+        running
+            .append_event(running_id, "codex", event_at(0))
+            .unwrap();
+        let selector = |name: &str| HistorySessionSelector::Name(name.parse().unwrap());
+        let open = |name: &str, labels: &[&str]| {
+            HistoryWatcher::open_session(
+                &dir,
+                None,
+                history::parse_labels(labels.iter().copied()).unwrap(),
+                None,
+                true,
+                Some(&selector(name)),
+            )
+            .unwrap()
+        };
+        let mut by_label = open("named-again", &["team=b"]);
+        assert_eq!(by_label.drain_events().len(), 1);
+        let mut closed = open("named", &["team=a"]);
+        assert_eq!(closed.drain_available().len(), 1);
+        // A name nothing carries yet waits for the first session that does.
+        let mut awaiting = open("not-yet", &[]);
+        assert!(awaiting.drain_available().is_empty());
+        let later = id_at(now, 3);
+        closed_run(&dir, &project, "not-yet", later, &[]);
+        assert_eq!(
+            awaiting
+                .poll()
+                .unwrap()
+                .iter()
+                .map(|record| record.history_id)
+                .collect::<Vec<_>>(),
+            vec![later]
+        );
+        // Following an id: nothing from any other session.
+        let id: HistorySessionId = running
+            .path()
+            .file_stem()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let mut following = HistoryWatcher::open_session(
+            &dir,
+            None,
+            HistoryLabels::default(),
+            None,
+            true,
+            Some(&HistorySessionSelector::Id(id)),
+        )
+        .unwrap();
+        assert!(following.drain_available().is_empty());
+        assert_eq!(following.drain_events().len(), 1);
+    }
+
+    #[test]
+    fn an_all_time_listing_reads_the_legacy_index_and_skips_what_it_cannot_resolve() {
+        let dir = temp_dir("list-legacy");
+        let other = temp_dir("list-legacy-source");
+        let project = temp_dir("list-legacy-project");
+        let dir = fs::canonicalize(&dir).unwrap();
+        let other = fs::canonicalize(&other).unwrap();
+        let id = id_at(1_700_000_000, 1);
+        let session = unindexed_copy(&dir, &closed_run(&other, &project, "legacy", id, &["k=v"]));
+        let running = id_at(1_700_000_100, 2);
+        let mut index = legacy_run_line(&dir, &session, id);
+        index.push_str(&legacy_run_line(&dir, &session, id));
+        index.push_str("{\"session_path\":\"../escape.jsonl\",\"record\":{}}\n");
+        fs::write(dir.join(LEGACY_INDEX_FILE), index).unwrap();
+        let mut events = legacy_event_line(&dir, &session, running, r#"{"k":"v"}"#);
+        events.push_str("{\"session_path\":\"x\",\"labels\":{},\"line\":{}}\n");
+        fs::write(dir.join(LEGACY_EVENT_INDEX_FILE), events).unwrap();
+
+        assert!(list_sessions(&dir, None, HistoryWindow::default())
+            .unwrap()
+            .is_empty());
+        let listed = list_sessions(&dir, None, HistoryWindow::AllTime).unwrap();
+        assert_eq!(listed.len(), 1, "{listed:?}");
+        assert_eq!(
+            listed[0].record_count, 1,
+            "one record, however often indexed"
+        );
+        assert!(listed[0].running, "an event of a run with no record");
+        assert_eq!(listed[0].name, "legacy");
+        assert_eq!(listed[0].labels.as_map().get("k").unwrap(), "v");
+        assert!(
+            list_sessions(&dir, Some("elsewhere"), HistoryWindow::AllTime)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            find_record_by_id_in(&dir, id, HistoryWindow::AllTime)
+                .unwrap()
+                .history_id,
+            id
+        );
+        // Gone from disk: the lookup skips it rather than failing.
+        fs::remove_file(&session).unwrap();
+        assert!(list_sessions(&dir, None, HistoryWindow::AllTime)
+            .unwrap()
+            .is_empty());
+        assert!(matches!(
+            find_record_by_id_in(&dir, id, HistoryWindow::AllTime),
+            Err(OneharnessError::HistoryNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn a_session_is_found_by_its_ids_date_or_by_name_under_a_project() {
+        let dir = temp_dir("find-session");
+        let project = temp_dir("find-session-project");
+        let session = closed_run(&dir, &project, "findable", id_at(now_secs(), 1), &[]);
+        let stem = session.file_stem().unwrap().to_str().unwrap();
+        let slug = session
+            .parent()
+            .unwrap()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert_eq!(
+            find_session_path(&dir, None, stem).unwrap(),
+            Some(session.clone())
+        );
+        assert_eq!(
+            find_session_path(&dir, Some(slug), stem).unwrap(),
+            Some(dir.join(slug).join(format!("{stem}.jsonl")))
+        );
+        for (slug, id) in [
+            (None, "../escape"),
+            (None, ""),
+            (Some(".index.d"), stem),
+            (Some("../up"), stem),
+            (None, "no-date-in-it"),
+            (None, "absent-20200101T000000Z-1"),
+        ] {
+            assert_eq!(
+                find_session_path(&dir, slug, id).unwrap(),
+                None,
+                "{slug:?} {id}"
+            );
+        }
+        assert!(remove_sessions(&dir, Some("../up")).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reindex_names_what_it_cannot_read_and_dates_what_carries_no_timestamp() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("reindex-edges");
+        let project = temp_dir("reindex-edges-project");
+        let other = temp_dir("reindex-edges-source");
+        // A legacy 0.1-style run: a UUIDv5 id and a session stem with no date,
+        // so its date is its record's timestamp.
+        let minted = id_at(now_secs(), 1);
+        let source = closed_run(&other, &project, "undated", minted, &[]);
+        let text = fs::read_to_string(&source).unwrap();
+        let v5 = HistoryId::legacy(b"undated");
+        let rewritten = text.replace(&minted.to_string(), &v5.to_string());
+        let slug_dir = dir.join("legacy-project");
+        fs::create_dir_all(&slug_dir).unwrap();
+        fs::write(slug_dir.join("undated.jsonl"), &rewritten).unwrap();
+        // Unmigrated whole-record lines are not indexed, and said once.
+        fs::write(
+            slug_dir.join("unmigrated.jsonl"),
+            "{\"schema_version\":\"0.3\",\"name\":\"old\"}\n",
+        )
+        .unwrap();
+        // An unreadable file and an unreadable project directory.
+        let unreadable = slug_dir.join("locked-20260101T000000Z-1.jsonl");
+        fs::write(&unreadable, "{}\n").unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o000)).unwrap();
+        let locked_dir = dir.join("locked-project");
+        fs::create_dir_all(&locked_dir).unwrap();
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).unwrap();
+        // SAFETY: geteuid has no preconditions. Root reads a mode-000 file.
+        let root = unsafe { libc::geteuid() } == 0;
+
+        let report = reindex(&dir).unwrap();
+        fs::set_permissions(&unreadable, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o755)).unwrap();
+        if !root {
+            assert_eq!(report.unreadable.len(), 2, "{report:?}");
+        }
+        let record_date = UtcDate::from_epoch_secs(now_epoch_secs()).to_string();
+        assert!(report
+            .segments
+            .iter()
+            .any(|segment| segment.segment == format!("runs-{record_date}.ndjson")));
+        assert_eq!(
+            find_record_by_id_in(&dir, v5, HistoryWindow::AllTime)
+                .unwrap()
+                .history_id,
+            v5
+        );
+        assert!(matches!(
+            find_record_by_id(&dir, v5),
+            Err(OneharnessError::HistoryNotFound { .. })
+        ));
+    }
+
     #[test]
     fn exact_id_lookup_has_a_typed_not_found_error() {
         let dir = temp_dir("exact-id");

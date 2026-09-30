@@ -24,7 +24,11 @@ import type { HistoryMigrateOptions } from "./generated/history-migrate-options.
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryPointers } from "./generated/history-pointers.js";
 import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
-import type { IncompleteHistoryRun } from "./generated/history-show-entries.js";
+import type {
+	HistoryShowEntries,
+	HistoryShowEntry,
+	IncompleteHistoryRun,
+} from "./generated/history-show-entries.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { InitOptions } from "./generated/init-options.js";
@@ -183,7 +187,7 @@ export type MockHarnessScript = {
  * run's record. Records carry no `type`; an in-flight entry's is `incomplete`.
  */
 export function isIncompleteHistoryRun(
-	entry: HistoryRecord | IncompleteHistoryRun,
+	entry: HistoryShowEntry,
 ): entry is IncompleteHistoryRun {
 	return entry.type === "incomplete";
 }
@@ -791,9 +795,7 @@ export class OneHarness {
 	 * entry (`type: "incomplete"`) carrying its `run_id`, `harness` and the
 	 * `events` so far.
 	 */
-	async history(
-		lookup: HistoryLookup,
-	): Promise<Array<HistoryRecord | IncompleteHistoryRun>> {
+	async history(lookup: HistoryLookup): Promise<HistoryShowEntries> {
 		// The `--last`-suppresses-a-name rule is declared, not re-derived here:
 		// the union deliberately accepts `{session, last: true}` and resolves it
 		// to "the most recent", and the manifest binds `session` with

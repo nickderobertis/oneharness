@@ -135,8 +135,11 @@ None of these runs implicitly: no writer, lookup or watch calls any of them.
   indexing every readable one. It never writes, renames, truncates or deletes a
   legacy index file or a session file. It is how a store written by an older
   core, or session files copied in from another store, become findable by id and
-  by date. Its memory is bounded by one UTC day's entries: candidates are spilled
-  to scratch space per segment, then each segment is reconciled on its own.
+  by date. Its memory does not grow with the store, nor with how many sessions
+  one UTC day holds: candidates are spilled to scratch space per segment, then
+  each segment is reconciled against the keys it holds by an external sort,
+  whose chunks and merge fan-in are fixed. New entries are appended in key
+  order.
 - **`--all-time`** on `history list`, `history show` and `history watch` reads
   every segment and the legacy index files.
 - **`history migrate`** rewrites legacy session files to the 1.0 line format. It

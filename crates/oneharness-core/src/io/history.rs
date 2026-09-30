@@ -1089,9 +1089,10 @@ pub struct HistoryReindexReport {
 /// record's `timestamp`). A file that cannot be read is named in the report and
 /// skipped, never failing the rest.
 ///
-/// Memory is bounded by one UTC day's entries: candidates are spilled to a
-/// scratch directory per segment, then each segment is reconciled against the
-/// ids it already holds, one date at a time.
+/// Memory does not grow with the store: candidates are spilled to a scratch
+/// directory per segment, then each segment is reconciled against the keys it
+/// already holds by an external sort, one date at a time — so a date holding
+/// ten times the sessions costs ten times the scratch space, not the memory.
 pub fn reindex(dir: &Path) -> Result<HistoryReindexReport, OneharnessError> {
     let mut report = HistoryReindexReport {
         segments: Vec::new(),
@@ -1105,21 +1106,32 @@ pub fn reindex(dir: &Path) -> Result<HistoryReindexReport, OneharnessError> {
     let scratch_error = |source| history_io_error(&std::env::temp_dir(), source);
     let mut spill = Spill::new().map_err(scratch_error)?;
     for project_dir in read_subdirs(dir)? {
-        let files = match read_session_files(&project_dir) {
+        let unreadable_dir = |source: std::io::Error| UnreadableSessionFile {
+            path: project_dir.display().to_string(),
+            error: source.to_string(),
+        };
+        // Streamed rather than collected, so a directory's size costs no memory.
+        let files = match fs::read_dir(&project_dir) {
             Ok(files) => files,
-            Err(OneharnessError::HistoryIo { path, source }) => {
-                report.unreadable.push(UnreadableSessionFile {
-                    path,
-                    error: source.to_string(),
-                });
+            Err(source) => {
+                report.unreadable.push(unreadable_dir(source));
                 continue;
             }
-            Err(error) => return Err(error),
         };
         let Some(slug) = project_dir.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        for path in files {
+        for file in files {
+            let path = match file {
+                Ok(file) => file.path(),
+                Err(source) => {
+                    report.unreadable.push(unreadable_dir(source));
+                    break;
+                }
+            };
+            if path.extension().and_then(|ext| ext.to_str()) != Some(SESSION_EXT) {
+                continue;
+            }
             match spill_session(&path, slug, &mut spill) {
                 Ok(unmigrated) => {
                     report.files_read += 1;
@@ -1140,7 +1152,7 @@ pub fn reindex(dir: &Path) -> Result<HistoryReindexReport, OneharnessError> {
     }
     report.unreadable.sort_by(|a, b| a.path.cmp(&b.path));
     for (kind, date) in spill.finish().map_err(scratch_error)? {
-        let added = reconcile_segment(dir, kind, date, &spill.path(kind, date))?;
+        let added = reconcile_segment(dir, kind, date, &spill.path(kind, date), spill.root.path())?;
         if added > 0 {
             report.entries_added += added;
             report.segments.push(SegmentReindexSummary {
@@ -1277,32 +1289,60 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
 }
 
 /// Append to one segment every spilled entry it lacks, returning how many
-/// went out. The segment's existing entries are read for their keys only, so
-/// memory holds one date's keys; its bytes are never rewritten.
+/// went out. The segment's keys and the spilled candidates are merged by an
+/// external sort under `scratch`, so memory holds one sort chunk however many
+/// entries the date has; the segment's bytes are never rewritten. Its new
+/// entries go out in key order.
 fn reconcile_segment(
     dir: &Path,
     kind: SegmentKind,
     date: UtcDate,
     spilled: &Path,
+    scratch: &Path,
 ) -> Result<usize, OneharnessError> {
     let target = segment_path(dir, kind, date);
-    let mut held: HashSet<IndexKey> = HashSet::new();
-    stream_lines(&target, 0, |line| {
-        if let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) {
-            held.insert(entry.key());
+    let scratch_error = |source| history_io_error(scratch, source);
+    let mut sort = ExternalSort::new(scratch, ExternalSort::CHUNK_BYTES, ExternalSort::FAN_IN)
+        .map_err(scratch_error)?;
+    let mut sort_failure = None;
+    for (path, held) in [(target.as_path(), true), (spilled, false)] {
+        stream_lines(path, 0, |line| {
+            let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) else {
+                return ControlFlow::Continue(());
+            };
+            let pushed = sort.push(entry.key(), if held { None } else { Some(line) });
+            match pushed {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(source) => {
+                    sort_failure = Some(source);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        if let Some(source) = sort_failure.take() {
+            return Err(scratch_error(source));
         }
-        ControlFlow::Continue(())
-    })?;
+    }
     let mut writer: Option<File> = None;
     let mut added = 0usize;
-    let mut failure = None;
-    stream_lines(spilled, 0, |line| {
-        let Ok(entry) = serde_json::from_slice::<HistoryIndexEntry>(line) else {
-            return ControlFlow::Continue(());
-        };
-        if !held.insert(entry.key()) {
+    let mut write_failure = None;
+    let mut current = [0u8; SORT_KEY_LEN];
+    let mut settled = false;
+    sort.finish(|record| {
+        let (key, rest) = record.split_at(SORT_KEY_LEN);
+        if key != current {
+            current.copy_from_slice(key);
+            settled = false;
+        }
+        // The segment's own record sorts first within a key, so a key it holds
+        // settles before any candidate for it is seen.
+        if settled {
             return ControlFlow::Continue(());
         }
+        settled = true;
+        let Some((&SORT_CANDIDATE, line)) = rest.split_first() else {
+            return ControlFlow::Continue(());
+        };
         let written = (|| {
             let file = match &mut writer {
                 Some(file) => file,
@@ -1325,15 +1365,199 @@ fn reconcile_segment(
                 ControlFlow::Continue(())
             }
             Err(source) => {
-                failure = Some(source);
+                write_failure = Some(source);
                 ControlFlow::Break(())
             }
         }
-    })?;
-    match failure {
+    })
+    .map_err(scratch_error)?;
+    match write_failure {
         Some(source) => Err(history_io_error(&target, source)),
         None => Ok(added),
     }
+}
+
+/// The width of a sort record's key: a kind byte, the hyphenated id, and a
+/// zero-padded event index (zero for a run), so every key is one width.
+const SORT_KEY_LEN: usize = 1 + 36 + 20;
+/// The byte after the key marking a key the segment already holds; it sorts
+/// before [`SORT_CANDIDATE`].
+const SORT_HELD: u8 = b'0';
+/// The byte after the key marking a spilled candidate, followed by its line.
+const SORT_CANDIDATE: u8 = b'1';
+
+fn sort_key(key: IndexKey) -> String {
+    match key {
+        IndexKey::Run(id) => format!("r{id}{:020}", 0),
+        IndexKey::Event(id, index) => format!("e{id}{index:020}"),
+    }
+}
+
+/// A bounded-memory external sort of reindex records: `<key><0>` for a key a
+/// segment holds, `<key><1><entry line>` for a candidate. Records are sorted in
+/// memory up to `chunk_bytes`, written out as a sorted run, and runs are merged
+/// `fan_in` at a time level by level, so memory holds one chunk plus `fan_in`
+/// read buffers however many records go in.
+struct ExternalSort {
+    root: crate::io::scratch::ScratchDir,
+    chunk_bytes: usize,
+    fan_in: usize,
+    buffer: Vec<Vec<u8>>,
+    buffered: usize,
+    /// Sorted runs by level; a level reaching `fan_in` merges into the next.
+    levels: Vec<Vec<PathBuf>>,
+    written: usize,
+}
+
+impl ExternalSort {
+    const CHUNK_BYTES: usize = 4 << 20;
+    const FAN_IN: usize = 16;
+    /// What one buffered record costs beyond its bytes: its `Vec` header and
+    /// allocation.
+    const RECORD_OVERHEAD: usize = 48;
+
+    fn new(parent: &Path, chunk_bytes: usize, fan_in: usize) -> std::io::Result<ExternalSort> {
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let tag = format!("sort-{}", SEQ.fetch_add(1, Ordering::Relaxed));
+        Ok(ExternalSort {
+            root: crate::io::scratch::ScratchDir::under(parent, &tag)?,
+            chunk_bytes,
+            fan_in: fan_in.max(2),
+            buffer: Vec::new(),
+            buffered: 0,
+            levels: Vec::new(),
+            written: 0,
+        })
+    }
+
+    fn push(&mut self, key: IndexKey, line: Option<&[u8]>) -> std::io::Result<()> {
+        let key = sort_key(key);
+        let mut record = Vec::with_capacity(SORT_KEY_LEN + 1 + line.map_or(0, <[u8]>::len));
+        record.extend_from_slice(key.as_bytes());
+        match line {
+            None => record.push(SORT_HELD),
+            Some(line) => {
+                record.push(SORT_CANDIDATE);
+                record.extend_from_slice(line);
+            }
+        }
+        self.buffered += record.len() + Self::RECORD_OVERHEAD;
+        self.buffer.push(record);
+        if self.buffered >= self.chunk_bytes {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn next_path(&mut self) -> PathBuf {
+        self.written += 1;
+        self.root.path().join(format!("run-{}", self.written))
+    }
+
+    /// Write the buffer out as one sorted run at level zero, cascading any
+    /// level that reaches `fan_in` into one run at the next.
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        self.buffer.sort_unstable();
+        let path = self.next_path();
+        let mut out = BufWriter::new(File::create(&path)?);
+        for record in self.buffer.drain(..) {
+            out.write_all(&record)?;
+            out.write_all(b"\n")?;
+        }
+        out.flush()?;
+        self.buffered = 0;
+        self.buffer = Vec::new();
+        let mut level = 0;
+        let mut run = path;
+        loop {
+            if self.levels.len() == level {
+                self.levels.push(Vec::new());
+            }
+            self.levels[level].push(run);
+            if self.levels[level].len() < self.fan_in {
+                return Ok(());
+            }
+            let inputs = std::mem::take(&mut self.levels[level]);
+            run = self.merge_to_file(&inputs)?;
+            level += 1;
+        }
+    }
+
+    fn merge_to_file(&mut self, inputs: &[PathBuf]) -> std::io::Result<PathBuf> {
+        let path = self.next_path();
+        let mut out = BufWriter::new(File::create(&path)?);
+        let mut failure = None;
+        merge_runs(inputs, |record| {
+            match out.write_all(record).and_then(|()| out.write_all(b"\n")) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(error) => {
+                    failure = Some(error);
+                    ControlFlow::Break(())
+                }
+            }
+        })?;
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        out.flush()?;
+        for input in inputs {
+            fs::remove_file(input)?;
+        }
+        Ok(path)
+    }
+
+    /// Hand every record to `each` in sorted order, merging at most `fan_in`
+    /// runs at once.
+    fn finish(mut self, each: impl FnMut(&[u8]) -> ControlFlow<()>) -> std::io::Result<()> {
+        self.flush()?;
+        let mut runs: VecDeque<PathBuf> = self.levels.drain(..).flatten().collect();
+        while runs.len() > self.fan_in {
+            let inputs: Vec<PathBuf> = runs.drain(..self.fan_in).collect();
+            let merged = self.merge_to_file(&inputs)?;
+            runs.push_back(merged);
+        }
+        merge_runs(runs.make_contiguous(), each)
+    }
+}
+
+/// A k-way merge of sorted runs of newline-terminated records.
+fn merge_runs(
+    inputs: &[PathBuf],
+    mut each: impl FnMut(&[u8]) -> ControlFlow<()>,
+) -> std::io::Result<()> {
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
+    let next = |reader: &mut BufReader<File>| -> std::io::Result<Option<Vec<u8>>> {
+        let mut record = Vec::new();
+        if reader.read_until(b'\n', &mut record)? == 0 {
+            return Ok(None);
+        }
+        if record.last() == Some(&b'\n') {
+            record.pop();
+        }
+        Ok(Some(record))
+    };
+    let mut readers = Vec::with_capacity(inputs.len());
+    let mut heap = BinaryHeap::with_capacity(inputs.len());
+    for (source, path) in inputs.iter().enumerate() {
+        let mut reader = BufReader::with_capacity(64 * 1024, File::open(path)?);
+        if let Some(record) = next(&mut reader)? {
+            heap.push(Reverse((record, source)));
+        }
+        readers.push(reader);
+    }
+    while let Some(Reverse((record, source))) = heap.pop() {
+        if each(&record).is_break() {
+            return Ok(());
+        }
+        if let Some(record) = next(&mut readers[source])? {
+            heap.push(Reverse((record, source)));
+        }
+    }
+    Ok(())
 }
 
 /// A resumable reader over the dated index. It reads the segments dated from
@@ -3511,6 +3735,58 @@ mod tests {
             find_record_by_id(&dir, v5),
             Err(OneharnessError::HistoryNotFound { .. })
         ));
+    }
+
+    #[test]
+    fn the_reindex_sort_merges_many_runs_into_one_order_keeping_held_keys_first() {
+        let scratch = temp_dir("reindex-sort");
+        // A tiny chunk and a fan-in of two: every few records is a run, runs
+        // cascade through several levels, and finishing merges what is left.
+        let mut sort = ExternalSort::new(scratch.path(), 256, 2).unwrap();
+        let ids: Vec<HistoryId> = (0..40u16).map(|n| id_at(now_secs(), n + 1)).collect();
+        for (n, id) in ids.iter().enumerate().rev() {
+            sort.push(
+                IndexKey::Event(*id, n),
+                Some(format!("candidate-{n}").as_bytes()),
+            )
+            .unwrap();
+            if n % 3 == 0 {
+                sort.push(IndexKey::Event(*id, n), None).unwrap();
+            }
+            sort.push(IndexKey::Run(*id), Some(b"run")).unwrap();
+        }
+        let mut records = Vec::new();
+        sort.finish(|record| {
+            records.push(record.to_vec());
+            ControlFlow::Continue(())
+        })
+        .unwrap();
+        assert_eq!(records.len(), 40 * 2 + 14);
+        assert!(records.windows(2).all(|pair| pair[0] <= pair[1]));
+        for (n, id) in ids.iter().enumerate() {
+            let key = sort_key(IndexKey::Event(*id, n));
+            let group: Vec<&Vec<u8>> = records
+                .iter()
+                .filter(|record| record.starts_with(key.as_bytes()))
+                .collect();
+            if n % 3 == 0 {
+                assert_eq!(group[0][SORT_KEY_LEN], SORT_HELD);
+            }
+            assert!(group
+                .last()
+                .unwrap()
+                .ends_with(format!("candidate-{n}").as_bytes()));
+        }
+        // A consumer that stops is handed no further record.
+        let mut sort = ExternalSort::new(scratch.path(), 256, 2).unwrap();
+        sort.push(IndexKey::Run(ids[0]), None).unwrap();
+        let mut stopped = 0;
+        sort.finish(|_| {
+            stopped += 1;
+            ControlFlow::Break(())
+        })
+        .unwrap();
+        assert_eq!(stopped, 1);
     }
 
     #[test]

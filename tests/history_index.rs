@@ -2110,3 +2110,90 @@ fn reindex_memory_does_not_grow_with_the_session_files_it_reads() {
         peaks[1]
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn reindex_memory_does_not_grow_with_the_sessions_one_utc_day_holds() {
+    const EVENTS: usize = 10;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // One session in the released session format, recorded through the
+    // writer; every copy below is that file under a fresh id minted today, so
+    // all of a store's entries land in today's two segments.
+    let template_scratch = ScratchDir::new("hindex-reindex-day-template").unwrap();
+    let project = template_scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let template_id = id_at(now, 1);
+    let writer = HistoryWriter::open(
+        &template_scratch.join("store"),
+        &project,
+        "day",
+        HistoryLabels::default(),
+    )
+    .unwrap();
+    for index in 0..EVENTS {
+        writer
+            .append_event(template_id, "codex", event(index, "o"))
+            .unwrap();
+    }
+    writer
+        .append_streamed(
+            template_id,
+            PermissionMode::Default,
+            None,
+            "day",
+            &finished_result("day"),
+            &(0..EVENTS).collect(),
+        )
+        .unwrap();
+    let template = std::fs::read_to_string(writer.path()).unwrap();
+    let template_id = template_id.to_string();
+
+    let mut peaks = Vec::new();
+    for (tag, sessions) in [("small", 3_000u64), ("large", 30_000)] {
+        let scratch = ScratchDir::new(&format!("hindex-reindex-day-{tag}")).unwrap();
+        let store = scratch.join("store");
+        let project_dir = store.join("copied");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        for n in 0..sessions {
+            let id = id_at(now, n + 2).to_string();
+            std::fs::write(
+                project_dir.join(format!("day-{n}-20260101T000000Z-{n}.jsonl")),
+                template.replace(&template_id, &id),
+            )
+            .unwrap();
+        }
+        let mut command = oneharness();
+        command
+            .args([
+                "history",
+                "reindex",
+                "--history-dir",
+                &store.display().to_string(),
+            ])
+            .args(["--format", "json"]);
+        let measured = measured::measure(command, Duration::from_secs(300));
+        let report = json(&measured.output);
+        assert_eq!(report["files_read"], sessions);
+        assert_eq!(
+            report["entries_added"],
+            sessions * (EVENTS as u64 + 1),
+            "{report}"
+        );
+        // Every entry went to one day: its runs and its events segment.
+        let segments = report["segments"].as_array().unwrap();
+        assert_eq!(segments.len(), 2, "{report}");
+        let day = UtcDate::from_epoch_secs(now as i64);
+        assert_eq!(segments[0]["segment"], format!("events-{day}.ndjson"));
+        assert_eq!(segments[1]["segment"], format!("runs-{day}.ndjson"));
+        peaks.push(measured.max_rss_kib);
+    }
+    assert!(
+        peaks[1] <= peaks[0] + 8 * 1024,
+        "reindex peak RSS grew with the sessions one day holds: {} KiB -> {} KiB",
+        peaks[0],
+        peaks[1]
+    );
+}

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ZodType, z } from "zod";
 import {
@@ -1104,6 +1104,142 @@ describe("OneHarness", () => {
 			)[0]?.name,
 		).toBe("older-session");
 	});
+
+	test("reads a history lookup and a watch over exactly the window each names", async () => {
+		const client = sdk();
+		// One real run supplies the closing line every dated fixture copies, so
+		// only the id, name and timestamp this test turns on are hand-set.
+		const template = await client.run({
+			prompt: "window template",
+			harnesses: ["codex"],
+			mode: "bypass",
+			history: true,
+			historyDir: await scratch("window-template"),
+			env: { MOCK_STDOUT: historyTrace },
+			bins: { codex: mock },
+		});
+		const templateFile = template.history_file;
+		if (!templateFile)
+			throw new Error("run --history recorded no history file");
+		const line = (await readFile(templateFile, "utf8"))
+			.trim()
+			.split("\n")
+			.find((candidate) => JSON.parse(candidate).type === "run");
+		if (!line) throw new Error(`history file ${templateFile} recorded no run`);
+		const historyDir = await scratch("window");
+		const slug = basename(dirname(templateFile));
+		await mkdir(resolve(historyDir, slug));
+		// A UUIDv7 minted at `day`, so the dated index files it under that date.
+		const recordAt = async (name: string, day: string, seq: number) => {
+			const hex = Date.parse(`${day}T00:00:00Z`).toString(16).padStart(12, "0");
+			const stem = `${name}-${day.replaceAll("-", "")}T000000Z-00000${seq}`;
+			const record = {
+				...JSON.parse(line),
+				history_id: `${hex.slice(0, 8)}-${hex.slice(8)}-7000-8000-00000000000${seq}`,
+				session: stem,
+				name,
+				prompt: name,
+				timestamp: `${day}T00:00:00Z`,
+			};
+			await writeFile(
+				resolve(historyDir, slug, `${stem}.jsonl`),
+				`${JSON.stringify(record)}\n`,
+			);
+			return { record, sessionPath: `${slug}/${stem}.jsonl` };
+		};
+		// Two runs on dates of their own, both older than the default 7 days...
+		await recordAt("win-a", "2020-01-05", 1);
+		await recordAt("win-b", "2020-01-15", 2);
+		expect((await client.historyReindex({ historyDir })).entries_added).toBe(2);
+		// ...and the newest one known only to the legacy index an older core
+		// kept, which only the all-time window reads.
+		const legacy = await recordAt("win-c", "2020-02-01", 3);
+		const { type: _type, ...legacyRecord } = legacy.record;
+		await writeFile(
+			resolve(historyDir, ".index.jsonl"),
+			`${JSON.stringify({ session_path: legacy.sessionPath, record: legacyRecord })}\n`,
+		);
+
+		const found = async (lookup: HistoryLookup) =>
+			client.history(lookup).then(
+				(records) => records[0]?.name,
+				(error: unknown) => {
+					if (error instanceof HistoryNotFoundError) return null;
+					throw error;
+				},
+			);
+		// By name: `since` reads from its date on, inclusive, and never the
+		// legacy index; the default window reaches none of these dates.
+		for (const [lookup, name] of [
+			[{ session: "win-a", historyDir }, null],
+			[{ session: "win-a", historyDir, since: "2020-01-05" }, "win-a"],
+			[{ session: "win-a", historyDir, since: "2020-01-06" }, null],
+			[{ session: "win-b", historyDir, since: "2020-01-06" }, "win-b"],
+			[{ session: "win-c", historyDir, since: "2020-01-01" }, null],
+			[{ session: "win-a", historyDir, allTime: true }, "win-a"],
+			[{ session: "win-c", historyDir, allTime: true }, "win-c"],
+			// By last: the newest session inside the window, never beyond it.
+			[{ last: true, historyDir }, null],
+			[{ last: true, historyDir, since: "2020-01-01" }, "win-b"],
+			[{ last: true, historyDir, since: "2020-01-16" }, null],
+			[{ last: true, historyDir, allTime: true }, "win-c"],
+		] satisfies Array<[HistoryLookup, string | null]>) {
+			expect([lookup, await found(lookup)]).toEqual([lookup, name]);
+		}
+
+		// A run recorded now lands in today's segment: what every watch window
+		// reaches, and so the proof a window opened at all.
+		const recordToday = (name: string) =>
+			client.run({
+				prompt: name,
+				harnesses: ["codex"],
+				mode: "bypass",
+				history: true,
+				historyName: name,
+				historyDir,
+				env: { MOCK_STDOUT: historyTrace },
+				bins: { codex: mock },
+			});
+		await recordToday("win-today");
+		// A watch emits its whole opening read before anything newer, so a run
+		// recorded once the first record arrives marks where that read ended:
+		// what came before it is exactly the range the window read.
+		const windows: Array<[HistoryWatchOptions, string[]]> = [
+			[{}, ["win-today"]],
+			[{ since: "2020-01-06" }, ["win-b", "win-today"]],
+			[{ allTime: true }, ["win-a", "win-b", "win-c", "win-today"]],
+		];
+		for (const [index, [options, names]] of windows.entries()) {
+			// A session name is recorded as a lowercase slug, so the marker is one.
+			const marker = `end-${index}`;
+			const watch = client.historyWatch({
+				...options,
+				allProjects: true,
+				historyDir,
+			});
+			const seen: string[] = [];
+			let marked = false;
+			try {
+				for (
+					let next = await watch.next();
+					!next.done;
+					next = await watch.next()
+				) {
+					const { name } = next.value.record as HistoryRecord;
+					if (name === marker) break;
+					// An earlier window's marker is today's too; it is not a fixture.
+					if (!name.startsWith("end-")) seen.push(name);
+					if (!marked) {
+						marked = true;
+						await recordToday(marker);
+					}
+				}
+			} finally {
+				await watch.return(undefined);
+			}
+			expect([options, seen.sort()]).toEqual([options, names]);
+		}
+	}, 60_000);
 
 	test("continues a native session with the new user message", async () => {
 		const argvFile = resolve(await scratch("resume"), "argv");

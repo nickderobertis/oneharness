@@ -894,20 +894,26 @@ fn segment_path(dir: &Path, kind: SegmentKind, date: UtcDate) -> PathBuf {
 
 /// Read the one line a span names and parse it, when it is a whole line. The
 /// span is read from disk, so it is trusted only as far as the session file
-/// reaches: one that runs past the file's end is refused before anything is
-/// allocated for it.
+/// reaches — one that runs past the file's end is refused — and its `length`
+/// is never allocated up front: the bytes are parsed as they are read, so what
+/// is held is what the file actually holds there, and a span that does not
+/// open on a record fails at its first byte however long it claims to be.
 fn read_span(path: &Path, span: LineSpan) -> Option<HistoryLine> {
     let mut file = File::open(path).ok()?;
     let end = span.offset.checked_add(span.length.get())?;
     if end > file.metadata().ok()?.len() {
         return None;
     }
-    let length = usize::try_from(span.length.get()).ok()?;
+    file.seek(SeekFrom::Start(end - 1)).ok()?;
+    let mut last = [0u8; 1];
+    file.read_exact(&mut last).ok()?;
+    if last != *b"\n" {
+        return None;
+    }
     file.seek(SeekFrom::Start(span.offset)).ok()?;
-    let mut bytes = vec![0u8; length];
-    file.read_exact(&mut bytes).ok()?;
-    let body = bytes.strip_suffix(b"\n")?;
-    serde_json::from_slice(body).ok()
+    // The closing newline is JSON whitespace, and anything past the one value
+    // the span holds — part of a neighbouring line — is refused as trailing.
+    serde_json::from_reader(BufReader::new(file.take(span.length.get()))).ok()
 }
 
 /// Find one line of a session file: at its span when the span holds it, else
@@ -3275,6 +3281,52 @@ mod tests {
                 HistoryIndexEntry::Run(_) => false,
             })
             .unwrap_or(true));
+    }
+
+    // A sparse file is how a span can claim far more bytes than memory holds
+    // while still fitting its file; Windows would write every one of them.
+    #[cfg(unix)]
+    #[test]
+    fn a_span_over_bytes_that_hold_no_record_is_refused_without_allocating_its_length() {
+        let dir = temp_dir("span-sparse");
+        let project = temp_dir("span-sparse-project");
+        let writer =
+            HistoryWriter::open(&dir, &project, "sparse", HistoryLabels::default()).unwrap();
+        writer
+            .append(PermissionMode::Default, None, "sparse", &result("codex"))
+            .unwrap();
+        let run = run_entries(&dir).remove(0);
+        let good = run.span.unwrap();
+        let recorded = fs::metadata(writer.path()).unwrap().len();
+        // 64 GiB of holes closed by one newline: a span over them fits the
+        // file, so only reading it as it parses keeps this from allocating it.
+        let claimed: u64 = 64 << 30;
+        let file = OpenOptions::new().write(true).open(writer.path()).unwrap();
+        file.set_len(recorded + claimed - 1).unwrap();
+        drop(file);
+        OpenOptions::new()
+            .append(true)
+            .open(writer.path())
+            .unwrap()
+            .write_all(b"\n")
+            .unwrap();
+        let hole = LineSpan {
+            offset: recorded,
+            length: std::num::NonZeroU64::new(claimed).unwrap(),
+        };
+        assert!(read_span(writer.path(), hole).is_none());
+        // A span that starts inside the record rather than at it is refused
+        // too, even though it ends on that record's newline.
+        let inside = LineSpan {
+            offset: good.offset + 1,
+            length: std::num::NonZeroU64::new(good.length.get() - 1).unwrap(),
+        };
+        assert!(read_span(writer.path(), inside).is_none());
+        assert!(read_span(writer.path(), good).is_some());
+        let found = find_run_line(writer.path(), run.history_id, Some(hole))
+            .unwrap()
+            .expect("the record ahead of the holes still answers");
+        assert_eq!(found.prompt, "sparse");
     }
 
     fn id_at(secs: u64, counter: u16) -> HistoryId {

@@ -68,6 +68,8 @@ OUTPUT_ALIASES = (
     "RunReport",
     "RunStreamEnvelope",
     "HistoryRecord",
+    "HistoryShowEntry",
+    "IncompleteHistoryRun",
     "HistoryLine",
     "HistoryStreamEnvelope",
     "HarnessInfo",

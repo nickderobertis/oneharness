@@ -380,6 +380,62 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.7)
         self.assertNotIn("COMPLETE", log.read_text(encoding="utf-8"))
 
+    async def test_history_shows_a_streamed_session_still_in_flight(self) -> None:
+        """A session whose run has not finished reads as its events so far."""
+        history_dir = str(scratch(self, "in-flight"))
+        client = self.client()
+        # The events land first; the filler lines hold the run open long after
+        # them, so the lookup below reads a session with no closing record yet.
+        trace = (
+            '{"type":"thread.started","thread_id":"in-flight-thread"}',
+            '{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"weighing it"}}',
+            '{"type":"item.started","item":{"id":"c1","type":"command_execution",'
+            '"command":"echo hi","status":"in_progress"}}',
+            '{"type":"item.completed","item":{"id":"c1","type":"command_execution",'
+            '"command":"echo hi","aggregated_output":"hi","exit_code":0,"status":"completed"}}',
+            '{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"still going"}}',
+            *(['{"type":"turn.progress"}'] * 40),
+            '{"type":"turn.completed"}',
+        )
+        stream = client.run_stream(
+            {
+                "prompt": "in flight",
+                "harnesses": ["codex"],
+                "mode": "bypass",
+                "history": True,
+                "history_name": "python-in-flight",
+                "history_dir": history_dir,
+                "env": {"MOCK_STREAM_DELAY_MS": "300", "MOCK_STDOUT": "\n".join(trace)},
+                "bins": {"codex": str(MOCK)},
+            }
+        )
+        try:
+            streamed: list[str] = []
+            while "message" not in streamed:
+                envelope = await stream.__anext__()
+                if envelope["type"] == "event":
+                    streamed.append(envelope["event"]["kind"])
+
+            entries = await client.history(
+                {"session": "python-in-flight", "history_dir": history_dir}
+            )
+            self.assertEqual(len(entries), 1)
+            entry = entries[0]
+            self.assertEqual(entry["type"], "incomplete")
+            self.assertEqual(entry["harness"], "codex")
+            self.assertRegex(entry["run_id"], r"^[0-9a-f-]{36}$")
+            self.assertEqual(
+                [event["kind"] for event in entry["events"]],
+                ["reasoning", "tool_call", "message"],
+            )
+            self.assertEqual(entry["events"][1]["input"]["command"], "echo hi")
+            self.assertEqual(entry["events"][2]["output"], "still going")
+        finally:
+            # `run_stream` is typed as an `AsyncIterator`, which declares no
+            # `aclose`; the generator it returns has one, and closing it ends
+            # the still-running subprocess.
+            await cast("Any", stream).aclose()
+
     async def test_history_watch_filters_records_and_closes(self) -> None:
         """Resume after one record and filter later records without duplication."""
         history_dir = str(scratch(self, "watch"))

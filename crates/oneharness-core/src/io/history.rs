@@ -34,7 +34,8 @@ use serde_json::Value;
 use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
-    HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector, PointerSession,
+    HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector,
+    HistoryShowEntry, IncompleteHistoryRun, PointerSession,
 };
 use crate::domain::history_index::{
     self as index, EventIndexEntry, HistoryIndexEntry, IndexKey, LineSpan, RunIndexEntry,
@@ -2230,7 +2231,7 @@ pub fn read_session(path: &Path) -> Result<Vec<HistoryRecord>, OneharnessError> 
 
 /// Read the display view, including event-only runs whose terminal line has not
 /// landed. Completed entries retain the established materialized record shape.
-pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> {
+pub fn read_session_display(path: &Path) -> Result<Vec<HistoryShowEntry>, OneharnessError> {
     let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
         path: path.display().to_string(),
         source,
@@ -2251,18 +2252,16 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
                     .remove(&run.history_id)
                     .map(|(_, events)| events)
                     .unwrap_or_default();
-                values.push(serde_json::to_value(run.materialize(events))?);
+                values.push(HistoryShowEntry::Record(run.materialize(events)));
             }
         }
     }
-    for (run_id, (harness, mut events)) in dangling {
-        events.sort_by_key(|event| event.index);
-        values.push(serde_json::json!({
-            "type": "incomplete",
-            "run_id": run_id,
-            "harness": harness,
-            "events": events,
-        }));
+    for (run_id, (harness, events)) in dangling {
+        // Every dangling run was entered by reading one of its events, so the
+        // constructor's empty-events `None` cannot arise here.
+        values.extend(
+            IncompleteHistoryRun::new(run_id, harness, events).map(HistoryShowEntry::Incomplete),
+        );
     }
     Ok(values)
 }
@@ -3007,25 +3006,26 @@ mod tests {
         fs::create_dir_all(&project_dir).unwrap();
         let path = project_dir.join("interrupted.jsonl");
         let run_id = HistoryId::from_uuid(uuid::Uuid::now_v7());
+        let event = crate::domain::events::ActionEvent {
+            kind: "message".to_string(),
+            name: None,
+            input: None,
+            output: Some("partial".to_string()),
+            index: 0,
+            tool_call_id: None,
+            started_at: None,
+            finished_at: None,
+            duration_ms: None,
+            status: None,
+            timing_source: None,
+        };
         let line = HistoryLine::Event(HistoryEventLine {
             schema_version: history::SCHEMA_VERSION.to_string(),
             run_id,
             harness: "codex".to_string(),
             variant: None,
             harness_id: Some("codex".to_string()),
-            event: crate::domain::events::ActionEvent {
-                kind: "message".to_string(),
-                name: None,
-                input: None,
-                output: Some("partial".to_string()),
-                index: 0,
-                tool_call_id: None,
-                started_at: None,
-                finished_at: None,
-                duration_ms: None,
-                status: None,
-                timing_source: None,
-            },
+            event: event.clone(),
             session_name: None,
         });
         fs::write(
@@ -3043,10 +3043,11 @@ mod tests {
         assert_eq!(listed[0].record_count, 0);
         assert_eq!(listed[0].name, "interrupted");
         assert_eq!(listed[0].harnesses, ["codex"]);
-        let displayed = read_session_display(&path).unwrap();
-        assert_eq!(displayed[0]["type"], "incomplete");
-        assert_eq!(displayed[0]["run_id"], run_id.to_string());
-        assert_eq!(displayed[0]["events"][0]["output"], "partial");
+        let expected = IncompleteHistoryRun::new(run_id, "codex".to_string(), vec![event]);
+        assert_eq!(
+            read_session_display(&path).unwrap(),
+            [HistoryShowEntry::Incomplete(expected.unwrap())]
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

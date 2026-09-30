@@ -209,8 +209,8 @@
     ],
     "method": "history",
     "options": "history_lookup",
-    "output": "history_records",
-    "rust": "oneharness_core::io::history::read_session",
+    "output": "history_show_entries",
+    "rust": "oneharness_core::io::history::read_session_display",
     "stdin": false,
     "stdout": "json",
     "uncovered": []

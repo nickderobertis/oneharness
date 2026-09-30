@@ -86,6 +86,37 @@ if [[ $* == *"Cargo.toml"* && $* != *"crates/oneharness-core/Cargo.toml"* && ${B
       echo 'error[E0599]: no variant named `ControlSocketAddress` found for enum `OneharnessError`'
       echo '  --> src/commands/interrupt.rs:58:44'
       echo 'error: could not compile `oneharness` (lib) due to 2 previous errors'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == cached-core ]]; then
+      # Captured verbatim from a real `cargo package` whose registry core was
+      # already built by an earlier run: Cargo prints no `Compiling` line for
+      # it, so the only thing tying the failure to the published dependency is
+      # that the binary compiled from the unpacked package directory.
+      echo '   Verifying oneharness v0.19.1 (/repo)'
+      if [[ ${REGISTRY_PATH_KIND:-unix} == windows ]]; then
+        echo '   Compiling oneharness v0.19.1 (C:\repo\target\package\oneharness-0.19.1)'
+      else
+        echo '   Compiling oneharness v0.19.1 (/repo/target/package/oneharness-0.19.1)'
+      fi
+      echo 'error[E0432]: unresolved import `oneharness_core::domain::history::HistoryShowEntry`'
+      echo '  --> src/commands/history.rs:15:37'
+      echo 'error: could not compile `oneharness` (lib) due to 1 previous error'
+      echo 'error: failed to verify package tarball'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == cached-package-unrelated ]]; then
+      # The unpacked package on a warm cache failing for its OWN reason: the
+      # location matches the transition, the diagnostic names no core item.
+      echo '   Verifying oneharness v0.19.1 (/repo)'
+      echo '   Compiling oneharness v0.19.1 (/repo/target/package/oneharness-0.19.1)'
+      echo 'error[E0425]: cannot find value `typo` in this scope'
+      echo '  --> src/commands/history.rs:15:37'
+      echo 'error: could not compile `oneharness` (lib) due to 1 previous error'
+      echo 'error: failed to verify package tarball'
+    elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == cached-workspace-source ]]; then
+      # The same warm cache with the binary compiled from the WORKSPACE, not
+      # the package directory: no core line at all, and the binary's own bug.
+      echo '   Compiling oneharness v0.19.1 (/repo)'
+      echo 'error[E0425]: cannot find value `typo` in this scope'
+      echo '  --> src/commands/history.rs:15:37'
+      echo 'error: could not compile `oneharness` (lib) due to 1 previous error'
     elif [[ ${BINARY_FAILURE_KIND:-core-mismatch} == workspace-source ]]; then
       # The same compile failure with the core resolved from the WORKSPACE PATH —
       # so the published dependency is not what broke, and the pathless-line
@@ -308,6 +339,45 @@ if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=binary-source just packa
   fail "a binary-source failure with no pending core release unexpectedly passed"
 fi
 assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
+
+# The same transition on a warm cache: the registry core was built by an earlier
+# run, so Cargo prints no `Compiling oneharness-core` line and the arm above has
+# nothing to read. Every gate after the first then refused a permitted
+# transition; the binary compiling from the unpacked package is what says the
+# core it linked is the registry's.
+for path_kind in unix windows; do
+  if ! run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=cached-core REGISTRY_PATH_KIND="$path_kind" \
+    COMMIT_KIND=fix just package-crates >"$work/out" 2>&1; then
+    cat "$work/out" >&2
+    fail "a $path_kind cached-core failure against the registry core did not permit the release-plz transition"
+  fi
+  assert_contains "awaits release-plz's core version bump" "$work/out"
+done
+
+# ...still only while a core release is actually pending.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=cached-core just package-crates >"$work/out" 2>&1; then
+  fail "a cached-core failure with no pending core release unexpectedly passed"
+fi
+assert_contains "cannot be packaged against its published oneharness-core dependency" "$work/out"
+
+# Compiling from the unpacked package is not enough on its own: with a core
+# release pending, a compile error there that names no unresolved core item is
+# the binary's own bug and must be refused like any other.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=cached-package-unrelated COMMIT_KIND=fix \
+  just package-crates >"$work/out" 2>&1; then
+  fail "an unrelated compile failure in the unpacked package unexpectedly read as the registry transition"
+fi
+assert_contains "failed for a reason other than its registry-resolved oneharness-core transition" "$work/out"
+assert_contains 'cannot find value' "$work/out"
+
+# A warm cache must not widen what reads as the transition: a binary compiled
+# from the workspace is its own bug, even with a core release pending.
+if run_case env BINARY_PACKAGE=fail BINARY_FAILURE_KIND=cached-workspace-source COMMIT_KIND=fix \
+  just package-crates >"$work/out" 2>&1; then
+  fail "a workspace compile failure on a warm cache unexpectedly read as the registry transition"
+fi
+assert_contains "failed for a reason other than its registry-resolved oneharness-core transition" "$work/out"
+assert_contains 'cannot find value' "$work/out"
 
 # The same transition as Cargo actually prints it in CI, where
 # `actions-rust-lang/setup-rust-toolchain` exports CARGO_TERM_COLOR=always: the

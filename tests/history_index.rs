@@ -292,6 +292,7 @@ fn entries_of(bytes: &[u8]) -> Vec<HistoryIndexEntry> {
         .collect()
 }
 
+#[cfg(unix)]
 fn project_slug(project: &Path) -> String {
     oneharness_core::domain::history::project_slug(
         &std::fs::canonicalize(project)
@@ -323,6 +324,7 @@ fn set_mode(path: &Path, mode: u32) {
 
 /// A sparse file: one real line, then `size` bytes of hole — a full read of it
 /// is `size` bytes of `rchar` and of heap, at no disk cost.
+#[cfg(target_os = "linux")]
 fn sparse(path: &Path, first_line: &str, size: u64) {
     std::fs::write(path, format!("{first_line}\n")).unwrap();
     std::fs::OpenOptions::new()
@@ -421,7 +423,7 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
 /// (mode `000`, sparse), one FIFO session file in the run's own project, and
 /// today's segments already long (sparse) — which the writer appends to after
 /// reading one byte.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 struct CrowdedStore {
     _scratch: ScratchDir,
     store: PathBuf,
@@ -429,7 +431,7 @@ struct CrowdedStore {
     untouchable: Vec<PathBuf>,
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl CrowdedStore {
     fn new(tag: &str, sessions: u64) -> CrowdedStore {
         let scratch = ScratchDir::new(&format!("hindex-crowd-{tag}")).unwrap();
@@ -495,7 +497,7 @@ impl CrowdedStore {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 impl Drop for CrowdedStore {
     fn drop(&mut self) {
         // Mode 000 files are the scratch guard's to remove, which needs the
@@ -507,10 +509,12 @@ impl Drop for CrowdedStore {
     }
 }
 
+#[cfg(target_os = "linux")]
 trait WriteNewline {
     fn write_all_newline(self);
 }
 
+#[cfg(target_os = "linux")]
 impl WriteNewline for std::fs::File {
     fn write_all_newline(mut self) {
         use std::io::Write;

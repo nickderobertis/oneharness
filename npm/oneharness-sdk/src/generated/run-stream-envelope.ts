@@ -1,7 +1,8 @@
 /* Generated from oneharness-core. Do not edit. */
 
 /**
- * One line of `oneharness run --stream` output.
+ * One line of `oneharness run --stream --format json` output (a bare `--stream`
+ * prints the readable text view instead).
  *
  * Event lines carry normalized actions as they arrive. Exactly one terminal
  * result line carries the complete report unless the consumer closes the

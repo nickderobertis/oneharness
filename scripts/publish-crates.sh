@@ -12,13 +12,31 @@ fail() {
   exit 1
 }
 
+# The package is named by its manifest alone, never by `--package`: a workspace
+# that also resolves a registry copy of one of its own crates (history-compat's
+# published `oneharness-core`) makes the bare name ambiguous, and cargo refuses it.
 manifest_version() {
-  local manifest="$1" package="$2" package_id version
-  if ! package_id="$(cargo pkgid --manifest-path "$manifest" --package "$package" 2>/dev/null)"; then
-    fail "cannot validate $package's version in $manifest; run 'cargo metadata --no-deps' and fix the manifest"
+  local manifest="$1" package="$2" package_id fragment name version errors
+  errors="$(mktemp)"
+  if ! package_id="$(cargo pkgid --manifest-path "$manifest" 2>"$errors")"; then
+    package_id="$(cat "$errors")"
+    rm -f "$errors"
+    fail "cannot validate $package's version in $manifest; run 'cargo metadata --no-deps' and fix the manifest
+$package_id"
   fi
-  version="${package_id##*#}"
-  version="${version##*@}"
+  rm -f "$errors"
+  fragment="${package_id##*#}"
+  if [[ "$fragment" == *@* ]]; then
+    name="${fragment%@*}"
+    version="${fragment##*@}"
+  else
+    name="${package_id%#*}"
+    name="${name##*/}"
+    version="$fragment"
+  fi
+  if [ "$name" != "$package" ]; then
+    fail "$manifest declares package '$name', not $package; publish from $package's own manifest"
+  fi
   if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
     fail "cargo returned an invalid version '$version' for $package; run 'cargo metadata --no-deps' and fix the manifest"
   fi

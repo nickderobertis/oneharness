@@ -157,7 +157,7 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `gate` | `oneharness gate` | `oneharness_core::domain::gate::render_deny` | yes | yes | text (see notes) |
 | `mock` | `oneharness mock` | `oneharness_core::domain::mock::decide` | yes | yes | text (see notes) |
 | `interrupt` | `oneharness interrupt` | `oneharness_core::io::control::send` | yes | yes | `interrupt_response` |
-| `history` | `oneharness history show` | `oneharness_core::io::history::read_session` | yes | yes | `history_show_entries` |
+| `history` | `oneharness history show` | `oneharness_core::io::history::read_session_display` | yes | yes | `history_show_entries` |
 | `historyList` | `oneharness history list` | `oneharness_core::io::history::list_sessions` | yes | yes | `history_list` |
 | `historyWatch` | `oneharness history watch` | `oneharness_core::io::history::HistoryWatcher` | yes | yes | `history_stream_envelope` (one per line) |
 | `historyClear` | `oneharness history clear` | `oneharness_core::io::history::remove_sessions` | yes | yes | `history_clear_report` |

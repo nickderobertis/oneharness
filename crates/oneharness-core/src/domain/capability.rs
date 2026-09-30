@@ -666,7 +666,7 @@ pub const CAPABILITIES: &[Capability] = &[
         options: Some("history_lookup"),
         stdout: StdoutShape::Json("history_show_entries"),
         stdin: false,
-        rust: "oneharness_core::io::history::read_session",
+        rust: "oneharness_core::io::history::read_session_display",
         always: JSON_DOCUMENT,
         bindings: &[
             bind_prefer("session", FlagKind::Positional, "last"),

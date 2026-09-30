@@ -26982,11 +26982,22 @@ fn control_interrupt_aborts_a_live_turn_from_a_separate_process() {
 
     let socket = store.join("control").join("watched.sock");
     wait_until("the control socket to appear", || socket.exists());
-    // 0600: the socket is a lever over a running agent.
+    // Owner-only: the socket is a lever over a running agent. The kernel creates
+    // it at `bind` under the umask and `bind` narrows it to 0600 an instant
+    // later, so the directory — narrowed to 0700 BEFORE the bind — is what
+    // guards that window, and the socket's own mode is waited for rather than
+    // read at the first sight of the file.
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&socket).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "control socket must be owner-only");
+        let mode_of = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode_of(socket.parent().unwrap()),
+            0o700,
+            "control socket directory must be owner-only"
+        );
+        wait_until("the control socket to be owner-only (0600)", || {
+            mode_of(&socket) == 0o600
+        });
     }
     // The turn is genuinely in flight once the harness has the prompt frame.
     wait_until("the turn to start", || {

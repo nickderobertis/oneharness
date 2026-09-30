@@ -37,6 +37,11 @@ export interface HistoryLookupByLast {
   all?: boolean | undefined;
   allProjects?: boolean | undefined;
   /**
+   * Read every dated index segment plus the legacy index an older
+   * oneharness kept, rather than the last 7 UTC days.
+   */
+  allTime?: boolean | undefined;
+  /**
    * Load configuration from exactly these files, in order, skipping
    * user/project discovery; each later file overrides the earlier ones.
    */
@@ -60,6 +65,11 @@ export interface HistoryLookupByLast {
    * than invalid, so `{"session": "", "last": true}` stays accepted.
    */
   session?: string | undefined;
+  /**
+   * Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
+   * the last 7 UTC days. Refused beside a true `allTime`.
+   */
+  since?: string | null | undefined;
 }
 /**
  * Select the session named by `session`.
@@ -70,6 +80,11 @@ export interface HistoryLookupBySession {
    */
   all?: boolean | undefined;
   allProjects?: boolean | undefined;
+  /**
+   * Read every dated index segment plus the legacy index an older
+   * oneharness kept, rather than the last 7 UTC days.
+   */
+  allTime?: boolean | undefined;
   /**
    * Load configuration from exactly these files, in order, skipping
    * user/project discovery; each later file overrides the earlier ones.
@@ -94,4 +109,9 @@ export interface HistoryLookupBySession {
    * the name that selects, so it must be non-empty.
    */
   session: string;
+  /**
+   * Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
+   * the last 7 UTC days. Refused beside a true `allTime`.
+   */
+  since?: string | null | undefined;
 }

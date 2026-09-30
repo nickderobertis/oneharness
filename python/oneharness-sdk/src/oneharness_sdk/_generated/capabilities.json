@@ -177,6 +177,19 @@
         "unless": null
       },
       {
+        "flag": "--since",
+        "kind": "value",
+        "option": "since",
+        "unless": "allTime",
+        "unless_resolution": "refuse"
+      },
+      {
+        "flag": "--all-time",
+        "kind": "switch",
+        "option": "allTime",
+        "unless": null
+      },
+      {
         "flag": "--history-dir",
         "kind": "value",
         "option": "historyDir",
@@ -293,6 +306,19 @@
         "unless": null
       },
       {
+        "flag": "--since",
+        "kind": "value",
+        "option": "since",
+        "unless": "allTime",
+        "unless_resolution": "refuse"
+      },
+      {
+        "flag": "--all-time",
+        "kind": "switch",
+        "option": "allTime",
+        "unless": null
+      },
+      {
         "flag": "--history-dir",
         "kind": "value",
         "option": "historyDir",
@@ -385,6 +411,45 @@
     "stdout": "json",
     "uncovered": []
   },
+  "historyReindex": {
+    "always": [
+      "--compact",
+      "--format",
+      "json"
+    ],
+    "argv": [
+      "history",
+      "reindex"
+    ],
+    "bindings": [
+      {
+        "flag": "--history-dir",
+        "kind": "value",
+        "option": "historyDir",
+        "unless": null
+      },
+      {
+        "flag": "--config",
+        "kind": "repeated",
+        "option": "config",
+        "unless": "noConfig",
+        "unless_resolution": "refuse"
+      },
+      {
+        "flag": "--no-config",
+        "kind": "switch",
+        "option": "noConfig",
+        "unless": null
+      }
+    ],
+    "method": "historyReindex",
+    "options": "history_reindex_options",
+    "output": "history_reindex_report",
+    "rust": "oneharness_core::io::history::reindex",
+    "stdin": false,
+    "stdout": "json",
+    "uncovered": []
+  },
   "historyWatch": {
     "always": [
       "--format",
@@ -442,6 +507,19 @@
         "flag": "--events",
         "kind": "switch",
         "option": "events",
+        "unless": null
+      },
+      {
+        "flag": "--since",
+        "kind": "value",
+        "option": "since",
+        "unless": "allTime",
+        "unless_resolution": "refuse"
+      },
+      {
+        "flag": "--all-time",
+        "kind": "switch",
+        "option": "allTime",
         "unless": null
       },
       {

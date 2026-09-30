@@ -122,6 +122,16 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		module: "history-migrate-report",
 	},
 	{
+		key: "history_reindex_options",
+		type: "HistoryReindexOptions",
+		module: "history-reindex-options",
+	},
+	{
+		key: "history_reindex_report",
+		type: "HistoryReindexReport",
+		module: "history-reindex-report",
+	},
+	{
 		key: "history_pointers_options",
 		type: "HistoryPointersOptions",
 		module: "history-pointers-options",

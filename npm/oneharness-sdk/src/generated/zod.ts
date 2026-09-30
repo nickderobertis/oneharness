@@ -55,6 +55,8 @@ import type { HistoryMigrateReport, MigrationSummary } from "./history-migrate-r
 import type { HistoryPointer, HistoryPointers } from "./history-pointers.js";
 import type { HistoryPointersOptions } from "./history-pointers-options.js";
 import type { HistoryRecords } from "./history-records.js";
+import type { HistoryReindexOptions } from "./history-reindex-options.js";
+import type { HistoryReindexReport, SegmentReindexSummary, UnreadableSessionFile } from "./history-reindex-report.js";
 import type { HistoryEventLine, HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./history-watch-options.js";
 import type { InitOptions } from "./init-options.js";
@@ -1374,10 +1376,26 @@ export const HistoryListSchema: z.ZodType<HistoryList> = z.array(z.lazy(() => Hi
 
 export const HistoryListOptionsSchema: z.ZodType<HistoryListOptions> = z.strictObject({
   allProjects: z.boolean().optional(),
+  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
+  since: z
+    .union([
+      z
+        .string()
+        .min(10)
+        .regex(
+          new RegExp(
+            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+            "u",
+          ),
+        )
+        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
+      z.null(),
+    ])
+    .optional(),
   variant: z.string().optional(),
 });
 
@@ -1389,17 +1407,34 @@ export const HistoryLookupSchema: z.ZodType<HistoryLookup> = z.union([
 export const HistoryLookupByLastSchema: z.ZodType<HistoryLookupByLast> = z.strictObject({
   all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
+  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   last: z.literal(true).refine((value) => value !== undefined, { message: "Required" }),
   noConfig: z.boolean().optional(),
   project: z.string().optional(),
   session: z.string().optional(),
+  since: z
+    .union([
+      z
+        .string()
+        .min(10)
+        .regex(
+          new RegExp(
+            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+            "u",
+          ),
+        )
+        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
+      z.null(),
+    ])
+    .optional(),
 });
 
 export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z.strictObject({
   all: z.boolean().optional(),
   allProjects: z.boolean().optional(),
+  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   historyDir: z.string().optional(),
   last: z.boolean().optional(),
@@ -1409,6 +1444,21 @@ export const HistoryLookupBySessionSchema: z.ZodType<HistoryLookupBySession> = z
     .string()
     .min(1)
     .refine((value) => value !== undefined, { message: "Required" }),
+  since: z
+    .union([
+      z
+        .string()
+        .min(10)
+        .regex(
+          new RegExp(
+            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+            "u",
+          ),
+        )
+        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
+      z.null(),
+    ])
+    .optional(),
 });
 
 export const HistoryMigrateOptionsSchema: z.ZodType<HistoryMigrateOptions> = z.strictObject({
@@ -2618,6 +2668,29 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
 
 export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(() => HistoryRecordSchema));
 
+export const HistoryReindexOptionsSchema: z.ZodType<HistoryReindexOptions> = z.strictObject({
+  config: z.array(z.string()).optional(),
+  historyDir: z.string().optional(),
+  noConfig: z.boolean().optional(),
+});
+
+export const HistoryReindexReportSchema: z.ZodType<HistoryReindexReport> = z.looseObject({
+  entries_added: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+  files_read: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+  segments: z
+    .array(z.lazy(() => SegmentReindexSummarySchema))
+    .refine((value) => value !== undefined, { message: "Required" }),
+  unreadable: z
+    .array(z.lazy(() => UnreadableSessionFileSchema))
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.looseObject({
   harnesses: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
   id: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -2654,6 +2727,7 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
     .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
     .optional(),
   allProjects: z.boolean().optional(),
+  allTime: z.boolean().optional(),
   config: z.array(z.string()).optional(),
   events: z.boolean().optional(),
   historyDir: z.string().optional(),
@@ -2674,6 +2748,21 @@ export const HistoryWatchOptionsSchema: z.ZodType<HistoryWatchOptions> = z.stric
         .refine((value) => !new RegExp("[^A-Za-z0-9-]|^-|-$|--", "u").test(value), {
           message: "Invalid string: must not contain [^A-Za-z0-9-]|^-|-$|--",
         }),
+      z.null(),
+    ])
+    .optional(),
+  since: z
+    .union([
+      z
+        .string()
+        .min(10)
+        .regex(
+          new RegExp(
+            "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",
+            "u",
+          ),
+        )
+        .refine((value) => [...value].length <= 10, { message: "Too long: expected at most 10 characters" }),
       z.null(),
     ])
     .optional(),
@@ -2956,6 +3045,15 @@ export const RunStreamEnvelopeSchema: z.ZodType<RunStreamEnvelope> = z.union([
 
 export const RunWorkSchema: z.ZodType<RunWork> = z.union([z.literal("done"), z.literal("none")]);
 
+export const SegmentReindexSummarySchema: z.ZodType<SegmentReindexSummary> = z.looseObject({
+  added: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+  path: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  segment: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const SessionPhaseSchema: z.ZodType<SessionPhase> = z.union([z.literal("create"), z.literal("continue")]);
 
 export const SessionReportSchema: z.ZodType<SessionReport> = z.looseObject({
@@ -3049,6 +3147,11 @@ export const UnmappedRuleSchema: z.ZodType<UnmappedRule> = z.looseObject({
   list: z.lazy(() => RuleListSchema).refine((value) => value !== undefined, { message: "Required" }),
   reason: z.string().refine((value) => value !== undefined, { message: "Required" }),
   rule: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const UnreadableSessionFileSchema: z.ZodType<UnreadableSessionFile> = z.looseObject({
+  error: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  path: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const UsageSchema: z.ZodType<Usage> = z.looseObject({

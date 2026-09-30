@@ -29,21 +29,25 @@
   },
   "history_list_options": {
     "all_projects": "allProjects",
+    "all_time": "allTime",
     "config": "config",
     "history_dir": "historyDir",
     "no_config": "noConfig",
     "project": "project",
+    "since": "since",
     "variant": "variant"
   },
   "history_lookup": {
     "all": "all",
     "all_projects": "allProjects",
+    "all_time": "allTime",
     "config": "config",
     "history_dir": "historyDir",
     "last": "last",
     "no_config": "noConfig",
     "project": "project",
-    "session": "session"
+    "session": "session",
+    "since": "since"
   },
   "history_migrate_options": {
     "config": "config",
@@ -53,9 +57,15 @@
   "history_pointers_options": {
     "file": "file"
   },
+  "history_reindex_options": {
+    "config": "config",
+    "history_dir": "historyDir",
+    "no_config": "noConfig"
+  },
   "history_watch_options": {
     "after": "after",
     "all_projects": "allProjects",
+    "all_time": "allTime",
     "config": "config",
     "events": "events",
     "history_dir": "historyDir",
@@ -63,6 +73,7 @@
     "no_config": "noConfig",
     "project": "project",
     "session": "session",
+    "since": "since",
     "variant": "variant"
   },
   "init_options": {

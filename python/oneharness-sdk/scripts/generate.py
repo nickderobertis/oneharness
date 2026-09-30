@@ -34,6 +34,7 @@ INPUT_ROOTS = (
     "history_clear_options",
     "history_migrate_options",
     "history_pointers_options",
+    "history_reindex_options",
 )
 
 # The input roots that become a public TypedDict, and its name. `history_lookup`
@@ -55,6 +56,7 @@ TYPED_DICTS = (
     ("HistoryClearOptions", "history_clear_options"),
     ("HistoryMigrateOptions", "history_migrate_options"),
     ("HistoryPointersOptions", "history_pointers_options"),
+    ("HistoryReindexOptions", "history_reindex_options"),
 )
 
 # Output contracts the client returns. Each is a validated JSON document rather
@@ -77,6 +79,7 @@ OUTPUT_ALIASES = (
     "HistoryClearReport",
     "HistoryMigrateReport",
     "HistoryPointers",
+    "HistoryReindexReport",
 )
 
 

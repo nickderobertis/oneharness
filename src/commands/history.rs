@@ -1,14 +1,15 @@
 //! `oneharness history` — view and manage the standardized run history that
-//! `run --history` streams to disk. Every bounded subcommand prints JSON to
-//! stdout by default (the programmatic contract every other subcommand upholds)
-//! and offers an opt-in `--format text` human view; `clear` deletes sessions
-//! (dry-run unless `--yes`).
+//! `run --history` streams to disk. Every bounded subcommand prints a text view
+//! by default and the JSON contract under `--format json`; `clear` deletes
+//! sessions (dry-run unless `--yes`). The readers read the dated index for the
+//! window they are given; only `reindex`, `migrate`, `clear` and `--all-time`
+//! read the whole store, and each only when asked.
 
 use std::path::{Path, PathBuf};
 
 use crate::cli::{
     HistoryClearArgs, HistoryCommand, HistoryListArgs, HistoryMigrateArgs, HistoryPointersArgs,
-    HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
+    HistoryReindexArgs, HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
 };
 use crate::commands::{print_report, printable};
 use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
@@ -16,7 +17,7 @@ use oneharness_core::domain::render::{render_event, render_history_show_text};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
 use oneharness_core::io::history as history_io;
-use oneharness_core::io::history::SessionSummary;
+use oneharness_core::io::history::{HistoryWindow, SessionSummary, UtcDate};
 
 /// Exit codes (clap uses 2 for argument errors).
 const EXIT_OK: i32 = 0;
@@ -29,6 +30,7 @@ pub fn run(args: &crate::cli::HistoryArgs) -> Result<i32, OneharnessError> {
         HistoryCommand::Watch(a) => watch(a),
         HistoryCommand::Clear(a) => clear(a),
         HistoryCommand::Migrate(a) => migrate(a),
+        HistoryCommand::Reindex(a) => reindex(a),
         HistoryCommand::Pointers(a) => pointers(a),
     }
 }
@@ -48,6 +50,22 @@ fn migrate(args: &HistoryMigrateArgs) -> Result<i32, OneharnessError> {
     Ok(EXIT_OK)
 }
 
+/// The window a `--since` / `--all-time` pair names; clap refuses both at once.
+fn window(since: Option<UtcDate>, all_time: bool) -> HistoryWindow {
+    match (since, all_time) {
+        (_, true) => HistoryWindow::AllTime,
+        (Some(date), false) => HistoryWindow::Since(date),
+        (None, false) => HistoryWindow::default(),
+    }
+}
+
+fn reindex(args: &HistoryReindexArgs) -> Result<i32, OneharnessError> {
+    let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
+    let report = history_io::reindex(&dir)?;
+    print_report(&report, args.stdout, render_reindex_text)?;
+    Ok(EXIT_OK)
+}
+
 fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     use std::time::Duration;
 
@@ -63,13 +81,15 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     let labels = history::parse_labels(args.label.iter().map(String::as_str))
         .map_err(OneharnessError::HistoryLabelInvalid)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut watcher = history_io::HistoryWatcher::open_session(
+    let start = (args.since.is_some() || args.all_time).then(|| window(args.since, args.all_time));
+    let mut watcher = history_io::HistoryWatcher::open_in(
         &dir,
         after,
         labels,
         slug,
         args.events,
         args.session.as_ref(),
+        start,
     )?;
     let of_variant = |variant: Option<&str>| {
         args.variant
@@ -239,7 +259,8 @@ fn project_slug(all_projects: bool, project: Option<&Path>) -> Option<String> {
 fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
     let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let mut sessions = history_io::list_sessions(&dir, slug.as_deref())?;
+    let mut sessions =
+        history_io::list_sessions(&dir, slug.as_deref(), window(args.since, args.all_time))?;
     if let Some(variant) = &args.variant {
         let suffix = format!(":{variant}");
         sessions.retain(|session| {
@@ -255,18 +276,19 @@ fn list(args: &HistoryListArgs) -> Result<i32, OneharnessError> {
 
 fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     let dir = resolve_dir(args.history_dir.as_deref(), &args.config, args.no_config)?;
+    let window = window(args.since, args.all_time);
     // A UUID is an exact record lookup, independent of session names and project
     // scoping. Preserve the existing id-or-name session lookup for every other
     // spelling.
     if !args.last {
         let needle = args.session.as_deref().unwrap_or_default();
         if let Ok(id) = needle.parse::<HistoryId>() {
-            match history_io::find_record_by_id(&dir, id) {
+            match history_io::find_record_by_id_in(&dir, id, window) {
                 Ok(record) => {
                     return render_records(args.stdout, &[record]);
                 }
-                Err(OneharnessError::HistoryNotFound { .. }) => {
-                    eprintln!("oneharness: history record `{id}` was not found");
+                Err(error @ OneharnessError::HistoryNotFound { .. }) => {
+                    eprintln!("oneharness: {error}");
                     return Ok(EXIT_NOT_FOUND);
                 }
                 Err(error) => return Err(error),
@@ -275,7 +297,15 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     }
 
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
+    // A session id under a named project is a file name: open it directly,
+    // with no index — how a pointer line's session is read at any age.
+    if !args.last && slug.is_some() {
+        let needle = args.session.as_deref().unwrap_or_default();
+        if let Some(path) = history_io::find_session_path(&dir, slug.as_deref(), needle)? {
+            return render_record_values(args.stdout, &history_io::read_session_display(&path)?);
+        }
+    }
+    let sessions = history_io::list_sessions(&dir, slug.as_deref(), window)?;
 
     // Which session file(s) to read: --last is the newest in scope; otherwise
     // resolve the id-or-name needle (newest match, or every match with --all).
@@ -344,8 +374,10 @@ fn clear(args: &HistoryClearArgs) -> Result<i32, OneharnessError> {
         history_io::HistoryClearReport::removed(history_io::remove_sessions(&dir, slug.as_deref())?)
     } else {
         // Dry run: report what *would* be removed, delete nothing.
-        let sessions = history_io::list_sessions(&dir, slug.as_deref())?;
-        history_io::HistoryClearReport::dry_run(sessions.iter().map(|s| s.path.clone()).collect())
+        history_io::HistoryClearReport::dry_run(history_io::list_session_files(
+            &dir,
+            slug.as_deref(),
+        )?)
     };
     print_report(&report, args.stdout, render_clear_text)?;
     Ok(EXIT_OK)
@@ -400,6 +432,39 @@ fn render_migrate_text(report: &history_io::HistoryMigrateReport) -> String {
             plural(file.records_migrated),
             file.already_current,
             file.skipped,
+        ));
+    }
+    out
+}
+
+/// What `history reindex` appended: one row per segment it added to, then
+/// every file it could not read.
+fn render_reindex_text(report: &history_io::HistoryReindexReport) -> String {
+    let mut out = format!(
+        "reindexed {} session file{}: added {} entr{} to {} segment{}\n",
+        report.files_read,
+        plural(report.files_read),
+        report.entries_added,
+        if report.entries_added == 1 {
+            "y"
+        } else {
+            "ies"
+        },
+        report.segments.len(),
+        plural(report.segments.len()),
+    );
+    for segment in &report.segments {
+        out.push_str(&format!(
+            "  {}: {} added\n",
+            printable(&segment.segment),
+            segment.added
+        ));
+    }
+    for unreadable in &report.unreadable {
+        out.push_str(&format!(
+            "  could not read {}: {}\n",
+            printable(&unreadable.path),
+            printable(&unreadable.error)
         ));
     }
     out

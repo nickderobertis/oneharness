@@ -24,6 +24,8 @@ import type { HistoryMigrateOptions } from "./generated/history-migrate-options.
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryPointers } from "./generated/history-pointers.js";
 import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
+import type { HistoryReindexOptions } from "./generated/history-reindex-options.js";
+import type { HistoryReindexReport } from "./generated/history-reindex-report.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { InitOptions } from "./generated/init-options.js";
@@ -53,6 +55,8 @@ import {
 	HistoryPointersOptionsSchema,
 	HistoryPointersSchema,
 	HistoryRecordsSchema,
+	HistoryReindexOptionsSchema,
+	HistoryReindexReportSchema,
 	HistoryStreamEnvelopeSchema,
 	HistoryWatchOptionsSchema,
 	InitOptionsSchema,
@@ -122,6 +126,12 @@ export type {
 } from "./generated/history-pointers.js";
 export type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
 export type { HistoryRecords } from "./generated/history-records.js";
+export type { HistoryReindexOptions } from "./generated/history-reindex-options.js";
+export type {
+	HistoryReindexReport,
+	SegmentReindexSummary,
+	UnreadableSessionFile,
+} from "./generated/history-reindex-report.js";
 export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 export type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 export type { InitOptions } from "./generated/init-options.js";
@@ -813,6 +823,25 @@ export class OneHarness {
 			options,
 			HistoryMigrateOptionsSchema,
 			HistoryMigrateReportSchema,
+		);
+	}
+
+	/**
+	 * Index every session line the dated history index lacks: append one entry
+	 * per run or event line its date's segment does not hold yet.
+	 *
+	 * Idempotent and append-only, and the only verb that reads every session
+	 * file to build the index. The report names what was added per segment and
+	 * every file that could not be read.
+	 */
+	async historyReindex(
+		options: HistoryReindexOptions = {},
+	): Promise<HistoryReindexReport> {
+		return await this.call(
+			"historyReindex",
+			options,
+			HistoryReindexOptionsSchema,
+			HistoryReindexReportSchema,
 		);
 	}
 

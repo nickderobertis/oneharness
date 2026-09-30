@@ -32,6 +32,8 @@ from ._generated_types import (
     HistoryPointers,
     HistoryPointersOptions,
     HistoryRecord,
+    HistoryReindexOptions,
+    HistoryReindexReport,
     HistoryStreamEnvelope,
     HistoryWatchOptions,
     InitOptions,
@@ -638,6 +640,25 @@ class OneHarness:
                 options or {},
                 "history_migrate_options",
                 "history_migrate_report",
+            ),
+        )
+
+    async def history_reindex(
+        self, options: Optional[HistoryReindexOptions] = None
+    ) -> HistoryReindexReport:
+        """Index every session line the dated history index lacks.
+
+        Appends one entry per run or event line its date's segment does not
+        hold yet. Idempotent and append-only; the report names what was added
+        per segment and every file that could not be read.
+        """
+        return cast(
+            "HistoryReindexReport",
+            await self._call(
+                "historyReindex",
+                options or {},
+                "history_reindex_options",
+                "history_reindex_report",
             ),
         )
 

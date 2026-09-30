@@ -162,6 +162,7 @@ entry point a consumer calls instead of spawning the binary; **Python** and
 | `historyWatch` | `oneharness history watch` | `oneharness_core::io::history::HistoryWatcher` | yes | yes | `history_stream_envelope` (one per line) |
 | `historyClear` | `oneharness history clear` | `oneharness_core::io::history::remove_sessions` | yes | yes | `history_clear_report` |
 | `historyMigrate` | `oneharness history migrate` | `oneharness_core::io::history::migrate` | yes | yes | `history_migrate_report` |
+| `historyReindex` | `oneharness history reindex` | `oneharness_core::io::history::reindex` | yes | yes | `history_reindex_report` |
 | `historyPointers` | `oneharness history pointers` | `oneharness_core::io::history::read_pointers` | yes | yes | `history_pointers` |
 
 ### Flags, per capability
@@ -387,6 +388,8 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all` | `all` | `--flag` when true |
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
+| `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
+| `--all-time` | `allTime` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
@@ -400,6 +403,8 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--variant` | `variant` | `--flag VALUE` |
 | `--project` | `project` | `--flag VALUE` (refused beside `allProjects`) |
 | `--all-projects` | `allProjects` | `--flag` when true |
+| `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
+| `--all-time` | `allTime` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
@@ -417,6 +422,8 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--all-projects` | `allProjects` | `--flag` when true |
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--events` | `events` | `--flag` when true |
+| `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
+| `--all-time` | `allTime` | `--flag` when true |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 
@@ -434,6 +441,16 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--no-config` | `noConfig` | `--flag` when true |
 
 #### `historyMigrate` — `oneharness history migrate`
+
+| CLI flag | SDK option | How it is sent |
+| --- | --- | --- |
+| `--compact` | _(always sent)_ | fixed |
+| `--format` | _(always sent)_ | fixed |
+| `--history-dir` | `historyDir` | `--flag VALUE` |
+| `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
+| `--no-config` | `noConfig` | `--flag` when true |
+
+#### `historyReindex` — `oneharness history reindex`
 
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
@@ -480,6 +497,7 @@ caller rather than being dropped.
 | `history_stream_envelope` | `line`, `record`, `type` | 48 | yes | yes | yes |
 | `history_clear_report` | `dry_run`, `files`, `hint`, `removed`, `would_remove` | 5 | yes | yes | yes |
 | `history_migrate_report` | `files`, `files_processed` | 6 | yes | yes | yes |
+| `history_reindex_report` | `entries_added`, `files_read`, `segments`, `unreadable` | 8 | yes | yes | yes |
 | `history_pointers` | `pointers`, `skipped` | 15 | yes | yes | yes |
 
 <!-- END GENERATED: capability-tables -->

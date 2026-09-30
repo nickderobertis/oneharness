@@ -110,10 +110,14 @@ fn oneharness_v0_17_0_reads_the_history_this_build_writes() {
     assert_eq!(shown.len(), 1);
     assert_eq!(shown[0]["events"].as_array().unwrap().len(), kinds.len());
 
-    // Its event watcher reads the same lines from the event index.
+    // Its watcher learns of the run through its own reconcile, which walks the
+    // tree and appends the record to its legacy `.index.jsonl`. This build
+    // writes live events only to the dated segments, so that watcher sees none
+    // of them — the documented cost of sharing a store with an older core
+    // (docs/history-index.md).
     let mut watcher =
         released::io::history::HistoryWatcher::open(&store, None, Default::default(), None, true)
             .unwrap();
-    assert_eq!(watcher.drain_events().len(), kinds.len());
+    assert_eq!(watcher.drain_events().len(), 0);
     assert_eq!(watcher.drain_available().len(), 1);
 }

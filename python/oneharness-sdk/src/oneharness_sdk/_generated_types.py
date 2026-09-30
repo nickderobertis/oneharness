@@ -58,10 +58,12 @@ class RunOptions(_RunOptionsOptional):
 
 class _HistoryListOptionsOptional(TypedDict, total=False):
     all_projects: bool
+    all_time: bool
     config: Sequence[str]
     history_dir: str
     no_config: bool
     project: str
+    since: Any
     variant: str
 
 
@@ -72,6 +74,7 @@ class HistoryListOptions(_HistoryListOptionsOptional):
 class _HistoryWatchOptionsOptional(TypedDict, total=False):
     after: str
     all_projects: bool
+    all_time: bool
     config: Sequence[str]
     events: bool
     history_dir: str
@@ -79,6 +82,7 @@ class _HistoryWatchOptionsOptional(TypedDict, total=False):
     no_config: bool
     project: str
     session: Any
+    since: Any
     variant: str
 
 
@@ -209,6 +213,16 @@ class HistoryPointersOptions(_HistoryPointersOptionsOptional):
     file: str
 
 
+class _HistoryReindexOptionsOptional(TypedDict, total=False):
+    config: Sequence[str]
+    history_dir: str
+    no_config: bool
+
+
+class HistoryReindexOptions(_HistoryReindexOptionsOptional):
+    pass
+
+
 HistoryLookup = dict[str, Any]
 RunReport = dict[str, Any]
 RunStreamEnvelope = dict[str, Any]
@@ -224,3 +238,4 @@ InterruptResponse = dict[str, Any]
 HistoryClearReport = dict[str, Any]
 HistoryMigrateReport = dict[str, Any]
 HistoryPointers = dict[str, Any]
+HistoryReindexReport = dict[str, Any]

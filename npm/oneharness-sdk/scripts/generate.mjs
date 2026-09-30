@@ -195,6 +195,17 @@ const CONTRACT_MODULES = Object.freeze([
 		output: true,
 	},
 	{
+		module: "history-reindex-options",
+		key: "history_reindex_options",
+		type: "HistoryReindexOptions",
+	},
+	{
+		module: "history-reindex-report",
+		key: "history_reindex_report",
+		type: "HistoryReindexReport",
+		output: true,
+	},
+	{
 		module: "history-pointers-options",
 		key: "history_pointers_options",
 		type: "HistoryPointersOptions",

@@ -167,6 +167,7 @@ const bundle = JSON.parse(
 const PATTERNED: Array<[RegExp, string]> = [
 	[/T\(\[01\]/u, "2026-08-11T00:00:00.000Z"],
 	[/\{8\}-/u, "0198f0d0-7b31-7000-8000-000000000001"],
+	[/-02-29/u, "2026-09-29"],
 ];
 
 /**
@@ -664,6 +665,10 @@ describe("OneHarness", () => {
 		await runRejects({ prompt: 42 });
 		await runRejects({ prompt: "wrong shape", harnesses: "codex" });
 		await listRejects({ project: 42 });
+		// `since` is a real calendar date, as the CLI parses it: a rolled-over
+		// day or a trailing newline is refused before anything spawns.
+		await listRejects({ since: "2026-02-30" });
+		await listRejects({ since: "2026-01-01\n" });
 		await listRejects({ allProjects: "yes" });
 		await historyRejects({ session: 42 });
 		await historyRejects({ last: "yes" });
@@ -1032,16 +1037,22 @@ describe("OneHarness", () => {
 			.split("\n")
 			.find((candidate) => JSON.parse(candidate).type === "run");
 		if (!line) throw new Error(`history file ${olderFile} recorded no run`);
+		// A record of its own needs an id of its own: a UUIDv7 minted now, so
+		// the dated index files it under today.
+		const now = Date.now().toString(16).padStart(12, "0");
 		await writeFile(
 			resolve(dirname(olderFile), "newer-session-id.jsonl"),
 			`${JSON.stringify({
 				...JSON.parse(line),
+				history_id: `${now.slice(0, 8)}-${now.slice(8)}-7000-8000-000000000abc`,
 				session: "newer-session-id",
 				name: "newer-session",
 				prompt: "the newer session",
 				timestamp: "2099-01-01T00:00:00Z",
 			})}\n`,
 		);
+		// A session file written by hand is findable once reindexed.
+		expect((await client.historyReindex({ historyDir })).entries_added).toBe(1);
 
 		// `last: true` selects the most recent session even though the lookup also
 		// carries an older name: `last` has priority, and the name rides along
@@ -1662,6 +1673,23 @@ describe("OneHarness", () => {
 		expect(await client.historyMigrate({ historyDir })).toMatchObject({
 			files_processed: expect.any(Number),
 		});
+		// The run this client recorded is already in the dated index, so a
+		// reindex finds nothing to add; the windows read it back.
+		expect(await client.historyReindex({ historyDir })).toMatchObject({
+			entries_added: 0,
+			files_read: 1,
+			segments: [],
+			unreadable: [],
+		});
+		expect(
+			await client.historyList({ historyDir, since: "2000-01-01" }),
+		).toHaveLength(1);
+		expect(
+			await client.historyList({ historyDir, allTime: true }),
+		).toHaveLength(1);
+		expect(
+			await client.historyList({ historyDir, since: "9999-12-31" }),
+		).toHaveLength(0);
 
 		// A dry run reports what it *would* remove and deletes nothing, which
 		// the following list still seeing the session is what proves.

@@ -668,7 +668,8 @@ fn a_consumer_lists_reads_and_clears_the_run_history_it_recorded() {
 
     // An in-flight run is already a listed session, marked running: only its
     // events have landed, so it has no completed record yet.
-    let listed = history::list_sessions(&dir, None).expect("the store lists");
+    let listed = history::list_sessions(&dir, None, history::HistoryWindow::default())
+        .expect("the store lists");
     assert_eq!(listed.len(), 1, "{listed:?}");
     assert!(
         listed[0].running,
@@ -688,7 +689,8 @@ fn a_consumer_lists_reads_and_clears_the_run_history_it_recorded() {
         )
         .expect("the terminal record is durable");
 
-    let sessions = history::list_sessions(&dir, None).expect("the store lists");
+    let sessions = history::list_sessions(&dir, None, history::HistoryWindow::default())
+        .expect("the store lists");
     assert_eq!(sessions.len(), 1, "the completed session is listed");
     // The name is oneharness-derived and slugged, never the harness's — headless
     // harnesses expose only an opaque session id, so there is nothing to take.
@@ -701,7 +703,7 @@ fn a_consumer_lists_reads_and_clears_the_run_history_it_recorded() {
     let removed = history::remove_sessions(&dir, None).expect("the store clears");
     assert_eq!(removed.len(), 1, "clearing removed the one session");
     assert!(
-        history::list_sessions(&dir, None)
+        history::list_sessions(&dir, None, history::HistoryWindow::default())
             .expect("the emptied store still lists")
             .is_empty(),
         "nothing is left after a clear"
@@ -722,6 +724,67 @@ fn a_legacy_history_store_migrates_in_process() {
     let summaries = history::migrate(&dir).expect("an empty store migrates cleanly");
     assert!(summaries.is_empty(), "nothing to rewrite: {summaries:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// capability: historyReindex
+#[test]
+fn a_consumer_reindexes_sessions_copied_in_from_another_store() {
+    // Session files copied in from another store are on disk but in no dated
+    // segment, so an id lookup cannot see them until `reindex` appends their
+    // entries — once: a second reindex adds nothing.
+    use oneharness_core::domain::history::HistoryLabels;
+    use oneharness_core::io::history::{self, HistoryWindow, HistoryWriter};
+
+    hermetic_environment();
+    let source = scratch("history-reindex-source");
+    let target = scratch("history-reindex-target");
+    let project = scratch("history-reindex-project");
+    let writer = HistoryWriter::open(&source, &project, "copied", HistoryLabels::default())
+        .expect("the source store opens");
+    let run = writer.begin_run();
+    writer
+        .append_streamed(
+            run,
+            oneharness_core::domain::mode::PermissionMode::Default,
+            None,
+            "copied in",
+            &finished_result(),
+            &std::collections::BTreeSet::new(),
+        )
+        .expect("the record is durable");
+    let slug_dir = writer.path().parent().expect("a project directory");
+    let copied = target
+        .join(slug_dir.file_name().expect("a slug"))
+        .join(writer.path().file_name().expect("a session file"));
+    std::fs::create_dir_all(copied.parent().unwrap()).unwrap();
+    std::fs::copy(writer.path(), &copied).unwrap();
+
+    assert!(matches!(
+        history::find_record_by_id(&target, run),
+        Err(OneharnessError::HistoryNotFound { .. })
+    ));
+    let report = history::reindex(&target).expect("the store reindexes");
+    assert_eq!(report.files_read, 1);
+    assert_eq!(report.entries_added, 1);
+    assert!(report.unreadable.is_empty());
+    assert_eq!(
+        history::find_record_by_id(&target, run)
+            .expect("the copied run is found by id")
+            .prompt,
+        "copied in"
+    );
+    assert_eq!(
+        history::list_sessions(&target, None, HistoryWindow::default())
+            .expect("the store lists")
+            .len(),
+        1
+    );
+    assert_eq!(
+        history::reindex(&target)
+            .expect("a second reindex runs")
+            .entries_added,
+        0
+    );
 }
 
 // capability: historyPointers

@@ -11,6 +11,11 @@ export interface HistoryWatchOptions {
   after?: string | undefined;
   allProjects?: boolean | undefined;
   /**
+   * Start from the first record the index holds, the legacy index an
+   * older oneharness kept included. The CLI refuses it beside `after`.
+   */
+  allTime?: boolean | undefined;
+  /**
    * Load configuration from exactly these files, in order, skipping
    * user/project discovery; each later file overrides the earlier ones.
    */
@@ -30,6 +35,12 @@ export interface HistoryWatchOptions {
    * the first to appear).
    */
   session?: string | null | undefined;
+  /**
+   * Start from this UTC date's index segments (`YYYY-MM-DD`) rather than
+   * today's. Refused beside a true `allTime`; the CLI refuses it beside
+   * `after`.
+   */
+  since?: string | null | undefined;
   /**
    * Narrow to one configured harness identity (`claude-code:work`).
    */

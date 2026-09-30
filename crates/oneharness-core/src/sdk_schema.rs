@@ -20,8 +20,8 @@ use crate::domain::report::{attempted_failure, RunReport, RunStreamEnvelope, Sta
 use crate::domain::sdk::{
     schema_for_serialize, ConfigOptions, DetectOptions, GateOptions, HistoryClearOptions,
     HistoryListOptions, HistoryLookup, HistoryMigrateOptions, HistoryPointersOptions,
-    HistoryWatchOptions, InitOptions, InterruptOptions, MockOptions, RunOptions, SyncOptions,
-    UsageOptions,
+    HistoryReindexOptions, HistoryWatchOptions, InitOptions, InterruptOptions, MockOptions,
+    RunOptions, SyncOptions, UsageOptions,
 };
 use crate::domain::signals::FailureKind;
 use crate::io::history::SessionSummary;
@@ -67,6 +67,8 @@ pub struct SdkSchemaBundle {
     pub history_clear_report: Schema,
     pub history_migrate_options: Schema,
     pub history_migrate_report: Schema,
+    pub history_reindex_options: Schema,
+    pub history_reindex_report: Schema,
     pub history_pointers_options: Schema,
     /// What `history pointers` reads back: the run's pointer lines, each a
     /// `HistoryPointer` — the one declaration of that line, so the SDK types
@@ -107,6 +109,8 @@ pub fn bundle() -> SdkSchemaBundle {
         history_clear_report: schema_for_serialize::<crate::io::history::HistoryClearReport>(),
         history_migrate_options: schema_for!(HistoryMigrateOptions),
         history_migrate_report: schema_for_serialize::<crate::io::history::HistoryMigrateReport>(),
+        history_reindex_options: schema_for!(HistoryReindexOptions),
+        history_reindex_report: schema_for_serialize::<crate::io::history::HistoryReindexReport>(),
         history_pointers_options: schema_for!(HistoryPointersOptions),
         history_pointers: schema_for_serialize::<crate::io::history::HistoryPointers>(),
     }

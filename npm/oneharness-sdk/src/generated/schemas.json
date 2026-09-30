@@ -1040,6 +1040,19 @@
           "unless": null
         },
         {
+          "option": "since",
+          "flag": "--since",
+          "kind": "value",
+          "unless": "allTime",
+          "unless_resolution": "refuse"
+        },
+        {
+          "option": "allTime",
+          "flag": "--all-time",
+          "kind": "switch",
+          "unless": null
+        },
+        {
           "option": "historyDir",
           "flag": "--history-dir",
           "kind": "value",
@@ -1094,6 +1107,19 @@
         {
           "option": "allProjects",
           "flag": "--all-projects",
+          "kind": "switch",
+          "unless": null
+        },
+        {
+          "option": "since",
+          "flag": "--since",
+          "kind": "value",
+          "unless": "allTime",
+          "unless_resolution": "refuse"
+        },
+        {
+          "option": "allTime",
+          "flag": "--all-time",
           "kind": "switch",
           "unless": null
         },
@@ -1185,6 +1211,19 @@
           "unless": null
         },
         {
+          "option": "since",
+          "flag": "--since",
+          "kind": "value",
+          "unless": "allTime",
+          "unless_resolution": "refuse"
+        },
+        {
+          "option": "allTime",
+          "flag": "--all-time",
+          "kind": "switch",
+          "unless": null
+        },
+        {
           "option": "config",
           "flag": "--config",
           "kind": "repeated",
@@ -1269,6 +1308,45 @@
       "stdout": "json",
       "stdin": false,
       "rust": "oneharness_core::io::history::migrate",
+      "always": [
+        "--compact",
+        "--format",
+        "json"
+      ],
+      "bindings": [
+        {
+          "option": "historyDir",
+          "flag": "--history-dir",
+          "kind": "value",
+          "unless": null
+        },
+        {
+          "option": "config",
+          "flag": "--config",
+          "kind": "repeated",
+          "unless": "noConfig",
+          "unless_resolution": "refuse"
+        },
+        {
+          "option": "noConfig",
+          "flag": "--no-config",
+          "kind": "switch",
+          "unless": null
+        }
+      ],
+      "uncovered": []
+    },
+    {
+      "method": "historyReindex",
+      "argv": [
+        "history",
+        "reindex"
+      ],
+      "options": "history_reindex_options",
+      "output": "history_reindex_report",
+      "stdout": "json",
+      "stdin": false,
+      "rust": "oneharness_core::io::history::reindex",
       "always": [
         "--compact",
         "--format",
@@ -4115,6 +4193,10 @@
           "allProjects": {
             "type": "boolean"
           },
+          "allTime": {
+            "description": "Read every dated index segment plus the legacy index an older\noneharness kept, rather than the last 7 UTC days.",
+            "type": "boolean"
+          },
           "config": {
             "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
             "type": "array",
@@ -4140,6 +4222,16 @@
           "session": {
             "description": "A name may accompany `last: true` — it is what the caller would have\nlooked up otherwise — but `last` takes priority, so it never selects.\nIt is therefore unconstrained: an empty name is meaningless here rather\nthan invalid, so `{\"session\": \"\", \"last\": true}` stays accepted.",
             "type": "string"
+          },
+          "since": {
+            "description": "Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than\nthe last 7 UTC days. Refused beside a true `allTime`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10,
+            "minLength": 10,
+            "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
           }
         },
         "additionalProperties": false,
@@ -4156,6 +4248,10 @@
             "type": "boolean"
           },
           "allProjects": {
+            "type": "boolean"
+          },
+          "allTime": {
+            "description": "Read every dated index segment plus the legacy index an older\noneharness kept, rather than the last 7 UTC days.",
             "type": "boolean"
           },
           "config": {
@@ -4183,6 +4279,16 @@
             "description": "The oneharness-derived session name recorded by `run --history`. This is\nthe name that selects, so it must be non-empty.",
             "type": "string",
             "minLength": 1
+          },
+          "since": {
+            "description": "Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than\nthe last 7 UTC days. Refused beside a true `allTime`.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 10,
+            "minLength": 10,
+            "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
           }
         },
         "additionalProperties": false,
@@ -4201,6 +4307,10 @@
       "allProjects": {
         "type": "boolean"
       },
+      "allTime": {
+        "description": "Read every dated index segment plus the legacy index an older\noneharness kept, rather than the last 7 UTC days.",
+        "type": "boolean"
+      },
       "config": {
         "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
         "type": "array",
@@ -4217,6 +4327,16 @@
       },
       "project": {
         "type": "string"
+      },
+      "since": {
+        "description": "Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than\nthe last 7 UTC days. Refused beside a true `allTime`.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 10,
+        "minLength": 10,
+        "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
       },
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
@@ -4238,6 +4358,10 @@
         "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
       },
       "allProjects": {
+        "type": "boolean"
+      },
+      "allTime": {
+        "description": "Start from the first record the index holds, the legacy index an\nolder oneharness kept included. The CLI refuses it beside `after`.",
         "type": "boolean"
       },
       "config": {
@@ -4274,6 +4398,16 @@
           "pattern": "[^A-Za-z0-9-]|^-|-$|--"
         },
         "pattern": "^(?:[a-z0-9-]+|[a-z0-9-]+-(?:[0-9]{4}(?:(?:0[13578]|1[02])(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)(?:0[1-9]|[12][0-9]|30)|02(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)0229)T(?:[01][0-9]|2[0-3])[0-5][0-9][0-5][0-9]Z-[0-9]+)$"
+      },
+      "since": {
+        "description": "Start from this UTC date's index segments (`YYYY-MM-DD`) rather than\ntoday's. Refused beside a true `allTime`; the CLI refuses it beside\n`after`.",
+        "type": [
+          "string",
+          "null"
+        ],
+        "maxLength": 10,
+        "minLength": 10,
+        "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$"
       },
       "variant": {
         "description": "Narrow to one configured harness identity (`claude-code:work`).",
@@ -18001,6 +18135,113 @@
           "records_migrated",
           "skipped",
           "already_current"
+        ]
+      }
+    }
+  },
+  "history_reindex_options": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryReindexOptions",
+    "description": "Options accepted by the language SDKs' `historyReindex()`.",
+    "type": "object",
+    "properties": {
+      "config": {
+        "description": "Load configuration from exactly these files, in order, skipping\nuser/project discovery; each later file overrides the earlier ones.",
+        "type": "array",
+        "items": {
+          "type": "string"
+        }
+      },
+      "historyDir": {
+        "type": "string"
+      },
+      "noConfig": {
+        "description": "Ignore every configuration file and `ONEHARNESS_*` override. `true`\nbeside a non-empty `config` is refused before anything runs.",
+        "type": "boolean"
+      }
+    },
+    "additionalProperties": false
+  },
+  "history_reindex_report": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "HistoryReindexReport",
+    "description": "The `oneharness history reindex` output contract.",
+    "type": "object",
+    "properties": {
+      "entries_added": {
+        "description": "The sum of `segments[].added`.",
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0
+      },
+      "files_read": {
+        "description": "How many session files were read.",
+        "type": "integer",
+        "format": "uint",
+        "minimum": 0
+      },
+      "segments": {
+        "description": "One row per segment this run appended to, in file-name order; a\nsegment that already held every entry is not listed.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/SegmentReindexSummary"
+        }
+      },
+      "unreadable": {
+        "description": "Every session file (or project directory) that could not be read,\nwith why. The rest are indexed regardless.",
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/UnreadableSessionFile"
+        }
+      }
+    },
+    "required": [
+      "segments",
+      "entries_added",
+      "files_read",
+      "unreadable"
+    ],
+    "$defs": {
+      "SegmentReindexSummary": {
+        "description": "What [`reindex`] appended to one segment.",
+        "type": "object",
+        "properties": {
+          "added": {
+            "description": "How many entries this run appended to it.",
+            "type": "integer",
+            "format": "uint",
+            "minimum": 0
+          },
+          "path": {
+            "description": "The segment's path, as a display string.",
+            "type": "string"
+          },
+          "segment": {
+            "description": "The segment's file name (`runs-YYYY-MM-DD.ndjson` or\n`events-YYYY-MM-DD.ndjson`).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "segment",
+          "path",
+          "added"
+        ]
+      },
+      "UnreadableSessionFile": {
+        "description": "A session file [`reindex`] could not read.",
+        "type": "object",
+        "properties": {
+          "error": {
+            "description": "Why it could not be read, as the operating system said it.",
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "error"
         ]
       }
     }

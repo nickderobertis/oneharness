@@ -481,6 +481,10 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             await client.history(cast("Any", {}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness history list options"):
             await client.history_list(cast("Any", {"all_project": True}))
+        # `since` is a real calendar date, as the CLI parses it.
+        for since in ("2026-02-30", "2026-01-01\n"):
+            with self.assertRaisesRegex(ContractError, "invalid oneharness history list options"):
+                await client.history_list({"since": since})
         with self.assertRaisesRegex(ContractError, "invalid oneharness history watch options"):
             client.history_watch(cast("Any", {"all_project": True}))
         with self.assertRaisesRegex(ContractError, "invalid oneharness detect options"):
@@ -886,6 +890,19 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
         migrated = await client.history_migrate({"history_dir": history_dir})
         self.assertIsInstance(migrated["files_processed"], int)
+        # The run this client recorded is already in the dated index, so a
+        # reindex finds nothing to add; the windows read it back.
+        reindexed = await client.history_reindex({"history_dir": history_dir})
+        self.assertEqual(reindexed["entries_added"], 0)
+        self.assertEqual(reindexed["files_read"], 1)
+        self.assertEqual(reindexed["unreadable"], [])
+        for window, expected in (
+            ({"since": "2000-01-01"}, 1),
+            ({"all_time": True}, 1),
+            ({"since": "9999-12-31"}, 0),
+        ):
+            listed = await client.history_list(cast("Any", {"history_dir": history_dir, **window}))
+            self.assertEqual(len(listed), expected, window)
 
         dry = await client.history_clear({"history_dir": history_dir})
         self.assertIs(dry["dry_run"], True)

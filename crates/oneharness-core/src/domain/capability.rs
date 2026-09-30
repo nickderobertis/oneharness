@@ -360,6 +360,9 @@ const fn bind(option: &'static str, kind: FlagKind) -> OptionBinding {
 // * `project` / `allProjects` (history show, list, watch, clear) — refuse. One
 //   project's store or every project's; `historyClear` makes the wrong answer
 //   destructive, and the rest hand back records from a store nobody asked for.
+// * `since` / `allTime` (history show, list, watch) — refuse. "From this date"
+//   and "from the beginning" are two different windows, and quietly keeping
+//   either reads a range of history the caller did not ask for.
 // * `session` / `last` (history show) — prefer. The lookup union deliberately
 //   accepts `{session, last: true}` and defines it as "the most recent", so the
 //   request has one meaning and `--last` is it. This is the pair the mechanism
@@ -674,6 +677,8 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("all", FlagKind::Switch("--all")),
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind_refuse("since", FlagKind::Value("--since"), "allTime"),
+            bind("allTime", FlagKind::Switch("--all-time")),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
@@ -692,6 +697,8 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("variant", FlagKind::Value("--variant")),
             bind_refuse("project", FlagKind::Value("--project"), "allProjects"),
             bind("allProjects", FlagKind::Switch("--all-projects")),
+            bind_refuse("since", FlagKind::Value("--since"), "allTime"),
+            bind("allTime", FlagKind::Switch("--all-time")),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
@@ -715,6 +722,8 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("allProjects", FlagKind::Switch("--all-projects")),
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind("events", FlagKind::Switch("--events")),
+            bind_refuse("since", FlagKind::Value("--since"), "allTime"),
+            bind("allTime", FlagKind::Switch("--all-time")),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],
@@ -745,6 +754,21 @@ pub const CAPABILITIES: &[Capability] = &[
         stdout: StdoutShape::Json("history_migrate_report"),
         stdin: false,
         rust: "oneharness_core::io::history::migrate",
+        always: JSON_DOCUMENT,
+        bindings: &[
+            bind("historyDir", FlagKind::Value("--history-dir")),
+            bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
+            bind("noConfig", FlagKind::Switch("--no-config")),
+        ],
+        uncovered: &[],
+    },
+    Capability {
+        method: "historyReindex",
+        argv: &["history", "reindex"],
+        options: Some("history_reindex_options"),
+        stdout: StdoutShape::Json("history_reindex_report"),
+        stdin: false,
+        rust: "oneharness_core::io::history::reindex",
         always: JSON_DOCUMENT,
         bindings: &[
             bind("historyDir", FlagKind::Value("--history-dir")),

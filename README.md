@@ -2253,25 +2253,41 @@ view on stdout by default, `--format json` (or `--compact`) for the programmatic
 contract, on every bounded subcommand:
 
 ```bash
-oneharness history list [--project <dir> | --all-projects]   # sessions, newest first
-oneharness history show <session-id-or-name> [--last] [--all] # a session's records
-oneharness history show <history-id>                          # one exact record
-oneharness history watch [--session <name|id>] [--label key=value] [--after <history-id>] [--events] [--format jsonl|text]
+oneharness history list [--project <dir> | --all-projects] [--since <YYYY-MM-DD> | --all-time]  # sessions, newest first
+oneharness history show <session-id-or-name> [--last] [--all] [--since <YYYY-MM-DD> | --all-time] # a session's records
+oneharness history show <history-id> [--all-time]            # one exact record
+oneharness history watch [--session <name|id>] [--label key=value] [--after <history-id> | --since <YYYY-MM-DD> | --all-time] [--events] [--format jsonl|text]
+oneharness history reindex                                    # index what the dated index lacks
 oneharness history clear [--all-projects] [--yes]            # dry-run unless --yes
 ```
+
+**Index.** Beside the sessions, `<history_dir>/.index.d/` holds a dated,
+append-only index of small pointer entries — `runs-YYYY-MM-DD.ndjson` and
+`events-YYYY-MM-DD.ndjson`, by UTC date — so recording a run appends one line
+and reads nothing else, however large the store grows, and nothing ever deletes
+or rewrites a segment. The readers read only the dates their window names:
+`list`, `show <name>` and `show --last` read the last 7 UTC days unless
+`--since` or `--all-time` says otherwise; `show <history-id>` reads the one
+segment its id's date names; `watch` starts at the current UTC day (or after
+`--after`). Only `history reindex`, `migrate`, `clear` and `--all-time` read the
+whole store, and none runs implicitly. A store an older oneharness wrote (its
+runs are in the legacy `.index.jsonl`, not a segment) stays readable: `show
+<history-id> --all-time` finds any of its runs, `history show <session-id>
+--project <dir>` and a pointer line's `history_file` open a session by name with
+no index, and one `history reindex` makes them all findable by id and by date.
+The layout, the entry fields, which segments each reader reads and how an older
+core sharing the directory behaves are declared in
+[`docs/history-index.md`](docs/history-index.md).
 
 `show` resolves its argument against a session **id or name** (name is
 non-unique — the newest match wins, or `--all` shows every match); a UUID
 `history_id` instead performs an exact record lookup across projects. `watch`
-first emits matching records after its optional cursor, then follows the locked,
-append-only `.index.jsonl` without rescanning the history tree. Reconciliation
-on startup adds missing session records, ignores removed sessions, and truncates
-a partial final index line left by an interrupted writer. Reusing the last
-emitted `history_id` with `--after` resumes without duplication; repeated
-`--label` filters are ANDed; `oneharness history watch --help` describes
-`--session`, `--events` and `--format`. `clear` reports
+first emits matching records after its optional cursor, then follows the index
+as it grows. Reusing the last emitted `history_id` with `--after` resumes
+without duplication; repeated `--label` filters are ANDed; `oneharness history
+watch --help` describes `--session`, `--events` and `--format`. `clear` reports
 what it *would* remove and deletes nothing until `--yes`, so it is safe to run
-non-interactively first.
+non-interactively first; it deletes session files only, never the index.
 
 **Pointer file.** `history_file` reaches only the process that ran that one
 turn. A consumer that starts many runs — an orchestrator fanning out agents,
@@ -2326,8 +2342,12 @@ setting already follows. Read it back typed, never by parsing the JSONL:
 
 ```bash
 oneharness history pointers run/pointers.jsonl [--format json]
-oneharness history show <history-id>            # open a session from a line
+oneharness history show <history_session> --project <project> --history-dir <history_dir>  # a line's session, any age, no index
+oneharness history show <history-id>            # a run the dated index holds
 ```
+
+Opening a line's session by name reads that one file and no index, so it works
+for a run of any age — recorded before the dated index, or never reindexed.
 
 `oneharness_core::io::history::read_pointers(path)` is the same read for a Rust
 consumer (`historyPointers()` / `history_pointers()` in the SDKs): the lines in

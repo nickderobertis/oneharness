@@ -1032,6 +1032,19 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "since",
+				flag: "--since",
+				kind: "value",
+				unless: "allTime",
+				unless_resolution: "refuse",
+			},
+			{
+				option: "allTime",
+				flag: "--all-time",
+				kind: "switch",
+				unless: null,
+			},
+			{
 				option: "historyDir",
 				flag: "--history-dir",
 				kind: "value",
@@ -1079,6 +1092,19 @@ export const CAPABILITIES = {
 			{
 				option: "allProjects",
 				flag: "--all-projects",
+				kind: "switch",
+				unless: null,
+			},
+			{
+				option: "since",
+				flag: "--since",
+				kind: "value",
+				unless: "allTime",
+				unless_resolution: "refuse",
+			},
+			{
+				option: "allTime",
+				flag: "--all-time",
 				kind: "switch",
 				unless: null,
 			},
@@ -1164,6 +1190,19 @@ export const CAPABILITIES = {
 				unless: null,
 			},
 			{
+				option: "since",
+				flag: "--since",
+				kind: "value",
+				unless: "allTime",
+				unless_resolution: "refuse",
+			},
+			{
+				option: "allTime",
+				flag: "--all-time",
+				kind: "switch",
+				unless: null,
+			},
+			{
 				option: "config",
 				flag: "--config",
 				kind: "repeated",
@@ -1238,6 +1277,38 @@ export const CAPABILITIES = {
 		stdout: "json",
 		stdin: false,
 		rust: "oneharness_core::io::history::migrate",
+		always: ["--compact", "--format", "json"],
+		bindings: [
+			{
+				option: "historyDir",
+				flag: "--history-dir",
+				kind: "value",
+				unless: null,
+			},
+			{
+				option: "config",
+				flag: "--config",
+				kind: "repeated",
+				unless: "noConfig",
+				unless_resolution: "refuse",
+			},
+			{
+				option: "noConfig",
+				flag: "--no-config",
+				kind: "switch",
+				unless: null,
+			},
+		],
+		uncovered: [],
+	},
+	historyReindex: {
+		method: "historyReindex",
+		argv: ["history", "reindex"],
+		options: "history_reindex_options",
+		output: "history_reindex_report",
+		stdout: "json",
+		stdin: false,
+		rust: "oneharness_core::io::history::reindex",
 		always: ["--compact", "--format", "json"],
 		bindings: [
 			{

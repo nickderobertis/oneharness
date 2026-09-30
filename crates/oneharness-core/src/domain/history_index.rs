@@ -421,7 +421,13 @@ mod tests {
 
     #[test]
     fn a_date_round_trips_through_its_spelling_and_refuses_a_rolled_over_day() {
-        for text in ["1970-01-01", "2000-02-29", "2026-09-29", "9999-12-31", "1000-01-01"] {
+        for text in [
+            "1970-01-01",
+            "2000-02-29",
+            "2026-09-29",
+            "9999-12-31",
+            "1000-01-01",
+        ] {
             let date: UtcDate = text.parse().unwrap();
             assert_eq!(date.to_string(), text);
         }
@@ -476,7 +482,10 @@ mod tests {
     fn a_v7_id_is_dated_by_its_timestamp_and_a_v5_id_by_nothing() {
         let at = uuid::Timestamp::from_unix(uuid::NoContext, 1_790_700_180, 0);
         let id = HistoryId::from_uuid(uuid::Uuid::new_v7(at));
-        assert_eq!(UtcDate::of_history_id(id).unwrap().to_string(), "2026-09-29");
+        assert_eq!(
+            UtcDate::of_history_id(id).unwrap().to_string(),
+            "2026-09-29"
+        );
         assert_eq!(UtcDate::of_history_id(HistoryId::legacy(b"x")), None);
     }
 

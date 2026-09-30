@@ -6,6 +6,11 @@
 export interface HistoryListOptions {
   allProjects?: boolean | undefined;
   /**
+   * Read every dated index segment plus the legacy index an older
+   * oneharness kept, rather than the last 7 UTC days.
+   */
+  allTime?: boolean | undefined;
+  /**
    * Load configuration from exactly these files, in order, skipping
    * user/project discovery; each later file overrides the earlier ones.
    */
@@ -17,6 +22,11 @@ export interface HistoryListOptions {
    */
   noConfig?: boolean | undefined;
   project?: string | undefined;
+  /**
+   * Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
+   * the last 7 UTC days. Refused beside a true `allTime`.
+   */
+  since?: string | null | undefined;
   /**
    * Narrow to one configured harness identity (`claude-code:work`).
    */

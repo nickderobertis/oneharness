@@ -815,6 +815,9 @@ describe("OneHarness", () => {
 				input: { command: "echo hi" },
 			});
 			expect(entry.events[2]?.output).toBe("still going");
+			// The deprecated records-only schema names what it validates: an
+			// in-flight entry is not a record, so it refuses this output.
+			expect(HistoryRecordsSchema.safeParse(entries).success).toBe(false);
 		} finally {
 			await stream.return(undefined);
 		}

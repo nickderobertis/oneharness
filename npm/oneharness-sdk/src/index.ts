@@ -24,10 +24,7 @@ import type { HistoryMigrateOptions } from "./generated/history-migrate-options.
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryPointers } from "./generated/history-pointers.js";
 import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
-import type {
-	HistoryShowEntries,
-	IncompleteHistoryRun,
-} from "./generated/history-show-entries.js";
+import type { IncompleteHistoryRun } from "./generated/history-show-entries.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { InitOptions } from "./generated/init-options.js";
@@ -56,6 +53,7 @@ import {
 	HistoryMigrateReportSchema,
 	HistoryPointersOptionsSchema,
 	HistoryPointersSchema,
+	HistoryRecordSchema,
 	HistoryShowEntriesSchema,
 	HistoryStreamEnvelopeSchema,
 	HistoryWatchOptionsSchema,
@@ -151,15 +149,20 @@ export type {
 export * from "./generated/zod.js";
 
 /**
- * @deprecated Renamed `HistoryShowEntries`: `history show` answers an
- * in-flight run as well as finished records.
+ * Finished runs' records only.
+ *
+ * @deprecated `history show` also answers an in-flight run, so its output is
+ * `HistoryShowEntries`; this names only the finished records it can carry.
  */
-export type HistoryRecords = HistoryShowEntries;
+export type HistoryRecords = HistoryRecord[];
 /**
- * @deprecated Renamed `HistoryShowEntriesSchema`: `history show` answers an
- * in-flight run as well as finished records.
+ * Validates finished runs' records only; an in-flight entry fails it.
+ *
+ * @deprecated `history show`'s output is validated by
+ * `HistoryShowEntriesSchema`, which also accepts an in-flight run.
  */
-export const HistoryRecordsSchema = HistoryShowEntriesSchema;
+export const HistoryRecordsSchema: ZodType<HistoryRecords> =
+	HistoryRecordSchema.array();
 
 export type OneHarnessOptions = {
 	executable?: string;

@@ -11,7 +11,9 @@ use crate::cli::{
     HistoryShowArgs, HistoryWatchArgs, HistoryWatchFormat, StdoutFormat,
 };
 use crate::commands::{print_report, printable};
-use oneharness_core::domain::history::{self, HistoryId, HistoryRecord, HistoryStreamEnvelope};
+use oneharness_core::domain::history::{
+    self, HistoryId, HistoryRecord, HistoryShowEntry, HistoryStreamEnvelope,
+};
 use oneharness_core::domain::render::{render_event, render_history_show_text};
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::config as config_io;
@@ -295,7 +297,7 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     if chosen.is_empty() && !args.last {
         let needle = args.session.as_deref().unwrap_or_default();
         if let Some(path) = history_io::find_session_path(&dir, slug.as_deref(), needle)? {
-            return render_record_values(args.stdout, &history_io::read_session_display(&path)?);
+            return render_entries(args.stdout, &history_io::read_session_display(&path)?);
         }
     }
     if chosen.is_empty() {
@@ -312,25 +314,30 @@ fn show(args: &HistoryShowArgs) -> Result<i32, OneharnessError> {
     for s in &chosen {
         records.extend(history_io::read_session_display(Path::new(&s.path))?);
     }
-    render_record_values(args.stdout, &records)
+    render_entries(args.stdout, &records)
 }
 
 fn render_records(format: StdoutFormat, records: &[HistoryRecord]) -> Result<i32, OneharnessError> {
-    // The text view reads the record's JSON shape (it is what a legacy store
-    // hands back too), so the typed records are projected onto it first: one
+    let entries: Vec<HistoryShowEntry> = records
+        .iter()
+        .cloned()
+        .map(HistoryShowEntry::Record)
+        .collect();
+    render_entries(format, &entries)
+}
+
+fn render_entries(
+    format: StdoutFormat,
+    entries: &[HistoryShowEntry],
+) -> Result<i32, OneharnessError> {
+    // The text view reads each entry's JSON shape (it is what a legacy store
+    // hands back too), so the typed entries are projected onto it first: one
     // renderer for both lookups rather than two that could drift.
-    let values = records
+    let values = entries
         .iter()
         .map(serde_json::to_value)
         .collect::<Result<Vec<_>, _>>()?;
-    render_record_values(format, &values)
-}
-
-fn render_record_values(
-    format: StdoutFormat,
-    records: &[serde_json::Value],
-) -> Result<i32, OneharnessError> {
-    print_report(&records, format, |r| render_history_show_text(r))?;
+    print_report(&entries, format, |_| render_history_show_text(&values))?;
     Ok(EXIT_OK)
 }
 

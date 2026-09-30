@@ -26,7 +26,7 @@ use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
     HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector,
-    IncompleteHistoryRun, PointerSession,
+    HistoryShowEntry, IncompleteHistoryRun, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
@@ -1109,7 +1109,7 @@ pub fn read_session(path: &Path) -> Result<Vec<HistoryRecord>, OneharnessError> 
 
 /// Read the display view, including event-only runs whose terminal line has not
 /// landed. Completed entries retain the established materialized record shape.
-pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> {
+pub fn read_session_display(path: &Path) -> Result<Vec<HistoryShowEntry>, OneharnessError> {
     let text = fs::read_to_string(path).map_err(|source| OneharnessError::HistoryIo {
         path: path.display().to_string(),
         source,
@@ -1130,7 +1130,7 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
                     .remove(&run.history_id)
                     .map(|(_, events)| events)
                     .unwrap_or_default();
-                values.push(serde_json::to_value(run.materialize(events))?);
+                values.push(HistoryShowEntry::Record(run.materialize(events)));
             }
         }
     }
@@ -1138,9 +1138,7 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
         // Every dangling run was entered by reading one of its events, so the
         // constructor's empty-events `None` cannot arise here.
         values.extend(
-            IncompleteHistoryRun::new(run_id, harness, events)
-                .map(serde_json::to_value)
-                .transpose()?,
+            IncompleteHistoryRun::new(run_id, harness, events).map(HistoryShowEntry::Incomplete),
         );
     }
     Ok(values)
@@ -2089,9 +2087,12 @@ mod tests {
         assert_eq!(listed[0].name, "interrupted");
         assert_eq!(listed[0].harnesses, ["codex"]);
         let displayed = read_session_display(&path).unwrap();
-        assert_eq!(displayed[0]["type"], "incomplete");
-        assert_eq!(displayed[0]["run_id"], run_id.to_string());
-        assert_eq!(displayed[0]["events"][0]["output"], "partial");
+        let [HistoryShowEntry::Incomplete(in_flight)] = displayed.as_slice() else {
+            panic!("expected one in-flight entry, got {displayed:?}");
+        };
+        assert_eq!(in_flight.run_id(), run_id);
+        assert_eq!(in_flight.harness(), "codex");
+        assert_eq!(in_flight.events()[0].output.as_deref(), Some("partial"));
         let _ = fs::remove_dir_all(&dir);
     }
 

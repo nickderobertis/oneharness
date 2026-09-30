@@ -10912,6 +10912,11 @@ fn every_history_verb_honors_repeated_config_files() {
         assert_eq!(cleared["would_remove"], sessions, "{label}: {cleared}");
         let migrated = verb(&["migrate"]);
         assert_eq!(migrated["files_processed"], sessions, "{label}: {migrated}");
+        // Every session was recorded with its entries, so reindex adds none;
+        // what shows the store it resolved is how many session files it read.
+        let reindexed = verb(&["reindex"]);
+        assert_eq!(reindexed["files_read"], sessions, "{label}: {reindexed}");
+        assert_eq!(reindexed["entries_added"], 0, "{label}: {reindexed}");
 
         // `watch` resumes after a record only the right store holds, so the
         // wrong store refuses the cursor at once and prints nothing. The index

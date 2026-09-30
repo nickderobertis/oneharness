@@ -3814,4 +3814,33 @@ mod tests {
         dropped.as_object_mut().unwrap().remove("variant");
         assert!(serde_json::from_value::<HistoryPointer>(dropped).is_err());
     }
+
+    #[test]
+    fn an_in_flight_run_reads_back_its_events_in_index_order() {
+        let event = |index: usize, kind: &str| -> ActionEvent {
+            serde_json::from_value(serde_json::json!({
+                "kind": kind, "name": null, "input": null, "output": null,
+                "index": index,
+            }))
+            .unwrap()
+        };
+        let run_id = "0198f0d0-7b31-7000-8000-000000000002"
+            .parse::<HistoryId>()
+            .unwrap();
+        let run = IncompleteHistoryRun::new(
+            run_id,
+            "codex".to_string(),
+            vec![event(1, "message"), event(0, "reasoning")],
+        )
+        .unwrap();
+        assert_eq!(run.run_id(), run_id);
+        assert_eq!(run.harness(), "codex");
+        let order: Vec<(usize, &str)> = run
+            .events()
+            .iter()
+            .map(|event| (event.index, event.kind.as_str()))
+            .collect();
+        assert_eq!(order, [(0, "reasoning"), (1, "message")]);
+        assert!(IncompleteHistoryRun::new(run_id, "codex".to_string(), Vec::new()).is_none());
+    }
 }

@@ -370,11 +370,11 @@ impl fmt::Display for SessionPath {
 /// the legacy index: one project directory, then one `<session>.jsonl` file.
 /// Looser than [`SessionPath`] only where released cores were: their
 /// reconcile indexed every `<subdir>/*.jsonl` it found, so a legacy line can
-/// name the `.index.d` project (the slug of a project at `/.index.d`) or a
-/// file whose name holds `:`. Each part must still be one plain path
+/// name a file whose name holds `:`. Each part must still be one plain path
 /// component on this platform — never empty, `.`, `..`, a root or a drive
-/// prefix — so no legacy path reaches outside the store. Every
-/// [`SessionPath`] is one.
+/// prefix — so no legacy path reaches outside the store; and the project is
+/// never [`INDEX_DIR`], which no released core wrote into (see
+/// [`LegacyEntryPath`]). Every [`SessionPath`] is one.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LegacySessionPath {
     project_slug: String,
@@ -427,7 +427,7 @@ impl FromStr for LegacySessionPath {
             .and_then(|stem| stem.strip_suffix('.'))
             .filter(|stem| !stem.is_empty())
             .ok_or(SessionPathError)?;
-        if !one_component(project) || !one_component(file) {
+        if project == INDEX_DIR || !one_component(project) || !one_component(file) {
             return Err(SessionPathError);
         }
         Ok(Self {
@@ -437,7 +437,34 @@ impl FromStr for LegacySessionPath {
     }
 }
 
-impl<'de> Deserialize<'de> for LegacySessionPath {
+/// What a legacy index entry's `session_path` names. `.index.d/` did not
+/// exist before dated segments, so no released core wrote an entry pointing
+/// into it; one that does is kept as its text so a reader can refuse it by
+/// path rather than skip the line silently. Any other path that is not a
+/// [`LegacySessionPath`] does not parse, like any malformed line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyEntryPath {
+    /// A session file a released core could have indexed.
+    Session(LegacySessionPath),
+    /// A path into [`INDEX_DIR`], as the entry spelled it.
+    IntoIndexDir(String),
+}
+
+impl FromStr for LegacyEntryPath {
+    type Err = SessionPathError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if let Ok(path) = value.parse() {
+            return Ok(Self::Session(path));
+        }
+        match value.split_once(['/', '\\']) {
+            Some((INDEX_DIR, _)) => Ok(Self::IntoIndexDir(value.to_string())),
+            _ => Err(SessionPathError),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for LegacyEntryPath {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         String::deserialize(deserializer)?
             .parse()
@@ -779,7 +806,6 @@ mod tests {
         let owned = |slug: &str, stem: &str| Some((slug.to_string(), stem.to_string()));
         assert_eq!(parts("proj/s.jsonl"), owned("proj", "s"));
         assert_eq!(parts("proj\\s.jsonl"), owned("proj", "s"));
-        assert_eq!(parts(".index.d/s.jsonl"), owned(".index.d", "s"));
         assert_eq!(parts("proj/..jsonl"), owned("proj", "."));
         // A `:` is part of a name on Unix and a drive prefix on Windows, where
         // it would re-root the join; there no released core could name one.
@@ -800,9 +826,30 @@ mod tests {
             "/proj/s.jsonl",
             "proj/.jsonl",
             "proj/s.ndjson",
+            ".index.d/s.jsonl",
         ] {
             assert_eq!(parts(bad), None, "{bad}");
         }
+        assert_eq!(
+            ".index.d/s.jsonl".parse::<LegacyEntryPath>(),
+            Ok(LegacyEntryPath::IntoIndexDir(
+                ".index.d/s.jsonl".to_string()
+            ))
+        );
+        assert_eq!(
+            ".index.d\\runs-2026-09-29.ndjson".parse::<LegacyEntryPath>(),
+            Ok(LegacyEntryPath::IntoIndexDir(
+                ".index.d\\runs-2026-09-29.ndjson".to_string()
+            ))
+        );
+        assert_eq!(
+            "proj/s.jsonl".parse::<LegacyEntryPath>(),
+            Ok(LegacyEntryPath::Session("proj/s.jsonl".parse().unwrap()))
+        );
+        assert_eq!(
+            "../s.jsonl".parse::<LegacyEntryPath>(),
+            Err(SessionPathError)
+        );
         let dated: SessionPath = "proj/s.jsonl".parse().unwrap();
         assert_eq!(
             LegacySessionPath::from(&dated),

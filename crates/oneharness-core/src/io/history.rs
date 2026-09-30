@@ -38,9 +38,9 @@ use crate::domain::history::{
     HistoryShowEntry, IncompleteHistoryRun, PointerSession,
 };
 use crate::domain::history_index::{
-    self as index, EventIndexEntry, HistoryIndexEntry, IndexKey, LegacySessionPath, LineSpan,
-    RunIndexEntry, SegmentKind, INDEX_DIR, INDEX_SCHEMA_VERSION, LEGACY_EVENT_INDEX_FILE,
-    LEGACY_INDEX_FILE,
+    self as index, EventIndexEntry, HistoryIndexEntry, IndexKey, LegacyEntryPath,
+    LegacySessionPath, LineSpan, RunIndexEntry, SegmentKind, INDEX_DIR, INDEX_SCHEMA_VERSION,
+    LEGACY_EVENT_INDEX_FILE, LEGACY_INDEX_FILE,
 };
 pub use crate::domain::history_index::{HistoryWindow, UtcDate};
 use crate::domain::mode::PermissionMode;
@@ -813,16 +813,38 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), OneharnessError> {
 /// closing record. Read only — by the all-time readers and a watcher's tail.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LegacyIndexEntry {
-    session_path: LegacySessionPath,
+    session_path: LegacyEntryPath,
     record: HistoryRunRecord,
 }
 
 /// The entry shape an older core writes to [`LEGACY_EVENT_INDEX_FILE`].
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 struct LegacyEventIndexEntry {
-    session_path: LegacySessionPath,
+    session_path: LegacyEntryPath,
     labels: HistoryLabels,
     line: HistoryEventLine,
+}
+
+/// The session file a legacy entry names — or, for one pointing into the
+/// index directory, which no released core wrote, an error naming the path it
+/// gives, the way an unreadable segment fails a read: refused, never skipped.
+fn legacy_session<'a>(
+    dir: &Path,
+    path: &'a LegacyEntryPath,
+) -> Result<&'a LegacySessionPath, OneharnessError> {
+    match path {
+        LegacyEntryPath::Session(session) => Ok(session),
+        LegacyEntryPath::IntoIndexDir(text) => Err(history_io_error(
+            &dir.join(text),
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "a legacy index entry names this path inside `{INDEX_DIR}/`, which holds \
+                     index segments and no session a released core wrote; it is refused"
+                ),
+            ),
+        )),
+    }
 }
 
 /// Stream the complete lines of an index file from byte `offset`, handing each
@@ -1836,23 +1858,39 @@ impl HistoryWatcher {
         if self.events {
             let path = self.dir.join(LEGACY_EVENT_INDEX_FILE);
             let start = self.legacy_offsets[0];
-            if let Some(end) = stream_lines(&path, start, |line| {
+            let mut refused = None;
+            let end = stream_lines(&path, start, |line| {
                 if let Ok(entry) = serde_json::from_slice::<LegacyEventIndexEntry>(line) {
-                    self.accept_legacy_event(entry);
+                    if let Err(error) = self.accept_legacy_event(entry) {
+                        refused = Some(error);
+                        return ControlFlow::Break(());
+                    }
                 }
                 ControlFlow::Continue(())
-            })? {
+            })?;
+            if let Some(error) = refused {
+                return Err(error);
+            }
+            if let Some(end) = end {
                 self.legacy_offsets[0] = end;
             }
         }
         let path = self.dir.join(LEGACY_INDEX_FILE);
         let start = self.legacy_offsets[1];
-        if let Some(end) = stream_lines(&path, start, |line| {
+        let mut refused = None;
+        let end = stream_lines(&path, start, |line| {
             if let Ok(entry) = serde_json::from_slice::<LegacyIndexEntry>(line) {
-                self.accept_legacy_run(entry);
+                if let Err(error) = self.accept_legacy_run(entry) {
+                    refused = Some(error);
+                    return ControlFlow::Break(());
+                }
             }
             ControlFlow::Continue(())
-        })? {
+        })?;
+        if let Some(error) = refused {
+            return Err(error);
+        }
+        if let Some(end) = end {
             self.legacy_offsets[1] = end;
         }
         Ok(())
@@ -1880,19 +1918,21 @@ impl HistoryWatcher {
         }
     }
 
-    fn accept_legacy_run(&mut self, entry: LegacyIndexEntry) {
-        let (slug, stem) = entry.session_path.parts();
+    fn accept_legacy_run(&mut self, entry: LegacyIndexEntry) -> Result<(), OneharnessError> {
+        let session = legacy_session(&self.dir, &entry.session_path)?;
+        let (slug, stem) = session.parts();
         let record = entry.record;
         if self.seen.contains(&record.history_id)
             || !self.in_project(slug)
             || !record.labels.matches(&self.labels)
             || !self.in_session(stem, Some(&record.name))
-            || !entry.session_path.under(&self.dir).is_file()
+            || !session.under(&self.dir).is_file()
         {
-            return;
+            return Ok(());
         }
         self.seen.insert(record.history_id);
         self.pending.push_back(record.materialize(Vec::new()));
+        Ok(())
     }
 
     fn accept_event(&mut self, entry: EventIndexEntry) {
@@ -1913,8 +1953,9 @@ impl HistoryWatcher {
         }
     }
 
-    fn accept_legacy_event(&mut self, entry: LegacyEventIndexEntry) {
-        let (slug, stem) = entry.session_path.parts();
+    fn accept_legacy_event(&mut self, entry: LegacyEventIndexEntry) -> Result<(), OneharnessError> {
+        let session = legacy_session(&self.dir, &entry.session_path)?;
+        let (slug, stem) = session.parts();
         if self
             .events_after
             .is_some_and(|cursor| entry.line.run_id <= cursor)
@@ -1928,11 +1969,12 @@ impl HistoryWatcher {
                     .as_ref()
                     .map(HistorySessionName::as_str),
             )
-            || !entry.session_path.under(&self.dir).is_file()
+            || !session.under(&self.dir).is_file()
         {
-            return;
+            return Ok(());
         }
         self.pending_events.push_back(entry.line);
+        Ok(())
     }
 
     /// Whether an in-scope entry belongs to the followed session (always, when
@@ -2093,9 +2135,16 @@ fn collect_sessions(
         })?;
     }
     if window.reads_legacy() {
+        let mut refused = None;
         stream_lines(&dir.join(LEGACY_INDEX_FILE), 0, |line| {
             if let Ok(entry) = serde_json::from_slice::<LegacyIndexEntry>(line) {
-                let session_path = entry.session_path;
+                let session_path = match legacy_session(dir, &entry.session_path) {
+                    Ok(session_path) => session_path.clone(),
+                    Err(error) => {
+                        refused = Some(error);
+                        return ControlFlow::Break(());
+                    }
+                };
                 if in_scope(&session_path) {
                     let record = entry.record;
                     let harness_id = record.harness_id.clone().unwrap_or(record.harness.clone());
@@ -2107,9 +2156,18 @@ fn collect_sessions(
             }
             ControlFlow::Continue(())
         })?;
+        if let Some(error) = refused {
+            return Err(error);
+        }
         stream_lines(&dir.join(LEGACY_EVENT_INDEX_FILE), 0, |line| {
             if let Ok(entry) = serde_json::from_slice::<LegacyEventIndexEntry>(line) {
-                let session_path = entry.session_path;
+                let session_path = match legacy_session(dir, &entry.session_path) {
+                    Ok(session_path) => session_path.clone(),
+                    Err(error) => {
+                        refused = Some(error);
+                        return ControlFlow::Break(());
+                    }
+                };
                 if in_scope(&session_path) {
                     let session = sessions.entry(session_path).or_default();
                     session.event_runs.insert(entry.line.run_id);
@@ -2125,6 +2183,9 @@ fn collect_sessions(
             }
             ControlFlow::Continue(())
         })?;
+        if let Some(error) = refused {
+            return Err(error);
+        }
     }
     let mut collected = Vec::new();
     for (session_path, found) in sessions {
@@ -2380,13 +2441,14 @@ pub fn find_record_by_id_in(
             }
             match serde_json::from_slice::<LegacyIndexEntry>(line) {
                 Ok(entry) if entry.record.history_id == id => {
-                    session_path = Some(entry.session_path.under(dir));
+                    session_path =
+                        Some(legacy_session(dir, &entry.session_path).map(|path| path.under(dir)));
                     ControlFlow::Break(())
                 }
                 _ => ControlFlow::Continue(()),
             }
         })?;
-        if let Some(record) = match session_path {
+        if let Some(record) = match session_path.transpose()? {
             Some(path) => record_in_session(&path, id)?,
             None => None,
         } {

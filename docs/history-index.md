@@ -114,6 +114,14 @@ segment or to the session tree. A segment that cannot be read fails the read
 with an error naming its path; a line that does not parse is skipped; an entry
 whose session file is gone is skipped at read (one `stat`).
 
+A legacy index entry's path is resolved as released cores indexed it — one
+project directory, then one `*.jsonl` file, each a single plain path component
+on the host (so a file name holding `:` is read where the platform allows one)
+— never reaching outside the store. `.index.d/` did not exist before dated
+segments, so a legacy entry pointing into it was written by no released core:
+a reader that meets one fails with an error naming that path, as for an
+unreadable segment, rather than skipping it.
+
 | reader | reads |
 | --- | --- |
 | id lookup — `find_record_by_id`, `history show <uuid>` | the one runs segment for the id's date, then that entry's session file. A miss is not-found, naming `history reindex` and `--all-time`; there is no fallback read of the legacy index |

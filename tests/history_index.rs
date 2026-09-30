@@ -2223,76 +2223,136 @@ fn a_store_an_older_core_wrote_is_read_by_id_all_time_by_pointer_and_by_session_
     );
 }
 
-/// Paths a released core's reconcile indexed that the dated entries' stricter
-/// `SessionPath` refuses: v0.19.1's `rebuild_index_locked` walked every
-/// `<subdir>/*.jsonl` of the store, so a project at `/.index.d` (whose slug is
-/// `.index.d`) and — where a file name may hold one — a hand-placed session
-/// whose name holds `:` both reached `.index.jsonl`.
-fn legacy_paths_released_cores_indexed() -> Vec<(&'static str, &'static str)> {
-    let mut paths = vec![(".index.d", "legacy-20240101T000000Z-1")];
-    if cfg!(unix) {
-        paths.push(("proj", "copied:in-20240101T000000Z-2"));
-    }
-    paths
-}
-
-#[test]
-fn an_all_time_lookup_reads_legacy_paths_a_session_path_refuses() {
-    let scratch = ScratchDir::new("hindex-legacy-paths").unwrap();
+/// A legacy store holding one run at `<slug>/<stem>.jsonl`: the session file a
+/// released core wrote, copied there, and its `.index.jsonl` line.
+fn legacy_run_at(scratch: &ScratchDir, slug: &str, stem: &str, n: u64) -> (PathBuf, HistoryId) {
     let store = scratch.join("store");
     let project = scratch.join("project");
     std::fs::create_dir_all(&project).unwrap();
-    let mut index = String::new();
-    let mut runs = Vec::new();
-    for (n, (slug, stem)) in legacy_paths_released_cores_indexed()
-        .into_iter()
-        .enumerate()
-    {
-        let id = id_at(1_704_067_200, n as u64 + 1);
-        let recorded = seed_run(&scratch.join("source"), &project, "legacy", id, "legacy");
-        let session = store.join(slug).join(format!("{stem}.jsonl"));
-        std::fs::create_dir_all(session.parent().unwrap()).unwrap();
-        std::fs::copy(&recorded, &session).unwrap();
-        index.push_str(&legacy_index_line(&store, &session, id));
-        runs.push((id, session));
-    }
-    std::fs::write(store.join(".index.jsonl"), &index).unwrap();
+    let id = id_at(1_704_067_200, n);
+    let recorded = seed_run(&scratch.join("source"), &project, "legacy", id, "legacy");
+    let session = store.join(slug).join(format!("{stem}.jsonl"));
+    std::fs::create_dir_all(session.parent().unwrap()).unwrap();
+    std::fs::copy(&recorded, &session).unwrap();
+    let line = legacy_index_line(&store, &session, id);
+    let index = store.join(".index.jsonl");
+    let mut body = std::fs::read_to_string(&index).unwrap_or_default();
+    body.push_str(&line);
+    std::fs::write(&index, body).unwrap();
     std::fs::write(store.join(".event-index.jsonl"), "").unwrap();
+    (session, id)
+}
+
+/// A released core's reconcile indexed every `<subdir>/*.jsonl` of the store
+/// (v0.19.1's `rebuild_index_locked`), so a session file copied in under a
+/// name holding `:` reached `.index.jsonl` though the dated entries' stricter
+/// `SessionPath` refuses it. An all-time read still finds it.
+#[cfg(unix)]
+#[test]
+fn an_all_time_lookup_reads_a_legacy_session_whose_name_holds_a_colon() {
+    let scratch = ScratchDir::new("hindex-legacy-colon").unwrap();
+    let (session, id) = legacy_run_at(&scratch, "proj", "copied:in-20240101T000000Z-2", 1);
+    let store = scratch.join("store");
     let before = snapshot(&store);
-    for (id, session) in &runs {
-        let shown = history_verb(&store, &["show", &id.to_string(), "--all-time"]);
-        assert!(
-            shown.status.success(),
-            "{}: exit {:?}\nstderr: {}",
-            session.display(),
-            shown.status.code(),
-            String::from_utf8_lossy(&shown.stderr)
-        );
-        assert_eq!(json(&shown)[0]["history_id"], id.to_string());
-    }
+    let shown = history_verb(&store, &["show", &id.to_string(), "--all-time"]);
+    assert_eq!(json(&shown)[0]["history_id"], id.to_string());
     let listed = json(&history_verb(
         &store,
         &["list", "--all-projects", "--all-time"],
     ));
-    let listed: BTreeSet<String> = listed
+    let paths: Vec<&str> = listed
         .as_array()
         .unwrap()
         .iter()
-        .map(|session| session["path"].as_str().unwrap().to_string())
+        .map(|session| session["path"].as_str().unwrap())
         .collect();
-    for (_, session) in &runs {
-        let canonical = std::fs::canonicalize(session).unwrap();
-        assert!(
-            listed.contains(&session.display().to_string())
-                || listed.contains(&canonical.display().to_string()),
-            "{} missing from {listed:?}",
-            session.display()
-        );
-    }
+    let canonical = std::fs::canonicalize(&session).unwrap();
+    assert!(
+        paths.contains(&session.display().to_string().as_str())
+            || paths.contains(&canonical.display().to_string().as_str()),
+        "{} missing from {paths:?}",
+        session.display()
+    );
     assert_eq!(
         snapshot(&store),
         before,
         "no file was created, modified or removed"
+    );
+}
+
+/// `.index.d/` did not exist before dated segments, so no released core wrote
+/// a legacy entry pointing into it. One that does is refused by path — the
+/// way an unreadable segment fails a read — by an id lookup, a listing and a
+/// watch, never skipped silently.
+#[test]
+fn a_legacy_entry_pointing_into_the_index_directory_is_refused_by_path() {
+    let scratch = ScratchDir::new("hindex-legacy-indexdir").unwrap();
+    let (session, id) = legacy_run_at(&scratch, ".index.d", "legacy-20240101T000000Z-1", 1);
+    let store = scratch.join("store");
+    let named = format!(".index.d{}", std::path::MAIN_SEPARATOR);
+    let before = snapshot(&store);
+    let id_text = id.to_string();
+    for args in [
+        ["show", id_text.as_str(), "--all-time"],
+        ["list", "--all-projects", "--all-time"],
+    ] {
+        let output = history_verb(&store, &args);
+        assert!(!output.status.success(), "{args:?} succeeded");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&named) && stderr.contains("legacy-20240101T000000Z-1.jsonl"),
+            "{args:?}: {stderr}"
+        );
+    }
+    assert_eq!(snapshot(&store), before, "a refusal changes nothing");
+
+    // A watch tails the legacy index from its size at open: an entry an older
+    // core appends after that is refused the same way. A run in today's
+    // segment, which the watch emits first, says it has opened.
+    std::fs::write(store.join(".index.jsonl"), "").unwrap();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let today_id = id_at(now, 2);
+    seed_run(&store, &scratch.join("project"), "today", today_id, "today");
+    let mut watch = oneharness()
+        .args(["history", "watch", "--all-projects", "--format", "jsonl"])
+        .args(["--history-dir", &store.display().to_string()])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut first = String::new();
+    std::io::BufRead::read_line(
+        &mut std::io::BufReader::new(watch.stdout.take().unwrap()),
+        &mut first,
+    )
+    .unwrap();
+    assert!(first.contains(&today_id.to_string()), "{first}");
+    std::fs::write(
+        store.join(".index.jsonl"),
+        legacy_index_line(&store, &session, id),
+    )
+    .unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = watch.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            watch.kill().ok();
+            watch.wait().ok();
+            panic!("the watch never refused the entry");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let mut stderr = String::new();
+    std::io::Read::read_to_string(&mut watch.stderr.take().unwrap(), &mut stderr).unwrap();
+    assert!(!status.success());
+    assert!(
+        stderr.contains(&named) && stderr.contains("legacy-20240101T000000Z-1.jsonl"),
+        "{stderr}"
     );
 }
 

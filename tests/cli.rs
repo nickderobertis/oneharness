@@ -17187,6 +17187,74 @@ fn interrupted_stream_preserves_events_without_a_closing_run() {
     );
 }
 
+/// `history show` puts an in-flight run's events in `index` order whatever
+/// order its event lines landed in the session file.
+#[test]
+fn history_show_orders_an_in_flight_runs_events_by_index() {
+    let dir = hist_dir("show-in-flight-order");
+    let ds = dir.display().to_string();
+    let project_dir = dir.join("some-project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let run_id = "01926a3e-7c1b-7d2e-8f00-0123456789ab";
+    let line = |index: u64, kind: &str, output: &str| {
+        serde_json::json!({
+            "type": "event",
+            "schema_version": oneharness_core::domain::history::SCHEMA_VERSION,
+            "run_id": run_id,
+            "harness": "codex",
+            "harness_id": "codex",
+            "event": {
+                "kind": kind, "name": null, "input": null, "output": output,
+                "index": index, "tool_call_id": null, "started_at": null,
+                "finished_at": null, "duration_ms": null, "status": null,
+                "timing_source": null,
+            },
+        })
+        .to_string()
+    };
+    std::fs::write(
+        project_dir.join("in-flight.jsonl"),
+        [
+            line(2, "message", "third"),
+            line(0, "reasoning", "first"),
+            line(1, "message", "second"),
+        ]
+        .map(|l| l + "\n")
+        .concat(),
+    )
+    .unwrap();
+
+    let shown = run(
+        &[
+            "history",
+            "show",
+            "in-flight",
+            "--all-projects",
+            "--history-dir",
+            &ds,
+            "--compact",
+        ],
+        &[],
+    );
+    let displayed = json_stdout(&shown);
+    let displayed = displayed.as_array().unwrap();
+    assert_eq!(displayed.len(), 1, "{displayed:?}");
+    assert_eq!(displayed[0]["type"], "incomplete");
+    assert_eq!(displayed[0]["run_id"], run_id);
+    let order: Vec<(u64, &str)> = displayed[0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|event| {
+            (
+                event["index"].as_u64().unwrap(),
+                event["output"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(order, [(0, "first"), (1, "second"), (2, "third")]);
+}
+
 #[test]
 fn history_watch_event_mode_observes_event_before_stream_finishes() {
     let mock_profile = mock_profile_redirect();

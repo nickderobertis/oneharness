@@ -988,10 +988,10 @@ export const CAPABILITIES = {
 		method: "history",
 		argv: ["history", "show"],
 		options: "history_lookup",
-		output: "history_records",
+		output: "history_show_entries",
 		stdout: "json",
 		stdin: false,
-		rust: "oneharness_core::io::history::read_session",
+		rust: "oneharness_core::io::history::read_session_display",
 		always: ["--compact", "--format", "json"],
 		bindings: [
 			{

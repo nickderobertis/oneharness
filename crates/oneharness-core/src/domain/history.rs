@@ -1037,6 +1037,82 @@ pub struct HistoryRecord {
     pub error: Option<FailureText>,
 }
 
+/// A run `history show` reads before its closing record has landed: the events
+/// its event lines have published so far, under the run they belong to. It is a
+/// display entry, never a store line: once the run's closing record lands the
+/// same run is shown as a [`HistoryRecord`] instead. It exists only because an
+/// event line was read, so it always carries at least one event.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct IncompleteHistoryRun {
+    /// Always `incomplete`: what tells this entry apart from a record.
+    #[serde(rename = "type")]
+    kind: IncompleteRunType,
+    /// The id the run's closing record will carry as its `history_id`.
+    run_id: HistoryId,
+    /// The harness the event lines name.
+    // llmlint: ignore[invalid_states_unrepresentable] Copied verbatim from `HistoryEventLine::harness`, a legacy-compatible wire string (v1.0 lines predate the composed identity); this display entry repeats what the line says rather than re-deriving an identity the line may not carry.
+    harness: String,
+    /// The events published so far, in `index` order; never empty.
+    #[schemars(length(min = 1))]
+    events: Vec<ActionEvent>,
+}
+
+impl IncompleteHistoryRun {
+    /// The in-flight entry for `run_id`, with `events` put in `index` order;
+    /// `None` when there are no events, since a run nothing was read for is not
+    /// in flight as far as the store can tell.
+    #[must_use]
+    pub fn new(run_id: HistoryId, harness: String, mut events: Vec<ActionEvent>) -> Option<Self> {
+        if events.is_empty() {
+            return None;
+        }
+        events.sort_by_key(|event| event.index);
+        Some(Self {
+            kind: IncompleteRunType::Incomplete,
+            run_id,
+            harness,
+            events,
+        })
+    }
+
+    /// The id the run's closing record will carry as its `history_id`.
+    #[must_use]
+    pub fn run_id(&self) -> HistoryId {
+        self.run_id
+    }
+
+    /// The harness the event lines name.
+    #[must_use]
+    pub fn harness(&self) -> &str {
+        &self.harness
+    }
+
+    /// The events published so far, in `index` order; never empty.
+    #[must_use]
+    pub fn events(&self) -> &[ActionEvent] {
+        &self.events
+    }
+}
+
+/// The discriminator of an [`IncompleteHistoryRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+pub enum IncompleteRunType {
+    #[default]
+    #[serde(rename = "incomplete")]
+    Incomplete,
+}
+
+/// One entry of `history show`'s answer: a finished run's record, or a run still
+/// in flight.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum HistoryShowEntry {
+    /// A run whose closing record has landed.
+    Record(HistoryRecord),
+    /// A run that has published events but no closing record yet.
+    Incomplete(IncompleteHistoryRun),
+}
+
 impl HistoryRecord {
     /// Decode a whole-record history line written before the v1.0 event-sourced
     /// contract. The stable source identity gives v0.1 records (which predate
@@ -3738,5 +3814,34 @@ mod tests {
         let mut dropped = good;
         dropped.as_object_mut().unwrap().remove("variant");
         assert!(serde_json::from_value::<HistoryPointer>(dropped).is_err());
+    }
+
+    #[test]
+    fn an_in_flight_run_reads_back_its_events_in_index_order() {
+        let event = |index: usize, kind: &str| -> ActionEvent {
+            serde_json::from_value(serde_json::json!({
+                "kind": kind, "name": null, "input": null, "output": null,
+                "index": index,
+            }))
+            .unwrap()
+        };
+        let run_id = "0198f0d0-7b31-7000-8000-000000000002"
+            .parse::<HistoryId>()
+            .unwrap();
+        let run = IncompleteHistoryRun::new(
+            run_id,
+            "codex".to_string(),
+            vec![event(1, "message"), event(0, "reasoning")],
+        )
+        .unwrap();
+        assert_eq!(run.run_id(), run_id);
+        assert_eq!(run.harness(), "codex");
+        let order: Vec<(usize, &str)> = run
+            .events()
+            .iter()
+            .map(|event| (event.index, event.kind.as_str()))
+            .collect();
+        assert_eq!(order, [(0, "reasoning"), (1, "message")]);
+        assert!(IncompleteHistoryRun::new(run_id, "codex".to_string(), Vec::new()).is_none());
     }
 }

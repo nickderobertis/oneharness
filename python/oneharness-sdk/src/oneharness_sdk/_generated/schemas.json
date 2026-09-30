@@ -6376,7 +6376,7 @@
     ],
     "title": "HistoryRecord"
   },
-  "history_records": {
+  "history_show_entries": {
     "$defs": {
       "ActionEvent": {
         "description": "One normalized action a harness took, harness-agnostic so a single consumer\nassertion works across harnesses. Every field is always serialized (null when\nabsent) so the shape is stable, mirroring the `usage` contract.",
@@ -9243,6 +9243,61 @@
           }
         ]
       },
+      "HistoryShowEntry": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/HistoryRecord",
+            "description": "A run whose closing record has landed."
+          },
+          {
+            "$ref": "#/$defs/IncompleteHistoryRun",
+            "description": "A run that has published events but no closing record yet."
+          }
+        ],
+        "description": "One entry of `history show`'s answer: a finished run's record, or a run still\nin flight."
+      },
+      "IncompleteHistoryRun": {
+        "description": "A run `history show` reads before its closing record has landed: the events\nits event lines have published so far, under the run they belong to. It is a\ndisplay entry, never a store line: once the run's closing record lands the\nsame run is shown as a [`HistoryRecord`] instead. It exists only because an\nevent line was read, so it always carries at least one event.",
+        "properties": {
+          "events": {
+            "description": "The events published so far, in `index` order; never empty.",
+            "items": {
+              "$ref": "#/$defs/ActionEvent"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
+          "harness": {
+            "description": "The harness the event lines name.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "The id the run's closing record will carry as its `history_id`.",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$",
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/$defs/IncompleteRunType",
+            "description": "Always `incomplete`: what tells this entry apart from a record."
+          }
+        },
+        "required": [
+          "type",
+          "run_id",
+          "harness",
+          "events"
+        ],
+        "type": "object"
+      },
+      "IncompleteRunType": {
+        "description": "The discriminator of an [`IncompleteHistoryRun`].",
+        "enum": [
+          "incomplete"
+        ],
+        "type": "string"
+      },
       "PermissionMode": {
         "description": "The unified approval mode, from least to most autonomy. A harness may not\nsupport every value (see [`crate::domain::harness::HarnessSpec::mode`]); the\ncommand layer refuses an unsupported one before spawning, never silently\ndowngrading it.",
         "oneOf": [
@@ -9417,9 +9472,9 @@
     },
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "items": {
-      "$ref": "#/$defs/HistoryRecord"
+      "$ref": "#/$defs/HistoryShowEntry"
     },
-    "title": "Array_of_HistoryRecord",
+    "title": "Array_of_HistoryShowEntry",
     "type": "array"
   },
   "history_stream_envelope": {

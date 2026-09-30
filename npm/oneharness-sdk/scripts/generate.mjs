@@ -104,9 +104,9 @@ const CONTRACT_MODULES = Object.freeze([
 	// name them after their element type; `title` is what keeps the exported
 	// name the one the client imports.
 	{
-		module: "history-records",
-		key: "history_records",
-		type: "HistoryRecords",
+		module: "history-show-entries",
+		key: "history_show_entries",
+		type: "HistoryShowEntries",
 		output: true,
 		title: true,
 	},
@@ -247,6 +247,9 @@ async function compileContract(contract) {
 	const declarations = await compile(schema, contract.type, {
 		bannerComment: `/* Generated from ${contract.banner ?? "oneharness-core"}. Do not edit. */`,
 		additionalProperties: true,
+		// An array bound is the runtime validator's to enforce (Zod `.min`/`.max`);
+		// a tuple-typed declaration would not accept the array Zod infers.
+		ignoreMinAndMaxItems: true,
 		style: { endOfLine: "lf" },
 	});
 	return exactOptionalProperties(

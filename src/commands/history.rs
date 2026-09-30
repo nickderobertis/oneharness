@@ -639,6 +639,47 @@ mod tests {
     }
 
     #[test]
+    fn reindex_text_names_each_segment_and_every_unreadable_file() {
+        let report = history_io::HistoryReindexReport {
+            segments: vec![history_io::SegmentReindexSummary {
+                segment: "runs-2026-01-01.ndjson".to_string(),
+                path: "/h/.index.d/runs-2026-01-01.ndjson".to_string(),
+                added: 1,
+            }],
+            entries_added: 1,
+            files_read: 2,
+            unreadable: vec![history_io::UnreadableSessionFile {
+                path: "/h/p/s.jsonl".to_string(),
+                error: "Permission denied (os error 13)".to_string(),
+            }],
+        };
+        assert_eq!(
+            render_reindex_text(&report),
+            "reindexed 2 session files: added 1 entry to 1 segment\n  \
+             runs-2026-01-01.ndjson: 1 added\n  \
+             could not read /h/p/s.jsonl: Permission denied (os error 13)\n"
+        );
+        let empty = history_io::HistoryReindexReport {
+            segments: vec![],
+            entries_added: 0,
+            files_read: 0,
+            unreadable: vec![],
+        };
+        assert_eq!(
+            render_reindex_text(&empty),
+            "reindexed 0 session files: added 0 entries to 0 segments\n"
+        );
+    }
+
+    #[test]
+    fn a_window_follows_since_and_all_time() {
+        assert_eq!(window(None, false), HistoryWindow::default());
+        assert_eq!(window(None, true), HistoryWindow::AllTime);
+        let date: UtcDate = "2026-01-01".parse().unwrap();
+        assert_eq!(window(Some(date), false), HistoryWindow::Since(date));
+    }
+
+    #[test]
     fn migrate_text_counts_each_file() {
         let report = history_io::HistoryMigrateReport::new(vec![history_io::MigrationSummary {
             path: "/h/s.jsonl".to_string(),

@@ -652,6 +652,8 @@ class OneHarness:
         hold yet. Idempotent and append-only; the report names what was added
         per segment and every file that could not be read.
         """
+        # `_call` validated the document against `history_reindex_report`, so
+        # the cast names what the schema already established.
         return cast(
             "HistoryReindexReport",
             await self._call(

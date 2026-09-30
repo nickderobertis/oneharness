@@ -1144,7 +1144,8 @@ export const CAPABILITIES = {
 				option: "after",
 				flag: "--after",
 				kind: "value",
-				unless: null,
+				unless: "since",
+				unless_resolution: "refuse",
 			},
 			{
 				option: "labels",
@@ -1200,7 +1201,8 @@ export const CAPABILITIES = {
 				option: "allTime",
 				flag: "--all-time",
 				kind: "switch",
-				unless: null,
+				unless: "after",
+				unless_resolution: "refuse",
 			},
 			{
 				option: "config",

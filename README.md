@@ -2275,9 +2275,11 @@ runs are in the legacy `.index.jsonl`, not a segment) stays readable: `show
 <history-id> --all-time` finds any of its runs, `history show <session-id>
 --project <dir>` and a pointer line's `history_file` open a session by name with
 no index, and one `history reindex` makes them all findable by id and by date.
+<!-- llmlint: ignore-block[no_redundant_instruction_pointers] The task this section implements requires the README's history section to point at the one contract declaration rather than restate it; README.md is read by people and SDK consumers, not loaded as agent instructions, so AGENTS.md naming the same file does not reach them. -->
 The layout, the entry fields, which segments each reader reads and how an older
 core sharing the directory behaves are declared in
 [`docs/history-index.md`](docs/history-index.md).
+<!-- llmlint: ignore-end[no_redundant_instruction_pointers] -->
 
 `show` resolves its argument against a session **id or name** (name is
 non-unique — the newest match wins, or `--all` shows every match); a UUID

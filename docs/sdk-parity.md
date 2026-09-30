@@ -414,7 +414,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | CLI flag | SDK option | How it is sent |
 | --- | --- | --- |
 | `--format` | _(always sent)_ | fixed |
-| `--after` | `after` | `--flag VALUE` |
+| `--after` | `after` | `--flag VALUE` (refused beside `since`) |
 | `--label` | `labels` | `--flag KEY=VALUE` per entry |
 | `--variant` | `variant` | `--flag VALUE` |
 | `--session` | `session` | `--flag VALUE` |
@@ -423,7 +423,7 @@ which clients do. `tests/capability.rs` fails if a flag appears in
 | `--history-dir` | `historyDir` | `--flag VALUE` |
 | `--events` | `events` | `--flag` when true |
 | `--since` | `since` | `--flag VALUE` (refused beside `allTime`) |
-| `--all-time` | `allTime` | `--flag` when true |
+| `--all-time` | `allTime` | `--flag` when true (refused beside `after`) |
 | `--config` | `config` | `--flag VALUE` per element (refused beside `noConfig`) |
 | `--no-config` | `noConfig` | `--flag` when true |
 

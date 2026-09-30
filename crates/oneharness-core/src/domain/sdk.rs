@@ -596,12 +596,11 @@ pub struct HistoryWatchOptions {
     #[schemars(with = "bool")]
     pub events: Option<bool>,
     /// Start from this UTC date's index segments (`YYYY-MM-DD`) rather than
-    /// today's. Refused beside a true `allTime`; the CLI refuses it beside
-    /// `after`.
+    /// today's. Refused beside `after` or a true `allTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<crate::domain::history_index::UtcDate>,
     /// Start from the first record the index holds, the legacy index an
-    /// older oneharness kept included. The CLI refuses it beside `after`.
+    /// older oneharness kept included. Refused beside `after`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub all_time: Option<bool>,

@@ -12822,7 +12822,7 @@
         "type": "boolean"
       },
       "all_time": {
-        "description": "Start from the first record the index holds, the legacy index an\nolder oneharness kept included. The CLI refuses it beside `after`.",
+        "description": "Start from the first record the index holds, the legacy index an\nolder oneharness kept included. Refused beside `after`.",
         "type": "boolean"
       },
       "config": {
@@ -12861,7 +12861,7 @@
         ]
       },
       "since": {
-        "description": "Start from this UTC date's index segments (`YYYY-MM-DD`) rather than\ntoday's. Refused beside a true `allTime`; the CLI refuses it beside\n`after`.",
+        "description": "Start from this UTC date's index segments (`YYYY-MM-DD`) rather than\ntoday's. Refused beside `after` or a true `allTime`.",
         "maxLength": 10,
         "minLength": 10,
         "pattern": "^(?:[1-9][0-9]{3}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[1-9][0-9](?:0[48]|[2468][048]|[13579][26])|(?:1[26]|2[048]|3[26]|4[048]|5[26]|6[048]|7[26]|8[048]|9[26])00)-02-29)$",

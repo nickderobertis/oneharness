@@ -12,7 +12,7 @@ export interface HistoryWatchOptions {
   allProjects?: boolean | undefined;
   /**
    * Start from the first record the index holds, the legacy index an
-   * older oneharness kept included. The CLI refuses it beside `after`.
+   * older oneharness kept included. Refused beside `after`.
    */
   allTime?: boolean | undefined;
   /**
@@ -37,8 +37,7 @@ export interface HistoryWatchOptions {
   session?: string | null | undefined;
   /**
    * Start from this UTC date's index segments (`YYYY-MM-DD`) rather than
-   * today's. Refused beside a true `allTime`; the CLI refuses it beside
-   * `after`.
+   * today's. Refused beside `after` or a true `allTime`.
    */
   since?: string | null | undefined;
   /**

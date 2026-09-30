@@ -27,7 +27,8 @@ pub const INDEX_SCHEMA_VERSION: &str = "1.0";
 /// deleting what is in it.
 pub const INDEX_DIR: &str = ".index.d";
 
-/// The extension of every segment file.
+/// The segment extension: line-delimited JSON like a session, but never
+/// spelled `.jsonl`, which every released reader takes for a session file.
 pub const SEGMENT_EXT: &str = "ndjson";
 
 /// The index an older core keeps, directly under the store. Read (never
@@ -355,7 +356,8 @@ impl HistoryIndexEntry {
     }
 }
 
-/// See [`HistoryIndexEntry::key`].
+/// What `reindex` de-duplicates on: a segment holding an entry with a line's
+/// key already indexes that line, whatever else the entries carry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum IndexKey {
     Run(HistoryId),

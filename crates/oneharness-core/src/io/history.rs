@@ -877,15 +877,21 @@ fn list_segments(dir: &Path) -> Result<Vec<(UtcDate, SegmentKind, PathBuf)>, One
     Ok(found)
 }
 
-/// The path of one segment.
 fn segment_path(dir: &Path, kind: SegmentKind, date: UtcDate) -> PathBuf {
     dir.join(INDEX_DIR).join(kind.file_name(date))
 }
 
-/// Read the one line a span names and parse it, when it is a whole line.
+/// Read the one line a span names and parse it, when it is a whole line. The
+/// span is read from disk, so it is trusted only as far as the session file
+/// reaches: one that runs past the file's end is refused before anything is
+/// allocated for it.
 fn read_span(path: &Path, span: LineSpan) -> Option<HistoryLine> {
-    let length = usize::try_from(span.length).ok()?;
     let mut file = File::open(path).ok()?;
+    let end = span.offset.checked_add(span.length)?;
+    if span.length == 0 || end > file.metadata().ok()?.len() {
+        return None;
+    }
+    let length = usize::try_from(span.length).ok()?;
     file.seek(SeekFrom::Start(span.offset)).ok()?;
     let mut bytes = vec![0u8; length];
     file.read_exact(&mut bytes).ok()?;
@@ -2981,6 +2987,41 @@ mod tests {
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].prompt, "next");
         assert_eq!(recovered[0].history_id, entries[0].history_id);
+    }
+
+    #[test]
+    fn a_span_the_session_file_cannot_hold_is_refused_and_the_file_read_instead() {
+        let dir = temp_dir("span-bound");
+        let project = temp_dir("span-bound-project");
+        let writer = HistoryWriter::open(&dir, &project, "span", HistoryLabels::default()).unwrap();
+        writer
+            .append(PermissionMode::Default, None, "spanned", &result("codex"))
+            .unwrap();
+        let run = run_entries(&dir).remove(0);
+        let good = run.span.unwrap();
+        assert!(read_span(writer.path(), good).is_some());
+        // A length no file this size holds — a corrupt or hostile entry — is
+        // refused before anything is allocated for it.
+        for bad in [
+            LineSpan {
+                offset: good.offset,
+                length: u64::MAX / 2,
+            },
+            LineSpan {
+                offset: u64::MAX,
+                length: 1,
+            },
+            LineSpan {
+                offset: 0,
+                length: 0,
+            },
+        ] {
+            assert!(read_span(writer.path(), bad).is_none(), "{bad:?}");
+            let found = find_run_line(writer.path(), run.history_id, Some(bad))
+                .unwrap()
+                .expect("the session file itself still answers");
+            assert_eq!(found.prompt, "spanned");
+        }
     }
 
     #[test]

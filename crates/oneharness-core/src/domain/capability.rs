@@ -363,6 +363,11 @@ const fn bind(option: &'static str, kind: FlagKind) -> OptionBinding {
 // * `since` / `allTime` (history show, list, watch) — refuse. "From this date"
 //   and "from the beginning" are two different windows, and quietly keeping
 //   either reads a range of history the caller did not ask for.
+// * `after` / `since` and `allTime` / `after` (history watch) — refuse. A
+//   cursor and a start are two answers to where a watch begins, and the CLI
+//   refuses each pair. One `unless` apiece covers the three watch pairs as a
+//   cycle: `since` names `allTime`, `allTime` names `after`, `after` names
+//   `since`.
 // * `session` / `last` (history show) — prefer. The lookup union deliberately
 //   accepts `{session, last: true}` and defines it as "the most recent", so the
 //   request has one meaning and `--last` is it. This is the pair the mechanism
@@ -714,7 +719,7 @@ pub const CAPABILITIES: &[Capability] = &[
         rust: "oneharness_core::io::history::HistoryWatcher",
         always: &["--format", "jsonl"],
         bindings: &[
-            bind("after", FlagKind::Value("--after")),
+            bind_refuse("after", FlagKind::Value("--after"), "since"),
             bind("labels", FlagKind::KeyValue("--label")),
             bind("variant", FlagKind::Value("--variant")),
             bind("session", FlagKind::Value("--session")),
@@ -723,7 +728,7 @@ pub const CAPABILITIES: &[Capability] = &[
             bind("historyDir", FlagKind::Value("--history-dir")),
             bind("events", FlagKind::Switch("--events")),
             bind_refuse("since", FlagKind::Value("--since"), "allTime"),
-            bind("allTime", FlagKind::Switch("--all-time")),
+            bind_refuse("allTime", FlagKind::Switch("--all-time"), "after"),
             bind_refuse("config", FlagKind::Repeated("--config"), "noConfig"),
             bind("noConfig", FlagKind::Switch("--no-config")),
         ],

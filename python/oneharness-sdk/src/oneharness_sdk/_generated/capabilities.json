@@ -464,7 +464,8 @@
         "flag": "--after",
         "kind": "value",
         "option": "after",
-        "unless": null
+        "unless": "since",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--label",
@@ -520,7 +521,8 @@
         "flag": "--all-time",
         "kind": "switch",
         "option": "allTime",
-        "unless": null
+        "unless": "after",
+        "unless_resolution": "refuse"
       },
       {
         "flag": "--config",

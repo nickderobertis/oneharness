@@ -588,6 +588,7 @@ pub struct HistoryWatchOptions {
     /// index an older oneharness kept included). Omitted, the current UTC
     /// day. Refused beside `after`, the other answer to where a watch begins.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] `after` is a released SDK field every existing watch caller passes, and manager ruling 1 fixes this window as a bare `HistoryWindow`; folding both into one union would break those callers, so the pair is refused at the boundary instead (capability `bind_refuse("after", …, "window")`, clap `conflicts_with`) and the library takes one `WatchStart`.
     pub window: Option<crate::domain::history_index::HistoryWindow>,
     /// Narrow to one configured harness identity (`claude-code:work`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

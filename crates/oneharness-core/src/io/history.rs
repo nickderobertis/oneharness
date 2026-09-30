@@ -1606,6 +1606,17 @@ enum SessionFilter {
     Awaiting(HistorySessionName),
 }
 
+/// Where a [`HistoryWatcher`] begins: strictly after a record it already
+/// emitted, or from the beginning of a window. The two are one answer, so a
+/// watch cannot be asked to start at both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchStart {
+    /// Resume strictly after this record, from its date's runs segment.
+    After(HistoryId),
+    /// Start at the beginning of this window's earliest date.
+    Window(HistoryWindow),
+}
+
 impl HistoryWatcher {
     /// Prepare to emit records strictly after `after` — the entries after the
     /// cursor in its date's segment, and every later-dated segment — or, with
@@ -1618,7 +1629,14 @@ impl HistoryWatcher {
         project_slug: Option<String>,
         events: bool,
     ) -> Result<Self, OneharnessError> {
-        Self::open_in(dir, after, labels, project_slug, events, None, None)
+        Self::open_in(
+            dir,
+            after.map(WatchStart::After),
+            labels,
+            project_slug,
+            events,
+            None,
+        )
     }
 
     /// [`open`](Self::open), narrowed to one session when `session` names one:
@@ -1637,27 +1655,36 @@ impl HistoryWatcher {
         events: bool,
         session: Option<&HistorySessionSelector>,
     ) -> Result<Self, OneharnessError> {
-        Self::open_in(dir, after, labels, project_slug, events, session, None)
+        Self::open_in(
+            dir,
+            after.map(WatchStart::After),
+            labels,
+            project_slug,
+            events,
+            session,
+        )
     }
 
-    /// [`open_session`](Self::open_session), starting from a window rather
-    /// than from today: its first date's segments are read from the beginning
+    /// [`open_session`](Self::open_session), starting where `start` says:
+    /// after a cursor, or from the beginning of a window's first date
     /// ([`HistoryWindow::AllTime`] reads every segment, and the legacy index
-    /// files from their first byte). A window and a cursor are two answers to
-    /// one question, so `window` is ignored when `after` is given.
+    /// files from their first byte). `None` starts at the current UTC day.
     pub fn open_in(
         dir: &Path,
-        after: Option<HistoryId>,
+        start: Option<WatchStart>,
         labels: HistoryLabels,
         project_slug: Option<String>,
         events: bool,
         session: Option<&HistorySessionSelector>,
-        window: Option<HistoryWindow>,
     ) -> Result<Self, OneharnessError> {
         let today = today();
         let mut offsets = BTreeMap::new();
-        let (earliest, window) = match after {
-            Some(cursor) => {
+        let after = match start {
+            Some(WatchStart::After(cursor)) => Some(cursor),
+            _ => None,
+        };
+        let (earliest, window) = match start {
+            Some(WatchStart::After(cursor)) => {
                 let not_found = || OneharnessError::HistoryNotFound {
                     id: cursor.to_string(),
                 };
@@ -1677,10 +1704,11 @@ impl HistoryWatcher {
                 offsets.insert((SegmentKind::Runs, date), after_cursor);
                 (Some(date), HistoryWindow::Since(date))
             }
+            Some(WatchStart::Window(window)) => (window.earliest(today), window),
             None => {
-                let window = window.unwrap_or(HistoryWindow::Recent {
+                let window = HistoryWindow::Recent {
                     days: NonZeroU32::MIN,
-                });
+                };
                 (window.earliest(today), window)
             }
         };
@@ -3515,12 +3543,11 @@ mod tests {
         // All time: every line from the first byte, labels and project applied.
         let mut all = HistoryWatcher::open_in(
             &dir,
-            None,
+            Some(WatchStart::Window(HistoryWindow::AllTime)),
             history::parse_labels(["k=v"]).unwrap(),
             None,
             true,
             None,
-            Some(HistoryWindow::AllTime),
         )
         .unwrap();
         assert_eq!(
@@ -3533,12 +3560,11 @@ mod tests {
         assert_eq!(all.drain_events().len(), 1);
         let mut elsewhere = HistoryWatcher::open_in(
             &dir,
-            None,
+            Some(WatchStart::Window(HistoryWindow::AllTime)),
             HistoryLabels::default(),
             Some("another-project".to_string()),
             true,
             None,
-            Some(HistoryWindow::AllTime),
         )
         .unwrap();
         assert!(elsewhere.drain_available().is_empty());

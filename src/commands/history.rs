@@ -94,15 +94,16 @@ fn watch(args: &HistoryWatchArgs) -> Result<i32, OneharnessError> {
     let labels = history::parse_labels(args.label.iter().map(String::as_str))
         .map_err(OneharnessError::HistoryLabelInvalid)?;
     let slug = project_slug(args.all_projects, args.project.as_deref());
-    let start = chosen_window(args.days, args.since, args.all_time);
+    let start = after.map(history_io::WatchStart::After).or_else(|| {
+        chosen_window(args.days, args.since, args.all_time).map(history_io::WatchStart::Window)
+    });
     let mut watcher = history_io::HistoryWatcher::open_in(
         &dir,
-        after,
+        start,
         labels,
         slug,
         args.events,
         args.session.as_ref(),
-        start,
     )?;
     let of_variant = |variant: Option<&str>| {
         args.variant

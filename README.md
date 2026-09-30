@@ -2263,12 +2263,9 @@ oneharness history clear [--all-projects] [--yes]            # dry-run unless --
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 **Index.** Beside the sessions, `<history_dir>/.index.d/` holds a dated,
-append-only index of small pointer entries, one segment per UTC date, so
-recording a run costs the same however large the store grows and nothing ever
-rewrites or deletes history. The readers read recent dates unless `--days`,
-`--since` or `--all-time` names another window — one `window` value in the
-SDKs — and `history reindex` indexes a store an older
-oneharness wrote, or session files copied in from another store.
+append-only index, so recording a run costs the same however large the store
+grows. Run `history reindex` after copying session files in from another store
+or upgrading from an older oneharness.
 <!-- llmlint: ignore-block[no_redundant_instruction_pointers] The task this section implements requires the README's history section to point at the one contract declaration rather than restate it; README.md is read by people and SDK consumers, not loaded as agent instructions, so AGENTS.md naming the same file does not reach them. -->
 The layout, the entry fields, which segments each reader reads and how an older
 core sharing the directory behaves are declared in

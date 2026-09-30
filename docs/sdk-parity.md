@@ -475,7 +475,7 @@ caller rather than being dropped.
 | `sync_report` | `check`, `config_files`, `exact`, `results`, `schema_version` | 16 | yes | yes | yes |
 | `usage_report` | `identities`, `observed_at`, `schema_version` | 33 | yes | yes | yes |
 | `interrupt_response` | `error`, `mechanism`, `ok`, `reason`, `redirected`, `v` | 6 | yes | yes | yes |
-| `history_records` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_model`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `usage`, `variant`, `work` | 42 | yes | yes | yes |
+| `history_records` | `duration_ms`, `error`, `events`, `exit_code`, `failure_kind`, `finished_at`, `harness`, `harness_id`, `history_id`, `labels`, `model`, `model_ms`, `name`, `observed_model`, `observed_tool_ms`, `permission_mode`, `project`, `prompt`, `run_id`, `schema_version`, `session`, `session_id`, `started_at`, `status`, `text`, `text_source`, `time_to_first_token_ms`, `timestamp`, `tool_ms`, `type`, `usage`, `variant`, `work` | 44 | yes | yes | yes |
 | `history_list` | `harnesses`, `id`, `labels`, `name`, `path`, `project`, `record_count`, `running`, `started` | 9 | yes | yes | yes |
 | `history_stream_envelope` | `line`, `record`, `type` | 48 | yes | yes | yes |
 | `history_clear_report` | `dry_run`, `files`, `hint`, `removed`, `would_remove` | 5 | yes | yes | yes |

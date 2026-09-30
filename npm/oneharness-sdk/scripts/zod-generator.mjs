@@ -76,7 +76,6 @@ export const SDK_SCHEMA_ROOTS = Object.freeze([
 		key: "history_records",
 		type: "HistoryRecords",
 		module: "history-records",
-		definitions: false,
 	},
 	{ key: "history_list", type: "HistoryList", module: "history-list" },
 	{ key: "list_report", type: "ListReport", module: "registry" },
@@ -151,6 +150,7 @@ export const SDK_SCHEMA_ALIASES = Object.freeze({
 	BatchStrategy: 'BatchReport["strategy"]',
 	ControlShape: 'ControlReport["mechanism"]',
 	IdentitySelector: 'UsageIdentity["selector"]',
+	IncompleteRunType: 'IncompleteHistoryRun["type"]',
 	ModeHeadless: 'ModeInfo["headless"]',
 	SessionPhase: 'SessionReport["phase"]',
 	UsedPercent: "number",
@@ -688,7 +688,7 @@ export function generateZodModule(bundle, roots, aliases = {}) {
 		lines.push(
 			// The version-gated history unions exceed TypeScript's comparison limit;
 			// only those exact runtime validators cross an opaque assignment boundary.
-			`export const ${name}Schema: z.ZodType<${name}> = ${schemaExpression(value.schema, value.path)}${["HistoryLine", "HistoryRecord"].includes(name) ? ` as unknown as z.ZodType<${name}>` : ""};`,
+			`export const ${name}Schema: z.ZodType<${name}> = ${schemaExpression(value.schema, value.path)}${["HistoryLine", "HistoryRecord", "HistoryShowEntry"].includes(name) ? ` as unknown as z.ZodType<${name}>` : ""};`,
 			"",
 		);
 	}

@@ -12560,10 +12560,10 @@
   },
   "history_records": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "title": "Array_of_HistoryRecord",
+    "title": "Array_of_HistoryShowEntry",
     "type": "array",
     "items": {
-      "$ref": "#/$defs/HistoryRecord"
+      "$ref": "#/$defs/HistoryShowEntry"
     },
     "$defs": {
       "ActionEvent": {
@@ -15429,6 +15429,60 @@
               "failure_kind"
             ]
           }
+        ]
+      },
+      "HistoryShowEntry": {
+        "description": "One entry of `history show`'s answer: a finished run's record, or a run still\nin flight.",
+        "anyOf": [
+          {
+            "description": "A run whose closing record has landed.",
+            "$ref": "#/$defs/HistoryRecord"
+          },
+          {
+            "description": "A run that has published events but no closing record yet.",
+            "$ref": "#/$defs/IncompleteHistoryRun"
+          }
+        ]
+      },
+      "IncompleteHistoryRun": {
+        "description": "A run `history show` reads before its closing record has landed: the events\nits event lines have published so far, under the run they belong to. It is a\ndisplay entry, never a store line: once the run's\nclosing record lands the same run is shown as a [`HistoryRecord`] instead.",
+        "type": "object",
+        "properties": {
+          "events": {
+            "description": "The events published so far, in `index` order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/ActionEvent"
+            }
+          },
+          "harness": {
+            "description": "The harness the event lines name.",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "The id the run's closing record will carry as its `history_id`.",
+            "type": "string",
+            "maxLength": 36,
+            "minLength": 36,
+            "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$"
+          },
+          "type": {
+            "description": "Always `incomplete`: what tells this entry apart from a record.",
+            "$ref": "#/$defs/IncompleteRunType"
+          }
+        },
+        "required": [
+          "type",
+          "run_id",
+          "harness",
+          "events"
+        ]
+      },
+      "IncompleteRunType": {
+        "description": "The discriminator of an [`IncompleteHistoryRun`].",
+        "type": "string",
+        "enum": [
+          "incomplete"
         ]
       },
       "PermissionMode": {

@@ -9,11 +9,11 @@ use serde::Serialize;
 
 use crate::domain::fallback::RunWork;
 use crate::domain::history::{
-    gated_failure_kind_version, HistoryLine, HistoryRecord, HistoryStreamEnvelope,
-    FIRST_CANCELLED_SCHEMA_VERSION, FIRST_ERROR_SCHEMA_VERSION, FIRST_EVENT_SCHEMA_VERSION,
-    FIRST_MODEL_OBSERVATION_SCHEMA_VERSION, FIRST_PARTIAL_TIMING_SCHEMA_VERSION,
-    FIRST_WORK_EVIDENCE_SCHEMA_VERSION, OBSERVED_TIMING_SCHEMA_VERSION,
-    PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
+    gated_failure_kind_version, HistoryLine, HistoryRecord, HistoryShowEntry,
+    HistoryStreamEnvelope, FIRST_CANCELLED_SCHEMA_VERSION, FIRST_ERROR_SCHEMA_VERSION,
+    FIRST_EVENT_SCHEMA_VERSION, FIRST_MODEL_OBSERVATION_SCHEMA_VERSION,
+    FIRST_PARTIAL_TIMING_SCHEMA_VERSION, FIRST_WORK_EVIDENCE_SCHEMA_VERSION,
+    OBSERVED_TIMING_SCHEMA_VERSION, PREVIOUS_CURRENT_SCHEMA_VERSION, PRE_LIFECYCLE_RECORD_VERSIONS,
 };
 use crate::domain::history::{requires_provider_finish, run_failed, versions_from};
 use crate::domain::report::{attempted_failure, RunReport, RunStreamEnvelope, Status};
@@ -87,7 +87,7 @@ pub fn bundle() -> SdkSchemaBundle {
         history_line: history_line_schema(schema_for_serialize::<HistoryLine>()),
         history_record: history_schema(schema_for_serialize::<HistoryRecord>()),
         history_stream_envelope: history_stream_schema(),
-        history_records: history_schema(schema_for_serialize::<Vec<HistoryRecord>>()),
+        history_records: history_schema(schema_for_serialize::<Vec<HistoryShowEntry>>()),
         history_list: schema_for_serialize::<Vec<SessionSummary>>(),
         list_report: schema_for_serialize::<crate::io::registry::ListReport>(),
         detect_report: schema_for_serialize::<crate::io::detect::DetectReport>(),
@@ -1059,6 +1059,38 @@ mod tests {
                       "cache_write_tokens": null, "cost_usd": null},
             "session_id": null, "events": [event], "failure_kind": null
         })
+    }
+
+    #[test]
+    fn history_show_contract_accepts_an_in_flight_run_beside_a_record() {
+        use crate::domain::history::{HistoryId, IncompleteHistoryRun, IncompleteRunType};
+        let schema = serde_json::to_value(bundle().history_records).unwrap();
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let event = json!({
+            "kind": "message", "name": null, "input": null, "output": "partial", "index": 0,
+            "tool_call_id": null, "started_at": null, "finished_at": null,
+            "duration_ms": null, "status": null
+        });
+        // Built from the type `history show` serializes, so the contract is
+        // checked against what the CLI prints rather than a hand-written copy.
+        let in_flight = serde_json::to_value(IncompleteHistoryRun {
+            kind: IncompleteRunType::Incomplete,
+            run_id: "0198f0d0-7b31-7000-8000-000000000002"
+                .parse::<HistoryId>()
+                .unwrap(),
+            harness: "codex".to_string(),
+            events: vec![serde_json::from_value(event.clone()).unwrap()],
+        })
+        .unwrap();
+        assert_eq!(in_flight["type"], "incomplete");
+        assert!(validator.is_valid(&json!([current_record(event.clone()), in_flight])));
+
+        let mut untyped = in_flight.clone();
+        untyped.as_object_mut().unwrap().remove("type");
+        assert!(!validator.is_valid(&json!([untyped])));
+        let mut eventless = in_flight;
+        eventless.as_object_mut().unwrap().remove("events");
+        assert!(!validator.is_valid(&json!([eventless])));
     }
 
     #[test]

@@ -252,13 +252,15 @@ test("focused Zod generator covers the complete checked-in Rust schema bundle", 
 	]) {
 		expect(generated).toContain(`export const ${name}Schema`);
 	}
-	// These two version-gated history unions expand into thousands of TypeScript
+	// These three version-gated history unions (the third is `history show`'s
+	// entry, a record or an in-flight run) expand into thousands of TypeScript
 	// alternatives. Keep the runtime validators exact while making only their
 	// compile-time assignment opaque; every smaller schema remains inferred and
 	// checked directly against its generated type.
-	expect(generated.match(/as unknown as z\.ZodType/g)).toHaveLength(2);
+	expect(generated.match(/as unknown as z\.ZodType/g)).toHaveLength(3);
 	expect(generated).toContain("as unknown as z.ZodType<HistoryLine>");
 	expect(generated).toContain("as unknown as z.ZodType<HistoryRecord>");
+	expect(generated).toContain("as unknown as z.ZodType<HistoryShowEntry>");
 	expect(generated).toContain(
 		"export const RunReportSchema: z.ZodType<RunReport>",
 	);

@@ -25,7 +25,8 @@ use fs2::FileExt;
 use crate::domain::harness::HarnessIdentity;
 use crate::domain::history::{
     self, HistoryEventLine, HistoryId, HistoryLabels, HistoryLine, HistoryPointer, HistoryRecord,
-    HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector, PointerSession,
+    HistoryRunRecord, HistorySessionId, HistorySessionName, HistorySessionSelector,
+    IncompleteHistoryRun, IncompleteRunType, PointerSession,
 };
 use crate::domain::mode::PermissionMode;
 use crate::domain::report::RunResult;
@@ -1135,12 +1136,12 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
     }
     for (run_id, (harness, mut events)) in dangling {
         events.sort_by_key(|event| event.index);
-        values.push(serde_json::json!({
-            "type": "incomplete",
-            "run_id": run_id,
-            "harness": harness,
-            "events": events,
-        }));
+        values.push(serde_json::to_value(IncompleteHistoryRun {
+            kind: IncompleteRunType::Incomplete,
+            run_id,
+            harness,
+            events,
+        })?);
     }
     Ok(values)
 }

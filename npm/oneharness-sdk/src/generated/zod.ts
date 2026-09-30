@@ -54,7 +54,7 @@ import type { HistoryMigrateOptions } from "./history-migrate-options.js";
 import type { HistoryMigrateReport, MigrationSummary } from "./history-migrate-report.js";
 import type { HistoryPointer, HistoryPointers } from "./history-pointers.js";
 import type { HistoryPointersOptions } from "./history-pointers-options.js";
-import type { HistoryRecords } from "./history-records.js";
+import type { HistoryRecords, HistoryShowEntry, IncompleteHistoryRun } from "./history-records.js";
 import type { HistoryEventLine, HistoryStreamEnvelope } from "./history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./history-watch-options.js";
 import type { InitOptions } from "./init-options.js";
@@ -95,6 +95,7 @@ export type AbsolutePath = ControlReport["socket"];
 export type BatchStrategy = BatchReport["strategy"];
 export type ControlShape = ControlReport["mechanism"];
 export type IdentitySelector = UsageIdentity["selector"];
+export type IncompleteRunType = IncompleteHistoryRun["type"];
 export type ModeHeadless = ModeInfo["headless"];
 export type SessionPhase = SessionReport["phase"];
 export type UsedPercent = number;
@@ -2616,7 +2617,7 @@ export const HistoryRecordSchema: z.ZodType<HistoryRecord> = z.intersection(
   ),
 ) as unknown as z.ZodType<HistoryRecord>;
 
-export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(() => HistoryRecordSchema));
+export const HistoryRecordsSchema: z.ZodType<HistoryRecords> = z.array(z.lazy(() => HistoryShowEntrySchema));
 
 export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.looseObject({
   harnesses: z.array(z.string()).refine((value) => value !== undefined, { message: "Required" }),
@@ -2632,6 +2633,11 @@ export const HistorySessionSummarySchema: z.ZodType<HistorySessionSummary> = z.l
   running: z.boolean().optional(),
   started: z.string().refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const HistoryShowEntrySchema: z.ZodType<HistoryShowEntry> = z.union([
+  z.lazy(() => HistoryRecordSchema),
+  z.lazy(() => IncompleteHistoryRunSchema),
+]) as unknown as z.ZodType<HistoryShowEntry>;
 
 export const HistoryStreamEnvelopeSchema: z.ZodType<HistoryStreamEnvelope> = z.union([
   z.looseObject({
@@ -2707,6 +2713,22 @@ export const IdentitySelectorSchema: z.ZodType<IdentitySelector> = z.union([
     kind: z.literal("ambient").refine((value) => value !== undefined, { message: "Required" }),
   }),
 ]);
+
+export const IncompleteHistoryRunSchema: z.ZodType<IncompleteHistoryRun> = z.looseObject({
+  events: z.array(z.lazy(() => ActionEventSchema)).refine((value) => value !== undefined, { message: "Required" }),
+  harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  run_id: z
+    .string()
+    .min(36)
+    .regex(
+      new RegExp("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$", "u"),
+    )
+    .refine((value) => [...value].length <= 36, { message: "Too long: expected at most 36 characters" })
+    .refine((value) => value !== undefined, { message: "Required" }),
+  type: z.lazy(() => IncompleteRunTypeSchema).refine((value) => value !== undefined, { message: "Required" }),
+});
+
+export const IncompleteRunTypeSchema: z.ZodType<IncompleteRunType> = z.literal("incomplete");
 
 export const InitOptionsSchema: z.ZodType<InitOptions> = z.strictObject({
   force: z.boolean().optional(),

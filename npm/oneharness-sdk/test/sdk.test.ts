@@ -43,6 +43,7 @@ import {
 	HistoryWatchOptionsSchema,
 	InitOptionsSchema,
 	InterruptOptionsSchema,
+	isIncompleteHistoryRun,
 	type ListReport,
 	ListReportSchema,
 	MockOptionsSchema,
@@ -753,6 +754,68 @@ describe("OneHarness", () => {
 		expect(DetectReportSchema.safeParse(rawDetect).success).toBe(true);
 	}, 30_000);
 
+	test("shows a streamed session's history while its run is still in flight", async () => {
+		const historyDir = await scratch("history-in-flight");
+		const client = sdk();
+		// The events land first; the filler lines hold the run open long after
+		// them, so the lookup below reads a session with no closing record yet.
+		const stream = client.runStream({
+			prompt: "in flight",
+			harnesses: ["codex"],
+			mode: "bypass",
+			history: true,
+			historyName: "node-in-flight",
+			historyDir,
+			env: {
+				MOCK_STREAM_DELAY_MS: "300",
+				MOCK_STDOUT: [
+					'{"type":"thread.started","thread_id":"in-flight-thread"}',
+					'{"type":"item.completed","item":{"id":"r1","type":"reasoning","text":"weighing it"}}',
+					'{"type":"item.started","item":{"id":"c1","type":"command_execution","command":"echo hi","status":"in_progress"}}',
+					'{"type":"item.completed","item":{"id":"c1","type":"command_execution","command":"echo hi","aggregated_output":"hi","exit_code":0,"status":"completed"}}',
+					'{"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"still going"}}',
+					...Array.from({ length: 40 }, () => '{"type":"turn.progress"}'),
+					'{"type":"turn.completed"}',
+				].join("\n"),
+			},
+			bins: { codex: mock },
+		});
+		try {
+			const streamed: string[] = [];
+			while (!streamed.includes("message")) {
+				const next = await stream.next();
+				if (next.done) throw new Error("the run finished before its message");
+				if (next.value.type === "event") streamed.push(next.value.event.kind);
+			}
+
+			const entries = await client.history({
+				session: "node-in-flight",
+				historyDir,
+			});
+			expect(entries).toHaveLength(1);
+			const [entry] = entries.filter(isIncompleteHistoryRun);
+			if (!entry)
+				throw new Error(
+					`expected an in-flight entry, got ${JSON.stringify(entries)}`,
+				);
+			expect(entry.type).toBe("incomplete");
+			expect(entry.harness).toBe("codex");
+			expect(entry.run_id).toMatch(/^[0-9a-f-]{36}$/u);
+			expect(entry.events.map(({ kind }) => kind)).toEqual([
+				"reasoning",
+				"tool_call",
+				"message",
+			]);
+			expect(entry.events[1]).toMatchObject({
+				name: "command_execution",
+				input: { command: "echo hi" },
+			});
+			expect(entry.events[2]?.output).toBe("still going");
+		} finally {
+			await stream.return(undefined);
+		}
+	}, 30_000);
+
 	test("looks up standardized history created across the CLI boundary", async () => {
 		const historyDir = await scratch("history");
 		const client = sdk();
@@ -773,7 +836,7 @@ describe("OneHarness", () => {
 		expect(records[0]?.prompt).toBe("history sdk");
 		expect(records[0]?.name).toBe("node-session");
 		expect(records[0]?.status).toBe("ok");
-		const historyId = records[0]?.history_id;
+		const historyId = records[0]?.history_id as string | undefined;
 		if (!historyId) throw new Error("history record had no exact id");
 		const exact = await client.history({ session: historyId, historyDir });
 		expect(exact).toHaveLength(1);
@@ -814,7 +877,7 @@ describe("OneHarness", () => {
 				events: [
 					{
 						kind: "tool_call",
-						name: "shell",
+						name: "command_execution",
 						input: {},
 						output: null,
 						index: 0,
@@ -829,7 +892,7 @@ describe("OneHarness", () => {
 				events: [
 					{
 						kind: "tool_call",
-						name: "shell",
+						name: "command_execution",
 						input: {},
 						output: null,
 						index: 0,
@@ -924,7 +987,12 @@ describe("OneHarness", () => {
 				env: { MOCK_STDOUT: historyTrace },
 				bins: { codex: mock },
 			});
-			records.push(...(await client.history({ session: name, historyDir })));
+			records.push(
+				...((await client.history({
+					session: name,
+					historyDir,
+				})) as HistoryRecord[]),
+			);
 		}
 		const cursor = records[0]?.history_id;
 		if (!cursor) throw new Error("cursor fixture had no history id");

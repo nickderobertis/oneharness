@@ -1037,6 +1037,42 @@ pub struct HistoryRecord {
     pub error: Option<FailureText>,
 }
 
+/// A run `history show` reads before its closing record has landed: the events
+/// its event lines have published so far, under the run they belong to. It is a
+/// display entry, never a store line: once the run's
+/// closing record lands the same run is shown as a [`HistoryRecord`] instead.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct IncompleteHistoryRun {
+    /// Always `incomplete`: what tells this entry apart from a record.
+    #[serde(rename = "type")]
+    pub kind: IncompleteRunType,
+    /// The id the run's closing record will carry as its `history_id`.
+    pub run_id: HistoryId,
+    /// The harness the event lines name.
+    pub harness: String,
+    /// The events published so far, in `index` order.
+    pub events: Vec<ActionEvent>,
+}
+
+/// The discriminator of an [`IncompleteHistoryRun`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, JsonSchema)]
+pub enum IncompleteRunType {
+    #[default]
+    #[serde(rename = "incomplete")]
+    Incomplete,
+}
+
+/// One entry of `history show`'s answer: a finished run's record, or a run still
+/// in flight.
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+#[serde(untagged)]
+pub enum HistoryShowEntry {
+    /// A run whose closing record has landed.
+    Record(HistoryRecord),
+    /// A run that has published events but no closing record yet.
+    Incomplete(IncompleteHistoryRun),
+}
+
 impl HistoryRecord {
     /// Decode a whole-record history line written before the v1.0 event-sourced
     /// contract. The stable source identity gives v0.1 records (which predate

@@ -31,7 +31,7 @@ from ._generated_types import (
     HistoryMigrateReport,
     HistoryPointers,
     HistoryPointersOptions,
-    HistoryRecord,
+    HistoryShowEntry,
     HistoryStreamEnvelope,
     HistoryWatchOptions,
     InitOptions,
@@ -573,14 +573,18 @@ class OneHarness:
             ),
         )
 
-    async def history(self, lookup: HistoryLookup) -> builtins.list[HistoryRecord]:
-        """Resolve one history record or session."""
+    async def history(self, lookup: HistoryLookup) -> builtins.list[HistoryShowEntry]:
+        """Resolve one history record or session.
+
+        A run still in flight has no record yet: it is an entry whose `type` is
+        `incomplete`, carrying its `run_id`, `harness` and the `events` so far.
+        """
         # The `--last`-suppresses-a-name rule is declared, not re-derived here:
         # the union deliberately accepts `{session, last: True}` and resolves it
         # to "the most recent", and the manifest binds `session` with
         # `unless: "last"` so the builder renders only `--last`.
         return cast(
-            "builtins.list[HistoryRecord]",
+            "builtins.list[HistoryShowEntry]",
             await self._call(
                 "history",
                 lookup,

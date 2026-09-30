@@ -24,6 +24,7 @@ import type { HistoryMigrateOptions } from "./generated/history-migrate-options.
 import type { HistoryMigrateReport } from "./generated/history-migrate-report.js";
 import type { HistoryPointers } from "./generated/history-pointers.js";
 import type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
+import type { IncompleteHistoryRun } from "./generated/history-records.js";
 import type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 import type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 import type { InitOptions } from "./generated/init-options.js";
@@ -121,7 +122,11 @@ export type {
 	HistoryPointers,
 } from "./generated/history-pointers.js";
 export type { HistoryPointersOptions } from "./generated/history-pointers-options.js";
-export type { HistoryRecords } from "./generated/history-records.js";
+export type {
+	HistoryRecords,
+	HistoryShowEntry,
+	IncompleteHistoryRun,
+} from "./generated/history-records.js";
 export type { HistoryStreamEnvelope } from "./generated/history-stream-envelope.js";
 export type { HistoryWatchOptions } from "./generated/history-watch-options.js";
 export type { InitOptions } from "./generated/init-options.js";
@@ -155,6 +160,16 @@ export type MockHarnessScript = {
 	exitCode?: number;
 	latencyMs?: number;
 };
+
+/**
+ * Whether a `history()` entry is a run still in flight rather than a finished
+ * run's record. Records carry no `type`; an in-flight entry's is `incomplete`.
+ */
+export function isIncompleteHistoryRun(
+	entry: HistoryRecord | IncompleteHistoryRun,
+): entry is IncompleteHistoryRun {
+	return entry.type === "incomplete";
+}
 
 /** A non-zero exit from the oneharness subprocess. */
 export class OneHarnessProcessError extends Error {
@@ -752,7 +767,16 @@ export class OneHarness {
 		);
 	}
 
-	async history(lookup: HistoryLookup): Promise<HistoryRecord[]> {
+	/**
+	 * Resolve one history record or session.
+	 *
+	 * A run still in flight has no record yet: it is an `IncompleteHistoryRun`
+	 * entry (`type: "incomplete"`) carrying its `run_id`, `harness` and the
+	 * `events` so far.
+	 */
+	async history(
+		lookup: HistoryLookup,
+	): Promise<Array<HistoryRecord | IncompleteHistoryRun>> {
 		// The `--last`-suppresses-a-name rule is declared, not re-derived here:
 		// the union deliberately accepts `{session, last: true}` and resolves it
 		// to "the most recent", and the manifest binds `session` with

@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/nickderobertis/oneharness/compare/v0.18.0...v0.19.0) - 2026-09-30
+
+### Added
+
+- *(stream)* [**breaking**] human-readable streaming, text history watch, and the event gaps behind it ([#1386](https://github.com/nickderobertis/oneharness/pull/1386))
+
 <!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] A changelog entry records what this release changed, as of this release; it is history a consumer reads when upgrading, not a live copy of the stream, event, history or Rust API contracts to keep in step. Their sources are `ActionEvent`'s doc comments (generated into the SDK schemas), `domain::render`, `commands::run`'s `StreamView` and `HistoryEventLine`, each pinned by its own tests and `just sdk-check`. -->
 
 ### Changed

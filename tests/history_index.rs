@@ -29,6 +29,52 @@ use oneharness_core::io::history::{self, HistoryWindow, HistoryWriter, UtcDate};
 use oneharness_core::io::scratch::ScratchDir;
 use serde_json::Value;
 
+/// Counts the heap this test binary holds, byte for byte, so the in-process
+/// library child can report exactly what a run keeps alive at each event —
+/// a measure no resident-size figure resolves.
+mod live_heap {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static LIVE: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct Counting;
+
+    // SAFETY: every call is forwarded unchanged to the system allocator; the
+    // counter only records the sizes it was asked for.
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+            // SAFETY: the caller's contract for `alloc` is passed through.
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+            LIVE.fetch_add(layout.size(), Ordering::Relaxed);
+            // SAFETY: the caller's contract for `alloc_zeroed` is passed through.
+            unsafe { System.alloc_zeroed(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+            // SAFETY: the caller's contract for `dealloc` is passed through.
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            LIVE.fetch_add(new_size, Ordering::Relaxed);
+            LIVE.fetch_sub(layout.size(), Ordering::Relaxed);
+            // SAFETY: the caller's contract for `realloc` is passed through.
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    /// The bytes currently allocated and not yet freed.
+    pub fn bytes() -> usize {
+        LIVE.load(Ordering::Relaxed)
+    }
+}
+
+#[global_allocator]
+static LIVE_HEAP: live_heap::Counting = live_heap::Counting;
+
 fn oneharness_bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_oneharness"))
 }
@@ -835,28 +881,53 @@ fn library_recording_child() {
         n.parse::<usize>()
             .expect("HISTORY_INDEX_CHILD_EVENTS is a count")
     });
-    let env = match events {
-        Some(n) => vec![
+    // Set by the per-event retention test: a turn too long for an env var,
+    // emitted from a file, with or without history.
+    let turn_file = std::env::var("HISTORY_INDEX_CHILD_TURN_FILE").ok();
+    let recording = std::env::var("HISTORY_INDEX_CHILD_HISTORY").as_deref() != Ok("off");
+    let env = match (&turn_file, events) {
+        (Some(path), _) => vec![format!("MOCK_CAT_FILE={path}")],
+        (None, Some(n)) => vec![
             format!("MOCK_STDOUT={}", long_turn_stdout(n)),
             format!("MOCK_STREAM_DELAY_MS={LONG_TURN_EVENT_GAP_MS}"),
         ],
-        None => vec![
+        (None, None) => vec![
             format!("MOCK_STDOUT={CODEX_TELEMETRY}"),
             "MOCK_SLEEP_MS=400".to_string(),
         ],
     };
-    struct Counting(usize);
+    // Set by the per-event retention test: every this many events, note the
+    // live heap as `[events seen, bytes]`.
+    let heap_every = std::env::var("HISTORY_INDEX_CHILD_HEAP_EVERY")
+        .ok()
+        .map(|n| {
+            n.parse::<usize>()
+                .expect("HISTORY_INDEX_CHILD_HEAP_EVERY is a count")
+        });
+    struct Counting {
+        seen: usize,
+        heap_every: Option<usize>,
+        heap: Vec<(usize, usize)>,
+    }
     impl oneharness_core::io::run::EventSink for Counting {
         fn event(
             &mut self,
             _harness_id: &str,
             _event: &ActionEvent,
         ) -> oneharness_core::io::run::SinkStep {
-            self.0 += 1;
+            self.seen += 1;
+            if self.heap_every.is_some_and(|every| self.seen % every == 0) {
+                self.heap.push((self.seen, live_heap::bytes()));
+            }
             oneharness_core::io::run::SinkStep::Continue
         }
     }
-    let mut sink = Counting(0);
+    let mut sink = Counting {
+        seen: 0,
+        heap_every,
+        // Reserved up front, so noting a sample allocates nothing mid-run.
+        heap: Vec::with_capacity(events.unwrap_or(0) / heap_every.unwrap_or(1) + 1),
+    };
     let outcome = run(
         &RunRequest {
             harness: vec!["codex".to_string()],
@@ -865,7 +936,7 @@ fn library_recording_child() {
             env,
             no_config: true,
             timeout: Some(60),
-            history: Some(true),
+            history: Some(recording),
             history_dir: Some(PathBuf::from(store)),
             cwd: Some(PathBuf::from(cwd)),
             mode: Some(PermissionMode::Bypass),
@@ -881,13 +952,25 @@ fn library_recording_child() {
     assert_eq!(outcome.report.results[0].status, report::Status::Ok);
     if let Some(n) = events {
         // Each tool call and the closing answer, as they happened.
-        assert_eq!(sink.0, n + 1, "every event reached the library's sink");
+        assert_eq!(sink.seen, n + 1, "every event reached the library's sink");
     }
-    assert!(
+    assert_eq!(
         outcome.report.history_file.is_some(),
-        "history was recorded"
+        recording,
+        "history was recorded exactly when it was asked for"
     );
-    println!("{}", serde_json::to_string(&outcome.report).unwrap());
+    if turn_file.is_some() {
+        // Only the handle: the report of a turn this long is megabytes.
+        println!(
+            "{}",
+            serde_json::json!({
+                "history_file": outcome.report.history_file,
+                "heap": sink.heap,
+            })
+        );
+    } else {
+        println!("{}", serde_json::to_string(&outcome.report).unwrap());
+    }
 }
 
 /// The history file a recording's stdout names: the buffered report, the
@@ -1148,6 +1231,201 @@ fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
             large_peak <= small_peak + 4 * 1024,
             "{recorder:?}: peak RSS grew with the store: {small_peak} KiB -> {large_peak} KiB"
         );
+    }
+}
+
+/// How many tool events the per-event retention test streams, and how often
+/// the in-process run notes its live heap. Enough events that a few dozen
+/// bytes kept per indexed entry add up to hundreds of kilobytes of exact heap
+/// in-process, and a kept entry to megabytes of resident size in the CLI.
+#[cfg(target_os = "linux")]
+const RETENTION_TURN_EVENTS: usize = 12_000;
+#[cfg(target_os = "linux")]
+const RETENTION_HEAP_EVERY: usize = 500;
+
+/// What history may keep per streamed event, in exact heap bytes: the run's
+/// own set of the event indexes it already persisted, which its closing record
+/// skips (`persisted_event_indexes` in `io::run`, a `BTreeSet<usize>`). It is
+/// the run's, bounded by its own turn, and dropped with it; any index state
+/// kept per entry — a set of indexed ids, the entries themselves — comes on
+/// top of it.
+#[cfg(target_os = "linux")]
+const HISTORY_BYTES_PER_EVENT: usize = 24;
+
+/// The CLI's resident size is measured, not counted, so a recording may exceed
+/// its control by this much before the difference is read as retention. At
+/// [`RETENTION_TURN_EVENTS`] that resolves a kept entry (hundreds of bytes per
+/// event) but not a kept id: an id set is the size of the persisted-index set
+/// the run legitimately holds, which only the exact in-process count tells
+/// apart — and the CLI's recording path is that same `io::run`.
+#[cfg(target_os = "linux")]
+const CLI_RETENTION_MARGIN_KIB: i64 = 4 * 1024;
+
+/// The CLI or `io::run` streaming the turn in `turn_file` into `crowd`, with
+/// history on or — the control — off.
+#[cfg(target_os = "linux")]
+fn retention_command(
+    recorder: Recorder,
+    crowd: &CrowdedStore,
+    turn_file: &Path,
+    recording: bool,
+) -> Command {
+    let store = crowd.store.display().to_string();
+    let project = crowd.project.display().to_string();
+    match recorder {
+        Recorder::CliStreaming => {
+            let mut command = oneharness();
+            command
+                .env("MOCK_CAT_FILE", turn_file)
+                .args(["run", "--harness", "codex", "--prompt", "record me"])
+                .args(["--bin", &format!("codex={}", mock_bin().display())])
+                .args([
+                    "--cwd", &project, "--bypass", "--format", "json", "--stream",
+                ]);
+            if recording {
+                command.args(["--history", "--history-dir", &store]);
+            }
+            command
+        }
+        Recorder::Library => {
+            let mut command = recording_command(Recorder::Library, crowd);
+            command
+                .env(
+                    "HISTORY_INDEX_CHILD_EVENTS",
+                    RETENTION_TURN_EVENTS.to_string(),
+                )
+                .env("HISTORY_INDEX_CHILD_TURN_FILE", turn_file)
+                .env(
+                    "HISTORY_INDEX_CHILD_HEAP_EVERY",
+                    RETENTION_HEAP_EVERY.to_string(),
+                )
+                .env(
+                    "HISTORY_INDEX_CHILD_HISTORY",
+                    if recording { "on" } else { "off" },
+                );
+            command
+        }
+        Recorder::Cli => unreachable!("a buffered run appends its events only as it closes"),
+    }
+}
+
+/// The library child's `[events seen, live heap bytes]` samples.
+#[cfg(target_os = "linux")]
+fn heap_samples(stdout: &[u8]) -> Vec<(usize, usize)> {
+    let text = String::from_utf8_lossy(stdout);
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<Value>(&line[line.find('{')?..]).ok())
+        .find_map(|value| serde_json::from_value(value["heap"].clone()).ok())
+        .unwrap_or_else(|| panic!("no heap samples in: {text}"))
+}
+
+/// A recording run keeps nothing per event it indexes. Over a streamed turn
+/// of [`RETENTION_TURN_EVENTS`] events, the same turn is run with history off
+/// as the control — the run legitimately grows with its turn (the report keeps
+/// every event), and the control is what isolates the history path:
+/// - in-process, `io::run`'s live heap is counted exactly at every
+///   [`RETENTION_HEAP_EVERY`]th event, and at each of those points history may
+///   hold no more than [`HISTORY_BYTES_PER_EVENT`] per event seen over the
+///   control;
+/// - the CLI, where nothing counts the heap, may not peak more than
+///   [`CLI_RETENTION_MARGIN_KIB`] of resident size above the control.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_recording_run_retains_nothing_per_event_it_indexes() {
+    let scratch = ScratchDir::new("hindex-retention-turn").unwrap();
+    let turn_file = scratch.join("turn.jsonl");
+    std::fs::write(&turn_file, long_turn_stdout(RETENTION_TURN_EVENTS)).unwrap();
+    for recorder in [Recorder::CliStreaming, Recorder::Library] {
+        let mut lives = Vec::new();
+        for recording in [false, true] {
+            let crowd = CrowdedStore::new(&format!("retain-{recorder:?}-{recording}"), 200);
+            let events_segment = crowd
+                .store
+                .join(".index.d")
+                .join(format!("events-{}.ndjson", today()));
+            let segment_before = std::fs::metadata(&events_segment).unwrap().len();
+            let measured = measured::measure_watching(
+                retention_command(recorder, &crowd, &turn_file, recording),
+                Duration::from_secs(120),
+                Some(&events_segment),
+            );
+            let stderr = String::from_utf8_lossy(&measured.output.stderr).into_owned();
+            assert!(
+                measured.output.status.success() && !stderr.contains("warning"),
+                "{recorder:?}/history={recording}: {stderr}"
+            );
+            let appended = std::fs::read(&events_segment).unwrap();
+            let entries = entries_of(&appended[segment_before as usize..]).len();
+            if recording {
+                // Every event was indexed, and the segment was growing across
+                // several of the samples taken over the run's life.
+                assert_eq!(entries, RETENTION_TURN_EVENTS + 1, "{recorder:?}");
+                let growing = measured
+                    .series
+                    .windows(2)
+                    .filter(|pair| pair[1].watched_len > pair[0].watched_len)
+                    .count();
+                assert!(
+                    growing >= 5,
+                    "{recorder:?}: the segment grew across only {growing} samples: {:?}",
+                    measured.series
+                );
+            } else {
+                assert_eq!(entries, 0, "{recorder:?}: the control recorded history");
+            }
+            let heap = match recorder {
+                Recorder::Library => heap_samples(&measured.output.stdout),
+                _ => Vec::new(),
+            };
+            lives.push((measured.max_rss_kib, heap));
+        }
+        let (control_peak, control_heap) = &lives[0];
+        let (recorded_peak, recorded_heap) = &lives[1];
+        if let Recorder::CliStreaming = recorder {
+            // Its peak falls as the run closes and prints its report, when
+            // neither run has a line left queued.
+            assert!(
+                *recorded_peak <= control_peak + CLI_RETENTION_MARGIN_KIB,
+                "{recorder:?}: recording {RETENTION_TURN_EVENTS} events peaked {} KiB above \
+                 the same turn without history ({control_peak} KiB -> {recorded_peak} KiB)",
+                recorded_peak - control_peak
+            );
+        }
+        if let Recorder::Library = recorder {
+            let points: Vec<usize> = control_heap.iter().map(|(seen, _)| *seen).collect();
+            assert_eq!(
+                points.len(),
+                RETENTION_TURN_EVENTS / RETENTION_HEAP_EVERY,
+                "{recorder:?}: the control sampled its heap at every point"
+            );
+            assert_eq!(
+                recorded_heap
+                    .iter()
+                    .map(|(seen, _)| *seen)
+                    .collect::<Vec<_>>(),
+                points
+            );
+            // Early in the turn the two runs differ by how many read lines
+            // each still has queued — the mock writes the whole turn at once,
+            // and the recording run drains its queue more slowly. That backlog
+            // is gone within the first fifth of the turn; the last quarter is
+            // where kept state alone separates them.
+            let settled = control_heap
+                .iter()
+                .zip(recorded_heap)
+                .filter(|((seen, _), _)| *seen >= RETENTION_TURN_EVENTS * 3 / 4);
+            for (&(seen, control), &(_, recorded)) in settled {
+                let kept = recorded.saturating_sub(control);
+                assert!(
+                    kept <= HISTORY_BYTES_PER_EVENT * seen + 64 * 1024,
+                    "{recorder:?}: after {seen} events history kept {kept} B of heap over \
+                     the same turn without it — {} B per event, past the \
+                     {HISTORY_BYTES_PER_EVENT} B its own persisted-index set needs: \
+                     {recorded_heap:?} vs {control_heap:?}",
+                    kept / seen
+                );
+            }
+        }
     }
 }
 

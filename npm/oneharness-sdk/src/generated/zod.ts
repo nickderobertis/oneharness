@@ -2715,10 +2715,7 @@ export const IdentitySelectorSchema: z.ZodType<IdentitySelector> = z.union([
 ]);
 
 export const IncompleteHistoryRunSchema: z.ZodType<IncompleteHistoryRun> = z.looseObject({
-  events: z
-    .array(z.lazy(() => ActionEventSchema))
-    .min(1)
-    .refine((value) => value !== undefined, { message: "Required" }),
+  events: z.array(z.lazy(() => ActionEventSchema)).refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
   run_id: z
     .string()

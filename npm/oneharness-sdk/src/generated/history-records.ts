@@ -1888,10 +1888,8 @@ export interface Usage8 {
 export interface IncompleteHistoryRun {
   /**
    * The events published so far, in `index` order.
-   *
-   * @minItems 1
    */
-  events: [ActionEvent, ...ActionEvent[]];
+  events: ActionEvent[];
   /**
    * The harness the event lines name.
    */

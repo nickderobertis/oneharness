@@ -15453,8 +15453,7 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/ActionEvent"
-            },
-            "minItems": 1
+            }
           },
           "harness": {
             "description": "The harness the event lines name.",

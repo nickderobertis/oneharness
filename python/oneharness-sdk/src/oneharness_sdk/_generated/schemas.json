@@ -9264,7 +9264,6 @@
             "items": {
               "$ref": "#/$defs/ActionEvent"
             },
-            "minItems": 1,
             "type": "array"
           },
           "harness": {

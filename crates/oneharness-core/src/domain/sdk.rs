@@ -455,6 +455,7 @@ pub struct HistoryLookupByLast {
     /// Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
     /// the last 7 UTC days. Refused beside a true `allTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
     pub since: Option<crate::domain::history_index::UtcDate>,
     /// Read every dated index segment plus the legacy index an older
     /// oneharness kept, rather than the last 7 UTC days.
@@ -505,6 +506,7 @@ pub struct HistoryLookupBySession {
     /// Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
     /// the last 7 UTC days. Refused beside a true `allTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
     pub since: Option<crate::domain::history_index::UtcDate>,
     /// Read every dated index segment plus the legacy index an older
     /// oneharness kept, rather than the last 7 UTC days.
@@ -545,6 +547,7 @@ pub struct HistoryListOptions {
     /// Read the dated index from this UTC date on (`YYYY-MM-DD`) rather than
     /// the last 7 UTC days. Refused beside a true `allTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
     pub since: Option<crate::domain::history_index::UtcDate>,
     /// Read every dated index segment plus the legacy index an older
     /// oneharness kept, rather than the last 7 UTC days.
@@ -598,6 +601,7 @@ pub struct HistoryWatchOptions {
     /// Start from this UTC date's index segments (`YYYY-MM-DD`) rather than
     /// today's. Refused beside `after` or a true `allTime`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // llmlint: ignore[invalid_states_unrepresentable] these options mirror the CLI's flat `--since`/`--all-time` (and `--after`) flags, the shape the plan's contract fixes; `domain::capability` binds each pair as `refuse`, so both SDKs and clap reject a contradictory window before anything runs, and `deny_unknown_fields` rules out the `#[serde(flatten)]` an enum-typed window would need.
     pub since: Option<crate::domain::history_index::UtcDate>,
     /// Start from the first record the index holds, the legacy index an
     /// older oneharness kept included. Refused beside `after`.

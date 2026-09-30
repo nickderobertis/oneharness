@@ -9,7 +9,7 @@ import re
 import sys
 import tempfile
 import unittest
-from collections.abc import Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -23,6 +23,7 @@ from oneharness_sdk import (
     HistoryWatchOptions,
     OneHarness,
     OneHarnessProcessError,
+    RunReport,
 )
 from oneharness_sdk._client import (
     _CAPABILITIES,
@@ -422,7 +423,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         """Find a dated record inside its lookup or watch window and never outside it."""
         client = self.client()
 
-        async def record_today(history_dir: str, name: str) -> Any:
+        async def record_today(history_dir: str, name: str) -> RunReport:
             return await client.run(
                 {
                     "prompt": name,
@@ -449,7 +450,7 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         slug = template_file.parent.name
         (Path(history_dir) / slug).mkdir()
 
-        def record_at(name: str, day: str, seq: int) -> tuple[dict[str, Any], str]:
+        def record_at(name: str, day: str, seq: int) -> tuple[dict[str, object], str]:
             # A UUIDv7 minted at `day`, so the dated index files it under that date.
             instant = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
             hex_ms = f"{int(instant.timestamp() * 1000):012x}"
@@ -536,7 +537,10 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                         marked = True
                         await record_today(history_dir, marker)
             finally:
-                await cast("Any", watch).aclose()
+                # The client builds its iterator as an async generator; asserting
+                # that narrows the type to one `aclose` is declared on.
+                assert isinstance(watch, AsyncGenerator)
+                await watch.aclose()
             self.assertEqual(sorted(seen), names, options)
 
     async def test_history_label_precedence_crosses_the_cli_boundary(self) -> None:

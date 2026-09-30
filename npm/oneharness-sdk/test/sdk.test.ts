@@ -1225,7 +1225,15 @@ describe("OneHarness", () => {
 					!next.done;
 					next = await watch.next()
 				) {
-					const { name } = next.value.record as HistoryRecord;
+					// HistoryRecord's version-gated union is too large for TypeScript
+					// to narrow, so the name is read by runtime checks, not a cast.
+					const record: unknown = next.value.record;
+					const name =
+						typeof record === "object" && record !== null && "name" in record
+							? record.name
+							: undefined;
+					if (typeof name !== "string")
+						throw new Error(`a watched record without a name: ${String(name)}`);
 					if (name === marker) break;
 					// An earlier window's marker is today's too; it is not a fixture.
 					if (!name.startsWith("end-")) seen.push(name);

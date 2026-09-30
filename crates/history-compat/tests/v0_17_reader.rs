@@ -121,3 +121,93 @@ fn oneharness_v0_17_0_reads_the_history_this_build_writes() {
     assert_eq!(watcher.drain_events().len(), 0);
     assert_eq!(watcher.drain_available().len(), 1);
 }
+
+/// Every segment file under the store's index directory, with its bytes.
+fn segments(store: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+    let mut found: Vec<(PathBuf, Vec<u8>)> = std::fs::read_dir(store.join(".index.d"))
+        .unwrap()
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            (path, bytes)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+#[test]
+fn oneharness_v0_17_0_never_reads_rewrites_or_deletes_a_segment() {
+    // The released pre-change core itself — `oneharness-core` 0.19.0 from
+    // crates.io, the engine of oneharness v0.17.0 — sharing a store this build
+    // indexed: its reconcile on open, its listing, its watcher, its migrate and
+    // its `clear --all-projects --yes` (`remove_sessions(dir, None)`) all walk
+    // the store's subdirectories. They see `.index.d/` as a project holding no
+    // `*.jsonl`, so nothing of it is read, rewritten or deleted.
+    let scratch = ScratchDir::new("history-compat-segments").unwrap();
+    let store = scratch.join("store");
+    let project = scratch.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    for name in ["first", "second"] {
+        let output = Command::new(oneharness_bin())
+            .env("ONEHARNESS_NO_CONFIG", "1")
+            .env(
+                "MOCK_STDOUT",
+                include_str!("../../../tests/fixtures/codex-exec-turn.jsonl"),
+            )
+            .args(["run", "--harness", "codex", "--prompt", name])
+            .args(["--bin", &format!("codex={}", mock_bin().display())])
+            .args(["--history", "--history-dir", &store.display().to_string()])
+            .args([
+                "--history-name",
+                name,
+                "--cwd",
+                &project.display().to_string(),
+            ])
+            .args(["--bypass", "--format", "json"])
+            .output()
+            .expect("run oneharness");
+        assert!(output.status.success(), "{output:?}");
+    }
+    let before = segments(&store);
+    assert!(before.len() >= 2, "runs and events segments: {before:?}");
+    // Make one segment unreadable too: a released core that opened it would
+    // fail rather than pass quietly.
+    #[cfg(unix)]
+    let unreadable = {
+        use std::os::unix::fs::PermissionsExt;
+        let path = before[0].0.clone();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        path
+    };
+
+    let released_labels = released::domain::history::HistoryLabels::default();
+    released::io::history::HistoryWriter::open(&store, &project, "released", released_labels)
+        .expect("the released core opens the shared store");
+    let listed = released::io::history::list_sessions(&store, None).unwrap();
+    assert_eq!(listed.len(), 2, "its tree walk sees this build's runs");
+    released::io::history::HistoryWatcher::open(&store, None, Default::default(), None, true)
+        .expect("the released watcher opens");
+    released::io::history::migrate(&store).expect("the released migrate runs");
+    let removed = released::io::history::remove_sessions(&store, None).unwrap();
+    assert_eq!(
+        removed.len(),
+        2,
+        "its clear removes the session files: {removed:?}"
+    );
+    assert!(
+        removed.iter().all(|path| path.ends_with(".jsonl")),
+        "{removed:?}"
+    );
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+    assert!(
+        store.join(".index.d").is_dir(),
+        "the index directory survives its clear"
+    );
+    assert_eq!(segments(&store), before, "every segment byte-identical");
+}

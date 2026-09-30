@@ -1887,7 +1887,9 @@ export interface Usage8 {
  */
 export interface IncompleteHistoryRun {
   /**
-   * The events published so far, in `index` order.
+   * The events published so far, in `index` order; never empty.
+   *
+   * @minItems 1
    */
   events: ActionEvent[];
   /**

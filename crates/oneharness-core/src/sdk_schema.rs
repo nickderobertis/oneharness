@@ -1090,6 +1090,9 @@ mod tests {
         let mut untyped = in_flight.clone();
         untyped.as_object_mut().unwrap().remove("type");
         assert!(!validator.is_valid(&json!([untyped])));
+        let mut emptied = in_flight.clone();
+        emptied["events"] = json!([]);
+        assert!(!validator.is_valid(&json!([emptied])));
         let mut eventless = in_flight;
         eventless.as_object_mut().unwrap().remove("events");
         assert!(!validator.is_valid(&json!([eventless])));

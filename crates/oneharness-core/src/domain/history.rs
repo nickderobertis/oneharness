@@ -1052,7 +1052,8 @@ pub struct IncompleteHistoryRun {
     /// The harness the event lines name.
     // llmlint: ignore[invalid_states_unrepresentable] Copied verbatim from `HistoryEventLine::harness`, a legacy-compatible wire string (v1.0 lines predate the composed identity); this display entry repeats what the line says rather than re-deriving an identity the line may not carry.
     harness: String,
-    /// The events published so far, in `index` order.
+    /// The events published so far, in `index` order; never empty.
+    #[schemars(length(min = 1))]
     events: Vec<ActionEvent>,
 }
 

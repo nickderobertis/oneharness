@@ -15449,11 +15449,12 @@
         "type": "object",
         "properties": {
           "events": {
-            "description": "The events published so far, in `index` order.",
+            "description": "The events published so far, in `index` order; never empty.",
             "type": "array",
             "items": {
               "$ref": "#/$defs/ActionEvent"
-            }
+            },
+            "minItems": 1
           },
           "harness": {
             "description": "The harness the event lines name.",

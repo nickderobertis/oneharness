@@ -9260,10 +9260,11 @@
         "description": "A run `history show` reads before its closing record has landed: the events\nits event lines have published so far, under the run they belong to. It is a\ndisplay entry, never a store line: once the run's closing record lands the\nsame run is shown as a [`HistoryRecord`] instead. It exists only because an\nevent line was read, so it always carries at least one event.",
         "properties": {
           "events": {
-            "description": "The events published so far, in `index` order.",
+            "description": "The events published so far, in `index` order; never empty.",
             "items": {
               "$ref": "#/$defs/ActionEvent"
             },
+            "minItems": 1,
             "type": "array"
           },
           "harness": {

@@ -247,6 +247,9 @@ async function compileContract(contract) {
 	const declarations = await compile(schema, contract.type, {
 		bannerComment: `/* Generated from ${contract.banner ?? "oneharness-core"}. Do not edit. */`,
 		additionalProperties: true,
+		// An array bound is the runtime validator's to enforce (Zod `.min`/`.max`);
+		// a tuple-typed declaration would not accept the array Zod infers.
+		ignoreMinAndMaxItems: true,
 		style: { endOfLine: "lf" },
 	});
 	return exactOptionalProperties(

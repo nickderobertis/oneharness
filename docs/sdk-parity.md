@@ -84,8 +84,9 @@ tables below:
   consuming the contract has no use for, and saying `json` on every call is
   what let the CLI's default move to that view without any SDK noticing
   (`--compact` alone also selects `json`, so either flag would do; both are
-  sent). `runStream` sends neither `--format`: a stream is its own NDJSON
-  protocol, which the flag never changes.
+  sent). `runStream` sends both too: a stream with no `--format` is the
+  readable text view, so the NDJSON protocol the SDK parses is asked for by
+  name.
 * **`--bypass` / `--no-bypass`** are shorthands for `--mode`. One setting with
   two spellings is how a caller ends up passing both, which clap then refuses.
 

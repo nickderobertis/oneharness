@@ -160,7 +160,7 @@ reset_case
 expect_failure "publish-crates: cannot validate oneharness-core's version in crates/oneharness-core/Cargo.toml; run 'cargo metadata --no-deps' and fix the manifest" env PKGID_FAILURE=oneharness-core scripts/publish-crates.sh
 expect_no_publish "a cargo pkgid failure"
 grep -Fq 'error: simulated unreadable manifest' "$work/stderr" || {
-  echo "check-publish-crates: cargo's own pkgid error was discarded" >&2
+  echo "check-publish-crates: cargo's own pkgid error was discarded; keep cargo pkgid's stderr in manifest_version's failure message" >&2
   exit 1
 }
 
@@ -210,7 +210,7 @@ expect_publish_order
 expected_queries="https://crates.io/api/v1/crates/oneharness-core/$core_manifest_version
 https://crates.io/api/v1/crates/oneharness/$cli_manifest_version"
 if [ "$(cat "$QUERY_LOG")" != "$expected_queries" ]; then
-  printf 'check-publish-crates: expected the real toolchain to resolve core %s then CLI %s; queried:\n' \
+  printf 'check-publish-crates: expected the real toolchain to resolve core %s then CLI %s; fix manifest_version in scripts/publish-crates.sh (run it by hand with cargo pkgid over this workspace). Queried:\n' \
     "$core_manifest_version" "$cli_manifest_version" >&2
   cat "$QUERY_LOG" >&2
   exit 1

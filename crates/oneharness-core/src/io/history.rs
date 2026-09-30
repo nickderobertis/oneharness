@@ -1135,10 +1135,13 @@ pub fn read_session_display(path: &Path) -> Result<Vec<Value>, OneharnessError> 
         }
     }
     for (run_id, (harness, events)) in dangling {
-        // Every dangling run was entered by reading one of its events.
-        if let Some(run) = IncompleteHistoryRun::new(run_id, harness, events) {
-            values.push(serde_json::to_value(run)?);
-        }
+        // Every dangling run was entered by reading one of its events, so the
+        // constructor's empty-events `None` cannot arise here.
+        values.extend(
+            IncompleteHistoryRun::new(run_id, harness, events)
+                .map(serde_json::to_value)
+                .transpose()?,
+        );
     }
     Ok(values)
 }

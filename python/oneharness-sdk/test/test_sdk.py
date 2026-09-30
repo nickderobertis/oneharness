@@ -11,13 +11,16 @@ import tempfile
 import unittest
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Optional, cast
 
 from oneharness_sdk import (
     ContractError,
     HistoryListOptions,
+    HistoryLookup,
     HistoryNotFoundError,
+    HistoryWatchOptions,
     OneHarness,
     OneHarnessProcessError,
 )
@@ -93,6 +96,7 @@ POPULATED: dict[str, Any] = {
     "after": "0198f0d0-7b31-7000-8000-000000000001",
     "all": True,
     "allProjects": False,
+    "allTime": True,
     "batchPrompts": ["first", "second"],
     "batchStrategy": "speed",
     "bins": {"codex": "/bin/codex"},
@@ -104,6 +108,7 @@ POPULATED: dict[str, Any] = {
     "env": {"MOCK_STDOUT": "hi"},
     "event": "{}",
     "events": True,
+    "exact": True,
     "exclude": ["goose"],
     "file": "/nowhere/pointers.jsonl",
     "force": True,
@@ -146,6 +151,7 @@ POPULATED: dict[str, Any] = {
     "serverOverloadedMaxRetries": 3,
     "session": "work",
     "sessionDir": "/nowhere/sessions",
+    "since": "2026-01-01",
     "spyFile": "/nowhere/spy.jsonl",
     "system": "be terse",
     "systemFile": "/nowhere/system.txt",
@@ -411,6 +417,127 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope["record"]["history_id"], records[2]["history_id"])
         self.assertNotEqual(envelope["record"]["history_id"], records[0]["history_id"])
         await cast("Any", watch).aclose()
+
+    async def test_history_lookup_and_watch_read_exactly_the_window_named(self) -> None:
+        """Find a dated record inside its lookup or watch window and never outside it."""
+        client = self.client()
+
+        async def record_today(history_dir: str, name: str) -> Any:
+            return await client.run(
+                {
+                    "prompt": name,
+                    "harnesses": ["codex"],
+                    "mode": "bypass",
+                    "history": True,
+                    "history_name": name,
+                    "history_dir": history_dir,
+                    "env": {"MOCK_STDOUT": HISTORY_TRACE},
+                    "bins": {"codex": str(MOCK)},
+                }
+            )
+
+        # One real run supplies the closing line every dated fixture copies, so
+        # only the id, name and timestamp this test turns on are hand-set.
+        template = await record_today(str(scratch(self, "window-template")), "template")
+        template_file = Path(template["history_file"])
+        line = next(
+            json.loads(candidate)
+            for candidate in template_file.read_text(encoding="utf-8").splitlines()
+            if json.loads(candidate)["type"] == "run"
+        )
+        history_dir = str(scratch(self, "window"))
+        slug = template_file.parent.name
+        (Path(history_dir) / slug).mkdir()
+
+        def record_at(name: str, day: str, seq: int) -> tuple[dict[str, Any], str]:
+            # A UUIDv7 minted at `day`, so the dated index files it under that date.
+            instant = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            hex_ms = f"{int(instant.timestamp() * 1000):012x}"
+            stem = f"{name}-{day.replace('-', '')}T000000Z-00000{seq}"
+            record = {
+                **line,
+                "history_id": f"{hex_ms[:8]}-{hex_ms[8:]}-7000-8000-00000000000{seq}",
+                "session": stem,
+                "name": name,
+                "prompt": name,
+                "timestamp": f"{day}T00:00:00Z",
+            }
+            (Path(history_dir) / slug / f"{stem}.jsonl").write_text(
+                json.dumps(record) + "\n", encoding="utf-8"
+            )
+            return record, f"{slug}/{stem}.jsonl"
+
+        # Two runs on dates of their own, both older than the default 7 days...
+        record_at("win-a", "2020-01-05", 1)
+        record_at("win-b", "2020-01-15", 2)
+        reindexed = await client.history_reindex({"history_dir": history_dir})
+        self.assertEqual(reindexed["entries_added"], 2)
+        # ...and the newest one known only to the legacy index an older core
+        # kept, which only the all-time window reads.
+        legacy, legacy_path = record_at("win-c", "2020-02-01", 3)
+        legacy_record = {key: value for key, value in legacy.items() if key != "type"}
+        (Path(history_dir) / ".index.jsonl").write_text(
+            json.dumps({"session_path": legacy_path, "record": legacy_record}) + "\n",
+            encoding="utf-8",
+        )
+
+        lookups: list[tuple[HistoryLookup, Optional[str]]] = [
+            # By name: `since` reads from its date on, inclusive, and never the
+            # legacy index; the default window reaches none of these dates.
+            ({"session": "win-a", "history_dir": history_dir}, None),
+            ({"session": "win-a", "history_dir": history_dir, "since": "2020-01-05"}, "win-a"),
+            ({"session": "win-a", "history_dir": history_dir, "since": "2020-01-06"}, None),
+            ({"session": "win-b", "history_dir": history_dir, "since": "2020-01-06"}, "win-b"),
+            ({"session": "win-c", "history_dir": history_dir, "since": "2020-01-01"}, None),
+            ({"session": "win-a", "history_dir": history_dir, "all_time": True}, "win-a"),
+            ({"session": "win-c", "history_dir": history_dir, "all_time": True}, "win-c"),
+            # By last: the newest session inside the window, never beyond it.
+            ({"last": True, "history_dir": history_dir}, None),
+            ({"last": True, "history_dir": history_dir, "since": "2020-01-01"}, "win-b"),
+            ({"last": True, "history_dir": history_dir, "since": "2020-01-16"}, None),
+            ({"last": True, "history_dir": history_dir, "all_time": True}, "win-c"),
+        ]
+        for lookup, expected in lookups:
+            with self.subTest(lookup=lookup):
+                try:
+                    found: Optional[str] = (await client.history(lookup))[0]["name"]
+                except HistoryNotFoundError:
+                    found = None
+                self.assertEqual(found, expected)
+
+        # A run recorded now lands in today's segment: what every watch window
+        # reaches, and so the proof a window opened at all.
+        await record_today(history_dir, "win-today")
+        # A watch emits its whole opening read before anything newer, so a run
+        # recorded once the first record arrives marks where that read ended:
+        # what came before it is exactly the range the window read.
+        windows: list[tuple[HistoryWatchOptions, list[str]]] = [
+            ({}, ["win-today"]),
+            ({"since": "2020-01-06"}, ["win-b", "win-today"]),
+            ({"all_time": True}, ["win-a", "win-b", "win-c", "win-today"]),
+        ]
+        for index, (options, names) in enumerate(windows):
+            # A session name is recorded as a lowercase slug, so the marker is one.
+            marker = f"end-{index}"
+            watch = client.history_watch(
+                {**options, "all_projects": True, "history_dir": history_dir}
+            )
+            seen: list[str] = []
+            marked = False
+            try:
+                async for envelope in watch:
+                    name = envelope["record"]["name"]
+                    if name == marker:
+                        break
+                    # An earlier window's marker is today's too; it is not a fixture.
+                    if not name.startswith("end-"):
+                        seen.append(name)
+                    if not marked:
+                        marked = True
+                        await record_today(history_dir, marker)
+            finally:
+                await cast("Any", watch).aclose()
+            self.assertEqual(sorted(seen), names, options)
 
     async def test_history_label_precedence_crosses_the_cli_boundary(self) -> None:
         """Apply CLI labels over environment and project configuration."""

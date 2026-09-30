@@ -69,6 +69,15 @@ sed -E "s/${esc}\[[0-9;]*[a-zA-Z]//g" "$output_file" >"$plain_output"
 # release-worthy core change is pending, and a binary that fails against the
 # WORKSPACE core is already red in `build`/`check`, which run first in both
 # entry points.
+#
+# That `Compiling` line is printed only when Cargo actually rebuilds the registry
+# core, and a second run finds it already built in the target directory — so on
+# a warm cache the arm above never fires, and every gate after the first called
+# the same permitted transition a defect. The cache-independent signal is where
+# the BINARY compiled: `cargo package` verifies it from the unpacked tarball
+# under `package/oneharness-<version>`, whose manifest carries no path, so the
+# core it links is the registry's whatever the cache holds. The binary itself
+# is always rebuilt there when it fails, since a failed build caches nothing.
 core_version_unpublished=false
 registry_core_mismatch=false
 if grep -Eq "failed to select a version for the requirement \`oneharness-core" "$plain_output" &&
@@ -84,6 +93,9 @@ elif grep -Eq "failed to select a version for \`oneharness-core\`" "$plain_outpu
   grep -Eq "depends on \`oneharness-core\`, with features:" "$plain_output"; then
   registry_core_mismatch=true
 elif grep -Eq '^[[:space:]]*Compiling oneharness-core v[0-9]+\.[0-9]+\.[0-9]+[[:space:]]*$' "$plain_output" &&
+  grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
+  registry_core_mismatch=true
+elif grep -Eq '^[[:space:]]*Compiling oneharness v[0-9]+\.[0-9]+\.[0-9]+ \(.*[/\\]package[/\\]oneharness-[0-9]+\.[0-9]+\.[0-9]+\)[[:space:]]*$' "$plain_output" &&
   grep -Eq "could not compile \`oneharness\`" "$plain_output"; then
   registry_core_mismatch=true
 fi

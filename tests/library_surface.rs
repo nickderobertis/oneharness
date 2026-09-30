@@ -726,6 +726,7 @@ fn a_legacy_history_store_migrates_in_process() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// llmlint: ignore[comments_earn_their_place] Not a banner: `scripts/check-capability-surface.sh` reads this `// capability: <method>` marker to prove the capability's Rust entry point is exercised here.
 // capability: historyReindex
 #[test]
 fn a_consumer_reindexes_sessions_copied_in_from_another_store() {

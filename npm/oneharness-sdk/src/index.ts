@@ -572,6 +572,9 @@ function capabilityArguments(
 				trailing.push(...(value as unknown[]).map(String));
 				break;
 			case "window":
+				// A `window` binding only ever names an option the contract types as
+				// `HistoryWindow`, and Zod validated this value against that contract
+				// before it reached here, so the assertion restates a checked shape.
 				args.push(...windowArguments(binding, value as HistoryWindow));
 				break;
 		}

@@ -335,8 +335,6 @@ fn sparse(path: &Path, first_line: &str, size: u64) {
         .unwrap();
 }
 
-// The contract document is pinned to the entry types.
-
 /// The fields a `docs/history-index.md` table documents: every `` `name` `` in
 /// its first column, `a` / `b` rows naming two.
 fn documented_fields(doc: &str, marker: &str) -> BTreeSet<String> {
@@ -414,8 +412,6 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
     );
     assert!(doc.contains(&format!("(`{INDEX_SCHEMA_VERSION}`)")));
 }
-
-// Recording reads nothing but its own files, however large the store.
 
 /// A store crowded with everything a recording run must not touch: a legacy
 /// index and event index and lock (mode `000`, sparse — sized with the store),
@@ -915,8 +911,6 @@ fn recording_reads_nothing_but_its_own_files_however_large_the_store() {
     }
 }
 
-// The writer: no lock, one write, a torn tail never swallows the next entry.
-
 #[cfg(unix)]
 fn flock_exclusive(path: &Path) -> std::fs::File {
     use std::os::unix::io::AsRawFd;
@@ -1047,8 +1041,6 @@ fn concurrent_writers_each_land_one_whole_entry_and_a_torn_tail_swallows_none() 
     assert_eq!(lines[0], torn.as_slice());
 }
 
-// An entry's size never depends on what it points at.
-
 /// An entry with the fields that name its session (whose length follows the
 /// clock and the pid, not the content) and its span (whose digits follow the
 /// line's offset and length) blanked, serialized.
@@ -1150,8 +1142,6 @@ fn an_entry_is_the_same_size_for_a_one_mebibyte_prompt_or_event_as_for_a_short_o
         "short vs 1 MiB: (run entry, event entry)"
     );
 }
-
-// Past runs over two UTC dates stay found; nothing rewrites what was there.
 
 struct DatedStore {
     _scratch: ScratchDir,
@@ -1285,9 +1275,6 @@ fn past_runs_on_two_utc_dates_stay_found_and_nothing_rewrites_the_store() {
     );
     let _ = &dated.project;
 }
-
-// A watcher across a new UTC date's segment, a late closing line, and a
-// record an older core appends to the legacy index.
 
 struct Watch {
     child: std::process::Child,
@@ -1678,8 +1665,6 @@ fn days_reads_the_last_n_utc_days_on_list_show_and_watch() {
     assert_eq!(refused.status.code(), Some(2), "{refused:?}");
 }
 
-// Each reader reads only the segments the contract names for it.
-
 #[cfg(unix)]
 #[test]
 fn each_reader_opens_only_the_segments_its_window_names() {
@@ -1867,8 +1852,6 @@ fn each_reader_opens_only_the_segments_its_window_names() {
     }
 }
 
-// A store an older core wrote: readable with no conversion.
-
 struct LegacyStore {
     _scratch: ScratchDir,
     store: PathBuf,
@@ -2021,8 +2004,6 @@ fn an_all_time_lookup_streams_the_legacy_index_in_bounded_memory() {
         peaks[1]
     );
 }
-
-// reindex: sessions copied in from another store become findable, once.
 
 #[cfg(unix)]
 #[test]

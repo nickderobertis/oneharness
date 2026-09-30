@@ -17304,6 +17304,11 @@ fn history_show_orders_an_in_flight_runs_events_by_index() {
         .concat(),
     )
     .unwrap();
+    // A hand-written session is findable by name only once `reindex` has given
+    // its events index entries, and its run id is dated 2024, so the default
+    // 7-day window does not reach it.
+    let reindexed = run(&["history", "reindex", "--history-dir", &ds], &[]);
+    assert!(reindexed.status.success(), "{reindexed:?}");
 
     let shown = run(
         &[
@@ -17311,6 +17316,7 @@ fn history_show_orders_an_in_flight_runs_events_by_index() {
             "show",
             "in-flight",
             "--all-projects",
+            "--all-time",
             "--history-dir",
             &ds,
             "--compact",

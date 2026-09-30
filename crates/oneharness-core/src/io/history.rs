@@ -1142,6 +1142,16 @@ pub fn reindex(dir: &Path) -> Result<HistoryReindexReport, OneharnessError> {
     Ok(report)
 }
 
+/// The UTC date a record's `timestamp` names. It is read from a session file,
+/// so it is validated as an RFC 3339 UTC instant first; anything else names
+/// no date.
+fn timestamp_date(timestamp: &str) -> Option<UtcDate> {
+    timestamp
+        .parse::<UtcInstant>()
+        .ok()
+        .and_then(|instant| UtcDate::of_instant(&instant))
+}
+
 enum SpillError {
     /// The session file could not be read: report it and go on.
     Session(std::io::Error),
@@ -1173,7 +1183,7 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
             break;
         }
         if let Ok(HistoryLine::Run(run)) = serde_json::from_slice::<HistoryLine>(&line) {
-            first_run_date = UtcDate::of_rfc3339(&run.timestamp);
+            first_run_date = timestamp_date(&run.timestamp);
             labels = run.labels;
             break;
         }
@@ -1198,7 +1208,7 @@ fn spill_session(path: &Path, slug: &str, spill: &mut Spill) -> Result<bool, Spi
         offset += read as u64;
         let (entry, fallback) = match serde_json::from_slice::<HistoryLine>(&line) {
             Ok(HistoryLine::Run(run)) => {
-                let fallback = session_date.or_else(|| UtcDate::of_rfc3339(&run.timestamp));
+                let fallback = session_date.or_else(|| timestamp_date(&run.timestamp));
                 let harness_id = run.harness_id.clone().unwrap_or_else(|| {
                     run.variant.as_ref().map_or(run.harness.clone(), |variant| {
                         format!("{}:{variant}", run.harness)

@@ -16,6 +16,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::domain::history::{civil_from_epoch, HistoryId, HistoryLabels, SESSION_FILE_EXT};
+use crate::domain::usage::UtcInstant;
 
 /// The version every index entry this crate writes declares. The index is its
 /// own contract, independent of the session file's `schema_version`.
@@ -86,11 +87,16 @@ impl UtcDate {
         i64::try_from(secs).ok().map(Self::from_epoch_secs)
     }
 
-    /// The date an RFC 3339 UTC instant (`YYYY-MM-DDThh:mm:ssZ`, the shape a
-    /// history record's `timestamp` carries) falls on.
+    /// The UTC date an instant falls on. A [`UtcInstant`] is validated and
+    /// held in its canonical `YYYY-MM-DDThh:mm:ssZ` spelling, so its date is
+    /// its first ten characters; `None` only for a year outside the range a
+    /// [`UtcDate`] spells.
     #[must_use]
-    pub fn of_rfc3339(instant: &str) -> Option<Self> {
-        instant.get(..10).and_then(|date| date.parse().ok())
+    pub fn of_instant(instant: &UtcInstant) -> Option<Self> {
+        instant
+            .as_str()
+            .get(..10)
+            .and_then(|date| date.parse().ok())
     }
 
     fn days_in_month(year: i64, month: u32) -> u32 {
@@ -414,7 +420,9 @@ pub fn session_name_from_id(id: &str) -> Option<&str> {
 /// The UTC date a session id records its start on.
 #[must_use]
 pub fn session_date_from_id(id: &str) -> Option<UtcDate> {
-    crate::domain::history::session_started_from_id(id).and_then(|at| UtcDate::of_rfc3339(&at))
+    crate::domain::history::session_started_from_id(id)
+        .and_then(|at| at.parse::<UtcInstant>().ok())
+        .and_then(|at| UtcDate::of_instant(&at))
 }
 
 #[cfg(test)]
@@ -489,6 +497,22 @@ mod tests {
             "2026-09-29"
         );
         assert_eq!(UtcDate::of_history_id(HistoryId::legacy(b"x")), None);
+    }
+
+    #[test]
+    fn an_instant_is_dated_by_its_utc_day_and_malformed_text_never_reaches_one() {
+        let instant: UtcInstant = "2026-09-29T23:59:59Z".parse().unwrap();
+        assert_eq!(
+            UtcDate::of_instant(&instant).unwrap().to_string(),
+            "2026-09-29"
+        );
+        // A timestamp in another spelling of UTC is normalized first.
+        let offset: UtcInstant = "2026-09-30T00:00:00+00:00".parse().unwrap();
+        assert_eq!(
+            UtcDate::of_instant(&offset).unwrap().to_string(),
+            "2026-09-30"
+        );
+        assert!("2026-01-01junk".parse::<UtcInstant>().is_err());
     }
 
     #[test]

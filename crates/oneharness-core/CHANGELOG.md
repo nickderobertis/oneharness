@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.24.0...oneharness-core-v0.24.1) - 2026-10-03
+
+### Fixed
+
+- *(events)* mark a failed Claude tool call in the live text stream ([#1412](https://github.com/nickderobertis/oneharness/pull/1412))
+
 ## [0.24.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.23.0...oneharness-core-v0.24.0) - 2026-09-30
 
 ### Added

@@ -5215,7 +5215,9 @@ fn normalizes_tool_events_from_cursor_stream_json_content_blocks() {
     assert_eq!(events[0]["input"]["command"], "ls");
     assert_eq!(events[1]["kind"], "tool_result");
     assert_eq!(events[1]["output"], "a.txt");
-    assert!(events[1]["name"].is_null());
+    // A result is named after the call it answers and carries its outcome.
+    assert_eq!(events[1]["name"], "Bash");
+    assert_eq!(events[1]["status"], "completed");
 }
 
 #[test]
@@ -35034,6 +35036,164 @@ fn a_text_stream_prints_each_event_as_it_happens_then_the_text_report() {
     assert_eq!(stream_default_warnings(&output), 0, "{output:?}");
 }
 
+#[test]
+fn a_claude_tool_result_without_its_call_still_records_its_run() {
+    // A transcript can carry a `tool_result` whose `tool_use` never appeared
+    // in it (a stream joined mid-turn). Without an observed call the run has
+    // no tool timing, and an untimed history record makes no tool-state claim
+    // on any event — so the result's outcome stays in the report, and the
+    // record is written without it rather than refused.
+    let transcript = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_unseen","is_error":true,"content":"boom"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"It failed."}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"It failed."}"#,
+        "\n",
+    );
+    let history = hist_dir("claude-unmatched-tool-result");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+        ],
+        &[("MOCK_STDOUT", transcript)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("history"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let streamed: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let result = streamed
+        .iter()
+        .find(|line| line["type"] == "result")
+        .expect("the stream ends with its result");
+    let events = result["report"]["results"][0]["events"]
+        .as_array()
+        .expect("the report carries the run's events");
+    assert_eq!(events[0]["kind"], "tool_result", "{result}");
+    assert_eq!(events[0]["status"], "failed", "{result}");
+    let session_file = result["report"]["history_file"]
+        .as_str()
+        .expect("the report names the history file");
+    let record = first_history_run(Path::new(session_file));
+    assert_eq!(record["status"], "ok", "{record}");
+    assert_eq!(record["events"][0]["kind"], "tool_result", "{record}");
+    assert!(record["events"][0]["status"].is_null(), "{record}");
+    assert_eq!(record["events"][0]["output"], "boom", "{record}");
+}
+
+#[test]
+fn a_text_stream_marks_a_failed_claude_tool_call_once_after_its_call() {
+    // Claude Code's `stream-json` reports a failed call only on the
+    // `tool_result` block that answers it (`is_error: true`), after the call's
+    // own line has been drawn — so the failure gets one line of its own,
+    // naming the tool the call named. A completed call gets none.
+    let transcript = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bad","is_error":true,"content":"error: could not compile `demo`"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ok","name":"Read","input":{"file_path":"src/lib.rs"}}]}}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ok","is_error":false,"content":"pub fn f() {}"}]}}"#,
+        "\n",
+        // A harness-written tool name cannot carry an escape to the reader.
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_esc","name":"Gr\u001b[2Jep","input":{"pattern":"todo"}}]}}"#,
+        "\n",
+        // The second result answers a call this run never showed, so the
+        // failure is still drawn, under the generic name.
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_esc","is_error":true,"content":"bad pattern"},{"type":"tool_result","tool_use_id":"toolu_unseen","is_error":true,"content":"boom"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The build fails."}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"The build fails."}"#,
+        "\n",
+    );
+    let history = hist_dir("claude-failed-tool-text-stream");
+    let output = run_as_typed(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+            "--format",
+            "text",
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+        ],
+        &[("MOCK_STDOUT", transcript)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    let events_end = lines
+        .iter()
+        .position(|line| line.is_empty())
+        .expect("a blank line separates the event lines from the report");
+    assert_eq!(
+        lines[..events_end],
+        [
+            "$ cargo test",
+            "✗ Bash  failed",
+            "▸ Read src/lib.rs",
+            "▸ Gr [2Jep todo",
+            "✗ Gr [2Jep  failed",
+            "✗ tool  failed",
+            "› The build fails."
+        ],
+        "{stdout}"
+    );
+    assert_eq!(stdout.matches('✗').count(), 3, "{stdout}");
+    assert!(!stdout.contains('\u{1b}'), "{stdout}");
+    // The result's outcome is a recorded signal too, and the record carrying
+    // it is still a valid one.
+    let session_file = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("history: "))
+        .expect("the text report names the history file");
+    let record = first_history_run(Path::new(session_file));
+    let results: Vec<(&str, &str)> = record["events"]
+        .as_array()
+        .expect("the record carries the run's events")
+        .iter()
+        .filter(|event| event["kind"] == "tool_result")
+        .map(|event| {
+            (
+                event["name"].as_str().unwrap_or("null"),
+                event["status"].as_str().unwrap_or("null"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        results,
+        [
+            ("Bash", "failed"),
+            ("Read", "completed"),
+            ("Gr\u{1b}[2Jep", "failed"),
+            ("null", "failed")
+        ],
+        "{record}"
+    );
+}
+
 /// [`run_with_config`] with `args` exactly as typed: no `--format` added.
 fn run_with_config_as_typed(
     args: &[&str],
@@ -36085,8 +36245,9 @@ fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
     // claude-code stream (its tool calls and results only), driven through
     // this suite's mock. Today's build, given the same run, prints the same
     // lines — framing, line types, every field — once the values that differ
-    // between any two runs are set aside and the one additive field is
-    // dropped.
+    // between any two runs are set aside and the additive values are
+    // dropped: `session_name`, and the `name`/`status` a `tool_result` now
+    // carries (null in v0.17.0), which are asserted here instead.
     let golden: Vec<Value> = include_str!("fixtures/history-watch-v0.17.0-tools-only.jsonl")
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
@@ -36126,6 +36287,7 @@ fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
         without_run_varying_values(&mut value);
         value
     };
+    let mut results = Vec::new();
     let ours: Vec<Value> = watched
         .iter()
         .map(|line| {
@@ -36136,10 +36298,23 @@ fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
                     .unwrap()
                     .remove("session_name");
                 assert_eq!(session_name, Some(Value::from("tools-only")), "{line}");
+                let event = &mut value["line"]["event"];
+                if event["kind"] == "tool_result" {
+                    results.push((event["name"].take(), event["status"].take()));
+                }
             }
             normalize(value)
         })
         .collect();
+    // The recording's second command exited 2, which its `tool_result` block
+    // reports as `is_error: true`.
+    assert_eq!(
+        results,
+        [
+            (Value::from("Bash"), Value::from("completed")),
+            (Value::from("Bash"), Value::from("failed"))
+        ]
+    );
     let theirs: Vec<Value> = golden.into_iter().map(normalize).collect();
     assert_eq!(ours, theirs);
 }

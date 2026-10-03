@@ -1572,8 +1572,10 @@ export interface ActionEvent {
    */
   kind: string;
   /**
-   * Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` for a
-   * `tool_result`, or when the harness did not name the tool.
+   * Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` when
+   * the harness did not name the tool. A `tool_result` carries the name of
+   * the `tool_call` it answers (matched by `tool_call_id`) when that call
+   * was seen earlier in the same run, else `null`.
    */
   name: string | null;
   /**
@@ -1585,7 +1587,11 @@ export interface ActionEvent {
    */
   started_at: string | null;
   /**
-   * Terminal tool state, populated on history tool-call events.
+   * Terminal tool state, populated on history tool-call events. On a
+   * `tool_result` it is the outcome the harness reported for the call:
+   * `failed` when the result is marked an error (a Claude Code / Qwen
+   * `is_error: true` block), else `completed`; `null` when the harness
+   * reports no error state for its results.
    */
   status: ToolCallStatus | null;
   /**

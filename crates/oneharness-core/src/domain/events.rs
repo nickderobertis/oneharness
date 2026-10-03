@@ -59,8 +59,10 @@ pub struct ActionEvent {
     /// shape never breaks the field — a consumer counting tool calls filters on
     /// it (see [`ActionEvent::is_tool_activity`]).
     pub kind: String,
-    /// Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` for a
-    /// `tool_result`, or when the harness did not name the tool.
+    /// Normalized tool name where knowable (e.g. `bash`, `Edit`); `null` when
+    /// the harness did not name the tool. A `tool_result` carries the name of
+    /// the `tool_call` it answers (matched by `tool_call_id`) when that call
+    /// was seen earlier in the same run, else `null`.
     pub name: Option<String>,
     /// Structured, tool-shaped arguments (the command string, the file path),
     /// so a consumer asserts on specific args without re-parsing; `null` when the
@@ -82,7 +84,11 @@ pub struct ActionEvent {
     pub finished_at: Option<String>,
     /// Monotonic elapsed tool time. `None` means no terminal boundary was seen.
     pub duration_ms: Option<u128>,
-    /// Terminal tool state, populated on history tool-call events.
+    /// Terminal tool state, populated on history tool-call events. On a
+    /// `tool_result` it is the outcome the harness reported for the call:
+    /// `failed` when the result is marked an error (a Claude Code / Qwen
+    /// `is_error: true` block), else `completed`; `null` when the harness
+    /// reports no error state for its results.
     pub status: Option<ToolCallStatus>,
     /// Provenance for the tool interval. Omitted when timing is unavailable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -246,6 +252,9 @@ pub fn events_from_value(value: &Value, start_index: usize) -> Vec<ActionEvent> 
 #[derive(Debug, Default)]
 pub(crate) struct EventStream {
     open: Vec<PartialEvent>,
+    /// `(tool_call_id, name)` of every delivered tool call, so the result that
+    /// answers one can name the tool it ran.
+    call_names: Vec<(String, String)>,
     next_index: usize,
     recognizer: Option<&'static str>,
 }
@@ -263,6 +272,7 @@ impl EventStream {
                 Phase::Open => self.hold(partial),
                 Phase::Finished => {
                     let partial = self.release(partial);
+                    let partial = self.named(partial);
                     finished.push(self.number(partial));
                 }
             }
@@ -278,6 +288,27 @@ impl EventStream {
         open.into_iter()
             .map(|partial| self.number(partial))
             .collect()
+    }
+
+    /// A finished call recorded by id, or a result named after the call it
+    /// answers.
+    fn named(&mut self, mut partial: PartialEvent) -> PartialEvent {
+        let Some(id) = partial.tool_call_id.clone() else {
+            return partial;
+        };
+        match (partial.kind, &partial.name) {
+            ("tool_call", Some(name)) => self.call_names.push((id, name.clone())),
+            ("tool_result", None) => {
+                partial.name = self
+                    .call_names
+                    .iter()
+                    .rev()
+                    .find(|(call, _)| *call == id)
+                    .map(|(_, name)| name.clone());
+            }
+            _ => {}
+        }
+        partial
     }
 
     fn number(&mut self, partial: PartialEvent) -> ActionEvent {
@@ -424,7 +455,13 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                     .get("tool_use_id")
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                status: None,
+                status: Some(
+                    if obj.get("is_error").and_then(Value::as_bool) == Some(true) {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Completed
+                    },
+                ),
                 phase: Phase::Finished,
             }),
             Some("text") if assistant => {
@@ -1337,6 +1374,43 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_tool_result_carries_its_error_state_and_its_calls_name() {
+        // Claude Code `stream-json`: a failed call's `tool_result` block carries
+        // `is_error: true`; a completed one carries `false` or omits it.
+        let raw = concat!(
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_bad","name":"Bash","input":{"command":"cargo test"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_bad","is_error":true,"content":"error: could not compile"}]}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_ok","name":"Read","input":{"file_path":"a.rs"}},{"type":"tool_use","id":"toolu_quiet","name":"Grep","input":{"pattern":"x"}}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ok","is_error":false,"content":"fn main() {}"},{"type":"tool_result","tool_use_id":"toolu_quiet","content":"a.rs"},{"type":"tool_result","tool_use_id":"toolu_unseen","is_error":true,"content":"boom"}]}}"#,
+            "\n",
+        );
+        let results: Vec<(Option<String>, Option<ToolCallStatus>)> = stream_lines(raw)
+            .0
+            .into_iter()
+            .flatten()
+            .filter(|event| event.kind == "tool_result")
+            .map(|event| (event.name, event.status))
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                (Some("Bash".to_string()), Some(ToolCallStatus::Failed)),
+                (Some("Read".to_string()), Some(ToolCallStatus::Completed)),
+                (Some("Grep".to_string()), Some(ToolCallStatus::Completed)),
+                // A result whose call this run never delivered stays unnamed.
+                (None, Some(ToolCallStatus::Failed)),
+            ]
+        );
+        // The buffered report folds the same lines through the same stream.
+        let report = extract_events(raw, OutputFormat::StreamJson).unwrap();
+        assert_eq!(report.events[1].status, Some(ToolCallStatus::Failed));
+        assert_eq!(report.events[1].name.as_deref(), Some("Bash"));
+    }
+
+    #[test]
     fn anthropic_content_blocks_yield_call_and_result_events() {
         // Claude Code / Cursor stream-json: an assistant message with a `tool_use`
         // block, then a user message with the `tool_result` observation.
@@ -1359,7 +1433,9 @@ mod tests {
         assert_eq!(got.events[1].input, Some(json!({"command": "echo hi"})));
         assert_eq!(got.events[1].output, None);
         assert_eq!(got.events[2].kind, "tool_result");
-        assert_eq!(got.events[2].name, None);
+        // A result is named after the call it answers, and carries its outcome.
+        assert_eq!(got.events[2].name.as_deref(), Some("Bash"));
+        assert_eq!(got.events[2].status, Some(ToolCallStatus::Completed));
         assert_eq!(got.events[2].input, None);
         assert_eq!(got.events[2].output.as_deref(), Some("hi\n"));
         assert_eq!(got.events[2].index, 2);

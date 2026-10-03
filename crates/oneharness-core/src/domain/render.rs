@@ -55,6 +55,8 @@ const REASONING_MARK: &str = "(thinking) ";
 const COMMAND_MARK: &str = "$ ";
 const FILE_MARK: &str = "✎ ";
 const TOOL_MARK: &str = "▸ ";
+/// The prefix of the line a failed `tool_result` draws.
+const FAILED_MARK: &str = "✗ ";
 /// The widest a tool call's argument summary is drawn before it is cut.
 const SUMMARY_MAX_CHARS: usize = 120;
 
@@ -73,13 +75,20 @@ const SUMMARY_MAX_CHARS: usize = 120;
 ///   one (`✗ exit 2`), else `✗ failed`, followed by the first line of its
 ///   output; a call cut short is marked `✗ timed out` / `✗ interrupted`.
 /// - A `tool_result` is `None`: the call it answers was already drawn, and the
-///   observation is the call's output, not a line of its own.
+///   observation is the call's output, not a line of its own — unless the
+///   result reports the call `failed` (a Claude Code `is_error` block), which
+///   the already-drawn call could not show: then one `✗ <name>  failed` line,
+///   naming the tool the call named (`tool` when unknown).
 #[must_use]
 pub fn render_event(event: &ActionEvent) -> Option<String> {
     match event.kind.as_str() {
         "message" => text_lines(MESSAGE_MARK, event.output.as_deref()?),
         "reasoning" => text_lines(REASONING_MARK, event.output.as_deref()?),
         "tool_call" => Some(render_tool_call(event)),
+        "tool_result" if event.status == Some(ToolCallStatus::Failed) => Some(format!(
+            "{FAILED_MARK}{}  failed",
+            printable(event.name.as_deref().unwrap_or("tool"))
+        )),
         _ => None,
     }
 }
@@ -695,6 +704,19 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_tool_result_draws_one_outcome_line_naming_its_tool() {
+        let mut failed = event("tool_result", Some("Bash"), None, Some("error: boom"));
+        failed.status = Some(ToolCallStatus::Failed);
+        assert_eq!(render_event(&failed).unwrap(), "✗ Bash  failed");
+        // A result whose call was never seen still says a call failed.
+        failed.name = None;
+        assert_eq!(render_event(&failed).unwrap(), "✗ tool  failed");
+        // A harness-written name cannot carry a control character to the reader.
+        failed.name = Some("Ba\u{1b}[2Jsh".to_string());
+        assert_eq!(render_event(&failed).unwrap(), "✗ Ba [2Jsh  failed");
+    }
+
+    #[test]
     fn a_command_is_drawn_without_the_harness_shell_wrapper() {
         for (wrapped, bare) in [
             (
@@ -883,6 +905,9 @@ mod tests {
             render_event(&event("tool_result", None, None, Some("hi"))),
             None
         );
+        let mut completed = event("tool_result", Some("Bash"), None, Some("hi"));
+        completed.status = Some(ToolCallStatus::Completed);
+        assert_eq!(render_event(&completed), None);
         assert_eq!(
             render_event(&event("future_kind", None, None, Some("x"))),
             None

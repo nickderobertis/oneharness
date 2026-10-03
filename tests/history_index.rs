@@ -604,9 +604,13 @@ mod measured {
             .unwrap()
     }
 
-    fn vm_rss_kib(pid: u32) -> Option<u64> {
-        std::fs::read_to_string(format!("/proc/{pid}/status"))
-            .ok()?
+    /// The child's resident size, adding the bytes this read took to
+    /// `own_reads`: the helper's own `rchar` carries every one of them, and how
+    /// many there are depends only on how long the child lived.
+    fn vm_rss_kib(pid: u32, own_reads: &mut u64) -> Option<u64> {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        *own_reads += status.len() as u64;
+        status
             .lines()
             .find_map(|line| line.strip_prefix("VmRSS:"))
             .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
@@ -638,6 +642,7 @@ mod measured {
         let mut series = Vec::new();
         let mut next_point = started;
         let mut timed_out = false;
+        let mut own_reads = 0;
         loop {
             // SAFETY: a zeroed siginfo_t is a valid out-parameter for waitid.
             let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
@@ -654,7 +659,7 @@ mod measured {
             if waited == 0 && unsafe { info.si_pid() } == pid as libc::pid_t {
                 break;
             }
-            if let Some(rss) = vm_rss_kib(pid) {
+            if let Some(rss) = vm_rss_kib(pid, &mut own_reads) {
                 sampled_rss_kib = sampled_rss_kib.max(rss);
                 if std::time::Instant::now() >= next_point {
                     next_point += SERIES_EVERY;
@@ -684,7 +689,10 @@ mod measured {
         assert_eq!(reaped, pid as libc::pid_t);
         Report {
             status,
-            rchar: rchar_of_self() - before,
+            // The child's reads alone: sampling it every few milliseconds reads
+            // its status file hundreds of times, so a child slowed by a loaded
+            // host would otherwise read as one that read more.
+            rchar: rchar_of_self() - before - own_reads,
             max_rss_kib: usage.ru_maxrss,
             sampled_rss_kib,
             series,

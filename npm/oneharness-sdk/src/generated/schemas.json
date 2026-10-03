@@ -1619,7 +1619,7 @@
             ]
           },
           "status": {
-            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results.",
+            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results, and in a history record with\nno tool timing, which makes no tool-state claim on any event.",
             "anyOf": [
               {
                 "$ref": "#/$defs/ToolCallStatus"
@@ -2700,7 +2700,7 @@
             ]
           },
           "status": {
-            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results.",
+            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results, and in a history record with\nno tool timing, which makes no tool-state claim on any event.",
             "anyOf": [
               {
                 "$ref": "#/$defs/ToolCallStatus"
@@ -6284,7 +6284,7 @@
             ]
           },
           "status": {
-            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results.",
+            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results, and in a history record with\nno tool timing, which makes no tool-state claim on any event.",
             "anyOf": [
               {
                 "$ref": "#/$defs/ToolCallStatus"
@@ -9324,7 +9324,7 @@
             ]
           },
           "status": {
-            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results.",
+            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results, and in a history record with\nno tool timing, which makes no tool-state claim on any event.",
             "anyOf": [
               {
                 "$ref": "#/$defs/ToolCallStatus"
@@ -9708,7 +9708,7 @@
             ]
           },
           "status": {
-            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results.",
+            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results, and in a history record with\nno tool timing, which makes no tool-state claim on any event.",
             "anyOf": [
               {
                 "$ref": "#/$defs/ToolCallStatus"
@@ -12890,7 +12890,7 @@
             ]
           },
           "status": {
-            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results.",
+            "description": "Terminal tool state, populated on history tool-call events. On a\n`tool_result` it is the outcome the harness reported for the call:\n`failed` when the result is marked an error (a Claude Code / Qwen\n`is_error: true` block), else `completed`; `null` when the harness\nreports no error state for its results, and in a history record with\nno tool timing, which makes no tool-state claim on any event.",
             "anyOf": [
               {
                 "$ref": "#/$defs/ToolCallStatus"

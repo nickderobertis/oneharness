@@ -1538,7 +1538,8 @@ export interface ActionEvent {
    * `tool_result` it is the outcome the harness reported for the call:
    * `failed` when the result is marked an error (a Claude Code / Qwen
    * `is_error: true` block), else `completed`; `null` when the harness
-   * reports no error state for its results.
+   * reports no error state for its results, and in a history record with
+   * no tool timing, which makes no tool-state claim on any event.
    */
   status: ToolCallStatus | null;
   /**

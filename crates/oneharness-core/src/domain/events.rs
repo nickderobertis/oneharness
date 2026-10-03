@@ -1434,7 +1434,6 @@ mod tests {
         assert_eq!(got.events[1].input, Some(json!({"command": "echo hi"})));
         assert_eq!(got.events[1].output, None);
         assert_eq!(got.events[2].kind, "tool_result");
-        // A result is named after the call it answers, and carries its outcome.
         assert_eq!(got.events[2].name.as_deref(), Some("Bash"));
         assert_eq!(got.events[2].status, Some(ToolCallStatus::Completed));
         assert_eq!(got.events[2].input, None);

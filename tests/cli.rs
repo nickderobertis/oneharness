@@ -35051,6 +35051,13 @@ fn a_text_stream_marks_a_failed_claude_tool_call_once_after_its_call() {
         "\n",
         r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_ok","is_error":false,"content":"pub fn f() {}"}]}}"#,
         "\n",
+        // A harness-written tool name cannot carry an escape to the reader.
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_esc","name":"Gr\u001b[2Jep","input":{"pattern":"todo"}}]}}"#,
+        "\n",
+        // The second result answers a call this run never showed, so the
+        // failure is still drawn, under the generic name.
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_esc","is_error":true,"content":"bad pattern"},{"type":"tool_result","tool_use_id":"toolu_unseen","is_error":true,"content":"boom"}]}}"#,
+        "\n",
         r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"The build fails."}]}}"#,
         "\n",
         r#"{"type":"result","subtype":"success","is_error":false,"result":"The build fails."}"#,
@@ -35088,11 +35095,15 @@ fn a_text_stream_marks_a_failed_claude_tool_call_once_after_its_call() {
             "$ cargo test",
             "✗ Bash  failed",
             "▸ Read src/lib.rs",
+            "▸ Gr [2Jep todo",
+            "✗ Gr [2Jep  failed",
+            "✗ tool  failed",
             "› The build fails."
         ],
         "{stdout}"
     );
-    assert_eq!(stdout.matches('✗').count(), 1, "{stdout}");
+    assert_eq!(stdout.matches('✗').count(), 3, "{stdout}");
+    assert!(!stdout.contains('\u{1b}'), "{stdout}");
     // The result's outcome is a recorded signal too, and the record carrying
     // it is still a valid one.
     let session_file = lines
@@ -35114,7 +35125,12 @@ fn a_text_stream_marks_a_failed_claude_tool_call_once_after_its_call() {
         .collect();
     assert_eq!(
         results,
-        [("Bash", "failed"), ("Read", "completed")],
+        [
+            ("Bash", "failed"),
+            ("Read", "completed"),
+            ("Gr\u{1b}[2Jep", "failed"),
+            ("null", "failed")
+        ],
         "{record}"
     );
 }

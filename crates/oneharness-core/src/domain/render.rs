@@ -55,7 +55,6 @@ const REASONING_MARK: &str = "(thinking) ";
 const COMMAND_MARK: &str = "$ ";
 const FILE_MARK: &str = "✎ ";
 const TOOL_MARK: &str = "▸ ";
-/// The prefix of the line a failed `tool_result` draws.
 const FAILED_MARK: &str = "✗ ";
 /// The widest a tool call's argument summary is drawn before it is cut.
 const SUMMARY_MAX_CHARS: usize = 120;

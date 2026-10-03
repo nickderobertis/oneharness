@@ -422,6 +422,7 @@ impl HistoryRunRecord {
             work: self.work,
             error: self.error,
         }
+        .without_untimed_result_status()
     }
 }
 
@@ -1266,6 +1267,24 @@ impl HistoryRecord {
             work,
             error,
         }
+        .without_untimed_result_status()
+    }
+
+    /// `self` with every `tool_result`'s outcome cleared when the record is
+    /// untimed (no `started_at`, no `observed_tool_ms`): such a record makes
+    /// no tool-state claim on any event (`untimed_trace_valid`, and the schema
+    /// every published reader validates with), so the outcome stays in the
+    /// report, the live stream and the event lines, and not in the record. A
+    /// claude-code result whose `tool_use` was never seen is the case.
+    fn without_untimed_result_status(mut self) -> Self {
+        if self.started_at.is_none() && self.observed_tool_ms.is_none() {
+            for event in self.events.iter_mut().flatten() {
+                if event.kind == "tool_result" {
+                    event.status = None;
+                }
+            }
+        }
+        self
     }
 
     pub(crate) fn complete(&self) -> bool {

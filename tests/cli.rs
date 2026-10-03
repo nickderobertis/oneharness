@@ -35037,6 +35037,65 @@ fn a_text_stream_prints_each_event_as_it_happens_then_the_text_report() {
 }
 
 #[test]
+fn a_claude_tool_result_without_its_call_still_records_its_run() {
+    // A transcript can carry a `tool_result` whose `tool_use` never appeared
+    // in it (a stream joined mid-turn). Without an observed call the run has
+    // no tool timing, and an untimed history record makes no tool-state claim
+    // on any event — so the result's outcome stays in the report, and the
+    // record is written without it rather than refused.
+    let transcript = concat!(
+        r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_unseen","is_error":true,"content":"boom"}]}}"#,
+        "\n",
+        r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"It failed."}]}}"#,
+        "\n",
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"It failed."}"#,
+        "\n",
+    );
+    let history = hist_dir("claude-unmatched-tool-result");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "claude-code",
+            "--prompt",
+            "hi",
+            "--bin",
+            &bin_override("claude-code"),
+            "--stream",
+            "--history",
+            "--history-dir",
+            &history.display().to_string(),
+        ],
+        &[("MOCK_STDOUT", transcript)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("history"), "{stderr}");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let streamed: Vec<Value> = stdout
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let result = streamed
+        .iter()
+        .find(|line| line["type"] == "result")
+        .expect("the stream ends with its result");
+    let events = result["report"]["results"][0]["events"]
+        .as_array()
+        .expect("the report carries the run's events");
+    assert_eq!(events[0]["kind"], "tool_result", "{result}");
+    assert_eq!(events[0]["status"], "failed", "{result}");
+    let session_file = result["report"]["history_file"]
+        .as_str()
+        .expect("the report names the history file");
+    let record = first_history_run(Path::new(session_file));
+    assert_eq!(record["status"], "ok", "{record}");
+    assert_eq!(record["events"][0]["kind"], "tool_result", "{record}");
+    assert!(record["events"][0]["status"].is_null(), "{record}");
+    assert_eq!(record["events"][0]["output"], "boom", "{record}");
+}
+
+#[test]
 fn a_text_stream_marks_a_failed_claude_tool_call_once_after_its_call() {
     // Claude Code's `stream-json` reports a failed call only on the
     // `tool_result` block that answers it (`is_error: true`), after the call's

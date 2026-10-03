@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.2](https://github.com/nickderobertis/oneharness/compare/v0.21.1...v0.21.2) - 2026-10-03
+
+### Fixed
+
+- *(events)* mark a failed Claude tool call in the live text stream ([#1412](https://github.com/nickderobertis/oneharness/pull/1412))
+
 ## [0.21.1](https://github.com/nickderobertis/oneharness/compare/v0.21.0...v0.21.1) - 2026-09-30
 
 ### Added

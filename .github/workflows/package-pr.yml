@@ -71,6 +71,8 @@ jobs:
           "target/$TARGET/release/oneharness.exe" --version
       - name: Build the oneharness-cli wheel
         uses: PyO3/maturin-action@v1
+        env:
+          RUSTFLAGS: -D warnings
         with:
           target: ${{ matrix.target }}
           args: --release --locked --out dist

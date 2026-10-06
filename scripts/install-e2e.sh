@@ -276,7 +276,7 @@ verify_platform_selection() {
             >"$trust/$version/${name}.sha256"
     done <<<"$declared"
 
-    # llmlint: ignore[e2e_not_mocked] uname is the installer's own host seam: this suite runs on one host, and proving the six hosts install.sh serves (Windows ARM64 above all, which no hosted job here runs it on) means answering uname as each would, while install.sh itself, its download, checksum and unpack run for real.
+    # llmlint: ignore-block[e2e_not_mocked] uname is the installer's own host seam: this suite runs on one host, and proving the six hosts install.sh serves (Windows ARM64 above all, which no hosted job here runs it on) means answering uname as each would, while install.sh itself, its download, checksum and unpack run for real.
     cat >"$stubdir/uname" <<'STUB'
 #!/bin/sh
 case "${1:-}" in
@@ -322,6 +322,7 @@ MINGW64_NT-10.0-26100|x86_64|AMD64|ARMv8 (64-bit) Family 8 Model 1 Revision 201,
 MINGW64_NT-10.0-26100|x86_64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 MSYS_NT-10.0-26100|x86_64|AMD64|ARM64 Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 CASES
+    # llmlint: ignore-end[e2e_not_mocked]
 }
 
 verify_trust_root_independence

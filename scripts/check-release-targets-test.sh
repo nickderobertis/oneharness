@@ -62,6 +62,7 @@ staged=(
   npm/oneharness/bin/oneharness.js
   npm/oneharness-sdk/package.json
   npm/oneharness-sdk/test/package-e2e.mjs
+  scripts/npm-e2e.sh
   release-platforms.toml
   .github/workflows/package-pr.yml
 )
@@ -716,6 +717,11 @@ rewrite "$root" npm/oneharness-sdk/test/package-e2e.mjs '!/^\t"win32-arm64": / {
 assert_red sdk-e2e-map-missing "an SDK package e2e host map missing a declared platform" \
   "package-e2e.mjs's host map lacks 'aarch64-pc-windows-msvc win32-arm64'"
 
+root="$(stage npm-e2e-map-missing)"
+rewrite "$root" scripts/npm-e2e.sh '!/^ +win32-arm64\) TARGET=/ { print }'
+assert_red npm-e2e-map-missing "a launcher e2e host map missing a declared platform" \
+  "scripts/npm-e2e.sh's detect_target lacks 'aarch64-pc-windows-msvc win32-arm64'"
+
 # And the other direction: a platform declared and built nowhere.
 root="$(stage platform-built-nowhere)"
 cat >>"$root/release-platforms.toml" <<'PLATFORM'
@@ -729,7 +735,8 @@ PLATFORM
 assert_red platform-built-nowhere "a declared platform no release matrix builds" \
   "release.yml's upload matrix lacks 'riscv64gc-unknown-linux-gnu ubuntu-latest tar.gz'"
 
-# The declaration itself is read strictly.
+# A misspelled or missing key read as an absent one would build a platform
+# nowhere without a word, so the declaration must refuse each.
 root="$(stage platform-unknown-key)"
 rewrite "$root" release-platforms.toml '{ sub(/^runner = "windows-11-arm"$/, "runnr = \"windows-11-arm\""); print }'
 assert_red platform-unknown-key "a platform key the declaration does not define" \

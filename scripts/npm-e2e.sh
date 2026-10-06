@@ -30,24 +30,20 @@ exe_path() {
     return 1
 }
 
-# Map `uname` to the Rust target triple the npm-build script keys on (the same
-# matrix as release.yml). Mirrors scripts/install-e2e.sh's detection.
+# Map node's platform-arch — the key the launcher resolves its package by — to
+# the Rust target the npm-build script keys on. Not `uname`: on a Windows ARM64
+# host Git Bash itself may run x64-emulated and report x86_64 while node is
+# native arm64, and the package staged must be the one the launcher asks for.
 detect_target() {
-    local os arch os_part arch_part
-    os="$(uname -s)"
-    arch="$(uname -m)"
-    case "$os" in
-        Linux) os_part="unknown-linux-gnu" ;;
-        Darwin) os_part="apple-darwin" ;;
-        MINGW* | MSYS* | CYGWIN* | Windows_NT) os_part="pc-windows-msvc" ;;
-        *) fail "unsupported operating system: $os" ;;
+    case "$1" in
+        linux-x64) TARGET="x86_64-unknown-linux-gnu" ;;
+        linux-arm64) TARGET="aarch64-unknown-linux-gnu" ;;
+        darwin-x64) TARGET="x86_64-apple-darwin" ;;
+        darwin-arm64) TARGET="aarch64-apple-darwin" ;;
+        win32-x64) TARGET="x86_64-pc-windows-msvc" ;;
+        win32-arm64) TARGET="aarch64-pc-windows-msvc" ;;
+        *) fail "no published npm platform package for node's $1; release-platforms.toml lists the published ones" ;;
     esac
-    case "$arch" in
-        x86_64 | amd64) arch_part="x86_64" ;;
-        arm64 | aarch64) arch_part="aarch64" ;;
-        *) fail "unsupported architecture: $arch" ;;
-    esac
-    TARGET="${arch_part}-${os_part}"
 }
 
 [ $# -ge 1 ] || { usage; exit 2; }
@@ -56,11 +52,11 @@ have node || fail "node not found on PATH"
 bin_resolved="$(exe_path "$bin")" || fail "oneharness binary not found: $bin"
 
 cd "$repo_root"
-detect_target
 
 # node's own platform/arch is the source of truth for the package dir name, so it
 # always matches the launcher's resolution key.
 key="$(node -e 'process.stdout.write(process.platform+"-"+process.arch)')"
+detect_target "$key"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT

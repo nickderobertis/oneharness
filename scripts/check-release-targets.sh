@@ -38,9 +38,10 @@
 # release builds the binary for. Each list that restates a share of that set —
 # release.yml's upload, build-wheels and build-npm matrices, package-pr.yml's
 # pull-request lane, npm-build.mjs's TARGETS, the launcher's platform map and
-# optionalDependencies, the npm:oneharness-cli `covers`, and the SDK package
-# e2e's host map — is held to it in both directions, because a platform one list
-# forgets is an install that fails on that host through that channel alone.
+# optionalDependencies, the npm:oneharness-cli `covers`, and the host maps of
+# the SDK package e2e and the launcher e2e (npm-e2e.sh) — is held to it in both
+# directions, because a platform one list forgets is an install that fails on
+# that host through that channel alone.
 #
 # Quiet on success, one line. On failure it names each drift and the fix.
 set -euo pipefail
@@ -675,6 +676,7 @@ pr_lane=".github/workflows/package-pr.yml"
 npm_launcher="npm/oneharness/bin/oneharness.js"
 npm_launcher_manifest="npm/oneharness/package.json"
 sdk_package_e2e="npm/oneharness-sdk/test/package-e2e.mjs"
+npm_e2e="scripts/npm-e2e.sh"
 
 if [ ! -f "$platforms" ]; then
 	fail "$platforms is missing, so nothing states which platforms a release builds; restore it — it is the one statement of that set every release matrix and npm list is held to"
@@ -830,6 +832,10 @@ if [ -n "$platform_records" ]; then
 		"$(declared_platforms 1 4)" \
 		"$(tr -d '\r' <"$sdk_package_e2e" | awk '/^const target = \{$/ { inside = 1; next } inside && /^\}/ { exit } inside' | sed -n 's/^[[:space:]]*"\([^"]*\)": "\([^"]*\)",$/\2 \1/p')" \
 		"map each npm platform there to its target, so the packed-package e2e runs on every host a release serves"
+	hold_to_platforms "$npm_e2e's detect_target" \
+		"$(declared_platforms 1 4)" \
+		"$(tr -d '\r' <"$npm_e2e" | sed -n 's/^ *\([a-z0-9]*-[a-z0-9]*\)) TARGET="\([^"]*\)" ;;$/\2 \1/p')" \
+		"map each npm platform there to its target, so the launcher e2e stages the package a host's node resolves"
 fi
 
 if [ "$fails" -ne 0 ]; then

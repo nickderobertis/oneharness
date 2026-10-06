@@ -276,6 +276,7 @@ verify_platform_selection() {
             >"$trust/$version/${name}.sha256"
     done <<<"$declared"
 
+    # llmlint: ignore[e2e_not_mocked] uname is the installer's own host seam: this suite runs on one host, and proving the six hosts install.sh serves (Windows ARM64 above all, which no hosted job here runs it on) means answering uname as each would, while install.sh itself, its download, checksum and unpack run for real.
     cat >"$stubdir/uname" <<'STUB'
 #!/bin/sh
 case "${1:-}" in
@@ -298,18 +299,18 @@ STUB
             sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
             >"$work/platform.out" 2>&1; then
             cat "$work/platform.out" >&2
-            fail "install.sh refused a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch'); it should have installed $want"
+            fail "install.sh refused a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch'); it should have installed $want — fix detect_target in scripts/install.sh, whose refusal is printed above"
         fi
         case "$want" in
             *-windows-*) bin_file="oneharness.exe" ;;
             *) bin_file="oneharness" ;;
         esac
         [ -f "$probe/$bin_file" ] ||
-            fail "install.sh on a $uname_s $uname_m host installed no $bin_file under $probe: $(ls "$probe" 2>/dev/null)"
+            fail "install.sh on a $uname_s $uname_m host installed no $bin_file under $probe (found: $(ls "$probe" 2>/dev/null)); check the binary name detect_target in scripts/install.sh picks for $want"
         expected="oneharness fixture for $want"
         installed="$(cat "$probe/$bin_file")"
         [ "$installed" = "$expected" ] ||
-            fail "install.sh on a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch', PROCESSOR_IDENTIFIER='$proc_id') installed the artifact saying '$installed'; it should have installed $want"
+            fail "install.sh on a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch', PROCESSOR_IDENTIFIER='$proc_id') installed the artifact saying '$installed'; it should have installed $want — fix the target detect_target in scripts/install.sh maps this host to"
     done <<'CASES'
 Linux|x86_64|||x86_64-unknown-linux-gnu
 Linux|aarch64|||aarch64-unknown-linux-gnu
@@ -318,8 +319,9 @@ Darwin|arm64|||aarch64-apple-darwin
 MINGW64_NT-10.0-26100|x86_64|AMD64|Intel64 Family 6 Model 85 Stepping 7, GenuineIntel|x86_64-pc-windows-msvc
 MINGW64_NT-10.0-26100|aarch64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 MINGW64_NT-10.0-26100|x86_64|AMD64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
+MINGW64_NT-10.0-26100|x86_64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
+MSYS_NT-10.0-26100|x86_64|AMD64|ARM64 Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 CASES
-    say "install-e2e: platform selection verified for every published Linux, macOS and Windows target"
 }
 
 verify_trust_root_independence

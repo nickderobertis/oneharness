@@ -7,9 +7,6 @@ name: Package (pull request)
 # a change that breaks its build would otherwise first fail at release, after
 # every other platform had already published (#1413).
 #
-# Each leg builds the binary and the oneharness-cli wheel exactly as release.yml
-# does, installs the wheel into a fresh environment and runs it from there.
-#
 # Deliberately NOT a required check: ARM runners queue, and a queue must never
 # extend a change's time to merge. Its result is advisory on the pull request.
 # It runs only when the diff touches what the build reads, so a docs-only change
@@ -27,6 +24,7 @@ on:
       - pyproject.toml
       - npm/oneharness/**
       - scripts/npm-build.mjs
+      - scripts/npm-e2e.sh
       - scripts/install.sh
       - release-platforms.toml
       - release-targets.toml
@@ -50,6 +48,7 @@ jobs:
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
             python-arch: arm64
+            node-arch: arm64
             wheel: win_arm64
     runs-on: ${{ matrix.os }}
     defaults:
@@ -99,3 +98,13 @@ jobs:
             exit 1
           fi
           echo "installed ${wheels[0]##*/}: $installed"
+      # The npm platform package, resolved and run by the launcher under a native
+      # Node, whose process.arch is what picks @oneharness/cli-<platform>-<arch>.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          architecture: ${{ matrix.node-arch }}
+      - name: Resolve and run the npm platform package through the launcher
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bash scripts/npm-e2e.sh "target/$TARGET/release/oneharness.exe"

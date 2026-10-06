@@ -58,6 +58,9 @@ name: Release
 #                           does — smoke included, since an unresolvable
 #                           per-platform package is not an install failure —
 #                           retried until the registry serves them.
+#   * verify-npm-windows-arm64
+#                        — the launcher alone installed on a Windows ARM64 host,
+#                           asserting npm resolved the win32-arm64 package.
 #
 on:
   release:
@@ -566,3 +569,29 @@ jobs:
         run: scripts/verify-published.sh npm-cli "${GITHUB_REF_NAME#v}"
       - name: Install the SDK from npm and exercise its packaged CLI dependency
         run: scripts/verify-published.sh npm-sdk "${GITHUB_REF_NAME#v}"
+
+  # The ubuntu install resolves linux-x64. On Windows ARM64 the launcher alone is
+  # installed, as a consumer does, and npm must pick @oneharness/cli-win32-arm64
+  # by itself from the optionalDependencies under a native arm64 Node.
+  verify-npm-windows-arm64:
+    needs: publish-npm
+    if: ${{ vars.NPM_PUBLISH == 'true' }}
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          architecture: arm64
+      - name: Install oneharness-cli from npm and smoke-test it
+        run: scripts/verify-published.sh npm-cli "${GITHUB_REF_NAME#v}"
+      - name: Prove npm resolved the native win32-arm64 package
+        run: |
+          if ! npm ls -g --depth=1 @oneharness/cli-win32-arm64 >/dev/null; then
+            npm ls -g --depth=1 >&2 || true
+            echo "::error::npm installed oneharness-cli without @oneharness/cli-win32-arm64; check that the release published it and that the launcher's optionalDependencies pin it" >&2
+            exit 1
+          fi

@@ -68,6 +68,7 @@ covers = [
   "npm:@oneharness/cli-darwin-x64",
   "npm:@oneharness/cli-darwin-arm64",
   "npm:@oneharness/cli-win32-x64",
+  "npm:@oneharness/cli-win32-arm64",
 ]
 
 [[target]]

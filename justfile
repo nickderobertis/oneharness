@@ -215,16 +215,22 @@ build:
 build-mock-harness:
     @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
 
-# Optimized release build (the distributed artifact).
-build-release:
-    cargo build --release --locked
+# Optimized release build (the distributed artifact). Extra args reach cargo,
+# e.g. `just build-release --target aarch64-pc-windows-msvc`.
+build-release *args:
+    @RUSTFLAGS="-D warnings" cargo build --release --locked {{ args }} || { echo "release build failed; fix the compiler diagnostics above and rerun 'just build-release {{ args }}'" >&2; exit 1; }
 
 # Hermetic npm-packaging e2e: assemble the host's per-platform npm package from a
 # just-built binary, stage it under the `oneharness-cli` launcher, and prove the
 # launcher shim resolves and execs it. Runs inside `smoke` (Node-gated) too; this
 # recipe is the standalone way to iterate on scripts/npm-build.mjs. Needs Node.
 npm-e2e: build
-    bash scripts/npm-e2e.sh target/debug/oneharness
+    @just npm-e2e-bin target/debug/oneharness
+
+# The same e2e against an already-built binary, such as a cross-target release
+# build: `just npm-e2e-bin target/<triple>/release/oneharness.exe`.
+npm-e2e-bin bin:
+    bash scripts/npm-e2e.sh {{ quote(bin) }}
 
 # Advisory + license audit. Separate from `check`: needs a network advisory DB.
 deps-check:

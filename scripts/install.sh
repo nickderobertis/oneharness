@@ -21,9 +21,16 @@
 # ONEHARNESS_RELEASE_BASE_URL, ONEHARNESS_CHECKSUM_BASE_URL.
 # Set GITHUB_TOKEN to lift the GitHub API rate limit when resolving "latest".
 #
-# Covers Linux and macOS (x86_64, arm64) and Windows x86_64 under a POSIX shell
-# (Git Bash / MSYS / WSL). For native Windows PowerShell or unpublished targets,
-# use `pip install oneharness-cli` or `cargo install oneharness --locked`.
+# The host platform is read from `uname -s` / `uname -m` and, on Windows, from
+# PROCESSOR_ARCHITECTURE / PROCESSOR_IDENTIFIER (see detect_target). Set
+# ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH to answer in place of `uname -s` /
+# `uname -m` — to fetch the binary for another host, and how the installer's own
+# tests (scripts/install-e2e.sh) pose as each platform it supports.
+#
+# Covers Linux, macOS and Windows, each on x86_64 and arm64 — Windows under a
+# POSIX shell (Git Bash / MSYS / WSL). For native Windows PowerShell or
+# unpublished targets, use `pip install oneharness-cli` or
+# `cargo install oneharness --locked`.
 #
 # Verification. Like the tool it installs, this script never weakens silently: it
 # aborts rather than install a binary it cannot vouch for, and — crucially — it
@@ -90,17 +97,19 @@ Usage: install.sh [--version <tag>] [--to <dir>] [--base-url <url>]
   -h, --help        Show this help.
 
 Environment: ONEHARNESS_VERSION, ONEHARNESS_INSTALL_DIR,
-ONEHARNESS_RELEASE_BASE_URL, ONEHARNESS_CHECKSUM_BASE_URL, GITHUB_TOKEN.
+ONEHARNESS_RELEASE_BASE_URL, ONEHARNESS_CHECKSUM_BASE_URL, GITHUB_TOKEN,
+ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH (answer in place of uname -s / -m).
 EOF
 }
 
-# Map `uname` output to a published Rust target triple, archive extension, and
-# (on Windows) the `.exe` binary name. The triples must match the targets the
-# release workflow builds (.github/workflows/release.yml). Unsupported pairs
-# abort with guidance.
+# Map the host platform (`uname`, or ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH)
+# to a published Rust target triple, archive extension, and (on Windows) the
+# `.exe` binary name. The triples must be targets release-platforms.toml declares
+# (the set .github/workflows/release.yml builds).
+# Unsupported pairs abort with guidance.
 detect_target() {
-    os="$(uname -s)"
-    arch="$(uname -m)"
+    os="${ONEHARNESS_HOST_OS:-$(uname -s)}"
+    arch="${ONEHARNESS_HOST_ARCH:-$(uname -m)}"
 
     case "$os" in
         Linux) os_part="unknown-linux-gnu"; ext="tar.gz" ;;
@@ -116,9 +125,16 @@ detect_target() {
         *) err "unsupported architecture: $arch" ;;
     esac
 
-    # The release matrix publishes Windows for x86_64 only.
-    if [ "$ext" = "zip" ] && [ "$arch_part" != "x86_64" ]; then
-        err "no prebuilt Windows binary for $arch; install with 'pip install oneharness-cli' or 'cargo install $BIN --locked'"
+    # A Windows ARM64 host can run this shell itself under x64 emulation, and
+    # then `uname -m` reports the emulated x86_64. Windows still says what the
+    # machine is: a native shell's PROCESSOR_ARCHITECTURE, or PROCESSOR_IDENTIFIER,
+    # which names the physical processor and which emulation leaves as it is.
+    # Installing the x64 binary there would run, but emulated, when a native
+    # aarch64 one is published.
+    if [ "$ext" = "zip" ] && [ "$arch_part" = "x86_64" ]; then
+        case "${PROCESSOR_ARCHITECTURE:-}:${PROCESSOR_IDENTIFIER:-}" in
+            ARM64:* | *:ARMv8* | *:ARM64*) arch_part="aarch64" ;;
+        esac
     fi
 
     TARGET="${arch_part}-${os_part}"

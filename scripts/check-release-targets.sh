@@ -34,6 +34,17 @@
 # Fails in both directions: a published name no target declares or covers, and a
 # declared or covered name this repository does not publish.
 #
+# **The platforms.** release-platforms.toml states once which targets every
+# release builds the binary for. Each list that restates a share of that set —
+# release.yml's upload, build-wheels and build-npm matrices, package-pr.yml's
+# pull-request lane, npm-build.mjs's TARGETS, the launcher's platform map and
+# optionalDependencies, the npm:oneharness-cli `covers`, and the host maps of
+# the SDK package e2e and the launcher e2e (npm-e2e.sh) — is held to it in both
+# directions, because a platform one list forgets is an install that fails on
+# that host through that channel alone. README.md lists none of them: it must
+# point at the declaration, and any target or platform package it names must be
+# declared.
+#
 # Quiet on success, one line. On failure it names each drift and the fix.
 set -euo pipefail
 
@@ -657,8 +668,191 @@ while read -r name; do
 		fail "scripts/npm-build.mjs publishes '$name' and no declared npm target's optionalDependencies pins it, so npm can never resolve it; add it to npm/oneharness/package.json's optionalDependencies"
 done < <(printf '%s\n' "$platform_names")
 
+# The release platform set, read strictly for the same reason the declaration
+# is: a key nobody declared read as an absent one is a platform quietly built
+# nowhere. One record per platform: target, runner, archive, npm, pull_request.
+platforms="release-platforms.toml"
+PLATFORM_KEYS="target runner archive npm pull_request"
+PLATFORM_REQUIRED="target runner archive npm"
+pr_lane=".github/workflows/package-pr.yml"
+npm_launcher="npm/oneharness/bin/oneharness.js"
+npm_launcher_manifest="npm/oneharness/package.json"
+sdk_package_e2e="npm/oneharness-sdk/test/package-e2e.mjs"
+npm_e2e="scripts/npm-e2e.sh"
+readme="README.md"
+
+if [ ! -f "$platforms" ]; then
+	fail "$platforms is missing, so nothing states which platforms a release builds; restore it — it is the one statement of that set every release matrix and npm list is held to"
+	platform_records=""
+else
+	platform_records="$(tr -d '\r' <"$platforms" | awk -v us="$US" -v keys="$PLATFORM_KEYS" -v required="$PLATFORM_REQUIRED" '
+		function refuse(message) { printf "!%s%s\n", us, message }
+		function close_entry(   n, i, want) {
+			if (!entry) return
+			n = split(required, want, " ")
+			for (i = 1; i <= n; i++)
+				if (!(want[i] in value)) refuse("[[platform]] " entry " declares no " want[i] "; every platform states " required)
+			printf "%s%s%s%s%s%s%s%s%s\n", value["target"], us, value["runner"], us, value["archive"], us, value["npm"], us, value["pull_request"]
+			delete value
+		}
+		{ line = $0; sub(/[ \t]+$/, "", line) }
+		line ~ /^[ \t]*(#.*)?$/ { next }
+		line == "[[platform]]" { close_entry(); entry++; next }
+		!entry { refuse("has \"" line "\" before its first [[platform]]; every key belongs to one platform"); next }
+		match(line, /^[a-z_]+ = "[^"]*"$/) || match(line, /^pull_request = true$/) {
+			key = line; sub(/ = .*$/, "", key)
+			val = line; sub(/^[a-z_]+ = /, "", val); gsub(/"/, "", val)
+			if (index(" " keys " ", " " key " ") == 0) { refuse("names \"" key "\" in [[platform]] " entry ", which is not one of: " keys); next }
+			if (key in value) { refuse("names " key " twice in [[platform]] " entry); next }
+			if (key == "pull_request" && line !~ /= true$/) { refuse("writes pull_request in [[platform]] " entry " as a string; write pull_request = true, or leave it out"); next }
+			if (key != "pull_request" && val == "") { refuse("leaves " key " empty in [[platform]] " entry); next }
+			value[key] = val
+			next
+		}
+		{ refuse("has a line in [[platform]] " entry " that is not key = \"value\" (or pull_request = true): " line) }
+		END { close_entry(); if (!entry) refuse("declares no [[platform]]") }
+	')"
+fi
+while IFS="$US" read -r kind message; do
+	[ "$kind" = "!" ] || continue
+	fail "$platforms $message"
+done < <(printf '%s\n' "$platform_records")
+platform_records="$(printf '%s\n' "$platform_records" | grep -v "^!" || true)"
+
+while read -r duplicate; do
+	[ -n "$duplicate" ] || continue
+	fail "$platforms declares $duplicate more than once; each target and each npm platform is built once, so drop the repeated [[platform]]"
+done < <(printf '%s\n' "$platform_records" | awk -F"$US" 'NF { print "target " $1; print "npm platform " $4 }' | sort | uniq -d)
+
+# The declared platforms, one per line: the record fields the arguments number
+# (1 target, 2 runner, 3 archive, 4 npm), space-joined. A leading
+# `--pull-request` keeps only the platforms marked pull_request = true.
+declared_platforms() {
+	local only=""
+	if [ "${1:-}" = --pull-request ]; then
+		only=1
+		shift
+	fi
+	printf '%s\n' "$platform_records" | awk -F"$US" -v only="$only" -v fields="$*" '
+		NF && (!only || $5 == "true") {
+			n = split(fields, f, " ")
+			out = ""
+			for (i = 1; i <= n; i++) out = out (i > 1 ? " " : "") $f[i]
+			print out
+		}
+	' | sort -u
+}
+
+# The include entries of one workflow job's matrix, one line each: the values of
+# the keys $3 names, space-joined, in that order. $1 = workflow, $2 = job.
+matrix_entries() {
+	tr -d '\r' <"$1" | awk -v job="$2" -v keys="$3" '
+		function flush(   n, i, k, out) {
+			if (!open) return
+			n = split(keys, k, " ")
+			out = ""
+			for (i = 1; i <= n; i++) if (k[i] in entry) out = out (out == "" ? "" : " ") entry[k[i]]
+			print out
+			delete entry
+			open = 0
+		}
+		$0 == "  " job ":" { inside = 1; next }
+		inside && /^  [^ #]/ { flush(); inside = 0 }
+		!inside { next }
+		match($0, /^ +- target: /) {
+			flush()
+			depth = RLENGTH - length("- target: ")
+			entry["target"] = substr($0, RLENGTH + 1)
+			open = 1
+			next
+		}
+		open && match($0, /^ +[a-z-]+: /) {
+			indent = match($0, /[^ ]/) - 1
+			if (indent != depth + 2) { flush(); next }
+			key = $0; sub(/^ +/, "", key); sub(/:.*$/, "", key)
+			val = $0; sub(/^ +[a-z-]+: /, "", val)
+			entry[key] = val
+			next
+		}
+		open { flush() }
+		END { flush() }
+	' | sort -u
+}
+
+# $1 = the list that restates the platform set, $2 = what it should hold (one
+# entry per line), $3 = what it holds, $4 = how to repair it.
+hold_to_platforms() {
+	local expected actual entry
+	expected="$(printf '%s\n' "$2" | sed '/^$/d' | sort -u)"
+	actual="$(printf '%s\n' "$3" | sed '/^$/d' | sort -u)"
+	while read -r entry; do
+		[ -n "$entry" ] || continue
+		fail "$1 lacks '$entry', which $platforms declares; $4"
+	done < <(comm -23 <(printf '%s\n' "$expected") <(printf '%s\n' "$actual"))
+	while read -r entry; do
+		[ -n "$entry" ] || continue
+		fail "$1 has '$entry', which $platforms does not declare; $4"
+	done < <(comm -13 <(printf '%s\n' "$expected") <(printf '%s\n' "$actual"))
+}
+
+if [ -n "$platform_records" ]; then
+	matrix_fix="make its matrix include exactly one entry per [[platform]] in $platforms, with that platform's runner as os"
+	hold_to_platforms "$release_workflow's upload matrix" \
+		"$(declared_platforms 1 2 3)" \
+		"$(matrix_entries "$release_workflow" upload "target os ext")" \
+		"$matrix_fix and its archive as ext"
+	for job in build-wheels build-npm; do
+		hold_to_platforms "$release_workflow's $job matrix" \
+			"$(declared_platforms 1 2)" \
+			"$(matrix_entries "$release_workflow" "$job" "target os")" \
+			"$matrix_fix"
+	done
+	if [ -f "$pr_lane" ]; then
+		hold_to_platforms "$pr_lane's package matrix" \
+			"$(declared_platforms --pull-request 1 2)" \
+			"$(matrix_entries "$pr_lane" package "target os")" \
+			"build exactly the platforms $platforms marks pull_request = true there, each on its own runner"
+	else
+		fail "$pr_lane is missing, so the platforms $platforms marks pull_request = true are built on no pull request; restore that workflow"
+	fi
+	hold_to_platforms "scripts/npm-build.mjs's TARGETS" \
+		"$(declared_platforms 1 4)" \
+		"$(sed -n 's/^  "\([^"]*\)": { *platform: "\([^"]*\)", *arch: "\([^"]*\)".*$/\1 \2-\3/p' scripts/npm-build.mjs)" \
+		"give each target there the platform and arch its npm name in $platforms spells"
+	hold_to_platforms "$npm_launcher's PACKAGES" \
+		"$(declared_platforms 4 | sed 's|.*|& @oneharness/cli-&|')" \
+		"$(tr -d '\r' <"$npm_launcher" | awk '/^const PACKAGES = \{$/ { inside = 1; next } inside && /^\};$/ { exit } inside' | sed -n 's/^  "\([^"]*\)": "\([^"]*\)",$/\1 \2/p')" \
+		"map each npm platform there to @oneharness/cli-<that platform>"
+	hold_to_platforms "$npm_launcher_manifest's optionalDependencies" \
+		"$(declared_platforms 4 | sed 's|^|@oneharness/cli-|')" \
+		"$(json_optional_dependencies "$npm_launcher_manifest" | sed -n 's/^ *"\(@oneharness\/cli-[^"]*\)": .*$/\1/p')" \
+		"pin each @oneharness/cli-<npm platform> there at the managed placeholder version"
+	hold_to_platforms "$declarations's npm:oneharness-cli covers" \
+		"$(declared_platforms 4 | sed 's|^|npm:@oneharness/cli-|')" \
+		"$(printf '%s' "$covered_ids" | grep '^npm:@oneharness/cli-' || true)" \
+		"cover each npm:@oneharness/cli-<npm platform> there, and never rename an entry: those names are a cross-repository contract"
+	hold_to_platforms "$sdk_package_e2e's host map" \
+		"$(declared_platforms 1 4)" \
+		"$(tr -d '\r' <"$sdk_package_e2e" | awk '/^const target = \{$/ { inside = 1; next } inside && /^\}/ { exit } inside' | sed -n 's/^[[:space:]]*"\([^"]*\)": "\([^"]*\)",$/\2 \1/p')" \
+		"map each npm platform there to its target, so the packed-package e2e runs on every host a release serves"
+	hold_to_platforms "$npm_e2e's detect_target" \
+		"$(declared_platforms 1 4)" \
+		"$(tr -d '\r' <"$npm_e2e" | sed -n 's/^ *\([a-z0-9]*-[a-z0-9]*\)) TARGET="\([^"]*\)" ;;$/\2 \1/p')" \
+		"map each npm platform there to its target, so the launcher e2e stages the package a host's node resolves"
+	# README.md keeps no copy of the set: it points at the declaration, and every
+	# target triple or platform package it does name must be one declared.
+	grep -q 'release-platforms\.toml' "$readme" ||
+		fail "$readme no longer points readers at $platforms for the release platform set; say there that every channel covers what $platforms declares, rather than listing the platforms"
+	while read -r entry; do
+		[ -n "$entry" ] || continue
+		fail "$readme names '$entry', which $platforms does not declare; name only declared platforms there, or point at $platforms instead"
+	done < <(comm -13 \
+		<({ declared_platforms 1; declared_platforms 4 | sed 's|^|@oneharness/cli-|'; } | sort -u) \
+		<(tr -d '\r' <"$readme" | grep -oE '\b[a-z0-9_]+-(unknown|apple|pc)-[a-z0-9_]+(-[a-z0-9_]+)?\b|@oneharness/cli-[a-z0-9]+-[a-z0-9]+' | sort -u))
+fi
+
 if [ "$fails" -ne 0 ]; then
 	printf 'check-release-targets: %d drift(s) between %s and what this repository publishes\n' "$fails" "$declarations" >&2
 	exit 1
 fi
-echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares"
+echo "check-release-targets: every published artifact is declared or covered, in the shape the canonical schema declares, and every platform list matches $platforms"

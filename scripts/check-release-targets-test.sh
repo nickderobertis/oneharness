@@ -59,7 +59,13 @@ staged=(
   pyproject.toml
   python/oneharness-sdk/pyproject.toml
   npm/oneharness/package.json
+  npm/oneharness/bin/oneharness.js
   npm/oneharness-sdk/package.json
+  npm/oneharness-sdk/test/package-e2e.mjs
+  scripts/npm-e2e.sh
+  release-platforms.toml
+  .github/workflows/package-pr.yml
+  README.md
 )
 
 # $1 = fixture name. Leaves a fresh staged checkout at $work/$1 and prints it.
@@ -624,11 +630,189 @@ root="$(stage uncovered)"
 rewrite "$root" scripts/npm-build.mjs '
   { print }
   /^  "x86_64-pc-windows-msvc":/ {
-    print "  \"aarch64-pc-windows-msvc\": { platform: \"win32\", arch: \"arm64\", exe: true },"
+    print "  \"riscv64gc-unknown-linux-gnu\": { platform: \"linux\", arch: \"riscv64\", exe: false },"
   }
 '
 assert_red uncovered "a per-platform package no launcher pins" \
-  "publishes '@oneharness/cli-win32-arm64' and no declared npm target's optionalDependencies pins it"
+  "publishes '@oneharness/cli-linux-riscv64' and no declared npm target's optionalDependencies pins it"
+
+# The platform set: release-platforms.toml states it once, and every list that
+# restates a share of it is held to it in both directions. Each case drops or
+# alters Windows ARM64 — the platform that went missing from all of them at once
+# (#1413) — in one list only.
+
+# $1 = fixture root, $2 = workflow, $3 = job. Drops that job's
+# aarch64-pc-windows-msvc matrix entry: its `- target:` line and the keys under it.
+drop_matrix_entry() {
+  rewrite "$1" "$2" "
+    \$0 == \"  $3:\" { inside = 1 }
+    inside && /^  [^ #]/ && \$0 != \"  $3:\" { inside = 0 }
+    inside && /^ +- target: aarch64-pc-windows-msvc\$/ { dropping = 1; next }
+    dropping && /^ +- / { dropping = 0 }
+    dropping && /^            [a-z-]+: / { next }
+    { dropping = 0; print }
+  "
+}
+
+for job in upload build-wheels build-npm; do
+  root="$(stage "matrix-missing-$job")"
+  drop_matrix_entry "$root" .github/workflows/release.yml "$job"
+  assert_red "matrix-missing-$job" "a release $job matrix missing aarch64-pc-windows-msvc" \
+    "release.yml's $job matrix lacks 'aarch64-pc-windows-msvc windows-11-arm"
+done
+
+root="$(stage matrix-wrong-archive)"
+rewrite "$root" .github/workflows/release.yml '
+  /^ +- target: aarch64-pc-windows-msvc$/ { seen = 1 }
+  seen && !done && /^            ext: zip$/ { sub(/zip/, "tar.gz"); done = 1 }
+  { print }
+'
+assert_red matrix-wrong-archive "an upload entry whose archive departs from the declared one" \
+  "upload matrix has 'aarch64-pc-windows-msvc windows-11-arm tar.gz', which release-platforms.toml does not declare"
+
+root="$(stage matrix-wrong-runner)"
+rewrite "$root" .github/workflows/release.yml '
+  /^ +- target: aarch64-pc-windows-msvc$/ { seen++ }
+  seen == 2 && !done && /^            os: windows-11-arm$/ { sub(/windows-11-arm/, "windows-latest"); done = 1 }
+  { print }
+'
+assert_red matrix-wrong-runner "a build-wheels entry on a runner the declaration does not name" \
+  "build-wheels matrix has 'aarch64-pc-windows-msvc windows-latest'"
+
+root="$(stage pr-lane-departs)"
+drop_matrix_entry "$root" .github/workflows/package-pr.yml package
+assert_red pr-lane-departs "a pull-request lane that stopped building a pull_request platform" \
+  "package-pr.yml's package matrix lacks 'aarch64-pc-windows-msvc windows-11-arm'"
+
+root="$(stage pr-lane-extra)"
+rewrite "$root" release-platforms.toml '!/^pull_request = true$/ { print }'
+assert_red pr-lane-extra "a pull-request lane building a platform not marked pull_request" \
+  "package-pr.yml's package matrix has 'aarch64-pc-windows-msvc windows-11-arm', which release-platforms.toml does not declare"
+
+root="$(stage npm-targets-depart)"
+rewrite "$root" scripts/npm-build.mjs '{ sub(/platform: "win32", arch: "arm64"/, "platform: \"win32\", arch: \"aarch64\""); print }'
+assert_red npm-targets-depart "an npm-side TARGETS entry whose platform departs from the set" \
+  "scripts/npm-build.mjs's TARGETS lacks 'aarch64-pc-windows-msvc win32-arm64'"
+
+root="$(stage launcher-map-missing)"
+rewrite "$root" npm/oneharness/bin/oneharness.js '!/^  "win32-arm64": / { print }'
+assert_red launcher-map-missing "a launcher platform map missing a declared platform" \
+  "npm/oneharness/bin/oneharness.js's PACKAGES lacks 'win32-arm64 @oneharness/cli-win32-arm64'"
+
+root="$(stage optional-dependency-missing)"
+rewrite "$root" npm/oneharness/package.json '
+  /^    "@oneharness\/cli-win32-arm64": / { next }
+  /^    "@oneharness\/cli-win32-x64": / { sub(/,$/, "") }
+  { print }
+'
+assert_red optional-dependency-missing "a launcher manifest missing a declared platform's pin" \
+  "npm/oneharness/package.json's optionalDependencies lacks '@oneharness/cli-win32-arm64'"
+
+root="$(stage covers-missing-platform)"
+rewrite "$root" release-targets.toml '!/^  "npm:@oneharness\/cli-win32-arm64",$/ { print }'
+assert_red covers-missing-platform "a covers list missing a declared platform's package" \
+  "release-targets.toml's npm:oneharness-cli covers lacks 'npm:@oneharness/cli-win32-arm64'"
+
+root="$(stage sdk-e2e-map-missing)"
+rewrite "$root" npm/oneharness-sdk/test/package-e2e.mjs '!/^\t"win32-arm64": / { print }'
+assert_red sdk-e2e-map-missing "an SDK package e2e host map missing a declared platform" \
+  "package-e2e.mjs's host map lacks 'aarch64-pc-windows-msvc win32-arm64'"
+
+root="$(stage npm-e2e-map-missing)"
+rewrite "$root" scripts/npm-e2e.sh '!/^ +win32-arm64\) TARGET=/ { print }'
+assert_red npm-e2e-map-missing "a launcher e2e host map missing a declared platform" \
+  "scripts/npm-e2e.sh's detect_target lacks 'aarch64-pc-windows-msvc win32-arm64'"
+
+# And the other direction: a platform declared and built nowhere.
+root="$(stage platform-built-nowhere)"
+cat >>"$root/release-platforms.toml" <<'PLATFORM'
+
+[[platform]]
+target = "riscv64gc-unknown-linux-gnu"
+runner = "ubuntu-latest"
+archive = "tar.gz"
+npm = "linux-riscv64"
+PLATFORM
+assert_red platform-built-nowhere "a declared platform no release matrix builds" \
+  "release.yml's upload matrix lacks 'riscv64gc-unknown-linux-gnu ubuntu-latest tar.gz'"
+
+# A misspelled or missing key read as an absent one would build a platform
+# nowhere without a word, so the declaration must refuse each.
+root="$(stage platform-unknown-key)"
+rewrite "$root" release-platforms.toml '{ sub(/^runner = "windows-11-arm"$/, "runnr = \"windows-11-arm\""); print }'
+assert_red platform-unknown-key "a platform key the declaration does not define" \
+  'names "runnr" in [[platform]] 6, which is not one of'
+
+root="$(stage platform-missing-key)"
+rewrite "$root" release-platforms.toml '!/^archive = "zip"$/ { print }'
+assert_red platform-missing-key "a platform missing a required key" \
+  "[[platform]] 5 declares no archive"
+
+root="$(stage platform-twice)"
+cat >>"$root/release-platforms.toml" <<'PLATFORM'
+
+[[platform]]
+target = "aarch64-pc-windows-msvc"
+runner = "windows-11-arm"
+archive = "zip"
+npm = "win32-arm64"
+PLATFORM
+assert_red platform-twice "one target declared twice" \
+  "declares target aarch64-pc-windows-msvc more than once"
+
+root="$(stage platform-key-before-first)"
+rewrite "$root" release-platforms.toml '!seen && /^\[\[platform\]\]$/ { print "runner = \"ubuntu-latest\""; seen = 1 } { print }'
+assert_red platform-key-before-first "a key outside any platform" \
+  'has "runner = "ubuntu-latest"" before its first [[platform]]'
+
+root="$(stage platform-key-repeated)"
+rewrite "$root" release-platforms.toml '{ print } /^runner = "windows-11-arm"$/ { print "runner = \"windows-latest\"" }'
+assert_red platform-key-repeated "one key written twice in a platform" \
+  "names runner twice in [[platform]] 6"
+
+root="$(stage platform-pull-request-string)"
+rewrite "$root" release-platforms.toml '{ sub(/^pull_request = true$/, "pull_request = \"true\""); print }'
+assert_red platform-pull-request-string "pull_request written as a string" \
+  "writes pull_request in [[platform]] 6 as a string"
+
+root="$(stage platform-empty-value)"
+rewrite "$root" release-platforms.toml '{ sub(/^npm = "win32-arm64"$/, "npm = \"\""); print }'
+assert_red platform-empty-value "a required key left empty" \
+  "leaves npm empty in [[platform]] 6"
+
+root="$(stage platform-malformed-line)"
+rewrite "$root" release-platforms.toml '{ sub(/^archive = "zip"$/, "archive = zip"); print }'
+assert_red platform-malformed-line "a platform line that is not key = \"value\"" \
+  "has a line in [[platform]] 5 that is not key = \"value\" (or pull_request = true): archive = zip"
+
+root="$(stage platforms-none-declared)"
+rewrite "$root" release-platforms.toml '/^#/ || /^$/ { print }'
+assert_red platforms-none-declared "a declaration that states no platform" \
+  "release-platforms.toml declares no [[platform]]"
+
+root="$(stage platforms-missing)"
+rm "$root/release-platforms.toml"
+assert_red platforms-missing "a missing platform declaration" \
+  "release-platforms.toml is missing"
+
+root="$(stage pr-lane-missing)"
+rm "$root/.github/workflows/package-pr.yml"
+assert_red pr-lane-missing "a missing pull-request lane" \
+  "package-pr.yml is missing, so the platforms release-platforms.toml marks pull_request = true are built on no pull request"
+
+# README.md keeps no copy of the platform set: it points at the declaration,
+# and a platform it names must be a declared one.
+root="$(stage readme-unpointed)"
+rewrite "$root" README.md '{ gsub(/release-platforms\.toml/, "the release matrix"); print }'
+assert_red readme-unpointed "a README that stopped pointing at the platform declaration" \
+  "README.md no longer points readers at release-platforms.toml"
+
+root="$(stage readme-undeclared-platform)"
+printf '\nAlso shipped: riscv64gc-unknown-linux-gnu, as @oneharness/cli-linux-riscv64.\n' >>"$root/README.md"
+assert_red readme-undeclared-platform "a README naming a platform the declaration does not" \
+  "README.md names '@oneharness/cli-linux-riscv64', which release-platforms.toml does not declare"
+grep -Fq "README.md names 'riscv64gc-unknown-linux-gnu'" "$work/out" ||
+  fail_showing "a README naming an undeclared target triple failed the gate without naming it; restore the triple half of the README check in scripts/check-release-targets.sh"
 
 # The probe owns which registries are answerable; this gate mirrors that list,
 # and a registry dropped from one side must not sit stale on the other.

@@ -1,0 +1,63 @@
+# The platforms every release builds the prebuilt `oneharness` binary for — the
+# one statement of that set.
+#
+# Each release ships the same binary several ways: the GitHub Release archives
+# (release.yml's `upload` matrix), the PyPI wheels (`build-wheels`) and the npm
+# per-platform packages (`build-npm`, named by scripts/npm-build.mjs and resolved
+# by the npm/oneharness launcher). A platform missing from one of those lists is
+# an install that fails on that host for one channel only, which is how Windows
+# ARM64 went unpublished on every channel at once. scripts/check-release-targets.sh
+# holds every one of those lists to this file, in both directions.
+#
+# Not part of release-targets.toml: that document is written against the
+# canonical release-target schema nickderobertis/onevcs defines, which declares
+# no platform key.
+#
+# Keys, all required except `pull_request`:
+#   target       — the Rust target triple the build compiles for.
+#   runner       — the GitHub-hosted runner that builds it natively.
+#   archive      — the release archive's extension (`upload`'s `ext`).
+#   npm          — the `<process.platform>-<process.arch>` the npm launcher maps
+#                  to `@oneharness/cli-<npm>`. Published names are a
+#                  cross-repository contract: never rename an existing one.
+#   pull_request — `true` when .github/workflows/package-pr.yml also builds and
+#                  installs this platform's artifacts on a pull request.
+
+[[platform]]
+target = "x86_64-unknown-linux-gnu"
+runner = "ubuntu-latest"
+archive = "tar.gz"
+npm = "linux-x64"
+
+[[platform]]
+target = "aarch64-unknown-linux-gnu"
+runner = "ubuntu-24.04-arm"
+archive = "tar.gz"
+npm = "linux-arm64"
+
+[[platform]]
+target = "x86_64-apple-darwin"
+runner = "macos-latest"
+archive = "tar.gz"
+npm = "darwin-x64"
+
+[[platform]]
+target = "aarch64-apple-darwin"
+runner = "macos-latest"
+archive = "tar.gz"
+npm = "darwin-arm64"
+
+[[platform]]
+target = "x86_64-pc-windows-msvc"
+runner = "windows-latest"
+archive = "zip"
+npm = "win32-x64"
+
+# Built natively on the hosted Windows 11 ARM64 runner. Also built on pull
+# requests, because it is the one platform whose runner no other job uses.
+[[platform]]
+target = "aarch64-pc-windows-msvc"
+runner = "windows-11-arm"
+archive = "zip"
+npm = "win32-arm64"
+pull_request = true

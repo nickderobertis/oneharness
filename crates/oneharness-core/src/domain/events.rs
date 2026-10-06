@@ -396,14 +396,14 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
 /// `pending`/`running` is open; any other state (or none) finishes it. A `text`
 /// part is a `message` event and a `reasoning` part a `reasoning` event,
 /// carrying the part's text and keyed by the part id so a part sent again is
-/// delivered once; one with a `time` but no `time.end` is unfinished, and one
-/// with blank text is no event. `None` for any other part (`step-start`, …).
+/// delivered once; one whose `time` carries no numeric `end` is unfinished, and
+/// one with blank text is no event. `None` for any other part (`step-start`, …).
 fn opencode_part_event(value: &Value) -> Option<PartialEvent> {
     let part = value.get("part").and_then(Value::as_object)?;
     match part.get("type").and_then(Value::as_str) {
         Some("tool") => {}
-        Some("text") => return opencode_prose(part, "message"),
-        Some("reasoning") => return opencode_prose(part, "reasoning"),
+        Some("text") => return opencode_prose(part, OpenCodeProse::Text),
+        Some("reasoning") => return opencode_prose(part, OpenCodeProse::Reasoning),
         _ => return None,
     }
     let state = part.get("state").and_then(Value::as_object);
@@ -430,15 +430,31 @@ fn opencode_part_event(value: &Value) -> Option<PartialEvent> {
     })
 }
 
-/// A finished OpenCode `text` / `reasoning` part as a `kind` event keyed by
-/// its part id; `None` while its `time` has no `end`, or for blank text.
+/// The two OpenCode prose part types, each with the event kind it becomes.
+#[derive(Clone, Copy)]
+enum OpenCodeProse {
+    Text,
+    Reasoning,
+}
+
+impl OpenCodeProse {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Text => "message",
+            Self::Reasoning => "reasoning",
+        }
+    }
+}
+
+/// A finished OpenCode `text` / `reasoning` part as its event, keyed by its
+/// part id; `None` while its `time` carries no numeric `end`, or for blank text.
 fn opencode_prose(
     part: &serde_json::Map<String, Value>,
-    kind: &'static str,
+    prose: OpenCodeProse,
 ) -> Option<PartialEvent> {
     if part
         .get("time")
-        .is_some_and(|time| time.get("end").is_none())
+        .is_some_and(|time| !time.get("end").is_some_and(Value::is_number))
     {
         return None;
     }
@@ -448,7 +464,7 @@ fn opencode_prose(
         .filter(|text| !text.trim().is_empty())?;
     Some(PartialEvent {
         item_id: part.get("id").and_then(Value::as_str).map(str::to_string),
-        ..PartialEvent::text(kind, text.to_string())
+        ..PartialEvent::text(prose.kind(), text.to_string())
     })
 }
 
@@ -1411,6 +1427,9 @@ mod tests {
             // The same part sent again: still one event.
             r#"{"type":"text","part":{"id":"p2","messageID":"m","type":"text","text":"PING-123","time":{"start":3,"end":4}}}"#,
             "\n",
+            // A `time.end` that is no timestamp is not a finish: no event.
+            r#"{"type":"text","part":{"id":"p4","messageID":"m","type":"text","text":"NULL-END","time":{"start":5,"end":null}}}"#,
+            "\n",
             // Whitespace-only text: no event.
             r#"{"type":"text","part":{"id":"p3","messageID":"m","type":"text","text":"  \n","time":{"start":5,"end":6}}}"#,
             "\n",
@@ -1440,7 +1459,7 @@ mod tests {
         // Streamed line by line, each part is delivered once, as it finishes.
         let (per_line, _) = stream_lines(raw);
         let counts: Vec<usize> = per_line.iter().map(Vec::len).collect();
-        assert_eq!(counts, vec![0, 1, 0, 1, 0, 0]);
+        assert_eq!(counts, vec![0, 1, 0, 1, 0, 0, 0]);
         // A single finished line read on its own is its event too.
         let line: Value = serde_json::from_str(
             r#"{"part":{"id":"p9","type":"reasoning","text":"hm","time":{"start":1,"end":2}}}"#,

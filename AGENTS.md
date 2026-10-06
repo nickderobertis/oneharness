@@ -652,12 +652,8 @@ aren't re-litigated each session:
   replaced at publish). The platform set is declared ONCE, in
   `release-platforms.toml` (Windows ARM64 ships as the `aarch64-pc-windows-msvc`
   release binary, the `win_arm64` wheel and `@oneharness/cli-win32-arm64`).
-  `scripts/check-release-targets.sh` (in `lint-workflows`) holds every
-  restatement to it in both directions — the `upload`/`build-wheels`/`build-npm`
-  matrices, `package-pr.yml`'s lane, `TARGETS` in `npm-build.mjs`, `PACKAGES` in
-  `bin/oneharness.js`, the launcher's `optionalDependencies`, the
-  `npm:oneharness-cli` `covers`, and the SDK package and launcher e2e host maps
-  — so adding a platform starts in that file and the gate names every list
+  Adding a platform starts in that file; `scripts/check-release-targets.sh` (in
+  `lint-workflows`) holds every matrix and npm list to it and names each one
   still missing it.
   `release.yml`'s `build-npm` job runs on every release (packaging-break alarm,
   like `build-wheels`); `publish-npm` publishes the platform packages first then

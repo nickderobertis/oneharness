@@ -215,9 +215,10 @@ build:
 build-mock-harness:
     @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
 
-# Optimized release build (the distributed artifact).
-build-release:
-    cargo build --release --locked
+# Optimized release build (the distributed artifact). Extra args reach cargo,
+# e.g. `just build-release --target aarch64-pc-windows-msvc`.
+build-release *args:
+    cargo build --release --locked {{ args }}
 
 # Hermetic npm-packaging e2e: assemble the host's per-platform npm package from a
 # just-built binary, stage it under the `oneharness-cli` launcher, and prove the

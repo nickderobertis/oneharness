@@ -260,7 +260,7 @@ verify_platform_selection() {
         /^archive = "/ { a = $3; gsub(/"/, "", a) }
         END { if (t != "") print t, a }
     ' "$repo_root/release-platforms.toml")"
-    [ -n "$declared" ] || fail "release-platforms.toml declares no platform to stage"
+    [ -n "$declared" ] || fail "release-platforms.toml declares no platform to stage; restore its [[platform]] entries (bash scripts/check-release-targets.sh names what is wrong with it)"
 
     while read -r target ext; do
         case "$target" in

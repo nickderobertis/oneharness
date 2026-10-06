@@ -21,6 +21,8 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - .cargo/**
+      - justfile
+      - .github/actions/setup-just/**
       - pyproject.toml
       - npm/oneharness/**
       - scripts/npm-build.mjs
@@ -60,11 +62,12 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           target: ${{ matrix.target }}
+      - uses: ./.github/actions/setup-just
       - name: Build the release binary
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          cargo build --release --locked --target "$TARGET"
+          just build-release --target "$TARGET"
           "target/$TARGET/release/oneharness.exe" --version
       - name: Build the oneharness-cli wheel
         uses: PyO3/maturin-action@v1

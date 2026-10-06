@@ -46,7 +46,13 @@ fn a_library_caller_gets_the_report_back_without_the_engine_printing_it() {
     let result = &outcome.report.results[0];
     assert_eq!(result.status, Status::Ok);
     assert_eq!(result.text.as_deref(), Some("working"));
-    assert_eq!(result.events.as_ref().map(Vec::len), Some(1));
+    let kinds: Vec<&str> = result
+        .events
+        .iter()
+        .flatten()
+        .map(|event| event.kind.as_str())
+        .collect();
+    assert_eq!(kinds, ["message", "tool_call"]);
     // The report names the engine's own version when the caller supplies none.
     assert!(!outcome.report.oneharness_version.is_empty());
 

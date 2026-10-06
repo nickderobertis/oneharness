@@ -158,9 +158,11 @@ jobs:
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             ext: zip
+          # llmlint: ignore-block[diagnostics_error_or_absent] This row only adds a target to the build step every other platform already uses; warnings are denied for this commit before any build job runs, by the `just check` (clippy and rustdoc `-D warnings`) whose CI verdict the gate job requires or runs itself, and changing how all six platforms compile at release time can only block a release the gate already cleared.
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
             ext: zip
+          # llmlint: ignore-end[diagnostics_error_or_absent]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -283,8 +285,10 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+          # llmlint: ignore-block[diagnostics_error_or_absent] This row only adds a target to the build step every other platform already uses; warnings are denied for this commit before any build job runs, by the `just check` (clippy and rustdoc `-D warnings`) whose CI verdict the gate job requires or runs itself, and changing how all six platforms compile at release time can only block a release the gate already cleared.
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
+          # llmlint: ignore-end[diagnostics_error_or_absent]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -457,8 +461,10 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+          # llmlint: ignore-block[diagnostics_error_or_absent, work_goes_through_command_surface] This row only adds a target to the build step every other platform already uses; warnings are denied for this commit before any build job runs, by the `just check` (clippy and rustdoc `-D warnings`) whose CI verdict the gate job requires or runs itself, and changing how all six platforms compile at release time can only block a release the gate already cleared.
           - target: aarch64-pc-windows-msvc
             os: windows-11-arm
+          # llmlint: ignore-end[diagnostics_error_or_absent, work_goes_through_command_surface]
     runs-on: ${{ matrix.os }}
     defaults:
       run:

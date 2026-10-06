@@ -607,9 +607,10 @@ aren't re-litigated each session:
   unavailable); the console command it installs is still `oneharness`. The wheel
   version is `dynamic` — maturin reads it from `Cargo.toml`, so release-plz stays
   the single version driver (never hand-set a version in `pyproject.toml`).
-  Wheels ship for every platform in `release-platforms.toml`, Windows ARM64
-  (`win_arm64`) included: a host with no wheel of its own makes `uv sync` of
-  anything depending on `oneharness-cli` refuse outright (#1413).
+  Every channel ships every platform in `release-platforms.toml`, Windows ARM64
+  included (the `aarch64-pc-windows-msvc` binary, the `win_arm64` wheel,
+  `@oneharness/cli-win32-arm64`): a host with no wheel of its own makes `uv
+  sync` of anything depending on `oneharness-cli` refuse outright (#1413).
   `release.yml`'s `build-wheels` job runs on every release (so a packaging break
   surfaces even while publishing is off); `publish-pypi` uses keyless **Trusted
   Publishing** (OIDC, no token secret and **no GitHub Actions environment** — the
@@ -617,12 +618,9 @@ aren't re-litigated each session:
   `environment:` or the OIDC claim won't match) and stays dormant until the
   `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
   repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
-  published version is `pip install`-able (and `verify-pypi-windows-arm64` the
-  same on that host). `package-pr.yml` builds the platforms
-  `release-platforms.toml` marks `pull_request = true` (today Windows ARM64,
-  whose runner nothing else uses) on pull requests touching the build's inputs —
-  advisory, never a required check, since an ARM runner queue must not extend
-  time to merge.
+  published version is `pip install`-able. The pull-request packaging lane
+  (`package-pr.yml`) is advisory, never a required check: an ARM runner queue
+  must not extend time to merge.
   The typed Python client is a separate pure-Python **`oneharness-sdk`**
   distribution (imported as `oneharness_sdk`, Python 3.9+). Its checked-in
   schemas and types are generated from `sdk_schema::bundle`; runtime inputs are
@@ -650,11 +648,9 @@ aren't re-litigated each session:
   like the wheels' `dynamic` version) — never hand-set it in a committed
   `package.json` (the committed versions are the `0.0.0-managed` placeholder,
   replaced at publish). The platform set is declared ONCE, in
-  `release-platforms.toml` (Windows ARM64 ships as the `aarch64-pc-windows-msvc`
-  release binary, the `win_arm64` wheel and `@oneharness/cli-win32-arm64`).
-  Adding a platform starts in that file; `scripts/check-release-targets.sh` (in
-  `lint-workflows`) holds every matrix and npm list to it and names each one
-  still missing it.
+  `release-platforms.toml`; adding a platform starts there, and
+  `scripts/check-release-targets.sh` (in `lint-workflows`) holds every matrix
+  and npm list to it and names each one still missing it.
   `release.yml`'s `build-npm` job runs on every release (packaging-break alarm,
   like `build-wheels`); `publish-npm` publishes the platform packages first then
   the launcher, authenticating with an **npm token** (the `NPM_TOKEN` secret — an

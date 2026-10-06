@@ -430,7 +430,6 @@ fn opencode_part_event(value: &Value) -> Option<PartialEvent> {
     })
 }
 
-/// The two OpenCode prose part types, each with the event kind it becomes.
 #[derive(Clone, Copy)]
 enum OpenCodeProse {
     Text,

@@ -5114,8 +5114,9 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
     // completed `text` part. No real reasoning capture exists, so a `reasoning`
     // part is spliced in written in that text part's recorded shape, with a
     // tool part after it and the text part sent again under its own id. A text
-    // part the turn ends before finishing (a `time` with no `end`) and a
-    // whitespace-only one are spliced in too: neither is an event.
+    // part the turn ends before finishing (a `time` with no `end`), one whose
+    // `end` is no timestamp, and a whitespace-only one are spliced in too: none
+    // is an event.
     let capture = include_str!("support/opencode_run.jsonl");
     let lines: Vec<&str> = capture.lines().collect();
     let (step_start, text_part, step_finish) = (lines[0], lines[1], lines[2]);
@@ -5139,6 +5140,11 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
         r#""id":"prt_eb6928c8a001unfinishedPart1","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","#,
         r#""type":"text","text":"STILL-WRITING","time":{"start":1781179518165}}}"#,
     );
+    let null_end_part = concat!(
+        r#"{"type":"text","timestamp":1781179518180,"sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","part":{"#,
+        r#""id":"prt_eb6928c8b001nullEndPart001","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","#,
+        r#""type":"text","text":"NULL-END","time":{"start":1781179518175,"end":null}}}"#,
+    );
     let stdout = [
         step_start,
         reasoning_part,
@@ -5147,6 +5153,7 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
         text_part,
         blank_part,
         unfinished_part,
+        null_end_part,
         step_finish,
         "",
     ]

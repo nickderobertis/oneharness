@@ -759,10 +759,45 @@ PLATFORM
 assert_red platform-twice "one target declared twice" \
   "declares target aarch64-pc-windows-msvc more than once"
 
+root="$(stage platform-key-before-first)"
+rewrite "$root" release-platforms.toml '!seen && /^\[\[platform\]\]$/ { print "runner = \"ubuntu-latest\""; seen = 1 } { print }'
+assert_red platform-key-before-first "a key outside any platform" \
+  'has "runner = "ubuntu-latest"" before its first [[platform]]'
+
+root="$(stage platform-key-repeated)"
+rewrite "$root" release-platforms.toml '{ print } /^runner = "windows-11-arm"$/ { print "runner = \"windows-latest\"" }'
+assert_red platform-key-repeated "one key written twice in a platform" \
+  "names runner twice in [[platform]] 6"
+
+root="$(stage platform-pull-request-string)"
+rewrite "$root" release-platforms.toml '{ sub(/^pull_request = true$/, "pull_request = \"true\""); print }'
+assert_red platform-pull-request-string "pull_request written as a string" \
+  "writes pull_request in [[platform]] 6 as a string"
+
+root="$(stage platform-empty-value)"
+rewrite "$root" release-platforms.toml '{ sub(/^npm = "win32-arm64"$/, "npm = \"\""); print }'
+assert_red platform-empty-value "a required key left empty" \
+  "leaves npm empty in [[platform]] 6"
+
+root="$(stage platform-malformed-line)"
+rewrite "$root" release-platforms.toml '{ sub(/^archive = "zip"$/, "archive = zip"); print }'
+assert_red platform-malformed-line "a platform line that is not key = \"value\"" \
+  "has a line in [[platform]] 5 that is not key = \"value\" (or pull_request = true): archive = zip"
+
+root="$(stage platforms-none-declared)"
+rewrite "$root" release-platforms.toml '/^#/ || /^$/ { print }'
+assert_red platforms-none-declared "a declaration that states no platform" \
+  "release-platforms.toml declares no [[platform]]"
+
 root="$(stage platforms-missing)"
 rm "$root/release-platforms.toml"
 assert_red platforms-missing "a missing platform declaration" \
   "release-platforms.toml is missing"
+
+root="$(stage pr-lane-missing)"
+rm "$root/.github/workflows/package-pr.yml"
+assert_red pr-lane-missing "a missing pull-request lane" \
+  "package-pr.yml is missing, so the platforms release-platforms.toml marks pull_request = true are built on no pull request"
 
 # The probe owns which registries are answerable; this gate mirrors that list,
 # and a registry dropped from one side must not sit stale on the other.

@@ -332,7 +332,6 @@ MINGW64_NT-10.0-26100|x86_64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201,
 MSYS_NT-10.0-26100|x86_64|AMD64|ARM64 Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 host||||$TARGET
 CASES
-    say "install-e2e: platform selection verified (every declared platform, and this runner's own)"
 }
 
 verify_trust_root_independence

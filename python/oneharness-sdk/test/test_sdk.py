@@ -347,9 +347,11 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             }
         ):
             envelopes.append(envelope)
-        self.assertEqual([item["type"] for item in envelopes], ["event", "result"])
+        self.assertEqual([item["type"] for item in envelopes], ["event", "event", "result"])
         self.assertEqual(envelopes[0]["event"]["name"], "bash")
-        self.assertEqual(envelopes[1]["report"]["results"][0]["text"], "stream done")
+        self.assertEqual(envelopes[1]["event"]["kind"], "message")
+        self.assertEqual(envelopes[1]["event"]["output"], "stream done")
+        self.assertEqual(envelopes[2]["report"]["results"][0]["text"], "stream done")
 
     async def test_run_stream_cancellation_terminates_the_subprocess(self) -> None:
         """Closing early prevents the provider fixture from completing its stream."""

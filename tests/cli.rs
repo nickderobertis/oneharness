@@ -5061,8 +5061,9 @@ fn extracts_opencode_text_from_real_jsonl_transcript() {
 #[test]
 fn normalizes_tool_events_from_opencode_jsonl() {
     // Behavioral trace (issue #1096): OpenCode's `tool` parts become normalized
-    // `tool_call` events carrying name/input/output, in order — so a consumer can
-    // assert on what the harness *did*, not just its final text.
+    // `tool_call` events carrying name/input/output, in order beside the
+    // `message` its text part becomes — so a consumer can assert on what the
+    // harness *did*, not just its final text.
     let stdout = concat!(
         r#"{"type":"text","part":{"type":"text","text":"running it"}}"#,
         "\n",
@@ -5091,16 +5092,120 @@ fn normalizes_tool_events_from_opencode_jsonl() {
     let result = &value["results"][0];
     assert_eq!(result["events_source"], "json:opencode-parts");
     let events = result["events"].as_array().unwrap();
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0]["kind"], "tool_call");
-    assert_eq!(events[0]["name"], "bash");
-    assert_eq!(events[0]["input"]["command"], "git commit -m x");
-    assert_eq!(events[0]["output"], "OK");
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0]["kind"], "message");
+    assert_eq!(events[0]["output"], "running it");
+    assert!(events[0]["tool_call_id"].is_null());
     assert_eq!(events[0]["index"], 0);
-    assert_eq!(events[1]["name"], "edit");
-    assert_eq!(events[1]["input"]["filePath"], "config.yaml");
-    assert!(events[1]["output"].is_null());
+    assert_eq!(events[1]["kind"], "tool_call");
+    assert_eq!(events[1]["name"], "bash");
+    assert_eq!(events[1]["input"]["command"], "git commit -m x");
+    assert_eq!(events[1]["output"], "OK");
     assert_eq!(events[1]["index"], 1);
+    assert_eq!(events[2]["name"], "edit");
+    assert_eq!(events[2]["input"]["filePath"], "config.yaml");
+    assert!(events[2]["output"].is_null());
+    assert_eq!(events[2]["index"], 2);
+}
+
+#[test]
+fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream() {
+    // The recorded `opencode run --format json` turn (OpenCode 1.17.3) carries a
+    // completed `text` part. No real reasoning capture exists, so a `reasoning`
+    // part is spliced in written in that text part's recorded shape, with a
+    // tool part after it and the text part sent again under its own id.
+    let capture = include_str!("support/opencode_run.jsonl");
+    let lines: Vec<&str> = capture.lines().collect();
+    let (step_start, text_part, step_finish) = (lines[0], lines[1], lines[2]);
+    let reasoning_part = concat!(
+        r#"{"type":"reasoning","timestamp":1781179518100,"sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","part":{"#,
+        r#""id":"prt_eb6928c86001reasoningPart01","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","#,
+        r#""type":"reasoning","text":"The user wants the ping marker.","time":{"start":1781179518086,"end":1781179518087}}}"#,
+    );
+    let tool_part = concat!(
+        r#"{"type":"tool_use","timestamp":1781179518150,"sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","part":{"#,
+        r#""id":"prt_eb6928c88001toolPart000001","callID":"call_1","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","type":"tool","tool":"bash","#,
+        r#""state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n","time":{"start":1781179518140,"end":1781179518149}}}}"#,
+    );
+    let stdout = [
+        step_start,
+        reasoning_part,
+        text_part,
+        tool_part,
+        text_part,
+        step_finish,
+        "",
+    ]
+    .join("\n");
+    let args = [
+        "run",
+        "--harness",
+        "opencode",
+        "--prompt",
+        "hi",
+        "--bin",
+        &bin_override("opencode"),
+    ];
+    let envs = [("MOCK_STDOUT", stdout.as_str())];
+    let expected = [
+        ("reasoning", "The user wants the ping marker."),
+        ("message", "PING-123"),
+        ("tool_call", "hi\n"),
+    ];
+    let summary = |events: &[Value]| -> Vec<(String, String, bool)> {
+        events
+            .iter()
+            .map(|e| {
+                (
+                    e["kind"].as_str().unwrap().to_string(),
+                    e["output"].as_str().unwrap().to_string(),
+                    e["tool_call_id"].is_null(),
+                )
+            })
+            .collect()
+    };
+    let want: Vec<(String, String, bool)> = expected
+        .iter()
+        .map(|(kind, output)| (kind.to_string(), output.to_string(), *kind != "tool_call"))
+        .collect();
+
+    // The buffered report's event list.
+    let output = run(&[&args[..], &["--compact"]].concat(), &envs);
+    assert!(output.status.success(), "{output:?}");
+    let value = json_stdout(&output);
+    let result = &value["results"][0];
+    assert_eq!(result["events_source"], "json:opencode-parts");
+    let events = result["events"].as_array().unwrap();
+    assert_eq!(summary(events), want);
+    let indexes: Vec<u64> = events
+        .iter()
+        .map(|e| e["index"].as_u64().unwrap())
+        .collect();
+    assert_eq!(indexes, vec![0, 1, 2]);
+
+    // The streamed NDJSON: the same events as they happen, then the report.
+    let streamed = run(
+        &[&args[..], &["--stream", "--format", "json"]].concat(),
+        &envs,
+    );
+    assert!(streamed.status.success(), "{streamed:?}");
+    let lines: Vec<Value> = String::from_utf8_lossy(&streamed.stdout)
+        .lines()
+        .map(|l| serde_json::from_str(l).expect("each stream line is JSON"))
+        .collect();
+    assert_eq!(lines.len(), 4, "{streamed:?}");
+    let live: Vec<Value> = lines[..3].iter().map(|l| l["event"].clone()).collect();
+    assert!(lines[..3].iter().all(|l| l["type"] == "event"));
+    assert_eq!(summary(&live), want);
+    assert_eq!(lines[3]["type"], "result");
+    assert_eq!(
+        summary(
+            lines[3]["report"]["results"][0]["events"]
+                .as_array()
+                .unwrap()
+        ),
+        want
+    );
 }
 
 #[test]
@@ -5378,29 +5483,35 @@ fn stream_mode_emits_event_lines_then_a_terminal_report() {
         .filter(|l| !l.trim().is_empty())
         .map(|l| serde_json::from_str(l).expect("each stream line matches the Rust contract"))
         .collect();
-    // Two event lines, then one result line.
-    assert_eq!(lines.len(), 3, "lines: {text}");
+    // Three event lines (the text part's message, then two tool calls), then
+    // one result line.
+    assert_eq!(lines.len(), 4, "lines: {text}");
     assert_eq!(lines[0]["type"], "event");
-    assert_eq!(lines[0]["event"]["kind"], "tool_call");
-    assert_eq!(lines[0]["event"]["name"], "bash");
+    assert_eq!(lines[0]["event"]["kind"], "message");
+    assert_eq!(lines[0]["event"]["output"], "working");
     assert_eq!(lines[0]["event"]["index"], 0);
     assert_eq!(lines[1]["type"], "event");
-    assert_eq!(lines[1]["event"]["name"], "edit");
+    assert_eq!(lines[1]["event"]["kind"], "tool_call");
+    assert_eq!(lines[1]["event"]["name"], "bash");
     assert_eq!(lines[1]["event"]["index"], 1);
+    assert_eq!(lines[2]["type"], "event");
+    assert_eq!(lines[2]["event"]["name"], "edit");
+    assert_eq!(lines[2]["event"]["index"], 2);
     // The terminal line is the full report; its single result carries the same
     // events array and the extracted text.
-    assert_eq!(lines[2]["type"], "result");
-    let result = &lines[2]["report"]["results"][0];
+    assert_eq!(lines[3]["type"], "result");
+    let result = &lines[3]["report"]["results"][0];
     assert_eq!(result["events_source"], "json:opencode-parts");
-    assert_eq!(result["events"].as_array().unwrap().len(), 2);
+    assert_eq!(result["events"].as_array().unwrap().len(), 3);
     assert_eq!(result["text"], "working");
     assert!(matches!(typed[0], RunStreamEnvelope::Event { .. }));
     assert!(matches!(typed[1], RunStreamEnvelope::Event { .. }));
-    assert!(matches!(typed[2], RunStreamEnvelope::Result { .. }));
+    assert!(matches!(typed[2], RunStreamEnvelope::Event { .. }));
+    assert!(matches!(typed[3], RunStreamEnvelope::Result { .. }));
 
     // Stream envelopes are producer output: new additive fields from a newer
     // oneharness remain readable by this Rust contract.
-    let mut future = lines[2].clone();
+    let mut future = lines[3].clone();
     future["future_output_field"] = Value::Bool(true);
     assert!(serde_json::from_value::<RunStreamEnvelope>(future).is_ok());
     assert!(serde_json::from_value::<RunStreamEnvelope>(
@@ -5450,7 +5561,7 @@ fn stream_buffers_partial_provider_records_until_newline() {
         .lines()
         .map(|line| serde_json::from_str::<RunStreamEnvelope>(line).unwrap())
         .collect::<Vec<_>>();
-    assert_eq!(envelopes.len(), 2);
+    assert_eq!(envelopes.len(), 3);
     match &envelopes[0] {
         RunStreamEnvelope::Event { event } => {
             assert_eq!(event.name.as_deref(), Some("bash"));
@@ -5459,9 +5570,16 @@ fn stream_buffers_partial_provider_records_until_newline() {
         RunStreamEnvelope::Result { .. } => panic!("partial JSON emitted a result early"),
     }
     match &envelopes[1] {
+        RunStreamEnvelope::Event { event } => {
+            assert_eq!(event.kind, "message");
+            assert_eq!(event.output.as_deref(), Some("done"));
+        }
+        RunStreamEnvelope::Result { .. } => panic!("partial JSON emitted a result early"),
+    }
+    match &envelopes[2] {
         RunStreamEnvelope::Result { report } => {
             assert_eq!(report.results[0].text.as_deref(), Some("done"));
-            assert_eq!(report.results[0].events.as_ref().unwrap().len(), 1);
+            assert_eq!(report.results[0].events.as_ref().unwrap().len(), 2);
         }
         RunStreamEnvelope::Event { .. } => panic!("missing terminal report"),
     }
@@ -5507,12 +5625,16 @@ bin = "{bin}"
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
         .collect();
-    assert_eq!(envelopes.len(), 2, "lines: {text}");
+    assert_eq!(envelopes.len(), 3, "lines: {text}");
     match &envelopes[0] {
         RunStreamEnvelope::Event { event } => assert_eq!(event.name.as_deref(), Some("bash")),
         RunStreamEnvelope::Result { .. } => panic!("config `stream` did not publish events"),
     }
     match &envelopes[1] {
+        RunStreamEnvelope::Event { event } => assert_eq!(event.kind, "message"),
+        RunStreamEnvelope::Result { .. } => panic!("config `stream` did not publish events"),
+    }
+    match &envelopes[2] {
         RunStreamEnvelope::Result { report } => {
             assert_eq!(report.results[0].text.as_deref(), Some("done"));
         }
@@ -5565,7 +5687,7 @@ bin = "{bin}"
         .filter(|line| !line.trim().is_empty())
         .map(|line| serde_json::from_str(line).expect("each stream line matches the contract"))
         .collect();
-    assert_eq!(envelopes.len(), 2);
+    assert_eq!(envelopes.len(), 3);
     assert!(matches!(envelopes[0], RunStreamEnvelope::Event { .. }));
     // ...and still loses to the explicit flag.
     let env_overridden = run_with_config(
@@ -6868,7 +6990,9 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     assert_eq!(result["usage"]["cost_usd"], 0.01);
     assert_eq!(result["session_id"], "ses-timeout");
     assert_eq!(result["events_source"], "json:opencode-parts");
-    assert_eq!(result["events"][0]["name"], "bash");
+    assert_eq!(result["events"][0]["kind"], "message");
+    assert_eq!(result["events"][0]["output"], "partial answer");
+    assert_eq!(result["events"][1]["name"], "bash");
     assert!(result["stderr"]
         .as_str()
         .unwrap()
@@ -6893,7 +7017,9 @@ fn timeout_preserves_partial_telemetry_in_report_and_history() {
     assert_eq!(record["text"], "partial answer");
     assert_eq!(record["usage"]["input_tokens"], 12);
     assert_eq!(record["session_id"], "ses-timeout");
-    assert_eq!(record["events"][0]["name"], "bash");
+    assert_eq!(record["events"][0]["kind"], "message");
+    assert_eq!(record["events"][0]["output"], "partial answer");
+    assert_eq!(record["events"][1]["name"], "bash");
     assert!(record.get("stdout").is_none());
 
     // The native-like descendant is gone when oneharness returns; it cannot keep
@@ -7220,14 +7346,18 @@ fn a_cancelled_run_keeps_the_output_it_had_already_produced() {
     assert_eq!(result["usage"]["cache_read_tokens"], 9);
     assert_eq!(result["usage"]["cost_usd"], 0.01);
     assert_eq!(result["session_id"], "ses-cancel");
-    assert_eq!(result["events"][0]["name"], "bash");
+    assert_eq!(result["events"][0]["kind"], "message");
+    assert_eq!(result["events"][0]["output"], "partial answer");
+    assert_eq!(result["events"][1]["name"], "bash");
 
     // History freezes the same normalized evidence under the cancelled status.
     let record = first_history_run(Path::new(value["history_file"].as_str().unwrap()));
     assert_eq!(record["status"], "cancelled");
     assert_eq!(record["text"], "partial answer");
     assert_eq!(record["session_id"], "ses-cancel");
-    assert_eq!(record["events"][0]["name"], "bash");
+    assert_eq!(record["events"][0]["kind"], "message");
+    assert_eq!(record["events"][0]["output"], "partial answer");
+    assert_eq!(record["events"][1]["name"], "bash");
 
     assert_native_descendant_stopped(&ticks);
     let _ = std::fs::remove_file(ticks);
@@ -16145,8 +16275,11 @@ fn history_collapses_opencode_running_and_completed_call_updates() {
     assert!(output.status.success());
     let report = json_stdout(&output);
     let record = first_history_run(Path::new(report["history_file"].as_str().unwrap()));
-    let calls = record["events"].as_array().unwrap();
-    assert_eq!(calls.len(), 1);
+    let events = record["events"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[1]["kind"], "message");
+    assert_eq!(events[1]["output"], "done");
+    let calls = &events[..1];
     assert_eq!(calls[0]["tool_call_id"], "call-1");
     assert_eq!(calls[0]["status"], "completed");
     assert_eq!(calls[0]["output"], "/repo\n");
@@ -34889,9 +35022,11 @@ fn a_streaming_run_is_text_by_default_and_ndjson_by_name() {
             .collect()
     };
     let theirs = parse(&baseline);
-    assert_eq!(theirs.len(), 2, "{baseline:?}");
+    assert_eq!(theirs.len(), 3, "{baseline:?}");
     assert_eq!(theirs[0]["type"], "event");
-    assert_eq!(theirs[1]["type"], "result");
+    assert_eq!(theirs[1]["type"], "event");
+    assert_eq!(theirs[1]["event"]["kind"], "message");
+    assert_eq!(theirs[2]["type"], "result");
     assert_eq!(stream_default_warnings(&baseline), 0, "{baseline:?}");
     for extra in [&["--compact"][..], &["--compact", "--format", "json"][..]] {
         let output = run_as_typed(&[&args[..], extra].concat(), &envs);
@@ -34918,7 +35053,7 @@ fn a_streaming_run_is_text_by_default_and_ndjson_by_name() {
         assert!(output.status.success(), "{label}: {output:?}");
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(
-            stdout.starts_with("$ echo hi\n\nprompt: hi\n"),
+            stdout.starts_with("$ echo hi\n› working\n\nprompt: hi\n"),
             "{label}: {stdout}"
         );
         assert!(
@@ -35919,7 +36054,7 @@ fn run_text_view_carries_the_batch_history_and_events_lines() {
     assert!(text.contains("\n  prompt: first prompt\n"), "{text}");
     assert!(text.contains("\n  prompt: second prompt\n"), "{text}");
     assert_eq!(
-        text.matches("  events: 1 (json:opencode-parts)\n").count(),
+        text.matches("  events: 2 (json:opencode-parts)\n").count(),
         2,
         "{text}"
     );

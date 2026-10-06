@@ -5470,9 +5470,11 @@ mod tests {
         assert_eq!(r.usage.cache_write_tokens, Some(4));
         assert_eq!(r.usage.cost_usd, Some(0.01));
         assert_eq!(r.session_id.as_deref(), Some("ses-timeout"));
-        let events = r.events.expect("the complete tool event survives");
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].name.as_deref(), Some("bash"));
+        let events = r.events.expect("the complete events survive");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "message");
+        assert_eq!(events[0].output.as_deref(), Some("partial answer"));
+        assert_eq!(events[1].name.as_deref(), Some("bash"));
     }
 
     #[test]

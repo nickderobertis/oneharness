@@ -1168,9 +1168,11 @@ invalidating earlier ones):
   | `qwen` | `--events` → `--output-format stream-json` | `stream-json:content-blocks` |
   | `goose`, `crush`, `copilot` | no machine-readable transcript headlessly | — (null) |
 
-  Four recognizers cover these, each harness-agnostic: OpenCode `tool` parts, the
-  Anthropic content-block shape (Claude Code + Qwen), Cursor's `tool_call`
-  events, and Codex's `command_execution` items. `goose`, `crush`, and `copilot`
+  Four recognizers cover these, each harness-agnostic: OpenCode parts (a `tool`
+  part is a `tool_call`; a completed `text` part a `message` and a completed
+  `reasoning` part a `reasoning`, one per part id), the Anthropic content-block
+  shape (Claude Code + Qwen), Cursor's `tool_call` events, and Codex's
+  `command_execution` items. `goose`, `crush`, and `copilot`
   emit only decorative TUI text headlessly (confirmed by probing the live CLIs),
   so `events` stays `null` for them — the honest answer, not a gap.
 

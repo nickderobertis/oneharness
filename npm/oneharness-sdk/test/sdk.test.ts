@@ -518,12 +518,20 @@ describe("OneHarness", () => {
 			envelopes.push(envelope);
 		}
 
-		expect(envelopes.map(({ type }) => type)).toEqual(["event", "result"]);
+		expect(envelopes.map(({ type }) => type)).toEqual([
+			"event",
+			"event",
+			"result",
+		]);
 		expect(envelopes[0]).toMatchObject({
 			type: "event",
 			event: { name: "bash", input: { command: "echo hi" } },
 		});
 		expect(envelopes[1]).toMatchObject({
+			type: "event",
+			event: { kind: "message", output: "stream finished" },
+		});
+		expect(envelopes[2]).toMatchObject({
 			type: "result",
 			report: { results: [{ text: "stream finished" }] },
 		});

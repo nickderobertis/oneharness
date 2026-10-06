@@ -19,7 +19,9 @@
 //! - **OpenCode** (`run --format json`): JSONL events whose `part.type == "tool"`
 //!   carry the tool `name` (`part.tool`) and a `state` object holding the call
 //!   `input` and observed `output`. One part is one completed call → one
-//!   `tool_call` event carrying its `output`.
+//!   `tool_call` event carrying its `output`. A completed `text` part becomes a
+//!   `message` event and a completed `reasoning` part a `reasoning` event, one
+//!   per part id, carrying the part's `text`.
 //! - **Anthropic content blocks** (Claude Code `stream-json`, Qwen `stream-json`
 //!   / `json`): messages whose `message.content[]` holds `tool_use` blocks
 //!   (`name` + structured `input`) and `tool_result` blocks (the observation) —
@@ -156,6 +158,9 @@ struct PartialEvent {
     tool_call_id: Option<String>,
     status: Option<ToolCallStatus>,
     phase: Phase,
+    /// The id a finished item is delivered under at most once: an OpenCode
+    /// prose part, which a stream may send again under the same id.
+    item_id: Option<String>,
 }
 
 impl PartialEvent {
@@ -169,6 +174,7 @@ impl PartialEvent {
             tool_call_id: None,
             status: None,
             phase: Phase::Finished,
+            item_id: None,
         }
     }
 
@@ -258,6 +264,8 @@ pub(crate) struct EventStream {
     call_names: Vec<(String, String)>,
     next_index: usize,
     recognizer: Option<&'static str>,
+    /// The `item_id` of every delivered item that carries one.
+    delivered_items: Vec<String>,
 }
 
 impl EventStream {
@@ -272,6 +280,12 @@ impl EventStream {
             match partial.phase {
                 Phase::Open => self.hold(partial),
                 Phase::Finished => {
+                    if let Some(id) = &partial.item_id {
+                        if self.delivered_items.contains(id) {
+                            continue;
+                        }
+                        self.delivered_items.push(id.clone());
+                    }
                     let partial = self.release(partial);
                     let partial = self.named(partial);
                     finished.push(self.number(partial));
@@ -348,8 +362,9 @@ impl EventStream {
 /// The shapes are mutually exclusive in practice (each keys off a distinct field
 /// layout), so the first match wins.
 fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
-    // OpenCode `tool` part: self-contained (name + input + output).
-    if let Some(pe) = opencode_tool_event(value) {
+    // OpenCode `tool` part (self-contained: name + input + output), or a
+    // completed `text` / `reasoning` part.
+    if let Some(pe) = opencode_part_event(value) {
         return Some(("opencode-parts", vec![pe]));
     }
     // Cursor `type:"tool_call"` with a nested `<name>ToolCall` payload.
@@ -376,13 +391,20 @@ fn recognize(value: &Value) -> Option<(&'static str, Vec<PartialEvent>)> {
     None
 }
 
-/// One OpenCode `tool` part → a single `tool_call` event carrying its input and
-/// output. A part still `pending`/`running` is open; any other state (or none)
-/// finishes it. `None` for any other part (`text`, `step-start`, `reasoning`, …).
-fn opencode_tool_event(value: &Value) -> Option<PartialEvent> {
+/// One OpenCode part → at most one event. A `tool` part is a single
+/// `tool_call` event carrying its input and output: one still
+/// `pending`/`running` is open; any other state (or none) finishes it. A `text`
+/// part is a `message` event and a `reasoning` part a `reasoning` event,
+/// carrying the part's text and keyed by the part id so a part sent again is
+/// delivered once; one whose `time` carries no numeric `end` is unfinished, and
+/// one with blank text is no event. `None` for any other part (`step-start`, …).
+fn opencode_part_event(value: &Value) -> Option<PartialEvent> {
     let part = value.get("part").and_then(Value::as_object)?;
-    if part.get("type").and_then(Value::as_str) != Some("tool") {
-        return None;
+    match part.get("type").and_then(Value::as_str) {
+        Some("tool") => {}
+        Some("text") => return opencode_prose(part, OpenCodeProse::Text),
+        Some("reasoning") => return opencode_prose(part, OpenCodeProse::Reasoning),
+        _ => return None,
     }
     let state = part.get("state").and_then(Value::as_object);
     let phase = match state.and_then(|s| s.get("status")).and_then(Value::as_str) {
@@ -404,6 +426,44 @@ fn opencode_tool_event(value: &Value) -> Option<PartialEvent> {
             .map(str::to_string),
         status: None,
         phase,
+        item_id: None,
+    })
+}
+
+#[derive(Clone, Copy)]
+enum OpenCodeProse {
+    Text,
+    Reasoning,
+}
+
+impl OpenCodeProse {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Text => "message",
+            Self::Reasoning => "reasoning",
+        }
+    }
+}
+
+/// A finished OpenCode `text` / `reasoning` part as its event, keyed by its
+/// part id; `None` while its `time` carries no numeric `end`, or for blank text.
+fn opencode_prose(
+    part: &serde_json::Map<String, Value>,
+    prose: OpenCodeProse,
+) -> Option<PartialEvent> {
+    if part
+        .get("time")
+        .is_some_and(|time| !time.get("end").is_some_and(Value::is_number))
+    {
+        return None;
+    }
+    let text = part
+        .get("text")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty())?;
+    Some(PartialEvent {
+        item_id: part.get("id").and_then(Value::as_str).map(str::to_string),
+        ..PartialEvent::text(prose.kind(), text.to_string())
     })
 }
 
@@ -446,6 +506,7 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                 tool_call_id: obj.get("id").and_then(Value::as_str).map(str::to_string),
                 status: None,
                 phase: Phase::Finished,
+                item_id: None,
             }),
             Some("tool_result") => out.push(PartialEvent {
                 kind: "tool_result",
@@ -464,6 +525,7 @@ fn content_block_events(value: &Value) -> Vec<PartialEvent> {
                     },
                 ),
                 phase: Phase::Finished,
+                item_id: None,
             }),
             Some("text") if assistant => {
                 if let Some(text) = block_text(obj, "text") {
@@ -526,6 +588,7 @@ fn cursor_tool_call(value: &Value) -> Option<PartialEvent> {
             .map(str::to_string),
         status: None,
         phase: Phase::Finished,
+        item_id: None,
     })
 }
 
@@ -632,6 +695,7 @@ fn codex_item(value: &Value) -> Option<PartialEvent> {
             .then(|| codex_tool_status(item))
             .flatten(),
         phase,
+        item_id: None,
     })
 }
 
@@ -720,6 +784,7 @@ fn codex_app_server_item(value: &Value) -> Option<Option<PartialEvent>> {
             .then(|| codex_tool_status(item))
             .flatten(),
         phase,
+        item_id: None,
     }))
 }
 
@@ -1318,8 +1383,9 @@ mod tests {
     #[test]
     fn opencode_tool_parts_become_ordered_tool_calls() {
         // A real `opencode run --format json` tool-using turn: a text part, a
-        // `tool` part carrying input+output, then a step-finish. Only the tool
-        // part is an event, and it carries the normalized name/input/output.
+        // `tool` part carrying input+output, then a step-finish. The text part
+        // is a `message` event; the tool part a `tool_call` carrying the
+        // normalized name/input/output.
         let raw = concat!(
             r#"{"type":"text","part":{"type":"text","text":"I'll run that."}}"#,
             "\n",
@@ -1330,13 +1396,77 @@ mod tests {
         );
         let got = extract_events(raw, OutputFormat::Json).unwrap();
         assert_eq!(got.source, "json:opencode-parts");
-        assert_eq!(got.events.len(), 1);
-        let ev = &got.events[0];
+        assert_eq!(got.events.len(), 2);
+        let prose = &got.events[0];
+        assert_eq!(prose.kind, "message");
+        assert_eq!(prose.output.as_deref(), Some("I'll run that."));
+        assert_eq!(prose.index, 0);
+        let ev = &got.events[1];
         assert_eq!(ev.kind, "tool_call");
         assert_eq!(ev.name.as_deref(), Some("bash"));
         assert_eq!(ev.input, Some(json!({"command": "git commit -m x"})));
         assert_eq!(ev.output.as_deref(), Some("HELLO-FROM-TOOL"));
-        assert_eq!(ev.index, 0);
+        assert_eq!(ev.index, 1);
+    }
+
+    #[test]
+    fn opencode_text_and_reasoning_parts_become_one_event_per_part() {
+        // The recorded `opencode run --format json` text part shape (id,
+        // messageID, text, time.{start,end}); reasoning in the same shape.
+        let raw = concat!(
+            r#"{"type":"step_start","part":{"id":"p0","type":"step-start"}}"#,
+            "\n",
+            r#"{"type":"reasoning","part":{"id":"p1","messageID":"m","type":"reasoning","text":"weighing it","time":{"start":1,"end":2}}}"#,
+            "\n",
+            // Not finished yet: no event.
+            r#"{"type":"text","part":{"id":"p2","messageID":"m","type":"text","text":"PING","time":{"start":3}}}"#,
+            "\n",
+            r#"{"type":"text","part":{"id":"p2","messageID":"m","type":"text","text":"PING-123","time":{"start":3,"end":4}}}"#,
+            "\n",
+            // The same part sent again: still one event.
+            r#"{"type":"text","part":{"id":"p2","messageID":"m","type":"text","text":"PING-123","time":{"start":3,"end":4}}}"#,
+            "\n",
+            // A `time.end` that is no timestamp is not a finish: no event.
+            r#"{"type":"text","part":{"id":"p4","messageID":"m","type":"text","text":"NULL-END","time":{"start":5,"end":null}}}"#,
+            "\n",
+            // Whitespace-only text: no event.
+            r#"{"type":"text","part":{"id":"p3","messageID":"m","type":"text","text":"  \n","time":{"start":5,"end":6}}}"#,
+            "\n",
+        );
+        let got = extract_events(raw, OutputFormat::Json).unwrap();
+        assert_eq!(got.source, "json:opencode-parts");
+        let seen: Vec<(&str, Option<&str>, Option<&str>, usize)> = got
+            .events
+            .iter()
+            .map(|e| {
+                (
+                    e.kind.as_str(),
+                    e.output.as_deref(),
+                    e.tool_call_id.as_deref(),
+                    e.index,
+                )
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                ("reasoning", Some("weighing it"), None, 0),
+                ("message", Some("PING-123"), None, 1),
+            ]
+        );
+        assert!(got.events.iter().all(|e| !e.is_tool_activity()));
+        // Streamed line by line, each part is delivered once, as it finishes.
+        let (per_line, _) = stream_lines(raw);
+        let counts: Vec<usize> = per_line.iter().map(Vec::len).collect();
+        assert_eq!(counts, vec![0, 1, 0, 1, 0, 0, 0]);
+        // A single finished line read on its own is its event too.
+        let line: Value = serde_json::from_str(
+            r#"{"part":{"id":"p9","type":"reasoning","text":"hm","time":{"start":1,"end":2}}}"#,
+        )
+        .unwrap();
+        let evs = events_from_value(&line, 3);
+        assert_eq!(evs.len(), 1);
+        assert_eq!((evs[0].kind.as_str(), evs[0].index), ("reasoning", 3));
     }
 
     #[test]
@@ -1851,11 +1981,14 @@ mod tests {
         // Claude Code's single-document `json` result carries no transcript, so
         // there is nothing to extract — events stays absent, never fabricated.
         assert!(extract_events(r#"{"type":"result","result":"hi"}"#, OutputFormat::Json).is_none());
-        // An opencode text part is not (yet) an event, so a turn made only of
-        // them is still absent — while a Claude assistant text block is a
-        // `message` event and no longer an absent reading.
+        // Prose is a `message` event, not an absent reading: an opencode text
+        // part and a Claude assistant text block alike.
         let opencode_prose = r#"{"type":"text","part":{"type":"text","text":"just prose"}}"#;
-        assert!(extract_events(opencode_prose, OutputFormat::Json).is_none());
+        let got = extract_events(opencode_prose, OutputFormat::Json).unwrap();
+        assert_eq!(got.events.len(), 1);
+        assert_eq!(got.events[0].kind, "message");
+        assert_eq!(got.events[0].output.as_deref(), Some("just prose"));
+        assert!(!got.events[0].is_tool_activity());
         let claude_prose =
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
         let got = extract_events(claude_prose, OutputFormat::Json).unwrap();

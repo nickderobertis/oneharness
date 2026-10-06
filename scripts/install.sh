@@ -21,6 +21,12 @@
 # ONEHARNESS_RELEASE_BASE_URL, ONEHARNESS_CHECKSUM_BASE_URL.
 # Set GITHUB_TOKEN to lift the GitHub API rate limit when resolving "latest".
 #
+# The host platform is read from `uname -s` / `uname -m` and, on Windows, from
+# PROCESSOR_ARCHITECTURE / PROCESSOR_IDENTIFIER (see detect_target). Set
+# ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH to answer in place of `uname -s` /
+# `uname -m` — to fetch the binary for another host, and how the installer's own
+# tests (scripts/install-e2e.sh) pose as each platform it supports.
+#
 # Covers Linux, macOS and Windows, each on x86_64 and arm64 — Windows under a
 # POSIX shell (Git Bash / MSYS / WSL). For native Windows PowerShell or
 # unpublished targets, use `pip install oneharness-cli` or
@@ -91,17 +97,19 @@ Usage: install.sh [--version <tag>] [--to <dir>] [--base-url <url>]
   -h, --help        Show this help.
 
 Environment: ONEHARNESS_VERSION, ONEHARNESS_INSTALL_DIR,
-ONEHARNESS_RELEASE_BASE_URL, ONEHARNESS_CHECKSUM_BASE_URL, GITHUB_TOKEN.
+ONEHARNESS_RELEASE_BASE_URL, ONEHARNESS_CHECKSUM_BASE_URL, GITHUB_TOKEN,
+ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH (answer in place of uname -s / -m).
 EOF
 }
 
-# Map `uname` output to a published Rust target triple, archive extension, and
-# (on Windows) the `.exe` binary name. The triples must be targets
-# release-platforms.toml declares (the set .github/workflows/release.yml builds).
+# Map the host platform (`uname`, or ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH)
+# to a published Rust target triple, archive extension, and (on Windows) the
+# `.exe` binary name. The triples must be targets release-platforms.toml declares
+# (the set .github/workflows/release.yml builds).
 # Unsupported pairs abort with guidance.
 detect_target() {
-    os="$(uname -s)"
-    arch="$(uname -m)"
+    os="${ONEHARNESS_HOST_OS:-$(uname -s)}"
+    arch="${ONEHARNESS_HOST_ARCH:-$(uname -m)}"
 
     case "$os" in
         Linux) os_part="unknown-linux-gnu"; ext="tar.gz" ;;

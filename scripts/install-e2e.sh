@@ -6,6 +6,10 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# install.sh's host overrides: every install here but the posed ones in
+# verify_platform_selection must detect the real host.
+unset ONEHARNESS_HOST_OS ONEHARNESS_HOST_ARCH
+
 say() { printf '%s\n' "$*" >&2; }
 fail() { printf 'install-e2e: FAIL: %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -239,20 +243,21 @@ STUB
 }
 
 # Prove install.sh picks the right artifact for every host it supports, not
-# only for the one this runs on. The host is substituted at the installer's own
-# seams — `uname` (a stub first on PATH) and the PROCESSOR_* variables Windows
-# sets — and the release source at ONEHARNESS_RELEASE_BASE_URL, which serves an
-# archive for EVERY platform release-platforms.toml declares, each carrying a
-# binary that names its own target. So a host mapped to the wrong platform
-# installs a binary naming the wrong target, and one mapped to an unpublished
-# platform fails its download.
+# only for the one this runs on. Each host is posed through the inputs install.sh
+# documents for it — ONEHARNESS_HOST_OS / ONEHARNESS_HOST_ARCH, plus the
+# PROCESSOR_* variables Windows sets — and the release source substituted at
+# ONEHARNESS_RELEASE_BASE_URL, which serves an archive for EVERY platform
+# release-platforms.toml declares, each carrying a binary that names its own
+# target. So a host mapped to the wrong platform installs a binary naming the
+# wrong target, and one mapped to an unpublished platform fails its download.
+# The last case poses nothing: this runner's own detection, unaltered, must pick
+# the platform it really is.
 verify_platform_selection() {
-    local mirror trust stubdir probe declared target ext bin_file name expected
-    local uname_s uname_m proc_arch proc_id want installed
+    local mirror trust probe declared target ext bin_file name expected
+    local host_os host_arch proc_arch proc_id want installed label
     mirror="$work/platform-mirror"
     trust="$work/platform-trust"
-    stubdir="$work/platform-uname"
-    mkdir -p "$mirror/$version" "$trust/$version" "$stubdir"
+    mkdir -p "$mirror/$version" "$trust/$version"
 
     declared="$(awk '
         /^\[\[platform\]\]$/ { if (t != "") print t, a; t = ""; a = ""; next }
@@ -276,42 +281,46 @@ verify_platform_selection() {
             >"$trust/$version/${name}.sha256"
     done <<<"$declared"
 
-    # llmlint: ignore-block[e2e_not_mocked] uname is the installer's own host seam: this suite runs on one host, and proving the six hosts install.sh serves (Windows ARM64 above all, which no hosted job here runs it on) means answering uname as each would, while install.sh itself, its download, checksum and unpack run for real.
-    cat >"$stubdir/uname" <<'STUB'
-#!/bin/sh
-case "${1:-}" in
-    -s) printf '%s\n' "$STUB_UNAME_S" ;;
-    -m) printf '%s\n' "$STUB_UNAME_M" ;;
-    *) printf '%s\n' "$STUB_UNAME_S" ;;
-esac
-STUB
-    chmod +x "$stubdir/uname"
-
-    # uname -s | uname -m | PROCESSOR_ARCHITECTURE | PROCESSOR_IDENTIFIER | target.
-    # Every case sets both PROCESSOR_* variables, so the runner's own (a Windows
-    # job has them) can never decide one.
-    while IFS='|' read -r uname_s uname_m proc_arch proc_id want; do
-        probe="$work/platform-probe/$want-$uname_m"
-        rm -rf "$probe"
-        if ! PATH="$stubdir:$PATH" STUB_UNAME_S="$uname_s" STUB_UNAME_M="$uname_m" \
-            PROCESSOR_ARCHITECTURE="$proc_arch" PROCESSOR_IDENTIFIER="$proc_id" \
-            ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
-            sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
-            >"$work/platform.out" 2>&1; then
-            cat "$work/platform.out" >&2
-            fail "install.sh refused a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch'); it should have installed $want — fix detect_target in scripts/install.sh, whose refusal is printed above"
+    # ONEHARNESS_HOST_OS | ONEHARNESS_HOST_ARCH | PROCESSOR_ARCHITECTURE |
+    # PROCESSOR_IDENTIFIER | target. Every posed case sets both PROCESSOR_*
+    # variables, so the runner's own (a Windows job has them) can never decide
+    # one. The final row, `host`, poses nothing and expects this runner's own
+    # platform as detect_target above reads it.
+    while IFS='|' read -r host_os host_arch proc_arch proc_id want; do
+        if [ "$host_os" = "host" ]; then
+            label="this runner (unposed)"
+            probe="$work/platform-probe/host"
+            rm -rf "$probe"
+            if ! ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
+                sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
+                >"$work/platform.out" 2>&1; then
+                cat "$work/platform.out" >&2
+                fail "install.sh refused $label; it should have installed $want — fix detect_target in scripts/install.sh, whose refusal is printed above"
+            fi
+        else
+            label="a $host_os $host_arch host (PROCESSOR_ARCHITECTURE='$proc_arch', PROCESSOR_IDENTIFIER='$proc_id')"
+            probe="$work/platform-probe/$want-$host_arch"
+            rm -rf "$probe"
+            if ! ONEHARNESS_HOST_OS="$host_os" ONEHARNESS_HOST_ARCH="$host_arch" \
+                PROCESSOR_ARCHITECTURE="$proc_arch" PROCESSOR_IDENTIFIER="$proc_id" \
+                ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
+                sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
+                >"$work/platform.out" 2>&1; then
+                cat "$work/platform.out" >&2
+                fail "install.sh refused $label; it should have installed $want — fix detect_target in scripts/install.sh, whose refusal is printed above"
+            fi
         fi
         case "$want" in
             *-windows-*) bin_file="oneharness.exe" ;;
             *) bin_file="oneharness" ;;
         esac
         [ -f "$probe/$bin_file" ] ||
-            fail "install.sh on a $uname_s $uname_m host installed no $bin_file under $probe (found: $(ls "$probe" 2>/dev/null)); check the binary name detect_target in scripts/install.sh picks for $want"
+            fail "install.sh on $label installed no $bin_file under $probe (found: $(ls "$probe" 2>/dev/null)); check the binary name detect_target in scripts/install.sh picks for $want"
         expected="oneharness fixture for $want"
         installed="$(cat "$probe/$bin_file")"
         [ "$installed" = "$expected" ] ||
-            fail "install.sh on a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch', PROCESSOR_IDENTIFIER='$proc_id') installed the artifact saying '$installed'; it should have installed $want — fix the target detect_target in scripts/install.sh maps this host to"
-    done <<'CASES'
+            fail "install.sh on $label installed the artifact saying '$installed'; it should have installed $want — fix the target detect_target in scripts/install.sh maps this host to"
+    done <<CASES
 Linux|x86_64|||x86_64-unknown-linux-gnu
 Linux|aarch64|||aarch64-unknown-linux-gnu
 Darwin|x86_64|||x86_64-apple-darwin
@@ -321,8 +330,9 @@ MINGW64_NT-10.0-26100|aarch64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201
 MINGW64_NT-10.0-26100|x86_64|AMD64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 MINGW64_NT-10.0-26100|x86_64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 MSYS_NT-10.0-26100|x86_64|AMD64|ARM64 Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
+host||||$TARGET
 CASES
-    # llmlint: ignore-end[e2e_not_mocked]
+    say "install-e2e: platform selection verified (every declared platform, and this runner's own)"
 }
 
 verify_trust_root_independence

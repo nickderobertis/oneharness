@@ -5113,7 +5113,9 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
     // The recorded `opencode run --format json` turn (OpenCode 1.17.3) carries a
     // completed `text` part. No real reasoning capture exists, so a `reasoning`
     // part is spliced in written in that text part's recorded shape, with a
-    // tool part after it and the text part sent again under its own id.
+    // tool part after it and the text part sent again under its own id. A text
+    // part the turn ends before finishing (a `time` with no `end`) and a
+    // whitespace-only one are spliced in too: neither is an event.
     let capture = include_str!("support/opencode_run.jsonl");
     let lines: Vec<&str> = capture.lines().collect();
     let (step_start, text_part, step_finish) = (lines[0], lines[1], lines[2]);
@@ -5127,12 +5129,24 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
         r#""id":"prt_eb6928c88001toolPart000001","callID":"call_1","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","type":"tool","tool":"bash","#,
         r#""state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n","time":{"start":1781179518140,"end":1781179518149}}}}"#,
     );
+    let blank_part = concat!(
+        r#"{"type":"text","timestamp":1781179518160,"sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","part":{"#,
+        r#""id":"prt_eb6928c89001blankPart00001","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","#,
+        r#""type":"text","text":"  \n","time":{"start":1781179518155,"end":1781179518156}}}"#,
+    );
+    let unfinished_part = concat!(
+        r#"{"type":"text","timestamp":1781179518170,"sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","part":{"#,
+        r#""id":"prt_eb6928c8a001unfinishedPart1","messageID":"msg_eb69284ee001f9gKyD7PZudPCV","sessionID":"ses_1496d7d5effenFlBINeoCqBVk8","#,
+        r#""type":"text","text":"STILL-WRITING","time":{"start":1781179518165}}}"#,
+    );
     let stdout = [
         step_start,
         reasoning_part,
         text_part,
         tool_part,
         text_part,
+        blank_part,
+        unfinished_part,
         step_finish,
         "",
     ]

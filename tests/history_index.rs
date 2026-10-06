@@ -905,17 +905,20 @@ fn rss_ballast_child() {
 /// writing `rchar_after` into the stand-in accounting file if one is given.
 #[cfg(target_os = "linux")]
 fn stand_in_command(ballast_mib: usize, rchar_after: Option<(&Path, u64)>) -> Command {
-    let mut script = String::from("\"$0\" --exact rss_ballast_child --ignored --test-threads=1");
-    if let Some((accounting, rchar)) = rchar_after {
-        script = format!(
-            "printf 'rchar: {rchar}\\n' > '{}' && {script}",
-            accounting.display()
-        );
-    }
+    // Every value reaches the script as a positional argument, never as source.
+    let (accounting, rchar) = rchar_after.map_or((PathBuf::new(), 0), |(path, rchar)| {
+        (path.to_path_buf(), rchar)
+    });
     let mut command = Command::new("sh");
     command
-        .args(["-c", &script])
+        .args([
+            "-c",
+            r#"if [ -n "$1" ]; then printf 'rchar: %s\n' "$2" > "$1" || exit 1; fi
+               exec "$0" --exact rss_ballast_child --ignored --test-threads=1"#,
+        ])
         .arg(std::env::current_exe().unwrap())
+        .arg(accounting)
+        .arg(rchar.to_string())
         .env("HISTORY_INDEX_BALLAST_MIB", ballast_mib.to_string());
     command
 }

@@ -42,7 +42,7 @@ detect_target() {
         darwin-arm64) TARGET="aarch64-apple-darwin" ;;
         win32-x64) TARGET="x86_64-pc-windows-msvc" ;;
         win32-arm64) TARGET="aarch64-pc-windows-msvc" ;;
-        *) fail "no published npm platform package for node's $1; release-platforms.toml lists the published ones" ;;
+        *) fail "no published npm platform package for node's $1; run with a node built for a platform release-platforms.toml declares, or add this one there and to every list bash scripts/check-release-targets.sh names" ;;
     esac
 }
 

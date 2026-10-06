@@ -110,4 +110,4 @@ jobs:
       - name: Resolve and run the npm platform package through the launcher
         env:
           TARGET: ${{ matrix.target }}
-        run: bash scripts/npm-e2e.sh "target/$TARGET/release/oneharness.exe"
+        run: just npm-e2e-bin "target/$TARGET/release/oneharness.exe"

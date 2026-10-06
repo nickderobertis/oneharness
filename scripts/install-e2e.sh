@@ -44,8 +44,12 @@ detect_target() {
         *) fail "unsupported architecture: $arch" ;;
     esac
 
-    if [ "$EXT" = "zip" ] && [ "$arch_part" != "x86_64" ]; then
-        fail "no prebuilt Windows binary target for $arch"
+    # The same correction install.sh makes for a shell emulating x64 on a
+    # Windows ARM64 host, so the archive staged here is the one it will ask for.
+    if [ "$EXT" = "zip" ] && [ "$arch_part" = "x86_64" ]; then
+        case "${PROCESSOR_ARCHITECTURE:-}:${PROCESSOR_IDENTIFIER:-}" in
+            ARM64:* | *:ARMv8* | *:ARM64*) arch_part="aarch64" ;;
+        esac
     fi
 
     TARGET="${arch_part}-${os_part}"
@@ -79,8 +83,12 @@ make_archive() {
                 win_archive="$(cygpath -w "$archive")"
                 powershell.exe -NoProfile -Command \
                     "Compress-Archive -LiteralPath '$win_bin' -DestinationPath '$win_archive' -Force"
+            elif have python3; then
+                python3 -c 'import sys, zipfile
+with zipfile.ZipFile(sys.argv[1], "w") as z: z.write(sys.argv[2], sys.argv[3])' \
+                    "$archive" "$stage/$BIN_FILE" "$BIN_FILE"
             else
-                fail "need zip or PowerShell Compress-Archive to create $archive"
+                fail "need zip, PowerShell Compress-Archive or python3 to create $archive"
             fi
             ;;
         *) fail "unknown archive type: $archive" ;;
@@ -230,6 +238,91 @@ STUB
     say "install-e2e: Sigstore attestation gate verified (a verifier runs; a failed attestation aborts)"
 }
 
+# Prove install.sh picks the right artifact for every host it supports, not
+# only for the one this runs on. The host is substituted at the installer's own
+# seams — `uname` (a stub first on PATH) and the PROCESSOR_* variables Windows
+# sets — and the release source at ONEHARNESS_RELEASE_BASE_URL, which serves an
+# archive for EVERY platform release-platforms.toml declares, each carrying a
+# binary that names its own target. So a host mapped to the wrong platform
+# installs a binary naming the wrong target, and one mapped to an unpublished
+# platform fails its download.
+verify_platform_selection() {
+    local mirror trust stubdir probe declared target ext bin_file name expected
+    local uname_s uname_m proc_arch proc_id want installed
+    mirror="$work/platform-mirror"
+    trust="$work/platform-trust"
+    stubdir="$work/platform-uname"
+    mkdir -p "$mirror/$version" "$trust/$version" "$stubdir"
+
+    declared="$(awk '
+        /^\[\[platform\]\]$/ { if (t != "") print t, a; t = ""; a = ""; next }
+        /^target = "/ { t = $3; gsub(/"/, "", t) }
+        /^archive = "/ { a = $3; gsub(/"/, "", a) }
+        END { if (t != "") print t, a }
+    ' "$repo_root/release-platforms.toml")"
+    [ -n "$declared" ] || fail "release-platforms.toml declares no platform to stage"
+
+    while read -r target ext; do
+        case "$target" in
+            *-windows-*) bin_file="oneharness.exe" ;;
+            *) bin_file="oneharness" ;;
+        esac
+        rm -rf "$work/platform-stage"
+        mkdir -p "$work/platform-stage"
+        printf 'oneharness fixture for %s\n' "$target" >"$work/platform-stage/$bin_file"
+        name="oneharness-${version}-${target}"
+        BIN_FILE="$bin_file" make_archive "$work/platform-stage" "$mirror/$version/${name}.${ext}"
+        printf '%s  %s\n' "$(sha256_of "$mirror/$version/${name}.${ext}")" "${name}.${ext}" \
+            >"$trust/$version/${name}.sha256"
+    done <<<"$declared"
+
+    cat >"$stubdir/uname" <<'STUB'
+#!/bin/sh
+case "${1:-}" in
+    -s) printf '%s\n' "$STUB_UNAME_S" ;;
+    -m) printf '%s\n' "$STUB_UNAME_M" ;;
+    *) printf '%s\n' "$STUB_UNAME_S" ;;
+esac
+STUB
+    chmod +x "$stubdir/uname"
+
+    # uname -s | uname -m | PROCESSOR_ARCHITECTURE | PROCESSOR_IDENTIFIER | target.
+    # Every case sets both PROCESSOR_* variables, so the runner's own (a Windows
+    # job has them) can never decide one.
+    while IFS='|' read -r uname_s uname_m proc_arch proc_id want; do
+        probe="$work/platform-probe/$want-$uname_m"
+        rm -rf "$probe"
+        if ! PATH="$stubdir:$PATH" STUB_UNAME_S="$uname_s" STUB_UNAME_M="$uname_m" \
+            PROCESSOR_ARCHITECTURE="$proc_arch" PROCESSOR_IDENTIFIER="$proc_id" \
+            ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
+            sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
+            >"$work/platform.out" 2>&1; then
+            cat "$work/platform.out" >&2
+            fail "install.sh refused a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch'); it should have installed $want"
+        fi
+        case "$want" in
+            *-windows-*) bin_file="oneharness.exe" ;;
+            *) bin_file="oneharness" ;;
+        esac
+        [ -f "$probe/$bin_file" ] ||
+            fail "install.sh on a $uname_s $uname_m host installed no $bin_file under $probe: $(ls "$probe" 2>/dev/null)"
+        expected="oneharness fixture for $want"
+        installed="$(cat "$probe/$bin_file")"
+        [ "$installed" = "$expected" ] ||
+            fail "install.sh on a $uname_s $uname_m host (PROCESSOR_ARCHITECTURE='$proc_arch', PROCESSOR_IDENTIFIER='$proc_id') installed the artifact saying '$installed'; it should have installed $want"
+    done <<'CASES'
+Linux|x86_64|||x86_64-unknown-linux-gnu
+Linux|aarch64|||aarch64-unknown-linux-gnu
+Darwin|x86_64|||x86_64-apple-darwin
+Darwin|arm64|||aarch64-apple-darwin
+MINGW64_NT-10.0-26100|x86_64|AMD64|Intel64 Family 6 Model 85 Stepping 7, GenuineIntel|x86_64-pc-windows-msvc
+MINGW64_NT-10.0-26100|aarch64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
+MINGW64_NT-10.0-26100|x86_64|AMD64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
+CASES
+    say "install-e2e: platform selection verified for every published Linux, macOS and Windows target"
+}
+
 verify_trust_root_independence
 verify_attestation_gate
+verify_platform_selection
 say "install-e2e: ok"

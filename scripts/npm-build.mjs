@@ -10,7 +10,8 @@
 //       @oneharness/cli-linux-arm64
 //       @oneharness/cli-darwin-x64
 //       @oneharness/cli-darwin-arm64
-//       @oneharness/cli-win32-x64  each carries the matching prebuilt binary
+//       @oneharness/cli-win32-x64
+//       @oneharness/cli-win32-arm64  each carries the matching prebuilt binary
 //
 // npm installs only the optional dependency whose `os`/`cpu` match the host, so
 // a `npm install -g oneharness-cli` is a seconds-fast binary install — the same
@@ -34,8 +35,9 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-// Rust target triple -> npm platform package facts. Keys must match the release
-// matrix in .github/workflows/release.yml; the (platform, arch) pair must match
+// Rust target triple -> npm platform package facts. Keys and (platform, arch)
+// pairs must match release-platforms.toml's `target` and `npm`, which
+// scripts/check-release-targets.sh enforces; the (platform, arch) pair must match
 // the PACKAGES map in npm/oneharness/bin/oneharness.js and the
 // optionalDependencies in npm/oneharness/package.json.
 const TARGETS = {
@@ -44,6 +46,7 @@ const TARGETS = {
   "x86_64-apple-darwin": { platform: "darwin", arch: "x64", exe: false },
   "aarch64-apple-darwin": { platform: "darwin", arch: "arm64", exe: false },
   "x86_64-pc-windows-msvc": { platform: "win32", arch: "x64", exe: true },
+  "aarch64-pc-windows-msvc": { platform: "win32", arch: "arm64", exe: true },
 };
 
 function die(msg) {

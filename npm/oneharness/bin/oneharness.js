@@ -18,14 +18,16 @@
 const { spawnSync } = require("node:child_process");
 
 // process.platform-process.arch -> the platform package that carries the binary.
-// The keys mirror the Rust target matrix in .github/workflows/release.yml and the
-// optionalDependencies in package.json; keep the three in lockstep.
+// The keys mirror the platform set in release-platforms.toml and the
+// optionalDependencies in package.json; scripts/check-release-targets.sh keeps
+// them in lockstep.
 const PACKAGES = {
   "linux-x64": "@oneharness/cli-linux-x64",
   "linux-arm64": "@oneharness/cli-linux-arm64",
   "darwin-x64": "@oneharness/cli-darwin-x64",
   "darwin-arm64": "@oneharness/cli-darwin-arm64",
   "win32-x64": "@oneharness/cli-win32-x64",
+  "win32-arm64": "@oneharness/cli-win32-arm64",
 };
 
 function fail(message) {

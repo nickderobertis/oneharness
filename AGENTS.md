@@ -607,6 +607,10 @@ aren't re-litigated each session:
   unavailable); the console command it installs is still `oneharness`. The wheel
   version is `dynamic` — maturin reads it from `Cargo.toml`, so release-plz stays
   the single version driver (never hand-set a version in `pyproject.toml`).
+  Wheels ship for every platform in `release-platforms.toml` — Linux x86_64/
+  aarch64, macOS x86_64/arm64, Windows x86_64 (`win_amd64`) and Windows ARM64
+  (`win_arm64`, built natively on `windows-11-arm`; without it `uv sync` of
+  anything depending on `oneharness-cli` refuses on that host, #1413).
   `release.yml`'s `build-wheels` job runs on every release (so a packaging break
   surfaces even while publishing is off); `publish-pypi` uses keyless **Trusted
   Publishing** (OIDC, no token secret and **no GitHub Actions environment** — the
@@ -614,7 +618,12 @@ aren't re-litigated each session:
   `environment:` or the OIDC claim won't match) and stays dormant until the
   `PYPI_PUBLISH` repo variable is `true` and the PyPI project registers this
   repo's `release.yml` as its Trusted Publisher; `verify-pypi` then proves the
-  published version is `pip install`-able.
+  published version is `pip install`-able, and `verify-pypi-windows-arm64`
+  proves the native `win_arm64` wheel is what resolves on a Windows ARM64 host.
+  `package-pr.yml` builds the platforms `release-platforms.toml` marks
+  `pull_request = true` (today Windows ARM64, whose runner nothing else uses) on
+  pull requests touching the build's inputs — advisory, never a required check,
+  since an ARM runner queue must not extend time to merge.
   The typed Python client is a separate pure-Python **`oneharness-sdk`**
   distribution (imported as `oneharness_sdk`, Python 3.9+). Its checked-in
   schemas and types are generated from `sdk_schema::bundle`; runtime inputs are
@@ -641,9 +650,16 @@ aren't re-litigated each session:
   comes from `Cargo.toml` by default (release-plz stays the single version driver,
   like the wheels' `dynamic` version) — never hand-set it in a committed
   `package.json` (the committed versions are the `0.0.0-managed` placeholder,
-  replaced at publish). Keep the three platform lists in lockstep: the release
-  matrix's Rust targets, `TARGETS` in `npm-build.mjs`, `PACKAGES` in
-  `bin/oneharness.js`, and the `optionalDependencies` in the launcher manifest.
+  replaced at publish). The platform set is declared ONCE, in
+  `release-platforms.toml` (target, runner, archive, npm name): Linux
+  x64/arm64, macOS x64/arm64, Windows x64 and Windows ARM64
+  (`@oneharness/cli-win32-arm64`). `scripts/check-release-targets.sh` (in
+  `lint-workflows`) holds every restatement to it in both directions — the
+  `upload`/`build-wheels`/`build-npm` matrices, `package-pr.yml`'s lane,
+  `TARGETS` in `npm-build.mjs`, `PACKAGES` in `bin/oneharness.js`, the launcher's
+  `optionalDependencies`, the `npm:oneharness-cli` `covers`, and the SDK
+  package e2e's host map — so adding a platform starts in that file and the gate
+  names every list still missing it.
   `release.yml`'s `build-npm` job runs on every release (packaging-break alarm,
   like `build-wheels`); `publish-npm` publishes the platform packages first then
   the launcher, authenticating with an **npm token** (the `NPM_TOKEN` secret — an

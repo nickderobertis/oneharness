@@ -47,9 +47,6 @@ detect_target() {
         arm64 | aarch64) arch_part="aarch64" ;;
         *) fail "unsupported architecture: $arch" ;;
     esac
-    if [ "$os_part" = "pc-windows-msvc" ] && [ "$arch_part" != "x86_64" ]; then
-        fail "no prebuilt Windows npm package for $arch"
-    fi
     TARGET="${arch_part}-${os_part}"
 }
 

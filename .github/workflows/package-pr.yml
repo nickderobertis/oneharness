@@ -1,0 +1,101 @@
+name: Package (pull request)
+
+# Build a release artifact on a pull request, for the platforms whose release
+# build nothing else exercises before a tag: release-platforms.toml marks them
+# `pull_request = true`, and scripts/check-release-targets.sh holds this matrix
+# to that set. Today that is Windows ARM64, whose runner no other job uses — so
+# a change that breaks its build would otherwise first fail at release, after
+# every other platform had already published (#1413).
+#
+# Each leg builds the binary and the oneharness-cli wheel exactly as release.yml
+# does, installs the wheel into a fresh environment and runs it from there.
+#
+# Deliberately NOT a required check: ARM runners queue, and a queue must never
+# extend a change's time to merge. Its result is advisory on the pull request.
+# It runs only when the diff touches what the build reads, so a docs-only change
+# never waits on it.
+
+on:
+  pull_request:
+    paths:
+      - src/**
+      - crates/**
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - .cargo/**
+      - pyproject.toml
+      - npm/oneharness/**
+      - scripts/npm-build.mjs
+      - scripts/install.sh
+      - release-platforms.toml
+      - release-targets.toml
+      - .github/workflows/release.yml
+      - .github/workflows/package-pr.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: package (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
+            python-arch: arm64
+            wheel: win_arm64
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      # Reads the pinned channel + components from rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+      - name: Build the release binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          cargo build --release --locked --target "$TARGET"
+          "target/$TARGET/release/oneharness.exe" --version
+      - name: Build the oneharness-cli wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --locked --out dist
+      # A native interpreter, so pip selects the platform's own wheel rather than
+      # an emulated x64 one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python-arch }}
+      - name: Install the wheel into a fresh environment and run it
+        env:
+          WHEEL_PLATFORM: ${{ matrix.wheel }}
+        run: |
+          shopt -s nullglob
+          wheels=(dist/oneharness_cli-*-"$WHEEL_PLATFORM".whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one oneharness-cli wheel tagged $WHEEL_PLATFORM in dist/, found: $(ls dist)" >&2
+            exit 1
+          fi
+          venv="$RUNNER_TEMP/oneharness-wheel-venv"
+          python -m venv "$venv"
+          "$venv/Scripts/python" -m pip install --no-index --no-deps "${wheels[0]}"
+          # A Windows checkout may give Cargo.toml CRLF endings.
+          version="$(tr -d '\r' <Cargo.toml | sed -n '/^\[package\]$/,/^\[/ s/^version = "\([^"]*\)"$/\1/p' | head -n 1)"
+          installed="$("$venv/Scripts/oneharness" --version | tr -d '\r')"
+          if [ "$installed" != "oneharness $version" ]; then
+            echo "::error::the wheel's oneharness reports '$installed', not 'oneharness $version'" >&2
+            exit 1
+          fi
+          echo "installed ${wheels[0]##*/}: $installed"

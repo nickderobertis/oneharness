@@ -36,6 +36,9 @@ name: Release
 #                           dormant until the PYPI_PUBLISH repo variable is set.
 #   * verify-pypi        — install the just-published version the way a consumer
 #                           does, retried until the index serves it.
+#   * verify-pypi-windows-arm64
+#                        — the same install on a Windows ARM64 host, asserting
+#                           the native win_arm64 wheel is what resolved.
 #   * build-python-sdk   — build oneharness-sdk at the Cargo release version,
 #                           with an exact dependency on oneharness-cli.
 #   * publish-python-sdk — Trusted Publishing (keyless OIDC) to the registered
@@ -133,8 +136,10 @@ jobs:
       matrix:
         include:
           # Native runners per target so nothing needs cross-compilation:
-          # arm64 Linux builds on a hosted arm64 runner; macOS cross-builds
-          # x86_64<->arm64 within the Apple toolchain (no emulation/Docker).
+          # arm64 Linux and arm64 Windows build on hosted arm64 runners; macOS
+          # cross-builds x86_64<->arm64 within the Apple toolchain (no
+          # emulation/Docker). The set is release-platforms.toml's, which
+          # scripts/check-release-targets.sh holds all three matrices to.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             ext: tar.gz
@@ -149,6 +154,9 @@ jobs:
             ext: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            ext: zip
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
             ext: zip
     runs-on: ${{ matrix.os }}
     steps:
@@ -272,6 +280,8 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -325,6 +335,38 @@ jobs:
           python-version: "3.12"
       - name: Install oneharness-cli from PyPI and smoke-test it
         run: scripts/verify-published.sh pypi-cli "${GITHUB_REF_NAME#v}"
+
+  # The ubuntu install above proves the release, not that each platform's wheel
+  # resolves. Windows ARM64 is proven on its own host because an arm64 Python
+  # resolving no win_arm64 wheel refuses the install outright (#1413), and an
+  # x64 Python under emulation would quietly install the win_amd64 one instead —
+  # so the interpreter is pinned to arm64 and the installed wheel's tag is
+  # asserted, not assumed.
+  verify-pypi-windows-arm64:
+    needs: publish-pypi
+    if: ${{ vars.PYPI_PUBLISH == 'true' }}
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: arm64
+      - name: Install oneharness-cli from PyPI and smoke-test it
+        run: scripts/verify-published.sh pypi-cli "${GITHUB_REF_NAME#v}"
+      - name: Prove the installed wheel is the native win_arm64 one
+        run: |
+          tags="$(python -c 'from importlib.metadata import distribution; print(" ".join(line.split(":", 1)[1].strip() for line in distribution("oneharness-cli").read_text("WHEEL").splitlines() if line.startswith("Tag:")))')"
+          case " $tags " in
+            *-win_arm64\ *) echo "installed oneharness-cli wheel: $tags" ;;
+            *)
+              echo "::error::the installed oneharness-cli wheel is tagged '$tags', not win_arm64; the release published no native Windows ARM64 wheel, or this interpreter is not arm64" >&2
+              exit 1
+              ;;
+          esac
 
   # The pure-Python SDK is generated from Rust-owned contracts and stamped from
   # Cargo.toml at packaging time. Its wheel and sdist depend on the exact same
@@ -412,6 +454,8 @@ jobs:
             os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+          - target: aarch64-pc-windows-msvc
+            os: windows-11-arm
     runs-on: ${{ matrix.os }}
     defaults:
       run:

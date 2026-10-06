@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.21.3](https://github.com/nickderobertis/oneharness/compare/v0.21.2...v0.21.3) - 2026-10-06
+
+### Fixed
+
+- *(release)* publish Windows ARM64 binaries, the win_arm64 wheel and the win32-arm64 npm package ([#1424](https://github.com/nickderobertis/oneharness/pull/1424))
+- *(events)* turn OpenCode text and reasoning parts into message and reasoning events ([#1422](https://github.com/nickderobertis/oneharness/pull/1422))
+
 ## [0.21.2](https://github.com/nickderobertis/oneharness/compare/v0.21.1...v0.21.2) - 2026-10-03
 
 ### Fixed

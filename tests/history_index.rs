@@ -547,12 +547,23 @@ mod measured {
     //! this large, multi-threaded test process would report this process's
     //! size. The helper is small and single-purpose, so its children's figures
     //! are theirs, and a reaped child's I/O is folded into the helper's own.
+    //!
+    //! A kernel built without per-task I/O accounting (WSL2's) has no
+    //! `/proc/self/io`: there the bytes read are [`BytesRead`]'s `Err`, naming
+    //! why, and each assertion on them is skipped aloud through [`bytes_read`]
+    //! while every other figure is still measured.
     use super::*;
     use serde::{Deserialize, Serialize};
 
+    /// Where the helper reads its own `rchar` unless a test names a stand-in.
+    pub const PROC_SELF_IO: &str = "/proc/self/io";
+
+    /// The command's bytes read, or why this host cannot count them.
+    pub type BytesRead = Result<u64, String>;
+
     pub struct Measured {
         pub output: Output,
-        pub rchar: u64,
+        pub rchar: BytesRead,
         pub max_rss_kib: i64,
         /// The largest resident size sampled from the command while it ran.
         pub sampled_rss_kib: u64,
@@ -583,25 +594,55 @@ mod measured {
         pub limit_ms: u64,
         /// A file whose length each [`Sample`] records, if any.
         pub watch: Option<PathBuf>,
+        /// The `/proc/<pid>/io`-shaped file `rchar` is read from.
+        pub accounting: PathBuf,
     }
 
     #[derive(Serialize, Deserialize)]
     pub struct Report {
         pub status: i32,
-        pub rchar: u64,
+        pub rchar: BytesRead,
         pub max_rss_kib: i64,
         pub sampled_rss_kib: u64,
         pub series: Vec<Sample>,
         pub timed_out: bool,
     }
 
-    fn rchar_of_self() -> u64 {
-        std::fs::read_to_string("/proc/self/io")
-            .unwrap()
+    /// The `rchar` `accounting` reports, or — only when that file does not
+    /// exist — why the bytes read cannot be counted here.
+    fn rchar_of(accounting: &Path) -> BytesRead {
+        let io = match std::fs::read_to_string(accounting) {
+            Ok(io) => io,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "{} does not exist: this kernel keeps no per-task I/O accounting",
+                    accounting.display()
+                ))
+            }
+            Err(error) => panic!("read {}: {error}", accounting.display()),
+        };
+        Ok(io
             .lines()
             .find_map(|line| line.strip_prefix("rchar: "))
             .and_then(|value| value.trim().parse().ok())
-            .unwrap()
+            .unwrap_or_else(|| panic!("no rchar in {}: {io}", accounting.display())))
+    }
+
+    /// `rchar` when this host counts it; otherwise `None`, saying on the test's
+    /// output that `assertion` was skipped and why.
+    pub fn bytes_read(rchar: &BytesRead, assertion: &str) -> Option<u64> {
+        match rchar {
+            Ok(rchar) => Some(*rchar),
+            Err(reason) => {
+                eprintln!("{}", skip_note(assertion, reason));
+                None
+            }
+        }
+    }
+
+    /// What a test prints for an `assertion` it skipped for `reason`.
+    pub fn skip_note(assertion: &str, reason: &str) -> String {
+        format!("skipped bytes-read assertion ({assertion}): {reason}")
     }
 
     /// The child's resident size, adding the bytes this read took to
@@ -630,7 +671,7 @@ mod measured {
                 None => command.env_remove(key),
             };
         }
-        let before = rchar_of_self();
+        let before = rchar_of(&request.accounting);
         // Reaped by the `wait4` below, which is what yields its rusage — a
         // `Child::wait` would reap it first and lose exactly that.
         #[allow(clippy::zombie_processes)]
@@ -691,8 +732,13 @@ mod measured {
             status,
             // The child's reads alone: sampling it every few milliseconds reads
             // its status file hundreds of times, so a child slowed by a loaded
-            // host would otherwise read as one that read more.
-            rchar: rchar_of_self() - before - own_reads,
+            // host would otherwise read as one that read more. A stand-in
+            // source need not count those reads, hence the saturation.
+            rchar: before.and_then(|before| {
+                Ok(rchar_of(&request.accounting)?
+                    .saturating_sub(before)
+                    .saturating_sub(own_reads))
+            }),
             max_rss_kib: usage.ru_maxrss,
             sampled_rss_kib,
             series,
@@ -707,6 +753,17 @@ mod measured {
 
     /// [`measure`], also sampling the length of `watch` over the command's life.
     pub fn measure_watching(command: Command, limit: Duration, watch: Option<&Path>) -> Measured {
+        measure_from(command, limit, watch, Path::new(PROC_SELF_IO))
+    }
+
+    /// [`measure_watching`], reading the helper's `rchar` from `accounting`
+    /// rather than [`PROC_SELF_IO`].
+    pub fn measure_from(
+        command: Command,
+        limit: Duration,
+        watch: Option<&Path>,
+        accounting: &Path,
+    ) -> Measured {
         let scratch = ScratchDir::new(&format!(
             "hindex-measure-{}",
             SystemTime::now()
@@ -734,6 +791,7 @@ mod measured {
             stderr: scratch.join("stderr"),
             limit_ms: limit.as_millis() as u64,
             watch: watch.map(Path::to_path_buf),
+            accounting: accounting.to_path_buf(),
         };
         let request_file = scratch.join("request.json");
         let report_file = scratch.join("report.json");
@@ -790,6 +848,163 @@ fn measure_helper() {
         "wait4 reported no peak RSS for the measured command"
     );
     std::fs::write(out, serde_json::to_vec(&report).unwrap()).unwrap();
+}
+
+/// What a tenfold store must not move in a run that should never read it:
+/// its bytes read (where the kernel counts them) and its peak RSS. Returns the
+/// note it printed when the bytes read could not be counted.
+#[cfg(target_os = "linux")]
+fn assert_unmoved_by_store(
+    label: &str,
+    small: &measured::Measured,
+    large: &measured::Measured,
+) -> Option<String> {
+    let assertion = format!("{label}: bytes read must not grow with the store");
+    let skipped = match (&small.rchar, &large.rchar) {
+        (&Ok(small_read), &Ok(large_read)) => {
+            assert!(
+                large_read <= small_read + 64 * 1024,
+                "{label}: bytes read grew with the store: {small_read} -> {large_read}"
+            );
+            None
+        }
+        (Err(reason), _) | (_, Err(reason)) => {
+            let note = measured::skip_note(&assertion, reason);
+            eprintln!("{note}");
+            Some(note)
+        }
+    };
+    let (small_peak, large_peak) = (small.max_rss_kib, large.max_rss_kib);
+    assert!(
+        large_peak <= small_peak + 4 * 1024,
+        "{label}: peak RSS grew with the store: {small_peak} KiB -> {large_peak} KiB"
+    );
+    skipped
+}
+
+/// A measured child holding `HISTORY_INDEX_BALLAST_MIB` MiB resident, so a
+/// peak-RSS bound has something real to catch.
+#[test]
+#[ignore = "the measured child of the store-growth assertion's own tests"]
+fn rss_ballast_child() {
+    let mib: usize = std::env::var("HISTORY_INDEX_BALLAST_MIB")
+        .expect("rss_ballast_child is entered only by the store-growth assertion's tests")
+        .parse()
+        .unwrap();
+    let ballast = vec![1u8; mib << 20];
+    assert_eq!(
+        std::hint::black_box(&ballast)
+            .iter()
+            .map(|b| *b as usize)
+            .sum::<usize>(),
+        mib << 20
+    );
+}
+
+/// A measured command: this test binary holding `ballast_mib` MiB, after
+/// writing `rchar_after` into the stand-in accounting file if one is given.
+#[cfg(target_os = "linux")]
+fn stand_in_command(ballast_mib: usize, rchar_after: Option<(&Path, u64)>) -> Command {
+    // Every value reaches the script as a positional argument, never as source.
+    let (accounting, rchar) = rchar_after.map_or((PathBuf::new(), 0), |(path, rchar)| {
+        (path.to_path_buf(), rchar)
+    });
+    let mut command = Command::new("sh");
+    command
+        .args([
+            "-c",
+            r#"if [ -n "$1" ]; then printf 'rchar: %s\n' "$2" > "$1" || exit 1; fi
+               exec "$0" --exact rss_ballast_child --ignored --test-threads=1"#,
+        ])
+        .arg(std::env::current_exe().unwrap())
+        .arg(accounting)
+        .arg(rchar.to_string())
+        .env("HISTORY_INDEX_BALLAST_MIB", ballast_mib.to_string());
+    command
+}
+
+/// A stand-in `/proc/self/io` reporting `rchar` bytes read so far.
+#[cfg(target_os = "linux")]
+fn stand_in_accounting(scratch: &ScratchDir, name: &str, rchar: u64) -> PathBuf {
+    let path = scratch.join(name);
+    std::fs::write(&path, format!("rchar: {rchar}\nwchar: 0\n")).unwrap();
+    path
+}
+
+/// The panic message of `check`, which must panic.
+#[cfg(target_os = "linux")]
+fn panic_of(check: impl FnOnce() + std::panic::UnwindSafe) -> String {
+    let payload = std::panic::catch_unwind(check).expect_err("the assertion must fail");
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn where_the_kernel_counts_bytes_read_a_run_that_read_more_fails_the_bound() {
+    let scratch = ScratchDir::new("hindex-accounting-counted").unwrap();
+    let limit = Duration::from_secs(60);
+    let small_io = stand_in_accounting(&scratch, "small-io", 1_000_000);
+    let small = measured::measure_from(stand_in_command(0, None), limit, None, &small_io);
+    // The larger run's accounting moves 10 MiB while it lives.
+    let large_io = stand_in_accounting(&scratch, "large-io", 1_000_000);
+    let large = measured::measure_from(
+        stand_in_command(0, Some((&large_io, 1_000_000 + (10 << 20)))),
+        limit,
+        None,
+        &large_io,
+    );
+    assert!(small.output.status.success() && large.output.status.success());
+    assert_eq!(small.rchar, Ok(0));
+    assert!(
+        // Less only the helper's own reads of the child's status file.
+        large.rchar.clone().unwrap() >= 9 << 20,
+        "{:?}",
+        large.rchar
+    );
+    let message = panic_of(|| {
+        assert_unmoved_by_store("stand-in", &small, &large);
+    });
+    assert!(
+        message.contains("stand-in: bytes read grew with the store: 0 -> "),
+        "{message}"
+    );
+    // The same figures within the bound pass, with nothing skipped.
+    assert_eq!(assert_unmoved_by_store("stand-in", &small, &small), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn without_io_accounting_only_the_bytes_read_bound_is_skipped_and_said() {
+    let scratch = ScratchDir::new("hindex-accounting-absent").unwrap();
+    let absent = scratch.join("no-such-io");
+    let limit = Duration::from_secs(60);
+    let small = measured::measure_from(stand_in_command(0, None), limit, None, &absent);
+    let large = measured::measure_from(stand_in_command(64, None), limit, None, &absent);
+    assert!(small.output.status.success() && large.output.status.success());
+    let reason = small.rchar.clone().unwrap_err();
+    assert!(
+        reason.contains(&absent.display().to_string()) && reason.contains("does not exist"),
+        "{reason}"
+    );
+    assert_eq!(measured::bytes_read(&small.rchar, "a bound"), None);
+    // Within the RSS bound, the run passes and says what it skipped.
+    let note = assert_unmoved_by_store("absent", &small, &small).expect("a skip note");
+    assert!(
+        note.contains("bytes read must not grow with the store") && note.contains(&reason),
+        "{note}"
+    );
+    // The peak-RSS bound is still enforced: 64 MiB more resident fails it.
+    let message = panic_of(|| {
+        assert_unmoved_by_store("absent", &small, &large);
+    });
+    assert!(
+        message.contains("absent: peak RSS grew with the store"),
+        "{message}"
+    );
 }
 
 /// How a recording run is started: the CLI buffered, the CLI streaming, and an
@@ -986,26 +1201,13 @@ fn recording_reads_nothing_but_its_own_files_however_large_the_store() {
             let found = history::find_record_by_id(&crowd.store, records[0].history_id)
                 .expect("the recorded run is found by id");
             assert_eq!(found.prompt, "record me");
-            runs.push((
-                size,
-                measured.rchar,
-                measured.max_rss_kib,
-                measured.sampled_rss_kib,
-            ));
+            runs.push(measured);
         }
-        let (_, small_read, small_peak, small_sampled) = runs[0];
-        let (_, large_read, large_peak, large_sampled) = runs[1];
+        let (small_sampled, large_sampled) = (runs[0].sampled_rss_kib, runs[1].sampled_rss_kib);
         // A store ten times larger — 1800 more session files of 256 KiB each,
         // a legacy index 115 MiB longer and today's segments 28 MiB longer —
         // reads the same bytes and holds the same memory.
-        assert!(
-            large_read <= small_read + 64 * 1024,
-            "{recorder:?}: bytes read grew with the store: {small_read} -> {large_read}"
-        );
-        assert!(
-            large_peak <= small_peak + 4 * 1024,
-            "{recorder:?}: peak RSS grew with the store: {small_peak} KiB -> {large_peak} KiB"
-        );
+        assert_unmoved_by_store(&format!("{recorder:?}"), &runs[0], &runs[1]);
         assert!(
             large_sampled <= small_sampled + 4 * 1024,
             "{recorder:?}: RSS while the run was live grew with the store: \
@@ -1126,7 +1328,7 @@ fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
             // The run really was long-lived and appending while it was sampled:
             // many samples, spread over seconds, across which the segment kept
             // growing rather than taking every entry as the run closed.
-            let series = measured.series;
+            let series = &measured.series;
             let life_ms = series.last().map_or(0, |sample| sample.at_ms);
             assert!(
                 life_ms >= 3_000 && series.len() >= 25,
@@ -1166,17 +1368,14 @@ fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
                         .rss_kib
                 })
                 .collect();
-            lives.push((measured.rchar, profile, measured.max_rss_kib));
+            lives.push((measured, profile));
         }
-        let (small_read, small_profile, small_peak) = &lives[0];
-        let (large_read, large_profile, large_peak) = &lives[1];
+        let (small, small_profile) = &lives[0];
+        let (large, large_profile) = &lives[1];
         // The tenfold store — today's segments 3 MiB -> 31 MiB, the legacy
         // index 12 MiB -> 125 MiB, 200 -> 2000 other sessions' files — moves
         // none of it.
-        assert!(
-            *large_read <= small_read + 64 * 1024,
-            "{recorder:?}: bytes read grew with the store: {small_read} -> {large_read}"
-        );
+        assert_unmoved_by_store(&format!("{recorder:?}"), small, large);
         for (eighth, (small, large)) in small_profile.iter().zip(large_profile).enumerate() {
             assert!(
                 *large <= small + 4 * 1024,
@@ -1185,10 +1384,6 @@ fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
                 eighth + 1
             );
         }
-        assert!(
-            *large_peak <= small_peak + 4 * 1024,
-            "{recorder:?}: peak RSS grew with the store: {small_peak} KiB -> {large_peak} KiB"
-        );
     }
 }
 
@@ -2410,13 +2605,16 @@ fn an_all_time_lookup_streams_the_legacy_index_in_bounded_memory() {
         let measured = measured::measure(command, Duration::from_secs(60));
         assert_eq!(json(&measured.output)[0]["history_id"], target);
         assert_eq!(snapshot(&legacy.store), before);
-        assert!(
-            measured.rchar
-                > std::fs::metadata(legacy.store.join(".index.jsonl"))
+        if let Some(read) =
+            measured::bytes_read(&measured.rchar, "the lookup read through the legacy index")
+        {
+            assert!(
+                read > std::fs::metadata(legacy.store.join(".index.jsonl"))
                     .unwrap()
                     .len(),
-            "the lookup read through the legacy index"
-        );
+                "the lookup read through the legacy index"
+            );
+        }
         peaks.push(measured.max_rss_kib);
     }
     // 18 000 more 4 KiB entries — about 75 MiB more legacy index.

@@ -41,7 +41,9 @@
 # optionalDependencies, the npm:oneharness-cli `covers`, and the host maps of
 # the SDK package e2e and the launcher e2e (npm-e2e.sh) — is held to it in both
 # directions, because a platform one list forgets is an install that fails on
-# that host through that channel alone.
+# that host through that channel alone. README.md lists none of them: it must
+# point at the declaration, and any target or platform package it names must be
+# declared.
 #
 # Quiet on success, one line. On failure it names each drift and the fix.
 set -euo pipefail
@@ -677,6 +679,7 @@ npm_launcher="npm/oneharness/bin/oneharness.js"
 npm_launcher_manifest="npm/oneharness/package.json"
 sdk_package_e2e="npm/oneharness-sdk/test/package-e2e.mjs"
 npm_e2e="scripts/npm-e2e.sh"
+readme="README.md"
 
 if [ ! -f "$platforms" ]; then
 	fail "$platforms is missing, so nothing states which platforms a release builds; restore it — it is the one statement of that set every release matrix and npm list is held to"
@@ -836,6 +839,16 @@ if [ -n "$platform_records" ]; then
 		"$(declared_platforms 1 4)" \
 		"$(tr -d '\r' <"$npm_e2e" | sed -n 's/^ *\([a-z0-9]*-[a-z0-9]*\)) TARGET="\([^"]*\)" ;;$/\2 \1/p')" \
 		"map each npm platform there to its target, so the launcher e2e stages the package a host's node resolves"
+	# README.md keeps no copy of the set: it points at the declaration, and every
+	# target triple or platform package it does name must be one declared.
+	grep -q 'release-platforms\.toml' "$readme" ||
+		fail "$readme no longer points readers at $platforms for the release platform set; say there that every channel covers what $platforms declares, rather than listing the platforms"
+	while read -r entry; do
+		[ -n "$entry" ] || continue
+		fail "$readme names '$entry', which $platforms does not declare; name only declared platforms there, or point at $platforms instead"
+	done < <(comm -13 \
+		<({ declared_platforms 1; declared_platforms 4 | sed 's|^|@oneharness/cli-|'; } | sort -u) \
+		<(tr -d '\r' <"$readme" | grep -oE '\b[a-z0-9_]+-(unknown|apple|pc)-[a-z0-9_]+(-[a-z0-9_]+)?\b|@oneharness/cli-[a-z0-9]+-[a-z0-9]+' | sort -u))
 fi
 
 if [ "$fails" -ne 0 ]; then

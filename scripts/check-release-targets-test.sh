@@ -65,6 +65,7 @@ staged=(
   scripts/npm-e2e.sh
   release-platforms.toml
   .github/workflows/package-pr.yml
+  README.md
 )
 
 # $1 = fixture name. Leaves a fresh staged checkout at $work/$1 and prints it.
@@ -798,6 +799,20 @@ root="$(stage pr-lane-missing)"
 rm "$root/.github/workflows/package-pr.yml"
 assert_red pr-lane-missing "a missing pull-request lane" \
   "package-pr.yml is missing, so the platforms release-platforms.toml marks pull_request = true are built on no pull request"
+
+# README.md keeps no copy of the platform set: it points at the declaration,
+# and a platform it names must be a declared one.
+root="$(stage readme-unpointed)"
+rewrite "$root" README.md '{ gsub(/release-platforms\.toml/, "the release matrix"); print }'
+assert_red readme-unpointed "a README that stopped pointing at the platform declaration" \
+  "README.md no longer points readers at release-platforms.toml"
+
+root="$(stage readme-undeclared-platform)"
+printf '\nAlso shipped: riscv64gc-unknown-linux-gnu, as @oneharness/cli-linux-riscv64.\n' >>"$root/README.md"
+assert_red readme-undeclared-platform "a README naming a platform the declaration does not" \
+  "README.md names '@oneharness/cli-linux-riscv64', which release-platforms.toml does not declare"
+grep -Fq "README.md names 'riscv64gc-unknown-linux-gnu'" "$work/out" ||
+  fail_showing "a README naming an undeclared target triple failed the gate without naming it; restore the triple half of the README check in scripts/check-release-targets.sh"
 
 # The probe owns which registries are answerable; this gate mirrors that list,
 # and a registry dropped from one side must not sit stale on the other.

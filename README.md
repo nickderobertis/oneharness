@@ -208,13 +208,14 @@ the distribution is `oneharness-cli`, the command is `oneharness`), **npm**
 per-platform packages (`npm install -g oneharness-cli`, same distribution name,
 same command), **crates.io** (`cargo install oneharness`), prebuilt checksummed
 binaries on its
-[GitHub Releases](https://github.com/nickderobertis/oneharness/releases) page for
-Linux, macOS, and Windows, and `cargo install --git`. Every channel covers the
-same six platforms: Linux x86_64 and aarch64, macOS x86_64 and arm64, Windows
-x86_64, and **Windows ARM64** — the `aarch64-pc-windows-msvc` release binary
-(`oneharness.exe` in a `.zip`, which `install.sh` selects on a Windows ARM64
-host even from an x64-emulated shell), the `win_arm64` `oneharness-cli` wheel,
-and the `@oneharness/cli-win32-arm64` npm package. The PyPI and npm CLI packages
+[GitHub Releases](https://github.com/nickderobertis/oneharness/releases) page, and
+`cargo install --git`. Every channel covers every platform
+[`release-platforms.toml`](release-platforms.toml) declares — the one list, which
+a drift gate holds each channel to. Among them is **Windows ARM64**: the
+`aarch64-pc-windows-msvc` release binary (`oneharness.exe` in a `.zip`, which
+`install.sh` selects on a Windows ARM64 host even from an x64-emulated shell),
+the `win_arm64` `oneharness-cli` wheel, and the `@oneharness/cli-win32-arm64` npm
+package. The PyPI and npm CLI packages
 both wrap the **prebuilt** binary — no Rust toolchain, no compile — carrying the
 platform-specific binary in a per-platform artifact (a wheel; an
 `@oneharness/cli-<platform>-<arch>` optional dependency) that the package manager

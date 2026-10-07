@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.24.1...oneharness-core-v0.24.2) - 2026-10-06
+
+### Fixed
+
+- *(events)* turn OpenCode text and reasoning parts into message and reasoning events ([#1422](https://github.com/nickderobertis/oneharness/pull/1422))
+
 ## [0.24.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.24.0...oneharness-core-v0.24.1) - 2026-10-03
 
 ### Fixed

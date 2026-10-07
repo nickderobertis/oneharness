@@ -13,15 +13,18 @@ workflow=.github/workflows/release.yml
 ci=.github/workflows/ci.yml
 release_plz=.github/workflows/release-plz.yml
 verdict=scripts/ci-verdict.sh
+notignored=.github/workflows/notignored.yml
 cp "$workflow" "$work/release.yml"
 cp "$ci" "$work/ci.yml"
 cp "$release_plz" "$work/release-plz.yml"
 cp "$verdict" "$work/ci-verdict.sh"
+cp "$notignored" "$work/notignored.yml"
 restore() {
   cp "$work/release.yml" "$workflow"
   cp "$work/ci.yml" "$ci"
   cp "$work/release-plz.yml" "$release_plz"
   cp "$work/ci-verdict.sh" "$verdict"
+  cp "$work/notignored.yml" "$notignored"
   rm -rf "$work"
 }
 trap restore EXIT
@@ -208,5 +211,34 @@ grep -Fq 'keep the verdict selector pointed at ci.yml' "$work/stderr" || {
   exit 1
 }
 cp "$work/ci-verdict.sh" "$verdict"
+
+# The suppressions comment stays advisory: it keeps its fork guard, keeps to its
+# own single-job workflow, and never rides inside a required check's workflow.
+expect_notignored_refusal() {
+  local case="$1" expected="$2"
+  if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
+    echo "check-workflows-e2e: $case unexpectedly passed the gate" >&2
+    echo "  fix: restore the notignored.yml contract in scripts/check-workflows.sh" >&2
+    exit 1
+  fi
+  grep -Fq "$expected" "$work/stderr" || {
+    echo "check-workflows-e2e: $case failed without naming '$expected'" >&2
+    echo "  fix: restore that wording in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
+    cat "$work/stderr" >&2
+    exit 1
+  }
+  cp "$work/notignored.yml" "$notignored"
+  cp "$work/ci.yml" "$ci"
+}
+
+grep -v 'if: github.event.pull_request.head.repo.full_name == github.repository' \
+  "$work/notignored.yml" >"$notignored"
+expect_notignored_refusal "notignored.yml without its fork guard" "skip fork pull requests"
+
+printf '  llmlint:\n    needs: suppressions\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' >>"$notignored"
+expect_notignored_refusal "a second job in notignored.yml" "must define exactly one job, 'suppressions'"
+
+printf '      - uses: nickderobertis/notignored@v0\n' >>"$ci"
+expect_notignored_refusal "notignored inside ci.yml" "ci.yml runs nickderobertis/notignored"
 
 echo 'check-workflows-e2e: ok'

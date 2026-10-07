@@ -276,6 +276,33 @@ if grep -qE 'run: just (lint|lint-sh|test)$|run: bun run --cwd npm/oneharness-sd
   fail "release.yml must use just check/sdk-check instead of re-listing their stages"
 fi
 
+# The suppressions review comment is an advisory artifact, never a gate. It
+# skips fork pull requests, so a required check carrying it would never report
+# on one: it stays its own workflow, with its one job, and nothing else runs it.
+notignored=.github/workflows/notignored.yml
+if [ ! -f "$notignored" ]; then
+  fail "$notignored must exist to comment the suppressions each pull request adds"
+else
+  require_line "$notignored" 'uses: nickderobertis/notignored@v0' "run nickderobertis/notignored@v0"
+  require_line "$notignored" 'pull_request:' "run on pull requests"
+  require_line "$notignored" 'contents: read' "read the tree with a read-only contents permission"
+  require_line "$notignored" 'pull-requests: write' "hold pull-requests: write to upsert its comment"
+  require_line "$notignored" 'fetch-depth: 0' "check out full history, since the scan diffs against the base branch"
+  # This is a literal GitHub expression in YAML.
+  # shellcheck disable=SC2016
+  require_line "$notignored" 'if: github.event.pull_request.head.repo.full_name == github.repository' \
+    "skip fork pull requests, whose read-only token cannot upsert the comment"
+  notignored_jobs="$(tr -d '\r' <"$notignored" | awk '/^jobs:/ { inside = 1; next } inside && /^[^ #]/ { exit } inside && /^  [a-zA-Z_-]+:/ { job = $0; sub(/:.*/, "", job); sub(/^  /, "", job); print job }')"
+  [ "$notignored_jobs" = "suppressions" ] ||
+    fail "$notignored must define exactly one job, 'suppressions', so no required status-check context ever comes to depend on it (found: $(printf '%s' "$notignored_jobs" | tr '\n' ' '))"
+fi
+for workflow in .github/workflows/*.yml; do
+  [ "$workflow" = "$notignored" ] && continue
+  if grep -q 'nickderobertis/notignored@' "$workflow"; then
+    fail "$workflow runs nickderobertis/notignored; keep it in $notignored alone, where no required check depends on it"
+  fi
+done
+
 if [ "$fails" -ne 0 ]; then
   printf 'check-workflows: %d contract drift(s)\n' "$fails" >&2
   exit 1

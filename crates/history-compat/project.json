@@ -60,7 +60,7 @@
         "fixtures"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-history-compat.lcov"
+        "{workspaceRoot}/target/coverage/oneharness-history-compat.profdata"
       ],
       "parallelism": false
     }

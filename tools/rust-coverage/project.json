@@ -6,7 +6,7 @@
     "type:coverage",
     "lang:rust"
   ],
-  "//": "The Rust line floor, enforced once over the union of every Rust crate's instrumented `test` run (each leaves target/coverage/<crate>.lcov). Selected through its inputs whenever Rust source or a Rust test changes, never through graph edges, so it depends on no e2e project. Skipped on Windows, where llvm-cov does not attribute subprocess-spawned binary coverage.",
+  "//": "The Rust line floor: `cargo llvm-cov report --fail-under-lines 95` over every Rust crate's instrumented `test` run (each leaves its merged profile in target/coverage/<record>.profdata). Selected through its inputs whenever Rust source or a Rust test changes, never through graph edges, so it depends on no e2e project. Skipped on Windows, where llvm-cov does not attribute subprocess-spawned binary coverage.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
@@ -14,7 +14,7 @@
       "{workspaceRoot}/src/**/*",
       "{workspaceRoot}/crates/**/*",
       "{workspaceRoot}/tests/**/*",
-      "{workspaceRoot}/scripts/rust-coverage.mjs",
+      "{workspaceRoot}/scripts/rust-coverage.sh",
       "{workspaceRoot}/scripts/cargo-test.sh"
     ]
   },
@@ -23,7 +23,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "node scripts/rust-coverage.mjs oneharness-core oneharness oneharness-integration oneharness-mock-harness oneharness-e2e oneharness-history-compat oneharness-sdk-contract oneharness-sdk-conformance"
+          "bash scripts/rust-coverage.sh oneharness-core oneharness oneharness-integration oneharness-mock-harness oneharness-e2e oneharness-history-compat oneharness-sdk-contract oneharness-sdk-conformance"
         ],
         "parallel": false
       },
@@ -45,10 +45,10 @@
       "inputs": [
         "default",
         {
-          "dependentTasksOutputFiles": "**/*.lcov",
+          "dependentTasksOutputFiles": "**/*.profdata",
           "transitive": false
         },
-        "{workspaceRoot}/scripts/rust-coverage.mjs",
+        "{workspaceRoot}/scripts/rust-coverage.sh",
         {
           "env": "COVERAGE_MIN"
         },
@@ -57,7 +57,8 @@
         }
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/rust-summary.json"
+        "{workspaceRoot}/target/coverage/rust-coverage.txt",
+        "{workspaceRoot}/target/coverage/rust.profdata"
       ]
     }
   }

@@ -74,7 +74,7 @@
         "{workspaceRoot}/scripts/with-symlinked-tmp-test.sh"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-e2e.lcov"
+        "{workspaceRoot}/target/coverage/oneharness-e2e.profdata"
       ],
       "parallelism": false,
       "dependsOn": [

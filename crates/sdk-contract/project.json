@@ -72,7 +72,7 @@
         "rustTestRunner"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-sdk-contract.lcov"
+        "{workspaceRoot}/target/coverage/oneharness-sdk-contract.profdata"
       ],
       "parallelism": false
     }

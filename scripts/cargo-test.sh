@@ -13,19 +13,22 @@
 # builds them into the same profile directory the suite reads them from, under
 # the same instrumentation; the nextest filter still runs only <package>'s tests.
 #
-# On Linux and macOS the run is instrumented (`cargo llvm-cov`) and its line
-# data exported to target/coverage/<package>.lcov — a self-contained record of
-# which lines this run executed, so a cache-replayed run still carries its
-# contribution without the instrumented objects that produced it. On Windows
+# On Linux and macOS the run is instrumented (`cargo llvm-cov`) and its raw
+# profiles are merged into one indexed profile, target/coverage/<record>.profdata
+# — this run's contribution to the Rust floor, which rust-coverage reads (with
+# every other crate's) through `cargo llvm-cov report`. One small file rather
+# than the run's raw profiles, which number in the thousands for a suite that
+# spawns the binary, so the test target can cache and replay it. On Windows
 # llvm-cov does not attribute the coverage of subprocess-spawned binaries (the
 # binary crate reads as ~0% there), so the suite runs uninstrumented and the
 # floor is enforced on the other two platforms.
 #
 # `--filter` narrows which of <package>'s tests run (ANDed with the package), so
 # one crate's unit and integration tiers can be two projects; `--record` names
-# the line record (default: the package), so each tier leaves its own. `--uninstrumented` asks for that
-# plain run on any platform (the symlinked-TMPDIR replay of the e2e journeys,
-# which re-runs a suite already measured).
+# the profile (default: the package), so each tier leaves its own.
+# `--uninstrumented` asks for that plain run on any platform (the
+# symlinked-TMPDIR replay of the e2e journeys, which re-runs a suite already
+# measured).
 #
 # Quiet on success apart from nextest's summary; a failure prints in full.
 set -euo pipefail
@@ -81,19 +84,27 @@ if [[ "${OS:-}" == "Windows_NT" ]] || [ "$instrumented" -eq 0 ]; then
   exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"
 fi
 
-lcov="target/coverage/$record.lcov"
+profile="target/coverage/$record.profdata"
 mkdir -p target/coverage
-rm -f "$lcov"
+rm -f "$profile"
 # Profiles are named after the workspace, not the crate, so a previous crate's
 # are cleared first; Nx runs these targets one at a time (`parallelism: false`)
 # so no other run's profiles are in flight while this one is cleared.
 cargo llvm-cov clean --profraw-only
 RUSTFLAGS="${RUSTFLAGS:-} -C linker=$root/scripts/coverage-linker.sh" \
   bash scripts/check-temp-leaks.sh cargo llvm-cov --no-report nextest "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"
-# Report over every workspace member, as the single `--workspace` run this
-# replaces did: `report` otherwise keeps only the root package's files.
-members="$(cargo metadata --no-deps --format-version 1 --locked --offline |
-  node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{for(const p of JSON.parse(s).packages)console.log(p.name)})')"
-report=()
-while IFS= read -r member; do report+=(-p "$member"); done <<<"$members"
-cargo llvm-cov report "${report[@]}" --lcov --output-path "$lcov" >/dev/null
+# The toolchain's own llvm-profdata (rustup's llvm-tools-preview), the one
+# cargo-llvm-cov merges with.
+llvm_profdata="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-profdata"
+[ -x "$llvm_profdata" ] || [ -x "$llvm_profdata.exe" ] || {
+  echo "cargo-test: no llvm-profdata at $llvm_profdata; run 'rustup component add llvm-tools-preview' (just bootstrap does)" >&2
+  exit 1
+}
+inputs="$(mktemp)"
+trap 'rm -f "$inputs"' EXIT
+find target/llvm-cov-target -maxdepth 1 -name '*.profraw' >"$inputs"
+[ -s "$inputs" ] || {
+  echo "cargo-test: the instrumented run of $package wrote no profile under target/llvm-cov-target; its coverage cannot be recorded" >&2
+  exit 1
+}
+"$llvm_profdata" merge -sparse --input-files="$inputs" -o "$profile"

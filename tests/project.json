@@ -64,7 +64,7 @@
         "{workspaceRoot}/scripts/check-capability-surface.sh"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-integration.lcov"
+        "{workspaceRoot}/target/coverage/oneharness-integration.profdata"
       ],
       "parallelism": false
     }

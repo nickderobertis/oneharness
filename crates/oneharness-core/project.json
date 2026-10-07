@@ -78,7 +78,7 @@
         "{workspaceRoot}/src/cli.rs"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-core.lcov"
+        "{workspaceRoot}/target/coverage/oneharness-core.profdata"
       ],
       "parallelism": false
     }

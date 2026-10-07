@@ -123,8 +123,8 @@ repo-level `coverage` — and each target calls its own language's tool.
   paid `live-*` suites and the dispatch-only `explore-*` probes declare no gate
   target, so neither tier ever runs them; each runs from its own workflow.
 - **Caching** is on for every deterministic target, keyed by its declared
-  inputs, replaying its declared outputs (a Rust `test` replays its line record,
-  `target/coverage/<crate>.lcov`; a `build` its binary). Uncached: `format-write`
+  inputs, replaying its declared outputs (a Rust `test` replays its merged
+  profile, `target/coverage/<record>.profdata`; a `build` its binary). Uncached: `format-write`
   (it writes the tree), `workspace:lint` (the graph it checks is no single
   file), the targets that reach the network (`supply-chain`, `package-crates`,
   `semver-check`, `probe-live`) and the paid or dispatch-only `live`/`explore`

@@ -2,21 +2,22 @@
 
 Subtree rules for the Rust line-coverage floor. Root `AGENTS.md` still applies.
 
-- **Coverage is enforced at the skill default, 95% lines** (`FLOOR` in
-  `scripts/rust-coverage.mjs`, overridable through `COVERAGE_MIN`), via `cargo
-  llvm-cov` — an external tool, handled like `cargo-deny` and shellcheck: CI
-  installs it (`cargo-llvm-cov` + the `llvm-tools-preview` rustup component, added
-  by `just bootstrap`) and this project's `coverage` (part of `just check`) fails
-  the gate below the bar. Each Rust project's `test` runs its crate instrumented
-  (`scripts/cargo-test.sh`) and leaves its line record in
-  `target/coverage/<record>.lcov`; `coverage` depends on every one of them and
-  counts a line covered when ANY run executed it — what the single `--workspace`
-  run it replaced measured, over the same files. So the `oneharness-core` engine
-  is gated alongside the binary. The records rather than the raw profiles are
-  what is combined because a cache-replayed `test` must carry its contribution
-  without the instrumented objects that produced it. A stale instrumented build
-  can only add uncovered lines, never hide one; `cargo llvm-cov clean
-  --workspace` clears it.
+- **Coverage is enforced at the skill default, 95% lines** (`COVERAGE_MIN`,
+  default 95, in `scripts/rust-coverage.sh`), via `cargo llvm-cov` — an external
+  tool, handled like `cargo-deny` and shellcheck: CI installs it
+  (`cargo-llvm-cov` + the `llvm-tools-preview` rustup component, added by `just
+  bootstrap`) and this project's `coverage` (part of `just check`) fails the gate
+  below the bar. Each Rust project's `test` runs its crate instrumented
+  (`scripts/cargo-test.sh`) and merges that run's raw profiles into one indexed
+  profile, `target/coverage/<record>.profdata` (one small file, so the target can
+  cache it, where the raw profiles of a suite that spawns the binary number in
+  the thousands). `coverage` depends on every one of them and runs `cargo llvm-cov
+  report --fail-under-lines` over all of them and every workspace member — the
+  metric and the files the single `--workspace` run it replaced measured. So the
+  `oneharness-core` engine is gated alongside the binary. The report maps the
+  profiles onto the instrumented objects in `target/llvm-cov-target`; a profile
+  whose objects were since rebuilt can only lose counts, failing the floor rather
+  than passing it, and `cargo llvm-cov clean --workspace` clears a stale build.
   The threshold is line coverage, not region/branch: the hermetic mock-harness
   suite drives whole user journeys (high-leverage line coverage), and a few
   I/O-failure arms in `crates/oneharness-core/src/io/runner.rs` (spawn/wait

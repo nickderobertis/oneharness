@@ -73,7 +73,7 @@
         "rustTestRunner"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-mock-harness.lcov"
+        "{workspaceRoot}/target/coverage/oneharness-mock-harness.profdata"
       ],
       "parallelism": false
     }

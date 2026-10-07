@@ -48,10 +48,13 @@ follow-ups (see "After the main task").
 
 - **Product shape:** CLI plus Rust, Node, and Python libraries (`shapes/cli.md`,
   `shapes/library.md`, `intersections/rust-cli.md`).
-- **Language(s):** Rust, TypeScript, and Python; Bash is limited to setup/live e2e.
+- **Language(s):** Rust, TypeScript, Python, and Bash. Bash is gate code, not
+  only setup: `scripts/` holds the smoke, install and live e2e drivers and the
+  drift checks (and their tests) that `just lint-workflows` runs in `check`.
 - **References composed:** `base.md`, `shapes/cli.md`, `shapes/library.md`,
-  `languages/rust.md`, `languages/typescript.md`, `intersections/rust-cli.md`,
-  `ci.md`, `llmlint.md`, `releasing.md`, `monorepo.md`.
+  `languages/rust.md`, `languages/typescript.md`, `languages/python.md`,
+  `languages/bash.md`, `intersections/rust-cli.md`, `ci.md`, `llmlint.md`,
+  `releasing.md`, `monorepo.md`.
 - **Cross-cutting:** `ci.md`, `releasing.md`, and `monorepo.md`; root `just`
   delegates to Cargo/Bun without Nx because this small two-package graph is static.
 - **Excluded, and why:** web-app/React/Next.js/asdf-plugin/skills-repo guidance

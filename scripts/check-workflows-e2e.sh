@@ -21,7 +21,7 @@ cp "$verdict" "$work/ci-verdict.sh"
 cp "$notignored" "$work/notignored.yml" || {
   echo "check-workflows-e2e: could not back up $notignored into $work" >&2
   echo "  fix: make sure $notignored exists and the temp dir is writable, then re-run" >&2
-  rm -rf "$work"
+  rm -rf "$work" || echo "  also: could not remove the scratch dir $work; delete it by hand" >&2
   exit 1
 }
 restore() {

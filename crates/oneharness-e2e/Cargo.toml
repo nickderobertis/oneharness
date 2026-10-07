@@ -20,5 +20,5 @@ path = "src/lib.rs"
 # every verb and pin documented defaults against the source of truth.
 oneharness = { path = "../.." }
 oneharness-core = { path = "../oneharness-core" }
-clap = { version = "4.5", features = ["derive"] }
+clap = { workspace = true }
 serde_json = { workspace = true }

@@ -508,3 +508,73 @@ hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath)
   echo "check-local-gate: bootstrap installed hooksPath '$hooks_path', expected '.githooks'" >&2
   exit 1
 }
+
+# The llmlint installer runs from the SessionStart hook, so under its `set -e`
+# every failure it guards must still end in exit 0. Each case drives the real
+# script against a scratch HOME whose `uv` and `llmlint` stubs record their
+# calls: reaching `llmlint doctor` proves the run carried on past the failure.
+installer_home="$tmp/installer-home"
+installer_err="$tmp/installer-err"
+{
+  mkdir -p "$installer_home/.local/bin" &&
+    cat > "$installer_home/.local/bin/uv" <<'STUB' &&
+#!/usr/bin/env bash
+printf 'uv %s\n' "$*" >> "$CALL_LOG"
+exit "${UV_STATUS:-0}"
+STUB
+    cat > "$installer_home/.local/bin/llmlint" <<'STUB' &&
+#!/usr/bin/env bash
+printf 'llmlint %s\n' "$*" >> "$CALL_LOG"
+STUB
+    chmod +x "$installer_home/.local/bin/uv" "$installer_home/.local/bin/llmlint"
+} || {
+  echo "check-local-gate: could not stage the installer fixture under $installer_home" >&2
+  echo "  fix: make the scratch directory $tmp writable, then re-run" >&2
+  exit 1
+}
+
+# $1 = what went wrong, $2 = what to change.
+installer_fail() {
+  echo "check-local-gate: setup-llmlint.sh $1" >&2
+  echo "  fix: $2" >&2
+  echo "  what the installer said:" >&2
+  cat "$installer_err" >&2 || true
+  exit 1
+}
+guard_fix="guard that step in scripts/setup-llmlint.sh with '|| log ...' so the SessionStart hook still exits 0"
+wording_fix="restore that message in scripts/setup-llmlint.sh, or update this expectation to its new wording"
+
+# $1 = the stub install's exit status, $2 = CLAUDE_ENV_FILE ('' for none).
+# Fails unless the installer exits 0 and reaches its final doctor call.
+run_installer() {
+  local uv_status=$1 env_file=$2 status=0
+  : > "$log" || installer_fail "case could not reset $log" "make $tmp writable, then re-run"
+  CALL_LOG="$log" UV_STATUS="$uv_status" HOME="$installer_home" CLAUDE_ENV_FILE="$env_file" \
+    bash "$root/scripts/setup-llmlint.sh" 2> "$installer_err" || status=$?
+  [[ $status -eq 0 ]] || installer_fail "exited $status; it must always exit 0" "$guard_fix"
+  grep -q '^llmlint doctor' "$log" || installer_fail "stopped before 'llmlint doctor'" "$guard_fix"
+}
+
+run_installer 1 ''
+grep -Fq 'llmlint-cli install failed (continuing)' "$installer_err" \
+  || installer_fail "did not report a failed install as continuing" "$wording_fix"
+
+run_installer 0 "$tmp/missing-dir/env"
+grep -Fq "could not write $tmp/missing-dir/env (continuing)" "$installer_err" \
+  || installer_fail "did not report an unwritable CLAUDE_ENV_FILE" "$wording_fix"
+if grep -Fq 'exported PATH' "$installer_err"; then
+  installer_fail "claimed to export PATH after the env file write failed" \
+    "return before logging success when the CLAUDE_ENV_FILE append fails"
+fi
+
+run_installer 0 "$tmp/session-env"
+grep -Fq 'exported PATH' "$installer_err" \
+  || installer_fail "did not report a writable CLAUDE_ENV_FILE as exported" "$wording_fix"
+
+# A diagnostic that cannot be written (stderr closed) must not end the run.
+{ : > "$log" && : > "$installer_err"; } || installer_fail "case could not reset its logs" "make $tmp writable, then re-run"
+status=0
+CALL_LOG="$log" UV_STATUS=1 HOME="$installer_home" CLAUDE_ENV_FILE="$tmp/session-env" \
+  bash "$root/scripts/setup-llmlint.sh" 2>&- || status=$?
+[[ $status -eq 0 ]] || installer_fail "exited $status with stderr closed; it must always exit 0" "$guard_fix"
+grep -q '^llmlint doctor' "$log" || installer_fail "stopped before 'llmlint doctor' with stderr closed" "$guard_fix"

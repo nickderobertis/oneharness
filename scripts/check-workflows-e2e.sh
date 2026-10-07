@@ -18,13 +18,22 @@ cp "$workflow" "$work/release.yml"
 cp "$ci" "$work/ci.yml"
 cp "$release_plz" "$work/release-plz.yml"
 cp "$verdict" "$work/ci-verdict.sh"
-cp "$notignored" "$work/notignored.yml"
+cp "$notignored" "$work/notignored.yml" || {
+  echo "check-workflows-e2e: could not back up $notignored into $work" >&2
+  echo "  fix: make sure $notignored exists and the temp dir is writable, then re-run" >&2
+  rm -rf "$work"
+  exit 1
+}
 restore() {
   cp "$work/release.yml" "$workflow"
   cp "$work/ci.yml" "$ci"
   cp "$work/release-plz.yml" "$release_plz"
   cp "$work/ci-verdict.sh" "$verdict"
-  cp "$work/notignored.yml" "$notignored"
+  cp "$work/notignored.yml" "$notignored" || {
+    echo "check-workflows-e2e: could not restore $notignored; its original is kept at $work/notignored.yml" >&2
+    echo "  fix: copy that file back over $notignored (or 'git checkout -- $notignored')" >&2
+    return 1
+  }
   rm -rf "$work"
 }
 trap restore EXIT
@@ -227,8 +236,11 @@ expect_notignored_refusal() {
     cat "$work/stderr" >&2
     exit 1
   }
-  cp "$work/notignored.yml" "$notignored"
-  cp "$work/ci.yml" "$ci"
+  { cp "$work/notignored.yml" "$notignored" && cp "$work/ci.yml" "$ci"; } || {
+    echo "check-workflows-e2e: could not reset $notignored and $ci after $case" >&2
+    echo "  fix: make sure both are writable, then re-run; the EXIT trap restores them from $work" >&2
+    exit 1
+  }
 }
 
 grep -v 'if: github.event.pull_request.head.repo.full_name == github.repository' \

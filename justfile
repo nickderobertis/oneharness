@@ -89,8 +89,7 @@ lint-sh:
     shellcheck scripts/*.sh
 
 # Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
-# plus the hermetic behavioral tests of the idempotent crates.io publisher and
-# the always-exit-0 llmlint session installer.
+# plus the hermetic behavioral test of the idempotent crates.io publisher.
 lint-workflows: build build-mock-harness
     @bash scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh >/dev/null
@@ -115,7 +114,6 @@ lint-workflows: build build-mock-harness
     @bash scripts/with-portable-sed.sh scripts/check-smoke-env.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-publish-npm.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-local-gate.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/setup-llmlint-test.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-sdk-install.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh >/dev/null
     @bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh >/dev/null

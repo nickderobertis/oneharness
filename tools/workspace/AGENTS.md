@@ -10,10 +10,10 @@ Subtree rules for the repository-wide checks no single project owns. Root
   declares; a new crate edge needs the matching `implicitDependencies` entry,
   which the same check derives from `cargo metadata`. `check-nx-graph-test.sh`
   holds the refusals red against a scratch copy of the tree.
-- **`test` holds the gate's own plumbing**: the affected tier's base
-  (`scripts/nx-base.sh`, `check-nx-base.sh`), the scratch-leak and LF gates,
-  and the checks that `just check` and `just bootstrap` stay self-sufficient in
-  a fresh checkout (`check-js-install.sh`, `check-build-mock-harness.sh`).
+- **A gate test edits a staged copy, never the tracked file.** Projects run in
+  parallel, so a check that mutates `release.yml`, `check-temp-leaks.sh` or a
+  scratch prefix in place to watch a gate fail can hand a sibling task a file
+  nobody committed; copy what the gate reads into scratch space and drift that.
 - **`supply-chain`** (`cargo deny` + `cargo machete`) reads the network advisory
   database, so it is uncached and in neither tier; `just deps-check`, `just gate`
   and ci.yml's `deny` job run it by name.

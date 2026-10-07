@@ -45,6 +45,7 @@ follow-ups (see "After the main task").
    A clean base and a reproducible environment are usually how the user's
    feature ships with a low error rate.
 
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] The composition record is mandated content — the create-repo baseline's record of the references composed, the projects in the graph and each exclusion with its reason — so its project list is the decision of record, held to the graph by scripts/check-nx-graph.mjs. The block brackets the whole section from outside because the baseline checker refuses any angle-bracket text inside it. -->
 ## Stack and composition
 
 - **Product shape:** CLI plus Rust, Node, and Python libraries (`shapes/cli.md`,
@@ -87,6 +88,7 @@ follow-ups (see "After the main task").
   there); the functional gate still runs on all three platforms.
 
 ## Project graph
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 
 Nx runs every target; each ecosystem resolves through its own one workspace and
 lockfile — Cargo (`Cargo.lock`), one Bun workspace (root `package.json` +

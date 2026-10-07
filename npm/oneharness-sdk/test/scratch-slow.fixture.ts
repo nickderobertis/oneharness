@@ -1,4 +1,3 @@
-// llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file and `scratch.test.ts` is what runs it.
 // A passing test whose scratch cleanup outlasts bun's default hook budget.
 //
 // `scratch.test.ts` runs this file as its own `bun test` subprocess: the shared

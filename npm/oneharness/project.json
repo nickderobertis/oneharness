@@ -24,8 +24,7 @@
       "options": {
         "commands": [
           "node --check npm/oneharness/bin/oneharness.js",
-          "node --check scripts/npm-build.mjs",
-          "shellcheck scripts/npm-e2e.sh"
+          "node --check scripts/npm-build.mjs"
         ],
         "parallel": false
       }

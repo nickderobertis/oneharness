@@ -5,6 +5,7 @@
 # target reads it.
 #
 #   scripts/cargo-test.sh <package> [--with <package>]... [--features <list>]
+#                         [--filter <nextest filterset>] [--record <name>]
 #                         [--uninstrumented]
 #
 # `--with` names a crate whose BINARIES the suite spawns (`oneharness`,
@@ -18,7 +19,11 @@
 # contribution without the instrumented objects that produced it. On Windows
 # llvm-cov does not attribute the coverage of subprocess-spawned binaries (the
 # binary crate reads as ~0% there), so the suite runs uninstrumented and the
-# floor is enforced on the other two platforms. `--uninstrumented` asks for that
+# floor is enforced on the other two platforms.
+#
+# `--filter` narrows which of <package>'s tests run (ANDed with the package), so
+# one crate's unit and integration tiers can be two projects; `--record` names
+# the line record (default: the package), so each tier leaves its own. `--uninstrumented` asks for that
 # plain run on any platform (the symlinked-TMPDIR replay of the e2e journeys,
 # which re-runs a suite already measured).
 #
@@ -30,7 +35,7 @@ cd "$root"
 
 usage() {
   echo "cargo-test: $1" >&2
-  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--uninstrumented]" >&2
+  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--filter <filterset>] [--record <name>] [--uninstrumented]" >&2
   exit 2
 }
 
@@ -40,6 +45,8 @@ shift
 [[ "$package" =~ ^[a-z0-9_-]+$ ]] || usage "'$package' is not a cargo package name"
 packages=(-p "$package")
 features=()
+filterset=""
+record="$package"
 instrumented=1
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +58,14 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] && [[ "$2" =~ ^[a-z0-9_/,-]+$ ]] || usage "--features needs a comma-separated feature list"
       features=(--features "$2")
       shift 2 ;;
+    --filter)
+      [ $# -ge 2 ] && [ -n "$2" ] || usage "--filter needs a nextest filterset"
+      filterset="$2"
+      shift 2 ;;
+    --record)
+      [ $# -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--record needs a record name"
+      record="$2"
+      shift 2 ;;
     --uninstrumented)
       instrumented=0
       shift ;;
@@ -59,14 +74,14 @@ while [ $# -gt 0 ]; do
 done
 
 # Only <package>'s own tests run; the companions are there for their binaries.
-filter=(-E "package($package)")
+filter=(-E "package($package)${filterset:+ & ($filterset)}")
 nextest_flags=(--locked --status-level fail --final-status-level fail)
 
 if [[ "${OS:-}" == "Windows_NT" ]] || [ "$instrumented" -eq 0 ]; then
   exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"
 fi
 
-lcov="target/coverage/$package.lcov"
+lcov="target/coverage/$record.lcov"
 mkdir -p target/coverage
 rm -f "$lcov"
 # Profiles are named after the workspace, not the crate, so a previous crate's

@@ -23,7 +23,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "node scripts/rust-coverage.mjs oneharness-core oneharness oneharness-mock-harness oneharness-e2e oneharness-history-compat oneharness-sdk-contract oneharness-sdk-conformance"
+          "node scripts/rust-coverage.mjs oneharness-core oneharness oneharness-integration oneharness-mock-harness oneharness-e2e oneharness-history-compat oneharness-sdk-contract oneharness-sdk-conformance"
         ],
         "parallel": false
       },
@@ -32,6 +32,7 @@
           "projects": [
             "oneharness-core",
             "oneharness",
+            "oneharness-integration",
             "oneharness-mock-harness",
             "oneharness-e2e",
             "history-compat",

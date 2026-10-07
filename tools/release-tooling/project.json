@@ -47,15 +47,6 @@
     ]
   },
   "targets": {
-    "lint": {
-      "executor": "nx:run-commands",
-      "options": {
-        "commands": [
-          "shellcheck scripts/ci-verdict.sh scripts/check-ci-verdict.sh scripts/verify-published.sh scripts/check-verify-published.sh scripts/publish-crates.sh scripts/check-publish-crates.sh scripts/publish-npm.sh scripts/check-publish-npm.sh scripts/package-crates.sh scripts/check-package-crates.sh scripts/semver-check.sh scripts/check-semver-check.sh scripts/release-probe.sh scripts/check-release-probe.sh scripts/release-probe-live.sh scripts/check-release-targets.sh scripts/check-release-targets-test.sh"
-        ],
-        "parallel": false
-      }
-    },
     "test": {
       "executor": "nx:run-commands",
       "options": {

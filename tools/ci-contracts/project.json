@@ -53,15 +53,6 @@
     ]
   },
   "targets": {
-    "lint": {
-      "executor": "nx:run-commands",
-      "options": {
-        "commands": [
-          "shellcheck scripts/check-pr-title.sh scripts/check-pr-title-e2e.sh scripts/check-e2e-matrix.sh scripts/check-e2e-matrix-test.sh scripts/check-workflows.sh scripts/check-workflows-test.sh scripts/check-workflows-e2e.sh scripts/check-workflows-portable-test.sh scripts/with-portable-sed.sh scripts/check-setup-just.sh scripts/setup-just-install.sh scripts/setup-just-pin.sh scripts/report-scheduled-failure.sh scripts/report-scheduled-failure-test.sh scripts/ci-gate-tier.sh scripts/check-ci-gate-tier.sh scripts/check-local-gate.sh scripts/local-llmlint-gate.sh scripts/local-llmlint-gate-lib.sh scripts/comparison-base.sh scripts/setup-llmlint.sh"
-        ],
-        "parallel": false
-      }
-    },
     "test": {
       "executor": "nx:run-commands",
       "options": {

@@ -55,8 +55,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "cargo clippy -p oneharness-sdk-conformance --all-targets --locked -- -D warnings",
-          "shellcheck scripts/check-sdk-coverage.sh scripts/check-sdk-coverage-test.sh scripts/check-parity-audit.sh"
+          "cargo clippy -p oneharness-sdk-conformance --all-targets --locked -- -D warnings"
         ],
         "parallel": false
       }

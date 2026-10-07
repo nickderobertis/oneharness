@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file and `just lint-workflows` is what runs it.
 #
 # Run one bash script with a `sed` on PATH that holds it to what BSD sed
 # (macOS) and GNU sed (Linux, Git Bash) read alike, so a GNU-only call fails on

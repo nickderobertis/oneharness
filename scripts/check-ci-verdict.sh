@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
 # Drive CI verdict selection through a stand-in GitHub API, including reruns
 # and unreadable responses that cannot safely authorize publication, and the
 # choice of WHICH run swept the tagged tree: the merged release pull request's

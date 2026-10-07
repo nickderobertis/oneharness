@@ -1,0 +1,21 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "scripts",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:bash"
+  ],
+  "//": "The repository's shell, Node and Python tooling, owned here by path so every script belongs to a project. Its `lint` is the repository-wide shellcheck. Which project RUNS a script is a separate question each one answers through its inputs \u2014 the drift gates are ci-contracts, release-tooling, e2e-support and workspace; the installer is install-surface; the live and exploration drivers are the live-* and explore-* projects \u2014 so a script change selects this lint and the projects whose targets read that script, nothing else.",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash -c \"shellcheck scripts/*.sh scripts/nx\""
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

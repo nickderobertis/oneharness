@@ -6,7 +6,7 @@
     "type:app",
     "lang:rust"
   ],
-  "//": "The published binary crate. Its manifest stays at the repository root (cargo install --git, maturin and the release matrix name it there), so this project is rooted at src/: a project rooted at the repository root would own every file no other project owns, and every script or document edit would rebuild everything that depends on the binary. Its integration tests (tests/*.rs) and the shipped mock responder (tests/support/) are claimed through its inputs instead.",
+  "//": "The published binary crate and its unit tests. Its manifest stays at the repository root (cargo install --git, maturin and the release matrix name it there), so this project is rooted at src/: a project rooted at the repository root would own every file no other project owns, and every script or document edit would rebuild everything that depends on the binary. The shipped mock responder (tests/support/mock_harness.rs, compiled into the library) is claimed through its inputs; the crate's integration tests are the oneharness-integration project.",
   "implicitDependencies": [
     "oneharness-core"
   ],
@@ -14,8 +14,7 @@
     "default": [
       "{projectRoot}/**/*",
       "rustToolchain",
-      "{workspaceRoot}/tests/*.rs",
-      "{workspaceRoot}/tests/support/**/*"
+      "{workspaceRoot}/tests/support/mock_harness.rs"
     ]
   },
   "targets": {
@@ -41,8 +40,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "cargo clippy -p oneharness --all-targets --features mock-harness --locked -- -D warnings",
-          "shellcheck scripts/check-capability-surface.sh"
+          "cargo clippy -p oneharness --lib --bins --features mock-harness --locked -- -D warnings"
         ],
         "parallel": false
       }
@@ -67,17 +65,14 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/cargo-test.sh oneharness --with oneharness-mock-harness --features oneharness/mock-harness",
-          "bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh"
+          "bash scripts/cargo-test.sh oneharness --features oneharness/mock-harness --filter \"kind(lib) | kind(bin)\""
         ],
         "parallel": false
       },
       "inputs": [
         "default",
         "^default",
-        "rustTestRunner",
-        "{workspaceRoot}/docs/history-index.md",
-        "{workspaceRoot}/scripts/check-capability-surface.sh"
+        "rustTestRunner"
       ],
       "outputs": [
         "{workspaceRoot}/target/coverage/oneharness.lcov"

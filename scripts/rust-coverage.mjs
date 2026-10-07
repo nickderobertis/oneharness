@@ -15,7 +15,9 @@
 // floor is a property of the suite, measured on Linux and macOS.
 //
 // Quiet on success: one line. Below the floor it names the least-covered files.
-import { readFileSync } from "node:fs";
+// Either way the merged numbers are written to target/coverage/rust-summary.json,
+// the target's declared output, so a replayed run states the same verdict.
+import { readFileSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -74,6 +76,10 @@ for (const [file, lines] of files) {
 }
 const percent = total === 0 ? 0 : (covered / total) * 100;
 const summary = `${percent.toFixed(2)}% lines (${covered}/${total}) over ${packages.length} crate runs`;
+writeFileSync(
+	resolve(root, "target/coverage/rust-summary.json"),
+	`${JSON.stringify({ floor: FLOOR, percent: Number(percent.toFixed(2)), covered, total, records: packages }, null, 2)}\n`,
+);
 if (total === 0 || percent < FLOOR) {
 	console.error(`coverage: ${summary} is below the ${FLOOR}% floor.`);
 	perFile

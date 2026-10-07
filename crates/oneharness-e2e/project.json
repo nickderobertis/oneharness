@@ -41,8 +41,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "cargo clippy -p oneharness-e2e --all-targets --locked -- -D warnings",
-          "shellcheck scripts/smoke.sh scripts/check-smoke-env.sh scripts/with-symlinked-tmp.sh scripts/with-symlinked-tmp-test.sh"
+          "cargo clippy -p oneharness-e2e --all-targets --locked -- -D warnings"
         ],
         "parallel": false
       }
@@ -68,6 +67,7 @@
         "{workspaceRoot}/CHANGELOG.md",
         "{workspaceRoot}/docs/harness-usage.md",
         "{workspaceRoot}/justfile",
+        "{workspaceRoot}/tests/support/opencode_run.jsonl",
         "{workspaceRoot}/scripts/smoke.sh",
         "{workspaceRoot}/scripts/check-smoke-env.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp.sh",

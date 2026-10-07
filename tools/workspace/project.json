@@ -49,9 +49,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "node scripts/check-nx-graph.mjs",
-          "shellcheck scripts/nx-base.sh scripts/check-nx-base.sh scripts/check-nx-graph-test.sh scripts/cargo-test.sh scripts/coverage-linker.sh scripts/check-temp-leaks.sh scripts/check-temp-leaks-test.sh scripts/check-scratch-prefixes.sh scripts/check-scratch-prefixes-test.sh scripts/check-lf-contracts.sh scripts/check-lf-contracts-test.sh scripts/check-sdk-install.sh scripts/check-build-mock-harness.sh scripts/session-setup.sh",
-          "shellcheck scripts/nx"
+          "node scripts/check-nx-graph.mjs"
         ],
         "parallel": false
       },

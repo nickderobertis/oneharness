@@ -18,15 +18,6 @@
     ]
   },
   "targets": {
-    "lint": {
-      "executor": "nx:run-commands",
-      "options": {
-        "commands": [
-          "shellcheck scripts/install.sh scripts/install-e2e.sh"
-        ],
-        "parallel": false
-      }
-    },
     "test": {
       "executor": "nx:run-commands",
       "options": {

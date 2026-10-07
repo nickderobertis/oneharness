@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is release.yml's verify jobs, and scripts/check-verify-published.sh covers it from `just lint-workflows`.
 # Prove a just-published artifact is installable by retrying, to a bound, what
 # its consumer does: the install plus a smoke of it, with the last attempt's
 # output surfaced when the bound runs out.

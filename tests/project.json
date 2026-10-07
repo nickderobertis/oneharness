@@ -1,0 +1,72 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "oneharness-integration",
+  "projectType": "library",
+  "tags": [
+    "type:test",
+    "lang:rust"
+  ],
+  "//": "The binary crate's in-process integration tier: tests/*.rs drive the library API (and the mock harness as a subprocess) without the CLI binary. A project of its own so a change here re-runs this tier, not every project that depends on the binary. It also owns tests/fixtures/, the captured harness output several suites read; each of those claims the files through its own inputs.",
+  "implicitDependencies": [
+    "oneharness-core",
+    "oneharness",
+    "oneharness-mock-harness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/*.rs",
+      "{projectRoot}/support/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash -c \"rustfmt --edition 2021 --check tests/*.rs\""
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash -c \"rustfmt --edition 2021 tests/*.rs\""
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness --tests --features mock-harness --locked -- -D warnings"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness --with oneharness-mock-harness --features oneharness/mock-harness --filter \"kind(test)\" --record oneharness-integration",
+          "bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner",
+        "{workspaceRoot}/docs/history-index.md",
+        "{workspaceRoot}/scripts/check-capability-surface.sh"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness-integration.lcov"
+      ],
+      "parallelism": false
+    }
+  }
+}

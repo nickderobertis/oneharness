@@ -65,7 +65,7 @@ readonly RELEASE_BRANCH_PREFIX="release-plz-"
 # the person reading the log of a release that behaved unexpectedly.
 decide() {
   local needs_check="$1" why="$2"
-  printf 'ci-verdict: %s\n' "$why"
+  printf 'ci-verdict: %s; %s\n' "$run_source" "$why"
   if [ -n "${GITHUB_OUTPUT:-}" ] && ! printf 'needs_check=%s\n' "$needs_check" >>"$GITHUB_OUTPUT"; then
     refuse "ci-verdict: could not record the verdict for $sha" \
       "it was writing needs_check=$needs_check to \$GITHUB_OUTPUT ($GITHUB_OUTPUT)" \
@@ -139,7 +139,6 @@ locate_sweep() {
       run_source="release pull request #$number's head $head_sha carried a different tree than $sha"
     fi
   fi
-  printf 'ci-verdict: %s; reading its %s run of %s\n' "$run_source" "$run_event" "$workflow"
   endpoint="repos/$repo/actions/workflows/$workflow/runs?head_sha=$run_sha&event=$run_event${run_branch:+&branch=$run_branch}&per_page=100"
 }
 

@@ -820,7 +820,7 @@ expect_said "$tmp/err" "no workflow_dispatch run of ci.yml for $SHA_UNDER_TEST"
 GH_PULLS="$(release_pr feature-branch)" GH_TREES="$tmp/same-trees" run_case "{\"workflow_runs\":[$(pr_run 308 success success success)]}" \
   "a merged pull request that is not release-plz's"
 expect_refused
-expect_said "$tmp/out" "no merged release pull request carried $SHA_UNDER_TEST"
+expect_said "$tmp/err" "no merged release pull request carried $SHA_UNDER_TEST"
 
 GH_PULLS_FAIL=1 run_case "{\"workflow_runs\":[$(pr_run 309 success success success)]}" \
   "the pull requests endpoint refuses"

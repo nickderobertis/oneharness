@@ -63,7 +63,7 @@ specs="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
     }
   });
 ')"
-[ -n "$specs" ] || { echo "rust-coverage: no Rust project's test runs scripts/cargo-test.sh; there is nothing to measure" >&2; exit 1; }
+[ -n "$specs" ] || { echo "rust-coverage: no Rust project's test runs scripts/cargo-test.sh; there is nothing to measure; restore a Rust project's test target that runs scripts/cargo-test.sh in its project.json" >&2; exit 1; }
 
 # The objects first, for this tree; then the profiles, each run's own.
 records=()
@@ -101,7 +101,7 @@ done
 # leaving the report on its default package selection.
 names="$(cargo metadata --no-deps --format-version 1 --locked --offline |
   node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{for(const p of JSON.parse(s).packages)console.log(p.name)})')"
-[ -n "$names" ] || { echo "rust-coverage: cargo metadata named no workspace member to report on" >&2; exit 1; }
+[ -n "$names" ] || { echo "rust-coverage: cargo metadata named no workspace member to report on; check the [workspace] members in the root Cargo.toml with 'cargo metadata --no-deps --offline --locked'" >&2; exit 1; }
 members=()
 while IFS= read -r member; do members+=(-p "$member"); done <<<"$names"
 
@@ -112,7 +112,7 @@ merged=(target/llvm-cov-target/*.profdata)
 if [ -s "${merged[0]}" ]; then
   cp "${merged[0]}" target/coverage/rust.profdata
 elif [ "$status" -eq 0 ]; then
-  echo "rust-coverage: the report wrote no merged profile under target/llvm-cov-target" >&2
+  echo "rust-coverage: the report wrote no merged profile under target/llvm-cov-target; re-run the Rust test targets with --skip-nx-cache so their profiles are rebuilt, then this coverage target" >&2
   exit 1
 fi
 total="$(awk '/^TOTAL/ { print $(NF-3) " lines (" $(NF-4) " missed of " $(NF-5) ")" }' target/coverage/rust-coverage.txt)"

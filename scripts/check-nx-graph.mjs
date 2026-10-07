@@ -116,7 +116,9 @@ try {
 		}),
 	);
 } catch (error) {
-	die(`cargo metadata failed:\n${String(error.stderr ?? error.message).trim()}`);
+	die(
+		`cargo metadata failed:\n${String(error.stderr ?? error.message).trim()}\nNext: fix the Cargo.toml or Cargo.lock error above (run \`cargo fetch --locked\` if a dependency is missing offline), then re-run this check.`,
+	);
 }
 for (const pkg of metadata.packages) {
 	const project = projectByManifest.get(resolve(pkg.manifest_path));

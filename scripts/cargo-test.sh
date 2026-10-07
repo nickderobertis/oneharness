@@ -125,7 +125,7 @@ inputs="$(mktemp)"
 trap 'rm -f "$inputs"' EXIT
 find target/llvm-cov-target -maxdepth 1 -name '*.profraw' >"$inputs"
 [ -s "$inputs" ] || {
-  echo "cargo-test: the instrumented run of $package wrote no profile under target/llvm-cov-target; its coverage cannot be recorded" >&2
+  echo "cargo-test: the instrumented run of $package wrote no profile under target/llvm-cov-target; its coverage cannot be recorded; check that cargo-llvm-cov is installed (just bootstrap) and nothing overrides LLVM_PROFILE_FILE, then re-run the test target with --skip-nx-cache" >&2
   exit 1
 }
 "$llvm_profdata" merge -sparse --input-files="$inputs" -o "$profile"

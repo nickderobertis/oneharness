@@ -24,7 +24,7 @@
       "{workspaceRoot}/scripts/check-scratch-prefixes-test.sh",
       "{workspaceRoot}/scripts/check-lf-contracts.sh",
       "{workspaceRoot}/scripts/check-lf-contracts-test.sh",
-      "{workspaceRoot}/scripts/check-sdk-install.sh",
+      "{workspaceRoot}/scripts/check-js-install.sh",
       "{workspaceRoot}/scripts/check-build-mock-harness.sh",
       "{workspaceRoot}/scripts/session-setup.sh",
       "{workspaceRoot}/scripts/nx",
@@ -68,7 +68,7 @@
           "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh",
           "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh",
           "bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-sdk-install.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-js-install.sh",
           "bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh"
         ],
         "parallel": false

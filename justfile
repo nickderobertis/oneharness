@@ -198,7 +198,7 @@ sdk-generate:
 # the root bun.lock into *this* checkout — gitignored, so anything that needs it
 # installs it rather than assuming a bootstrapped caller (scripts/nx does the
 # same before every Nx run). Quiet on success; bun's `--silent` would drop
-# failure reasons too, hence the capture. Enforced by scripts/check-sdk-install.sh.
+# failure reasons too, hence the capture. Enforced by scripts/check-js-install.sh.
 js-install:
     @out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node workspace dependency install failed; the bun output above says why. If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check network access to the npm registry and rerun 'just js-install'." >&2; exit 1; }
 

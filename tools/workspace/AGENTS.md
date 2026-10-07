@@ -13,7 +13,7 @@ Subtree rules for the repository-wide checks no single project owns. Root
 - **`test` holds the gate's own plumbing**: the affected tier's base
   (`scripts/nx-base.sh`, `check-nx-base.sh`), the scratch-leak and LF gates,
   and the checks that `just check` and `just bootstrap` stay self-sufficient in
-  a fresh checkout (`check-sdk-install.sh`, `check-build-mock-harness.sh`).
+  a fresh checkout (`check-js-install.sh`, `check-build-mock-harness.sh`).
 - **`supply-chain`** (`cargo deny` + `cargo machete`) reads the network advisory
   database, so it is uncached and in neither tier; `just deps-check`, `just gate`
   and ci.yml's `deny` job run it by name.

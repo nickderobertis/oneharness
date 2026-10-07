@@ -6,7 +6,7 @@
     "type:coverage",
     "lang:rust"
   ],
-  "//": "The Rust line floor: `cargo llvm-cov report --fail-under-lines 95` over every Rust crate's instrumented `test` run (each leaves its merged profile in target/coverage/<record>.profdata). Selected through its inputs whenever Rust source or a Rust test changes, never through graph edges, so it depends on no e2e project. Skipped on Windows, where llvm-cov does not attribute subprocess-spawned binary coverage.",
+  "//": "llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] JSON has no comment to scope this to `coverage`, which is what it is about: the Rust line floor is ONE report over every crate's instrumented run, so it depends on every Rust project's `test`, the binary e2e journeys included, by design \u2014 leaving any run out would let that crate's coverage slip outside the floor (scripts/check-nx-graph.mjs refuses exactly that). Each `test` is still selected by the graph and replays from the cache when its inputs are unchanged. The Rust line floor: `cargo llvm-cov report --fail-under-lines 95` over every Rust crate's instrumented `test` run (each leaves its merged profile in target/coverage/<record>.profdata). Selected through its inputs whenever Rust source or a Rust test changes, never through graph edges, so it depends on no e2e project. Skipped on Windows, where llvm-cov does not attribute subprocess-spawned binary coverage.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",

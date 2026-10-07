@@ -2,7 +2,7 @@
 # Hermetic contract check for the mechanism assertion used by live-control.
 set -euo pipefail
 
-# The same treatment `check-local-gate.sh` and `check-sdk-install.sh` take, for
+# The same treatment `check-local-gate.sh` and `check-js-install.sh` take, for
 # the same reason: the cases below stand a `sort` of their own on the PATH to
 # drive the CRLF branch, and an extensionless stub is not a program on Windows.
 # The suite this checks is itself unix-only (`e2e-control.sh` exits early there —

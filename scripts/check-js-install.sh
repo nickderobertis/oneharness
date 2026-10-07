@@ -24,7 +24,7 @@ set -euo pipefail
 
 case $(uname -s) in
   MINGW* | MSYS* | CYGWIN*)
-    echo "check-sdk-install: skipped on Windows because this Unix behavioral harness relies on extensionless executable stubs" >&2
+    echo "check-js-install: skipped on Windows because this Unix behavioral harness relies on extensionless executable stubs" >&2
     exit 0
     ;;
 esac
@@ -36,7 +36,7 @@ trap 'rm -rf "$tmp"' EXIT
 install_line='bun install --frozen-lockfile'
 
 fail() {
-    echo "check-sdk-install: $1" >&2
+    echo "check-js-install: $1" >&2
     echo "  Restore the contract: scripts/nx installs the root Bun workspace ('$install_line')" >&2
     echo "  before Nx runs whenever the install is missing or older than bun.lock, quiet on" >&2
     echo "  success and loud on failure, and bootstrap reaches 'just js-install'." >&2
@@ -165,4 +165,4 @@ if grep -q '^nx ' "$tmp/loud.calls"; then
     fail "Nx ran after the workspace install failed"
 fi
 
-echo "check-sdk-install: ok"
+echo "check-js-install: ok"

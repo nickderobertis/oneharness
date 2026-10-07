@@ -16,6 +16,7 @@ cd "$repo_root"
 # files: the leak gate and these prefixes are read by suites that run in
 # parallel with this one, and must never see a drifted copy.
 stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
 for file in scripts/check-scratch-prefixes.sh scripts/check-temp-leaks.sh \
   crates/oneharness-core/src/io/scratch.rs npm/oneharness-sdk/test/scratch.mjs \
   python/oneharness-sdk/test/scratch.py python/oneharness-sdk/test/package_e2e.py; do

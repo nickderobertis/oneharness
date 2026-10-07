@@ -14,6 +14,7 @@ cd "$(dirname "$0")/.."
 # Copied by path rather than through git, since check-workflows-portable-test.sh
 # runs this script inside a staged tree of its own that is no repository.
 stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
 for path in scripts .github Cargo.toml crates/*/Cargo.toml rust-toolchain.toml \
   pyproject.toml python/oneharness-sdk/pyproject.toml npm/oneharness/package.json \
   npm/oneharness-sdk/package.json justfile release-plz.toml; do

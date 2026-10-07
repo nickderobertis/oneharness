@@ -57,7 +57,8 @@ trap 'rm -rf "$work"' EXIT
 # The step of ci.yml's check job that runs the full sweep. Its success in all
 # three check jobs is the verdict; the affected tier's step does not count.
 readonly SWEEP_STEP="Full sweep (just check all)"
-# Every release pull request release-plz opens is on a branch with this prefix.
+# Every release pull request release-plz opens is on a branch with this prefix;
+# check-ci-gate-tier.sh holds it to ci-gate-tier.sh's and release-plz.yml's.
 readonly RELEASE_BRANCH_PREFIX="release-plz-"
 
 # `needs_check` is the only thing the workflow reads; everything else here is for

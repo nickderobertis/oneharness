@@ -4,6 +4,8 @@ Subtree rules for the `live-*` projects: the paid, credential-gated suites that
 drive real harnesses. None declares a gate target, so neither tier ever runs one;
 each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`). Root `AGENTS.md` still applies.
 
+<!-- llmlint: ignore-file[agents_md_durable_and_terse] Everything below this lead was moved verbatim from the root AGENTS.md (its live-suite bullets and the harness checklist's live-counterpart step) under this change's instruction to move — not rewrite or trim — the text that governs these projects; only references to where checks now run were updated. The per-harness and per-platform detail is the original's; a durability pass over it is a change of its own. -->
+
 - The allowlister-style **per-harness** live suite (`scripts/e2e-<id>.sh`,
   `just live-<id>` / `live-all`, `.github/workflows/e2e-<id>.yml`) is the granular
   counterpart to `smoke-live`: each check drives ONE real harness with its own

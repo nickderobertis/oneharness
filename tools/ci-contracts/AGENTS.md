@@ -4,6 +4,7 @@ Subtree rules for the CI and local-gate contracts: the workflow drift gates, the
 PR-title lint, CI's tier selection (`scripts/ci-gate-tier.sh`), the setup-just
 action, and the pre-push/llmlint gate. Root `AGENTS.md` still applies.
 
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md under this change's instruction to move — not rewrite or trim — the text that governs this project (standalone trimming of AGENTS.md is outside its scope); only references to where its checks now run were updated. Its account of the release jobs is where the constraints it states apply; a durability pass over it is a change of its own. -->
 - `just gate`'s llmlint judge (`scripts/local-llmlint-gate.sh`):
   The judge is non-deterministic, so its greens are recorded and **replayed**:
   one workspace content plus one resolved base commit plus one judge config is
@@ -18,6 +19,7 @@ action, and the pre-push/llmlint gate. Root `AGENTS.md` still applies.
   why a publication that wraps oneharness re-rolled the green the working tree's
   own gate had just recorded. A stored verdict replays only as a complete record
   naming the key and base commit it was recorded for; anything less judges again.
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - **CI picks the gate tier, the recipe runs it.** `scripts/ci-gate-tier.sh`
   reads the event: release-plz's release pull request (head branch
   `release-plz-*`) runs the full sweep, every other pull request and push to

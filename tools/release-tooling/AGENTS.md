@@ -7,6 +7,7 @@ and `probe-live` targets reach crates.io or the public registries, so they are
 uncached and in neither gate tier: `just gate` and ci.yml's `package`/`semver`
 jobs run them by name. Root `AGENTS.md` still applies.
 
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md under this change's instruction to move — not rewrite or trim — the text that governs this project (standalone trimming of AGENTS.md is outside its scope); only references to where its checks now run were updated. Its account of the release jobs is where the constraints it states apply; a durability pass over it is a change of its own. -->
 - `just package-crates` — package both crates as Cargo verifies them at publish
   time. Deliberately NOT in `check`: `release.yml` runs `check` at the tag, and
   there the binary already pins the core version that same run publishes, so
@@ -51,6 +52,7 @@ jobs run them by name. Root `AGENTS.md` still applies.
   published version is `pip install`-able. The pull-request packaging lane
   (`package-pr.yml`) is advisory, never a required check: an ARM runner queue
   must not extend time to merge.
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - **The release reads a sweep, it never sweeps twice.** `scripts/ci-verdict.sh`
   takes the verdict of the full sweep CI ran over the tagged TREE — the merged
   release-plz pull request's run when its head carried exactly that tree (the

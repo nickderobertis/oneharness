@@ -3,6 +3,8 @@
 Subtree rules for the reusable engine — the pure `domain` layer and the `io`
 boundary every surface (the CLI, the SDKs, an embedder) drives. Root `AGENTS.md` still applies.
 
+<!-- llmlint: ignore-file[agents_md_durable_and_terse] Everything below this header was moved verbatim from the root AGENTS.md (its "What this binary is" engine rules and its "Adding or changing a harness" checklist), under this change's instruction to move — not rewrite or trim — the text that governs this project, with standalone trimming of AGENTS.md out of its scope. The dated inventories inside it (which harnesses a capability is wired for today) are the original's; a durability pass over this checklist is a change of its own. -->
+
 ## What this binary is
 
 - A thin CLI over a registry of **harness adapters**. Each adapter is data: a
@@ -457,11 +459,9 @@ shape. When you add one:
   `session_formats` (every non-empty list implies `supports_resume`): the exact
   output formats that emit the native id, preferred automatic format first; an
   empty list means incapable. `oneharness list` derives `session_capable` from
-  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records the harnesses or history the instruction applies to today; trimming that is a deliberate pass over the checklist, not part of relocating it. -->
   this list, so capability can never drift from the transport. The non-empty
   harnesses are exactly the `extract_session` sources — claude-code, opencode,
   codex, cursor, qwen — which is what lets the uniform
-  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   `run --session <name>` handle map a caller-owned name to the harness's native
   token in the session store (`domain::session` decides create-vs-continue,
   `io::session` persists `<state>/oneharness/sessions/<slug>/<name>.json`; the
@@ -522,11 +522,9 @@ shape. When you add one:
   with `reasoning: None` that has an effective `--reasoning`/config value — never a
   silent drop. `None` is the honest default (opencode/qwen/crush express effort
   only through their own config file — the `sync`-path follow-up; goose has no
-  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
   headless knob at all). Wired today: claude-code (`--effort`), codex
   (`-c model_reasoning_effort=`), copilot (`--reasoning-effort`), cursor
   (`ModelSuffix`). Pin the rendered argv with a `--print-command` assertion, add
-  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   the `reasoning`/`supports_reasoning` column to the README matrix, resolve it per
   harness (`[harness.<id>] reasoning`, next to `model`, since effort values are
   provider-specific), and add the `oh_reasoning_enforce <id> <effort>` live phase —
@@ -534,10 +532,8 @@ shape. When you add one:
   evidence of honoring). That live phase matters most for copilot (a history of
   headless features silently not firing — its hooks were probe-refuted) and cursor
   (a forum report says cursor-agent may reject the very bracket syntax its `--help`
-  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records the harnesses or history the instruction applies to today; trimming that is a deliberate pass over the checklist, not part of relocating it. -->
   advertises — the phase fails loudly if so). The config/env/CLI trio gained
   `reasoning` / `ONEHARNESS_REASONING` / `--reasoning`.
-  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - Declare its `large_input` (`LargeInput`): how a **large** prompt/system reaches
   the harness without inlining it into the argv (past the OS ceiling → `E2BIG`;
   issue #1115). Three fields, all sourced from the CLI's headless docs, never
@@ -557,12 +553,10 @@ shape. When you add one:
   the CLI still reads the off-argv input. `LargeInput::NONE` (inline only) is the
   honest default until a stdin/file route is *verified* from a real invocation —
   a large value then stays inline and the command layer warns loudly rather than
-  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
   risking a silent E2BIG. All eight harnesses are wired today (cursor's
   stdin-only-prompt path was closed-source, so it was **probe-verified** via
   `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
   before wiring — the pattern to reuse for the next uncertain CLI).
-  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   <!-- llmlint: ignore-block[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] This bullet can state the two rules an adapter author must satisfy or defer them to `docs/harness-usage.md`, and one rule in this list forbids each; it keeps the minimum, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
 - Declare its `usage` (`UsageSupport`). Every harness must report an honest tier:
   one that cannot report headroom says *which kind* of cannot (no plan quota at
@@ -614,7 +608,6 @@ shape. When you add one:
   (must not break text extraction — verified live). **Never guess a shape: source
   it from a real transcript** — the `scripts/explore-events.sh` + dispatch-only
   `explore-events.yml` probe dumps every harness's live output to CI logs (run it
-  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
   from the Actions tab), which is how the current four recognizers were written;
   re-run it when adding a harness. Coverage today
   (all sourced, all e2e drift-alarmed): opencode (`json`, default),
@@ -623,7 +616,6 @@ shape. When you add one:
   default, `command_execution` items), qwen (`--events`→`stream-json`, content
   blocks). Goose/crush/copilot emit only decorative TUI text headlessly (probe-
   confirmed), so `events` stays `null` — correct, not a gap. Forward `--events`
-  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   (or `--stream`) to `oh_events_assert`/`oh_stream_assert` as a run-arg for a
   harness whose transcript needs the upgraded format. Streaming
   (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)

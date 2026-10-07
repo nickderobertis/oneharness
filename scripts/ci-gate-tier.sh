@@ -23,7 +23,8 @@
 set -euo pipefail
 
 # Every release pull request release-plz opens is on a branch with this prefix
-# (release-plz.yml finds its own pull request the same way).
+# (release-plz.yml finds its own pull request the same way); check-ci-gate-tier.sh
+# holds this, ci-verdict.sh and release-plz.yml to one spelling.
 readonly RELEASE_BRANCH_PREFIX="release-plz-"
 
 refuse() {

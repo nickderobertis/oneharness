@@ -142,6 +142,19 @@ printf '%s\n' "$sweep" | grep -qx '        run: just check all' ||
 grep -qF '"Full sweep (just check all)"' scripts/ci-verdict.sh ||
   fail "scripts/ci-verdict.sh no longer reads the step 'Full sweep (just check all)'; the release would trust a run it cannot tell was a sweep"
 
+# The release pull request is recognized by its branch prefix in three places —
+# the tier selector, the release's verdict reader, and release-plz.yml finding
+# its own pull request — and all three must name the same prefix.
+prefix_of() { sed -n 's/^readonly RELEASE_BRANCH_PREFIX="\(.*\)"$/\1/p' "$1"; }
+tier_prefix="$(prefix_of scripts/ci-gate-tier.sh)"
+verdict_prefix="$(prefix_of scripts/ci-verdict.sh)"
+plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' .github/workflows/release-plz.yml | head -n 1)"
+[ -n "$tier_prefix" ] || fail "scripts/ci-gate-tier.sh declares no 'readonly RELEASE_BRANCH_PREFIX=\"...\"'"
+[ "$verdict_prefix" = "$tier_prefix" ] ||
+  fail "scripts/ci-verdict.sh recognizes release pull requests by '$verdict_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'; the release would read a run that never swept, or none"
+[ "$plz_prefix" = "$tier_prefix" ] ||
+  fail ".github/workflows/release-plz.yml finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
+
 # The other required contexts keep their names and never wait on `check`.
 for name in pr-title deny llmlint; do
   grep -qx "  $name:" "$ci" || fail "$ci lost its '$name' job, a required context"

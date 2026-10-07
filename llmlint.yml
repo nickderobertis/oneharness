@@ -39,3 +39,30 @@ plugins:
   - "https://raw.githubusercontent.com/nickderobertis/dero-skills/main/skills/bootstrap/create-repo/assets/llmlint/languages/bash.llmlint.yml@1"
   - "https://raw.githubusercontent.com/nickderobertis/dero-skills/main/skills/bootstrap/create-repo/assets/llmlint/ci.llmlint.yml@1"
   - "https://raw.githubusercontent.com/nickderobertis/dero-skills/main/skills/bootstrap/create-repo/assets/llmlint/releasing.llmlint.yml@1"
+# Temporary, for the move that created the oneharness-e2e crate (removed by the
+# follow-up node once that move is on main). crates/oneharness-e2e/tests/cli.rs
+# came from tests/cli.rs — git reports the rename at 99% similarity; the only
+# edits re-point its include_str!, fixture and binary paths at the new crate.
+# These three rules' e2e globs match the new path but not the old one, and
+# llmlint 0.4.6 then treats the rename as ineligible for EVERY rule in the run
+# (its eligibility check reads rule scopes, not ignore directives), sending the
+# whole 1.34 MB file as new: the judge prompt reached 2,202,802 characters and
+# codex refused it (input_too_large, cap 1,048,576). Each entry restates its
+# plugin `include` verbatim (an override's `files` replaces the plugin's) and
+# excludes only that one path; every other rule still judges the file's edits.
+rules:
+  - name: e2e_not_mocked
+    override: true
+    files:
+      include: ["**/e2e/**", "**/*e2e*", "**/integration/**", "**/*.integration.*"]
+      exclude: ["crates/oneharness-e2e/tests/cli.rs"]
+  - name: tests_mirror_real_usage
+    override: true
+    files:
+      include: ["**/e2e/**", "**/*e2e*", "**/integration/**", "**/*.integration.*"]
+      exclude: ["crates/oneharness-e2e/tests/cli.rs"]
+  - name: expensive_tests_stay_behind_their_own_edge
+    override: true
+    files:
+      include: ["**/e2e/**", "**/*e2e*", "**/integration/**", "**/*.integration.*", "**/project.json", "nx.json"]
+      exclude: ["crates/oneharness-e2e/tests/cli.rs"]

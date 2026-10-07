@@ -282,6 +282,8 @@ fi
 notignored=.github/workflows/notignored.yml
 if [ ! -f "$notignored" ]; then
   fail "$notignored must exist to comment the suppressions each pull request adds"
+elif [ ! -r "$notignored" ]; then
+  fail "$notignored is not readable, so its contract cannot be checked; restore read permission on it and re-run"
 else
   require_line "$notignored" 'uses: nickderobertis/notignored@v0' "run nickderobertis/notignored@v0"
   require_line "$notignored" 'pull_request:' "run on pull requests"
@@ -293,14 +295,19 @@ else
   require_line "$notignored" 'if: github.event.pull_request.head.repo.full_name == github.repository' \
     "skip fork pull requests, whose read-only token cannot upsert the comment"
   notignored_jobs="$(tr -d '\r' <"$notignored" | awk '/^jobs:/ { inside = 1; next } inside && /^[^ #]/ { exit } inside && /^  [a-zA-Z_-]+:/ { job = $0; sub(/:.*/, "", job); sub(/^  /, "", job); print job }')"
+  # The file was just checked readable, so an empty list here means no job.
   [ "$notignored_jobs" = "suppressions" ] ||
     fail "$notignored must define exactly one job, 'suppressions', so no required status-check context ever comes to depend on it (found: $(printf '%s' "$notignored_jobs" | tr '\n' ' '))"
 fi
 for workflow in .github/workflows/*.yml; do
   [ "$workflow" = "$notignored" ] && continue
-  if grep -q 'nickderobertis/notignored@' "$workflow"; then
-    fail "$workflow runs nickderobertis/notignored; keep it in $notignored alone, where no required check depends on it"
-  fi
+  status=0
+  grep -q 'nickderobertis/notignored@' "$workflow" || status=$?
+  case "$status" in
+    0) fail "$workflow runs nickderobertis/notignored; keep it in $notignored alone, where no required check depends on it" ;;
+    1) ;;
+    *) fail "$workflow could not be read (grep exit $status), so whether it runs nickderobertis/notignored is unknown; restore read permission on it and re-run" ;;
+  esac
 done
 
 if [ "$fails" -ne 0 ]; then

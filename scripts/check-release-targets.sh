@@ -844,10 +844,14 @@ if [ -n "$platform_records" ]; then
 	# The pinned toolchain installs the standard library of every target it
 	# lists, so a release target missing there is one no checkout can build
 	# without an ad-hoc `rustup target add`.
-	hold_to_platforms "$toolchain's targets" \
-		"$(declared_platforms 1)" \
-		"$(tr -d '\r' <"$toolchain" | awk '/^targets = \[/ { inside = 1 } inside { print } inside && /\]/ { exit }' | grep -oE '"[^"]+"' | tr -d '"')" \
-		"list exactly the targets $platforms declares in its targets array, one quoted triple per line"
+	if [ -f "$toolchain" ] && [ -r "$toolchain" ]; then
+		hold_to_platforms "$toolchain's targets" \
+			"$(declared_platforms 1)" \
+			"$(tr -d '\r' <"$toolchain" | awk '/^targets = \[/ { inside = 1 } inside { print } inside && /\]/ { exit }' | grep -oE '"[^"]+"' | tr -d '"')" \
+			"list exactly the targets $platforms declares in its targets array, one quoted triple per line"
+	else
+		fail "$toolchain is missing or unreadable, so no pinned toolchain lists the targets $platforms declares; restore it with those targets in its targets array"
+	fi
 	# README.md keeps no copy of the set: it points at the declaration, and every
 	# target triple or platform package it does name must be one declared.
 	grep -q 'release-platforms\.toml' "$readme" ||

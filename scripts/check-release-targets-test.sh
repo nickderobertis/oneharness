@@ -816,6 +816,12 @@ rm "$root/.github/workflows/package-pr.yml"
 assert_red pr-lane-missing "a missing pull-request lane" \
   "package-pr.yml is missing, so the platforms release-platforms.toml marks pull_request = true are built on no pull request"
 
+root="$(stage toolchain-missing)"
+rm "$root/rust-toolchain.toml" ||
+  fail "could not remove rust-toolchain.toml from the scratch copy $root; check that $work is writable, then re-run"
+assert_red toolchain-missing "a missing pinned toolchain" \
+  "rust-toolchain.toml is missing or unreadable, so no pinned toolchain lists the targets release-platforms.toml declares"
+
 # README.md keeps no copy of the platform set: it points at the declaration,
 # and a platform it names must be a declared one.
 root="$(stage readme-unpointed)"

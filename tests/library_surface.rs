@@ -29,7 +29,7 @@ use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::sync::{self, SyncMode, SyncRequest, SyncStatus};
 use oneharness_core::io::usage::{self, UsageRequest};
 
-#[path = "support/library_fixture.rs"]
+#[path = "common/library_fixture.rs"]
 mod fixture;
 
 /// A private directory for one test's files, cleared on the way in so a rerun

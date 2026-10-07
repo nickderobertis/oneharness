@@ -6,7 +6,7 @@
     "type:test",
     "lang:rust"
   ],
-  "//": "The binary crate's in-process integration tier: tests/*.rs drive the library API (and the mock harness as a subprocess) without the CLI binary. A project of its own so a change here re-runs this tier, not every project that depends on the binary. It also owns tests/fixtures/, the captured harness output several suites read; each of those claims the files through its own inputs.",
+  "//": "The binary crate's in-process integration tier: tests/*.rs drive the library API (and the mock harness as a subprocess) without the CLI binary. A project of its own so a change here re-runs this tier, not every project that depends on the binary. ",
   "implicitDependencies": [
     "oneharness-core",
     "oneharness",
@@ -15,7 +15,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/*.rs",
-      "{projectRoot}/support/**/*",
+      "{projectRoot}/common/**/*",
       "rustToolchain"
     ]
   },

@@ -16,6 +16,7 @@ not own every unowned file. Root `AGENTS.md` still applies.
   `tests/` (`oneharness-integration`), and the built-binary journeys
   (`oneharness-e2e`). A change here reaches all three; a test edit reaches only
   its own tier.
-- **The shipped mock responder is library code.** `tests/support/mock_harness.rs`
-  compiles into this crate (`lib.rs`'s `#[path]`), so it is an input of this
-  project's targets although `tests/` owns it.
+- **The mock responder ships.** `tests/support/mock_harness.rs` is library code
+  behind `oneharness mock-harness`, compiled in by `lib.rs`'s `#[path]`; it is the
+  `mock-responder` project this one depends on, and its replayed captures come
+  from `harness-captures`.

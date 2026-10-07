@@ -8,7 +8,9 @@
 # a dependency on a live suite, on an exploration probe, on the binary e2e
 # journeys, and from the SDK contract to an SDK that consumes it — plus a crate
 # edge Cargo has and the graph lost, and holds the check to rejecting each with
-# that edge named. Nx computes every graph here for real; nothing is stubbed.
+# that edge named — and the AGENTS.md project record and the Rust coverage
+# floor's list of test runs falling out of step with the graph. Nx computes every
+# graph here for real; nothing is stubbed.
 #
 # Quiet on success, one line.
 set -euo pipefail
@@ -90,5 +92,30 @@ cp "$tmp/saved.json" "$ws/crates/history-compat/project.json"
 [ "$status" -ne 0 ] || fail "a Cargo path dependency missing from the graph should have failed the check"
 grep -qF 'no history-compat -> oneharness-core edge' "$tmp/err" ||
   fail "the check failed but did not name the missing history-compat -> oneharness-core edge"
+
+# The two restatements of the project set: a project the AGENTS.md record does
+# not name, and a Rust test run the coverage floor does not read.
+cp "$ws/AGENTS.md" "$tmp/saved.md"
+sed 's/.harness-captures., //' "$tmp/saved.md" >"$ws/AGENTS.md"
+check
+cp "$tmp/saved.md" "$ws/AGENTS.md"
+[ "$status" -ne 0 ] || fail "an AGENTS.md project record missing harness-captures should have failed the check"
+grep -qF 'record does not name harness-captures' "$tmp/err" ||
+  fail "the check failed but did not name the project the AGENTS.md record leaves out"
+
+cp "$ws/tools/rust-coverage/project.json" "$tmp/saved.json"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const project = JSON.parse(fs.readFileSync(file, "utf8"));
+  const options = project.targets.coverage.options;
+  options.commands = options.commands.map((c) => c.replace(" oneharness-e2e", ""));
+  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+' "$ws/tools/rust-coverage/project.json"
+check
+cp "$tmp/saved.json" "$ws/tools/rust-coverage/project.json"
+[ "$status" -ne 0 ] || fail "a coverage floor that no longer reads oneharness-e2e's profile should have failed the check"
+grep -qF "does not read oneharness-e2e's profile (oneharness-e2e)" "$tmp/err" ||
+  fail "the check failed but did not name the Rust test run the floor leaves out"
 
 echo "check-nx-graph-test: ok"

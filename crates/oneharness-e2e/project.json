@@ -10,7 +10,8 @@
   "implicitDependencies": [
     "oneharness-core",
     "oneharness",
-    "oneharness-mock-harness"
+    "oneharness-mock-harness",
+    "harness-captures"
   ],
   "namedInputs": {
     "default": [
@@ -61,13 +62,11 @@
         "default",
         "^default",
         "rustTestRunner",
-        "fixtures",
         "{workspaceRoot}/README.md",
         "{workspaceRoot}/AGENTS.md",
         "{workspaceRoot}/CHANGELOG.md",
         "{workspaceRoot}/docs/harness-usage.md",
         "{workspaceRoot}/justfile",
-        "{workspaceRoot}/tests/support/opencode_run.jsonl",
         "{workspaceRoot}/scripts/smoke.sh",
         "{workspaceRoot}/scripts/check-smoke-env.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp.sh",

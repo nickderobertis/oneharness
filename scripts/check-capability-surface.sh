@@ -24,7 +24,8 @@ generator=(cargo run -q -p oneharness-core --features sdk-schema
 # cause to the tail — a cargo failure runs long, and the error is at the end.
 generator_err="$(mktemp)"
 trap 'rm -f "$generator_err"' EXIT
-if ! bundle="$("${generator[@]}" 2>"$generator_err")"; then
+# Warnings deny as in every compile the gate makes (the `build` targets' flags).
+if ! bundle="$(RUSTFLAGS="${RUSTFLAGS:--D warnings}" "${generator[@]}" 2>"$generator_err")"; then
   echo "check-capability-surface: the Rust schema generator failed, so there is no capability manifest to check against." >&2
   if [ -s "$generator_err" ]; then
     echo "  cargo said:" >&2

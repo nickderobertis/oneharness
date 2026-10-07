@@ -22,9 +22,6 @@
         "env": "OS"
       }
     ],
-    "fixtures": [
-      "{workspaceRoot}/tests/fixtures/**/*"
-    ],
     "jsToolchain": [
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/bun.lock"

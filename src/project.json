@@ -6,15 +6,15 @@
     "type:app",
     "lang:rust"
   ],
-  "//": "The published binary crate and its unit tests. Its manifest stays at the repository root (cargo install --git, maturin and the release matrix name it there), so this project is rooted at src/: a project rooted at the repository root would own every file no other project owns, and every script or document edit would rebuild everything that depends on the binary. The shipped mock responder (tests/support/mock_harness.rs, compiled into the library) is claimed through its inputs; the crate's integration tests are the oneharness-integration project.",
+  "//": "The published binary crate and its unit tests. Its manifest stays at the repository root (cargo install --git, maturin and the release matrix name it there), so this project is rooted at src/: a project rooted at the repository root would own every file no other project owns, and every script or document edit would rebuild everything that depends on the binary. The crate's integration tests are the oneharness-integration project.",
   "implicitDependencies": [
-    "oneharness-core"
+    "oneharness-core",
+    "mock-responder"
   ],
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "rustToolchain",
-      "{workspaceRoot}/tests/support/mock_harness.rs"
+      "rustToolchain"
     ]
   },
   "targets": {

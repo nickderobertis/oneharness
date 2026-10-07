@@ -5058,7 +5058,7 @@ fn extracts_opencode_text_from_real_jsonl_transcript() {
     // had to fall back to raw stdout. The fixture is a real `opencode run --format
     // json` transcript (OpenCode 1.17.3); oneharness reconstructs the answer from
     // its `text` parts and records the method as `json:opencode-parts`.
-    let stdout = include_str!("../../../tests/support/opencode_run.jsonl");
+    let stdout = include_str!("../../../tests/fixtures/opencode_run.jsonl");
     let output = run(
         &[
             "run",
@@ -5138,7 +5138,7 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
     // part the turn ends before finishing (a `time` with no `end`), one whose
     // `end` is no timestamp, and a whitespace-only one are spliced in too: none
     // is an event.
-    let capture = include_str!("../../../tests/support/opencode_run.jsonl");
+    let capture = include_str!("../../../tests/fixtures/opencode_run.jsonl");
     let lines: Vec<&str> = capture.lines().collect();
     let (step_start, text_part, step_finish) = (lines[0], lines[1], lines[2]);
     let reasoning_part = concat!(

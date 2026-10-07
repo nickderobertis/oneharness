@@ -14,7 +14,7 @@
 use oneharness_core::domain::report::Status;
 use oneharness_core::io::run::{run, RunControls};
 
-#[path = "support/library_fixture.rs"]
+#[path = "common/library_fixture.rs"]
 mod fixture;
 use fixture::request;
 

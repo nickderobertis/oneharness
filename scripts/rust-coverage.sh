@@ -36,7 +36,7 @@ if [[ "${OS:-}" == "Windows_NT" ]]; then
   echo "coverage: skipped on Windows (llvm-cov subprocess attribution under-reports; measured on Linux/macOS — see scripts/rust-coverage.sh)"
   exit 0
 fi
-[ $# -ge 1 ] || { echo "usage: scripts/rust-coverage.sh <record>...  (COVERAGE_MIN, default 95)" >&2; exit 2; }
+[ "$#" -ge 1 ] || { echo "usage: scripts/rust-coverage.sh <record>...  (COVERAGE_MIN, default 95)" >&2; exit 2; }
 [[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "rust-coverage: COVERAGE_MIN '$floor' is not a percentage" >&2; exit 2; }
 
 # The report collects every profile in target/llvm-cov-target. A record is an

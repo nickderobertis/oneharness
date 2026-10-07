@@ -20,7 +20,7 @@ use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::sync::{self, SyncRequest};
 use oneharness_core::io::usage::{self, UsageRequest};
 
-#[path = "support/library_fixture.rs"]
+#[path = "common/library_fixture.rs"]
 mod fixture;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());

@@ -2,11 +2,9 @@
 
 Subtree rules for the typed Python SDK (`oneharness-sdk`). Root `AGENTS.md` still applies.
 
-- `just python-sdk-check` — every gate target of this project: generated-contract
-  drift, ruff, mypy, the unit suite under 95% branch-inclusive coverage, and the
-  packed-artifact subprocess e2e. The Python gate runs on the oldest supported
-  Python 3.9 (`python/.python-version`), from the uv workspace rooted at
-  `python/` (one `python/uv.lock`).
+- **Python 3.9 is the floor, and the gate runs on it** (`python/.python-version`
+  for the uv workspace rooted at `python/`): code and dev pins must keep
+  resolving and passing there.
 - The typed Python client is a separate pure-Python **`oneharness-sdk`**
   distribution (imported as `oneharness_sdk`, Python 3.9+). Its checked-in
   schemas and types are generated from `sdk_schema::bundle`; runtime inputs are

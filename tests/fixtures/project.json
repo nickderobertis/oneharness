@@ -1,0 +1,11 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "harness-captures",
+  "projectType": "library",
+  "tags": [
+    "type:contract",
+    "lang:data"
+  ],
+  "//": "Captured real harness output \u2014 the external wire formats every parser in this repository is held to \u2014 and the SDK acceptance matrix. Data only, so no target; the engine's tests, the shipped mock responder, the e2e journeys, the compatibility test, the SDK contract and the live helpers' checks depend on it by graph edge, so a changed capture re-runs exactly them.",
+  "targets": {}
+}

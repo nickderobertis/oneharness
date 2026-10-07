@@ -28,11 +28,10 @@ fail() {
   exit 1
 }
 
-# Every step of the recipe runs through the portable-sed runner, or the calls it
-# makes are held to nothing.
-# Every drift script a project target runs: the steps `just lint-workflows` used
-# to list, now declared by the projects that own them (tools/*, sdk-conformance,
-# the e2e and binary crates). Each must go through the portable-sed shim.
+# Every drift script a project target runs goes through the portable-sed runner,
+# or the sed calls it makes are held to nothing. The steps are read from the
+# project definitions that declare them (tools/*, sdk-conformance, the e2e and
+# binary projects).
 # `check-temp-leaks.sh` and `cargo-test.sh` are excluded: they run a suite
 # rather than being a drift gate.
 # The single-quoted program is JavaScript.

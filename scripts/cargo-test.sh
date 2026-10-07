@@ -42,7 +42,7 @@ usage() {
   exit 2
 }
 
-[ $# -ge 1 ] || usage "no package named"
+[ "$#" -ge 1 ] || usage "no package named"
 package="$1"
 shift
 [[ "$package" =~ ^[a-z0-9_-]+$ ]] || usage "'$package' is not a cargo package name"
@@ -51,22 +51,22 @@ features=()
 filterset=""
 record="$package"
 instrumented=1
-while [ $# -gt 0 ]; do
+while [ "$#" -gt 0 ]; do
   case "$1" in
     --with)
-      [ $# -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--with needs a cargo package name"
+      [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--with needs a cargo package name"
       packages+=(-p "$2")
       shift 2 ;;
     --features)
-      [ $# -ge 2 ] && [[ "$2" =~ ^[a-z0-9_/,-]+$ ]] || usage "--features needs a comma-separated feature list"
+      [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9_/,-]+$ ]] || usage "--features needs a comma-separated feature list"
       features=(--features "$2")
       shift 2 ;;
     --filter)
-      [ $# -ge 2 ] && [ -n "$2" ] || usage "--filter needs a nextest filterset"
+      [ "$#" -ge 2 ] && [ -n "$2" ] || usage "--filter needs a nextest filterset"
       filterset="$2"
       shift 2 ;;
     --record)
-      [ $# -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--record needs a record name"
+      [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--record needs a record name"
       record="$2"
       shift 2 ;;
     --uninstrumented)
@@ -79,6 +79,11 @@ done
 # Only <package>'s own tests run; the companions are there for their binaries.
 filter=(-E "package($package)${filterset:+ & ($filterset)}")
 nextest_flags=(--locked --status-level fail --final-status-level fail)
+
+# A warning in test code fails the run, as it does every other compile the gate
+# makes; the same flags as the `build` targets, so target/debug is not rebuilt
+# between them.
+export RUSTFLAGS="${RUSTFLAGS:-} -D warnings"
 
 if [[ "${OS:-}" == "Windows_NT" ]] || [ "$instrumented" -eq 0 ]; then
   exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"

@@ -39,7 +39,7 @@ fail() {
     echo "check-sdk-install: $1" >&2
     echo "  Restore the contract: scripts/nx installs the root Bun workspace ('$install_line')" >&2
     echo "  before Nx runs whenever the install is missing or older than bun.lock, quiet on" >&2
-    echo "  success and loud on failure, and bootstrap reaches 'just sdk-install'." >&2
+    echo "  success and loud on failure, and bootstrap reaches 'just js-install'." >&2
     exit 1
 }
 
@@ -74,7 +74,7 @@ printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
 STUB
 done
 chmod +x "$bin"/*
-# `bootstrap` shells back out to `just sdk-install`, so the real `just` has to
+# `bootstrap` shells back out to `just js-install`, so the real `just` has to
 # stay reachable through the trimmed PATH the stubs are served from, as do the
 # real node and git the wrapper uses.
 ln -s "$(command -v just)" "$bin/just"
@@ -107,10 +107,10 @@ first_nx() {
 run_recipe "$tmp/fresh.calls" check all
 installed_at="$(first_call "$tmp/fresh.calls" "$install_line")"
 nx_at="$(first_nx "$tmp/fresh.calls")"
-[[ -n $installed_at ]] ||
+[[ -n "$installed_at" ]] ||
     fail "'just check all' never ran '$install_line' in a fresh checkout, so it assumes an already-bootstrapped one"
-[[ -n $nx_at ]] || fail "'just check all' never reached Nx; this gate is checking the wrong recipe"
-[[ $installed_at -lt $nx_at ]] ||
+[[ -n "$nx_at" ]] || fail "'just check all' never reached Nx; this gate is checking the wrong recipe"
+[[ "$installed_at" -lt "$nx_at" ]] ||
     fail "the workspace was installed at call $installed_at, after Nx ran at call $nx_at"
 grep -q '^nx run-many --all ' "$tmp/fresh.calls" ||
     fail "'just check all' did not hand the full sweep to 'nx run-many --all'"
@@ -120,20 +120,20 @@ fi
 
 # Installed and current: no second install.
 run_recipe "$tmp/warm.calls" check all
-[[ -z $(first_call "$tmp/warm.calls" "$install_line") ]] ||
+[[ -z "$(first_call "$tmp/warm.calls" "$install_line")" ]] ||
     fail "a current install was installed again; every gate run would pay for it"
 
 # A lockfile newer than the install: install again before Nx.
 sleep 1
 touch "$fixture/bun.lock"
 run_recipe "$tmp/stale.calls" check all
-[[ -n $(first_call "$tmp/stale.calls" "$install_line") ]] ||
+[[ -n "$(first_call "$tmp/stale.calls" "$install_line")" ]] ||
     fail "a bun.lock newer than the install did not reinstall, so Nx would run on stale dependencies"
 
 run_recipe "$tmp/bootstrap.calls" bootstrap
-[[ -n $(first_call "$tmp/bootstrap.calls" "$install_line") ]] ||
+[[ -n "$(first_call "$tmp/bootstrap.calls" "$install_line")" ]] ||
     fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
-[[ -n $(first_call "$tmp/bootstrap.calls" 'uv sync --project python --frozen --no-install-workspace --quiet') ]] ||
+[[ -n "$(first_call "$tmp/bootstrap.calls" 'uv sync --project python --frozen --no-install-workspace --quiet')" ]] ||
     fail "bootstrap no longer syncs the uv workspace; a clean clone would have no Python SDK environment"
 
 # A bun that fails the way a stale lockfile really does: the reason survives,
@@ -154,7 +154,7 @@ status=0
 CALL_LOG="$tmp/loud.calls" PATH="$failing_bin:/usr/bin:/bin" HOME="$tmp/home" \
     just --justfile "$fixture/justfile" --working-directory "$fixture" check all \
     >"$tmp/out" 2>"$tmp/err" || status=$?
-[[ $status -ne 0 ]] ||
+[[ "$status" -ne 0 ]] ||
     fail "a failing '$install_line' left 'just check all' green; the gate would run on absent dependencies"
 grep -qF 'error: lockfile had changes, but lockfile is frozen' "$tmp/err" || {
     cat "$tmp/err" >&2

@@ -2,6 +2,9 @@
 
 Subtree rules for the typed Node SDK (`@oneharness/sdk`). Root `AGENTS.md` still applies.
 
-- `just sdk-check` — every gate target of this project: generated-contract drift,
-  strict lint/type/test coverage (bun's `coverageThreshold = 0.95`), the build,
-  and the packed-artifact subprocess e2e (`e2e`, which `test` does not include).
+- **`e2e` stays out of `test`.** `test` is the unit suite under bun's
+  `coverageThreshold = 0.95`; the packed-artifact journey is `e2e`, so a run
+  that wants only the fast tier never pays for packing and installing.
+- **The launcher is a workspace sibling.** The SDK depends on `oneharness-cli` as
+  `workspace:*`, so the root Bun workspace links `npm/oneharness`; the pack step
+  (`scripts/sdk-pack.mjs`) stamps the exact release version a consumer installs.

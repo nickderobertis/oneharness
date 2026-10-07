@@ -2,10 +2,11 @@
 
 Subtree rules for the binary crate's in-process integration tier (`tests/*.rs`,
 the `oneharness-integration` project): suites that drive the library API — and
-the mock harness as a subprocess — without the CLI binary. This directory also
-holds the shipped mock responder (`support/mock_harness.rs`, compiled into the
-`oneharness` library) and the captured harness output several suites read
-(`fixtures/`). Root `AGENTS.md` still applies.
+the mock harness as a subprocess — without the CLI binary. Two directories here
+are projects of their own: the shipped mock responder (`support/`,
+`mock-responder`) and the captured harness output several suites read
+(`fixtures/`, `harness-captures`).
+Root `AGENTS.md` still applies.
 
 - **Hermetic by construction.** Tests never call a real harness CLI, the network,
   or an authenticated session. The subprocess path is exercised through the

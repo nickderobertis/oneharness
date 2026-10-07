@@ -8,13 +8,13 @@
   ],
   "//": "The cross-language SDK contract: the generator every SDK runs and the acceptance matrix all three languages are held to. Tagged type:contract, it may depend only on the engine it is generated from \u2014 never on an SDK that consumes it (scripts/check-nx-graph.mjs).",
   "implicitDependencies": [
-    "oneharness-core"
+    "oneharness-core",
+    "harness-captures"
   ],
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
       "rustToolchain",
-      "{workspaceRoot}/tests/fixtures/sdk-contract-matrix.json",
       "{workspaceRoot}/scripts/sdk-generator.mjs"
     ]
   },

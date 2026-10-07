@@ -17,6 +17,11 @@
 //     crate edges as `implicitDependencies`; a restatement nothing reconciles
 //     would let affected selection silently skip a dependent crate.
 //
+// And two restatements of the project set are held to it: the root AGENTS.md's
+// "Projects in the graph" record, and rust-coverage's list of the Rust `test`
+// runs (and their profile records) the floor is enforced over — a Rust project
+// missing there would leave its crate's coverage silently out of the floor.
+//
 // Quiet on success: one line. Node built-ins only.
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -128,6 +133,62 @@ for (const pkg of metadata.packages) {
 				`crate ${pkg.name} depends on ${dependency.name} by path, but the graph has no ${project} -> ${target} edge; add "${target}" to ${project}'s implicitDependencies`,
 			);
 		}
+	}
+}
+
+// The Rust floor covers every Rust project's `test`, by project and by record.
+const recordOf = (name) => {
+	const options = graph.nodes[name].data.targets.test?.options ?? {};
+	const first = (options.commands ?? [options.command ?? ""])[0] ?? "";
+	const match = first.match(/^bash scripts\/cargo-test\.sh ([a-z0-9_-]+)(?:.* --record ([a-z0-9_-]+))?/u);
+	return match ? (match[2] ?? match[1]) : undefined;
+};
+const rustTests = Object.keys(graph.nodes)
+	.filter((name) => (graph.nodes[name].data.tags ?? []).includes("lang:rust") && graph.nodes[name].data.targets.test)
+	.sort();
+const coverage = graph.nodes["rust-coverage"]?.data.targets.coverage;
+if (coverage === undefined) {
+	failures.push("there is no rust-coverage:coverage target to enforce the Rust floor");
+} else {
+	const covered = [...(coverage.dependsOn?.[0]?.projects ?? [])].sort();
+	for (const name of rustTests.filter((n) => !covered.includes(n))) {
+		failures.push(`rust-coverage:coverage does not depend on ${name}:test, so that crate's coverage is outside the floor; add it to the dependsOn projects`);
+	}
+	for (const name of covered.filter((n) => !rustTests.includes(n))) {
+		failures.push(`rust-coverage:coverage depends on ${name}:test, which is not a Rust project's test`);
+	}
+	const command = coverage.options?.command ?? (coverage.options?.commands ?? [])[0] ?? "";
+	const records = command.replace(/^bash scripts\/rust-coverage\.sh\s*/u, "").split(/\s+/u).filter(Boolean);
+	for (const name of rustTests) {
+		const record = recordOf(name);
+		if (record === undefined) {
+			failures.push(`${name}:test does not run scripts/cargo-test.sh, so it leaves no coverage profile for the Rust floor`);
+		} else if (!records.includes(record)) {
+			failures.push(`rust-coverage:coverage does not read ${name}'s profile (${record}); add it to the scripts/rust-coverage.sh arguments`);
+		}
+	}
+}
+
+// The root AGENTS.md's "Projects in the graph" record names exactly the graph.
+const agents = readFileSync(join(root, "AGENTS.md"), "utf8");
+const record = agents.match(/^- \*\*Projects in the graph:\*\*(?<body>[\s\S]*?)(?=\n(?:- |<!--|\n))/mu);
+if (!record) {
+	failures.push(`AGENTS.md has no "- **Projects in the graph:**" record of the project set; restore it`);
+} else {
+	const listed = new Set(
+		[...record.groups.body.matchAll(/`([a-z0-9-]+)`/gu)].map((match) => match[1]),
+	);
+	for (const [family, noun] of [["live", "suites"], ["explore", "probes"]]) {
+		const group = record.groups.body.match(new RegExp(`\`${family}-\\*\`\\s+${noun}\\s+\\(([^)]*)\\)`, "u"));
+		for (const member of (group?.[1] ?? "").split(",")) {
+			if (member.trim()) listed.add(`${family}-${member.trim()}`);
+		}
+	}
+	for (const name of Object.keys(graph.nodes).filter((n) => !listed.has(n)).sort()) {
+		failures.push(`AGENTS.md's "Projects in the graph" record does not name ${name}; add it`);
+	}
+	for (const name of [...listed].filter((n) => !(n in graph.nodes)).sort()) {
+		failures.push(`AGENTS.md's "Projects in the graph" record names ${name}, which is not a project in the graph`);
 	}
 }
 

@@ -17,8 +17,7 @@
       "{projectRoot}/**/*",
       "!{projectRoot}/dist/**/*",
       "!{projectRoot}/node_modules/**/*",
-      "jsToolchain",
-      "fixtures"
+      "jsToolchain"
     ]
   },
   "targets": {

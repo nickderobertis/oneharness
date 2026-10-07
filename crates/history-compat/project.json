@@ -9,7 +9,8 @@
   "implicitDependencies": [
     "oneharness-core",
     "oneharness",
-    "oneharness-mock-harness"
+    "oneharness-mock-harness",
+    "harness-captures"
   ],
   "namedInputs": {
     "default": [
@@ -56,8 +57,7 @@
       "inputs": [
         "default",
         "^default",
-        "rustTestRunner",
-        "fixtures"
+        "rustTestRunner"
       ],
       "outputs": [
         "{workspaceRoot}/target/coverage/oneharness-history-compat.profdata"

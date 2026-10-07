@@ -8,6 +8,21 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Every mutation below lands on a staged copy of what the gate reads, never on
+# the tracked files: the gate's projects run in parallel, and a sibling reading
+# release.yml or ci.yml mid-mutation would judge a file nobody committed.
+# Copied by path rather than through git, since check-workflows-portable-test.sh
+# runs this script inside a staged tree of its own that is no repository.
+stage="$(mktemp -d)"
+for path in scripts .github Cargo.toml crates/*/Cargo.toml rust-toolchain.toml \
+  pyproject.toml python/oneharness-sdk/pyproject.toml npm/oneharness/package.json \
+  npm/oneharness-sdk/package.json justfile release-plz.toml; do
+  [ -e "$path" ] || continue
+  mkdir -p "$stage/$(dirname "$path")"
+  cp -R "$path" "$stage/$path"
+done
+cd "$stage"
+
 work="$(mktemp -d)"
 workflow=.github/workflows/release.yml
 ci=.github/workflows/ci.yml
@@ -34,7 +49,7 @@ restore() {
     echo "  fix: copy that file back over $notignored (or 'git checkout -- $notignored')" >&2
     return 1
   }
-  rm -rf "$work"
+  rm -rf "$work" "$stage"
 }
 trap restore EXIT
 

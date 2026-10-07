@@ -15,8 +15,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "pyToolchain",
-      "fixtures"
+      "pyToolchain"
     ]
   },
   "targets": {

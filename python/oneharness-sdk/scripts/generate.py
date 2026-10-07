@@ -7,6 +7,7 @@ import copy
 import difflib
 import json
 import keyword
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -264,6 +265,8 @@ def _schema_bundle() -> dict[str, Any]:
         "generate_sdk_schema",
     ]
     try:
+        # Warnings deny here as in every compile the gate makes — the same flags
+        # as the `build` targets, so target/debug is not rebuilt between them.
         completed = subprocess.run(
             argv,
             cwd=ROOT,
@@ -271,6 +274,7 @@ def _schema_bundle() -> dict[str, Any]:
             text=True,
             capture_output=True,
             check=True,
+            env={**os.environ, "RUSTFLAGS": os.environ.get("RUSTFLAGS", "-D warnings")},
         )
     except FileNotFoundError:
         raise SystemExit(

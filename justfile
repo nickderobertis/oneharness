@@ -24,7 +24,7 @@ default:
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
-    @just sdk-install
+    @just js-install
     uv sync --project python --frozen --no-install-workspace --quiet
     ./scripts/setup-llmlint.sh
     git config core.hooksPath .githooks
@@ -199,13 +199,13 @@ sdk-generate:
 # installs it rather than assuming a bootstrapped caller (scripts/nx does the
 # same before every Nx run). Quiet on success; bun's `--silent` would drop
 # failure reasons too, hence the capture. Enforced by scripts/check-sdk-install.sh.
-sdk-install:
-    @out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node workspace dependency install failed; the bun output above says why. If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
+js-install:
+    @out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node workspace dependency install failed; the bun output above says why. If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check network access to the npm registry and rerun 'just js-install'." >&2; exit 1; }
 
 # Compile the Node SDK's publishable `dist/` — the release's spelling of the
 # node-sdk project's `build`, which the release runs without Nx because it skips
 # the gate when CI already swept the tree. Same command, so they cannot drift.
-sdk-build: sdk-install
+sdk-build: js-install
     bun run --cwd npm/oneharness-sdk build
 
 # Strict SDK gates, one project at a time: every gate target of the Node SDK

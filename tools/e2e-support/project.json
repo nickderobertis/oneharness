@@ -9,7 +9,8 @@
   "//": "What the live suites share \u2014 scripts/e2e-lib.sh \u2014 and the hermetic tests that hold its helpers and the probes' tables to the registry without a credential or a model call. Deterministic, so in the gate. Every live and exploration script is still shellchecked in the gate by the `scripts` project, which keeps their code linted while the suites themselves stay out of it.",
   "implicitDependencies": [
     "oneharness",
-    "oneharness-mock-harness"
+    "oneharness-mock-harness",
+    "harness-captures"
   ],
   "namedInputs": {
     "default": [
@@ -42,8 +43,7 @@
       "{workspaceRoot}/scripts/explore-events.sh",
       "{workspaceRoot}/scripts/explore-hooks.sh",
       "{workspaceRoot}/scripts/explore_control.py",
-      "{workspaceRoot}/scripts/with-portable-sed.sh",
-      "{workspaceRoot}/tests/fixtures/codex-rate-limits.schema.json"
+      "{workspaceRoot}/scripts/with-portable-sed.sh"
     ]
   },
   "targets": {

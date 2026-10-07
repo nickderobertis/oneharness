@@ -63,9 +63,12 @@ export function schemaBundle({
 	];
 	let json;
 	try {
+		// Warnings deny here as in every compile the gate makes — the same flags
+		// as the `build` targets, so target/debug is not rebuilt between them.
 		json = execFileSync("cargo", args, {
 			cwd,
 			encoding: "utf8",
+			env: { ...process.env, RUSTFLAGS: process.env.RUSTFLAGS ?? "-D warnings" },
 		});
 	} catch (error) {
 		const cause = tail(error.stderr);

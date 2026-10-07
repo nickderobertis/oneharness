@@ -31,7 +31,6 @@ from ._generated_types import (
     HistoryMigrateReport,
     HistoryPointers,
     HistoryPointersOptions,
-    HistoryRecord,
     HistoryReindexOptions,
     HistoryReindexReport,
     HistoryShowEntry,

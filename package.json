@@ -1,0 +1,8 @@
+{
+	"name": "oneharness-workspace",
+	"private": true,
+	"workspaces": ["npm/oneharness-sdk", "npm/oneharness"],
+	"devDependencies": {
+		"nx": "23.3.0"
+	}
+}

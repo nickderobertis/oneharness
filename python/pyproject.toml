@@ -1,0 +1,18 @@
+# The uv workspace for this repository's Python packages: one resolve, one
+# `uv.lock`. It is rooted here rather than at the repository root because the
+# root `pyproject.toml` is maturin's `oneharness-cli` wheel wrapper — a uv
+# workspace rooted there would build the Rust binary as a Python package on
+# every sync.
+#
+# Virtual (no `[project]`): nothing here is installed except the members.
+[tool.uv.workspace]
+members = ["oneharness-sdk"]
+
+[tool.uv]
+# `oneharness-sdk` pins the exact `oneharness-cli` release it ships beside, and
+# that pin is stamped at release time (scripts/python-sdk-pack.mjs); the
+# committed placeholder `0.0.0.dev0` exists on no index. The SDK's suites drive
+# this checkout's own `target/debug/oneharness` instead, so the dev environment
+# leaves the CLI wheel out of the resolve entirely — the never-true marker is
+# uv's spelling of "not here". The release's packaged e2e installs the real one.
+override-dependencies = ["oneharness-cli; sys_platform == 'never'"]

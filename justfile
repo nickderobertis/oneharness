@@ -268,7 +268,7 @@ sdk-generate:
 # on success; bun's `--silent` would drop failure reasons too, hence the capture.
 # Enforced by scripts/check-sdk-install.sh.
 sdk-install:
-    @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
+    @out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node workspace dependency install failed; the bun output above says why. If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
 
 # Compile the Node SDK's publishable `dist/`. It is gitignored, so it has to be
 # built both for the gate's packaged e2e and for the release's `npm pack` — and
@@ -293,7 +293,8 @@ sdk-check: build build-mock-harness sdk-install
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.
 python-sdk-generate:
-    uv run --no-project --python 3.9 --with-requirements python/oneharness-sdk/requirements-dev.txt python python/oneharness-sdk/scripts/generate.py
+    uv sync --project python --frozen --no-install-workspace --quiet
+    uv run --project python --frozen --no-sync python python/oneharness-sdk/scripts/generate.py
 
 # Strict Python SDK gate on the oldest supported interpreter, including generated
 # contract drift, branch-aware coverage, and a release-stamped wheel exercised
@@ -310,7 +311,8 @@ python-sdk-check:
             exit 1
         fi
         cargo build --locked --features {{FEATURES}} --bins
-        run=(uv run --no-project --python 3.9 --with-requirements python/oneharness-sdk/requirements-dev.txt)
+        uv sync --project python --frozen --no-install-workspace --quiet
+        run=(uv run --project python --frozen --no-sync)
         "${run[@]}" python python/oneharness-sdk/scripts/generate.py --check
         "${run[@]}" ruff format --check python/oneharness-sdk
         "${run[@]}" ruff check python/oneharness-sdk

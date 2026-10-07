@@ -19,11 +19,18 @@ __pycache__/
 # Version-stamped Python SDK staging and wheel output.
 /python/dist
 
+# The uv workspace's environment (`python/uv.lock` is committed; this is not).
+/python/.venv/
+
 # npm packaging build outputs (per-platform packages + stamped launcher assembled
 # by scripts/npm-build.mjs). npm/oneharness/ IS committed; these are not.
 /npm/dist
 /npm/oneharness-sdk/dist
 node_modules/
+
+# Nx's local computation cache and project-graph workspace data. The cache is
+# local-only by recorded decision (AGENTS.md); neither is ever committed.
+/.nx/
 
 # `just`'s tempdir (justfile `set tempdir`). The directory IS committed so a
 # clean clone has it; the per-recipe `just-XXXXXX/` scratch it fills with is not,

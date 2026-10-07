@@ -373,7 +373,7 @@ fn json_stdout(output: &Output) -> Value {
 /// whatever the caller wrote — and on macOS those two differ for every temp
 /// path, because `/tmp` is a symlink to `/private/tmp`. Comparing them raw
 /// passes on Linux and then cancels a macOS job 20 minutes later.
-/// `just test-symlinked-tmp` replays these journeys under that spelling on
+/// This crate's `test` target replays these journeys under that spelling on
 /// Linux, and resolving both sides is what satisfies it.
 ///
 /// Both sides, not just the expected one: canonicalizing only the path the test

@@ -32,6 +32,8 @@
       "{workspaceRoot}/release-targets.toml",
       "{workspaceRoot}/release-platforms.toml",
       "{workspaceRoot}/release-plz.toml",
+      "{workspaceRoot}/AGENTS.md",
+      "{workspaceRoot}/README.md",
       "{workspaceRoot}/rust-toolchain.toml",
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/crates/oneharness-core/Cargo.toml",

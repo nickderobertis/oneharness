@@ -549,7 +549,7 @@ precedence first:
    every config file.
 5. **CLI flags** — always win.
 
-<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the one user-facing statement of the repeatable `--config` contract the task requires in this README (the flag bullet and the opt-out paragraph point here rather than restating it); its source is `io::config::load_layers`, and its drift gate is the behavior, pinned claim by claim through the real binary in `tests/cli.rs` (`repeated_config_files_layer_in_order_beneath_env_and_flags`, `config_command_lists_repeated_files_in_layering_order_with_each_value_attributed`, `a_run_reports_repeated_config_files_in_the_order_config_lists_them`) and in-process in `tests/library_config_layers.rs`. -->
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the one user-facing statement of the repeatable `--config` contract the task requires in this README (the flag bullet and the opt-out paragraph point here rather than restating it); its source is `io::config::load_layers`, and its drift gate is the behavior, pinned claim by claim through the real binary in `crates/oneharness-e2e/tests/cli.rs` (`repeated_config_files_layer_in_order_beneath_env_and_flags`, `config_command_lists_repeated_files_in_layering_order_with_each_value_attributed`, `a_run_reports_repeated_config_files_in_the_order_config_lists_them`) and in-process in `tests/library_config_layers.rs`. -->
 Naming files with `--config` replaces steps 2 and 3. The flag is repeatable,
 and the named files are the only file layers, in the order given: `built-ins →
 --config A (A's own extends chain immediately beneath A) → --config B (B's
@@ -587,7 +587,7 @@ array records exactly which files shaped a run.
 
 #### Inheriting a parent config (`extends`)
 
-<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of the `extends` contract the task requires here; its drift gate is the behavior, pinned claim by claim in `io::config`'s chain tests (the 32-file bound against this text), `domain::config`'s `extends` and merge tests, and the `extends` journeys through the real binary in `tests/cli.rs`. -->
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the user-facing statement of the `extends` contract the task requires here; its drift gate is the behavior, pinned claim by claim in `io::config`'s chain tests (the 32-file bound against this text), `domain::config`'s `extends` and merge tests, and the `extends` journeys through the real binary in `crates/oneharness-e2e/tests/cli.rs`. -->
 A config file may name one parent with a top-level `extends = "<path>"` and
 state only what differs from it:
 
@@ -1466,7 +1466,7 @@ is a socket rather than a flag. The protocol is one newline-terminated JSON
 request per connection, one response, connection closed:
 
 <!-- Every frame below is reconciled against the type that encodes it by
-     `the_readme_documents_the_control_protocol_frames_in_force` (tests/cli.rs),
+     `the_readme_documents_the_control_protocol_frames_in_force` (crates/oneharness-e2e/tests/cli.rs),
      so this block cannot drift from `domain::control` unnoticed. -->
 ```jsonc
 → {"v":2,"verb":"interrupt"}
@@ -2613,12 +2613,18 @@ Warnings (a history file that could not be opened, a mode that may block) go to
 ## Development
 
 ```console
-just bootstrap   # toolchain components + fetch (works from a clean clone)
-just check       # full gate: fmt-check, clippy -D warnings, shellcheck, tests, build, smoke
-just test        # tests only
+just bootstrap   # toolchain components + every locked install (works from a clean clone)
+just check       # the gate over what your change reaches (Nx affected, vs origin/main)
+just check all   # the full sweep: every project's format, lint, typecheck, build, test, e2e, coverage
+just test        # tests only (affected; `just test all` for every project)
 just smoke       # hermetic end-to-end smoke of the built binary
 just run -- list # run the CLI through cargo
 ```
+
+The repository is an [Nx](https://nx.dev) project graph over one Cargo
+workspace, one Bun workspace and one uv workspace (`python/`); `bash scripts/nx
+show projects` lists the projects, and each one's `project.json` names its
+targets.
 
 The gate uses [`just`](https://github.com/casey/just) (pinned in `.tool-versions`
 for asdf/mise users) and [`shellcheck`](https://github.com/koalaman/shellcheck)
@@ -2627,13 +2633,13 @@ for the shell scripts; CI installs both, so install `shellcheck`
 
 Tests are hermetic: the subprocess path is exercised against a mock harness
 fixture (no network, no real CLI), and every adapter's command construction is
-pinned with `--print-command` assertions. `just check` also runs
-`scripts/smoke.sh`, an end-to-end smoke of the *built* binary, including a
+pinned with `--print-command` assertions. The gate also runs
+`scripts/smoke.sh`, an end-to-end smoke of the *built* binary, and a
 local-release installer check that drives `scripts/install.sh` without network.
 To exercise the real harnesses you have installed, run `just smoke-live` — it
 makes real model calls, skips any harness that isn't installed, and is
-intentionally never part of the gate or CI. See `AGENTS.md` and
-`tests/AGENTS.md`.
+intentionally never part of the gate or CI. See `AGENTS.md` and the nested
+`AGENTS.md` beside each project.
 
 Released CLI and SDK consumers can use that same deterministic provider seam;
 see [Testing patterns](docs/testing-patterns.md) for the stable `MOCK_*`

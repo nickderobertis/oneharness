@@ -56,7 +56,7 @@ export ONEHARNESS_NO_CONFIG=1
 # its agents through oneharness carries `ONEHARNESS_HARNESSES` /
 # `ONEHARNESS_MODE` / `ONEHARNESS_TIMEOUT`, and a planted `harnesses` the step
 # asserts on is then overridden by whatever the host selected. Stripping them
-# here is what `tests/cli.rs`'s `run_with_config` does for the compiled-CLI
+# here is what `crates/oneharness-e2e/tests/cli.rs`'s `run_with_config` does for the compiled-CLI
 # suite; it is the same invariant, applied to the same boundary.
 #
 # Every `ONEHARNESS_*` in the environment goes, discovered rather than listed,

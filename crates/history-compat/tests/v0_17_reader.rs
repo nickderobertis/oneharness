@@ -43,7 +43,7 @@ fn mock_bin() -> PathBuf {
 /// `--env` sending the mock harness's coverage profile outside the target
 /// directory: a harness torn down after the TERM grace leaves a truncated
 /// `.profraw`, and one of those fails the whole `just coverage` merge. The
-/// same redirect `tests/cli.rs` applies to every run it drives.
+/// same redirect `crates/oneharness-e2e/tests/cli.rs` applies to every run it drives.
 fn mock_profile_redirect() -> String {
     format!(
         "LLVM_PROFILE_FILE={}",

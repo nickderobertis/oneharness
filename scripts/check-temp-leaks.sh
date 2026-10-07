@@ -55,9 +55,10 @@ fi
 # Each root is resolved before it is swept: `find` does not follow a symlinked
 # starting point, so a root spelled through one would match nothing and report
 # every leak as a clean run. That is not a hypothetical spelling — macOS hands
-# it to every run for free (`/tmp` is a symlink to `/private/tmp`) and
-# `just test-symlinked-tmp` reproduces it on Linux, where `$TMPDIR` is the
-# symlink and the scratch space lands in the directory behind it.
+# it to every run for free (`/tmp` is a symlink to `/private/tmp`) and the
+# `oneharness-e2e` project's symlinked-`$TMPDIR` replay reproduces it on Linux,
+# where `$TMPDIR` is the symlink and the scratch space lands in the directory
+# behind it.
 # A subshell body: resolving a root must never move the gate's own directory.
 resolve_root() (
   CDPATH='' cd -- "$1" 2>/dev/null && pwd -P

@@ -48,7 +48,7 @@ fn mock_bin() -> PathBuf {
 /// A harness torn down after the TERM grace (which a loaded parallel suite
 /// reaches often enough to be a race, not a property of one test) never
 /// finishes its profile, and one truncated `.profraw` in the target directory
-/// fails the whole `llvm-profdata merge`. Same redirect `tests/cli.rs` applies
+/// fails the whole `llvm-profdata merge`. Same redirect `crates/oneharness-e2e/tests/cli.rs` applies
 /// to every run; the binary under test keeps its own coverage, since `--env`
 /// reaches only the harness process. Harmless when nothing is instrumented.
 fn mock_profile_redirect() -> String {

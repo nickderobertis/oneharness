@@ -119,11 +119,11 @@ omitted when empty, and `exact` when false, so an add-only report is unchanged.
      from `domain::capability::CAPABILITIES` and the schema bundle; the
      Python/TypeScript columns are read from each client's own source and
      checked-in schemas; the gate table is read from the project definitions
-     and the justfile's `CHECK_TARGETS`. Edit those, not this block. -->
+     and the justfile's `check` recipe. Edit those, not this block. -->
 
 ### Which gate runs them
 
-Read from the project definitions and the justfile's `CHECK_TARGETS`, so
+Read from the project definitions and the justfile's `check` recipe, so
 this is the composition a run actually has rather than a second copy of it.
 `just check` runs those targets (`format`, `lint`, `typecheck`, `build`, `test`, `e2e`, `coverage`)
 on every project a change can reach, and `just check all` on every project;

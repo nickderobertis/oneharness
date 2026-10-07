@@ -245,7 +245,7 @@ function outputTable(declared, bundles) {
  * The project targets that must carry the parity gates, and what each holds.
  *
  * This is the question the audit asks, not the answer: the project definitions
- * say what each target runs, and the justfile's `CHECK_TARGETS` says which
+ * say what each target runs, and the justfile's `check` recipe says which
  * targets a gate run composes, so the section below is read from both. A target
  * renamed, dropped from the gate, or no longer running the script it is listed
  * for fails the regeneration rather than leaving a document — or a README
@@ -293,13 +293,14 @@ function refuse(message) {
 /** The targets a gate run composes, as the justfile's `check` recipe names them. */
 function checkTargets() {
 	const justfile = readFileSync(resolve(root, "justfile"), "utf8");
-	const declared = justfile.match(/^CHECK_TARGETS := "(?<targets>[^"\n]*)"$/mu);
-	if (!declared) {
+	const recipe = justfile.match(/^check tier="affected":\n(?<body>(?: {4}.*\n|\n)+)/mu);
+	const targets = recipe?.groups.body.match(/scripts\/nx affected [^\n]*-t (?<list>[a-z0-9,-]+)/u);
+	if (!targets) {
 		refuse(
-			"the justfile declares no `CHECK_TARGETS := \"...\"` to read the gate composition from; restore it",
+			"the justfile's `check` recipe no longer hands `nx affected` a `-t <targets>` list to read the gate composition from; restore it",
 		);
 	}
-	return declared.groups.targets.split(",").filter(Boolean);
+	return targets.groups.list.split(",").filter(Boolean);
 }
 
 function enforcementSection() {
@@ -320,7 +321,7 @@ function enforcementSection() {
 				refuse(`${project} has no \`${target}\` target; restore it, or drop it from PARITY_TARGETS in scripts/parity-audit.mjs`);
 			}
 			if (!composition.includes(target)) {
-				refuse(`the justfile's CHECK_TARGETS no longer runs \`${target}\`, so ${project}'s parity gate would never run; restore it`);
+				refuse(`the justfile's \`check\` recipe no longer runs \`${target}\`, so ${project}'s parity gate would never run; restore it`);
 			}
 			const options = definition.targets[target].options ?? {};
 			commands.push(...(options.commands ?? []), options.command ?? "");
@@ -334,7 +335,7 @@ function enforcementSection() {
 	return [
 		"### Which gate runs them",
 		"",
-		"Read from the project definitions and the justfile's `CHECK_TARGETS`, so",
+		"Read from the project definitions and the justfile's `check` recipe, so",
 		"this is the composition a run actually has rather than a second copy of it.",
 		`\`just check\` runs those targets (${composition.map((target) => `\`${target}\``).join(", ")})`,
 		"on every project a change can reach, and `just check all` on every project;",
@@ -381,7 +382,7 @@ const generated = [
 	"     from `domain::capability::CAPABILITIES` and the schema bundle; the",
 	"     Python/TypeScript columns are read from each client's own source and",
 	"     checked-in schemas; the gate table is read from the project definitions",
-	"     and the justfile's `CHECK_TARGETS`. Edit those, not this block. -->",
+	"     and the justfile's `check` recipe. Edit those, not this block. -->",
 	"",
 	enforcementSection(),
 	capabilityTable(declared, ts, py),

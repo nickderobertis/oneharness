@@ -12,11 +12,6 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 # llmlint: ignore[changed_behavior_has_e2e] `check` is itself a shebang recipe in the required `check`/`gate` path, so every gate exercises this boundary through Just's real script execution.
 set tempdir := ".just-tmp"
 
-# The gate's targets, in the order a contributor wants their verdicts. Every
-# project declares whichever of these apply to it and nothing else; the live and
-# exploration suites declare none of them, so no tier ever runs one.
-CHECK_TARGETS := "format,lint,typecheck,build,test,e2e,coverage"
-
 # List available recipes.
 default:
     @just --list
@@ -41,12 +36,15 @@ bootstrap:
 # FULL SWEEP: the same targets on every project, with the computation cache
 # skipped, so no replayed result can stand in for a clean run. CI picks the tier
 # per event (scripts/ci-gate-tier.sh); the release PR is where the sweep runs.
+# The targets are the gate's, in the order a contributor wants their verdicts:
+# every project declares whichever apply to it, and the live and exploration
+# suites declare none of them, so no tier ever runs one.
 check tier="affected":
     #!/usr/bin/env bash
     set -euo pipefail
     case {{ quote(tier) }} in
-        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t {{CHECK_TARGETS}} ;;
-        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t {{CHECK_TARGETS}} --skip-nx-cache ;;
+        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t format,lint,typecheck,build,test,e2e,coverage ;;
+        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t format,lint,typecheck,build,test,e2e,coverage --skip-nx-cache ;;
         *) printf "check: unknown tier '%s' — use 'affected' (the default) or 'all'\n" {{ quote(tier) }} >&2; exit 2 ;;
     esac
     echo "check ({{tier}}): ok"
@@ -216,10 +214,10 @@ sdk-build: sdk-install
 # (generated-contract drift, ruff, mypy on Python 3.9, the unit suite under 95%
 # branch-inclusive coverage, and the release-stamped wheel e2e).
 sdk-check:
-    bash scripts/nx run-many -p node-sdk -t {{CHECK_TARGETS}}
+    bash scripts/nx run-many -p node-sdk -t format,lint,typecheck,build,test,e2e
 
 python-sdk-check:
-    bash scripts/nx run-many -p python-sdk -t {{CHECK_TARGETS}}
+    bash scripts/nx run-many -p python-sdk -t format,lint,typecheck,test,e2e
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.
 python-sdk-generate:

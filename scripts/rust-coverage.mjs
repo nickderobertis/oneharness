@@ -90,7 +90,7 @@ if (total === 0 || percent < FLOOR) {
 			console.error(`  ${file}: ${size - hit} uncovered of ${size}`);
 		});
 	console.error(
-		"Cover the new behavior with a test (never lower COVERAGE_MIN); `just coverage-html` shows the uncovered lines.",
+		"Cover the new behavior with a test (never lower the floor); `just coverage-html` shows the uncovered lines.",
 	);
 	process.exit(1);
 }

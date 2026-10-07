@@ -41,7 +41,10 @@ case "$*" in
     # `--jq .tree.sha`: the commit's tree from "$GH_TREES" ("<commit> <tree>"
     # lines), else the commit sha itself, so distinct commits carry distinct trees.
     commit="$(sed -n 's@.*/git/commits/\([0-9a-f]*\).*@\1@p' <<<"$*")"
-    tree="$(awk -v c="$commit" '$1 == c { print $2 }' "${GH_TREES:-/dev/null}")"
+    tree="$(awk -v c="$commit" '$1 == c { print $2 }' "${GH_TREES:-/dev/null}")" || {
+      echo "gh stub: could not read the trees fixture ${GH_TREES:-}" >&2
+      exit 2
+    }
     printf '%s\n' "${tree:-$commit}"
     exit 0 ;;
 esac

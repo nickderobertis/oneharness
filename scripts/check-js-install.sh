@@ -59,6 +59,7 @@ mkdir -p "$bin"
 # quiet-on-success assertion below would catch leaking into every gate run.
 cat >"$bin/bun" <<'STUB'
 #!/usr/bin/env bash
+set -euo pipefail
 printf 'bun %s\n' "$*" >> "$CALL_LOG"
 if [ "${1:-}" = install ]; then
   mkdir -p node_modules/nx/dist/bin
@@ -70,6 +71,7 @@ STUB
 for tool in cargo rustup uv; do
     cat >"$bin/$tool" <<'STUB'
 #!/usr/bin/env bash
+set -euo pipefail
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
 STUB
 done
@@ -142,6 +144,7 @@ failing_bin="$tmp/failing-bin"
 mkdir -p "$failing_bin"
 cat >"$failing_bin/bun" <<'STUB'
 #!/usr/bin/env bash
+set -euo pipefail
 printf 'bun %s\n' "$*" >> "$CALL_LOG"
 echo 'error: lockfile had changes, but lockfile is frozen' >&2
 exit 1

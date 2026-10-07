@@ -520,9 +520,11 @@ shape. When you add one:
   with `reasoning: None` that has an effective `--reasoning`/config value — never a
   silent drop. `None` is the honest default (opencode/qwen/crush express effort
   only through their own config file — the `sync`-path follow-up; goose has no
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
   headless knob at all). Wired today: claude-code (`--effort`), codex
   (`-c model_reasoning_effort=`), copilot (`--reasoning-effort`), cursor
   (`ModelSuffix`). Pin the rendered argv with a `--print-command` assertion, add
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   the `reasoning`/`supports_reasoning` column to the README matrix, resolve it per
   harness (`[harness.<id>] reasoning`, next to `model`, since effort values are
   provider-specific), and add the `oh_reasoning_enforce <id> <effort>` live phase —
@@ -551,10 +553,12 @@ shape. When you add one:
   the CLI still reads the off-argv input. `LargeInput::NONE` (inline only) is the
   honest default until a stdin/file route is *verified* from a real invocation —
   a large value then stays inline and the command layer warns loudly rather than
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
   risking a silent E2BIG. All eight harnesses are wired today (cursor's
   stdin-only-prompt path was closed-source, so it was **probe-verified** via
   `scripts/explore-cursor-stdin.sh` + the dispatch-only `explore-cursor-stdin.yml`
   before wiring — the pattern to reuse for the next uncertain CLI).
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   <!-- llmlint: ignore-block[no_redundant_instruction_pointers, agents_md_durable_and_terse, comments_earn_their_place] This bullet can state the two rules an adapter author must satisfy or defer them to `docs/harness-usage.md`, and one rule in this list forbids each; it keeps the minimum, with the pointer intact. `comments_earn_their_place` is listed because the span covers these directive lines too. -->
 - Declare its `usage` (`UsageSupport`). Every harness must report an honest tier:
   one that cannot report headroom says *which kind* of cannot (no plan quota at
@@ -607,6 +611,7 @@ shape. When you add one:
   it from a real transcript** — the `scripts/explore-events.sh` + dispatch-only
   `explore-events.yml` probe dumps every harness's live output to CI logs (run it
   from the Actions tab), which is how the current four recognizers were written;
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
   re-run it when adding a harness. Coverage today
   (all sourced, all e2e drift-alarmed): opencode (`json`, default),
   cursor (`stream-json`, default, its own `type:"tool_call"` shape), claude-code
@@ -614,6 +619,7 @@ shape. When you add one:
   default, `command_execution` items), qwen (`--events`→`stream-json`, content
   blocks). Goose/crush/copilot emit only decorative TUI text headlessly (probe-
   confirmed), so `events` stays `null` — correct, not a gap. Forward `--events`
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   (or `--stream`) to `oh_events_assert`/`oh_stream_assert` as a run-arg for a
   harness whose transcript needs the upgraded format. Streaming
   (`run --stream`, `io::runner::run_job_streaming` + `events::events_from_value`)

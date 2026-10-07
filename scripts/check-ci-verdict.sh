@@ -34,6 +34,10 @@ case "$*" in
     printf '%s' "${GH_PULLS:-[[]]}"
     exit 0 ;;
   */git/commits/*)
+    if [ -n "${GH_TREES_FAIL:-}" ]; then
+      echo 'gh: git data endpoint refused (HTTP 404)' >&2
+      exit 1
+    fi
     # `--jq .tree.sha`: the commit's tree from "$GH_TREES" ("<commit> <tree>"
     # lines), else the commit sha itself, so distinct commits carry distinct trees.
     commit="$(sed -n 's@.*/git/commits/\([0-9a-f]*\).*@\1@p' <<<"$*")"
@@ -111,7 +115,7 @@ invoke() {
   set +e
   env -u GITHUB_REPOSITORY -u GITHUB_SHA \
     GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" GH_JOBS_FAIL="${GH_JOBS_FAIL:-}" GH_JOBS_RESPONSE="${GH_JOBS_RESPONSE:-}" \
-    GH_PULLS="${GH_PULLS:-}" GH_PULLS_FAIL="${GH_PULLS_FAIL:-}" GH_TREES="${GH_TREES:-}" \
+    GH_PULLS="${GH_PULLS:-}" GH_PULLS_FAIL="${GH_PULLS_FAIL:-}" GH_TREES="${GH_TREES:-}" GH_TREES_FAIL="${GH_TREES_FAIL:-}" \
     PATH="$tmp/bin:$PATH" \
     REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
     CI_WORKFLOW="${WORKFLOW_OVERRIDE-ci.yml}" \
@@ -819,6 +823,16 @@ GH_PULLS_FAIL=1 run_case "{\"workflow_runs\":[$(pr_run 309 success success succe
   "the pull requests endpoint refuses"
 expect_refused
 expect_said "$tmp/err" "could not read the pull requests behind $SHA_UNDER_TEST"
+
+# Two trees that cannot be read are not two equal trees: the release stops
+# rather than trusting the release pull request's run for a tree it never saw.
+GH_PULLS="$(release_pr)" GH_TREES_FAIL=1 run_case "{\"workflow_runs\":[$(pr_run 311 success success success)]}" \
+  "the tree lookups fail"
+expect_refused
+expect_said "$tmp/err" "could not read the tree of $PR_HEAD"
+if grep -q 'actions/workflows' "$tmp/calls"; then
+  fail "$description: a failed tree lookup still went on to read CI runs"
+fi
 
 GH_PULLS='[[{"number":42,"merged_at":"2026-01-02T00:00:00Z","base":{"ref":"main"},"head":{"sha":"not-a-sha","ref":"release-plz-x"}}]]' \
   run_case "{\"workflow_runs\":[$(pr_run 310 success success success)]}" \

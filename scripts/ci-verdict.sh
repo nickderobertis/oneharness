@@ -102,7 +102,7 @@ tree_of() {
 # run_source. The merged release pull request is that run when its head carried
 # exactly this tree; otherwise only a dispatched sweep of the tagged commit is.
 locate_sweep() {
-  local pulls_endpoint="repos/$repo/commits/$sha/pulls" pulls selected head_sha head_ref number
+  local pulls_endpoint="repos/$repo/commits/$sha/pulls" pulls selected head_sha head_ref number head_tree tag_tree
   if ! pulls="$(gh api --paginate --slurp "$pulls_endpoint" 2>"$work/gh-error")"; then
     sed 's/^/    gh: /' "$work/gh-error" >&2
     refuse "ci-verdict: could not read the pull requests behind $sha" "it was reading $pulls_endpoint" "restore pull-requests:read and GH_TOKEN access, then re-run this release"
@@ -126,7 +126,12 @@ locate_sweep() {
     IFS=$'\t' read -r number head_sha head_ref <<<"$selected"
     [[ "$number" =~ ^[0-9]+$ && "$head_sha" =~ ^[0-9a-f]{40}$ && "$head_ref" =~ ^[A-Za-z0-9._/-]+$ ]] ||
       refuse "ci-verdict: release pull request fields behind $sha were unreadable" "it was reading $pulls_endpoint" "inspect the pull request's number, head sha and head ref before releasing"
-    if [ "$(tree_of "$head_sha")" = "$(tree_of "$sha")" ]; then
+    # Assigned rather than compared inline: a refusal inside a substitution in a
+    # test would end only that subshell, and two failed lookups would compare
+    # equal. As assignments, `set -e` stops the release on either.
+    head_tree="$(tree_of "$head_sha")"
+    tag_tree="$(tree_of "$sha")"
+    if [ "$head_tree" = "$tag_tree" ]; then
       run_sha="$head_sha" run_event=pull_request run_branch="$head_ref"
       run_source="release pull request #$number ($head_ref) carried exactly this tree at $head_sha"
     else

@@ -27,7 +27,7 @@
     "test:package": "node test/package-e2e.mjs"
   },
   "dependencies": {
-    "oneharness-cli": "^0.3.21",
+    "oneharness-cli": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -27,7 +27,7 @@
       "name": "@oneharness/sdk",
       "version": "0.0.0-managed",
       "dependencies": {
-        "oneharness-cli": "^0.3.21",
+        "oneharness-cli": "workspace:*",
         "zod": "^4.4.3",
       },
       "devDependencies": {
@@ -96,16 +96,6 @@
     "@nx/nx-win32-arm64-msvc": ["@nx/nx-win32-arm64-msvc@23.3.0", "", { "os": "win32", "cpu": "arm64" }, "sha512-T/ChrK9uzt9/29TQzc8FGkRGDJC130ltM77eKI3Z67OjyD4SKHhsiTu5GameH1BU72jcF4QEKFf74PoI9JzbuA=="],
 
     "@nx/nx-win32-x64-msvc": ["@nx/nx-win32-x64-msvc@23.3.0", "", { "os": "win32", "cpu": "x64" }, "sha512-ermx8Qy8qf0ZIEDiGPqIXxQ0OPEL8VVUOyvAsxDec8aft3pCFjX8LrFhlfnAfM6MBFs5Bnc9Xl9D8TMzFBgo9w=="],
-
-    "@oneharness/cli-darwin-arm64": ["@oneharness/cli-darwin-arm64@0.3.21", "", { "os": "darwin", "cpu": "arm64" }, "sha512-8jwR6yWVoUS5pwdEWoreW85n2EC03TL4GBKFGWguF1r/FM7Gin2eP/i3GQTIolMLptz8B6bs8Ldu2nk12jhecA=="],
-
-    "@oneharness/cli-darwin-x64": ["@oneharness/cli-darwin-x64@0.3.21", "", { "os": "darwin", "cpu": "x64" }, "sha512-FjASBf1OYXMT0OyNoybdBKasNIxwOaQrEX6MSTxcYwRgMo/XKTjVwfykhC7Svoo7CSj5SPuFQSwJPOTH6UoR3g=="],
-
-    "@oneharness/cli-linux-arm64": ["@oneharness/cli-linux-arm64@0.3.21", "", { "os": "linux", "cpu": "arm64" }, "sha512-a6z+CKlWJijVhsZKAkv/C046YePQw8qEk43kodF+9XvCzRF6T5YO4zLB26b/HCV5maZh+fdY1R13sL3niR9nwA=="],
-
-    "@oneharness/cli-linux-x64": ["@oneharness/cli-linux-x64@0.3.21", "", { "os": "linux", "cpu": "x64" }, "sha512-+UsxQrFo8P/VgmvyYwkbGGcxLbTxG6spw6CsCSQcq5kgRyU4gZMneA1qDIoz/Qbe4wPa5IDVpipBC1DkWZoGJA=="],
-
-    "@oneharness/cli-win32-x64": ["@oneharness/cli-win32-x64@0.3.21", "", { "os": "win32", "cpu": "x64" }, "sha512-VtlPBqzJOvVXyPurGXoDqUTQ1/Vz+3vNcSNuTXuxE2fDgii3RXGur+etgg5W98L94vppsJ/qSZdsvCSMwqi/Hg=="],
 
     "@oneharness/sdk": ["@oneharness/sdk@workspace:npm/oneharness-sdk"],
 
@@ -326,7 +316,5 @@
     "yargs-parser": ["yargs-parser@21.1.1", "", {}, "sha512-tVpsJW7DdjecAiFpbIB1e3qxIQsE6NoPc5/eTdrbbIC4h0LVsWhnoa3g+m2HclBIujHzsxZ4VJVA+GUuc2/LBw=="],
 
     "zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
-
-    "@oneharness/sdk/oneharness-cli": ["oneharness-cli@0.3.21", "", { "optionalDependencies": { "@oneharness/cli-darwin-arm64": "0.3.21", "@oneharness/cli-darwin-x64": "0.3.21", "@oneharness/cli-linux-arm64": "0.3.21", "@oneharness/cli-linux-x64": "0.3.21", "@oneharness/cli-win32-x64": "0.3.21" }, "bin": { "oneharness": "bin/oneharness.js" } }, "sha512-PE0qiKCnlK0JqbU+KqgRNZBKOMkABjtZCWvLGn/vdGcXKoWLm7ITLEPQj5IR6yUpUdUemcJ2j5L+exCGod/1WA=="],
   }
 }

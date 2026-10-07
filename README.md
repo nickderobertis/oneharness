@@ -2638,8 +2638,7 @@ pinned with `--print-command` assertions. The gate also runs
 local-release installer check that drives `scripts/install.sh` without network.
 To exercise the real harnesses you have installed, run `just smoke-live` — it
 makes real model calls, skips any harness that isn't installed, and is
-intentionally never part of the gate or CI. See `AGENTS.md` and the nested
-`AGENTS.md` beside each project.
+intentionally never part of the gate or CI.
 
 Released CLI and SDK consumers can use that same deterministic provider seam;
 see [Testing patterns](docs/testing-patterns.md) for the stable `MOCK_*`

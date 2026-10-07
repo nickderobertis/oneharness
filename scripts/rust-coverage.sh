@@ -54,16 +54,24 @@ done
 
 # Every workspace member, as `--workspace` reported: `report` otherwise keeps
 # only the root package's files.
+# Captured before use, so a failed metadata read stops the run rather than
+# leaving the report on its default package selection.
+names="$(cargo metadata --no-deps --format-version 1 --locked --offline |
+  node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{for(const p of JSON.parse(s).packages)console.log(p.name)})')"
+[ -n "$names" ] || { echo "rust-coverage: cargo metadata named no workspace member to report on" >&2; exit 1; }
 members=()
-while IFS= read -r member; do members+=(-p "$member"); done < <(
-  cargo metadata --no-deps --format-version 1 --locked --offline |
-    node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{for(const p of JSON.parse(s).packages)console.log(p.name)})'
-)
+while IFS= read -r member; do members+=(-p "$member"); done <<<"$names"
 
 status=0
 cargo llvm-cov report "${members[@]}" --summary-only --fail-under-lines "$floor" \
   >target/coverage/rust-coverage.txt 2>target/coverage/rust-coverage.err || status=$?
-find target/llvm-cov-target -maxdepth 1 -name '*.profdata' -exec cp {} target/coverage/rust.profdata \;
+merged=(target/llvm-cov-target/*.profdata)
+if [ -s "${merged[0]}" ]; then
+  cp "${merged[0]}" target/coverage/rust.profdata
+elif [ "$status" -eq 0 ]; then
+  echo "rust-coverage: the report wrote no merged profile under target/llvm-cov-target" >&2
+  exit 1
+fi
 total="$(awk '/^TOTAL/ { print $(NF-3) " lines (" $(NF-4) " missed of " $(NF-5) ")" }' target/coverage/rust-coverage.txt)"
 if [ "$status" -ne 0 ]; then
   cat target/coverage/rust-coverage.txt target/coverage/rust-coverage.err >&2

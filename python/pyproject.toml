@@ -6,6 +6,7 @@
 #
 # Virtual (no `[project]`): nothing here is installed except the members.
 [tool.uv.workspace]
+# llmlint: ignore[projects_stay_in_one_uv_workspace] The repository's one other Python distribution, `oneharness-cli`, is the root pyproject.toml: maturin's wheel around the compiled Rust binary, built only by release.yml. As a member, every sync would compile the release binary as a Python package; the SDK's suites drive this checkout's own target/debug binary instead (AGENTS.md, Project graph).
 members = ["oneharness-sdk"]
 
 [tool.uv]

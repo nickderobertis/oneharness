@@ -2,9 +2,9 @@
 
 Subtree rules for the `oneharness-cli` npm launcher package. Root `AGENTS.md` still applies.
 
-- **npm packages** (*now enabled*, the direct analogue of the PyPI wheels — a
-  fifth install path). The npm distribution is **`oneharness-cli`** too (same
-  bare-name reasoning), and the command it installs is still `oneharness`.
+- **npm packages** (the direct analogue of the PyPI wheels). The npm
+  distribution is **`oneharness-cli`** too (same bare-name reasoning), and the
+  command it installs is still `oneharness`.
   `npm/oneharness/` is the committed **launcher** package: its `bin/oneharness.js`
   shim resolves and execs the prebuilt binary, which is carried in a per-platform
   package `@oneharness/cli-<platform>-<arch>` declared as an **optional

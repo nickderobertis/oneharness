@@ -3,8 +3,8 @@
 Subtree rules for `scripts/install.sh` (the published installer, whose URL is a
 public contract and never moves) and its hermetic e2e. Root `AGENTS.md` still applies.
 
-- **Sigstore release signing + mirror-safe `install.sh`** (*now enabled*,
-  mirroring llmlint). `release.yml`'s `upload` job signs each archive with a
+- **Sigstore release signing + mirror-safe `install.sh`** (mirroring llmlint).
+  `release.yml`'s `upload` job signs each archive with a
   keyless [Sigstore](https://www.sigstore.dev/) build-provenance attestation
   (`actions/attest-build-provenance@v2`, OIDC `id-token` — no secret) and
   publishes the `.sigstore.json` bundle beside the archive. `scripts/install.sh`

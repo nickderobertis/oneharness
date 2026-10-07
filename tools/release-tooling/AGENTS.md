@@ -29,7 +29,7 @@ jobs run them by name. Root `AGENTS.md` still applies.
   artifact this repository stops publishing is recorded rather than deleted. A
   per-platform `@oneharness/cli-*` package is not a target and needs BOTH halves
   of its accounting — `covers` and the launcher's `optionalDependencies`.
-- **PyPI wheels** (*now enabled*, mirroring `nickderobertis/llmlint`). `pyproject.toml`
+- **PyPI wheels** (mirroring `nickderobertis/llmlint`). The root `pyproject.toml`
   uses maturin's `bindings = "bin"` (the ruff/uv pattern) to wrap the prebuilt
   `oneharness` binary in per-platform wheels, so `pip install oneharness-cli` is a
   seconds-fast binary install where PyPI is reachable but github.com may be

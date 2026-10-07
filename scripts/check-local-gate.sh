@@ -501,7 +501,7 @@ done
 ln -s "$(command -v just)" "$bootstrap_bin/just"
 CALL_LOG="$log" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
   just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
-assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.17' "$log" \
+assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.23' "$log" \
   "bootstrap did not run the llmlint installer"
 hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath)
 [[ $hooks_path == .githooks ]] || {

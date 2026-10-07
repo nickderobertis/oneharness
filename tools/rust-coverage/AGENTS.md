@@ -22,8 +22,8 @@ Subtree rules for the Rust line-coverage floor. Root `AGENTS.md` still applies.
   suite drives whole user journeys (high-leverage line coverage), and a few
   I/O-failure arms in `crates/oneharness-core/src/io/runner.rs` (spawn/wait
   errors) and `io/config.rs` are intentionally left ungated rather than faked with
-  brittle environment manipulation. Measured coverage sits above 95% lines; keep
-  new behavior covered rather than lowering the floor. Coverage is a
+  brittle environment manipulation. Keep new behavior covered rather than
+  lowering the floor. Coverage is a
   platform-independent property of the suite, so it is enforced on Linux/macOS and
   skipped on Windows, where llvm-cov does not attribute the integration tests'
   subprocess-spawned binary coverage (a tooling limitation — the binary reads ~0%

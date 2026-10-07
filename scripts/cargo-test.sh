@@ -86,7 +86,7 @@ nextest_flags=(--locked --status-level fail --final-status-level fail)
 export RUSTFLAGS="${RUSTFLAGS:-} -D warnings"
 
 if [[ "${OS:-}" == "Windows_NT" ]] || [ "$instrumented" -eq 0 ]; then
-  exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"
+  exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" ${features[@]+"${features[@]}"} "${filter[@]}" "${nextest_flags[@]}"
 fi
 
 profile="target/coverage/$record.profdata"
@@ -97,7 +97,7 @@ rm -f "$profile"
 # so no other run's profiles are in flight while this one is cleared.
 cargo llvm-cov clean --profraw-only
 RUSTFLAGS="${RUSTFLAGS:-} -C linker=$root/scripts/coverage-linker.sh" \
-  bash scripts/check-temp-leaks.sh cargo llvm-cov --no-report nextest "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"
+  bash scripts/check-temp-leaks.sh cargo llvm-cov --no-report nextest "${packages[@]}" ${features[@]+"${features[@]}"} "${filter[@]}" "${nextest_flags[@]}"
 # The toolchain's own llvm-profdata (rustup's llvm-tools-preview), the one
 # cargo-llvm-cov merges with.
 llvm_profdata="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-profdata"

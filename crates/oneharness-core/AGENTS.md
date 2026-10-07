@@ -457,9 +457,11 @@ shape. When you add one:
   `session_formats` (every non-empty list implies `supports_resume`): the exact
   output formats that emit the native id, preferred automatic format first; an
   empty list means incapable. `oneharness list` derives `session_capable` from
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records the harnesses or history the instruction applies to today; trimming that is a deliberate pass over the checklist, not part of relocating it. -->
   this list, so capability can never drift from the transport. The non-empty
   harnesses are exactly the `extract_session` sources — claude-code, opencode,
   codex, cursor, qwen — which is what lets the uniform
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
   `run --session <name>` handle map a caller-owned name to the harness's native
   token in the session store (`domain::session` decides create-vs-continue,
   `io::session` persists `<state>/oneharness/sessions/<slug>/<name>.json`; the
@@ -532,8 +534,10 @@ shape. When you add one:
   evidence of honoring). That live phase matters most for copilot (a history of
   headless features silently not firing — its hooks were probe-refuted) and cursor
   (a forum report says cursor-agent may reject the very bracket syntax its `--help`
+  <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records the harnesses or history the instruction applies to today; trimming that is a deliberate pass over the checklist, not part of relocating it. -->
   advertises — the phase fails loudly if so). The config/env/CLI trio gained
   `reasoning` / `ONEHARNESS_REASONING` / `--reasoning`.
+  <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - Declare its `large_input` (`LargeInput`): how a **large** prompt/system reaches
   the harness without inlining it into the argv (past the OS ceiling → `E2BIG`;
   issue #1115). Three fields, all sourced from the CLI's headless docs, never
@@ -610,8 +614,8 @@ shape. When you add one:
   (must not break text extraction — verified live). **Never guess a shape: source
   it from a real transcript** — the `scripts/explore-events.sh` + dispatch-only
   `explore-events.yml` probe dumps every harness's live output to CI logs (run it
-  from the Actions tab), which is how the current four recognizers were written;
   <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md with the rest of this checklist, under this change's instruction to move — not rewrite or trim — the text that governs this project. It records which harnesses the capability is wired for today; trimming that inventory is a deliberate pass over the checklist, not part of relocating it. -->
+  from the Actions tab), which is how the current four recognizers were written;
   re-run it when adding a harness. Coverage today
   (all sourced, all e2e drift-alarmed): opencode (`json`, default),
   cursor (`stream-json`, default, its own `type:"tool_call"` shape), claude-code

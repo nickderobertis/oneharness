@@ -37,4 +37,5 @@ jobs:
 
       # The floating major follows each published 0.x release, so fixes arrive
       # without a pin bump; the defaults (the PR's base, the whole repo) fit.
+      # llmlint: ignore[changed_behavior_has_e2e] Posting and updating the comment is nickderobertis/notignored's own behavior against a hosted pull request, which no local run can drive; what this repository owns — trigger, permissions, fork guard, full checkout, single advisory job — is asserted by scripts/check-workflows.sh and proven red by scripts/check-workflows-e2e.sh.
       - uses: nickderobertis/notignored@v0

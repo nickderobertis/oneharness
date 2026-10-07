@@ -4,7 +4,8 @@
 # Each release ships the same binary several ways: the GitHub Release archives
 # (release.yml's `upload` matrix), the PyPI wheels (`build-wheels`) and the npm
 # per-platform packages (`build-npm`, named by scripts/npm-build.mjs and resolved
-# by the npm/oneharness launcher). A platform missing from one of those lists is
+# by the npm/oneharness launcher), and rust-toolchain.toml's `targets` installs
+# each one's standard library. A platform missing from one of those lists is
 # an install that fails on that host for one channel only, which is how Windows
 # ARM64 went unpublished on every channel at once. scripts/check-release-targets.sh
 # holds every one of those lists to this file, in both directions.

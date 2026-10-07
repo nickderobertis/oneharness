@@ -1,4 +1,14 @@
 [toolchain]
 channel = "1.86.0"
 components = ["clippy", "llvm-tools-preview", "rustfmt"]
+# Every target release-platforms.toml declares, one per line;
+# scripts/check-release-targets.sh holds the two lists equal.
+targets = [
+  "aarch64-apple-darwin",
+  "aarch64-pc-windows-msvc",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]
 profile = "minimal"

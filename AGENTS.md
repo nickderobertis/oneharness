@@ -59,7 +59,6 @@ follow-ups (see "After the main task").
 - **Cross-cutting:** `project-graph.md`, `ci.md` and `releasing.md`: an Nx
   project graph runs every target (*Project graph* below); release-plz drives
   versions; the full sweep sits at release-prep (*Releasing*).
-<!-- llmlint: ignore-block[agents_md_durable_and_terse] The composition record names the projects in the graph by design: it is the create-repo baseline's "Projects in the graph" line, which states the split the graph was built to and is read beside the references composed. scripts/check-nx-graph.mjs holds it to the graph Nx computes, so it cannot go stale silently. -->
 - **Projects in the graph:** `oneharness-core`, `oneharness`,
   `oneharness-integration`, `oneharness-mock-harness`, `oneharness-e2e`,
   `history-compat`, `mock-responder`, `harness-captures`, `sdk-contract`,
@@ -69,7 +68,6 @@ follow-ups (see "After the main task").
   codex, opencode, goose, qwen, crush, copilot, cursor, schema, control,
   variants) and the dispatch-only `explore-*` probes (control, cursor-stdin,
   events, hooks).
-<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - **Excluded, and why:** web-app/React/Next.js/asdf-plugin/skills-repo guidance
   do not apply; release artifacts are handled by the existing Cargo/GitHub
   Release workflow rather than a separate frontend or plugin distribution.

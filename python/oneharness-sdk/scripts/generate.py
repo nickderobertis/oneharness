@@ -267,6 +267,7 @@ def _schema_bundle() -> dict[str, Any]:
     try:
         # Warnings deny here as in every compile the gate makes — the same flags
         # as the `build` targets, so target/debug is not rebuilt between them.
+        # llmlint: ignore-block[async_typed_clients_at_boundaries] This is a one-shot codegen script run by `just python-sdk-generate`, not a service: it makes exactly one blocking cargo call and cannot proceed until the bundle exists, with no event loop and no other work to overlap, so an async client would only wrap the same wait.
         completed = subprocess.run(
             argv,
             cwd=ROOT,
@@ -276,6 +277,7 @@ def _schema_bundle() -> dict[str, Any]:
             check=True,
             env={**os.environ, "RUSTFLAGS": os.environ.get("RUSTFLAGS", "-D warnings")},
         )
+        # llmlint: ignore-end[async_typed_clients_at_boundaries]
     except FileNotFoundError:
         raise SystemExit(
             "python-sdk-generate: cargo is not on PATH, so the contract bundle cannot be built.\n"

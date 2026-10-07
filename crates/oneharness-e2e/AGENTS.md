@@ -7,6 +7,10 @@ Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the buil
   smoke`) is part of `just check` and CI: it drives the real artifact through
   `list`/`detect`/`--print-command` plus one mock spawn, fully hermetically —
   proving the shipped binary, not just the test-compiled crate.
+- A live cross-harness smoke against real CLIs (`just smoke-live`) is
+  deliberately **out** of `just check` and CI: it needs installed binaries, auth,
+  and network and makes real model calls. It stays opt-in and skips cleanly when
+  no harness is installed.
 - **Pin command construction with `--print-command`.** Every harness adapter has
   an argv assertion in `cli.rs`; that dry-run path is the deterministic proof and
   needs no binary at all. Add one when you add a harness.

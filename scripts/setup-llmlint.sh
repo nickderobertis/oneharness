@@ -27,8 +27,8 @@
 # Claude Code session where codex is absent — no `ONEHARNESS_*` override needed
 # (one would only clobber the fallback list). If your fallback order can't select
 # the right harness for some environment, set ONEHARNESS_HARNESSES there.
-# llmlint: ignore-file[tool_output_is_signal, boundary_inputs_validated] deliberate for a session-startup installer (see header): `set -e` is omitted so a flaky install can't abort the hook — the script owns its exit codes and always exits 0; success stays quiet while failures log-and-continue rather than block startup; and the toolchain is installed from PyPI (`uv tool install llmlint-cli`) whose wheels ship with Trusted Publishing + PEP 740 attestations, so no unvalidated external input is executed.
-set -uo pipefail
+# llmlint: ignore-file[tool_output_is_signal, boundary_inputs_validated] deliberate for a session-startup installer (see header): every fallible step is guarded with `||`/`if`, so a flaky install can't abort the hook and the script always exits 0; success stays quiet while failures log-and-continue rather than block startup; and the toolchain is installed from PyPI (`uv tool install llmlint-cli`) whose wheels ship with Trusted Publishing + PEP 740 attestations, so no unvalidated external input is executed.
+set -euo pipefail
 
 # Version floor, as a PyPI constraint (the `llmlint-cli` package version tracks the
 # wrapped binary version). `uv tool install --upgrade` installs the newest release
@@ -45,7 +45,7 @@ set -uo pipefail
 readonly LLMLINT_MIN="0.3.23"
 readonly BIN_DIR="$HOME/.local/bin"
 
-log() { printf 'setup-llmlint: %s\n' "$*" >&2; }
+log() { printf 'setup-llmlint: %s\n' "$*" >&2 || true; }
 
 # Install llmlint from PyPI via uv (the repo's Python package manager). uv is a
 # clean-clone prerequisite; if it is somehow absent, log an actionable pointer and
@@ -73,7 +73,7 @@ persist_session_env() {
     # (codex primary, claude-code secondary), so a Claude Code session — where codex
     # is absent — falls through to claude-code on its own. Set ONEHARNESS_HARNESSES
     # here only if a specific environment's fallback order can't pick correctly.
-  } >> "$CLAUDE_ENV_FILE"
+  } >> "$CLAUDE_ENV_FILE" || { log "could not write $CLAUDE_ENV_FILE (continuing)"; return 0; }
   log "exported PATH"
 }
 

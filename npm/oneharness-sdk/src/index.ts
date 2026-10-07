@@ -557,18 +557,24 @@ function capabilityArguments(
 				args.push(binding.flag, String(value));
 				break;
 			case "repeated":
+				// Zod validated this option against the contract, which types every
+				// `repeated` binding as an array.
 				pushMany(args, binding.flag, (value as unknown[]).map(String));
 				break;
 			case "switch":
 				if (value) args.push(binding.flag);
 				break;
 			case "key-value":
+				// Zod validated this option against the contract, which types every
+				// `key-value` binding as an object.
 				for (const [key, item] of Object.entries(
 					value as Record<string, unknown>,
 				))
 					args.push(binding.flag, `${key}=${String(item)}`);
 				break;
 			case "trailing":
+				// Zod validated this option against the contract, which types every
+				// `trailing` binding as an array.
 				trailing.push(...(value as unknown[]).map(String));
 				break;
 			case "window":

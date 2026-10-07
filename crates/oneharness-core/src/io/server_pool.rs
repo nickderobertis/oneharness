@@ -605,6 +605,8 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
         use windows_sys::Win32::System::Threading::{
             GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
+        // SAFETY: every out-pointer is a live local FILETIME, and the handle is
+        // checked for null before use and closed exactly once.
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid.get());
             if handle.is_null() {
@@ -655,6 +657,8 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
             start_seconds: u64,
             start_microseconds: u64,
         }
+        // SAFETY: the signature matches libproc's `proc_pidinfo` declaration in
+        // <libproc.h>.
         #[link(name = "proc")]
         unsafe extern "C" {
             fn proc_pidinfo(
@@ -668,6 +672,8 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
 
         let mut info = ProcBsdInfo::default();
         let size = std::mem::size_of::<ProcBsdInfo>();
+        // SAFETY: the buffer is a live, writable `ProcBsdInfo` whose size is the
+        // length passed; the kernel writes at most that many bytes.
         let read = unsafe {
             proc_pidinfo(
                 pid.get() as libc::c_int,
@@ -699,6 +705,8 @@ fn detach(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     // Its own session/process group, so terminating the dispatch's tree does
     // not take the shared server down with it.
+    // SAFETY: the hook runs in the forked child before exec and calls only
+    // `setsid`, which is async-signal-safe, and allocates nothing.
     unsafe {
         command.pre_exec(|| {
             if libc::setsid() == -1 {
@@ -722,6 +730,7 @@ pub fn pid_alive(pid: Pid) -> bool {
         // Signal 0 performs the existence/permission check without delivering.
         // A zombie still answers, but a zombie server is reaped by its parent's
         // exit, so treating it as alive only defers reclamation by one sweep.
+        // SAFETY: `kill` takes plain integers and signal 0 delivers nothing.
         unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
     }
     #[cfg(windows)]
@@ -730,6 +739,7 @@ pub fn pid_alive(pid: Pid) -> bool {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
+        // SAFETY: the handle is checked for null before use and closed once.
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
             if handle.is_null() {
@@ -785,6 +795,8 @@ fn reap_finished() {
 
 fn kill(pid: Pid) {
     let pid = pid.get();
+    // SAFETY: `kill` takes plain integers; a pid or group already gone is an
+    // ignored error, not undefined behavior.
     #[cfg(unix)]
     unsafe {
         // The server was started in its own session; signal the whole group so
@@ -798,6 +810,7 @@ fn kill(pid: Pid) {
         use windows_sys::Win32::System::Threading::{
             OpenProcess, TerminateProcess, PROCESS_TERMINATE,
         };
+        // SAFETY: the handle is checked for null before use and closed once.
         unsafe {
             let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
             if !handle.is_null() {
@@ -1066,6 +1079,7 @@ mod tests {
         assert!(pid_alive(server_pid));
 
         let mut holder = holder;
+        // SAFETY: `kill` takes plain integers; the holder is this test's child.
         unsafe {
             libc::kill(holder_pid.get() as libc::pid_t, libc::SIGKILL);
         }
@@ -1183,6 +1197,7 @@ mod tests {
         let root = temp_root("dead");
         let first = acquire(&root, &key(), &sleeper_plan(), DEFAULT_LINGER).unwrap();
         let dead_pid = first.record().pid;
+        // SAFETY: `kill` takes plain integers; the server is this test's own.
         unsafe {
             libc::kill(dead_pid.get() as libc::pid_t, libc::SIGKILL);
         }

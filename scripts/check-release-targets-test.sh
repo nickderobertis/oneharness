@@ -64,6 +64,7 @@ staged=(
   npm/oneharness-sdk/test/package-e2e.mjs
   scripts/npm-e2e.sh
   release-platforms.toml
+  rust-toolchain.toml
   .github/workflows/package-pr.yml
   README.md
 )
@@ -735,6 +736,21 @@ npm = "linux-riscv64"
 PLATFORM
 assert_red platform-built-nowhere "a declared platform no release matrix builds" \
   "release.yml's upload matrix lacks 'riscv64gc-unknown-linux-gnu ubuntu-latest tar.gz'"
+grep -Fq "rust-toolchain.toml's targets lacks 'riscv64gc-unknown-linux-gnu'" "$work/out" ||
+  fail_showing "a declared platform the pinned toolchain does not list failed the gate without naming it; restore the rust-toolchain.toml half of the platform check in scripts/check-release-targets.sh"
+
+# The pinned toolchain lists exactly the declared targets: one it forgets is a
+# release target no checkout can build as pinned, and one it adds is a target
+# nothing releases.
+root="$(stage toolchain-target-missing)"
+rewrite "$root" rust-toolchain.toml '!/^  "aarch64-pc-windows-msvc",$/ { print }'
+assert_red toolchain-target-missing "a toolchain that forgot a declared release target" \
+  "rust-toolchain.toml's targets lacks 'aarch64-pc-windows-msvc'"
+
+root="$(stage toolchain-target-extra)"
+rewrite "$root" rust-toolchain.toml '{ print } /^targets = \[$/ { print "  \"riscv64gc-unknown-linux-gnu\"," }'
+assert_red toolchain-target-extra "a toolchain listing a target no release builds" \
+  "rust-toolchain.toml's targets has 'riscv64gc-unknown-linux-gnu', which release-platforms.toml does not declare"
 
 # A misspelled or missing key read as an absent one would build a platform
 # nowhere without a word, so the declaration must refuse each.
@@ -799,6 +815,12 @@ root="$(stage pr-lane-missing)"
 rm "$root/.github/workflows/package-pr.yml"
 assert_red pr-lane-missing "a missing pull-request lane" \
   "package-pr.yml is missing, so the platforms release-platforms.toml marks pull_request = true are built on no pull request"
+
+root="$(stage toolchain-missing)"
+rm "$root/rust-toolchain.toml" ||
+  fail "could not remove rust-toolchain.toml from the scratch copy $root; check that $work is writable, then re-run"
+assert_red toolchain-missing "a missing pinned toolchain" \
+  "rust-toolchain.toml is missing or unreadable, so no pinned toolchain lists the targets release-platforms.toml declares"
 
 # README.md keeps no copy of the platform set: it points at the declaration,
 # and a platform it names must be a declared one.

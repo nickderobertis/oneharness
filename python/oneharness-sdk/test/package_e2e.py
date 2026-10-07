@@ -89,6 +89,19 @@ def main(stack: ExitStack) -> None:
             name.endswith("oneharness_sdk/_generated/schemas.json") for name in archive.namelist()
         ):
             raise AssertionError("Python SDK wheel omitted its generated runtime schemas")
+        # The SDK is published as typed (PEP 561): a checker reads its
+        # annotations only when the marker ships inside the package, and the
+        # classifier is how an index says so.
+        if "oneharness_sdk/py.typed" not in archive.namelist():
+            raise AssertionError(
+                "Python SDK wheel omitted oneharness_sdk/py.typed, so type checkers "
+                "ignore its annotations; keep the marker in src/oneharness_sdk"
+            )
+    if "Typing :: Typed" not in metadata.get_all("Classifier", []):
+        raise AssertionError(
+            "Python SDK wheel METADATA lacks 'Classifier: Typing :: Typed'; keep it in "
+            "python/oneharness-sdk/pyproject.toml's classifiers"
+        )
     assert metadata["Name"] == "oneharness-sdk"
     assert metadata["Version"] == version
     assert metadata["Requires-Python"] == ">=3.9"

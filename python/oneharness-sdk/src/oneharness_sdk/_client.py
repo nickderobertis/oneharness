@@ -64,10 +64,12 @@ class MockHarnessScript(TypedDict, total=False):
 
 def _load_json(name: str) -> dict[str, Any]:
     path = Path(__file__).with_name("_generated") / name
+    # cast: `json.loads` returns Any; every generated file read here is a JSON object, and `python-sdk-check` refuses drift in them.
     return cast("dict[str, Any]", json.loads(path.read_text(encoding="utf-8")))
 
 
 _SCHEMAS = _load_json("schemas.json")
+# cast: the generated key map is `{input root: {SDK key: CLI key}}`, all strings.
 _INPUT_KEYS = cast("dict[str, dict[str, str]]", _load_json("input-keys.json"))
 _CAPABILITIES = _load_json("capabilities.json")
 # The option contracts, taken from the generated key map rather than restated:
@@ -96,6 +98,7 @@ def _validate(root: str, value: Any, label: str) -> Any:
 def _input(root: str, value: Any, label: str) -> dict[str, Any]:
     if root not in _INPUT_ROOTS:  # pragma: no cover - internal programming guard
         raise AssertionError(f"{root} is not an input schema")
+    # cast: every input root is an object schema, and `_validate` just accepted `value` against it.
     checked = cast("Mapping[str, Any]", _validate(root, value, label))
     keys = _INPUT_KEYS[root]
     return {keys.get(key, key): item for key, item in checked.items()}
@@ -242,6 +245,7 @@ def _capability_arguments(method: str, options: Mapping[str, Any]) -> list[str]:
             if value:
                 args.append(flag)
         elif kind == "key-value":
+            # cast: `_input` validated a `key-value` binding's value as an object against its options schema.
             for key, item in cast("Mapping[str, Any]", value).items():
                 args.extend((flag, f"{key}={_text(item)}"))
         elif kind == "window":
@@ -388,6 +392,7 @@ class OneHarness:
         )
         value = await self._invoke(
             _capability_arguments(method, parsed),
+            # cast: every options schema validated `cwd` as a string or left it out.
             cwd=cast("Optional[str]", parsed.get("cwd")),
             accept_json_on_nonzero=accept_json_on_nonzero,
             history=history,
@@ -418,6 +423,7 @@ class OneHarness:
                     value = json.loads(line)
                 except (UnicodeDecodeError, json.JSONDecodeError) as error:
                     raise ContractError(f"{label}: invalid JSON: {error}") from error
+                # cast: every stream envelope root is an object schema `_validate` just accepted.
                 yield cast("dict[str, Any]", _validate(root, value, label))
             returncode = await process.wait()
             stderr = (await stderr_task).decode("utf-8", errors="replace")
@@ -434,6 +440,7 @@ class OneHarness:
         # `accept_json_on_nonzero`, because a harness that fails is data in the
         # report rather than a failure of the call: the CLI still prints a whole
         # contract and exits non-zero to say some result was not `ok`.
+        # cast: `_call` validated this document against `run_report`.
         return cast(
             "RunReport",
             await self._call(
@@ -456,6 +463,7 @@ class OneHarness:
             raise ContractError("invalid mock harness: harness must not be empty")
         parsed = _input("run_options", options, "invalid oneharness run options")
         scripted = dict(script or {})
+        # cast: `run_options` validated `env` as an object of string values.
         env = dict(cast("Mapping[str, str]", parsed.get("env", {})))
         mappings = {
             "stdout": "MOCK_STDOUT",
@@ -469,9 +477,11 @@ class OneHarness:
         parsed = {**parsed, "harnesses": [harness], "mockHarnesses": [harness], "env": env}
         value = await self._invoke(
             _capability_arguments("run", parsed),
+            # cast: every options schema validated `cwd` as a string or left it out.
             cwd=cast("Optional[str]", parsed.get("cwd")),
             accept_json_on_nonzero=True,
         )
+        # cast: `_validate` just accepted this document against `run_report`.
         return cast("RunReport", _validate("run_report", value, "invalid oneharness run contract"))
 
     def run_stream(self, options: RunOptions) -> AsyncIterator[RunStreamEnvelope]:
@@ -481,6 +491,7 @@ class OneHarness:
             _capability_arguments("runStream", parsed),
             "run_stream_envelope",
             "invalid oneharness run stream contract",
+            # cast: every options schema validated `cwd` as a string or left it out.
             cwd=cast("Optional[str]", parsed.get("cwd")),
         )
 
@@ -491,6 +502,7 @@ class OneHarness:
             await self._invoke(_capability_arguments("list", {})),
             "invalid oneharness list contract",
         )
+        # cast: `_validate` accepted `list_report`, whose `harnesses` items are HarnessInfo.
         return cast("builtins.list[HarnessInfo]", value["harnesses"])
 
     async def detect(
@@ -509,12 +521,15 @@ class OneHarness:
         ):
             raise ContractError("invalid oneharness detect options: harnesses must be strings")
         else:
+            # cast: the harnesses were checked as strings above, the whole of DetectOptions this builds.
             options = cast("DetectOptions", {"harnesses": list(harnesses_or_options)})
         report = await self._call("detect", options, "detect_options", "detect_report")
+        # cast: `_call` validated `detect_report`, whose `detected` items are Detection.
         return cast("builtins.list[Detection]", report["detected"])
 
     async def config(self, options: Optional[ConfigOptions] = None) -> ConfigReport:
         """Return the effective layered configuration and each value's source."""
+        # cast: `_call` validated this document against `config_report`.
         return cast(
             "ConfigReport",
             await self._call("config", options or {}, "config_options", "config_report"),
@@ -524,6 +539,7 @@ class OneHarness:
         """Merge the unified policy into each harness's own configuration file."""
         # `--check` exits non-zero when a file would change, which is the answer
         # rather than a failure, and the report says which files those are.
+        # cast: `_call` validated this document against `sync_report`.
         return cast(
             "SyncReport",
             await self._call(
@@ -537,6 +553,7 @@ class OneHarness:
 
     async def usage(self, options: Optional[UsageOptions] = None) -> UsageReport:
         """Report subscription headroom per harness identity, before spending it."""
+        # cast: `_call` validated this document against `usage_report`.
         return cast(
             "UsageReport",
             await self._call("usage", options or {}, "usage_options", "usage_report"),
@@ -551,6 +568,7 @@ class OneHarness:
         """
         parsed = _input("init_options", options or {}, "invalid oneharness init options")
         await self._invoke_text(_capability_arguments("init", parsed))
+        # cast: `init_options` validated `path` as a string, and the fallback is one.
         return cast("str", parsed.get("path") or "oneharness.toml")
 
     async def gate(self, options: GateOptions) -> Optional[str]:
@@ -563,6 +581,7 @@ class OneHarness:
         parsed = _input("gate_options", options, "invalid oneharness gate options")
         verdict = await self._invoke_text(
             _capability_arguments("gate", parsed),
+            # cast: `gate_options` requires `event` and validated it as a string.
             stdin=cast("str", parsed["event"]),
         )
         return verdict if verdict.strip() else None
@@ -572,6 +591,7 @@ class OneHarness:
         parsed = _input("mock_options", options, "invalid oneharness mock options")
         verdict = await self._invoke_text(
             _capability_arguments("mock", parsed),
+            # cast: `mock_options` requires `event` and validated it as a string.
             stdin=cast("str", parsed["event"]),
         )
         return verdict if verdict.strip() else None
@@ -583,6 +603,7 @@ class OneHarness:
         was served and, when it was not, why — which is what a supervisor
         branches on. So a non-zero exit still yields the frame.
         """
+        # cast: `_call` validated this document against `interrupt_response`.
         return cast(
             "InterruptResponse",
             await self._call(
@@ -622,6 +643,7 @@ class OneHarness:
         self, options: Optional[HistoryListOptions] = None
     ) -> builtins.list[dict[str, Any]]:
         """List standardized history sessions."""
+        # cast: `_call` validated this document against `history_list`.
         return cast(
             "builtins.list[dict[str, Any]]",
             await self._call(
@@ -643,6 +665,7 @@ class OneHarness:
         documents: ``dry_run`` discriminates them, so a caller reads ``removed``
         only from a run that removed something.
         """
+        # cast: `_call` validated this document against `history_clear_report`.
         return cast(
             "HistoryClearReport",
             await self._call(
@@ -657,6 +680,7 @@ class OneHarness:
         self, options: Optional[HistoryMigrateOptions] = None
     ) -> HistoryMigrateReport:
         """Rewrite legacy session files to the current record version."""
+        # cast: `_call` validated this document against `history_migrate_report`.
         return cast(
             "HistoryMigrateReport",
             await self._call(

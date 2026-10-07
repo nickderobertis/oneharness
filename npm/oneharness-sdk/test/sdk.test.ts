@@ -162,6 +162,8 @@ for (const name of Object.keys(process.env)) {
 }
 
 type JsonSchema = Record<string, unknown>;
+// `JSON.parse` returns any; the generated bundle maps each root to its schema
+// object, and `generate:check` refuses drift in it.
 const bundle = JSON.parse(
 	await readFile(resolve(here, "../src/generated/schemas.json"), "utf8"),
 ) as Record<string, JsonSchema>;
@@ -191,6 +193,7 @@ function populate(
 	if (!node) return null;
 	const scope = {
 		...defs,
+		// A JSON Schema's `$defs`, when present, maps names to schemas.
 		...((node.$defs as Record<string, JsonSchema>) ?? {}),
 	};
 	const deref = (child: JsonSchema | undefined) =>
@@ -225,6 +228,7 @@ function populate(
 		const collect = (part: JsonSchema | undefined): void => {
 			const here = deref(part);
 			if (!here) return;
+			// A JSON Schema's `properties`, when present, is an object.
 			for (const [name, child] of Object.entries(
 				(here.properties as Record<string, unknown>) ?? {},
 			)) {
@@ -254,6 +258,7 @@ function populate(
 	switch (kind) {
 		case "object": {
 			const value: Record<string, unknown> = {};
+			// A JSON Schema's `properties`, when present, is an object.
 			for (const [name, child] of Object.entries(
 				(node.properties as Record<string, unknown>) ?? {},
 			)) {
@@ -401,6 +406,8 @@ describe("OneHarness", () => {
 		// function apiece, and a field no instance ever carries is a function no
 		// test ever calls, which is what the package's coverage floor is really
 		// asking about.
+		// Indexed by root name below; a module namespace has no index signature,
+		// and each lookup is checked for a validator before it is used.
 		const exported = (await import("../src/index.js")) as unknown as Record<
 			string,
 			ZodType<unknown> | undefined
@@ -600,6 +607,8 @@ describe("OneHarness", () => {
 		expect(parsed.results[0]?.future_result).toBe("kept");
 		expect(parsed.results[0]?.usage.future_usage).toBe(7);
 
+		// Deliberately not a RunOptions: the misspelled key is what both the
+		// schema and the client must refuse at runtime.
 		const misspelled = {
 			prompt: "typo",
 			harneses: ["codex"],
@@ -2205,6 +2214,8 @@ describe("OneHarness", () => {
 		// enforces this across both languages in `just check`; asserting it here
 		// too means a missing method fails the package's own suite rather than
 		// only a repo-level script.
+		// Indexed by manifest name; the class has no index signature, and the
+		// assertion below is what checks each member is a method.
 		const client = sdk() as unknown as Record<string, unknown>;
 		for (const method of Object.keys(CAPABILITIES)) {
 			expect(typeof client[method], `${method} is missing`).toBe("function");

@@ -38,10 +38,11 @@
 # release builds the binary for. Each list that restates a share of that set —
 # release.yml's upload, build-wheels and build-npm matrices, package-pr.yml's
 # pull-request lane, npm-build.mjs's TARGETS, the launcher's platform map and
-# optionalDependencies, the npm:oneharness-cli `covers`, and the host maps of
-# the SDK package e2e and the launcher e2e (npm-e2e.sh) — is held to it in both
-# directions, because a platform one list forgets is an install that fails on
-# that host through that channel alone. README.md lists none of them: it must
+# optionalDependencies, the npm:oneharness-cli `covers`, the host maps of the
+# SDK package e2e and the launcher e2e (npm-e2e.sh), and rust-toolchain.toml's
+# `targets` — is held to it in both directions, because a platform one list
+# forgets is an install that fails on that host through that channel alone (or,
+# for the toolchain, a target no checkout can build as pinned). README.md lists none of them: it must
 # point at the declaration, and any target or platform package it names must be
 # declared.
 #
@@ -680,6 +681,7 @@ npm_launcher_manifest="npm/oneharness/package.json"
 sdk_package_e2e="npm/oneharness-sdk/test/package-e2e.mjs"
 npm_e2e="scripts/npm-e2e.sh"
 readme="README.md"
+toolchain="rust-toolchain.toml"
 
 if [ ! -f "$platforms" ]; then
 	fail "$platforms is missing, so nothing states which platforms a release builds; restore it — it is the one statement of that set every release matrix and npm list is held to"
@@ -839,6 +841,17 @@ if [ -n "$platform_records" ]; then
 		"$(declared_platforms 1 4)" \
 		"$(tr -d '\r' <"$npm_e2e" | sed -n 's/^ *\([a-z0-9]*-[a-z0-9]*\)) TARGET="\([^"]*\)" ;;$/\2 \1/p')" \
 		"map each npm platform there to its target, so the launcher e2e stages the package a host's node resolves"
+	# The pinned toolchain installs the standard library of every target it
+	# lists, so a release target missing there is one no checkout can build
+	# without an ad-hoc `rustup target add`.
+	if [ -f "$toolchain" ] && [ -r "$toolchain" ]; then
+		hold_to_platforms "$toolchain's targets" \
+			"$(declared_platforms 1)" \
+			"$(tr -d '\r' <"$toolchain" | awk '/^targets = \[/ { inside = 1 } inside { print } inside && /\]/ { exit }' | grep -oE '"[^"]+"' | tr -d '"')" \
+			"list exactly the targets $platforms declares in its targets array, one quoted triple per line"
+	else
+		fail "$toolchain is missing or unreadable, so no pinned toolchain lists the targets $platforms declares; restore it with those targets in its targets array"
+	fi
 	# README.md keeps no copy of the set: it points at the declaration, and every
 	# target triple or platform package it does name must be one declared.
 	grep -q 'release-platforms\.toml' "$readme" ||

@@ -13,15 +13,27 @@ workflow=.github/workflows/release.yml
 ci=.github/workflows/ci.yml
 release_plz=.github/workflows/release-plz.yml
 verdict=scripts/ci-verdict.sh
+notignored=.github/workflows/notignored.yml
 cp "$workflow" "$work/release.yml"
 cp "$ci" "$work/ci.yml"
 cp "$release_plz" "$work/release-plz.yml"
 cp "$verdict" "$work/ci-verdict.sh"
+cp "$notignored" "$work/notignored.yml" || {
+  echo "check-workflows-e2e: could not back up $notignored into $work" >&2
+  echo "  fix: make sure $notignored exists and the temp dir is writable, then re-run" >&2
+  rm -rf "$work" || echo "  also: could not remove the scratch dir $work; delete it by hand" >&2
+  exit 1
+}
 restore() {
   cp "$work/release.yml" "$workflow"
   cp "$work/ci.yml" "$ci"
   cp "$work/release-plz.yml" "$release_plz"
   cp "$work/ci-verdict.sh" "$verdict"
+  cp "$work/notignored.yml" "$notignored" || {
+    echo "check-workflows-e2e: could not restore $notignored; its original is kept at $work/notignored.yml" >&2
+    echo "  fix: copy that file back over $notignored (or 'git checkout -- $notignored')" >&2
+    return 1
+  }
   rm -rf "$work"
 }
 trap restore EXIT
@@ -208,5 +220,52 @@ grep -Fq 'keep the verdict selector pointed at ci.yml' "$work/stderr" || {
   exit 1
 }
 cp "$work/ci-verdict.sh" "$verdict"
+
+# The suppressions comment stays advisory: it keeps its fork guard, keeps to its
+# own single-job workflow, and never rides inside a required check's workflow.
+expect_notignored_refusal() {
+  local case="$1" expected="$2"
+  if bash scripts/check-workflows.sh >"$work/stdout" 2>"$work/stderr"; then
+    echo "check-workflows-e2e: $case unexpectedly passed the gate" >&2
+    echo "  fix: restore the notignored.yml contract in scripts/check-workflows.sh" >&2
+    exit 1
+  fi
+  grep -Fq "$expected" "$work/stderr" || {
+    echo "check-workflows-e2e: $case failed without naming '$expected'" >&2
+    echo "  fix: restore that wording in scripts/check-workflows.sh, or update this expectation to the new wording" >&2
+    cat "$work/stderr" >&2
+    exit 1
+  }
+  { cp "$work/notignored.yml" "$notignored" && cp "$work/ci.yml" "$ci"; } || {
+    echo "check-workflows-e2e: could not reset $notignored and $ci after $case" >&2
+    echo "  fix: make sure both are writable, then re-run; the EXIT trap restores them from $work" >&2
+    exit 1
+  }
+}
+
+# $1 = the fixture case whose rewrite failed, $2 = the file it was writing.
+fixture_fail() {
+  echo "check-workflows-e2e: could not write the '$1' fixture into $2" >&2
+  echo "  fix: make sure $2 is writable, then re-run; the EXIT trap restores it from $work" >&2
+  exit 1
+}
+
+fork_guard='if: github.event.pull_request.head.repo.full_name == github.repository'
+grep -Fq "$fork_guard" "$work/notignored.yml" || {
+  echo "check-workflows-e2e: $notignored has no '$fork_guard' line to remove" >&2
+  echo "  fix: restore the fork guard in $notignored, or update this fixture to its new spelling" >&2
+  exit 1
+}
+grep -Fv "$fork_guard" "$work/notignored.yml" >"$notignored" \
+  || fixture_fail "notignored.yml without its fork guard" "$notignored"
+expect_notignored_refusal "notignored.yml without its fork guard" "skip fork pull requests"
+
+printf '  llmlint:\n    needs: suppressions\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' >>"$notignored" \
+  || fixture_fail "a second job in notignored.yml" "$notignored"
+expect_notignored_refusal "a second job in notignored.yml" "must define exactly one job, 'suppressions'"
+
+printf '      - uses: nickderobertis/notignored@v0\n' >>"$ci" \
+  || fixture_fail "notignored inside ci.yml" "$ci"
+expect_notignored_refusal "notignored inside ci.yml" "ci.yml runs nickderobertis/notignored"
 
 echo 'check-workflows-e2e: ok'

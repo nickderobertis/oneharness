@@ -1083,6 +1083,8 @@ struct CallerJob(windows_sys::Win32::Foundation::HANDLE);
 // owns it for the whole run and closes it exactly once, in `Drop`.
 #[cfg(windows)]
 unsafe impl Send for CallerJob {}
+// SAFETY: as for `Send`; the handle is only read through `&self`, and the Win32
+// job calls it is passed to are thread-safe.
 #[cfg(windows)]
 unsafe impl Sync for CallerJob {}
 

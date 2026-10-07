@@ -1,7 +1,7 @@
 # AGENTS (oneharness-e2e)
 
 Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the built
-`oneharness` and `oneharness-mock-harness` executables as subprocesses. Root `AGENTS.md` still applies.
+`oneharness` and `oneharness-mock-harness` executables as subprocesses.
 
 - An end-to-end smoke of the *built* binary (`scripts/smoke.sh`, via `just
   smoke`) is part of `just check` and CI: it drives the real artifact through

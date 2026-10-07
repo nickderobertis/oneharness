@@ -1,7 +1,7 @@
 # AGENTS (live-control)
 
 Rules for the `live-control` suite alone (`scripts/e2e-control.sh`,
-`.github/workflows/e2e-control.yml`). Root `AGENTS.md` and `live/AGENTS.md` still apply.
+`.github/workflows/e2e-control.yml`).
 
 <!-- llmlint: ignore-file[agents_md_durable_and_terse] Everything below this lead was moved verbatim from live/AGENTS.md (and before that the root AGENTS.md) under this change's instruction to move — not rewrite or trim — the text that governs only this suite. The per-harness and per-platform detail is the original's; a durability pass over it is a change of its own. -->
 

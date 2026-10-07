@@ -2,8 +2,7 @@
 
 Rules for the live suites `scripts/check-e2e-matrix.sh` holds to one shared
 pull-request matrix contract: the eight per-harness suites under `harness/` and
-`live-schema`. `live-control` and `live-variants` sit outside it. Root
-`AGENTS.md` and `live/AGENTS.md` still apply.
+`live-schema`. `live-control` and `live-variants` sit outside it.
 
 <!-- llmlint: ignore-file[agents_md_durable_and_terse] Everything below this lead was moved verbatim from live/AGENTS.md (and before that the root AGENTS.md) under this change's instruction to move — not rewrite or trim — the text that governs these suites; only the connecting clause naming where a split-off rule now lives is new. The per-harness and per-platform detail is the original's; a durability pass over it is a change of its own. -->
 

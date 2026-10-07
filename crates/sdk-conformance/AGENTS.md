@@ -2,7 +2,7 @@
 
 Subtree rules for the SDKs' conformance to the capability manifest: the checks
 that read each SDK's hand-written client and README. A leaf that reads the SDKs
-through its inputs rather than depending on them. Root `AGENTS.md` still applies.
+through its inputs rather than depending on them.
 
 - The generated-contract drift checks never see a method that was never written, so
   `check-sdk-coverage.sh` (in this project's `test`) fails when a `domain::capability`

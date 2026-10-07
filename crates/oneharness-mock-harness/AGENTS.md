@@ -4,8 +4,7 @@ Subtree rules for the deterministic fake harness the hermetic suites spawn
 through a `--bin ID=PATH` override (or an `ONEHARNESS_BIN_<ID>` env var). The
 responder itself ships inside the CLI (`oneharness mock-harness`, from
 `tests/support/mock_harness.rs`, the `mock-responder` project); this crate is only the standalone executable
-around it, `publish = false`, so it never reaches `cargo install`. Root
-`AGENTS.md` still applies.
+around it, `publish = false`, so it never reaches `cargo install`.
 
 - **Script the mock through its env vars** (`MOCK_STDOUT`, `MOCK_STDERR`,
   `MOCK_EXIT`, `MOCK_SLEEP_MS`, `MOCK_ARGV_FILE`) — do not add bespoke fixtures

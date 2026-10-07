@@ -2,7 +2,7 @@
 
 Subtree rules for the `live-*` projects: the paid, credential-gated suites that
 drive real harnesses. None declares a gate target, so neither tier ever runs one;
-each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`). Root `AGENTS.md` still applies.
+each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`).
 
 - Also out of the core gate; the workflows are gated to the canonical repo and
   non-fork PRs. Auth comes from the `gh-secrets.json` manifest (Bitwarden secure

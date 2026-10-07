@@ -5,7 +5,7 @@ idempotent publishers, the packaging and semver gates, the release-target drift
 gate and probe — and their hermetic tests. Its `package-crates`, `semver-check`
 and `probe-live` targets reach crates.io or the public registries, so they are
 uncached and in neither gate tier: `just gate` and ci.yml's `package`/`semver`
-jobs run them by name. Root `AGENTS.md` still applies.
+jobs run them by name.
 
 <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md under this change's instruction to move — not rewrite or trim — the text that governs this project (standalone trimming of AGENTS.md is outside its scope); only references to where its checks now run were updated. Its account of the release jobs is where the constraints it states apply; a durability pass over it is a change of its own. -->
 - `just package-crates` — package both crates as Cargo verifies them at publish

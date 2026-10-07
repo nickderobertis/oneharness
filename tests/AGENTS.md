@@ -6,7 +6,6 @@ the mock harness as a subprocess — without the CLI binary. Two directories her
 are projects of their own: the shipped mock responder (`support/`,
 `mock-responder`) and the captured harness output several suites read
 (`fixtures/`, `harness-captures`).
-Root `AGENTS.md` still applies.
 
 - **Hermetic by construction.** Tests never call a real harness CLI, the network,
   or an authenticated session. The subprocess path is exercised through the

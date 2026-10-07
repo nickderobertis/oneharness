@@ -1,6 +1,6 @@
 # AGENTS (python-sdk)
 
-Subtree rules for the typed Python SDK (`oneharness-sdk`). Root `AGENTS.md` still applies.
+Subtree rules for the typed Python SDK (`oneharness-sdk`).
 
 - **Python 3.9 is the floor, and the gate runs on it** (`python/.python-version`
   for the uv workspace rooted at `python/`): code and dev pins must keep

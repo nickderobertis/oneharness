@@ -1,7 +1,7 @@
 # AGENTS (install-surface)
 
 Subtree rules for `scripts/install.sh` (the published installer, whose URL is a
-public contract and never moves) and its hermetic e2e. Root `AGENTS.md` still applies.
+public contract and never moves) and its hermetic e2e.
 
 <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md under this change's instruction to move — not rewrite or trim — the text that governs this project (standalone trimming of AGENTS.md is outside its scope); only references to where its checks now run were updated. Its account of the release jobs is where the constraints it states apply; a durability pass over it is a change of its own. -->
 - **Sigstore release signing + mirror-safe `install.sh`** (mirroring llmlint).

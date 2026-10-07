@@ -1,6 +1,6 @@
 # AGENTS (rust-coverage)
 
-Subtree rules for the Rust line-coverage floor. Root `AGENTS.md` still applies.
+Subtree rules for the Rust line-coverage floor.
 
 - **Coverage is enforced at the skill default, 95% lines** (`COVERAGE_MIN`,
   default 95, in `scripts/rust-coverage.sh`), via `cargo llvm-cov` — an external

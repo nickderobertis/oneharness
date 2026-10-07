@@ -2,7 +2,7 @@
 
 Subtree rules for the captured harness output — the external CLIs' own wire
 formats every parser here is held to — and the SDK acceptance matrix
-(`sdk-contract-matrix.json`). Root `AGENTS.md` still applies.
+(`sdk-contract-matrix.json`).
 
 - **A capture comes from a real run, never from imagination.** Record it from the
   CLI itself (the `explore-*` probes dump live output for exactly this) and keep

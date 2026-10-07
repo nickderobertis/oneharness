@@ -2,8 +2,7 @@
 
 Subtree rules for the deterministic harness responder: library code of the
 binary crate (`src/lib.rs` includes `mock_harness.rs` by path) behind `oneharness
-mock-harness`, and the body of the `oneharness-mock-harness` executable. Root
-`AGENTS.md` still applies.
+mock-harness`, and the body of the `oneharness-mock-harness` executable.
 
 - **It ships, so it is held like product code.** It compiles into the `oneharness`
   library, so that crate's clippy and tests are what lint and exercise it; this

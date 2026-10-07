@@ -1,7 +1,6 @@
 # AGENTS (workspace)
 
-Subtree rules for the repository-wide checks no single project owns. Root
-`AGENTS.md` still applies.
+Subtree rules for the repository-wide checks no single project owns.
 
 - **`lint` is the project graph's boundary check** (`scripts/check-nx-graph.mjs`,
   rules in `boundaries.json` here), run over the graph Nx computes, so an edge

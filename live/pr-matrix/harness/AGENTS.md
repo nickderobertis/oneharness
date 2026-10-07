@@ -1,8 +1,7 @@
 # AGENTS (live per-harness suites)
 
 Rules for the eight `live-<harness>` suites beneath this directory, one per
-registry harness. Root `AGENTS.md`, `live/AGENTS.md` and
-`live/pr-matrix/AGENTS.md` still apply.
+registry harness.
 
 <!-- llmlint: ignore-file[agents_md_durable_and_terse] Everything below this lead was moved verbatim from live/AGENTS.md (and before that the root AGENTS.md) under this change's instruction to move — not rewrite or trim — the text that governs only the per-harness suites; only the connecting clause naming where a split-off rule now lives is new. The per-harness and per-platform detail is the original's; a durability pass over it is a change of its own. -->
 

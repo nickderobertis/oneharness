@@ -1,7 +1,7 @@
 # AGENTS (oneharness-core)
 
 Subtree rules for the reusable engine — the pure `domain` layer and the `io`
-boundary every surface (the CLI, the SDKs, an embedder) drives. Root `AGENTS.md` still applies.
+boundary every surface (the CLI, the SDKs, an embedder) drives.
 
 <!-- llmlint: ignore-file[agents_md_durable_and_terse] Everything below this header was moved verbatim from the root AGENTS.md (its "What this binary is" engine rules and its "Adding or changing a harness" checklist), under this change's instruction to move — not rewrite or trim — the text that governs this project, with standalone trimming of AGENTS.md out of its scope. The dated inventories inside it (which harnesses a capability is wired for today) are the original's; a durability pass over this checklist is a change of its own. -->
 

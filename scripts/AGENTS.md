@@ -1,6 +1,6 @@
 # AGENTS (scripts)
 
-Subtree rules for the repository's tooling scripts. Root `AGENTS.md` still applies.
+Subtree rules for the repository's tooling scripts.
 
 - **Shell scripts are linted with shellcheck** — an external tool, handled like
   `cargo-deny`: CI installs it and this project's `lint` (part of `just check`)

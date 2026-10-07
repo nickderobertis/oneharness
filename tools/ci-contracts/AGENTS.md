@@ -2,7 +2,7 @@
 
 Subtree rules for the CI and local-gate contracts: the workflow drift gates, the
 PR-title lint, CI's tier selection (`scripts/ci-gate-tier.sh`), the setup-just
-action, and the pre-push/llmlint gate. Root `AGENTS.md` still applies.
+action, and the pre-push/llmlint gate.
 
 <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md under this change's instruction to move — not rewrite or trim — the text that governs this project (standalone trimming of AGENTS.md is outside its scope); only references to where its checks now run were updated. Its account of the release jobs is where the constraints it states apply; a durability pass over it is a change of its own. -->
 - `just gate`'s llmlint judge (`scripts/local-llmlint-gate.sh`):

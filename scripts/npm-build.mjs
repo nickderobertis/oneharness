@@ -30,7 +30,7 @@
 // `platform` prints the created package directory; `launcher` does likewise.
 
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, chmodSync, rmSync, cpSync, existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -148,7 +148,14 @@ function buildLauncher(args) {
 
   rmSync(dest, { recursive: true, force: true });
   mkdirSync(outRoot, { recursive: true });
-  cpSync(src, dest, { recursive: true });
+  // Everything but `node_modules`: the launcher is a member of the repository's
+  // Bun workspace, so an install links whatever `@oneharness/cli-*` it already
+  // resolved there, and a copy carrying that link would run a registry binary
+  // instead of the one this build stages.
+  cpSync(src, dest, {
+    recursive: true,
+    filter: (path) => !relative(src, path).split(sep).includes("node_modules"),
+  });
 
   // Stamp the real version into the launcher's own version and every
   // optionalDependency, so the launcher pins the exact platform packages this

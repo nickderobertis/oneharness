@@ -1,0 +1,51 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "npm-launcher",
+  "projectType": "library",
+  "tags": [
+    "type:distribution",
+    "lang:javascript"
+  ],
+  "implicitDependencies": [
+    "oneharness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/node_modules/**/*",
+      "{workspaceRoot}/scripts/npm-e2e.sh",
+      "{workspaceRoot}/scripts/npm-build.mjs",
+      "{workspaceRoot}/release-platforms.toml"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node --check npm/oneharness/bin/oneharness.js",
+          "node --check scripts/npm-build.mjs",
+          "shellcheck scripts/npm-e2e.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/smoke.sh --npm"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        "oneharness:build"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/smoke.sh"
+      ]
+    }
+  }
+}

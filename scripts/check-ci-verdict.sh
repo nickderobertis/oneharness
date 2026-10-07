@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
 # Drive CI verdict selection through a stand-in GitHub API, including reruns
-# and unreadable responses that cannot safely authorize publication.
+# and unreadable responses that cannot safely authorize publication, and the
+# choice of WHICH run swept the tagged tree: the merged release pull request's
+# when its head carried exactly that tree, otherwise a dispatched sweep.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,6 +23,25 @@ OTHER_SHA=2222222222222222222222222222222222222222
 cat >"$tmp/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$GH_CALLS"
+# The release pull request and tree lookups answer first: GH_FAIL is about the
+# Actions API the verdict is read from.
+case "$*" in
+  */commits/*/pulls*)
+    if [ -n "${GH_PULLS_FAIL:-}" ]; then
+      echo 'gh: pull requests endpoint refused (HTTP 403)' >&2
+      exit 1
+    fi
+    # One page, as `gh api --paginate --slurp` wraps it; no release PR by default.
+    printf '%s' "${GH_PULLS:-[[]]}"
+    exit 0 ;;
+  */git/commits/*)
+    # `--jq .tree.sha`: the commit's tree from "$GH_TREES" ("<commit> <tree>"
+    # lines), else the commit sha itself, so distinct commits carry distinct trees.
+    commit="$(sed -n 's@.*/git/commits/\([0-9a-f]*\).*@\1@p' <<<"$*")"
+    tree="$(awk -v c="$commit" '$1 == c { print $2 }' "${GH_TREES:-/dev/null}")"
+    printf '%s\n' "${tree:-$commit}"
+    exit 0 ;;
+esac
 if [ -n "${GH_FAIL:-}" ]; then
   echo 'gh: Resource not accessible by integration (HTTP 403)' >&2
   exit 1
@@ -42,7 +63,8 @@ case "$*" in
            | if type == "array" and all(.[]; type == "string") then
                map({name:("check (" + . + ")"), id:($id + 100), head_sha:$run.head_sha,
                     status:(if $run.status == "completed" then "completed" else "in_progress" end),
-                    conclusion:(if $run.status == "completed" then $run.conclusion else null end)})
+                    conclusion:(if $run.status == "completed" then $run.conclusion else null end)}
+                   | .steps = [{name:"Full sweep (just check all)", status:.status, conclusion:.conclusion}])
              else . end)
       ] | flatten | [{jobs:.}]
     ' "$GH_STATE/last-response"
@@ -53,9 +75,10 @@ n=$(( $(cat "$count" 2>/dev/null || echo 0) + 1 ))
 printf '%s' "$n" >"$count"
 if [ -f "$GH_RUNS.$n" ]; then response="$(cat "$GH_RUNS.$n")"; else response="$(cat "$GH_RUNS")"; fi
 # Older fixtures omit these stable GitHub fields; give them the values of a
-# main-branch push while preserving any explicit event and branch in a case.
+# dispatched sweep on main — the run read when no release pull request carried
+# the tagged tree — while preserving any explicit event and branch in a case.
 if decorated="$(printf '%s' "$response" | jq -c 'walk(if type == "object" and has("head_sha") then
-  (if has("event") then . else . + {event:"push"} end)
+  (if has("event") then . else . + {event:"workflow_dispatch"} end)
   | (if has("head_branch") then . else . + {head_branch:"main"} end)
 else . end)' 2>/dev/null)"; then
   response="$decorated"
@@ -89,6 +112,7 @@ invoke() {
   set +e
   env -u GITHUB_REPOSITORY -u GITHUB_SHA \
     GH_CALLS="$tmp/calls" GH_RUNS="$tmp/runs" GH_STATE="$tmp/state" GH_FAIL="${GH_FAIL:-}" GH_JOBS_FAIL="${GH_JOBS_FAIL:-}" GH_JOBS_RESPONSE="${GH_JOBS_RESPONSE:-}" \
+    GH_PULLS="${GH_PULLS:-}" GH_PULLS_FAIL="${GH_PULLS_FAIL:-}" GH_TREES="${GH_TREES:-}" \
     PATH="$tmp/bin:$PATH" \
     REPO="${REPO_OVERRIDE-owner/repo}" SHA="${SHA_OVERRIDE-$SHA_UNDER_TEST}" \
     CI_WORKFLOW="${WORKFLOW_OVERRIDE-ci.yml}" \
@@ -185,9 +209,16 @@ run_with_jobs() {
   jobs="$(jq -nc --arg sha "$SHA_UNDER_TEST" --arg u "$ubuntu" --arg m "$macos" --arg w "$windows" '
     ["ubuntu-latest", "macos-latest", "windows-latest"] as $names
     | [$u, $m, $w] | to_entries
-    | map(select(.value != "absent") | {id:(200 + .key), name:("check (" + $names[.key] + ")"), head_sha:$sha,
-      status:(if .value == "pending" then "in_progress" else "completed" end),
-      conclusion:(if .value == "pending" then null else .value end)})
+    | map(select(.value != "absent") | .value as $v | {id:(200 + .key), name:("check (" + $names[.key] + ")"), head_sha:$sha,
+      status:(if $v == "pending" then "in_progress" else "completed" end),
+      conclusion:(if $v == "pending" then null elif $v == "affected" then "success" else $v end),
+      # "affected": a green job that ran the affected tier, so its sweep step
+      # was skipped. Every other concluded job ran the sweep to its conclusion.
+      steps:(if $v == "pending" then []
+             elif $v == "affected" then [{name:"Affected tier (just check)", status:"completed", conclusion:"success"},
+                                         {name:"Full sweep (just check all)", status:"completed", conclusion:"skipped"}]
+             else [{name:"Affected tier (just check)", status:"completed", conclusion:"skipped"},
+                   {name:"Full sweep (just check all)", status:"completed", conclusion:$v}] end)})
   ')"
   workflow_run_json "$id" "$SHA_UNDER_TEST" completed "\"$workflow_conclusion\"" 2026-01-01T00:00:00Z |
     jq -c --argjson jobs "$jobs" '. + {check_jobs:$jobs}'
@@ -203,7 +234,8 @@ expect_status 0
 expect_needs_check false
 expect_said "$tmp/out" "concluded success for $SHA_UNDER_TEST"
 expect_said "$tmp/calls" '--paginate --slurp'
-expect_said "$tmp/calls" '&event=push&branch=main&'
+expect_said "$tmp/calls" 'commits/'"$SHA_UNDER_TEST"'/pulls'
+expect_said "$tmp/calls" '&event=workflow_dispatch&per_page=100'
 expect_said "$tmp/calls" 'actions/runs/11/jobs?filter=latest&per_page=100'
 
 # The same verdict, with nowhere to record it: the workflow would read no
@@ -293,7 +325,7 @@ expect_needs_check false
 expect_said "$tmp/out" "CI run 13 check jobs concluded success"
 
 run_case "{\"workflow_runs\":[{\"id\":14,\"head_sha\":\"$SHA_UNDER_TEST\",\"event\":\"pull_request\",\"head_branch\":\"feature\",\"status\":\"completed\",\"conclusion\":\"success\",\"run_started_at\":\"2026-01-05T00:00:00Z\"},$(workflow_run_json 15 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-02T00:00:00Z)]}" \
-  "a PR success cannot override main's failed push on the same SHA"
+  "an unrelated pull request run cannot override the dispatched sweep's failure on the same SHA"
 expect_refused
 expect_said "$tmp/err" "CI run 15 check job"
 grep -Fq "head_sha=$SHA_UNDER_TEST" "$tmp/calls" || {
@@ -306,8 +338,8 @@ grep -Fq "head_sha=$SHA_UNDER_TEST" "$tmp/calls" || {
 run_case "{\"workflow_runs\":[$(workflow_run_json 15 "$OTHER_SHA" completed '"success"' 2026-01-05T00:00:00Z)]}" \
   "a run for a different commit only"
 expect_refused
-expect_said "$tmp/err" "no main-branch run of ci.yml for $SHA_UNDER_TEST"
-expect_said "$tmp/err" "check (macos-latest) has no verdict"
+expect_said "$tmp/err" "no workflow_dispatch run of ci.yml for $SHA_UNDER_TEST"
+expect_said "$tmp/err" "check (macos-latest) has no sweep verdict"
 
 # A re-run after a failure: the newest finished run for the commit is CI's word.
 run_case "{\"workflow_runs\":[$(workflow_run_json 20 "$SHA_UNDER_TEST" completed '"failure"' 2026-01-01T00:00:00Z),$(workflow_run_json 21 "$SHA_UNDER_TEST" completed '"success"' 2026-01-03T00:00:00Z)]}" \
@@ -408,7 +440,7 @@ expect_said "$tmp/err" "unknown conclusion"
 # verified it on macOS or Windows.
 run_case '{"workflow_runs":[]}' "no CI run for the tagged commit"
 expect_refused
-expect_said "$tmp/err" "no main-branch run of ci.yml for $SHA_UNDER_TEST after 3 polls"
+expect_said "$tmp/err" "no workflow_dispatch run of ci.yml for $SHA_UNDER_TEST after 3 polls"
 
 # The runs API can list a new push after the release's first query. Wait for
 # the bound before treating an empty list as permanent absence.
@@ -705,6 +737,95 @@ WAIT_DELAY_OVERRIDE=99999 run_case '{"workflow_runs":[]}' "a delay past the boun
 unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "exceeds the 3600-second bound"
+
+# --- Which run swept the tagged tree ------------------------------------------
+# release-plz batches merges behind its release pull request, and CI sweeps the
+# release THERE; a push to main runs only the affected tier. So the verdict is
+# the merged release pull request's run when its head carried exactly the tagged
+# tree, and the tag's own push run never answers.
+PR_HEAD=3333333333333333333333333333333333333333
+SAME_TREE=4444444444444444444444444444444444444444
+release_pr() { printf '[[{"number":42,"merged_at":"2026-01-02T00:00:00Z","base":{"ref":"main"},"head":{"sha":"%s","ref":"%s"}}]]' "$PR_HEAD" "${1:-release-plz-2026-01-01T00-00-00Z}"; }
+printf '%s %s\n%s %s\n' "$PR_HEAD" "$SAME_TREE" "$SHA_UNDER_TEST" "$SAME_TREE" >"$tmp/same-trees"
+# $1 run id, then the three jobs' outcomes (ubuntu macos windows): a release
+# pull request's run of ci.yml, on its head commit and branch.
+pr_run() {
+  run_with_jobs "$1" success "$2" "$3" "$4" |
+    jq -c --arg head "$PR_HEAD" '.head_sha = $head | .event = "pull_request" | .head_branch = "release-plz-2026-01-01T00-00-00Z" | .check_jobs |= map(.head_sha = $head)'
+}
+
+GH_PULLS="$(release_pr)" GH_TREES="$tmp/same-trees" run_case "{\"workflow_runs\":[$(pr_run 300 success success success)]}" \
+  "the merged release pull request swept exactly the tagged tree"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "release pull request #42 (release-plz-2026-01-01T00-00-00Z) carried exactly this tree"
+expect_said "$tmp/out" "CI run 300 check jobs concluded success for $SHA_UNDER_TEST"
+expect_said "$tmp/calls" "head_sha=$PR_HEAD&event=pull_request&branch=release-plz-2026-01-01T00-00-00Z&"
+expect_said "$tmp/calls" "git/commits/$PR_HEAD"
+expect_said "$tmp/calls" "git/commits/$SHA_UNDER_TEST"
+
+# The affected tier's green is an answer about a diff, not about the tree: a
+# release pull request whose jobs never ran the sweep has no verdict to ship on.
+GH_PULLS="$(release_pr)" GH_TREES="$tmp/same-trees" run_case "{\"workflow_runs\":[$(pr_run 301 affected affected affected)]}" \
+  "a release pull request whose jobs ran only the affected tier"
+expect_refused
+expect_said "$tmp/err" "has no success verdict for $SHA_UNDER_TEST (ran the affected tier, not the full sweep)"
+
+# Only the Ubuntu leg lacks a sweep, so the sweep this runner can run stands in
+# for that one job — and only for that one.
+GH_PULLS="$(release_pr)" GH_TREES="$tmp/same-trees" run_case "{\"workflow_runs\":[$(pr_run 302 affected success success)]}" \
+  "a release pull request swept on macOS and Windows but not Ubuntu"
+expect_status 0
+expect_needs_check true
+expect_said "$tmp/out" "check job check (ubuntu-latest) has no success verdict for $SHA_UNDER_TEST (ran the affected tier, not the full sweep)"
+expect_said "$tmp/out" "running the gate here on Ubuntu"
+
+# A red sweep is a refusal, wherever the other legs stand.
+GH_PULLS="$(release_pr)" GH_TREES="$tmp/same-trees" run_case "{\"workflow_runs\":[$(pr_run 303 success failure success)]}" \
+  "a release pull request whose macOS sweep failed"
+expect_refused
+expect_said "$tmp/err" "CI run 303 check job 201 (check (macos-latest)) concluded failure"
+
+# Main moved under the release pull request, so its head is not the tree that
+# ships: its run answers nothing here, and only a dispatched sweep of the tagged
+# commit does.
+GH_PULLS="$(release_pr)" run_case "{\"workflow_runs\":[$(pr_run 304 success success success),$(run_with_jobs 305 success success success success)]}" \
+  "a release pull request whose head carried a different tree"
+expect_status 0
+expect_needs_check false
+expect_said "$tmp/out" "release pull request #42's head $PR_HEAD carried a different tree than $SHA_UNDER_TEST"
+expect_said "$tmp/out" "CI run 305 check jobs concluded success"
+expect_said "$tmp/calls" "head_sha=$SHA_UNDER_TEST&event=workflow_dispatch&per_page=100"
+
+GH_PULLS="$(release_pr)" run_case "{\"workflow_runs\":[$(pr_run 306 success success success)]}" \
+  "a different tree and no dispatched sweep of the tag"
+expect_refused
+expect_said "$tmp/err" "no workflow_dispatch run of ci.yml for $SHA_UNDER_TEST"
+expect_said "$tmp/err" "-f tier=all"
+
+# The tag's own push run ran the affected tier; with no release pull request it
+# is not even read, and nothing it says can publish the release.
+run_case "{\"workflow_runs\":[$(run_with_jobs 307 success success success success | jq -c '.event = "push"')]}" \
+  "only the tagged commit's own push run"
+expect_refused
+expect_said "$tmp/err" "no workflow_dispatch run of ci.yml for $SHA_UNDER_TEST"
+
+# A merged pull request from any other branch is not the release's.
+GH_PULLS="$(release_pr feature-branch)" GH_TREES="$tmp/same-trees" run_case "{\"workflow_runs\":[$(pr_run 308 success success success)]}" \
+  "a merged pull request that is not release-plz's"
+expect_refused
+expect_said "$tmp/out" "no merged release pull request carried $SHA_UNDER_TEST"
+
+GH_PULLS_FAIL=1 run_case "{\"workflow_runs\":[$(pr_run 309 success success success)]}" \
+  "the pull requests endpoint refuses"
+expect_refused
+expect_said "$tmp/err" "could not read the pull requests behind $SHA_UNDER_TEST"
+
+GH_PULLS='[[{"number":42,"merged_at":"2026-01-02T00:00:00Z","base":{"ref":"main"},"head":{"sha":"not-a-sha","ref":"release-plz-x"}}]]' \
+  run_case "{\"workflow_runs\":[$(pr_run 310 success success success)]}" \
+  "a release pull request with an unreadable head sha"
+expect_refused
+expect_said "$tmp/err" "release pull request fields behind $SHA_UNDER_TEST were unreadable"
 
 # Keep the four prose copies of the fallback rule aligned with the contract in
 # scripts/ci-verdict.sh.

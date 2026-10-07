@@ -1185,11 +1185,19 @@ shape. When you add one:
   generated `CHANGELOG.md`). release-plz opens a `release vX.Y.Z` PR that bumps
   `Cargo.toml`/`Cargo.lock` and writes the changelog section, auto-merges it once
   the required checks are green, then `release-plz release` tags `vX.Y.Z` and
-  cuts the GitHub Release. `release.yml` reads CI's verdict for the exact
-  tagged commit: a failed check job refuses release; only a complete successful
-  check matrix skips the release gate; once CI ends, a non-Ubuntu check job
-  without a success verdict refuses release, and an Ubuntu one alone runs the
-  gate on the Ubuntu release runner. An in-flight matrix is awaited to a bound.
+  cuts the GitHub Release. **Where the broader tier runs, and why:** release-plz
+  batches merges behind its release PR, so the tree that ships is one no merge
+  job swept. The full sweep (`just check all`, `scripts/ci-gate-tier.sh`)
+  therefore runs on the release PR, and merge-to-main and every other PR run
+  the affected tier. `release.yml` reads that sweep's verdict
+  (`scripts/ci-verdict.sh`) rather than sweeping the same tree again — the
+  merged release PR's run when its head carried exactly the tagged tree, else a
+  `workflow_dispatch` of `ci.yml` with `tier=all` on the release tag (the
+  manual fallback): a failed check job refuses release; only a complete check
+  matrix whose every job ran the full sweep successfully skips the release
+  gate; once CI ends, a non-Ubuntu check job without a successful sweep refuses
+  release, and an Ubuntu one alone runs the sweep on the Ubuntu release runner.
+  An in-flight matrix is awaited to a bound.
   The release publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the

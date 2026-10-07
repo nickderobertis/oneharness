@@ -702,6 +702,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "oneharness-sdk-conformance"
+version = "0.0.0"
+dependencies = [
+ "oneharness-core 0.24.2",
+]
+
+[[package]]
 name = "oneharness-sdk-contract"
 version = "0.0.0"
 dependencies = [

@@ -1,0 +1,132 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "node-sdk",
+  "projectType": "library",
+  "tags": [
+    "type:sdk",
+    "lang:typescript"
+  ],
+  "//": "The Node SDK. `test` is the unit suite under bun's 95% coverageThreshold (bunfig.toml); `e2e` is the packed-artifact journey and is not part of `test`. Both drive this checkout's built binary and mock harness.",
+  "implicitDependencies": [
+    "sdk-contract",
+    "oneharness",
+    "oneharness-mock-harness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/dist/**/*",
+      "!{projectRoot}/node_modules/**/*",
+      "jsToolchain",
+      "fixtures"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bun run format:check"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bun run format"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bun run lint",
+          "bun run generate:check"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bun run typecheck"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bun run build"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      },
+      "outputs": [
+        "{projectRoot}/dist"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash ../../scripts/check-temp-leaks.sh bun run test"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      },
+      "dependsOn": [
+        "oneharness:build",
+        "oneharness-mock-harness:build"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/check-temp-leaks.sh",
+        "{workspaceRoot}/scripts/check-capability-surface.sh",
+        "{workspaceRoot}/scripts/sdk-coverage.mjs",
+        "{workspaceRoot}/scripts/parity-audit.mjs",
+        "{workspaceRoot}/docs/sdk-parity.md",
+        "{workspaceRoot}/python/oneharness-sdk/src/oneharness_sdk/_client.py",
+        "{workspaceRoot}/tests/support/**/*",
+        "{workspaceRoot}/justfile",
+        "{workspaceRoot}/src/project.json",
+        "{workspaceRoot}/crates/sdk-conformance/project.json",
+        "{workspaceRoot}/python/oneharness-sdk/project.json"
+      ]
+    },
+    "e2e": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash ../../scripts/check-temp-leaks.sh bun run test:package"
+        ],
+        "parallel": false,
+        "cwd": "{projectRoot}"
+      },
+      "dependsOn": [
+        "build",
+        "oneharness:build",
+        "oneharness-mock-harness:build"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/check-temp-leaks.sh",
+        "{workspaceRoot}/scripts/sdk-pack.mjs",
+        "{workspaceRoot}/scripts/npm-build.mjs",
+        "{workspaceRoot}/npm/oneharness/**/*"
+      ]
+    }
+  }
+}

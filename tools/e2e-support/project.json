@@ -1,0 +1,80 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "e2e-support",
+  "projectType": "library",
+  "tags": [
+    "type:live-support",
+    "lang:bash"
+  ],
+  "//": "What the live suites share \u2014 scripts/e2e-lib.sh \u2014 and the hermetic tests that hold its helpers and the probes' tables to the registry without a credential or a model call. Deterministic, so in the gate; it also shellchecks every live and exploration script, which keeps their code linted while they themselves stay out of the gate.",
+  "implicitDependencies": [
+    "oneharness",
+    "oneharness-mock-harness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/e2e-lib.sh",
+      "{workspaceRoot}/scripts/check-usage-enforce.sh",
+      "{workspaceRoot}/scripts/check-control-enforce.sh",
+      "{workspaceRoot}/scripts/check-copilot-login-probe.sh",
+      "{workspaceRoot}/scripts/check-codex-usage-schema.sh",
+      "{workspaceRoot}/scripts/check-codex-usage-schema-test.sh",
+      "{workspaceRoot}/scripts/check-control-probes.sh",
+      "{workspaceRoot}/scripts/check-control-probe-http.sh",
+      "{workspaceRoot}/scripts/e2e-variants-test.sh",
+      "{workspaceRoot}/scripts/e2e-variants-provider-double.sh",
+      "{workspaceRoot}/scripts/e2e-variants-invalid-report-double.sh",
+      "{workspaceRoot}/scripts/e2e-claude.sh",
+      "{workspaceRoot}/scripts/e2e-codex.sh",
+      "{workspaceRoot}/scripts/e2e-opencode.sh",
+      "{workspaceRoot}/scripts/e2e-goose.sh",
+      "{workspaceRoot}/scripts/e2e-qwen.sh",
+      "{workspaceRoot}/scripts/e2e-crush.sh",
+      "{workspaceRoot}/scripts/e2e-copilot.sh",
+      "{workspaceRoot}/scripts/e2e-cursor.sh",
+      "{workspaceRoot}/scripts/e2e-schema.sh",
+      "{workspaceRoot}/scripts/e2e-control.sh",
+      "{workspaceRoot}/scripts/e2e-variants.sh",
+      "{workspaceRoot}/scripts/live-variants-tools-e2e.sh",
+      "{workspaceRoot}/scripts/explore-control.sh",
+      "{workspaceRoot}/scripts/explore-cursor-stdin.sh",
+      "{workspaceRoot}/scripts/explore-events.sh",
+      "{workspaceRoot}/scripts/explore-hooks.sh",
+      "{workspaceRoot}/scripts/explore_control.py",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/tests/fixtures/codex-rate-limits.schema.json"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "shellcheck scripts/e2e-lib.sh scripts/check-usage-enforce.sh scripts/check-control-enforce.sh scripts/check-copilot-login-probe.sh scripts/check-codex-usage-schema.sh scripts/check-codex-usage-schema-test.sh scripts/check-control-probes.sh scripts/check-control-probe-http.sh scripts/e2e-variants-test.sh scripts/e2e-variants-provider-double.sh scripts/e2e-variants-invalid-report-double.sh scripts/e2e-claude.sh scripts/e2e-codex.sh scripts/e2e-opencode.sh scripts/e2e-goose.sh scripts/e2e-qwen.sh scripts/e2e-crush.sh scripts/e2e-copilot.sh scripts/e2e-cursor.sh scripts/e2e-schema.sh scripts/e2e-control.sh scripts/e2e-variants.sh scripts/live-variants-tools-e2e.sh scripts/explore-control.sh scripts/explore-cursor-stdin.sh scripts/explore-events.sh scripts/explore-hooks.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-usage-enforce.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-control-probes.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-control-probe-http.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-control-enforce.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh",
+          "bash scripts/with-portable-sed.sh scripts/e2e-variants-test.sh"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        "oneharness:build",
+        "oneharness-mock-harness:build"
+      ]
+    }
+  }
+}

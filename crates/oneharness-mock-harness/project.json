@@ -1,0 +1,81 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "oneharness-mock-harness",
+  "projectType": "library",
+  "tags": [
+    "type:fixture",
+    "lang:rust"
+  ],
+  "implicitDependencies": [
+    "oneharness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-mock-harness -- --check"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-mock-harness"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness-mock-harness --all-targets --locked -- -D warnings"
+        ],
+        "parallel": false
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo build -p oneharness-mock-harness --locked"
+        ],
+        "parallel": false,
+        "env": {
+          "RUSTFLAGS": "-D warnings"
+        }
+      },
+      "outputs": [
+        "{workspaceRoot}/target/debug/oneharness-mock-harness",
+        "{workspaceRoot}/target/debug/oneharness-mock-harness.exe"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness-mock-harness"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness-mock-harness.lcov"
+      ],
+      "parallelism": false
+    }
+  }
+}

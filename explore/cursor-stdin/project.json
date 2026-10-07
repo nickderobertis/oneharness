@@ -1,0 +1,31 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "explore-cursor-stdin",
+  "projectType": "library",
+  "tags": [
+    "type:explore",
+    "lang:bash"
+  ],
+  "implicitDependencies": [
+    "oneharness",
+    "e2e-support"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/explore-cursor-stdin.sh"
+    ]
+  },
+  "targets": {
+    "explore": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/explore-cursor-stdin.sh"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    }
+  }
+}

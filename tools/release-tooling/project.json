@@ -1,0 +1,107 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "release-tooling",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:bash"
+  ],
+  "//": "The release lifecycle's own scripts and their hermetic tests. `package-crates`, `semver-check` and `probe-live` reach crates.io or the public registries, so they are uncached and outside the affected tier: `just gate` and ci.yml's `package`/`semver` jobs run them by name.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/ci-verdict.sh",
+      "{workspaceRoot}/scripts/check-ci-verdict.sh",
+      "{workspaceRoot}/scripts/verify-published.sh",
+      "{workspaceRoot}/scripts/check-verify-published.sh",
+      "{workspaceRoot}/scripts/publish-crates.sh",
+      "{workspaceRoot}/scripts/check-publish-crates.sh",
+      "{workspaceRoot}/scripts/publish-npm.sh",
+      "{workspaceRoot}/scripts/check-publish-npm.sh",
+      "{workspaceRoot}/scripts/package-crates.sh",
+      "{workspaceRoot}/scripts/check-package-crates.sh",
+      "{workspaceRoot}/scripts/semver-check.sh",
+      "{workspaceRoot}/scripts/check-semver-check.sh",
+      "{workspaceRoot}/scripts/release-probe.sh",
+      "{workspaceRoot}/scripts/check-release-probe.sh",
+      "{workspaceRoot}/scripts/release-probe-live.sh",
+      "{workspaceRoot}/scripts/check-release-targets.sh",
+      "{workspaceRoot}/scripts/check-release-targets-test.sh",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/scripts/npm-build.mjs",
+      "{workspaceRoot}/release-targets.toml",
+      "{workspaceRoot}/release-platforms.toml",
+      "{workspaceRoot}/release-plz.toml",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/crates/oneharness-core/Cargo.toml",
+      "{workspaceRoot}/pyproject.toml",
+      "{workspaceRoot}/npm/oneharness/package.json",
+      "{workspaceRoot}/npm/oneharness/bin/oneharness.js",
+      "{workspaceRoot}/npm/oneharness-sdk/package.json",
+      "{workspaceRoot}/python/oneharness-sdk/pyproject.toml",
+      "{workspaceRoot}/.github/workflows/release.yml",
+      "{workspaceRoot}/.github/workflows/release-plz.yml",
+      "{workspaceRoot}/.github/workflows/package-pr.yml",
+      "{workspaceRoot}/.github/workflows/ci.yml"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "shellcheck scripts/ci-verdict.sh scripts/check-ci-verdict.sh scripts/verify-published.sh scripts/check-verify-published.sh scripts/publish-crates.sh scripts/check-publish-crates.sh scripts/publish-npm.sh scripts/check-publish-npm.sh scripts/package-crates.sh scripts/check-package-crates.sh scripts/semver-check.sh scripts/check-semver-check.sh scripts/release-probe.sh scripts/check-release-probe.sh scripts/release-probe-live.sh scripts/check-release-targets.sh scripts/check-release-targets-test.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/with-portable-sed.sh scripts/check-ci-verdict.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-verify-published.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-publish-crates.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-package-crates.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-semver-check.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-publish-npm.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-release-targets.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-release-targets-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-release-probe.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "package-crates": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/package-crates.sh"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    },
+    "semver-check": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/semver-check.sh"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    },
+    "probe-live": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/release-probe-live.sh"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    }
+  }
+}

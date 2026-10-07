@@ -5,6 +5,7 @@
 # target reads it.
 #
 #   scripts/cargo-test.sh <package> [--with <package>]... [--features <list>]
+#                         [--uninstrumented]
 #
 # `--with` names a crate whose BINARIES the suite spawns (`oneharness`,
 # `oneharness-mock-harness`). They are selected beside the package so cargo
@@ -17,7 +18,9 @@
 # contribution without the instrumented objects that produced it. On Windows
 # llvm-cov does not attribute the coverage of subprocess-spawned binaries (the
 # binary crate reads as ~0% there), so the suite runs uninstrumented and the
-# floor is enforced on the other two platforms.
+# floor is enforced on the other two platforms. `--uninstrumented` asks for that
+# plain run on any platform (the symlinked-TMPDIR replay of the e2e journeys,
+# which re-runs a suite already measured).
 #
 # Quiet on success apart from nextest's summary; a failure prints in full.
 set -euo pipefail
@@ -27,7 +30,7 @@ cd "$root"
 
 usage() {
   echo "cargo-test: $1" >&2
-  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>]" >&2
+  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--uninstrumented]" >&2
   exit 2
 }
 
@@ -37,6 +40,7 @@ shift
 [[ "$package" =~ ^[a-z0-9_-]+$ ]] || usage "'$package' is not a cargo package name"
 packages=(-p "$package")
 features=()
+instrumented=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --with)
@@ -47,6 +51,9 @@ while [ $# -gt 0 ]; do
       [ $# -ge 2 ] && [[ "$2" =~ ^[a-z0-9_/,-]+$ ]] || usage "--features needs a comma-separated feature list"
       features=(--features "$2")
       shift 2 ;;
+    --uninstrumented)
+      instrumented=0
+      shift ;;
     *) usage "unknown argument '$1'" ;;
   esac
 done
@@ -55,7 +62,7 @@ done
 filter=(-E "package($package)")
 nextest_flags=(--locked --status-level fail --final-status-level fail)
 
-if [[ "${OS:-}" == "Windows_NT" ]]; then
+if [[ "${OS:-}" == "Windows_NT" ]] || [ "$instrumented" -eq 0 ]; then
   exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" "${features[@]}" "${filter[@]}" "${nextest_flags[@]}"
 fi
 

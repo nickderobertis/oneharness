@@ -1,0 +1,62 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "rust-coverage",
+  "projectType": "library",
+  "tags": [
+    "type:coverage",
+    "lang:rust"
+  ],
+  "//": "The Rust line floor, enforced once over the union of every Rust crate's instrumented `test` run (each leaves target/coverage/<crate>.lcov). Selected through its inputs whenever Rust source or a Rust test changes, never through graph edges, so it depends on no e2e project. Skipped on Windows, where llvm-cov does not attribute subprocess-spawned binary coverage.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain",
+      "{workspaceRoot}/src/**/*",
+      "{workspaceRoot}/crates/**/*",
+      "{workspaceRoot}/tests/**/*",
+      "{workspaceRoot}/scripts/rust-coverage.mjs",
+      "{workspaceRoot}/scripts/cargo-test.sh"
+    ]
+  },
+  "targets": {
+    "coverage": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node scripts/rust-coverage.mjs oneharness-core oneharness oneharness-mock-harness oneharness-e2e oneharness-history-compat oneharness-sdk-contract oneharness-sdk-conformance"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        {
+          "projects": [
+            "oneharness-core",
+            "oneharness",
+            "oneharness-mock-harness",
+            "oneharness-e2e",
+            "history-compat",
+            "sdk-contract",
+            "sdk-conformance"
+          ],
+          "target": "test"
+        }
+      ],
+      "inputs": [
+        {
+          "dependentTasksOutputFiles": "**/*.lcov",
+          "transitive": false
+        },
+        "{workspaceRoot}/scripts/rust-coverage.mjs",
+        {
+          "env": "COVERAGE_MIN"
+        },
+        {
+          "env": "OS"
+        }
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/rust-summary.json"
+      ]
+    }
+  }
+}

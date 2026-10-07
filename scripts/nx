@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Run Nx the way every gate recipe in the justfile does, rather than calling
+# `nx` directly, so:
+#
+#   * a checkout that has never run `bun install` gets the locked workspace
+#     install first (the root bun.lock), instead of "nx: command not found";
+#   * Nx runs without its background daemon, Nx Cloud, or the interactive TUI —
+#     every invocation is one foreground process that finishes, the same
+#     locally and in CI.
+#
+# Usage: scripts/nx <nx arguments...>
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
+
+export NX_DAEMON=false NX_NO_CLOUD=true NX_TUI=false NX_SKIP_NX_CACHE_WARNING=true
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "nx: Nx runs on Node, which is not on PATH; install Node (22, as CI does) and re-run." >&2
+  exit 1
+fi
+if ! command -v bun >/dev/null 2>&1; then
+  echo "nx: bun is not on PATH; it installs Nx from the root bun.lock. Install bun (https://bun.sh) and re-run 'just bootstrap'." >&2
+  exit 1
+fi
+
+stamp=node_modules/.bun-install-stamp
+if [ ! -f node_modules/nx/package.json ] || [ ! -f "$stamp" ] || [ bun.lock -nt "$stamp" ] || [ package.json -nt "$stamp" ]; then
+  if ! out="$(bun install --frozen-lockfile 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    echo "nx: 'bun install --frozen-lockfile' failed (above). If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check access to the npm registry, then re-run 'just bootstrap'." >&2
+    exit 1
+  fi
+  touch "$stamp"
+fi
+
+# The entry point is whatever the installed package's own `bin` field names.
+nx_bin="$(node -e 'const p = require.resolve("nx/package.json"); process.stdout.write(require("path").join(p, "..", require(p).bin.nx))')"
+
+# Outside a terminal Nx ends a failed run with "full log: <path>" per failed task
+# instead of its output — a path on whichever machine ran it, which a CI log
+# reader cannot open. So a failed run prints those logs here, after the summary.
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+status=0
+node "$nx_bin" "$@" 2>&1 | tee "$log" || status=$?
+if [ "$status" -ne 0 ]; then
+  sed -n 's/^[[:space:]]*full log: //p' "$log" | while IFS= read -r task_log; do
+    [ -f "$task_log" ] || continue
+    printf '\n----- %s -----\n' "$task_log"
+    cat "$task_log"
+  done
+fi
+exit "$status"

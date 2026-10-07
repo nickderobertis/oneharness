@@ -2,21 +2,24 @@
 # Regression gate: `just check` must be self-sufficient for the checkout it is
 # verifying, not just for a checkout somebody remembered to bootstrap.
 #
-# `npm/oneharness-sdk/node_modules` is the ONLY per-checkout artifact `bootstrap`
-# creates — every other step writes machine-global state a new checkout inherits
-# for free (rustup components, the cargo registry cache, the uv-installed
-# llmlint, and `core.hooksPath` in the shared common git dir). It is also
-# gitignored, so a fresh clone or `git worktree add` starts without it. When
-# `sdk-check` merely *used* those dependencies, `just gate` from the pre-push
-# hook — which runs the gate directly, never `bootstrap` — died in every fresh
-# worktree on `bun run --cwd npm/oneharness-sdk generate:check` with
-# ERR_MODULE_NOT_FOUND. CI never caught it because CI runs `just bootstrap`
-# first.
+# `node_modules` — the root Bun workspace's install, which carries the Node SDK's
+# dependencies AND Nx itself — is the one per-checkout artifact `bootstrap`
+# creates that every gate recipe needs: every other step writes machine-global
+# state a new checkout inherits for free (rustup components, the cargo registry
+# cache, the uv-installed llmlint, and `core.hooksPath` in the shared common git
+# dir). It is also gitignored, so a fresh clone or `git worktree add` starts
+# without it. When the SDK gate merely *used* those dependencies, `just gate`
+# from the pre-push hook — which runs the gate directly, never `bootstrap` —
+# died in every fresh worktree with ERR_MODULE_NOT_FOUND. CI never caught it
+# because CI runs `just bootstrap` first.
 #
-# So this asserts the recipe wiring, hermetically: `sdk-check` installs the Node
-# SDK dependencies into the checkout before consuming them, and `bootstrap`
-# reaches that same install, so the two can never drift apart again. Only the
-# external package managers are stubbed; the real justfile is what runs.
+# Every gate recipe reaches Nx through scripts/nx, so that is where the install
+# happens. This asserts it hermetically: in a fresh checkout `just check`
+# installs the locked workspace before Nx runs, a second run does not install
+# again, a changed lockfile does, the install is quiet on success and keeps
+# bun's own reason on failure, and `bootstrap` reaches the same install. Only
+# bun (and the Nx it would install) are stubbed; the real justfile, the real
+# scripts/nx and the real node are what run.
 set -euo pipefail
 
 case $(uname -s) in
@@ -30,65 +33,64 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-install_line='bun install --cwd npm/oneharness-sdk --frozen-lockfile'
-consume_line='bun run --cwd npm/oneharness-sdk generate:check'
+install_line='bun install --frozen-lockfile'
 
 fail() {
     echo "check-sdk-install: $1" >&2
-    echo "  Restore sdk-install's contract: sdk-check and bootstrap both reach 'just sdk-install'" >&2
-    echo "  before anything reads node_modules, and it stays quiet on success, loud on failure." >&2
+    echo "  Restore the contract: scripts/nx installs the root Bun workspace ('$install_line')" >&2
+    echo "  before Nx runs whenever the install is missing or older than bun.lock, quiet on" >&2
+    echo "  success and loud on failure, and bootstrap reaches 'just sdk-install'." >&2
     exit 1
 }
 
-# An isolated checkout holding just enough for `sdk-check` and `bootstrap` to
-# run: the real justfile, the real llmlint installer, and an empty SDK directory.
+# An isolated checkout holding just enough for the gate recipes and `bootstrap`
+# to run: the real justfile, the real Nx wrapper and llmlint installer, and the
+# workspace manifests the wrapper compares its install against.
 fixture="$tmp/checkout"
-mkdir -p "$fixture/scripts" "$fixture/npm/oneharness-sdk"
-cp "$root/justfile" "$fixture/justfile"
-cp "$root/scripts/setup-llmlint.sh" "$fixture/scripts/setup-llmlint.sh"
-# `sdk-check` runs its test steps under the scratch-leak gate, which reads the
-# prefix out of the Rust guard — so the fixture carries both, real, rather than
-# stubbing a step of the recipe this gate exists to run for real.
-mkdir -p "$fixture/crates/oneharness-core/src/io"
-cp "$root/scripts/check-temp-leaks.sh" "$fixture/scripts/check-temp-leaks.sh"
-cp "$root/crates/oneharness-core/src/io/scratch.rs" \
-    "$fixture/crates/oneharness-core/src/io/scratch.rs"
+mkdir -p "$fixture/scripts" "$fixture/.just-tmp"
+cp "$root/justfile" "$root/package.json" "$root/bun.lock" "$fixture/"
+cp "$root/scripts/nx" "$root/scripts/nx-base.sh" "$root/scripts/setup-llmlint.sh" "$fixture/scripts/"
 git -C "$fixture" init -q
-
-# The leak gate watches this instead of the host's temp directory, so a real
-# `oneharness` run happening elsewhere on the machine cannot fail this harness.
-scratch_root="$tmp/scratch"
-mkdir -p "$scratch_root"
 
 bin="$tmp/bin"
 mkdir -p "$bin"
-# Chatty on success, like the real tools: `bun install` prints a package list
-# every time. That is exactly the noise the quiet-on-success assertion below
-# would catch leaking into every `just check`.
-for tool in bun cargo rustup uv; do
+# A bun whose `install` lays down an Nx that only records how it was called.
+# Chatty on success, like the real one: that is exactly the noise the
+# quiet-on-success assertion below would catch leaking into every gate run.
+cat >"$bin/bun" <<'STUB'
+#!/usr/bin/env bash
+printf 'bun %s\n' "$*" >> "$CALL_LOG"
+if [ "${1:-}" = install ]; then
+  mkdir -p node_modules/nx/dist/bin
+  printf '{"name":"nx","bin":{"nx":"./dist/bin/nx.js"}}\n' > node_modules/nx/package.json
+  printf 'require("fs").appendFileSync(process.env.CALL_LOG, "nx " + process.argv.slice(2).join(" ") + "\\n");\n' > node_modules/nx/dist/bin/nx.js
+  echo "bun: 248 packages installed [596.00ms]"
+fi
+STUB
+for tool in cargo rustup uv; do
     cat >"$bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
-echo "$(basename "$0"): 26 packages installed [127.00ms]"
 STUB
-    chmod +x "$bin/$tool"
 done
+chmod +x "$bin"/*
 # `bootstrap` shells back out to `just sdk-install`, so the real `just` has to
-# stay reachable through the trimmed PATH the stubs are served from.
+# stay reachable through the trimmed PATH the stubs are served from, as do the
+# real node and git the wrapper uses.
 ln -s "$(command -v just)" "$bin/just"
+ln -s "$(command -v node)" "$bin/node"
+ln -s "$(command -v git)" "$bin/git"
 
 run_recipe() {
-    local recipe="$1"
-    local log="$tmp/$recipe.calls"
+    local log="$1"
+    shift
     : >"$log"
     CALL_LOG="$log" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
-        OH_SCRATCH_ROOTS="$scratch_root" \
-        just --justfile "$fixture/justfile" --working-directory "$fixture" "$recipe" \
-        >"$tmp/$recipe.out" 2>"$tmp/$recipe.err" || {
-        cat "$tmp/$recipe.err" >&2
-        fail "'just $recipe' failed against the stubbed fixture"
+        just --justfile "$fixture/justfile" --working-directory "$fixture" "$@" \
+        >"$tmp/out" 2>"$tmp/err" || {
+        cat "$tmp/err" >&2
+        fail "'just $*' failed against the stubbed fixture"
     }
-    printf '%s' "$log"
 }
 
 # The line number of the first call matching $2, or nothing when it never ran.
@@ -97,66 +99,70 @@ run_recipe() {
 first_call() {
     grep -Fxn "$2" "$1" | head -1 | cut -d: -f1 || true
 }
+first_nx() {
+    grep -n '^nx ' "$1" | head -1 | cut -d: -f1 || true
+}
 
-sdk_log="$(run_recipe sdk-check)"
-installed_at="$(first_call "$sdk_log" "$install_line")"
-consumed_at="$(first_call "$sdk_log" "$consume_line")"
-
+# A fresh checkout: no node_modules at all.
+run_recipe "$tmp/fresh.calls" check all
+installed_at="$(first_call "$tmp/fresh.calls" "$install_line")"
+nx_at="$(first_nx "$tmp/fresh.calls")"
 [[ -n $installed_at ]] ||
-    fail "sdk-check never ran '$install_line', so it assumes an already-bootstrapped checkout"
-[[ -n $consumed_at ]] ||
-    fail "sdk-check never ran '$consume_line'; this gate is checking the wrong recipe"
-[[ $installed_at -lt $consumed_at ]] ||
-    fail "sdk-check installed the Node SDK dependencies at call $installed_at, after using them at call $consumed_at"
-
-bootstrap_log="$(run_recipe bootstrap)"
-[[ -n $(first_call "$bootstrap_log" "$install_line") ]] ||
-    fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
-
-# Now that it runs on every `just check`, sdk-install owes the gate both halves
-# of the recipe contract: a silent success, and a failure that keeps bun's own
-# reason instead of replacing it with a generic message.
-run_install() {
-    local extra_path="$1" name="$2"
-    set +e
-    CALL_LOG="$tmp/$name.calls" PATH="$extra_path:/usr/bin:/bin" HOME="$tmp/home" \
-        just --justfile "$fixture/justfile" --working-directory "$fixture" sdk-install \
-        >"$tmp/$name.out" 2>"$tmp/$name.err"
-    local status=$?
-    set -e
-    printf '%s' "$status"
-}
-
-status="$(run_install "$bin" quiet)"
-[[ $status -eq 0 ]] || {
-    cat "$tmp/quiet.err" >&2
-    fail "sdk-install failed against a succeeding stub (exit $status)"
-}
-if [[ -s $tmp/quiet.out || -s $tmp/quiet.err ]]; then
-    echo "--- what it printed ---" >&2
-    cat "$tmp/quiet.out" "$tmp/quiet.err" >&2
-    fail "sdk-install printed on success; every gate run would carry that noise"
+    fail "'just check all' never ran '$install_line' in a fresh checkout, so it assumes an already-bootstrapped one"
+[[ -n $nx_at ]] || fail "'just check all' never reached Nx; this gate is checking the wrong recipe"
+[[ $installed_at -lt $nx_at ]] ||
+    fail "the workspace was installed at call $installed_at, after Nx ran at call $nx_at"
+grep -q '^nx run-many --all ' "$tmp/fresh.calls" ||
+    fail "'just check all' did not hand the full sweep to 'nx run-many --all'"
+if grep -q 'packages installed' "$tmp/out" "$tmp/err"; then
+    fail "the install printed on success; every gate run would carry that noise"
 fi
 
-# A bun that fails the way a stale lockfile really does.
+# Installed and current: no second install.
+run_recipe "$tmp/warm.calls" check all
+[[ -z $(first_call "$tmp/warm.calls" "$install_line") ]] ||
+    fail "a current install was installed again; every gate run would pay for it"
+
+# A lockfile newer than the install: install again before Nx.
+sleep 1
+touch "$fixture/bun.lock"
+run_recipe "$tmp/stale.calls" check all
+[[ -n $(first_call "$tmp/stale.calls" "$install_line") ]] ||
+    fail "a bun.lock newer than the install did not reinstall, so Nx would run on stale dependencies"
+
+run_recipe "$tmp/bootstrap.calls" bootstrap
+[[ -n $(first_call "$tmp/bootstrap.calls" "$install_line") ]] ||
+    fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
+[[ -n $(first_call "$tmp/bootstrap.calls" 'uv sync --project python --frozen --no-install-workspace --quiet') ]] ||
+    fail "bootstrap no longer syncs the uv workspace; a clean clone would have no Python SDK environment"
+
+# A bun that fails the way a stale lockfile really does: the reason survives,
+# Nx never runs, and the message names a next action.
 failing_bin="$tmp/failing-bin"
 mkdir -p "$failing_bin"
 cat >"$failing_bin/bun" <<'STUB'
 #!/usr/bin/env bash
+printf 'bun %s\n' "$*" >> "$CALL_LOG"
 echo 'error: lockfile had changes, but lockfile is frozen' >&2
 exit 1
 STUB
 chmod +x "$failing_bin/bun"
-ln -s "$(command -v just)" "$failing_bin/just"
-
-status="$(run_install "$failing_bin" loud)"
+for tool in just node git; do ln -s "$(command -v "$tool")" "$failing_bin/$tool"; done
+rm -rf "$fixture/node_modules"
+: >"$tmp/loud.calls"
+status=0
+CALL_LOG="$tmp/loud.calls" PATH="$failing_bin:/usr/bin:/bin" HOME="$tmp/home" \
+    just --justfile "$fixture/justfile" --working-directory "$fixture" check all \
+    >"$tmp/out" 2>"$tmp/err" || status=$?
 [[ $status -ne 0 ]] ||
-    fail "a failing 'bun install' left sdk-install green; the gate would run on absent dependencies"
-grep -qF 'error: lockfile had changes, but lockfile is frozen' "$tmp/loud.err" || {
-    cat "$tmp/loud.err" >&2
-    fail "sdk-install swallowed bun's own failure output; the reason must survive to the reader"
+    fail "a failing '$install_line' left 'just check all' green; the gate would run on absent dependencies"
+grep -qF 'error: lockfile had changes, but lockfile is frozen' "$tmp/err" || {
+    cat "$tmp/err" >&2
+    fail "the failed install swallowed bun's own output; the reason must survive to the reader"
 }
-grep -qF "just sdk-install" "$tmp/loud.err" ||
-    fail "sdk-install's failure named no next action"
+grep -qF "just bootstrap" "$tmp/err" || fail "the failed install named no next action"
+if grep -q '^nx ' "$tmp/loud.calls"; then
+    fail "Nx ran after the workspace install failed"
+fi
 
 echo "check-sdk-install: ok"

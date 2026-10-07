@@ -1,0 +1,32 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "explore-control",
+  "projectType": "library",
+  "tags": [
+    "type:explore",
+    "lang:bash"
+  ],
+  "implicitDependencies": [
+    "oneharness",
+    "e2e-support"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/explore-control.sh",
+      "{workspaceRoot}/scripts/explore_control.py"
+    ]
+  },
+  "targets": {
+    "explore": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/explore-control.sh"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    }
+  }
+}

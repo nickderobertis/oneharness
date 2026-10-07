@@ -5,6 +5,7 @@ members = [
     "crates/oneharness-mock-harness",
     "crates/oneharness-e2e",
     "crates/sdk-contract",
+    "crates/sdk-conformance",
 ]
 
 # Metadata every crate shares, inherited with `.workspace = true`. `version` and

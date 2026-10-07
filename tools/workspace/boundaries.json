@@ -1,0 +1,23 @@
+{
+	"//": "Which project types each type may depend on, read by scripts/check-nx-graph.mjs against Nx's own project graph. A type no list names is a leaf nothing may depend on: an e2e, test, live, exploration, coverage, conformance, tooling or workspace project. A contract depends only on what it is generated from, never on a consumer.",
+	"allow": {
+		"type:lib": [],
+		"type:app": ["type:lib"],
+		"type:fixture": ["type:app", "type:lib"],
+		"type:contract": ["type:lib", "type:contract"],
+		"type:conformance": ["type:lib", "type:contract"],
+		"type:sdk": ["type:contract", "type:app", "type:fixture", "type:distribution"],
+		"type:distribution": ["type:app"],
+		"type:e2e": ["type:app", "type:fixture", "type:lib"],
+		"type:test": ["type:app", "type:fixture", "type:lib"],
+		"type:tooling": ["type:app", "type:fixture", "type:lib"],
+		"type:live-support": ["type:app", "type:fixture"],
+		"type:live": ["type:app", "type:distribution", "type:live-support"],
+		"type:explore": ["type:app", "type:live-support"],
+		"type:coverage": [],
+		"type:workspace": []
+	},
+	"cargoManifests": {
+		"oneharness": "Cargo.toml"
+	}
+}

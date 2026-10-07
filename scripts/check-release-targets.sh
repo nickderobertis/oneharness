@@ -560,6 +560,11 @@ pypi_count=0
 while read -r manifest; do
 	[ -n "$manifest" ] || continue
 	name="$(toml_section_name "$manifest" project)"
+	# A virtual uv workspace root (python/pyproject.toml) builds no distribution:
+	# no [project] table at all, only the workspace its members resolve in.
+	if [ -z "$name" ] && ! grep -q '^\[project\]' "$manifest" && grep -q '^\[tool\.uv\.workspace\]' "$manifest"; then
+		continue
+	fi
 	if [ -z "$name" ]; then
 		fail "$manifest has no [project] name, so the PyPI distribution it builds cannot be derived; restore it"
 		continue

@@ -1,0 +1,68 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "history-compat",
+  "projectType": "library",
+  "tags": [
+    "type:test",
+    "lang:rust"
+  ],
+  "implicitDependencies": [
+    "oneharness-core",
+    "oneharness",
+    "oneharness-mock-harness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-history-compat -- --check"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-history-compat"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness-history-compat --all-targets --locked -- -D warnings"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness-history-compat --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner",
+        "fixtures"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness-history-compat.lcov"
+      ],
+      "parallelism": false
+    }
+  }
+}

@@ -35,8 +35,15 @@ LINUX='["ubuntu-latest"]'
 # coincidence: control sockets have no Windows equivalent, and schema's
 # quote-heavy argv is mangled by the Windows .cmd shim.
 UNIX_ONLY='["ubuntu-latest","macos-latest"]'
+# The test-only crates are excluded: the journeys, the fixture, the SDK contract
+# and its conformance suite exercise nothing a live harness run would prove, and
+# while they lived under tests/ and examples/ no change to them ran these suites.
 SHARED_PATHS='src/**
 crates/**
+"!crates/oneharness-e2e/**"
+"!crates/oneharness-mock-harness/**"
+"!crates/sdk-contract/**"
+"!crates/sdk-conformance/**"
 Cargo.toml
 Cargo.lock
 rust-toolchain.toml

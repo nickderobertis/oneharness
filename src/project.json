@@ -1,0 +1,88 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "oneharness",
+  "projectType": "library",
+  "tags": [
+    "type:app",
+    "lang:rust"
+  ],
+  "//": "The published binary crate. Its manifest stays at the repository root (cargo install --git, maturin and the release matrix name it there), so this project is rooted at src/: a project rooted at the repository root would own every file no other project owns, and every script or document edit would rebuild everything that depends on the binary. Its integration tests (tests/*.rs) and the shipped mock responder (tests/support/) are claimed through its inputs instead.",
+  "implicitDependencies": [
+    "oneharness-core"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain",
+      "{workspaceRoot}/tests/*.rs",
+      "{workspaceRoot}/tests/support/**/*"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness -- --check"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness --all-targets --features mock-harness --locked -- -D warnings",
+          "shellcheck scripts/check-capability-surface.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo build -p oneharness --locked"
+        ],
+        "parallel": false,
+        "env": {
+          "RUSTFLAGS": "-D warnings"
+        }
+      },
+      "outputs": [
+        "{workspaceRoot}/target/debug/oneharness",
+        "{workspaceRoot}/target/debug/oneharness.exe"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness --with oneharness-mock-harness --features oneharness/mock-harness",
+          "bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner",
+        "{workspaceRoot}/docs/history-index.md",
+        "{workspaceRoot}/scripts/check-capability-surface.sh"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness.lcov"
+      ],
+      "parallelism": false
+    }
+  }
+}

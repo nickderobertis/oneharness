@@ -1,0 +1,85 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "ci-contracts",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:bash"
+  ],
+  "//": "The CI and local-gate contracts: the workflow drift gates, the PR-title lint, the CI tier selection, the setup-just action and the pre-push/llmlint gate. Selected by a change under .github/ or scripts/ (or a file one of these gates reads, listed in its inputs); a product change reaches none of them.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/check-pr-title.sh",
+      "{workspaceRoot}/scripts/check-pr-title-e2e.sh",
+      "{workspaceRoot}/scripts/check-e2e-matrix.sh",
+      "{workspaceRoot}/scripts/check-e2e-matrix-test.sh",
+      "{workspaceRoot}/scripts/check-workflows.sh",
+      "{workspaceRoot}/scripts/check-workflows-test.sh",
+      "{workspaceRoot}/scripts/check-workflows-e2e.sh",
+      "{workspaceRoot}/scripts/check-workflows-portable-test.sh",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/scripts/check-setup-just.sh",
+      "{workspaceRoot}/scripts/setup-just-install.sh",
+      "{workspaceRoot}/scripts/setup-just-pin.sh",
+      "{workspaceRoot}/scripts/report-scheduled-failure.sh",
+      "{workspaceRoot}/scripts/report-scheduled-failure-test.sh",
+      "{workspaceRoot}/scripts/ci-gate-tier.sh",
+      "{workspaceRoot}/scripts/check-ci-gate-tier.sh",
+      "{workspaceRoot}/scripts/check-local-gate.sh",
+      "{workspaceRoot}/scripts/local-llmlint-gate.sh",
+      "{workspaceRoot}/scripts/local-llmlint-gate-lib.sh",
+      "{workspaceRoot}/scripts/comparison-base.sh",
+      "{workspaceRoot}/scripts/setup-llmlint.sh",
+      "{workspaceRoot}/.github/**/*",
+      "{workspaceRoot}/.githooks/**/*",
+      "{workspaceRoot}/.tool-versions",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/oneharness.toml",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/crates/*/Cargo.toml",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/release-plz.toml",
+      "{workspaceRoot}/npm/oneharness/package.json",
+      "{workspaceRoot}/npm/oneharness-sdk/package.json",
+      "{workspaceRoot}/python/oneharness-sdk/pyproject.toml",
+      "{workspaceRoot}/crates/oneharness-core/src/domain/control.rs",
+      "{workspaceRoot}/crates/oneharness-core/src/domain/dialogue.rs",
+      "{workspaceRoot}/crates/oneharness-core/src/domain/http.rs",
+      "{workspaceRoot}/crates/oneharness-core/src/io/control.rs",
+      "{workspaceRoot}/crates/oneharness-core/src/io/http_turn.rs",
+      "{workspaceRoot}/crates/oneharness-core/src/io/server_pool.rs",
+      "{workspaceRoot}/src/commands/interrupt.rs"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "shellcheck scripts/check-pr-title.sh scripts/check-pr-title-e2e.sh scripts/check-e2e-matrix.sh scripts/check-e2e-matrix-test.sh scripts/check-workflows.sh scripts/check-workflows-test.sh scripts/check-workflows-e2e.sh scripts/check-workflows-portable-test.sh scripts/with-portable-sed.sh scripts/check-setup-just.sh scripts/setup-just-install.sh scripts/setup-just-pin.sh scripts/report-scheduled-failure.sh scripts/report-scheduled-failure-test.sh scripts/ci-gate-tier.sh scripts/check-ci-gate-tier.sh scripts/check-local-gate.sh scripts/local-llmlint-gate.sh scripts/local-llmlint-gate-lib.sh scripts/comparison-base.sh scripts/setup-llmlint.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-e2e-matrix-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-workflows.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-workflows-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-setup-just.sh",
+          "bash scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-ci-gate-tier.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-local-gate.sh"
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

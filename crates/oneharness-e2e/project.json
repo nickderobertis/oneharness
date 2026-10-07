@@ -1,0 +1,86 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "oneharness-e2e",
+  "projectType": "library",
+  "tags": [
+    "type:e2e",
+    "lang:rust"
+  ],
+  "//": "The binary e2e journeys: tests/cli.rs drives the built executables as subprocesses, the symlinked-TMPDIR lane replays them under the temp-path spelling macOS gives every run, and the smoke drives the built debug binary. `test` depends on the two builds the smoke reads; the suite itself selects both crates beside it so cargo builds them under the same instrumentation.",
+  "implicitDependencies": [
+    "oneharness-core",
+    "oneharness",
+    "oneharness-mock-harness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-e2e -- --check"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-e2e"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness-e2e --all-targets --locked -- -D warnings",
+          "shellcheck scripts/smoke.sh scripts/check-smoke-env.sh scripts/with-symlinked-tmp.sh scripts/with-symlinked-tmp-test.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness",
+          "bash scripts/with-symlinked-tmp.sh bash scripts/cargo-test.sh oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness --uninstrumented",
+          "bash scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-smoke-env.sh"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner",
+        "fixtures",
+        "{workspaceRoot}/README.md",
+        "{workspaceRoot}/AGENTS.md",
+        "{workspaceRoot}/CHANGELOG.md",
+        "{workspaceRoot}/docs/harness-usage.md",
+        "{workspaceRoot}/justfile",
+        "{workspaceRoot}/scripts/smoke.sh",
+        "{workspaceRoot}/scripts/check-smoke-env.sh",
+        "{workspaceRoot}/scripts/with-symlinked-tmp.sh",
+        "{workspaceRoot}/scripts/with-symlinked-tmp-test.sh"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness-e2e.lcov"
+      ],
+      "parallelism": false,
+      "dependsOn": [
+        "oneharness:build",
+        "oneharness-mock-harness:build"
+      ]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# Never published: the language SDKs' conformance to the capability manifest —
+# the checks that read each SDK's hand-written client and README. A leaf of its
+# own (the SDKs' side of the contract, never the contract's), so an SDK edit
+# re-runs it without reaching the binary or the other SDK.
+[package]
+name = "oneharness-sdk-conformance"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+oneharness-core = { path = "../oneharness-core" }

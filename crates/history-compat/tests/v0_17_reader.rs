@@ -11,10 +11,11 @@ use std::process::Command;
 use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core_v0_19 as released;
 
-/// A binary the root crate builds into the target directory this test runs
-/// from (`<target>/<profile>/deps/<this test>`): another package's
-/// `CARGO_BIN_EXE_*` is not visible here, and a workspace-wide build (`just
-/// test`, `just coverage`) has built both before any test runs.
+/// A binary another workspace crate builds into the target directory this test
+/// runs from (`<target>/<profile>/deps/<this test>`): another package's
+/// `CARGO_BIN_EXE_*` is not visible here, and this crate's Nx `test` target
+/// selects `oneharness` and `oneharness-mock-harness` beside it, so the same
+/// cargo invocation has built both before any test runs.
 fn workspace_bin(name: &str) -> PathBuf {
     let test_exe = std::env::current_exe().expect("test executable path");
     let profile_dir = test_exe

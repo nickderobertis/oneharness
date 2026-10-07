@@ -41,7 +41,7 @@ const readonlyArrayProperties = (declarations, schema) => {
 };
 const bundle = schemaBundle({
 	script: "sdk-generate",
-	crate: "oneharness",
+	crate: "oneharness-sdk-contract",
 	example: "generate_sdk_schema",
 	cwd: root,
 	rerun: "just sdk-generate",

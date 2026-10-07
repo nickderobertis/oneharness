@@ -38,8 +38,10 @@ fn accepts(case: &Case) -> bool {
 }
 
 fn matrix() -> Matrix {
-    serde_json::from_str(include_str!("fixtures/sdk-contract-matrix.json"))
-        .expect("shared SDK contract matrix must be valid JSON")
+    serde_json::from_str(include_str!(
+        "../../../tests/fixtures/sdk-contract-matrix.json"
+    ))
+    .expect("shared SDK contract matrix must be valid JSON")
 }
 
 #[test]

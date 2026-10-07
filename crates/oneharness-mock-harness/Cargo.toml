@@ -1,0 +1,19 @@
+# Never published: the deterministic fake harness the hermetic suites spawn
+# through a `--bin` override. The responder itself ships inside the CLI
+# (`oneharness mock-harness`, from `oneharness::mock_harness`); this crate is
+# only the standalone executable around it, so it never reaches `cargo install`.
+[package]
+name = "oneharness-mock-harness"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "oneharness-mock-harness"
+path = "src/main.rs"
+
+[dependencies]
+oneharness = { path = "../.." }

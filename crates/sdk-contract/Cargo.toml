@@ -1,0 +1,33 @@
+# Never published: the cross-language SDK contract — the generator every SDK
+# reads (`examples/generate_sdk_schema.rs`, which emits
+# `oneharness_core::sdk_schema::bundle()`) and the acceptance matrix the Rust
+# types, the Node SDK and the Python SDK are all held to
+# (`tests/fixtures/sdk-contract-matrix.json`, read here by
+# `tests/sdk_contract_matrix.rs`). Its consumers depend on it; it depends on
+# none of them.
+[package]
+name = "oneharness-sdk-contract"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# The generator needs `oneharness-core`'s schema generation; the matrix test
+# does not, so it builds (and is measured) without it, as it was before this
+# crate existed.
+[[example]]
+name = "generate_sdk_schema"
+required-features = ["sdk-schema"]
+
+[features]
+sdk-schema = ["oneharness-core/sdk-schema"]
+
+[dev-dependencies]
+oneharness-core = { path = "../oneharness-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }

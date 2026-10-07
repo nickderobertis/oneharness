@@ -13,12 +13,6 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
-# Accepted so the workspace-wide `--features mock-harness` of `just test` and
-# `just coverage` selects this member too; the mock itself is the binary
-# crate's, built beside `oneharness` in the same target directory.
-[features]
-mock-harness = []
-
 [dev-dependencies]
 oneharness-core = { path = "../oneharness-core" }
 # llmlint: ignore[crates_stay_in_one_cargo_workspace] Deliberately the published 0.19.0 from crates.io, not the workspace member: it is the fixed compatibility anchor (oneharness v0.17.0's history reader) that `tests/v0_17_reader.rs` reads this build's history with, which the sibling path crate by definition cannot be.

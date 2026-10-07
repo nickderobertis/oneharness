@@ -1,0 +1,24 @@
+# Never published: the binary e2e journeys (`tests/cli.rs`) — the suite that
+# drives the built `oneharness` and `oneharness-mock-harness` executables as
+# subprocesses. A crate of its own so a change the binary cannot see skips it;
+# its Nx `test` target builds both executables in the same cargo invocation and
+# the suite reads them from the shared target directory (`workspace_bin`).
+[package]
+name = "oneharness-e2e"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dev-dependencies]
+# The CLI's clap tree and its public constants, read in-process to enumerate
+# every verb and pin documented defaults against the source of truth.
+oneharness = { path = "../.." }
+oneharness-core = { path = "../oneharness-core" }
+clap = { version = "4.5", features = ["derive"] }
+serde_json = { workspace = true }

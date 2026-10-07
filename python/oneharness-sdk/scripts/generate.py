@@ -257,7 +257,7 @@ def _schema_bundle() -> dict[str, Any]:
         "run",
         "-q",
         "-p",
-        "oneharness",
+        "oneharness-sdk-contract",
         "--features",
         "sdk-schema",
         "--example",

@@ -89,10 +89,23 @@ name = "oneharness-core"
 git_tag_name = "oneharness-core-v{{ version }}"
 git_release_enable = false
 
-# Test-only workspace member (`publish = false`) holding the v0.17.0 history
-# compatibility test; it never releases, tags or keeps a changelog.
+# Test-only workspace members (`publish = false`): the v0.17.0 history
+# compatibility test, the mock harness fixture, the binary e2e journeys and the
+# SDK contract. None releases, tags or keeps a changelog.
 [[package]]
 name = "oneharness-history-compat"
+release = false
+
+[[package]]
+name = "oneharness-mock-harness"
+release = false
+
+[[package]]
+name = "oneharness-e2e"
+release = false
+
+[[package]]
+name = "oneharness-sdk-contract"
 release = false
 
 # Keep-a-Changelog-style grouping. The version bump is computed from the

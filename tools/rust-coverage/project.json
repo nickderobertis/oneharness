@@ -43,6 +43,7 @@
         }
       ],
       "inputs": [
+        "default",
         {
           "dependentTasksOutputFiles": "**/*.lcov",
           "transitive": false

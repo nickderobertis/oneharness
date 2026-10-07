@@ -18,9 +18,9 @@
 //     would let affected selection silently skip a dependent crate.
 //
 // And two restatements of the project set are held to it: the root AGENTS.md's
-// "Projects in the graph" record, and rust-coverage's list of the Rust `test`
-// runs (and their profile records) the floor is enforced over — a Rust project
-// missing there would leave its crate's coverage silently out of the floor.
+// "Projects in the graph" record, and the Rust `test` runs rust-coverage depends
+// on — a Rust project missing there would leave its crate's coverage silently
+// out of the floor.
 //
 // Quiet on success: one line. Node built-ins only.
 import { execFileSync } from "node:child_process";
@@ -157,15 +157,10 @@ if (coverage === undefined) {
 	for (const name of covered.filter((n) => !rustTests.includes(n))) {
 		failures.push(`rust-coverage:coverage depends on ${name}:test, which is not a Rust project's test`);
 	}
-	const command = coverage.options?.command ?? (coverage.options?.commands ?? [])[0] ?? "";
-	const records = command.replace(/^bash scripts\/rust-coverage\.sh\s*/u, "").split(/\s+/u).filter(Boolean);
-	for (const name of rustTests) {
-		const record = recordOf(name);
-		if (record === undefined) {
-			failures.push(`${name}:test does not run scripts/cargo-test.sh, so it leaves no coverage profile for the Rust floor`);
-		} else if (!records.includes(record)) {
-			failures.push(`rust-coverage:coverage does not read ${name}'s profile (${record}); add it to the scripts/rust-coverage.sh arguments`);
-		}
+	// scripts/rust-coverage.sh reads each run's profile record off the same
+	// project definitions, so a run that is not cargo-test.sh leaves none.
+	for (const name of rustTests.filter((n) => recordOf(n) === undefined)) {
+		failures.push(`${name}:test does not run scripts/cargo-test.sh, so it leaves no coverage profile for the Rust floor`);
 	}
 }
 

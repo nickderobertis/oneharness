@@ -6,7 +6,7 @@
 #
 #   scripts/cargo-test.sh <package> [--with <package>]... [--features <list>]
 #                         [--filter <nextest filterset>] [--record <name>]
-#                         [--uninstrumented]
+#                         [--uninstrumented | --build-only]
 #
 # `--with` names a crate whose BINARIES the suite spawns (`oneharness`,
 # `oneharness-mock-harness`). They are selected beside the package so cargo
@@ -28,7 +28,9 @@
 # the profile (default: the package), so each tier leaves its own.
 # `--uninstrumented` asks for that plain run on any platform (the
 # symlinked-TMPDIR replay of the e2e journeys, which re-runs a suite already
-# measured).
+# measured). `--build-only` builds that same instrumented selection and runs
+# nothing: scripts/rust-coverage.sh uses it so the objects a report reads are
+# this tree's, whichever profiles the cache replayed.
 #
 # Quiet on success apart from nextest's summary; a failure prints in full.
 set -euo pipefail
@@ -38,7 +40,7 @@ cd "$root"
 
 usage() {
   echo "cargo-test: $1" >&2
-  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--filter <filterset>] [--record <name>] [--uninstrumented]" >&2
+  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--filter <filterset>] [--record <name>] [--uninstrumented | --build-only]" >&2
   exit 2
 }
 
@@ -51,6 +53,7 @@ features=()
 filterset=""
 record="$package"
 instrumented=1
+build_only=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --with)
@@ -72,6 +75,9 @@ while [ "$#" -gt 0 ]; do
     --uninstrumented)
       instrumented=0
       shift ;;
+    --build-only)
+      build_only=1
+      shift ;;
     *) usage "unknown argument '$1'" ;;
   esac
 done
@@ -84,6 +90,16 @@ nextest_flags=(--locked --status-level fail --final-status-level fail)
 # makes; the same flags as the `build` targets, so target/debug is not rebuilt
 # between them.
 export RUSTFLAGS="${RUSTFLAGS:-} -D warnings"
+
+if [ "$build_only" -eq 1 ]; then
+  [ "$instrumented" -eq 1 ] || usage "--build-only builds the instrumented selection; it cannot be --uninstrumented"
+  # Coverage is not measured on Windows, so there is nothing to keep current.
+  [[ "${OS:-}" == "Windows_NT" ]] && exit 0
+  RUSTFLAGS="${RUSTFLAGS} -C linker=$root/scripts/coverage-linker.sh" \
+    cargo llvm-cov --no-report nextest "${packages[@]}" ${features[@]+"${features[@]}"} \
+    -E 'none()' --no-tests=pass --locked --status-level none --final-status-level none
+  exit 0
+fi
 
 if [[ "${OS:-}" == "Windows_NT" ]] || [ "$instrumented" -eq 0 ]; then
   exec bash scripts/check-temp-leaks.sh cargo nextest run "${packages[@]}" ${features[@]+"${features[@]}"} "${filter[@]}" "${nextest_flags[@]}"

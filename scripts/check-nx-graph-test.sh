@@ -108,14 +108,14 @@ node -e '
   const fs = require("fs");
   const file = process.argv[1];
   const project = JSON.parse(fs.readFileSync(file, "utf8"));
-  const options = project.targets.coverage.options;
-  options.commands = options.commands.map((c) => c.replace(" oneharness-e2e", ""));
+  const dependsOn = project.targets.coverage.dependsOn[0];
+  dependsOn.projects = dependsOn.projects.filter((p) => p !== "oneharness-e2e");
   fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
 ' "$ws/tools/rust-coverage/project.json"
 check
 cp "$tmp/saved.json" "$ws/tools/rust-coverage/project.json"
-[ "$status" -ne 0 ] || fail "a coverage floor that no longer reads oneharness-e2e's profile should have failed the check"
-grep -qF "does not read oneharness-e2e's profile (oneharness-e2e)" "$tmp/err" ||
+[ "$status" -ne 0 ] || fail "a coverage floor that no longer depends on oneharness-e2e's test should have failed the check"
+grep -qF "does not depend on oneharness-e2e:test" "$tmp/err" ||
   fail "the check failed but did not name the Rust test run the floor leaves out"
 
 echo "check-nx-graph-test: ok"

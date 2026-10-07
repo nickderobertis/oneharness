@@ -1,6 +1,6 @@
 {
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "name": "live-cursor",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "live-opencode",
   "projectType": "library",
   "tags": [
     "type:live",
@@ -14,7 +14,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/scripts/e2e-cursor.sh"
+      "{workspaceRoot}/scripts/e2e-opencode.sh"
     ]
   },
   "targets": {
@@ -22,7 +22,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "just live-cursor"
+          "just live-opencode"
         ],
         "parallel": false
       },

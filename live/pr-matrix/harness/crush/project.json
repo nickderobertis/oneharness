@@ -1,6 +1,6 @@
 {
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "name": "live-schema",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "live-crush",
   "projectType": "library",
   "tags": [
     "type:live",
@@ -14,7 +14,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/scripts/e2e-schema.sh"
+      "{workspaceRoot}/scripts/e2e-crush.sh"
     ]
   },
   "targets": {
@@ -22,7 +22,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "just live-schema"
+          "just live-crush"
         ],
         "parallel": false
       },

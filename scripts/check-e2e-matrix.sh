@@ -7,7 +7,7 @@
 # literals per workflow, and each job's matrix restates the PR-default platform
 # set. This script is the single source of that contract and fails if any
 # workflow drifts from it — so the duplication is *checked*, not free-floating
-# (live/AGENTS.md > "Live e2e in CI").
+# (live/pr-matrix/AGENTS.md > "Live e2e in CI").
 #
 # The contract (change it HERE, then update the workflows to match):
 #   - No workflow may trigger on `push` (the release-plz release PR re-runs the

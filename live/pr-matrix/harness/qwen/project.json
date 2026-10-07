@@ -1,6 +1,6 @@
 {
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "name": "live-codex",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "live-qwen",
   "projectType": "library",
   "tags": [
     "type:live",
@@ -14,7 +14,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/scripts/e2e-codex.sh"
+      "{workspaceRoot}/scripts/e2e-qwen.sh"
     ]
   },
   "targets": {
@@ -22,7 +22,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "just live-codex"
+          "just live-qwen"
         ],
         "parallel": false
       },

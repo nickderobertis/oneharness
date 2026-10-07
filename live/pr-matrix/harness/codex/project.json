@@ -1,6 +1,6 @@
 {
-  "$schema": "../../node_modules/nx/schemas/project-schema.json",
-  "name": "live-copilot",
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "live-codex",
   "projectType": "library",
   "tags": [
     "type:live",
@@ -14,7 +14,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "{workspaceRoot}/scripts/e2e-copilot.sh"
+      "{workspaceRoot}/scripts/e2e-codex.sh"
     ]
   },
   "targets": {
@@ -22,7 +22,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "just live-copilot"
+          "just live-codex"
         ],
         "parallel": false
       },

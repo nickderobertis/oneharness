@@ -189,6 +189,9 @@ mod platform {
         Ok(())
     }
 
+    // SAFETY: the OS calls this on its own thread with an event code; it reads
+    // that code and touches only atomics (or, on a second signal, exits the
+    // process), so it shares no state that needs synchronizing.
     unsafe extern "system" fn handler(event: u32) -> BOOL {
         match event {
             CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT

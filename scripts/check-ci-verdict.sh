@@ -744,7 +744,6 @@ unset WAIT_DELAY_OVERRIDE
 expect_status 2
 expect_said "$tmp/err" "exceeds the 3600-second bound"
 
-# --- Which run swept the tagged tree ------------------------------------------
 # release-plz batches merges behind its release pull request, and CI sweeps the
 # release THERE; a push to main runs only the affected tier. So the verdict is
 # the merged release pull request's run when its head carried exactly the tagged

@@ -47,7 +47,7 @@
       "Bash(cargo deny:*)",
       "Bash(gh-secrets:*)",
       "Bash(shellcheck:*)",
-      "Bash(bash scripts/nx show:*)",
+      "Bash(bash scripts/nx show projects)",
       "Bash(actionlint:*)",
       "Bash(rustup component add:*)",
       "Bash(rustup show:*)",

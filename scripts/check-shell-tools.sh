@@ -68,8 +68,11 @@ case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=.exe ;; esac
 # curl reads it: on Windows that is the drive path (`file:///C:/...`), since
 # curl there cannot open the POSIX spelling Git Bash gives `$work`.
 file_url() {
+  local drive
   if [ -n "$exe" ]; then
-    printf 'file:///%s' "$(cygpath -m "$1")"
+    drive="$(cygpath -m "$1")" && [ -n "$drive" ] ||
+      fail "could not spell $1 as a Windows path for a file:/// mirror URL (cygpath -m failed)"
+    printf 'file:///%s' "$drive"
   else
     printf 'file://%s' "$1"
   fi

@@ -24,7 +24,23 @@ cd "$repo_root"
 # a blob that carries carriage returns on purpose — which is how
 # `check-lf-contracts-test.sh` proves it still goes red, without having to unpin
 # a real contract to do it.
-if [ "$#" -gt 0 ]; then
+#
+# `--shell` checks the other LF contract instead: every shell script bash runs
+# or shellcheck reads (`scripts:lint`), whether `*.sh` or extensionless with a
+# shell shebang like `scripts/nx` and `.githooks/pre-push`. A CRLF checkout of
+# one is a carriage return on every line — shellcheck's SC1017, and bash's
+# `$'\r': command not found`.
+rerun="bash scripts/check-lf-contracts.sh"
+if [ "${1:-}" = --shell ]; then
+  rerun+=" --shell"
+  contracts=()
+  while IFS= read -r path; do
+    case "$path" in
+      *.sh) contracts+=("$path") ;;
+      *) if head -n 1 "$path" | grep -Eq '^#!.*[/ ](ba)?sh([[:space:]]|$)'; then contracts+=("$path"); fi ;;
+    esac
+  done < <(git ls-files -- scripts .githooks)
+elif [ "$#" -gt 0 ]; then
   contracts=("$@")
 else
   contracts=(docs/sdk-parity.md)
@@ -63,10 +79,10 @@ crlf="$(node -e '
 ' "$work" "${contracts[@]}")"
 
 if [ -n "$crlf" ]; then
-  echo "check-lf-contracts: these are compared byte-for-byte but check out with CRLF on Windows:" >&2
+  echo "check-lf-contracts: these must stay LF but check out with CRLF on Windows:" >&2
   printf '%s\n' "$crlf" | sed 's/^/  /' >&2
   echo "  fix: pin each one in .gitattributes with 'text eol=lf', beside the entries" >&2
-  echo "       already there, then rerun 'bash scripts/check-lf-contracts.sh'." >&2
+  echo "       already there, then rerun '$rerun'." >&2
   exit 1
 fi
 

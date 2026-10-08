@@ -6,7 +6,7 @@
     "type:workspace",
     "lang:bash"
   ],
-  "//": "Repository-wide checks no single project owns, offline: the project-graph boundary and Cargo-edge check, scratch-space hygiene across every suite, and the LF contract. The suites that drive real host tools (the Nx base derivation through the real recipes, the self-sufficient install and bootstrap, the boundary check's refusals and the build recipes' diagnostics) are `workspace-integration`'s. `supply-chain` (cargo deny + machete) reads the network advisory database, so it is uncached and outside the affected tier; `just deps-check` and ci.yml's `deny` job run it by name.",
+  "//": "Repository-wide checks no single project owns, offline: the project-graph boundary and Cargo-edge check, scratch-space hygiene across every suite, and the LF contract. The suites that drive real host tools (the LF gate's own refusals over scratch git repositories, the Nx base derivation through the real recipes, the self-sufficient install and bootstrap, the boundary check's refusals and the build recipes' diagnostics) are `workspace-integration`'s. `supply-chain` (cargo deny + machete) reads the network advisory database, so it is uncached and outside the affected tier; `just deps-check` and ci.yml's `deny` job run it by name.",
   "implicitDependencies": [
     "harness-captures"
   ],
@@ -20,7 +20,6 @@
       "{workspaceRoot}/scripts/check-scratch-prefixes.sh",
       "{workspaceRoot}/scripts/check-scratch-prefixes-test.sh",
       "{workspaceRoot}/scripts/check-lf-contracts.sh",
-      "{workspaceRoot}/scripts/check-lf-contracts-test.sh",
       "{workspaceRoot}/scripts/session-setup.sh",
       "{workspaceRoot}/scripts/nx",
       "{workspaceRoot}/scripts/check-nx-graph.mjs",
@@ -31,6 +30,9 @@
       "{workspaceRoot}/bun.lock",
       "{workspaceRoot}/justfile",
       "{workspaceRoot}/.gitattributes",
+      "{workspaceRoot}/docs/sdk-parity.md",
+      "{workspaceRoot}/python/oneharness-sdk/**/*.py",
+      "{workspaceRoot}/python/oneharness-sdk/**/*.json",
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/crates/*/Cargo.toml",
       "{workspaceRoot}/**/project.json",
@@ -60,8 +62,7 @@
           "bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh",
           "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh",
           "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh"
+          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh"
         ],
         "parallel": false
       }

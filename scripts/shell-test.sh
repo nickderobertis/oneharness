@@ -57,7 +57,7 @@ run_id() {
   # path component; this holds it to that.
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || {
     echo "shell-test: no .sh script among '$*' to name the run after" >&2
-    echo "  fix: name the step's script as a scripts/*.sh path, as in 'scripts/shell-test.sh --id scripts/with-portable-sed.sh scripts/check-x.sh'" >&2
+    echo "  fix: name the step's script as a scripts/*.sh path, as in 'scripts/shell-test.sh --id scripts/check-x.sh'" >&2
     exit 2
   }
   printf '%s\n' "$id"
@@ -83,7 +83,7 @@ project="$1"
 shift
 [[ "$project" =~ ^[a-z0-9-]+$ ]] || {
   echo "shell-test: '$project' is not an Nx project name" >&2
-  echo "  fix: pass the owning project's name (lowercase letters, digits and '-', e.g. 'scripts' or 'shell-toolchain'), as in 'scripts/shell-test.sh scripts scripts/with-portable-sed.sh scripts/check-x.sh'" >&2
+  echo "  fix: pass the owning project's name (lowercase letters, digits and '-', e.g. 'scripts' or 'shell-toolchain'), as in 'scripts/shell-test.sh scripts scripts/check-x.sh'" >&2
   exit 2
 }
 script="$1"

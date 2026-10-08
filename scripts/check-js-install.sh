@@ -235,6 +235,26 @@ grep -qF "the task log $area/1234567890 is not read: the installed Nx did not sa
     { cat "$tmp/nx.err" >&2; fail "a missing Nx task-log module was not reported with its next action"; }
 grep -q 'at Module\|node:internal' "$tmp/nx.err" && fail "a missing Nx task-log module printed a stack trace"
 
+# A replay that itself fails — here a node that dies running it — is named,
+# and Nx's own status and stdout still stand rather than the replay's.
+crash_bin="$tmp/crash-bin"
+mkdir -p "$crash_bin"
+cp "$bin"/bun "$bin"/cargo "$bin"/rustup "$bin"/uv "$crash_bin/"
+for tool in just git; do ln -s "$(command -v "$tool")" "$crash_bin/$tool"; done
+cat >"$crash_bin/node" <<STUB
+#!/usr/bin/env bash
+case "\$*" in *terminalOutputPathForHash*) echo 'replay-node: killed' >&2; exit 9 ;; esac
+exec "$(command -v node)" "\$@"
+STUB
+chmod +x "$crash_bin/node"
+status=0
+NX_STUB_FAIL="$area/1234567890" CALL_LOG="$tmp/nx.calls" PATH="$crash_bin:/usr/bin:/bin" HOME="$tmp/home" \
+    "$fixture/scripts/nx" show projects --json >"$tmp/nx.out" 2>"$tmp/nx.err" || status=$?
+[[ "$status" -eq 3 ]] || { cat "$tmp/nx.err" >&2; fail "a failed task-log replay turned Nx's exit status 3 into $status"; }
+[[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed task-log replay changed Nx's stdout"
+grep -qF "nx: replaying the failed tasks' logs failed (above); the run's own result stands" "$tmp/nx.err" ||
+    { cat "$tmp/nx.err" >&2; fail "a failed task-log replay was not named"; }
+
 # A bun that fails the way a stale lockfile really does: the reason survives,
 # Nx never runs, and the message names a next action.
 failing_bin="$tmp/failing-bin"

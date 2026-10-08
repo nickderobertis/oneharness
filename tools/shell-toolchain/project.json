@@ -35,6 +35,11 @@
       },
       "outputs": [
         "{workspaceRoot}/target/coverage/shell/shell-toolchain"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "shellTestRunner"
       ]
     }
   }

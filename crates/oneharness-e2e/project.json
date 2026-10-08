@@ -71,9 +71,7 @@
         "{workspaceRoot}/scripts/check-smoke-env.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp-test.sh",
-        "{workspaceRoot}/scripts/shell-test.sh",
-        "{workspaceRoot}/scripts/shell-tools.sh",
-        "{workspaceRoot}/.shell-tool-versions"
+        "shellTestRunner"
       ],
       "outputs": [
         "{workspaceRoot}/target/coverage/oneharness-e2e.profdata",

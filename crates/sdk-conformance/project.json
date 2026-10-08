@@ -76,9 +76,7 @@
         "default",
         "^default",
         "rustTestRunner",
-        "{workspaceRoot}/scripts/shell-test.sh",
-        "{workspaceRoot}/scripts/shell-tools.sh",
-        "{workspaceRoot}/.shell-tool-versions"
+        "shellTestRunner"
       ],
       "outputs": [
         "{workspaceRoot}/target/coverage/oneharness-sdk-conformance.profdata",

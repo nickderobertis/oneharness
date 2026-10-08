@@ -79,9 +79,7 @@
       "inputs": [
         "default",
         "^default",
-        "{workspaceRoot}/scripts/shell-test.sh",
-        "{workspaceRoot}/scripts/shell-tools.sh",
-        "{workspaceRoot}/.shell-tool-versions"
+        "shellTestRunner"
       ]
     }
   }

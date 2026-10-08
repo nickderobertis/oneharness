@@ -21,6 +21,8 @@
 // "Projects in the graph" record, the Rust `test` runs rust-coverage depends on —
 // a Rust project missing there would leave its crate's coverage silently out of
 // the floor — and the shell test steps shell-coverage depends on, likewise.
+// Every `test` running a shell test step also reads, through its inputs, every
+// file scripts/shell-test.sh reads.
 //
 // Quiet on success: one line. Node built-ins only.
 import { execFileSync } from "node:child_process";
@@ -189,6 +191,38 @@ if (shellCoverage === undefined) {
 	}
 	for (const name of covered.filter((n) => !shellTests.includes(n))) {
 		failures.push(`shell-coverage:coverage depends on ${name}:test, which runs no scripts/shell-test.sh step; remove it from the dependsOn projects`);
+	}
+}
+
+// Every shell test step runs scripts/shell-test.sh, so every file it reads —
+// itself, and what its code names, transitively — is an input of each `test`
+// that runs one, through nx.json's one `shellTestRunner` named input. A file
+// missing there (the BASH_ENV trace hook, say) would let a change to it replay
+// stale results and stale shell coverage from the cache.
+const runnerReads = new Set();
+for (const queue = ["scripts/shell-test.sh"]; queue.length > 0; ) {
+	const file = queue.shift();
+	if (runnerReads.has(file)) continue;
+	runnerReads.add(file);
+	if (!file.endsWith(".sh")) continue;
+	const code = readFileSync(join(root, file), "utf8")
+		.split("\n")
+		.filter((line) => !/^\s*#/u.test(line))
+		.join("\n");
+	for (const match of code.matchAll(/(?<![\w.-])(scripts\/[A-Za-z0-9_-]+\.sh|\.shell-tool-versions)\b/gu)) {
+		if (existsSync(join(root, match[1]))) queue.push(match[1]);
+	}
+}
+const nxConfig = JSON.parse(readFileSync(join(root, "nx.json"), "utf8"));
+const runnerInput = new Set(
+	(nxConfig.namedInputs?.shellTestRunner ?? []).map((input) => String(input).replace(/^\{workspaceRoot\}\//u, "")),
+);
+for (const file of [...runnerReads].filter((f) => !runnerInput.has(f)).sort()) {
+	failures.push(`nx.json's shellTestRunner named input does not list ${file}, which scripts/shell-test.sh reads; add "{workspaceRoot}/${file}" to it`);
+}
+for (const name of shellTests) {
+	if (!(graph.nodes[name].data.targets.test.inputs ?? []).includes("shellTestRunner")) {
+		failures.push(`${name}:test runs scripts/shell-test.sh but does not list the shellTestRunner named input, so a change to the runner replays its stale results; add "shellTestRunner" to its inputs`);
 	}
 }
 

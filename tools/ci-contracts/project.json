@@ -44,6 +44,7 @@
       "{workspaceRoot}/npm/oneharness/package.json",
       "{workspaceRoot}/npm/oneharness-sdk/package.json",
       "{workspaceRoot}/python/oneharness-sdk/pyproject.toml",
+      "{workspaceRoot}/**/project.json",
       "{workspaceRoot}/crates/oneharness-core/src/domain/control.rs",
       "{workspaceRoot}/crates/oneharness-core/src/domain/dialogue.rs",
       "{workspaceRoot}/crates/oneharness-core/src/domain/http.rs",

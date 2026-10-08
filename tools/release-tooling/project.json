@@ -41,7 +41,7 @@
       "{workspaceRoot}/npm/oneharness/package.json",
       "{workspaceRoot}/npm/oneharness/bin/oneharness.js",
       "{workspaceRoot}/npm/oneharness-sdk/package.json",
-      "{workspaceRoot}/python/oneharness-sdk/pyproject.toml",
+      "{workspaceRoot}/**/pyproject.toml",
       "{workspaceRoot}/.github/workflows/release.yml",
       "{workspaceRoot}/.github/workflows/release-plz.yml",
       "{workspaceRoot}/.github/workflows/package-pr.yml",

@@ -55,10 +55,11 @@ status=0
 if [ "$status" -ne 0 ]; then
   # A "full log:" path is subprocess output, so it is read only when it is the
   # path the installed Nx's own `terminalOutputPathForHash` names for that hash
-  # and neither the cache directory, its `terminalOutputs`, nor the log is a
-  # link to somewhere else; any other path is named and refused. Node reads and
-  # replays it, so no filename passes back through the shell, and a failed
-  # replay never replaces Nx's status.
+  # and it lies physically where that path says: no link anywhere between the
+  # trusted anchor — this workspace, or a cache directory configured outside it
+  # — and the file. Any other path is named and refused. Node reads and replays
+  # it, so no filename passes back through the shell, and a failed replay never
+  # replaces Nx's status.
   if ! sed -n 's/^[[:space:]]*full log: //p' "$log" | node -e '
     const fs = require("fs"), path = require("path");
     const say = (text) => process.stderr.write(text);
@@ -81,8 +82,16 @@ if [ "$status" -ne 0 ]; then
         say("\nnx: the task log " + named + " is not readable on this machine; " + rerun + "\n");
         continue;
       }
-      const cacheDir = path.dirname(path.dirname(own));
-      const authorized = isOwn && kind(cacheDir) !== "link" && kind(path.dirname(own)) !== "link" && kind(own) === "file";
+      const cacheDir = path.resolve(path.dirname(path.dirname(own)));
+      const workspace = path.resolve(".");
+      const inWorkspace = !path.relative(workspace, cacheDir).startsWith("..") && !path.isAbsolute(path.relative(workspace, cacheDir));
+      const anchor = inWorkspace ? workspace : cacheDir;
+      let physical = null, expected = null;
+      try {
+        physical = fs.realpathSync(own);
+        expected = path.join(fs.realpathSync(anchor), path.relative(anchor, path.resolve(own)));
+      } catch {}
+      const authorized = isOwn && kind(own) === "file" && physical !== null && physical === expected;
       if (!authorized) {
         say("\nnx: the task log " + named + " is not a file in this workspace" + String.fromCharCode(39) + "s Nx task-log area (" + path.dirname(own) + "), so it is not read; " + rerun + "\n");
         continue;

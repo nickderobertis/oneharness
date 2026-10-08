@@ -37,13 +37,21 @@ if [ "${1:-}" = --shell ]; then
   # Each step stands alone so `set -e` sees it fail: a listing git could not
   # produce, or a script it could not read, stops the gate rather than leaving
   # a shorter list that passes.
-  tracked="$(git ls-files -- scripts .githooks)"
+  if ! tracked="$(git ls-files -- scripts .githooks)"; then
+    echo "check-lf-contracts: git could not list the tracked shell scripts (above)." >&2
+    echo "  fix: run this from a git checkout of the repository, then rerun '$rerun'." >&2
+    exit 1
+  fi
   while IFS= read -r path; do
     case "$path" in
       '') ;;
       *.sh) contracts+=("$path") ;;
       *)
-        first="$(head -n 1 -- "$path")"
+        if ! first="$(head -n 1 -- "$path")"; then
+          echo "check-lf-contracts: could not read the tracked file $path (above)." >&2
+          echo "  fix: restore it ('git checkout -- $path') or remove it from the index, then rerun '$rerun'." >&2
+          exit 1
+        fi
         if [[ "$first" =~ ^\#!.*[/\ ](ba)?sh([[:space:]]|$) ]]; then contracts+=("$path"); fi
         ;;
     esac

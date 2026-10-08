@@ -202,7 +202,11 @@ refused() {
         { cat "$tmp/nx.err" >&2; fail "a 'full log:' path outside the task-log area ($1) was not named as refused"; }
 }
 
-area="$fixture/.nx/cache/terminalOutputs"
+# Nx names paths from its physical working directory (macOS's temp dir sits
+# behind the /var -> /private/var link), so the fixture's paths are spelled the
+# same way.
+fixture_phys="$(cd "$fixture" && pwd -P)"
+area="$fixture_phys/.nx/cache/terminalOutputs"
 mkdir -p "$area/subdir" "$tmp/task-logs"
 echo 'error[E0425]: the failing task output' >"$area/1234567890"
 echo 'secret: a file outside the task-log area' >"$tmp/task-logs/outside.log"
@@ -234,6 +238,20 @@ echo 'secret: behind a linked task-log area' >"$tmp/elsewhere/555"
 ln -s "$tmp/elsewhere" "$tmp/linked-cache/terminalOutputs"
 NX_CACHE_DIRECTORY="$tmp/linked-cache" failed_run "$tmp/linked-cache/terminalOutputs/555"
 refused "$tmp/linked-cache/terminalOutputs/555" "$tmp/linked-cache/terminalOutputs"
+# A link further up — the workspace's `.nx`, or the cache directory itself —
+# moves the area just as surely, so it authorizes nothing either.
+mv "$fixture/.nx" "$tmp/real-dot-nx"
+ln -s "$tmp/real-dot-nx" "$fixture/.nx"
+failed_run "$area/1234567890"
+refused "$area/1234567890" "$area"
+rm "$fixture/.nx"
+mv "$tmp/real-dot-nx" "$fixture/.nx"
+mkdir -p "$tmp/elsewhere-cache/terminalOutputs"
+echo 'secret: behind a linked cache directory' >"$tmp/elsewhere-cache/terminalOutputs/808"
+ln -s "$tmp/elsewhere-cache" "$fixture/linked-cache"
+NX_CACHE_DIRECTORY=linked-cache failed_run "$fixture_phys/linked-cache/terminalOutputs/808"
+refused "$fixture_phys/linked-cache/terminalOutputs/808" "$fixture_phys/linked-cache/terminalOutputs"
+rm "$fixture/linked-cache"
 echo 'locked' >"$area/31337"
 chmod 000 "$area/31337"
 if [[ ! -r "$area/31337" ]]; then

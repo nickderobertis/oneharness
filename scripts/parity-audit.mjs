@@ -292,7 +292,9 @@ function refuse(message) {
 
 /** The targets a gate run composes, as the justfile's `check` recipe names them. */
 function checkTargets() {
-	const justfile = readFileSync(resolve(root, "justfile"), "utf8");
+	// A Windows checkout (core.autocrlf=true) gives the justfile CRLF endings,
+	// which the line-anchored recipe match below must read the same as LF.
+	const justfile = readFileSync(resolve(root, "justfile"), "utf8").replaceAll("\r\n", "\n");
 	const recipe = justfile.match(/^check tier="affected":\n(?<body>(?: {4}.*\n|\n)+)/mu);
 	const targets = recipe?.groups.body.match(/scripts\/nx affected [^\n]*-t (?<list>[a-z0-9,-]+)/u);
 	if (!targets) {

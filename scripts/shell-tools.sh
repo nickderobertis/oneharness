@@ -14,15 +14,21 @@
 # directory, never whatever `shellcheck` or `shfmt` happens to be on PATH, so a
 # format or lint verdict is the same on every machine.
 #
-# The shellcheck and shfmt pins are their projects' release binaries, checked against
-# the SHA-256 recorded below for that exact version and platform; a version
-# with no recorded checksum is refused rather than trusted. kcov publishes no
-# binaries, so its pin is a source build, verified the same way, and it is
-# built on Linux only: shell coverage is measured on Linux (AGENTS.md says
-# why), so macOS and Windows skip it and run the shell tests uninstrumented.
-# The build needs cmake (or uv, which supplies one) and kcov's libraries'
-# headers; on Debian/Ubuntu:
+# The shellcheck and shfmt pins are their projects' release binaries, checked
+# against the SHA-256 recorded below for that exact version and platform; a
+# version with no recorded checksum is refused rather than trusted. kcov
+# publishes no binaries, so its pin is a source build, verified the same way,
+# and it is built on Linux only: shell coverage is measured on Linux
+# (tools/shell-coverage/AGENTS.md says why), so macOS and Windows skip it and
+# run the shell tests uninstrumented. The build needs cmake (or uv, which
+# supplies one) and kcov's libraries' headers; on Debian/Ubuntu:
 #   sudo apt-get install binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev
+#
+# Every verified download is kept under the tools cache's `downloads/`, so a
+# reinstall needs no network. Downloads come from each project's GitHub
+# release unless ONEHARNESS_TOOLS_MIRROR names a base URL serving the same
+# asset names (a `file://` directory works); a mirror cannot change what is
+# installed, since every asset is still held to its recorded checksum.
 #
 # Quiet on success, one line; a failure names the tool, the step and the fix.
 set -euo pipefail
@@ -30,15 +36,19 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 pins="$root/.shell-tool-versions"
 
-die() {
+# Exit with status $1 after the message $2 and each fix line after it.
+refuse() {
+  local status="$1"
+  shift
   printf 'shell-tools: %s\n' "$1" >&2
   shift
   for line in "$@"; do printf '  %s\n' "$line" >&2; done
-  exit "${SHELL_TOOLS_STATUS:-1}"
+  exit "$status"
 }
+die() { refuse 1 "$@"; }
 
 usage() {
-  SHELL_TOOLS_STATUS=2 die "usage: scripts/shell-tools.sh install | exec <tool> [args...] | path <tool>" \
+  refuse 2 "usage: scripts/shell-tools.sh install | exec <tool> [args...] | path <tool>" \
     "tools: shellcheck, shfmt, kcov (pinned in .shell-tool-versions)"
 }
 
@@ -77,6 +87,11 @@ case "$tools_dir" in
   /*) ;;
   *) die "ONEHARNESS_TOOLS_DIR '$tools_dir' is not an absolute path" "fix: unset it, or set it to an absolute directory" ;;
 esac
+mirror="${ONEHARNESS_TOOLS_MIRROR:-}"
+case "$mirror" in
+  '' | https://* | file:///*) mirror="${mirror%/}" ;;
+  *) die "ONEHARNESS_TOOLS_MIRROR '$mirror' is not an https:// or file:/// URL" "fix: unset it to download from GitHub, or set it to a mirror's base URL" ;;
+esac
 
 # Every download and staging directory, removed however the run ends.
 scratch=()
@@ -85,27 +100,31 @@ trap cleanup EXIT
 
 bin_of() { printf '%s/%s-%s/bin/%s%s\n' "$tools_dir" "$1" "$2" "$1" "$exe"; }
 
-# The release asset for a tool, version and this platform, and its SHA-256.
-# A bump adds the new version's lines here, from the release's own digests.
-asset() {
-  local tool="$1" version="$2" name
+# The release asset's name for a tool and version on this platform, and the
+# URL GitHub serves it from. A bump adds the new version's checksums below,
+# from the release's own digests.
+asset_name() {
+  local tool="$1" version="$2" goarch=amd64
   case "$tool" in
     shellcheck)
-      case "$os" in
-        windows) name="shellcheck-v$version.zip" ;;
-        *) name="shellcheck-v$version.$os.$arch.tar.gz" ;;
-      esac
-      printf 'https://github.com/koalaman/shellcheck/releases/download/v%s/%s %s\n' "$version" "$name" "$name"
+      if [ "$os" = windows ]; then
+        printf 'shellcheck-v%s.zip\n' "$version"
+      else
+        printf 'shellcheck-v%s.%s.%s.tar.gz\n' "$version" "$os" "$arch"
+      fi
       ;;
     shfmt)
-      local goarch=amd64
       [ "$arch" = aarch64 ] && [ "$os" != windows ] && goarch=arm64
-      name="shfmt_v${version}_${os}_$goarch$exe"
-      printf 'https://github.com/mvdan/sh/releases/download/v%s/%s %s\n' "$version" "$name" "$name"
+      printf 'shfmt_v%s_%s_%s%s\n' "$version" "$os" "$goarch" "$exe"
       ;;
-    kcov)
-      printf 'https://github.com/SimonKagstrom/kcov/archive/refs/tags/v%s.tar.gz kcov-%s.tar.gz\n' "$version" "$version"
-      ;;
+    kcov) printf 'kcov-%s.tar.gz\n' "$version" ;;
+  esac
+}
+release_url() {
+  case "$1" in
+    shellcheck) printf 'https://github.com/koalaman/shellcheck/releases/download/v%s/%s\n' "$2" "$3" ;;
+    shfmt) printf 'https://github.com/mvdan/sh/releases/download/v%s/%s\n' "$2" "$3" ;;
+    kcov) printf 'https://github.com/SimonKagstrom/kcov/archive/refs/tags/v%s.tar.gz\n' "$2" ;;
   esac
 }
 
@@ -138,28 +157,56 @@ sha256() {
 reports_version() {
   local tool="$1" version="$2" bin="$3" out
   out="$("$bin" --version 2>&1)" || return 1
+  out="${out//$'\r'/}"
   case "$tool" in
-    shellcheck) grep -qx "version: $version" <<<"${out//$'\r'/}" ;;
-    shfmt) [ "${out//$'\r'/}" = "v$version" ] || [ "${out//$'\r'/}" = "$version" ] ;;
-    kcov) [ "${out//$'\r'/}" = "kcov $version" ] ;;
+    shellcheck) grep -qx "version: $version" <<<"$out" ;;
+    shfmt) [ "$out" = "v$version" ] || [ "$out" = "$version" ] ;;
+    kcov) [ "$out" = "kcov $version" ] ;;
   esac
 }
 
+# Put the verified asset $3 for tool $1 at version $2 in $4: from the download
+# cache when it holds the recorded bytes, else from the mirror or GitHub.
 fetch() {
-  local url="$1" file="$2" name="$3" want got
+  local tool="$1" version="$2" name="$3" file="$4" want got url cached
   want="$(checksum "$name")" ||
     die "no SHA-256 recorded for $name" \
       "fix: add '$name) echo <sha256> ;;' to checksum() in scripts/shell-tools.sh, from the release's own digest"
+  cached="$tools_dir/downloads/$name"
+  if [ -f "$cached" ] && [ "$(sha256 "$cached")" = "$want" ]; then
+    cp "$cached" "$file" || die "could not copy the cached $cached" "fix: check that $tools_dir is readable and its disk has room, then rerun 'just bootstrap'"
+    return 0
+  fi
+  url="$(release_url "$tool" "$version" "$name")"
+  [ -z "$mirror" ] || url="$mirror/$name"
   curl --fail --silent --show-error --location --retry 3 --output "$file" "$url" ||
-    die "could not download $url" "fix: check network access to github.com, then rerun 'just bootstrap'"
+    die "could not download $url" "fix: check network access to it (or unset ONEHARNESS_TOOLS_MIRROR), then rerun 'just bootstrap'"
   got="$(sha256 "$file")"
   [ "$got" = "$want" ] ||
-    die "$name has SHA-256 $got, but $want is recorded for it" \
-      "fix: do not trust the download; re-check the release's digest before changing scripts/shell-tools.sh"
+    die "$name has SHA-256 $got, but $want is recorded for it; nothing was installed" \
+      "fix: do not trust the download; re-check the release's digest (and any ONEHARNESS_TOOLS_MIRROR) before changing scripts/shell-tools.sh"
+  { mkdir -p "$tools_dir/downloads" && cp "$file" "$cached.partial.$$" && mv "$cached.partial.$$" "$cached"; } ||
+    die "could not keep $name in $tools_dir/downloads" "fix: check that $tools_dir is writable and its disk has room, then rerun 'just bootstrap'"
+}
+
+# Unpack archive $1 into directory $2.
+extract() {
+  local archive="$1" into="$2"
+  mkdir -p "$into"
+  case "$archive" in
+    *.zip)
+      if command -v unzip >/dev/null 2>&1; then
+        unzip -q "$archive" -d "$into"
+      else
+        powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$archive")' -DestinationPath '$(cygpath -w "$into")'"
+      fi
+      ;;
+    *) tar -xzf "$archive" -C "$into" ;;
+  esac
 }
 
 build_kcov() {
-  local version="$1" dest="$2" work="$3" log="$3/build.log"
+  local version="$1" dest="$2" src="$3" log="$4"
   local -a cmake=(cmake)
   if ! command -v cmake >/dev/null 2>&1; then
     command -v uv >/dev/null 2>&1 ||
@@ -167,22 +214,20 @@ build_kcov() {
         "fix: install cmake (or uv, which supplies it), then rerun 'just bootstrap'"
     cmake=(uv tool run --quiet cmake)
   fi
-  fetch "https://github.com/SimonKagstrom/kcov/archive/refs/tags/v$version.tar.gz" "$work/kcov.tar.gz" "kcov-$version.tar.gz"
-  tar -xzf "$work/kcov.tar.gz" -C "$work"
   if ! {
-    "${cmake[@]}" -S "$work/kcov-$version" -B "$work/build" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$dest" &&
-      "${cmake[@]}" --build "$work/build" --parallel 4 &&
-      "${cmake[@]}" --install "$work/build"
+    "${cmake[@]}" -S "$src" -B "$src/build" -DCMAKE_BUILD_TYPE=Release "-DCMAKE_INSTALL_PREFIX=$dest" &&
+      "${cmake[@]}" --build "$src/build" --parallel 4 &&
+      "${cmake[@]}" --install "$src/build"
   } >"$log" 2>&1; then
     tail -n 25 "$log" >&2
-    die "kcov $version did not build (the build log's tail is above)" \
+    die "kcov $version did not build (the build log's tail is above); nothing was installed" \
       "fix: install kcov's build dependencies, then rerun 'just bootstrap'; on Debian/Ubuntu:" \
       "sudo apt-get install binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev"
   fi
 }
 
 install_one() {
-  local tool="$1" version bin dest stage work url name
+  local tool="$1" version bin dest stage work name found old
   version="$(pin "$tool")"
   bin="$(bin_of "$tool" "$version")"
   if [ -x "$bin" ] && reports_version "$tool" "$version" "$bin"; then
@@ -190,43 +235,47 @@ install_one() {
   fi
   dest="$tools_dir/$tool-$version"
   stage="$dest.partial.$$"
+  old="$dest.old.$$"
   work="$(mktemp -d)"
-  scratch+=("$work" "$stage")
-  rm -rf "$stage"
-  mkdir -p "$stage/bin"
-  read -r url name < <(asset "$tool" "$version")
+  scratch+=("$work" "$stage" "$old")
+  name="$(asset_name "$tool" "$version")"
+  mkdir -p "$stage/bin" || die "could not create $stage" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
+  fetch "$tool" "$version" "$name" "$work/$name"
   case "$tool" in
     shellcheck)
-      fetch "$url" "$work/$name" "$name"
-      if [ "$os" = windows ]; then
-        if command -v unzip >/dev/null 2>&1; then
-          unzip -q "$work/$name" -d "$work/x"
-        else
-          powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$work/$name")' -DestinationPath '$(cygpath -w "$work/x")'"
-        fi
-        cp "$(find "$work/x" -name shellcheck.exe | head -n 1)" "$stage/bin/shellcheck.exe"
-      else
-        tar -xzf "$work/$name" -C "$work"
-        cp "$work/shellcheck-v$version/shellcheck" "$stage/bin/shellcheck"
-      fi
+      extract "$work/$name" "$work/x" ||
+        die "could not unpack $name (above)" "fix: delete $tools_dir/downloads/$name, then rerun 'just bootstrap'"
+      found="$(find "$work/x" -type f -name "shellcheck$exe" | head -n 1)"
+      [ -n "$found" ] || die "$name holds no shellcheck$exe to install" "fix: check the asset recorded for shellcheck in scripts/shell-tools.sh"
+      cp "$found" "$stage/bin/shellcheck$exe" ||
+        die "could not stage shellcheck from $name" "fix: check that $tools_dir is writable and its disk has room, then rerun 'just bootstrap'"
       ;;
     shfmt)
-      fetch "$url" "$work/$name" "$name"
-      cp "$work/$name" "$stage/bin/shfmt$exe"
+      cp "$work/$name" "$stage/bin/shfmt$exe" ||
+        die "could not stage shfmt from $name" "fix: check that $tools_dir is writable and its disk has room, then rerun 'just bootstrap'"
       ;;
     kcov)
-      build_kcov "$version" "$stage" "$work"
+      extract "$work/$name" "$work/x" ||
+        die "could not unpack $name (above)" "fix: delete $tools_dir/downloads/$name, then rerun 'just bootstrap'"
+      build_kcov "$version" "$stage" "$work/x/kcov-$version" "$work/build.log"
       ;;
   esac
-  chmod +x "$stage/bin/$tool$exe"
+  chmod +x "$stage/bin/$tool$exe" 2>/dev/null || true
   reports_version "$tool" "$version" "$stage/bin/$tool$exe" ||
-    die "the $tool just installed does not report version $version" \
+    die "the $tool just staged does not report version $version; nothing was installed" \
       "it says: $("$stage/bin/$tool$exe" --version 2>&1 | head -n 2 | tr '\n' ' ')" \
       "fix: check the asset recorded for $tool in scripts/shell-tools.sh"
-  # kcov's build bakes its install prefix into nothing it reads at run time,
-  # so the staged tree can move into place whole.
-  rm -rf "$dest"
-  mv "$stage" "$dest"
+  # The staged tree moves into place whole (kcov's build bakes its prefix
+  # into nothing it reads at run time). A previous install is set aside first
+  # and put back if the move fails, so a failed install never leaves less
+  # than it found.
+  if [ -e "$dest" ]; then
+    mv "$dest" "$old" || die "could not set aside the previous $dest" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
+  fi
+  if ! mv "$stage" "$dest"; then
+    [ ! -e "$old" ] || mv "$old" "$dest" || true
+    die "could not move the staged $tool $version into $dest" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
+  fi
 }
 
 resolve() {
@@ -250,7 +299,7 @@ shift
 case "$command" in
   install)
     [ "$#" -eq 0 ] || usage
-    mkdir -p "$tools_dir"
+    mkdir -p "$tools_dir" || die "could not create $tools_dir" "fix: set ONEHARNESS_TOOLS_DIR to a writable absolute directory, then rerun 'just bootstrap'"
     installed=()
     for tool in shellcheck shfmt kcov; do
       if [ "$tool" = kcov ] && [ "$os" != linux ]; then

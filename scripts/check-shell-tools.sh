@@ -5,11 +5,14 @@
 # The real pins are proven first: the shellcheck and shfmt this checkout runs
 # (and kcov, on Linux) report exactly the versions .shell-tool-versions names.
 # Then the pin reader and the installer's refusals are driven against a staged
-# copy with its own pin file and a tools directory of stand-in binaries, so no
-# case downloads anything: a pin the installer finds already in place is used
-# as it is, an absent tool is refused with the command that installs it, and a
-# malformed pin or a version with no recorded checksum stops the install before
-# any byte is fetched.
+# copy with its own pin file and a tools directory of stand-in binaries: a pin
+# the installer finds already in place is used as it is, an absent tool is
+# refused with the command that installs it, and a malformed pin or a version
+# with no recorded checksum stops the install before any byte is fetched.
+# Last, the real pins are installed cold, offline, from the release assets
+# this checkout's own install kept: extracted, verified and moved into place,
+# replacing a stale install; and a mismatched checksum, an unreachable mirror
+# and a failing kcov build each install nothing and say how to recover.
 #
 # Quiet on success, one line. On failure it names the case and what it saw.
 set -euo pipefail
@@ -117,11 +120,111 @@ pins "shellcheck 1.2.3" "shfmt 4.5.6" "kcov 78"
 status=0
 ONEHARNESS_TOOLS_DIR=relative/tools bash "$stage/scripts/shell-tools.sh" path shfmt >"$work/out" 2>&1 || status=$?
 expect 1 "is not an absolute path" "a relative ONEHARNESS_TOOLS_DIR"
+status=0
+ONEHARNESS_TOOLS_MIRROR=http://mirror.example ONEHARNESS_TOOLS_DIR="$tools" bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
+expect 1 "is not an https:// or file:/// URL" "a plain-http ONEHARNESS_TOOLS_MIRROR"
 for args in "" "exec" "path nope" "frobnicate"; do
-  # Word-split deliberately: each case is a plain argument list.
-  # shellcheck disable=SC2086
-  run $args
+  read -r -a argv <<<"$args"
+  run "${argv[@]}"
   expect 2 "usage: scripts/shell-tools.sh" "the arguments '$args'"
 done
+
+# Cold installs of the real pins, offline: the download cache is seeded with
+# the release assets this checkout's own install verified and kept, and the
+# mirror names a directory that does not exist, so any fetch fails loudly.
+# kcov's build runs through a cmake double that installs a stand-in, since
+# its real build is what `just bootstrap` proves.
+cp .shell-tool-versions "$stage/.shell-tool-versions"
+real_tools="$(dirname "$(dirname "$(dirname "$(bash scripts/shell-tools.sh path shfmt)")")")"
+assets=()
+for tool in shellcheck shfmt kcov; do
+  [ "$tool" = kcov ] && [ "$linux" = 0 ] && continue
+  name="$(find "$real_tools/downloads" -maxdepth 1 -name "$tool*$(pinned "$tool")*" ! -name '*.partial.*' 2>/dev/null | head -n 1)"
+  [ -n "$name" ] || fail "$real_tools/downloads keeps no $tool $(pinned "$tool") asset to install from; run 'just bootstrap' first"
+  assets+=("$name")
+done
+seed() {
+  rm -rf "$tools"
+  mkdir -p "$tools/downloads"
+  cp "$@" "$tools/downloads/"
+}
+doubles="$work/doubles"
+mkdir -p "$doubles"
+cat >"$doubles/cmake" <<'SH'
+#!/usr/bin/env bash
+# A cmake double: configure records the install prefix, install writes a kcov
+# that reports the pinned version there; CMAKE_DOUBLE_FAIL fails every step.
+set -euo pipefail
+if [ -n "${CMAKE_DOUBLE_FAIL:-}" ]; then
+  echo "cmake: $CMAKE_DOUBLE_FAIL" >&2
+  exit 1
+fi
+case "$1" in
+  -S)
+    mkdir -p "$4"
+    for arg in "$@"; do
+      case "$arg" in -DCMAKE_INSTALL_PREFIX=*) printf '%s\n' "${arg#*=}" >"$4/prefix" ;; esac
+    done
+    ;;
+  --build) ;;
+  --install)
+    prefix="$(cat "$2/prefix")"
+    mkdir -p "$prefix/bin"
+    printf '#!/usr/bin/env bash\necho "kcov %s"\n' "$CMAKE_DOUBLE_VERSION" >"$prefix/bin/kcov"
+    ;;
+esac
+SH
+chmod +x "$doubles/cmake"
+cold() {
+  status=0
+  PATH="$doubles:$PATH" CMAKE_DOUBLE_VERSION="$(pinned kcov)" ONEHARNESS_TOOLS_MIRROR="file://$work/no-mirror" \
+  ONEHARNESS_TOOLS_DIR="$tools" bash "$stage/scripts/shell-tools.sh" "$@" >"$work/out" 2>&1 || status=$?
+}
+
+seed "${assets[@]}"
+# A previous install that no longer reports the pin is replaced, not kept.
+stand_in shfmt "$(pinned shfmt)" "v0.0.0"
+cold install
+expect 0 "shell-tools: shellcheck $(pinned shellcheck), shfmt $(pinned shfmt)" "a cold install from the download cache"
+for tool in shellcheck shfmt; do
+  out="$("$tools/$tool-$(pinned "$tool")/bin/$tool$exe" --version)"
+  grep -Fq "$(pinned "$tool")" <<<"$out" || fail "the cold-installed $tool does not report $(pinned "$tool")" "$out"
+done
+[ "$linux" = 0 ] || [ "$("$tools/kcov-$(pinned kcov)/bin/kcov" --version)" = "kcov $(pinned kcov)" ] ||
+  fail "the cold install did not put the built kcov in place" "$(ls -R "$tools")"
+leftovers="$(find "$tools" -maxdepth 1 \( -name '*.partial.*' -o -name '*.old.*' \))"
+[ -z "$leftovers" ] || fail "a cold install left staging behind" "$leftovers"
+
+# Bytes that do not match the recorded checksum are refused and kept nowhere.
+rm -rf "$tools"
+stand_in shellcheck "$(pinned shellcheck)" "version: $(pinned shellcheck)"
+mkdir -p "$work/mirror"
+shfmt_asset="$(basename "$(printf '%s\n' "${assets[@]}" | grep '/shfmt')")"
+printf 'not shfmt\n' >"$work/mirror/$shfmt_asset"
+status=0
+ONEHARNESS_TOOLS_MIRROR="file://$work/mirror" ONEHARNESS_TOOLS_DIR="$tools" \
+  bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
+expect 1 "$shfmt_asset has SHA-256" "a mirrored asset with the wrong bytes"
+[ ! -e "$tools/shfmt-$(pinned shfmt)" ] && [ ! -e "$tools/downloads/$shfmt_asset" ] ||
+  fail "an asset failing its checksum was installed or kept" "$(ls -R "$tools")"
+
+# A download that fails names the URL and the fix.
+cold install
+expect 1 "could not download file://$work/no-mirror/$shfmt_asset" "an unreachable mirror"
+
+if [ "$linux" = 1 ]; then
+  # A kcov build that fails shows the build's own tail and the dependencies to
+  # install, and installs nothing.
+  seed "${assets[@]}"
+  stand_in shellcheck "$(pinned shellcheck)" "version: $(pinned shellcheck)"
+  stand_in shfmt "$(pinned shfmt)" "v$(pinned shfmt)"
+  status=0
+  PATH="$doubles:$PATH" CMAKE_DOUBLE_FAIL="no libdw found" ONEHARNESS_TOOLS_MIRROR="file://$work/no-mirror" \
+    ONEHARNESS_TOOLS_DIR="$tools" bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
+  expect 1 "kcov $(pinned kcov) did not build" "a failing kcov build"
+  grep -Fq "cmake: no libdw found" "$work/out" || fail "a failing kcov build hid the build's own error" "$(cat "$work/out")"
+  grep -Fq "sudo apt-get install binutils-dev" "$work/out" || fail "a failing kcov build named no dependencies to install" "$(cat "$work/out")"
+  [ ! -e "$tools/kcov-$(pinned kcov)" ] || fail "a failing kcov build installed a kcov" "$(ls -R "$tools")"
+fi
 
 echo "check-shell-tools: ok"

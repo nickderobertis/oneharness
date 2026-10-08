@@ -100,9 +100,9 @@ kcov="$(bash scripts/shell-tools.sh path kcov)"
 reports=()
 missing=()
 while IFS=$'\t' read -r project args; do
-  # Word-split deliberately: a step's arguments are plain words.
-  # shellcheck disable=SC2086
-  id="$(bash scripts/shell-test.sh --id $args)"
+  # A step's arguments are plain words, as the project definition spells them.
+  read -r -a argv <<<"$args"
+  id="$(bash scripts/shell-test.sh --id "${argv[@]}")"
   dir="target/coverage/shell/$project/$id"
   if [ -n "$(find "$dir" -name coverage.json -print -quit 2>/dev/null)" ]; then
     reports+=("$dir")
@@ -117,11 +117,13 @@ done <<<"$steps"
 printf '#!/usr/bin/env bash\ntrue\n' >"$work/noop.sh"
 include="$root/scripts,$root/.githooks"
 "$kcov" "--bash-parse-files-in-dir=$include" "--include-path=$include" "$work/baseline" "$work/noop.sh" >/dev/null ||
-  fail "kcov could not parse the scripts under scripts/ and .githooks/ for the baseline (above)"
+  fail "kcov could not parse the scripts under scripts/ and .githooks/ for the baseline (above)" \
+    "fix: run 'bash -n' on the script kcov names to find its syntax error; if none, reinstall kcov with 'just bootstrap'"
 merged="target/coverage/shell/merged"
 rm -rf "$merged"
 "$kcov" --merge "$merged" "$work/baseline" "${reports[@]}" >/dev/null ||
-  fail "kcov could not merge the ${#reports[@]} shell test reports (above)"
+  fail "kcov could not merge the ${#reports[@]} shell test reports (above)" \
+    "fix: delete target/coverage/shell and rerun through Nx with --skip-nx-cache, which writes every report afresh"
 
 summary="target/coverage/shell-coverage.txt"
 # The single-quoted program is JavaScript.
@@ -130,16 +132,24 @@ read -r rate covered total < <(node -e '
   const fs = require("fs");
   const [report, summary, root] = process.argv.slice(1);
   const merged = JSON.parse(fs.readFileSync(report, "utf8"));
+  const count = (value) => (/^[0-9]+$/u.test(String(value)) ? Number(value) : NaN);
   const rows = merged.files
-    .map((f) => ({ file: f.file.startsWith(root + "/") ? f.file.slice(root.length + 1) : f.file, covered: Number(f.covered_lines), total: Number(f.total_lines) }))
+    .map((f) => ({ file: f.file.startsWith(root + "/") ? f.file.slice(root.length + 1) : f.file, covered: count(f.covered_lines), total: count(f.total_lines) }))
     .sort((a, b) => a.covered / (a.total || 1) - b.covered / (b.total || 1) || a.file.localeCompare(b.file));
+  const bad = rows.filter((r) => !Number.isSafeInteger(r.covered) || !Number.isSafeInteger(r.total) || r.covered > r.total);
+  if (!Array.isArray(merged.files) || rows.length === 0 || bad.length > 0) {
+    console.error(`the merged report lists ${rows.length} scripts, with unreadable line counts for: ${bad.map((r) => r.file).join(", ") || "(none)"}`);
+    process.exit(1);
+  }
   const lines = rows.map((r) => `${(100 * r.covered / (r.total || 1)).toFixed(2).padStart(7)}%  ${String(r.covered).padStart(5)}/${String(r.total).padEnd(5)}  ${r.file}`);
   const covered = rows.reduce((n, r) => n + r.covered, 0);
   const total = rows.reduce((n, r) => n + r.total, 0);
   const rate = (100 * covered / (total || 1)).toFixed(2);
   fs.writeFileSync(summary, `shell line coverage: ${rate}% (${covered}/${total} lines, ${rows.length} scripts)\n\n${lines.join("\n")}\n`);
   console.log(`${rate} ${covered} ${total}`);
-' "$merged/kcov-merged/coverage.json" "$summary" "$root") || fail "could not read the merged report $merged/kcov-merged/coverage.json"
+' "$merged/kcov-merged/coverage.json" "$summary" "$root") ||
+  fail "could not read line counts from the merged report $merged/kcov-merged/coverage.json (above)" \
+    "fix: delete target/coverage/shell and rerun through Nx with --skip-nx-cache; if it recurs, reinstall kcov with 'just bootstrap'"
 
 if awk -v r="$rate" -v f="$floor" 'BEGIN { exit !(r < f) }'; then
   echo "shell-coverage: ${rate}% of shell lines covered ($covered/$total), below the ${floor}% floor" >&2

@@ -41,6 +41,7 @@ case "$mode" in format | format-write | lint) ;; *) usage ;; esac
 for dir in "$@"; do
   [ -d "$dir" ] || {
     echo "shell-check: '$dir' is not a directory under the repository root" >&2
+    echo "  fix: pass the owning project's directory relative to the checkout (e.g. 'scripts' or '.githooks'), as its project.json format and lint targets do" >&2
     exit 2
   }
 done

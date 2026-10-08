@@ -17,7 +17,8 @@
 # happens. This asserts it hermetically: in a fresh checkout `just check`
 # installs the locked workspace before Nx runs, a second run does not install
 # again, a changed lockfile does, the install is quiet on success and keeps
-# bun's own reason on failure, and `bootstrap` reaches the same install. Only
+# bun's own reason on failure, `bootstrap` reaches the same install, and the
+# wrapper keeps Nx's stdout and exit status while surfacing failed-task logs. Only
 # bun (and the Nx it would install) are stubbed; the real justfile, the real
 # scripts/nx and the real node are what run.
 set -euo pipefail
@@ -39,7 +40,8 @@ fail() {
     echo "check-js-install: $1" >&2
     echo "  Restore the contract: scripts/nx installs the root Bun workspace ('$install_line')" >&2
     echo "  before Nx runs whenever the install is missing or older than bun.lock, quiet on" >&2
-    echo "  success and loud on failure, and bootstrap reaches 'just js-install'." >&2
+    echo "  success and loud on failure, and bootstrap reaches 'just js-install'; and it" >&2
+    echo "  keeps Nx's stdout and exit status its own while replaying failed-task logs to stderr." >&2
     exit 1
 }
 
@@ -137,6 +139,41 @@ run_recipe "$tmp/bootstrap.calls" bootstrap
     fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
 [[ -n "$(first_call "$tmp/bootstrap.calls" 'uv sync --project python --frozen --no-install-workspace --quiet')" ]] ||
     fail "bootstrap no longer syncs the uv workspace; a clean clone would have no Python SDK environment"
+
+# The wrapper's own streams: Nx's stdout (`show projects --json`, say) reaches
+# the caller untouched while its stderr stays stderr, and a failed run keeps
+# Nx's exit status and replays each advertised task log — or, for one this
+# machine cannot read, names it and how to see that task's output.
+cat >"$fixture/node_modules/nx/dist/bin/nx.js" <<'STUB'
+const fail = process.env.NX_STUB_FAIL;
+process.stdout.write('["oneharness"]\n');
+process.stderr.write("nx-stub: diagnostics\n");
+if (fail) {
+  process.stderr.write(`  full log: ${fail}/present.log\n  full log: ${fail}/absent.log\n`);
+  process.exit(3);
+}
+STUB
+run_nx() {
+    local status=0
+    CALL_LOG="$tmp/nx.calls" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
+        "$fixture/scripts/nx" show projects --json >"$tmp/nx.out" 2>"$tmp/nx.err" || status=$?
+    echo "$status"
+}
+[[ "$(run_nx)" -eq 0 ]] || { cat "$tmp/nx.err" >&2; fail "scripts/nx failed a passing Nx run"; }
+[[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] ||
+    fail "scripts/nx changed Nx's stdout (got: $(cat "$tmp/nx.out")); machine-readable output must pass through untouched"
+grep -qxF 'nx-stub: diagnostics' "$tmp/nx.err" || fail "scripts/nx lost Nx's stderr"
+mkdir -p "$tmp/task-logs"
+echo 'error[E0425]: the failing task output' >"$tmp/task-logs/present.log"
+export NX_STUB_FAIL="$tmp/task-logs"
+nx_status="$(run_nx)"
+unset NX_STUB_FAIL
+[[ "$nx_status" -eq 3 ]] || fail "scripts/nx turned Nx's exit status 3 into $nx_status"
+[[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed run's task-log replay leaked onto stdout"
+grep -qxF 'error[E0425]: the failing task output' "$tmp/nx.err" ||
+    fail "a failed run did not replay the advertised task log to stderr"
+grep -qF "the task log $tmp/task-logs/absent.log is not readable on this machine; re-run the failed task" "$tmp/nx.err" ||
+    fail "an advertised task log this machine cannot read was skipped silently"
 
 # A bun that fails the way a stale lockfile really does: the reason survives,
 # Nx never runs, and the message names a next action.

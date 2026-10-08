@@ -54,7 +54,10 @@ status=0
 { node "$nx_bin" "$@" 2>&1 1>&3 3>&- | tee "$log" >&2 3>&-; } 3>&1 || status=$?
 if [ "$status" -ne 0 ]; then
   sed -n 's/^[[:space:]]*full log: //p' "$log" | while IFS= read -r task_log; do
-    [ -f "$task_log" ] || continue
+    if [ ! -f "$task_log" ]; then
+      printf '\nnx: the task log %s is not readable on this machine; re-run the failed task above alone (scripts/nx run <project>:<target>) to see its output.\n' "$task_log" >&2
+      continue
+    fi
     printf '\n----- %s -----\n' "$task_log" >&2
     cat "$task_log" >&2
   done

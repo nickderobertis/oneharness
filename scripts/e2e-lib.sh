@@ -1,7 +1,7 @@
 # shellcheck shell=bash
 # Shared helpers for oneharness's live e2e checks (scripts/e2e-<harness>.sh).
 #
-# These are the opt-in, network-bound counterpart to the hermetic `tests/cli.rs`
+# These are the opt-in, network-bound counterpart to the hermetic `crates/oneharness-e2e/tests/cli.rs`
 # suite: instead of a mock fixture, each script drives a *real* harness CLI
 # through the real `oneharness` binary and asserts on the JSON report — proving
 # the adapter's argv actually works end to end against the live tool, the

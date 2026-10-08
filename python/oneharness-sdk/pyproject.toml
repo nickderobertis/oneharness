@@ -27,7 +27,18 @@ classifiers = [
 ]
 dependencies = [
     "jsonschema>=4.18,<5",
+    # llmlint: ignore[projects_stay_in_one_uv_workspace] A release placeholder, not a sibling link: scripts/python-sdk-pack.mjs stamps it to the exact `oneharness-cli` version the release publishes beside this SDK. A workspace source would make every sync build the Rust binary as a wheel; the workspace root leaves it out of the dev resolve instead (python/pyproject.toml).
     "oneharness-cli==0.0.0.dev0",
+]
+
+# The SDK's own toolchain, resolved into the workspace's one `uv.lock`
+# (`python/uv.lock`) for every Python the package supports, 3.9 included.
+[dependency-groups]
+dev = [
+    "coverage==7.10.7",
+    "mypy==1.19.1",
+    "ruff==0.14.13",
+    "types-jsonschema==4.25.1.20251009",
 ]
 
 [project.urls]

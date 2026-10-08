@@ -132,8 +132,10 @@ test("schema generation builds into the clone-root target directory", () => {
 		rmSync(builds.built, { force: true });
 		rmSync(builds.legacy, { force: true });
 		const run = spawnSync(command, args, { cwd, env, encoding: "utf8" });
-		expect(run.status).toBe(0);
-		expect(run.stderr).toBe("");
+		// Together, so a failure names the caller and carries what it printed.
+		expect({ caller: args[0], status: run.status, stderr: run.stderr }).toEqual(
+			{ caller: args[0], status: 0, stderr: "" },
+		);
 		expect(existsSync(builds.built)).toBe(true);
 		expect(existsSync(builds.legacy)).toBe(false);
 	}
@@ -454,11 +456,19 @@ test("generator check reports a missing generated contract as stale", () => {
 		["checkout-index", `--prefix=${checkout.replaceAll("\\", "/")}/`, "-a"],
 		{ cwd: root },
 	);
-	symlinkSync(
-		resolve(root, sdkDirectory, "node_modules"),
-		resolve(checkout, sdkDirectory, "node_modules"),
-		process.platform === "win32" ? "junction" : "dir",
-	);
+	// The root Bun workspace installs isolated: each entry in the SDK's
+	// `node_modules` is a relative link into the root `node_modules/.bun` store.
+	// Linking the SDK's directory alone resolves on Linux, which follows a
+	// relative link from where it physically lives, but not on Windows, which
+	// resolves it from the junctioned path — `<checkout>/node_modules/.bun`. So
+	// the copy gets both, laid out as the workspace it was copied from.
+	for (const modules of ["node_modules", `${sdkDirectory}/node_modules`]) {
+		symlinkSync(
+			resolve(root, modules),
+			resolve(checkout, modules),
+			process.platform === "win32" ? "junction" : "dir",
+		);
+	}
 	// The copy's own `.cargo/config.toml` would build it into `<checkout>/target`
 	// from cold — every run a full compile of the dependency graph, which overran
 	// this test's budget on a loaded host. So the run is pointed at this clone's
@@ -487,6 +497,41 @@ test("generator check reports a missing generated contract as stale", () => {
 	expect(existsSync(missing)).toBe(false);
 	// Still a real generator invocation, so it builds the workspace crates; the
 	// budget covers that on a busy CI host, not a cold compile of everything.
+}, 120_000);
+
+test("the parity audit reads the gate composition from a Windows checkout", () => {
+	// Git rewrites every unpinned text file to CRLF on a Windows checkout
+	// (core.autocrlf=true), the justfile among them, and the audit reads the
+	// `check` recipe's `-t <targets>` list out of it. Check the tree out under
+	// those rules here, so the one platform whose checkout this is need not be
+	// the only place a line-ending assumption can fail.
+	const checkout = scratchSync("crlf-parity");
+	execFileSync(
+		"git",
+		[
+			"-c",
+			"core.autocrlf=true",
+			"-c",
+			"core.eol=crlf",
+			"checkout-index",
+			`--prefix=${checkout.replaceAll("\\", "/")}/`,
+			"-a",
+		],
+		{ cwd: root },
+	);
+	expect(readFileSync(resolve(checkout, "justfile"), "utf8")).toContain(
+		'check tier="affected":\r\n',
+	);
+	// Warm builds from this clone's own target directory, as the test above does.
+	const result = spawnSync("node", ["scripts/parity-audit.mjs", "--check"], {
+		cwd: checkout,
+		env: { ...process.env, CARGO_TARGET_DIR: resolve(root, "target") },
+		encoding: "utf8",
+	});
+	expect({ status: result.status, stderr: result.stderr }).toEqual({
+		status: 0,
+		stderr: "",
+	});
 }, 120_000);
 
 test("SDK packing reports a missing Cargo version without a stack trace", () => {

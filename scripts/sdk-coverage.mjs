@@ -16,7 +16,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { schemaBundle } from "./sdk-generator.mjs";
+import { schemaBundle } from "../crates/sdk-contract/sdk-generator.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 

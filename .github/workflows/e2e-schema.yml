@@ -5,7 +5,7 @@ name: E2E (Structured output)
 # round-trip (scripts/e2e-schema.sh). This is the per-FEATURE counterpart to the
 # per-harness e2e workflows — its job is to catch drift in Claude Code's native
 # `--json-schema` flag and `structured_output` field, which the hermetic
-# tests/cli.rs suite can only mock. Auth reuses the Claude secret, so no new one.
+# crates/oneharness-e2e/tests/cli.rs suite can only mock. Auth reuses the Claude secret, so no new one.
 #
 # Security: same posture as the per-harness workflows — gated to the canonical
 # repo and never run for a fork PR head, so a fork PR can edit this file without
@@ -16,6 +16,10 @@ on:
     paths:
       - src/**
       - crates/**
+      - "!crates/oneharness-e2e/**"
+      - "!crates/oneharness-mock-harness/**"
+      - "!crates/sdk-contract/**"
+      - "!crates/sdk-conformance/**"
       - Cargo.toml
       - Cargo.lock
       - rust-toolchain.toml

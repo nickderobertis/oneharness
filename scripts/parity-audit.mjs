@@ -16,7 +16,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { schemaBundle } from "./sdk-generator.mjs";
+import { schemaBundle } from "../crates/sdk-contract/sdk-generator.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const doc = resolve(root, "docs/sdk-parity.md");
@@ -242,65 +242,117 @@ function outputTable(declared, bundles) {
 }
 
 /**
- * The recipes that must carry the parity gates, and what each one holds.
+ * The project targets that must carry the parity gates, and what each holds.
  *
- * This is the question the audit asks, not the answer: the justfile's `check`
- * recipe is the one source for what a single gate run composes, and the section
- * below is read from it. A recipe renamed, or dropped from `check`, fails the
- * regeneration rather than leaving a document — or a README pointing at it —
- * claiming a gate that no longer runs.
+ * This is the question the audit asks, not the answer: the project definitions
+ * say what each target runs, and the justfile's `check` recipe says which
+ * targets a gate run composes, so the section below is read from both. A target
+ * renamed, dropped from the gate, or no longer running the script it is listed
+ * for fails the regeneration rather than leaving a document — or a README
+ * pointing at it — claiming a gate that no longer runs.
  */
-const PARITY_RECIPES = {
-	test: "`tests/capability.rs` and `tests/library_surface.rs`",
-	"lint-workflows":
-		"`scripts/check-sdk-coverage.sh` and `scripts/check-parity-audit.sh`",
-	"sdk-check":
-		"the TypeScript client's generated-contract drift check, lint, types, and packaged-CLI e2e",
-	"python-sdk-check":
-		"the same for the Python client, on the oldest supported interpreter",
-};
+const PARITY_TARGETS = [
+	{
+		project: "oneharness-integration",
+		file: "tests/project.json",
+		targets: ["test"],
+		runs: ['scripts/cargo-test.sh oneharness --with oneharness-mock-harness --features oneharness/mock-harness --filter "kind(test)"'],
+		holds: "`tests/capability.rs` and `tests/library_surface.rs`",
+	},
+	{
+		project: "sdk-conformance",
+		file: "crates/sdk-conformance/project.json",
+		targets: ["test"],
+		runs: ["scripts/check-sdk-coverage.sh", "scripts/check-parity-audit.sh"],
+		holds:
+			"`tests/sdk_conformance.rs`, `scripts/check-sdk-coverage.sh` and `scripts/check-parity-audit.sh`",
+	},
+	{
+		project: "node-sdk",
+		file: "npm/oneharness-sdk/project.json",
+		targets: ["lint", "typecheck", "test", "e2e"],
+		runs: ["generate:check"],
+		holds:
+			"the TypeScript client's generated-contract drift check, lint, types, unit suite and packaged-CLI e2e (`just sdk-check`)",
+	},
+	{
+		project: "python-sdk",
+		file: "python/oneharness-sdk/project.json",
+		targets: ["lint", "typecheck", "test", "e2e"],
+		runs: ["generate.py --check"],
+		holds:
+			"the same for the Python client, on the oldest supported interpreter (`just python-sdk-check`)",
+	},
+];
 
-/** The recipes the justfile's own `check` runs, in its order. */
-function checkComposition() {
-	const justfile = readFileSync(resolve(root, "justfile"), "utf8");
-	const recipe = justfile.match(/^check:(?<dependencies>[^\n]*)$/mu);
-	if (!recipe) {
-		console.error(
-			"justfile has no `check:` recipe to read the gate composition from; restore it and rerun just parity-audit",
+function refuse(message) {
+	console.error(`${message}; then rerun just parity-audit`);
+	process.exit(1);
+}
+
+/** The targets a gate run composes, as the justfile's `check` recipe names them. */
+function checkTargets() {
+	// A Windows checkout (core.autocrlf=true) gives the justfile CRLF endings,
+	// which the line-anchored recipe match below must read the same as LF.
+	const justfile = readFileSync(resolve(root, "justfile"), "utf8").replaceAll("\r\n", "\n");
+	const recipe = justfile.match(/^check tier="affected":\n(?<body>(?: {4}.*\n|\n)+)/mu);
+	const targets = recipe?.groups.body.match(/scripts\/nx affected [^\n]*-t (?<list>[a-z0-9,-]+)/u);
+	if (!targets) {
+		refuse(
+			"the justfile's `check` recipe no longer hands `nx affected` a `-t <targets>` list to read the gate composition from; restore it",
 		);
-		process.exit(1);
 	}
-	return recipe.groups.dependencies.trim().split(/\s+/u).filter(Boolean);
+	return targets.groups.list.split(",").filter(Boolean);
 }
 
 function enforcementSection() {
-	const composition = checkComposition();
-	const missing = Object.keys(PARITY_RECIPES).filter(
-		(recipe) => !composition.includes(recipe),
-	);
-	if (missing.length > 0) {
-		console.error(
-			`the justfile's \`check\` recipe no longer runs ${missing.join(", ")}; either restore the dependency or drop it from PARITY_RECIPES in scripts/parity-audit.mjs, then rerun just parity-audit`,
-		);
-		process.exit(1);
+	const composition = checkTargets();
+	for (const { project, file, targets, runs } of PARITY_TARGETS) {
+		let definition;
+		try {
+			definition = JSON.parse(readFileSync(resolve(root, file), "utf8"));
+		} catch (error) {
+			refuse(`cannot read ${file} (${error.message}); restore the ${project} project's definition`);
+		}
+		if (definition.name !== project) {
+			refuse(`${file} defines \`${definition.name}\`, not \`${project}\`; update PARITY_TARGETS in scripts/parity-audit.mjs`);
+		}
+		const commands = [];
+		for (const target of targets) {
+			if (!(target in (definition.targets ?? {}))) {
+				refuse(`${project} has no \`${target}\` target; restore it, or drop it from PARITY_TARGETS in scripts/parity-audit.mjs`);
+			}
+			if (!composition.includes(target)) {
+				refuse(`the justfile's \`check\` recipe no longer runs \`${target}\`, so ${project}'s parity gate would never run; restore it`);
+			}
+			const options = definition.targets[target].options ?? {};
+			commands.push(...(options.commands ?? []), options.command ?? "");
+		}
+		for (const needle of runs) {
+			if (!commands.some((command) => command.includes(needle))) {
+				refuse(`${project}'s ${targets.join("/")} no longer runs \`${needle}\`; restore it, or update PARITY_TARGETS in scripts/parity-audit.mjs`);
+			}
+		}
 	}
 	return [
 		"### Which gate runs them",
 		"",
-		"Read from the justfile's own `check` recipe, so this is the composition a",
-		"run actually has rather than a second copy of it. Each recipe below is",
-		"runnable alone while iterating; `just check` runs every one of them, along",
-		`with ${composition.filter((recipe) => !(recipe in PARITY_RECIPES)).map((recipe) => `\`${recipe}\``).join(", ")}.`,
+		"Read from the project definitions and the justfile's `check` recipe, so",
+		"this is the composition a run actually has rather than a second copy of it.",
+		`\`just check\` runs those targets (${composition.map((target) => `\`${target}\``).join(", ")})`,
+		"on every project a change can reach, and `just check all` on every project;",
+		"each row below also runs alone with `bash scripts/nx run-many -p <project> -t <targets>`.",
 		"",
-		"| Recipe | What it holds in place |",
-		"| --- | --- |",
-		...Object.entries(PARITY_RECIPES).map(
-			([recipe, holds]) => `| \`just ${recipe}\` | ${holds} |`,
+		"| Project | Targets | What it holds in place |",
+		"| --- | --- | --- |",
+		...PARITY_TARGETS.map(
+			({ project, targets, holds }) =>
+				`| \`${project}\` | ${targets.map((target) => `\`${target}\``).join(", ")} | ${holds} |`,
 		),
 		"",
 		"`just parity-audit` regenerates this document; the `check-parity-audit.sh`",
-		"run inside `lint-workflows` is what fails when the checked-in copy no longer",
-		"matches either source.",
+		"run inside `sdk-conformance`'s `test` is what fails when the checked-in copy",
+		"no longer matches either source.",
 		"",
 	].join("\n");
 }
@@ -331,8 +383,8 @@ const generated = [
 	"<!-- Generated by `just parity-audit`. The capability, flag and output rows come",
 	"     from `domain::capability::CAPABILITIES` and the schema bundle; the",
 	"     Python/TypeScript columns are read from each client's own source and",
-	"     checked-in schemas; the gate table is read from the justfile's `check`",
-	"     recipe. Edit those, not this block. -->",
+	"     checked-in schemas; the gate table is read from the project definitions",
+	"     and the justfile's `check` recipe. Edit those, not this block. -->",
 	"",
 	enforcementSection(),
 	capabilityTable(declared, ts, py),

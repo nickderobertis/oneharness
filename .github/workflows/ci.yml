@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The way to sweep one commit on demand — the release workflow's manual
+  # fallback reads such a run's verdict like a release pull request's.
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: "Gate tier: 'affected' (what a pull request runs) or 'all' (the full sweep)"
+        type: choice
+        default: all
+        options:
+          - all
+          - affected
 
 # Least privilege: CI only needs to read the repo.
 permissions:
@@ -25,7 +36,11 @@ jobs:
         run: scripts/check-pr-title.sh
 
   # Prove the artifact the way a future maintainer meets it: clean checkout ->
-  # bootstrap -> the full gate, on every supported platform.
+  # bootstrap -> the gate, on every supported platform. Which tier is the
+  # event's (scripts/ci-gate-tier.sh): release-plz's release pull request runs
+  # the full sweep, which the release workflow later reads instead of sweeping
+  # the tagged tree again; every other pull request and every push to main runs
+  # the affected tier against an explicitly derived base.
   check:
     strategy:
       fail-fast: false
@@ -34,6 +49,10 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # The affected tier diffs against the merge base, which a depth-1
+          # checkout does not carry.
+          fetch-depth: 0
       # Reads the pinned channel + components from rust-toolchain.toml.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
@@ -46,8 +65,27 @@ jobs:
           tool: just,nextest,cargo-llvm-cov,shellcheck
       - name: Bootstrap
         run: just bootstrap
-      - name: Full gate (fmt, clippy, tests, coverage, build, smoke)
+      - name: Select the gate tier
+        id: tier
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          DISPATCH_TIER: ${{ inputs.tier }}
+        run: bash scripts/ci-gate-tier.sh
+      # Exactly one of the next two runs. scripts/ci-verdict.sh reads the second
+      # one's conclusion BY NAME to decide whether a release may ship without
+      # sweeping again, so its name is a contract (scripts/check-ci-gate-tier.sh).
+      - name: Affected tier (just check)
+        if: steps.tier.outputs.tier == 'affected'
+        env:
+          NX_BASE: ${{ steps.tier.outputs.base }}
         run: just check
+      - name: Full sweep (just check all)
+        if: steps.tier.outputs.tier == 'all'
+        run: just check all
 
   # Package both crates exactly as Cargo will verify them at publish time. On its
   # own job for the same reason `deny` is — it needs the network-fetched
@@ -104,10 +142,16 @@ jobs:
       - run: just semver-check
 
   # Advisory + license audit, on its own because it needs a network advisory DB.
+  # `just deps-check` runs the repo-level `workspace:supply-chain` target, so
+  # this job carries Nx's toolchain (Node, and bun for the locked install).
   deny:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
       - uses: taiki-e/install-action@v2
         with:
           tool: just,cargo-deny,cargo-machete

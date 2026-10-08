@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# llmlint: ignore-file[new_code_lands_in_a_project] The rule presumes an Nx project graph; this repository has none by a recorded decision (`AGENTS.md`: root `just` delegates to Cargo/Bun without Nx because the two-package graph is static), so no project definition can cover this file. What runs it is `just lint-workflows`, in `check` and CI.
 # Exercise the release verifier through stand-in registry clients and installed
 # packages, including delayed installs and failures from its smoke commands.
 set -euo pipefail

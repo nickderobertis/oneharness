@@ -47,4 +47,52 @@ fi
 grep -q "must be in the" "$work/out" ||
   fail "the gate refused an untracked path without saying what to do about it"
 
-echo "check-lf-contracts-test: the LF gate goes red for a CRLF contract and an unreadable one"
+# The shell-script half: the real tree passes, and a repository whose only pin
+# is `*.sh` goes red on an extensionless bash script — like the `scripts/nx`
+# that failed SC1017 on every line of a Windows checkout — and green once that
+# script is pinned by path.
+if ! bash scripts/check-lf-contracts.sh --shell >"$work/out" 2>&1; then
+  fail "every tracked shell script should pass the LF gate's --shell check"
+fi
+fixture="$work/repo"
+mkdir -p "$fixture/scripts"
+cp scripts/check-lf-contracts.sh "$fixture/scripts/"
+printf '#!/usr/bin/env bash\necho ok\n' >"$fixture/scripts/tool"
+printf '*.sh text eol=lf\n' >"$fixture/.gitattributes"
+git -C "$fixture" init -q
+git -C "$fixture" add -A
+if bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; then
+  fail "an extensionless bash script pinned by nothing should have failed the --shell check"
+fi
+grep -qx "  scripts/tool" "$work/out" ||
+  fail "the --shell check failed but did not name the unpinned extensionless script"
+grep -q "rerun 'bash scripts/check-lf-contracts.sh --shell'" "$work/out" ||
+  fail "the --shell check named no rerun of itself"
+printf '/scripts/tool text eol=lf\n' >>"$fixture/.gitattributes"
+git -C "$fixture" add -A
+if ! bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; then
+  fail "a pinned extensionless bash script should pass the --shell check"
+fi
+
+# The --shell enumeration fails loudly, with its next action, rather than
+# checking a shorter list: outside a git checkout git cannot list the scripts,
+# and a tracked script that cannot be read is named.
+rm -rf "$fixture/.git"
+if bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; then
+  fail "the --shell check passed where git could not list the tracked scripts"
+fi
+grep -qF "git could not list the tracked shell scripts" "$work/out" ||
+  fail "a failed listing of the tracked scripts was not named"
+git -C "$fixture" init -q
+git -C "$fixture" add -A
+chmod 000 "$fixture/scripts/tool"
+if [ ! -r "$fixture/scripts/tool" ]; then
+  if bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; then
+    fail "the --shell check passed over a tracked script it could not read"
+  fi
+  grep -qF "could not read the tracked file scripts/tool" "$work/out" ||
+    fail "an unreadable tracked script was not named"
+fi
+chmod 644 "$fixture/scripts/tool"
+
+echo "check-lf-contracts-test: the LF gate goes red for a CRLF contract, an unreadable one and an unpinned shell script"

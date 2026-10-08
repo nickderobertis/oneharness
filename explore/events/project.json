@@ -1,0 +1,31 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "explore-events",
+  "projectType": "library",
+  "tags": [
+    "type:explore",
+    "lang:bash"
+  ],
+  "implicitDependencies": [
+    "oneharness",
+    "e2e-support"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/explore-events.sh"
+    ]
+  },
+  "targets": {
+    "explore": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/explore-events.sh"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    }
+  }
+}

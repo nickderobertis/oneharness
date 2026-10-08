@@ -31,19 +31,40 @@ const ALL_IDS: &[&str] = &[
     "cursor",
 ];
 
-fn oneharness_bin() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_oneharness"))
+/// The repository checkout this crate sits in (`crates/oneharness-e2e`), which
+/// is where the README, the docs and the shared `tests/fixtures` corpus live.
+fn repo_root() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
 }
 
-/// The mock harness is built beside the main binary when the `mock-harness`
-/// feature is enabled (which `just test` / `just check` and CI do).
-fn mock_bin() -> PathBuf {
-    let mut path = oneharness_bin();
-    path.set_file_name(format!(
-        "oneharness-mock-harness{}",
-        std::env::consts::EXE_SUFFIX
-    ));
+/// A binary of another workspace crate, read from the profile directory this
+/// test executable was built into (`<target>/<profile>/deps/cli-*`). Cargo sets
+/// `CARGO_BIN_EXE_*` only for a package's own binaries, and this crate has none:
+/// its `test` target builds `oneharness` and `oneharness-mock-harness` in the
+/// same cargo invocation, so they sit beside each other one level up.
+fn workspace_bin(name: &str) -> PathBuf {
+    let test_exe = std::env::current_exe().expect("test executable path");
+    let profile_dir = test_exe
+        .parent()
+        .and_then(Path::parent)
+        .expect("test executable under <target>/<profile>/deps");
+    let path = profile_dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        path.is_file(),
+        "{} is not built; run this suite through its Nx target (`just e2e`), which builds it alongside",
+        path.display()
+    );
     path
+}
+
+fn oneharness_bin() -> PathBuf {
+    workspace_bin("oneharness")
+}
+
+/// The fixture binary of the `oneharness-mock-harness` crate, built beside the
+/// main binary by this suite's `test` target.
+fn mock_bin() -> PathBuf {
+    workspace_bin("oneharness-mock-harness")
 }
 
 /// Drive the binary as this suite's JSON consumer does: `args` verbatim, plus
@@ -352,7 +373,7 @@ fn json_stdout(output: &Output) -> Value {
 /// whatever the caller wrote — and on macOS those two differ for every temp
 /// path, because `/tmp` is a symlink to `/private/tmp`. Comparing them raw
 /// passes on Linux and then cancels a macOS job 20 minutes later.
-/// `just test-symlinked-tmp` replays these journeys under that spelling on
+/// This crate's `test` target replays these journeys under that spelling on
 /// Linux, and resolving both sides is what satisfies it.
 ///
 /// Both sides, not just the expected one: canonicalizing only the path the test
@@ -422,7 +443,7 @@ fn assert_native_descendant_stopped(path: &std::path::Path) {
 fn mock_fixture_is_built() {
     assert!(
         mock_bin().exists(),
-        "mock harness not found at {}; run tests with `--features mock-harness` (e.g. `just test`)",
+        "mock harness not found at {}; run this suite through its Nx target (`just e2e`), which builds the fixture beside it",
         mock_bin().display()
     );
 }
@@ -950,9 +971,9 @@ fn run_help_explains_the_no_deadline_default_and_explicit_zero_synonym() {
         "{}-second approval-wait safety",
         oneharness_core::io::run::APPROVAL_WAIT_TIMEOUT_SECS
     );
-    assert!(include_str!("../README.md").contains(&readme_safety));
-    assert!(include_str!("../AGENTS.md").contains(&readme_safety));
-    assert!(include_str!("../CHANGELOG.md").contains(&readme_safety));
+    assert!(include_str!("../../../README.md").contains(&readme_safety));
+    assert!(include_str!("../../../AGENTS.md").contains(&readme_safety));
+    assert!(include_str!("../../../CHANGELOG.md").contains(&readme_safety));
 }
 
 #[test]
@@ -5037,7 +5058,7 @@ fn extracts_opencode_text_from_real_jsonl_transcript() {
     // had to fall back to raw stdout. The fixture is a real `opencode run --format
     // json` transcript (OpenCode 1.17.3); oneharness reconstructs the answer from
     // its `text` parts and records the method as `json:opencode-parts`.
-    let stdout = include_str!("support/opencode_run.jsonl");
+    let stdout = include_str!("../../../tests/fixtures/opencode_run.jsonl");
     let output = run(
         &[
             "run",
@@ -5117,7 +5138,7 @@ fn opencode_prose_parts_become_message_and_reasoning_events_in_list_and_stream()
     // part the turn ends before finishing (a `time` with no `end`), one whose
     // `end` is no timestamp, and a whitespace-only one are spliced in too: none
     // is an event.
-    let capture = include_str!("support/opencode_run.jsonl");
+    let capture = include_str!("../../../tests/fixtures/opencode_run.jsonl");
     let lines: Vec<&str> = capture.lines().collect();
     let (step_start, text_part, step_finish) = (lines[0], lines[1], lines[2]);
     let reasoning_part = concat!(
@@ -6135,7 +6156,7 @@ fn controlled_codex_normalizes_captured_app_server_tool_events() {
 fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
     // Windows cannot host the Unix control socket, but controlled turns feed
     // these captured app-server frames to this same production extractor.
-    let raw = include_str!("fixtures/codex-app-server-command-execution.jsonl");
+    let raw = include_str!("../../../tests/fixtures/codex-app-server-command-execution.jsonl");
     let reading = oneharness_core::domain::events::extract_events(
         raw,
         oneharness_core::domain::report::OutputFormat::Json,
@@ -6226,7 +6247,7 @@ fn controlled_codex_reports_a_started_tool_when_completion_never_arrives() {
 
 #[cfg(windows)]
 fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives() {
-    let raw = include_str!("fixtures/codex-app-server-command-execution.jsonl")
+    let raw = include_str!("../../../tests/fixtures/codex-app-server-command-execution.jsonl")
         .lines()
         .next()
         .unwrap();
@@ -10870,8 +10891,10 @@ fn a_single_config_file_explains_exactly_as_before_repeatable_config() {
     );
     let mut value = json_stdout(&output);
     with_placeholder_dir(&mut value, &fx.dir.display().to_string());
-    let golden: Value =
-        serde_json::from_str(include_str!("fixtures/config-report-single-file.json")).unwrap();
+    let golden: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/config-report-single-file.json"
+    ))
+    .unwrap();
     assert_eq!(value, golden);
 }
 
@@ -15519,7 +15542,7 @@ fn a_flooding_failure_is_recorded_within_the_documented_bound() {
 /// [`documented_usage_timeout_default_tracks_the_flag_constant`] uses).
 #[test]
 fn documented_history_failure_text_tracks_the_record_contract() {
-    let readme = include_str!("../README.md");
+    let readme = include_str!("../../../README.md");
     let bound = format!(
         "bounded to {} characters",
         oneharness_core::domain::history::ERROR_MAX
@@ -16641,7 +16664,7 @@ fn history_migrate_converts_every_legacy_store_and_is_idempotent() {
     std::fs::create_dir_all(&project).unwrap();
     for version in ["01", "02", "03"] {
         std::fs::copy(
-            format!("tests/fixtures/history-v{version}.jsonl"),
+            repo_root().join(format!("tests/fixtures/history-v{version}.jsonl")),
             project.join(format!("legacy-{version}.jsonl")),
         )
         .unwrap();
@@ -18392,7 +18415,7 @@ fn documented_history_pointer_line_tracks_the_wire_contract() {
     use oneharness_core::domain::history::{
         HistoryPointer, PointerSession, POINTER_SCHEMA_VERSION,
     };
-    let readme = include_str!("../README.md");
+    let readme = include_str!("../../../README.md");
     let documented = documented_pointer_fields(readme);
     assert_eq!(
         documented_pointer_fields(&readme.replace('\n', "\r\n")),
@@ -21252,7 +21275,7 @@ fn fallback_falls_through_a_claude_login_refusal_as_auth() {
     let mock = mock_bin().display().to_string();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
-    let line = include_str!("fixtures/claude-not-logged-in.txt").trim();
+    let line = include_str!("../../../tests/fixtures/claude-not-logged-in.txt").trim();
     // Unrelated rate-limit vocabulary in the same failed run, on whichever
     // stream is not carrying the refusal — or beside it, when the refusal is the
     // one bare line the harness printed.
@@ -21260,7 +21283,7 @@ fn fallback_falls_through_a_claude_login_refusal_as_auth() {
     let captures = [
         (
             "record",
-            include_str!("fixtures/claude-not-logged-in.jsonl")
+            include_str!("../../../tests/fixtures/claude-not-logged-in.jsonl")
                 .trim()
                 .to_string(),
             warning.to_string(),
@@ -21350,8 +21373,10 @@ fn fallback_falls_through_a_claude_login_refusal_as_auth() {
 #[test]
 fn fallback_falls_through_a_clean_exit_claude_login_refusal() {
     let mock = mock_bin().display().to_string();
-    let record =
-        serde_json::to_string(include_str!("fixtures/claude-not-logged-in.jsonl").trim()).unwrap();
+    let record = serde_json::to_string(
+        include_str!("../../../tests/fixtures/claude-not-logged-in.jsonl").trim(),
+    )
+    .unwrap();
     let project = format!(
         r#"
         harnesses = ["claude-code", "codex"]
@@ -21402,8 +21427,10 @@ fn fallback_falls_through_a_clean_exit_claude_login_refusal() {
 #[test]
 fn another_harnesss_login_wording_is_not_read_as_a_claude_refusal() {
     let mock = mock_bin().display().to_string();
-    let line =
-        serde_json::to_string(include_str!("fixtures/claude-not-logged-in.txt").trim()).unwrap();
+    let line = serde_json::to_string(
+        include_str!("../../../tests/fixtures/claude-not-logged-in.txt").trim(),
+    )
+    .unwrap();
     let project = format!(
         r#"
         harnesses = ["codex", "claude-code"]
@@ -21514,19 +21541,19 @@ fn fallback_falls_through_zero_work_claude_subscription_limit_captures() {
         (
             "session-json",
             "MOCK_STDOUT",
-            include_str!("fixtures/claude-session-limit.json"),
+            include_str!("../../../tests/fixtures/claude-session-limit.json"),
             "1",
         ),
         (
             "session-text",
             "MOCK_STDERR",
-            include_str!("fixtures/claude-session-limit.txt"),
+            include_str!("../../../tests/fixtures/claude-session-limit.txt"),
             "1",
         ),
         (
             "session-text-stdout",
             "MOCK_STDOUT",
-            include_str!("fixtures/claude-session-limit.txt"),
+            include_str!("../../../tests/fixtures/claude-session-limit.txt"),
             "1",
         ),
         // The same rejection with a different qualifier, printed as bare text.
@@ -21536,13 +21563,13 @@ fn fallback_falls_through_zero_work_claude_subscription_limit_captures() {
         (
             "weekly-text",
             "MOCK_STDERR",
-            include_str!("fixtures/claude-weekly-limit.txt"),
+            include_str!("../../../tests/fixtures/claude-weekly-limit.txt"),
             "1",
         ),
         (
             "weekly-text-stdout",
             "MOCK_STDOUT",
-            include_str!("fixtures/claude-weekly-limit.txt"),
+            include_str!("../../../tests/fixtures/claude-weekly-limit.txt"),
             "1",
         ),
     ];
@@ -21600,9 +21627,10 @@ fn fallback_falls_through_zero_work_claude_subscription_limit_captures() {
 #[test]
 fn fallback_falls_through_a_claude_session_limit_reported_as_an_api_error() {
     let mock = mock_bin().display().to_string();
-    let capture =
-        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
-            .unwrap();
+    let capture = serde_json::to_string(
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim(),
+    )
+    .unwrap();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
     let project = format!(
@@ -21660,9 +21688,10 @@ fn fallback_falls_through_a_claude_session_limit_reported_as_an_api_error() {
 #[test]
 fn fallback_falls_through_a_claude_weekly_limit_reported_as_an_api_error() {
     let mock = mock_bin().display().to_string();
-    let capture =
-        serde_json::to_string(include_str!("fixtures/claude-weekly-limit-api-error.json").trim())
-            .unwrap();
+    let capture = serde_json::to_string(
+        include_str!("../../../tests/fixtures/claude-weekly-limit-api-error.json").trim(),
+    )
+    .unwrap();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-codex"}}"#;
     let project = format!(
@@ -22185,7 +22214,7 @@ fn fallback_stops_at_a_timeout_carrying_a_session_limit_record() {
     let mock = mock_bin().display().to_string();
     let streamed = format!(
         "{}\n{{\"type\":\"result\",\"result\":\"never delivered\"}}",
-        include_str!("fixtures/claude-session-limit-api-error.json").trim()
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim()
     );
     let streamed = serde_json::to_string(&streamed).unwrap();
     let project = format!(
@@ -22231,8 +22260,10 @@ fn fallback_stops_at_a_timeout_carrying_a_session_limit_record() {
 #[test]
 fn fallback_falls_through_a_codex_usage_limit_to_the_alternate_account() {
     let mock = mock_bin().display().to_string();
-    let capture =
-        serde_json::to_string(include_str!("fixtures/codex-usage-limit.jsonl").trim()).unwrap();
+    let capture = serde_json::to_string(
+        include_str!("../../../tests/fixtures/codex-usage-limit.jsonl").trim(),
+    )
+    .unwrap();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-alternate"}}"#;
 
@@ -22922,7 +22953,8 @@ fn codex_server_overloaded_default_retries_are_bounded_and_persist_the_failure()
 #[test]
 fn fallback_falls_through_a_codex_app_server_usage_limit_to_the_alternate_account() {
     let mock = mock_bin().display().to_string();
-    let captured = include_str!("fixtures/codex-app-server-usage-limit.jsonl").trim();
+    let captured =
+        include_str!("../../../tests/fixtures/codex-app-server-usage-limit.jsonl").trim();
     let frames: Vec<&str> = captured.lines().collect();
     let alternate =
         r#"{"type":"item.completed","item":{"type":"agent_message","text":"served-by-alternate"}}"#;
@@ -23090,8 +23122,10 @@ fn fallback_stops_at_a_codex_turn_failure_and_does_not_fall_through() {
     // is a real task failure, so the chain must stop rather than silently re-run
     // the task on the alternate account.
     let mock = mock_bin().display().to_string();
-    let capture =
-        serde_json::to_string(include_str!("fixtures/codex-turn-failed.jsonl").trim()).unwrap();
+    let capture = serde_json::to_string(
+        include_str!("../../../tests/fixtures/codex-turn-failed.jsonl").trim(),
+    )
+    .unwrap();
     let project = format!(
         r#"
         harnesses = ["codex", "codex:alternate"]
@@ -23250,9 +23284,10 @@ fn stream_under_fallback_publishes_only_the_candidate_that_runs() {
     // The fallen-through candidate here is the real zero-work Claude session-limit
     // rejection (issue #1211), the shape a fallback chain exists to route around.
     let mock = mock_bin().display().to_string();
-    let rejection =
-        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
-            .unwrap();
+    let rejection = serde_json::to_string(
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim(),
+    )
+    .unwrap();
     let transcript = serde_json::to_string(&format!(
         "{}\n{}\n{}\n",
         r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}"#,
@@ -23462,9 +23497,10 @@ fn streamed_and_buffered_fallback_select_the_same_candidate() {
     // harness that ran, the fallen-through candidates and their reasons, how many
     // candidates were attempted, and the exit code.
     let mock = mock_bin().display().to_string();
-    let rejection =
-        serde_json::to_string(include_str!("fixtures/claude-session-limit-api-error.json").trim())
-            .unwrap();
+    let rejection = serde_json::to_string(
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim(),
+    )
+    .unwrap();
     // A transcript that did real work: a tool call, then a result billing tokens.
     let worked = serde_json::to_string(&format!(
         "{}\n{}\n",
@@ -24638,7 +24674,7 @@ fn documented_claude_probe_flags() -> Vec<String> {
 /// prints it: the `claude …` command inside the `get_usage` console block,
 /// including the lines a trailing backslash continues it onto.
 fn documented_claude_probe_command() -> Vec<String> {
-    let doc = include_str!("../docs/harness-usage.md");
+    let doc = include_str!("../../../docs/harness-usage.md");
     let block = doc
         .split_once("### `claude-code` — the `get_usage` control request")
         .expect("the doc documents the claude-code probe")
@@ -24673,7 +24709,7 @@ fn documented_claude_probe_command() -> Vec<String> {
 /// then fail on the release commit. Not `CARGO_PKG_VERSION` either: that is the
 /// *binary* crate's version here, and the two crates version independently.
 fn core_version() -> String {
-    include_str!("../crates/oneharness-core/Cargo.toml")
+    include_str!("../../oneharness-core/Cargo.toml")
         .lines()
         // Only the `[package]` version sits at column 0; a dependency's is
         // either inline in a table or indented under one.
@@ -26177,7 +26213,7 @@ fn documented_usage_timeout_default_tracks_the_flag_constant() {
         oneharness::cli::USAGE_DEFAULT_TIMEOUT_SECS
     );
     assert!(
-        include_str!("../README.md").contains(&documented),
+        include_str!("../../../README.md").contains(&documented),
         "README.md must state the per-probe timeout as `{documented}`"
     );
 
@@ -26585,9 +26621,9 @@ fn the_documented_usage_tiers_match_the_registry() {
     // reference restate it for readers. Restating a registry value is exactly
     // how a doc goes quietly stale — someone flips a tier after an upstream
     // release and the tables keep promising the old answer. This fails instead.
-    let readme = std::fs::read_to_string("README.md").expect("README.md");
-    let reference =
-        std::fs::read_to_string("docs/harness-usage.md").expect("docs/harness-usage.md");
+    let readme = std::fs::read_to_string(repo_root().join("README.md")).expect("README.md");
+    let reference = std::fs::read_to_string(repo_root().join("docs/harness-usage.md"))
+        .expect("docs/harness-usage.md");
 
     for spec in oneharness_core::domain::harness::all() {
         let (readme_cell, tier_heading, spelling) = documented_usage_tier(spec.usage);
@@ -28849,8 +28885,8 @@ fn control_with_a_schema_is_a_usage_error() {
 /// `control` cell (a mechanism id, or the em dash meaning "none"), and the
 /// `Continues a --session?` cell.
 fn readme_control_matrix() -> Vec<(String, String, String)> {
-    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
-        .expect("README.md is readable");
+    let readme =
+        std::fs::read_to_string(repo_root().join("README.md")).expect("README.md is readable");
     let table = readme
         .split("#### Control support matrix")
         .nth(1)
@@ -28954,8 +28990,8 @@ fn the_readme_session_continuation_column_matches_the_mechanisms() {
         );
     }
 
-    let readme = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md"))
-        .expect("README.md is readable");
+    let readme =
+        std::fs::read_to_string(repo_root().join("README.md")).expect("README.md is readable");
 
     // The prose spells the refusing set out twice (the `--session` flag entry
     // and the session-handle section), so both are rendered from the same list.
@@ -28999,8 +29035,7 @@ fn the_readme_session_continuation_column_matches_the_mechanisms() {
 fn the_readme_documents_every_control_refusal_reason() {
     // The three reasons are a wire contract a supervisor branches on; a reason
     // added to the enum but missing from the docs is an undocumented branch.
-    let readme =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let readme = std::fs::read_to_string(repo_root().join("README.md")).unwrap();
     let section = readme
         .split("### Turn control")
         .nth(1)
@@ -29208,8 +29243,7 @@ fn the_readme_documents_the_control_protocol_frames_in_force() {
     use oneharness_core::domain::control::{
         ControlReason, ControlRequest, ControlResponse, ControlShape, RedirectInput,
     };
-    let readme =
-        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("README.md")).unwrap();
+    let readme = std::fs::read_to_string(repo_root().join("README.md")).unwrap();
     let section = readme
         .split("### Turn control")
         .nth(1)
@@ -32489,7 +32523,8 @@ fn controlled_fallback_carries_control_to_the_candidate_that_served() {
     // holds it — the run says nothing about control being dropped, because
     // nothing was dropped.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection =
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
     let success = serde_json::to_string(
         r#"{"type":"result","subtype":"success","result":"served","session_id":"later"}"#,
@@ -32725,7 +32760,8 @@ fn controlled_fallback_records_its_streamed_history_under_the_live_run() {
     // withheld — a fresh id would orphan every event a watcher already read and
     // write the whole transcript into history a second time.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection =
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
     let transcript = serde_json::to_string(&format!(
         "{}\n{}\n{}\n",
@@ -32891,7 +32927,8 @@ fn controlled_fallback_binds_control_to_a_later_anchor_the_session_moved_to() {
     // over the control stream. The *session* token stays the anchor's alone; the
     // control delivery is every candidate's, since any of them can serve.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection =
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
     let success = serde_json::to_string(
         r#"{"type":"result","subtype":"success","result":"served","session_id":"reserve"}"#,
@@ -33362,7 +33399,8 @@ fn a_chain_that_falls_through_to_a_pooled_server_candidate_runs_it_on_its_own_mo
     // binds to the pooled mechanism at that point, so the supervisor's interrupt
     // goes out on the server's own route.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection =
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
     let store = control_store_dir("http-fallthrough");
     let store_arg = store.display().to_string();
@@ -33607,7 +33645,8 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
     // under `--mode plan` that is the difference between a candidate that plans
     // and one that starts editing.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection =
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
     let store = control_store_dir("per-cand-prompt");
     let store_arg = store.display().to_string();
@@ -34054,7 +34093,8 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
     // thread and turn, and nothing was ever written at the mechanism the chain
     // started on.
     let mock = mock_bin().display().to_string();
-    let rejection = include_str!("fixtures/claude-session-limit-api-error.json").trim();
+    let rejection =
+        include_str!("../../../tests/fixtures/claude-session-limit-api-error.json").trim();
     let rejection = serde_json::to_string(rejection).unwrap();
     let store = control_store_dir("mixed-chain");
     let store_arg = store.display().to_string();
@@ -35107,7 +35147,7 @@ fn stream_default_warnings(output: &Output) -> usize {
 /// The recorded `codex exec --json` turn (codex-cli 0.157.1): an agent
 /// message, a reasoning item, a command, a file change, a failing command and
 /// the final message.
-const CODEX_EXEC_TURN: &str = include_str!("fixtures/codex-exec-turn.jsonl");
+const CODEX_EXEC_TURN: &str = include_str!("../../../tests/fixtures/codex-exec-turn.jsonl");
 
 /// [`CODEX_EXEC_TURN`] with an `item.updated` record for its first command
 /// spliced in after that command's `item.started` — built from the recording's
@@ -35500,12 +35540,12 @@ fn a_streamed_turn_publishes_each_call_once_and_one_event_per_finished_item() {
         ),
         (
             "codex",
-            include_str!("fixtures/codex-app-server-turn.jsonl").to_string(),
+            include_str!("../../../tests/fixtures/codex-app-server-turn.jsonl").to_string(),
             vec!["message", "tool_call", "tool_call", "message"],
         ),
         (
             "claude-code",
-            include_str!("fixtures/claude-stream-json-turn.jsonl").to_string(),
+            include_str!("../../../tests/fixtures/claude-stream-json-turn.jsonl").to_string(),
             vec![
                 "reasoning",
                 "message",
@@ -36404,10 +36444,11 @@ fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
     // between any two runs are set aside and the additive values are
     // dropped: `session_name`, and the `name`/`status` a `tool_result` now
     // carries (null in v0.17.0), which are asserted here instead.
-    let golden: Vec<Value> = include_str!("fixtures/history-watch-v0.17.0-tools-only.jsonl")
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
+    let golden: Vec<Value> =
+        include_str!("../../../tests/fixtures/history-watch-v0.17.0-tools-only.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
     let dir = hist_dir("watch-v0-17-0");
     let project = ScratchDir::new("watch-v0-17-0-project").unwrap();
     let ds = dir.display().to_string();
@@ -36431,7 +36472,7 @@ fn history_watch_prints_what_v0_17_0_printed_for_a_tool_only_run() {
         ],
         &[(
             "MOCK_STDOUT",
-            include_str!("fixtures/claude-stream-json-tools-only.jsonl"),
+            include_str!("../../../tests/fixtures/claude-stream-json-tools-only.jsonl"),
         )],
     );
     assert!(seeded.status.success(), "{seeded:?}");
@@ -36985,7 +37026,7 @@ fn agent_messages_and_reasoning_reach_history_for_codex_and_claude() {
         ),
         (
             "claude-code",
-            include_str!("fixtures/claude-stream-json-turn.jsonl"),
+            include_str!("../../../tests/fixtures/claude-stream-json-turn.jsonl"),
             vec![
                 "reasoning",
                 "message",

@@ -1,0 +1,86 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "sdk-conformance",
+  "projectType": "library",
+  "tags": [
+    "type:conformance",
+    "lang:rust"
+  ],
+  "//": "The SDKs' conformance to the capability manifest: the checks that read each SDK's hand-written client and README, and the parity table that audits them. A leaf that reads the SDKs through its inputs rather than depending on them, so an SDK edit re-runs it without reaching the binary, the contract or the other SDK.",
+  "implicitDependencies": [
+    "oneharness-core",
+    "sdk-contract"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain",
+      "{workspaceRoot}/npm/oneharness-sdk/README.md",
+      "{workspaceRoot}/npm/oneharness-sdk/src/**/*",
+      "{workspaceRoot}/python/oneharness-sdk/README.md",
+      "{workspaceRoot}/python/oneharness-sdk/src/**/*",
+      "{workspaceRoot}/docs/sdk-parity.md",
+      "{workspaceRoot}/scripts/sdk-coverage.mjs",
+      "{workspaceRoot}/scripts/parity-audit.mjs",
+      "{workspaceRoot}/crates/sdk-contract/sdk-generator.mjs",
+      "{workspaceRoot}/scripts/check-sdk-coverage.sh",
+      "{workspaceRoot}/scripts/check-sdk-coverage-test.sh",
+      "{workspaceRoot}/scripts/check-parity-audit.sh",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/tests/project.json",
+      "{workspaceRoot}/npm/oneharness-sdk/project.json",
+      "{workspaceRoot}/python/oneharness-sdk/project.json"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-sdk-conformance -- --check"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-sdk-conformance"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness-sdk-conformance --all-targets --locked -- -D warnings"
+        ],
+        "parallel": false
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness-sdk-conformance",
+          "bash scripts/with-portable-sed.sh scripts/check-sdk-coverage.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-sdk-coverage-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-parity-audit.sh"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness-sdk-conformance.profdata"
+      ],
+      "parallelism": false
+    }
+  }
+}

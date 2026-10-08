@@ -9,11 +9,13 @@
 #   3. Merging that PR makes the `release` job tag `vX.Y.Z` and cut a GitHub
 #      Release with the changelog notes. That Release (created with a PAT, not
 #      the default GITHUB_TOKEN) triggers `release.yml`, which builds, archives,
-#      checksums, and attaches the cross-platform binaries. It reads CI's
-#      verdict for the tagged commit: a failed check job refuses release; only
-#      a complete successful check matrix skips the release gate; once CI
-#      ends, a non-Ubuntu check job without a success verdict refuses release,
-#      and an Ubuntu one alone runs the gate on the Ubuntu release runner.
+#      checksums, and attaches the cross-platform binaries. It reads the
+#      verdict of the full sweep CI ran over the tagged tree on the release PR
+#      (every other PR and push to main runs only the affected tier): a failed
+#      check job refuses release; only a complete check matrix whose every job
+#      ran the full sweep successfully skips the release gate; once CI ends, a
+#      non-Ubuntu check job without a successful sweep refuses release, and an
+#      Ubuntu one alone runs the sweep on the Ubuntu release runner.
 
 [workspace]
 # Both crates are published to crates.io on release. release-plz runs
@@ -89,10 +91,28 @@ name = "oneharness-core"
 git_tag_name = "oneharness-core-v{{ version }}"
 git_release_enable = false
 
-# Test-only workspace member (`publish = false`) holding the v0.17.0 history
-# compatibility test; it never releases, tags or keeps a changelog.
+# Test-only workspace members (`publish = false`): the v0.17.0 history
+# compatibility test, the mock harness fixture, the binary e2e journeys,
+# the SDK contract and the SDKs' conformance suite. None releases, tags or
+# keeps a changelog.
 [[package]]
 name = "oneharness-history-compat"
+release = false
+
+[[package]]
+name = "oneharness-mock-harness"
+release = false
+
+[[package]]
+name = "oneharness-e2e"
+release = false
+
+[[package]]
+name = "oneharness-sdk-contract"
+release = false
+
+[[package]]
+name = "oneharness-sdk-conformance"
 release = false
 
 # Keep-a-Changelog-style grouping. The version bump is computed from the

@@ -1,0 +1,32 @@
+{
+  "$schema": "../../../../node_modules/nx/schemas/project-schema.json",
+  "name": "live-goose",
+  "projectType": "library",
+  "tags": [
+    "type:live",
+    "lang:bash"
+  ],
+  "implicitDependencies": [
+    "oneharness",
+    "install-surface",
+    "e2e-support"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/e2e-goose.sh"
+    ]
+  },
+  "targets": {
+    "live": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "just live-goose"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    }
+  }
+}

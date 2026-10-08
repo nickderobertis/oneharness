@@ -5,6 +5,10 @@ on:
     paths:
       - src/**
       - crates/**
+      - "!crates/oneharness-e2e/**"
+      - "!crates/oneharness-mock-harness/**"
+      - "!crates/sdk-contract/**"
+      - "!crates/sdk-conformance/**"
       - scripts/e2e-variants.sh
       - .github/workflows/e2e-variants.yml
   workflow_dispatch:

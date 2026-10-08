@@ -1,0 +1,68 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "rust-coverage",
+  "projectType": "library",
+  "tags": [
+    "type:coverage",
+    "lang:rust"
+  ],
+  "//": "llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] JSON has no comment to scope this to `coverage`, which is what it is about: the Rust line floor is ONE report over every crate's instrumented run, so it depends on every Rust project's `test`, the binary e2e journeys included, by design \u2014 leaving any run out would let that crate's coverage slip outside the floor (scripts/check-nx-graph.mjs refuses exactly that). Each `test` is still selected by the graph and replays from the cache when its inputs are unchanged. The Rust line floor: `cargo llvm-cov report --fail-under-lines 95` over every Rust crate's instrumented `test` run (each leaves its merged profile in target/coverage/<record>.profdata), after rebuilding each run's instrumented selection so the objects match this tree. Selected through its inputs whenever Rust source or a Rust test changes, never through project-graph edges: its `dependsOn` on every `test`, `oneharness-e2e:test` included, orders tasks and adds no project dependency, so the boundary check still sees no project depending on an e2e one. Skipped on Windows, where llvm-cov does not attribute subprocess-spawned binary coverage.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain",
+      "{workspaceRoot}/src/**/*",
+      "{workspaceRoot}/crates/**/*",
+      "{workspaceRoot}/tests/**/*",
+      "{workspaceRoot}/scripts/rust-coverage.sh",
+      "{workspaceRoot}/scripts/cargo-test.sh"
+    ]
+  },
+  "targets": {
+    "coverage": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/rust-coverage.sh"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        {
+          "projects": [
+            "oneharness-core",
+            "oneharness",
+            "oneharness-integration",
+            "oneharness-mock-harness",
+            "oneharness-e2e",
+            "history-compat",
+            "sdk-contract",
+            "sdk-conformance"
+          ],
+          "target": "test"
+        }
+      ],
+      "inputs": [
+        "default",
+        {
+          "dependentTasksOutputFiles": "**/*.profdata",
+          "transitive": false
+        },
+        "{workspaceRoot}/scripts/rust-coverage.sh",
+        "{workspaceRoot}/crates/*/project.json",
+        "{workspaceRoot}/src/project.json",
+        "{workspaceRoot}/tests/project.json",
+        {
+          "env": "COVERAGE_MIN"
+        },
+        {
+          "env": "OS"
+        }
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/rust-coverage.txt",
+        "{workspaceRoot}/target/coverage/rust.profdata"
+      ]
+    }
+  }
+}

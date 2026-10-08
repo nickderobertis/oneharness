@@ -1,7 +1,14 @@
 [workspace]
-members = ["crates/oneharness-core", "crates/history-compat"]
+members = [
+    "crates/oneharness-core",
+    "crates/history-compat",
+    "crates/oneharness-mock-harness",
+    "crates/oneharness-e2e",
+    "crates/sdk-contract",
+    "crates/sdk-conformance",
+]
 
-# Metadata both crates share, inherited with `.workspace = true`. `version` and
+# Metadata every crate shares, inherited with `.workspace = true`. `version` and
 # `description` stay per-crate: the binary and the engine release on their own
 # tags and describe different things.
 [workspace.package]
@@ -10,11 +17,12 @@ rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/nickderobertis/oneharness"
 
-# Every requirement both crates take, stated once so a bump moves both. Cargo
+# Every requirement more than one crate takes, stated once so a bump moves all. Cargo
 # answers two diverging `windows-sys` requirements with a second copy rather than
 # an error. Features each crate needs beyond `serde`'s shared `derive` are
 # named at the member.
 [workspace.dependencies]
+clap = { version = "4.5", features = ["derive"] }
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,22 +44,15 @@ categories = ["command-line-utilities", "development-tools"]
 name = "oneharness"
 path = "src/main.rs"
 
-# Test-only fixture: a fake harness binary the e2e tests drive via a `--bin`
-# override, so the spawn/parse/parallel path is proven hermetically and
-# cross-platform. Gated behind a feature so it never ships in `cargo install`.
-[[bin]]
-name = "oneharness-mock-harness"
-path = "tests/support/mock_harness_main.rs"
-required-features = ["mock-harness"]
-
-[[example]]
-name = "generate_sdk_schema"
-required-features = ["sdk-schema"]
-
 [features]
-# Builds the mock harness fixture. Enabled by `just test`/`just check` and CI.
+# Compiles `oneharness-core`'s usage-sweep fault injectors into this build, so
+# the hermetic suites can drive them. Enabled by the `test` targets that run
+# this crate against the mock (its unit, integration and e2e suites, and
+# history-compat); the fake harness executable itself is the
+# `oneharness-mock-harness` crate.
 mock-harness = ["oneharness-core/mock-harness"]
-# Builds the Rust-owned schema generator shared by language SDKs.
+# Enables `oneharness-core`'s schema generation (`sdk_schema`). The generator
+# the language SDKs run is the `oneharness-sdk-contract` crate's example.
 sdk-schema = ["oneharness-core/sdk-schema"]
 
 # Depended on by path for local builds, with a `version` requirement so the
@@ -59,7 +60,7 @@ sdk-schema = ["oneharness-core/sdk-schema"]
 # version, which release-plz keeps in step with `oneharness-core`'s own version.
 [dependencies]
 oneharness-core = { path = "crates/oneharness-core", version = "0.24.2" }
-clap = { version = "4.5", features = ["derive"] }
+clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 

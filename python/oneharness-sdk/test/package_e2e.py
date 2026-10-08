@@ -122,6 +122,34 @@ def main(stack: ExitStack) -> None:
     )
     scripts = environment / ("Scripts" if os.name == "nt" else "bin")
     python = scripts / ("python.exe" if os.name == "nt" else "python")
+    # The offline install resolves the wheels' requirements from what the
+    # environment and uv's cache hold, and on an empty cache (every hosted
+    # runner) nothing has put the SDK's runtime dependencies there: the install
+    # failed with "jsonschema was not found in the cache". So the environment is
+    # first given exactly the SDK's locked runtime dependencies, from the
+    # workspace's one `uv.lock`, the way every Python target provisions its own
+    # (no resolve against an index; `oneharness-cli` is outside the dev resolve,
+    # python/pyproject.toml). The offline install below then proves the built
+    # wheels need nothing more than that.
+    # llmlint: ignore-block[async_typed_clients_at_boundaries] This is a sequential packaging journey run as a script, not a service: like every other step in it (uv build, uv venv, uv pip install), this one invokes the uv CLI the release itself uses and cannot proceed until it exits, with no event loop and no other work to overlap, so an async client would only wrap the same wait.
+    subprocess.run(
+        [
+            "uv",
+            "sync",
+            "--project",
+            "python",
+            "--frozen",
+            "--no-dev",
+            "--no-install-workspace",
+            "--package",
+            "oneharness-sdk",
+            "--quiet",
+        ],
+        cwd=ROOT,
+        env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment)},
+        check=True,
+    )
+    # llmlint: ignore-end[async_typed_clients_at_boundaries]
     subprocess.run(
         [
             "uv",

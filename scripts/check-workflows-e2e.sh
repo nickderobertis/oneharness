@@ -8,6 +8,22 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Every mutation below lands on a staged copy of what the gate reads, never on
+# the tracked files: the gate's projects run in parallel, and a sibling reading
+# release.yml or ci.yml mid-mutation would judge a file nobody committed.
+# Copied by path rather than through git, since check-workflows-portable-test.sh
+# runs this script inside a staged tree of its own that is no repository.
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+for path in scripts .github Cargo.toml crates/*/Cargo.toml rust-toolchain.toml \
+  pyproject.toml python/oneharness-sdk/pyproject.toml npm/oneharness/package.json \
+  npm/oneharness-sdk/package.json justfile release-plz.toml; do
+  [ -e "$path" ] || continue
+  mkdir -p "$stage/$(dirname "$path")"
+  cp -R "$path" "$stage/$path"
+done
+cd "$stage"
+
 work="$(mktemp -d)"
 workflow=.github/workflows/release.yml
 ci=.github/workflows/ci.yml
@@ -34,7 +50,7 @@ restore() {
     echo "  fix: copy that file back over $notignored (or 'git checkout -- $notignored')" >&2
     return 1
   }
-  rm -rf "$work"
+  rm -rf "$work" "$stage"
 }
 trap restore EXIT
 
@@ -164,20 +180,20 @@ node -e '
 ' "$workflow"
 expect_gate_refusal "job build-wheels must depend on gate"
 
-# A missing GUARD rather than a missing line: `just check` is still there, but
-# nothing conditions it, so it runs on every release again.
+# A missing GUARD rather than a missing line: the fallback sweep is still there,
+# but nothing conditions it, so it runs on every release again.
 # The single-quoted program is JavaScript.
 # shellcheck disable=SC2016
 node -e '
   const fs = require("node:fs");
   const path = process.argv[1];
   const lines = fs.readFileSync(path, "utf8").replaceAll("\r\n", "\n").split("\n");
-  const at = lines.findIndex((l) => l.trim() === "run: just check");
+  const at = lines.findIndex((l) => l.trim() === "run: just check all");
   if (at < 1) throw new Error("the conditioned gate fixture is missing; update this mutation to the current guarded check step in release.yml");
   lines.splice(at - 1, 1);
   fs.writeFileSync(path, lines.join("\n"));
 ' "$workflow"
-expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
+expect_gate_refusal "run the full sweep only when CI reached no sweep verdict for the tagged tree"
 
 # A forbidden pattern: a registry's metadata API answering, read as a consumer
 # being able to install.
@@ -192,8 +208,8 @@ expect_gate_refusal "must not run an SDK gate"
 # A SECOND copy of the gate, this one unconditioned. The guard requirement is
 # about every occurrence: one guarded copy says nothing about a sibling that
 # runs on every release.
-printf '      - name: Re-run the gate\n        run: just check\n' >>"$workflow"
-expect_gate_refusal "run the complete repository gate only when CI reached no verdict for the tagged commit"
+printf '      - name: Re-run the gate\n        run: just check all\n' >>"$workflow"
+expect_gate_refusal "run the full sweep only when CI reached no sweep verdict for the tagged tree"
 
 # A `name:` on CI's check job renames the `check (<os>)` jobs the selector
 # requires, so every release would read CI's verdict as absent.

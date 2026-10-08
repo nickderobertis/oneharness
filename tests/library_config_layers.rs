@@ -1,7 +1,7 @@
 //! Repeatable config files through the library: every request struct that
 //! reads configuration takes `config: Vec<PathBuf>`, layered in order with each
 //! later file overriding the earlier ones — the same result the CLI's repeated
-//! `--config` gives (`tests/cli.rs` drives that half through the binary).
+//! `--config` gives (`crates/oneharness-e2e/tests/cli.rs` drives that half through the binary).
 //!
 //! These calls read the environment layer, so this is its own test binary: it
 //! strips every ambient `ONEHARNESS_*` override once, and the one test that
@@ -20,7 +20,7 @@ use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::sync::{self, SyncRequest};
 use oneharness_core::io::usage::{self, UsageRequest};
 
-#[path = "support/library_fixture.rs"]
+#[path = "common/library_fixture.rs"]
 mod fixture;
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());

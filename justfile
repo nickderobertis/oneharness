@@ -9,39 +9,45 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 # Keep shebang recipes in a repository-local executable directory when the
 # environment's default tempdir is noexec. Keep this outside Cargo's ignored
 # `target/`: release-plz rejects files that are both tracked and ignored.
-# llmlint: ignore[changed_behavior_has_e2e] `python-sdk-check` is itself a shebang recipe in the required `check`/`gate` path, so every gate exercises this boundary through Just's real script execution.
+# llmlint: ignore[changed_behavior_has_e2e] `check` is itself a shebang recipe in the required `check`/`gate` path, so every gate exercises this boundary through Just's real script execution.
 set tempdir := ".just-tmp"
-
-# Feature that builds the test-only mock harness fixture the e2e tests drive.
-FEATURES := "mock-harness"
-
-# Minimum line coverage the gate enforces. The skill's default is 95%; see
-# AGENTS.md "Tests are context engineering" for why this is a hard gate.
-COVERAGE_MIN := "95"
-COVERAGE_LINKER := justfile_directory() / "scripts/coverage-linker.sh"
 
 # List available recipes.
 default:
     @just --list
 
-# Set up from a clean clone: toolchain components + fetched dependencies. The
-# `llvm-tools-preview` component is what `cargo llvm-cov` needs to instrument the
-# build for the coverage gate.
+# Set up from a clean clone: toolchain components + every ecosystem's one
+# locked resolve (Cargo, the Bun workspace that also carries Nx, the uv
+# workspace under python/), the llmlint toolchain and the pre-push hook. The
+# `llvm-tools-preview` component is what `cargo llvm-cov` needs to instrument
+# each crate's tests for the coverage floor.
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
-    @just sdk-install
+    @just js-install
+    uv sync --project python --frozen --no-install-workspace --quiet
     ./scripts/setup-llmlint.sh
     git config core.hooksPath .githooks
 
-# Full quality gate: format check, lint (Rust + shell + rustdoc), tests *with
-# enforced coverage*, build, artifact smoke. Fails on any issue. `coverage`
-# re-runs the workspace suite under instrumentation and fails below
-# {{COVERAGE_MIN}}% lines; `test` stays in the gate as the fast, un-instrumented
-# pass/fail signal, and `test-symlinked-tmp` replays the CLI journeys under the
-# temp-path spelling only macOS would otherwise produce.
-check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check test test-symlinked-tmp coverage build smoke
-    @echo "check: ok"
+# The quality gate, through the Nx project graph. `just check` is the AFFECTED
+# tier: every gate target of each project the diff since the base can reach
+# (scripts/nx-base.sh: NX_BASE when set — a plain ref name or a commit SHA, and
+# nothing else — or the merge base with origin/main). `just check all` is the
+# FULL SWEEP: the same targets on every project, with the computation cache
+# skipped, so no replayed result can stand in for a clean run. CI picks the tier
+# per event (scripts/ci-gate-tier.sh); the release PR is where the sweep runs.
+# The targets are the gate's, in the order a contributor wants their verdicts:
+# every project declares whichever apply to it, and the live and exploration
+# suites declare none of them, so no tier ever runs one.
+check tier="affected":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{ quote(tier) }} in
+        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t format,lint,typecheck,build,test,e2e,coverage ;;
+        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t format,lint,typecheck,build,test,e2e,coverage --skip-nx-cache ;;
+        *) printf "check: unknown tier '%s' — use 'affected' (the default) or 'all'\n" {{ quote(tier) }} >&2; exit 2 ;;
+    esac
+    echo "check ({{tier}}): ok"
 
 # Complete pre-push gate: deterministic product/dependency/API checks, followed
 # by llmlint validation and its changed-file LLM judge when local credentials
@@ -49,27 +55,54 @@ check: fmt-check lint lint-doc lint-sh lint-workflows sdk-check python-sdk-check
 gate remote="origin" base="": check deps-check package-crates semver-check
     @comparison=$(scripts/comparison-base.sh "{{remote}}" "{{base}}"); just lint-llm-local "$comparison"
 
+# One gate target over the affected projects (the default) or every project
+# (`all`), through the same graph `check` uses. The recipes below are this
+# with the target named.
+_tier target tier:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{ quote(tier) }} in
+        affected) base="$(bash scripts/nx-base.sh)"; exec bash scripts/nx affected --base="$base" -t {{ target }} ;;
+        all) exec bash scripts/nx run-many --all --exclude='live-*,explore-*' -t {{ target }} ;;
+        *) printf "unknown tier '%s' — use 'affected' (the default) or 'all'\n" {{ quote(tier) }} >&2; exit 2 ;;
+    esac
+
+# Every test suite: each project's unit/integration `test` and the SDKs'
+# packaged-artifact `e2e`. Scratch-space leaks fail the run (each suite runs
+# under scripts/check-temp-leaks.sh).
+test tier="affected": (_tier "test,e2e" tier)
+
+# Lint (clippy -D warnings, rustdoc, biome, ruff, shellcheck, the project-graph
+# boundaries) and type-check (tsc, mypy).
+lint tier="affected": (_tier "lint,typecheck" tier)
+
 # Verify formatting without modifying files.
-fmt-check:
-    cargo fmt --all -- --check
+fmt-check tier="affected": (_tier "format" tier)
 
-# Format the codebase in place.
+# Format the codebase in place, every project (uncached by design).
 format:
-    cargo fmt --all
+    bash scripts/nx run-many --all -t format-write
 
-# Lint with clippy across the workspace (core + binary); any warning is an error.
-lint:
-    cargo clippy --workspace --all-targets --features {{FEATURES}} -- -D warnings
+# The coverage floors: Rust's 95% lines over every crate's instrumented run
+# (rust-coverage, which runs each Rust `test` first and is skipped on Windows),
+# beside the Node SDK's and the Python SDK's own floors in their `test` targets.
+coverage tier="affected": (_tier "coverage" tier)
 
-# Alias for `lint`.
-clippy: lint
+# Browsable Rust coverage report (kept out of the gate): one instrumented run of
+# every crate, as the floor measures them, rendered to HTML.
+coverage-html:
+    cargo llvm-cov nextest --workspace --features oneharness/mock-harness --locked --html
+    @echo "report: target/llvm-cov/html/index.html"
 
-# The published API documentation of `oneharness-core`, with every rustdoc
-# warning an error: a public doc comment that links to a private item or to a
-# name that does not resolve fails here instead of shipping as a dead link on
-# docs.rs. `--no-deps` because only this crate's own docs are the contract.
-lint-doc:
-    @RUSTDOCFLAGS="-D warnings" cargo doc -p oneharness-core --no-deps --quiet --locked || { echo "rustdoc failed; fix the doc-comment diagnostics above (link the public concept, or name a private item in plain code font) and rerun 'just lint-doc'" >&2; exit 1; }
+# The repository's drift gates alone — the workflow, release, live-helper and
+# workspace contracts — linted and run (every target of the four tooling
+# projects; what `check` runs of them is decided by what a change reaches).
+lint-workflows:
+    bash scripts/nx run-many -p ci-contracts,release-tooling,e2e-support,workspace -t lint,test
+
+# Run the binary e2e journeys alone (the oneharness-e2e project's test target).
+e2e:
+    bash scripts/nx run oneharness-e2e:test
 
 # Package the reusable crate and the binary exactly as Cargo will verify them at
 # publish time. It guards a release from the PR that precedes it — `just gate`
@@ -81,115 +114,9 @@ lint-doc:
 package-crates:
     @bash scripts/package-crates.sh
 
-# Lint shell scripts with shellcheck; any finding is an error. Like `cargo-deny`,
-# shellcheck is an external tool: CI installs it, and this prints an install hint
-# if it is missing rather than failing cryptically.
-lint-sh:
-    if ! command -v shellcheck >/dev/null 2>&1; then echo "shellcheck not installed: 'apt-get install shellcheck' / 'brew install shellcheck' / https://github.com/koalaman/shellcheck#installing" >&2; exit 1; fi
-    shellcheck scripts/*.sh
-
-# Drift gates for the live-e2e matrix, Rust toolchain, and release lifecycle,
-# plus the hermetic behavioral test of the idempotent crates.io publisher.
-lint-workflows: build build-mock-harness
-    @bash scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-e2e-matrix-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-sdk-coverage.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-sdk-coverage-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-parity-audit.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-workflows.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-workflows-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-ci-verdict.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-verify-published.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-setup-just.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-publish-crates.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-package-crates.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-semver-check.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-smoke-env.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-publish-npm.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-local-gate.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-sdk-install.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-usage-enforce.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-release-targets.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-release-targets-test.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-release-probe.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-control-probes.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-control-probe-http.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-control-enforce.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh >/dev/null
-    @bash scripts/with-portable-sed.sh scripts/e2e-variants-test.sh >/dev/null
-    @echo 'lint-workflows: ok'
-
-# Run the test suite across the workspace (core unit tests + binary unit and
-# integration tests; prefers nextest, falls back to cargo test), then refuse a
-# run that left a scratch directory behind in the host temp directory.
-#
-# Reduced to failures plus the summary line: a passing test says nothing the
-# summary does not, and a per-test transcript is what buries the ones that
-# didn't. Both runners still report every failure in full — the gate holds all of
-# it back until one of them does. The recipe line is left echoed (no `@`) so this
-# minutes-long step still says what it is running before it goes quiet.
-test:
-    bash scripts/check-temp-leaks.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --workspace --features {{FEATURES}} --locked --status-level fail --final-status-level fail; else cargo test --workspace --features {{FEATURES}} --locked --quiet; fi'
-
-# Replay the CLI journeys with the host temp directory reached through a symlink
-# — the spelling macOS gives every temp path and Linux never does (skipped off
-# Linux; `scripts/with-symlinked-tmp.sh` says why). `--test cli` is where the
-# path-sensitive journeys live.
-test-symlinked-tmp:
-    bash scripts/with-symlinked-tmp.sh bash -c 'if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --test cli --locked --status-level fail --final-status-level fail; else cargo test --features {{FEATURES}} --test cli --locked --quiet; fi'
-
-# Run the workspace suite under instrumentation and FAIL if line coverage drops
-# below {{COVERAGE_MIN}}%. This is the coverage gate (part of `just check` and
-# CI): a behavior the tests never execute is a hole, and the number makes it
-# visible. `--workspace` so the `oneharness-core` engine is measured alongside the
-# binary. Uses nextest when present (same runner as `test`), else `cargo test`.
-# `just coverage-html` writes a browsable report for finding the uncovered lines.
-#
-# Coverage is a platform-independent property of the test suite, so it is measured
-# on Linux/macOS where llvm-cov's instrumentation attributes subprocess-spawned
-# binary coverage reliably. On Windows that attribution is broken — the integration
-# tests in tests/cli.rs drive the *built* binary as a subprocess, and its profraw
-# data is not collected, so the binary crate reads as ~0% there (a tooling
-# limitation, not a real gap). The full functional gate (test/build/smoke) still
-# runs on Windows; only the coverage measurement is skipped, with a notice.
-coverage:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [[ "${OS:-}" == "Windows_NT" ]]; then
-        echo "coverage: skipped on Windows (llvm-cov subprocess attribution under-reports; measured on Linux/macOS — see justfile)"
-        exit 0
-    fi
-    if command -v cargo-nextest >/dev/null 2>&1; then
-        RUSTFLAGS="${RUSTFLAGS:-} -C linker={{COVERAGE_LINKER}}" cargo llvm-cov nextest --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
-    else
-        RUSTFLAGS="${RUSTFLAGS:-} -C linker={{COVERAGE_LINKER}}" cargo llvm-cov --workspace --features {{FEATURES}} --locked --fail-under-lines {{COVERAGE_MIN}}
-    fi
-
-# Browsable coverage report (kept out of the gate; opens uncovered lines per file).
-coverage-html:
-    cargo llvm-cov --workspace --features {{FEATURES}} --locked --html
-    @echo "report: target/llvm-cov/html/index.html"
-
-# Run only the end-to-end CLI tests.
-e2e:
-    if command -v cargo-nextest >/dev/null 2>&1; then cargo nextest run --features {{FEATURES}} --test cli --locked; else cargo test --features {{FEATURES}} --test cli --locked; fi
-
-# Hermetic end-to-end smoke of the *built* binary (part of `check`; CI runs it on
-# every platform). Drives list/detect/print-command + one mock spawn; no network.
+# Hermetic end-to-end smoke of the *built* binary (the oneharness-e2e project's
+# `test` runs it, through scripts/check-smoke-env.sh, on every platform). Drives
+# list/detect/print-command + one mock spawn; no network.
 smoke:
     @ONEHARNESS_HARNESSES="codex:undeclared-smoke-sentinel" bash scripts/smoke.sh
 
@@ -207,13 +134,15 @@ smoke-live:
 release-probe-live:
     @bash scripts/release-probe-live.sh
 
-# Debug build.
+# Debug build of the binary (the same command as the oneharness project's Nx
+# `build`, with the recovery hint a direct caller needs).
 build:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --locked || { echo "build failed; fix the compiler diagnostics above and rerun 'just build'" >&2; exit 1; }
+    @RUSTFLAGS="-D warnings" cargo build -p oneharness --quiet --locked || { echo "build failed; fix the compiler diagnostics above and rerun 'just build'" >&2; exit 1; }
 
-# Build the provider-process double used by hermetic boundary tests.
+# Build the provider-process double used by hermetic boundary tests (the
+# oneharness-mock-harness project's Nx `build`).
 build-mock-harness:
-    @RUSTFLAGS="-D warnings" cargo build --quiet --locked --features {{FEATURES}} --bin oneharness-mock-harness || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
+    @RUSTFLAGS="-D warnings" cargo build -p oneharness-mock-harness --quiet --locked || { echo "mock-harness build failed; fix the compiler diagnostics above and rerun 'just build-mock-harness'" >&2; exit 1; }
 
 # Optimized release build (the distributed artifact). Extra args reach cargo,
 # e.g. `just build-release --target aarch64-pc-windows-msvc`.
@@ -222,8 +151,9 @@ build-release *args:
 
 # Hermetic npm-packaging e2e: assemble the host's per-platform npm package from a
 # just-built binary, stage it under the `oneharness-cli` launcher, and prove the
-# launcher shim resolves and execs it. Runs inside `smoke` (Node-gated) too; this
-# recipe is the standalone way to iterate on scripts/npm-build.mjs. Needs Node.
+# launcher shim resolves and execs it. The npm-launcher project's `test` runs it
+# in the gate; this recipe is the standalone way to iterate on
+# scripts/npm-build.mjs. Needs Node.
 npm-e2e: build
     @just npm-e2e-bin target/debug/oneharness
 
@@ -232,12 +162,12 @@ npm-e2e: build
 npm-e2e-bin bin:
     bash scripts/npm-e2e.sh {{ quote(bin) }}
 
-# Advisory + license audit. Separate from `check`: needs a network advisory DB.
+# Advisory + license audit: the repo-level `supply-chain` target (cargo deny +
+# cargo machete). Separate from `check`: it needs a network advisory DB.
 deps-check:
     if ! command -v cargo-deny >/dev/null 2>&1; then echo "cargo-deny not installed: cargo install cargo-deny --locked" >&2; exit 1; fi
     if ! command -v cargo-machete >/dev/null 2>&1; then echo "cargo-machete not installed: cargo install cargo-machete --locked" >&2; exit 1; fi
-    cargo deny check
-    cargo machete
+    bash scripts/nx run workspace:supply-chain
 
 # Refuse an API break the release-driving commit subject does not declare.
 # Separate from `check` for the same reasons `deps-check` is: it resolves the
@@ -247,11 +177,13 @@ deps-check:
 semver-check:
     @bash scripts/semver-check.sh
 
-# Upgrade dependencies, then re-run the full gate.
+# Upgrade dependencies in every ecosystem's one lockfile, then re-run the full
+# sweep.
 upgrade:
     cargo update
-    cd npm/oneharness-sdk && bun update
-    @just check
+    bun update
+    uv lock --project python --upgrade
+    @just check all
 
 # Regenerate docs/sdk-parity.md from the capability manifest and the SDK sources.
 parity-audit:
@@ -262,72 +194,35 @@ parity-audit:
 sdk-generate:
     bun run --cwd npm/oneharness-sdk generate
 
-# Install the Node SDK's dependencies into *this* checkout — the one per-checkout
-# artifact `bootstrap` creates, and gitignored, so `sdk-check` must depend on it
-# rather than assume a bootstrapped caller. Runs on every gate, so it stays quiet
-# on success; bun's `--silent` would drop failure reasons too, hence the capture.
-# Enforced by scripts/check-sdk-install.sh.
-sdk-install:
-    @out=$(bun install --cwd npm/oneharness-sdk --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node SDK dependency install failed; the bun output above says why. If npm/oneharness-sdk/package.json changed, refresh the lockfile with 'bun install --cwd npm/oneharness-sdk'; otherwise check network access to the npm registry and rerun 'just sdk-install'." >&2; exit 1; }
+# Install the Bun workspace (the Node SDK, the npm launcher and Nx itself) from
+# the root bun.lock into *this* checkout — gitignored, so anything that needs it
+# installs it rather than assuming a bootstrapped caller (scripts/nx runs this
+# recipe before Nx whenever the install is missing or older than bun.lock). Quiet on success; bun's `--silent` would drop
+# failure reasons too, hence the capture. Enforced by scripts/check-js-install.sh.
+js-install:
+    @out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node workspace dependency install failed; the bun output above says why. If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check network access to the npm registry and rerun 'just js-install'." >&2; exit 1; }
 
-# Compile the Node SDK's publishable `dist/`. It is gitignored, so it has to be
-# built both for the gate's packaged e2e and for the release's `npm pack` — and
-# the release skips the gate when CI already ran it, so this is the one spelling
-# both reach rather than two that can drift.
-sdk-build: sdk-install
+# Compile the Node SDK's publishable `dist/` — the release's spelling of the
+# node-sdk project's `build`, which the release runs without Nx because it skips
+# the gate when CI already swept the tree. Same command, so they cannot drift.
+sdk-build: js-install
     bun run --cwd npm/oneharness-sdk build
 
-# Strict Node SDK gate, including the Rust->TypeScript drift check and real CLI e2e.
-#
-# The two steps that take scratch space run under `check-temp-leaks.sh`, which
-# also makes them quiet on success — bun prints a coverage table and a per-file
-# summary otherwise — and replays every line when either fails.
-sdk-check: build build-mock-harness sdk-install
-    bun run --cwd npm/oneharness-sdk generate:check
-    bun run --cwd npm/oneharness-sdk format:check
-    bun run --cwd npm/oneharness-sdk lint
-    bun run --cwd npm/oneharness-sdk typecheck
-    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test
-    just sdk-build
-    bash scripts/check-temp-leaks.sh bun run --cwd npm/oneharness-sdk test:package
+# Strict SDK gates, one project at a time: every gate target of the Node SDK
+# (generated-contract drift, biome, tsc, the unit suite under its 95% coverage
+# threshold, the build, and the packed-artifact e2e) or of the Python SDK
+# (generated-contract drift, ruff, mypy on Python 3.9, the unit suite under 95%
+# branch-inclusive coverage, and the release-stamped wheel e2e).
+sdk-check:
+    bash scripts/nx run-many -p node-sdk -t format,lint,typecheck,build,test,e2e
+
+python-sdk-check:
+    bash scripts/nx run-many -p python-sdk -t format,lint,typecheck,test,e2e
 
 # Regenerate Python declarations and runtime schemas from Rust wire types.
 python-sdk-generate:
-    uv run --no-project --python 3.9 --with-requirements python/oneharness-sdk/requirements-dev.txt python python/oneharness-sdk/scripts/generate.py
-
-# Strict Python SDK gate on the oldest supported interpreter, including generated
-# contract drift, branch-aware coverage, and a release-stamped wheel exercised
-# through its installed public import against the real CLI subprocess.
-python-sdk-check:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    log=$(mktemp)
-    trap 'rm -f "$log"' EXIT
-    if ! (
-        set -euo pipefail
-        if ! command -v uv >/dev/null 2>&1; then
-            echo "uv not installed: https://docs.astral.sh/uv/getting-started/installation/" >&2
-            exit 1
-        fi
-        cargo build --locked --features {{FEATURES}} --bins
-        run=(uv run --no-project --python 3.9 --with-requirements python/oneharness-sdk/requirements-dev.txt)
-        "${run[@]}" python python/oneharness-sdk/scripts/generate.py --check
-        "${run[@]}" ruff format --check python/oneharness-sdk
-        "${run[@]}" ruff check python/oneharness-sdk
-        "${run[@]}" mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test
-        rm -f target/python-sdk.coverage
-        # The two steps that take scratch space run under check-temp-leaks.sh,
-        # the same gate `test` uses.
-        #
-        # `-t` preserves the test package for its relative imports.
-        COVERAGE_FILE=target/python-sdk.coverage PYTHONPATH=python/oneharness-sdk/src bash scripts/check-temp-leaks.sh "${run[@]}" coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p 'test_*.py' -t python/oneharness-sdk
-        COVERAGE_FILE=target/python-sdk.coverage "${run[@]}" coverage report --rcfile=python/oneharness-sdk/pyproject.toml
-        bash scripts/check-temp-leaks.sh "${run[@]}" python python/oneharness-sdk/test/package_e2e.py
-    ) >"$log" 2>&1; then
-        cat "$log" >&2
-        exit 1
-    fi
-    echo "python-sdk-check: ok"
+    uv sync --project python --frozen --no-install-workspace --quiet
+    uv run --project python --frozen --no-sync python python/oneharness-sdk/scripts/generate.py
 
 # Verbose, install-free diagnostics (kept out of the gate).
 doctor:

@@ -1,0 +1,39 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "install-surface",
+  "projectType": "library",
+  "tags": [
+    "type:distribution",
+    "lang:bash"
+  ],
+  "//": "scripts/install.sh \u2014 the published installer, whose URL is a public contract and so never moves \u2014 and its hermetic e2e, which installs this checkout's binary from a release-shaped archive.",
+  "implicitDependencies": [
+    "oneharness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/install.sh",
+      "{workspaceRoot}/scripts/install-e2e.sh"
+    ]
+  },
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/smoke.sh --install"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        "oneharness:build"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/smoke.sh"
+      ]
+    }
+  }
+}

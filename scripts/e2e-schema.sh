@@ -2,7 +2,7 @@
 # Live e2e: structured output (`run --schema`). Drives the real Claude Code CLI
 # through oneharness with a JSON Schema and asserts a schema-VALID round-trip —
 # the live drift alarm for Claude's native `--json-schema` flag and its
-# `structured_output` field. The hermetic suite (tests/cli.rs) mocks both, so
+# `structured_output` field. The hermetic suite (crates/oneharness-e2e/tests/cli.rs) mocks both, so
 # only this catches Claude renaming/removing the flag or moving the field.
 #
 # claude-code is the right harness here: it is the one with NATIVE schema

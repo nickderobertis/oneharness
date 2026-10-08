@@ -1,0 +1,82 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "workspace",
+  "projectType": "library",
+  "tags": [
+    "type:workspace",
+    "lang:bash"
+  ],
+  "//": "Repository-wide checks no single project owns, offline: the project-graph boundary and Cargo-edge check, scratch-space hygiene across every suite, and the LF contract. The suites that drive real host tools (the LF gate's own refusals over scratch git repositories, the Nx base derivation through the real recipes, the self-sufficient install and bootstrap, the boundary check's refusals and the build recipes' diagnostics) are `workspace-integration`'s. `supply-chain` (cargo deny + machete) reads the network advisory database, so it is uncached and outside the affected tier; `just deps-check` and ci.yml's `deny` job run it by name.",
+  "implicitDependencies": [
+    "harness-captures"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/cargo-test.sh",
+      "{workspaceRoot}/scripts/coverage-linker.sh",
+      "{workspaceRoot}/scripts/check-temp-leaks.sh",
+      "{workspaceRoot}/scripts/check-temp-leaks-test.sh",
+      "{workspaceRoot}/scripts/check-scratch-prefixes.sh",
+      "{workspaceRoot}/scripts/check-scratch-prefixes-test.sh",
+      "{workspaceRoot}/scripts/check-lf-contracts.sh",
+      "{workspaceRoot}/scripts/session-setup.sh",
+      "{workspaceRoot}/scripts/nx",
+      "{workspaceRoot}/scripts/check-nx-graph.mjs",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/AGENTS.md",
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/.gitattributes",
+      "{workspaceRoot}/docs/sdk-parity.md",
+      "{workspaceRoot}/python/oneharness-sdk/**/*.py",
+      "{workspaceRoot}/python/oneharness-sdk/**/*.json",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/crates/*/Cargo.toml",
+      "{workspaceRoot}/**/project.json",
+      "{workspaceRoot}/crates/oneharness-core/src/io/scratch.rs",
+      "{workspaceRoot}/npm/oneharness-sdk/test/scratch.mjs",
+      "{workspaceRoot}/python/oneharness-sdk/test/scratch.py",
+      "{workspaceRoot}/python/oneharness-sdk/test/package_e2e.py",
+      "{workspaceRoot}/python/oneharness-sdk/src/oneharness_sdk/_generated/**/*",
+      "{workspaceRoot}/npm/oneharness-sdk/src/generated/**/*"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node scripts/check-nx-graph.mjs"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh"
+        ],
+        "parallel": false
+      }
+    },
+    "supply-chain": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo deny check",
+          "cargo machete"
+        ],
+        "parallel": false
+      },
+      "cache": false
+    }
+  }
+}

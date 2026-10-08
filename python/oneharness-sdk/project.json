@@ -1,0 +1,135 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "python-sdk",
+  "projectType": "library",
+  "tags": [
+    "type:sdk",
+    "lang:python"
+  ],
+  "//": "The Python SDK, on the oldest supported interpreter (python/.python-version). Its targets run from the repository root, as its suites expect. `build` stages the release-stamped package (scripts/python-sdk-pack.mjs) and builds its wheel and sdist into python/dist/sdk-dist, as the release's build-python-sdk job does. `test` enforces 95% branch-inclusive coverage over oneharness_sdk; `e2e` builds and installs the release-stamped wheels and is not part of `test`.",
+  "implicitDependencies": [
+    "sdk-contract",
+    "oneharness",
+    "oneharness-mock-harness"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "pyToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ruff format --check python/oneharness-sdk"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ruff format python/oneharness-sdk"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ruff check python/oneharness-sdk",
+          "uv run --project python --frozen --no-sync python python/oneharness-sdk/scripts/generate.py --check"
+        ],
+        "parallel": false
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test"
+        ],
+        "parallel": false
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node -e \"require('fs').rmSync('python/dist/sdk-dist',{recursive:true,force:true})\"",
+          "bash -c 'set -euo pipefail; package=\"$(node scripts/python-sdk-pack.mjs)\"; uv build --quiet --out-dir python/dist/sdk-dist \"$package\"'"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/python-sdk-pack.mjs",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/LICENSE"
+      ],
+      "outputs": [
+        "{workspaceRoot}/python/dist/sdk",
+        "{workspaceRoot}/python/dist/sdk-dist"
+      ]
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "node -e \"require('fs').rmSync('target/python-sdk.coverage',{force:true})\"",
+          "bash scripts/check-temp-leaks.sh uv run --project python --frozen --no-sync coverage run --rcfile=python/oneharness-sdk/pyproject.toml -m unittest discover -s python/oneharness-sdk/test -p test_*.py -t python/oneharness-sdk",
+          "uv run --project python --frozen --no-sync coverage report --rcfile=python/oneharness-sdk/pyproject.toml"
+        ],
+        "parallel": false,
+        "env": {
+          "COVERAGE_FILE": "target/python-sdk.coverage",
+          "PYTHONPATH": "python/oneharness-sdk/src"
+        }
+      },
+      "dependsOn": [
+        "oneharness:build",
+        "oneharness-mock-harness:build"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/check-temp-leaks.sh"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/python-sdk.coverage"
+      ]
+    },
+    "e2e": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "bash scripts/check-temp-leaks.sh uv run --project python --frozen --no-sync python python/oneharness-sdk/test/package_e2e.py"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        "oneharness:build",
+        "oneharness-mock-harness:build",
+        "build"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/check-temp-leaks.sh",
+        "{workspaceRoot}/scripts/python-sdk-pack.mjs",
+        "{workspaceRoot}/pyproject.toml",
+        "{workspaceRoot}/LICENSE"
+      ]
+    }
+  }
+}

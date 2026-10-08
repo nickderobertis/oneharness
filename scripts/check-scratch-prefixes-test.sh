@@ -12,13 +12,26 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+# Every case edits a staged copy of what the check reads, never the tracked
+# files: the leak gate and these prefixes are read by suites that run in
+# parallel with this one, and must never see a drifted copy.
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+for file in scripts/check-scratch-prefixes.sh scripts/check-temp-leaks.sh \
+  crates/oneharness-core/src/io/scratch.rs npm/oneharness-sdk/test/scratch.mjs \
+  python/oneharness-sdk/test/scratch.py python/oneharness-sdk/test/package_e2e.py; do
+  mkdir -p "$stage/$(dirname "$file")"
+  cp "$file" "$stage/$file"
+done
+cd "$stage"
+
 check="scripts/check-scratch-prefixes.sh"
 node_prefixes="npm/oneharness-sdk/test/scratch.mjs"
 rust_prefix="crates/oneharness-core/src/io/scratch.rs"
 leak_gate="scripts/check-temp-leaks.sh"
 work="$(mktemp -d)"
-# Restored from copies rather than from git: one of these files is untracked in a
-# fresh checkout, and a case that edits it must still put it back.
+# Restored from copies between cases, so each case starts from the staged
+# originals.
 cp "$node_prefixes" "$work/node-prefixes"
 cp "$rust_prefix" "$work/rust-prefix"
 cp "$leak_gate" "$work/leak-gate"
@@ -27,7 +40,7 @@ restore() {
   cp "$work/rust-prefix" "$rust_prefix"
   cp "$work/leak-gate" "$leak_gate"
 }
-trap 'restore; rm -rf "$work"' EXIT
+trap 'restore; rm -rf "$work" "$stage"' EXIT
 
 fail() {
   echo "check-scratch-prefixes-test: $1" >&2

@@ -153,8 +153,12 @@ fi
 # shellcheck disable=SC2016
 require_line scripts/ci-verdict.sh 'workflow="${CI_WORKFLOW:-ci.yml}"' \
   "keep the verdict selector pointed at ci.yml"
-require_line scripts/ci-verdict.sh 'event=push&branch=main' \
-  "select CI's main-branch push runs"
+# This is a literal shell expansion in the selector's source.
+# shellcheck disable=SC2016
+require_line scripts/ci-verdict.sh '  endpoint="repos/$repo/actions/workflows/$workflow/runs?head_sha=$run_sha&event=$run_event${run_branch:+&branch=$run_branch}&per_page=100"' \
+  "select the run that swept the tagged tree (the release pull request's, or a dispatched sweep)"
+require_line scripts/ci-verdict.sh 'readonly SWEEP_STEP="Full sweep (just check all)"' \
+  "count only a check job whose full-sweep step succeeded as a verdict for the tree"
 require_line scripts/ci-verdict.sh '["check (macos-latest)", "check (ubuntu-latest)", "check (windows-latest)"]' \
   "require every CI check matrix job before skipping the release gate"
 require_line pyproject.toml 'name = "oneharness-cli"' "keep the PyPI CLI name used by publication verification"
@@ -176,9 +180,9 @@ require_line .github/workflows/release.yml 'actions: read' \
 # shellcheck disable=SC2016
 require_line .github/workflows/release.yml 'needs_check: ${{ steps.verdict.outputs.needs_check }}' \
   "publish that verdict to the jobs that would otherwise re-run a check"
-require_guarded .github/workflows/release.yml 'run: just check' \
+require_guarded .github/workflows/release.yml 'run: just check all' \
   "if: steps.verdict.outputs.needs_check == 'true'" \
-  "run the complete repository gate only when CI reached no verdict for the tagged commit"
+  "run the full sweep only when CI reached no sweep verdict for the tagged tree"
 # `just check` contains both SDK gates, so the fallback above has already run
 # them on this commit. A release job running either again is the same commit
 # swept twice, and neither belongs here any more.

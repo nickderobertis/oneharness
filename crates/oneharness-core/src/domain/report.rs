@@ -924,7 +924,7 @@ mod tests {
         // listed fails here instead of escaping the token check.
         //
         // A structural assertion, deliberately, in place of an end-to-end one:
-        // the summary journey (`tests/cli.rs`, the chain that stops each way)
+        // the summary journey (`crates/oneharness-e2e/tests/cli.rs`, the chain that stops each way)
         // already reads `ok`, `nonzero` and `timeout` off the emitted line, and
         // no chain the CLI can be driven through reports the other four. A
         // `skipped` or `spawn-error` candidate always falls through, named by

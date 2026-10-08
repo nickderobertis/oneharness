@@ -556,18 +556,30 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             # included; the default window (the last 7) reaches no 2020 date.
             ({"session": "win-a", "history_dir": history_dir}, None),
             ({"session": "win-recent", "history_dir": history_dir}, "win-recent"),
-            ({"session": "win-a", "history_dir": history_dir, "window": since("2020-01-05")}, "win-a"),
+            (
+                {"session": "win-a", "history_dir": history_dir, "window": since("2020-01-05")},
+                "win-a",
+            ),
             ({"session": "win-a", "history_dir": history_dir, "window": since("2020-01-06")}, None),
-            ({"session": "win-b", "history_dir": history_dir, "window": since("2020-01-06")}, "win-b"),
+            (
+                {"session": "win-b", "history_dir": history_dir, "window": since("2020-01-06")},
+                "win-b",
+            ),
             ({"session": "win-c", "history_dir": history_dir, "window": since("2020-01-01")}, None),
-            ({"session": "win-recent", "history_dir": history_dir, "window": recent(3)}, "win-recent"),
+            (
+                {"session": "win-recent", "history_dir": history_dir, "window": recent(3)},
+                "win-recent",
+            ),
             ({"session": "win-recent", "history_dir": history_dir, "window": recent(2)}, None),
             ({"session": "win-b", "history_dir": history_dir, "window": recent(3)}, None),
             ({"session": "win-a", "history_dir": history_dir, "window": "allTime"}, "win-a"),
             ({"session": "win-c", "history_dir": history_dir, "window": "allTime"}, "win-c"),
             # By last: the newest session inside the window, never beyond it.
             ({"last": True, "history_dir": history_dir}, "win-recent"),
-            ({"last": True, "history_dir": history_dir, "window": since("2020-01-01")}, "win-recent"),
+            (
+                {"last": True, "history_dir": history_dir, "window": since("2020-01-01")},
+                "win-recent",
+            ),
             ({"last": True, "history_dir": history_dir, "window": since(today)}, None),
             ({"last": True, "history_dir": history_dir, "window": recent(3)}, "win-recent"),
             ({"last": True, "history_dir": history_dir, "window": recent(2)}, None),
@@ -705,8 +717,9 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             {"all_time": True},
         ]
         for bad in bad_windows:
-            with self.subTest(bad=bad), self.assertRaisesRegex(
-                ContractError, "invalid oneharness history list options"
+            with (
+                self.subTest(bad=bad),
+                self.assertRaisesRegex(ContractError, "invalid oneharness history list options"),
             ):
                 await client.history_list(cast("Any", bad))
         with self.assertRaisesRegex(ContractError, "invalid oneharness history watch options"):

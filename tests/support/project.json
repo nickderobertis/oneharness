@@ -1,0 +1,39 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "mock-responder",
+  "projectType": "library",
+  "tags": [
+    "type:lib",
+    "lang:rust"
+  ],
+  "//": "The deterministic harness responder `oneharness mock-harness` ships and the oneharness-mock-harness executable wraps: library code of the binary crate (src/lib.rs includes it by path), kept apart so the crates that compile or spawn it depend on it by graph edge. It is linted and tested through the oneharness crate it compiles into.",
+  "implicitDependencies": [
+    "harness-captures"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "rustfmt --edition 2021 --check tests/support/mock_harness.rs"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "rustfmt --edition 2021 tests/support/mock_harness.rs"
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

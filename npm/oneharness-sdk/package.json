@@ -20,14 +20,14 @@
     "generate:check": "node scripts/generate.mjs --check",
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "lint": "biome check --no-errors-on-unmatched src test scripts",
+    "lint": "biome check --error-on-warnings --no-errors-on-unmatched src test scripts",
     "format": "biome format --write --no-errors-on-unmatched src test scripts",
     "format:check": "biome format --no-errors-on-unmatched src test scripts",
     "test": "bun test --coverage",
     "test:package": "node test/package-e2e.mjs"
   },
   "dependencies": {
-    "oneharness-cli": "^0.3.21",
+    "oneharness-cli": "workspace:*",
     "zod": "^4.4.3"
   },
   "devDependencies": {

@@ -809,14 +809,14 @@ mod tests {
     }
 
     /// The prose that restates this module's contract — the README's matrix
-    /// row, translation table, `--exact` and live-proof sections, AGENTS.md,
+    /// row, translation table, `--exact` and live-proof sections, the engine's AGENTS.md,
     /// and the parity note — is held to the code here, so a rename or a
     /// changed translation cannot leave the documents describing the old one.
     #[test]
     fn the_documents_restating_the_sync_contract_match_the_code() {
         use crate::domain::sync::RuleList;
         let readme = include_str!("../../../../README.md").replace("\r\n", "\n");
-        let agents = include_str!("../../../../AGENTS.md");
+        let agents = include_str!("../../AGENTS.md");
         let parity = include_str!("../../../../docs/sdk-parity.md");
         let e2e = include_str!("../../../../scripts/e2e-lib.sh");
         let lane = include_str!("../../../../scripts/e2e-codex.sh");

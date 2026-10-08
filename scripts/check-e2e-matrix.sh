@@ -7,7 +7,7 @@
 # literals per workflow, and each job's matrix restates the PR-default platform
 # set. This script is the single source of that contract and fails if any
 # workflow drifts from it — so the duplication is *checked*, not free-floating
-# (AGENTS.md > "Live e2e in CI").
+# (live/pr-matrix/AGENTS.md > "Live e2e in CI").
 #
 # The contract (change it HERE, then update the workflows to match):
 #   - No workflow may trigger on `push` (the release-plz release PR re-runs the
@@ -35,8 +35,15 @@ LINUX='["ubuntu-latest"]'
 # coincidence: control sockets have no Windows equivalent, and schema's
 # quote-heavy argv is mangled by the Windows .cmd shim.
 UNIX_ONLY='["ubuntu-latest","macos-latest"]'
+# The test-only crates are excluded: the journeys, the fixture, the SDK contract
+# and its conformance suite exercise nothing a live harness run would prove, and
+# while they lived under tests/ and examples/ no change to them ran these suites.
 SHARED_PATHS='src/**
 crates/**
+"!crates/oneharness-e2e/**"
+"!crates/oneharness-mock-harness/**"
+"!crates/sdk-contract/**"
+"!crates/sdk-conformance/**"
 Cargo.toml
 Cargo.lock
 rust-toolchain.toml

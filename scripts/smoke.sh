@@ -1,28 +1,41 @@
 #!/usr/bin/env bash
 #
 # End-to-end smoke of the *built* oneharness binary — the artifact a user runs,
-# not the test-compiled crate. Two modes:
+# not the test-compiled crate. Four modes:
 #
 #   (default) hermetic — drive the built binary through `list`, `detect --all`,
 #       and `run --all --print-command`, then one real spawn+parse against the
 #       mock-harness fixture. No network, no auth, fully deterministic. This is
-#       what `just check` (and therefore CI) requires on every platform.
+#       what the `oneharness-e2e` project's `test` target requires on every
+#       platform.
 #
-#   --live             — additionally fire a real prompt at whatever harnesses
-#       are installed and authenticated, skipping cleanly when none are. Opt-in:
-#       it needs binaries, auth, and network and makes real (paid) model calls,
-#       so it is never part of the gate or CI. Run it via `just smoke-live`.
+#   --install          — only the installer journey: package the binary as a
+#       release-shaped archive and install it through scripts/install.sh. The
+#       `install-surface` project's `test` target.
+#
+#   --npm              — only the npm journey: assemble the host's platform
+#       package and prove the `oneharness-cli` launcher execs it. The
+#       `npm-launcher` project's `test` target.
+#
+#   --live             — the hermetic smoke, then fire a real prompt at whatever
+#       harnesses are installed and authenticated, skipping cleanly when none
+#       are. Opt-in: it needs binaries, auth, and network and makes real (paid)
+#       model calls, so it is never part of the gate or CI. Run it via
+#       `just smoke-live`.
 #
 # Output is context the next agent reads: near-silent on success (one line),
 # and on failure the exact step, command, captured output, and a suggested fix.
 set -euo pipefail
 
 LIVE=0
+MODE=cli
 case "${1:-}" in
   --live) LIVE=1 ;;
+  --install) MODE=install ;;
+  --npm) MODE=npm ;;
   "") ;;
   *)
-    echo "smoke: unknown argument: $1 (use --live, or no argument)" >&2
+    echo "smoke: unknown argument: $1 (use --live, --install, --npm, or no argument)" >&2
     exit 2
     ;;
 esac
@@ -43,7 +56,7 @@ export ONEHARNESS_NO_CONFIG=1
 # its agents through oneharness carries `ONEHARNESS_HARNESSES` /
 # `ONEHARNESS_MODE` / `ONEHARNESS_TIMEOUT`, and a planted `harnesses` the step
 # asserts on is then overridden by whatever the host selected. Stripping them
-# here is what `tests/cli.rs`'s `run_with_config` does for the compiled-CLI
+# here is what `crates/oneharness-e2e/tests/cli.rs`'s `run_with_config` does for the compiled-CLI
 # suite; it is the same invariant, applied to the same boundary.
 #
 # Every `ONEHARNESS_*` in the environment goes, discovered rather than listed,
@@ -168,8 +181,9 @@ fi
 
 # 0. Installer e2e: package the binary under test as a release-shaped archive,
 #    install it through scripts/install.sh from a local URL, and prove the
-#    installed binary runs. This keeps the installer covered in `just check`
+#    installed binary runs. This keeps the installer covered in the gate
 #    without touching the network or depending on an already-published release.
+if [ "$MODE" = install ]; then
 install_dir="$(mktemp -d)"
 LAST_CMD="bash scripts/install-e2e.sh <oneharness-bin> <install-dir>"
 if ! out="$(bash scripts/install-e2e.sh "$oh" "$install_dir" 2>&1)"; then
@@ -185,6 +199,9 @@ if [ -n "$crate_ver" ] && [ -n "$installed_ver" ] && [ "$crate_ver" != "$install
     "$installed --version" "$out"
 fi
 rm -rf "$install_dir"
+echo "smoke: ok (installer — release-shaped archive installed through scripts/install.sh)"
+exit 0
+fi
 
 # 0b. npm packaging e2e: assemble the host's per-platform npm package from the
 #     binary under test, stage it under the launcher exactly as npm's optional-
@@ -192,14 +209,18 @@ rm -rf "$install_dir"
 #     resolves and execs it. Node-gated like the other external tools the gate
 #     uses: GitHub runners ship Node so CI covers every platform; a node-less
 #     clone skips with a notice rather than failing the gate.
-if command -v node >/dev/null 2>&1; then
-  LAST_CMD="bash scripts/npm-e2e.sh <oneharness-bin>"
-  if ! out="$(bash scripts/npm-e2e.sh "$oh" 2>&1)"; then
-    fail "npm packaging e2e failed" "$LAST_CMD" "$out" \
-      "inspect scripts/npm-e2e.sh, scripts/npm-build.mjs, and npm/oneharness/"
+if [ "$MODE" = npm ]; then
+  if command -v node >/dev/null 2>&1; then
+    LAST_CMD="bash scripts/npm-e2e.sh <oneharness-bin>"
+    if ! out="$(bash scripts/npm-e2e.sh "$oh" 2>&1)"; then
+      fail "npm packaging e2e failed" "$LAST_CMD" "$out" \
+        "inspect scripts/npm-e2e.sh, scripts/npm-build.mjs, and npm/oneharness/"
+    fi
+    echo "smoke: ok (npm — the oneharness-cli launcher execs the host's platform package)"
+  else
+    echo "smoke: node not found; npm packaging e2e skipped (install Node to run it)" >&2
   fi
-else
-  echo "smoke: node not found; npm packaging e2e skipped (install Node to run it)" >&2
+  exit 0
 fi
 
 # 1. `list` — the registry, with each adapter's example command. `--compact`
@@ -388,7 +409,7 @@ fi
 rm -rf "$init_dir"
 
 if [ "$LIVE" -eq 0 ]; then
-  echo "smoke: ok (hermetic — install, list, detect, print-command, config, sync, mock run, schema, history, init)"
+  echo "smoke: ok (hermetic — list, detect, print-command, config, sync, mock run, schema, history, init)"
   exit 0
 fi
 

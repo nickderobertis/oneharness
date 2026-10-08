@@ -59,13 +59,28 @@ key="$(node -e 'process.stdout.write(process.platform+"-"+process.arch)')"
 detect_target "$key"
 
 tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
+# The launcher is a Bun workspace member, so an install can leave a resolved
+# `@oneharness/cli-*` under its node_modules. Plant one (named for this run, and
+# removed with whatever this run created) so the build has to leave it behind:
+# a staged copy carrying it would run that package instead of this build's.
+launcher_modules="npm/oneharness/node_modules"
+[ -e "$launcher_modules" ] && created_modules="" || created_modules=1
+stale_pkg="$launcher_modules/@oneharness/cli-stale-$$"
+cleanup() {
+    rm -rf "$tmp" "$stale_pkg"
+    if [ -n "$created_modules" ]; then rm -rf "$launcher_modules"; fi
+}
+trap cleanup EXIT
+mkdir -p "$stale_pkg"
+printf '{"name":"@oneharness/cli-stale"}\n' >"$stale_pkg/package.json"
 
 # Build the platform package and the version-stamped launcher into $tmp/dist.
 plat_dir="$(node scripts/npm-build.mjs platform --target "$TARGET" --binary "$bin_resolved" --out "$tmp/dist")" \
     || fail "npm-build platform failed"
 launcher_dir="$(node scripts/npm-build.mjs launcher --out "$tmp/dist")" \
     || fail "npm-build launcher failed"
+[ ! -e "$launcher_dir/node_modules" ] ||
+    fail "npm-build launcher copied the source's node_modules into the staged launcher; it must stage only the package's own files"
 
 # Stage the platform package where npm would put the resolved optional
 # dependency: node_modules/@oneharness/cli-<platform>-<arch> beside the launcher.

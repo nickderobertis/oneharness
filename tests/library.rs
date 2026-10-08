@@ -29,7 +29,7 @@ use oneharness_core::io::run::{
 use oneharness_core::io::runner::ProcessSupervisor;
 use serde_json::Value;
 
-#[path = "support/library_fixture.rs"]
+#[path = "common/library_fixture.rs"]
 mod fixture;
 use fixture::{bin_override, request, tool_part_lines};
 

@@ -1,0 +1,90 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "defaultBase": "origin/main",
+  "cacheDirectory": ".nx/cache",
+  "parallel": 3,
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*"
+    ],
+    "rustToolchain": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/.cargo/config.toml",
+      "{workspaceRoot}/rustfmt.toml"
+    ],
+    "rustTestRunner": [
+      "{workspaceRoot}/scripts/cargo-test.sh",
+      "{workspaceRoot}/scripts/coverage-linker.sh",
+      "{workspaceRoot}/scripts/check-temp-leaks.sh",
+      {
+        "env": "OS"
+      }
+    ],
+    "jsToolchain": [
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock"
+    ],
+    "pyToolchain": [
+      "{workspaceRoot}/python/pyproject.toml",
+      "{workspaceRoot}/python/uv.lock",
+      "{workspaceRoot}/python/.python-version"
+    ]
+  },
+  "targetDefaults": {
+    "format": {
+      "cache": true,
+      "inputs": [
+        "default"
+      ]
+    },
+    "format-write": {
+      "cache": false
+    },
+    "lint": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default"
+      ]
+    },
+    "typecheck": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default"
+      ]
+    },
+    "build": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default"
+      ]
+    },
+    "test": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default"
+      ]
+    },
+    "e2e": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default"
+      ]
+    },
+    "coverage": {
+      "cache": true
+    },
+    "live": {
+      "cache": false
+    },
+    "explore": {
+      "cache": false
+    }
+  }
+}

@@ -5,18 +5,23 @@ name: Release
 #
 # The Release itself is created by release-plz (see release-plz.yml) when a
 # version-bump PR merges. Because release-plz uses a PAT, that Release fires the
-# `release: published` event below; this workflow then reads CI's verdict for the
-# tagged commit, publishes the crates idempotently, and uploads the archives +
-# checksums. Creating a Release by hand in the GitHub UI is the supported manual
-# fallback — it triggers the same validated path, read from CI's check jobs for
-# that exact commit: a failed check job refuses release; only a complete
-# successful check matrix skips the release gate; once CI ends, a non-Ubuntu
-# check job without a success verdict refuses release, and an Ubuntu one alone
-# runs the gate on the Ubuntu release runner — so a commit with no CI run is
+# `release: published` event below; this workflow then reads the verdict of the
+# full sweep CI ran over the tagged tree, publishes the crates idempotently, and
+# uploads the archives + checksums. That sweep ran on release-plz's release pull
+# request (ci.yml, scripts/ci-gate-tier.sh): release-plz batches merges behind
+# it, so a push to main runs only the affected tier, and the release reads the
+# merged release pull request's run when its head carried exactly the tagged
+# tree — or, for a Release created by hand in the GitHub UI (the supported
+# manual fallback) or one main moved under, a `workflow_dispatch` of ci.yml with
+# tier=all on the release tag. From that run's check jobs: a failed check job
+# refuses release; only a complete check matrix whose every job ran the full
+# sweep successfully skips the release gate; once CI ends, a non-Ubuntu check
+# job without a successful sweep refuses release, and an Ubuntu one alone runs
+# the sweep on the Ubuntu release runner — so a tree no sweep covered is
 # refused.
 #
-#   * gate               — consume CI's own verdict for the exact tagged commit
-#                           instead of re-running a check it already passed.
+#   * gate               — consume CI's full-sweep verdict for the tagged tree
+#                           instead of sweeping a tree it already swept.
 #   * upload             — build each target on a native runner, attach the
 #                           archive + sha256 checksum, sign a keyless Sigstore
 #                           build-provenance attestation (OIDC → the public Rekor
@@ -81,12 +86,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      actions: read  # read CI's own result for the tagged commit
+      actions: read  # read CI's own result for the tagged tree
+      pull-requests: read  # find the release pull request that carried it
     outputs:
       needs_check: ${{ steps.verdict.outputs.needs_check }}
     steps:
       - uses: actions/checkout@v5
-      - name: Read CI's verdict for the tagged commit
+      - name: Read CI's full-sweep verdict for the tagged tree
         id: verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -111,10 +117,10 @@ jobs:
       - if: steps.verdict.outputs.needs_check == 'true'
         run: just bootstrap
       # needs_check is true only when CI's Ubuntu check job alone has no
-      # success verdict for this tagged commit.
-      - name: Run gate when CI's Ubuntu check job lacks a success verdict
+      # successful sweep of this tagged tree; the sweep runs here in its place.
+      - name: Run the full sweep when CI's Ubuntu check job lacks one
         if: steps.verdict.outputs.needs_check == 'true'
-        run: just check
+        run: just check all
 
   publish-crates:
     needs: gate

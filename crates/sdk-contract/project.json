@@ -1,0 +1,79 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "sdk-contract",
+  "projectType": "library",
+  "tags": [
+    "type:contract",
+    "lang:rust"
+  ],
+  "//": "The cross-language SDK contract: the generator every SDK runs and the acceptance matrix all three languages are held to. Tagged type:contract, it may depend only on the engine it is generated from \u2014 never on an SDK that consumes it (scripts/check-nx-graph.mjs).",
+  "implicitDependencies": [
+    "oneharness-core",
+    "harness-captures"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "rustToolchain"
+    ]
+  },
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-sdk-contract -- --check"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo fmt -p oneharness-sdk-contract"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo clippy -p oneharness-sdk-contract --all-targets --features sdk-schema --locked -- -D warnings"
+        ],
+        "parallel": false
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "cargo build -p oneharness-sdk-contract --examples --features sdk-schema --locked"
+        ],
+        "parallel": false,
+        "env": {
+          "RUSTFLAGS": "-D warnings"
+        }
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/cargo-test.sh oneharness-sdk-contract"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "^default",
+        "rustTestRunner"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/oneharness-sdk-contract.profdata"
+      ],
+      "parallelism": false
+    }
+  }
+}

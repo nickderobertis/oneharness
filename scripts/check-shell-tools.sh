@@ -64,6 +64,16 @@ cp scripts/shell-tools.sh "$stage/scripts/"
 tools="$work/tools"
 exe=""
 case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) exe=.exe ;; esac
+# A `file:///` mirror URL for a scratch directory, spelled the way this host's
+# curl reads it: on Windows that is the drive path (`file:///C:/...`), since
+# curl there cannot open the POSIX spelling Git Bash gives `$work`.
+file_url() {
+  if [ -n "$exe" ]; then
+    printf 'file:///%s' "$(cygpath -m "$1")"
+  else
+    printf 'file://%s' "$1"
+  fi
+}
 
 # A stand-in that answers --version as the pinned tool does and otherwise
 # echoes its arguments, so `exec` is seen passing them through.
@@ -169,6 +179,8 @@ seed() {
   mkdir -p "$tools/downloads"
   cp "$@" "$tools/downloads/"
 }
+mirror="$(file_url "$work/mirror")"
+no_mirror="$(file_url "$work/no-mirror")"
 doubles="$work/doubles"
 mkdir -p "$doubles"
 cat >"$doubles/cmake" <<'SH'
@@ -198,7 +210,7 @@ SH
 chmod +x "$doubles/cmake"
 cold() {
   status=0
-  PATH="$doubles:$PATH" CMAKE_DOUBLE_VERSION="$(pinned kcov)" ONEHARNESS_TOOLS_MIRROR="file://$work/no-mirror" \
+  PATH="$doubles:$PATH" CMAKE_DOUBLE_VERSION="$(pinned kcov)" ONEHARNESS_TOOLS_MIRROR="$no_mirror" \
   ONEHARNESS_TOOLS_DIR="$tools" bash "$stage/scripts/shell-tools.sh" "$@" >"$work/out" 2>&1 || status=$?
 }
 
@@ -223,7 +235,7 @@ mkdir -p "$work/mirror"
 shfmt_asset="$(basename "$(printf '%s\n' "${assets[@]}" | grep '/shfmt')")"
 printf 'not shfmt\n' >"$work/mirror/$shfmt_asset"
 status=0
-ONEHARNESS_TOOLS_MIRROR="file://$work/mirror" ONEHARNESS_TOOLS_DIR="$tools" \
+ONEHARNESS_TOOLS_MIRROR="$mirror" ONEHARNESS_TOOLS_DIR="$tools" \
   bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
 expect 1 "$shfmt_asset has SHA-256" "a mirrored asset with the wrong bytes"
 [ ! -e "$tools/shfmt-$(pinned shfmt)" ] && [ ! -e "$tools/downloads/$shfmt_asset" ] ||
@@ -231,14 +243,14 @@ expect 1 "$shfmt_asset has SHA-256" "a mirrored asset with the wrong bytes"
 
 # A download that fails names the URL and the fix.
 cold install
-expect 1 "could not download file://$work/no-mirror/$shfmt_asset" "an unreachable mirror"
+expect 1 "could not download $no_mirror/$shfmt_asset" "an unreachable mirror"
 
 # A mirror serving the recorded bytes installs, and the download is kept, so
 # reinstalling needs no network at all.
 cp "$(printf '%s\n' "${assets[@]}" | grep '/shfmt')" "$work/mirror/$shfmt_asset"
 [ "$linux" = 0 ] || stand_in kcov "$(pinned kcov)" "kcov $(pinned kcov)"
 status=0
-ONEHARNESS_TOOLS_MIRROR="file://$work/mirror/" ONEHARNESS_TOOLS_DIR="$tools" \
+ONEHARNESS_TOOLS_MIRROR="$mirror/" ONEHARNESS_TOOLS_DIR="$tools" \
   bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
 expect 0 "shfmt $(pinned shfmt)" "an install from a mirror serving the recorded bytes"
 [ -f "$tools/downloads/$shfmt_asset" ] || fail "an install from the mirror did not keep its download" "$(ls -R "$tools")"
@@ -253,7 +265,7 @@ if [ "$linux" = 1 ]; then
   stand_in shellcheck "$(pinned shellcheck)" "version: $(pinned shellcheck)"
   stand_in shfmt "$(pinned shfmt)" "v$(pinned shfmt)"
   status=0
-  PATH="$doubles:$PATH" CMAKE_DOUBLE_FAIL="no libdw found" ONEHARNESS_TOOLS_MIRROR="file://$work/no-mirror" \
+  PATH="$doubles:$PATH" CMAKE_DOUBLE_FAIL="no libdw found" ONEHARNESS_TOOLS_MIRROR="$no_mirror" \
     ONEHARNESS_TOOLS_DIR="$tools" bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
   expect 1 "kcov $(pinned kcov) did not build" "a failing kcov build"
   grep -Fq "cmake: no libdw found" "$work/out" || fail "a failing kcov build hid the build's own error" "$(cat "$work/out")"

@@ -5,8 +5,10 @@ Subtree rules for the shell line-coverage floor.
 - **The floor is 54% lines** (`SHELL_COVERAGE_MIN`, default 54, in
   `scripts/shell-coverage.sh`), below the 95% default as the create-repo bash
   reference allows with a recorded reason, and still enforced: `coverage` fails
-  below it. Measured at 55.54% of every shell script under `scripts/` and
-  `.githooks/` with kcov 43 on Linux. Raise it as tests land; never lower it.
+  below it. It rests on the merged measurement of every shell script under
+  `scripts/` and `.githooks/` with kcov 43 on Linux aarch64: 55.54% when it was
+  set, 56.28% (5406/9606 lines, 101 scripts) once the shell toolchain's own
+  tests landed. Raise it as tests land; never lower it.
 - **Why it is below 95.** The denominator is every script, so what the gate
   never runs counts at zero: the paid `live-*` suites and `explore-*` probes
   (and most of their shared `e2e-lib.sh`), `install.sh` (POSIX `sh` run by

@@ -6,7 +6,7 @@
     "type:sdk",
     "lang:python"
   ],
-  "//": "The Python SDK, on the oldest supported interpreter (python/.python-version). Its targets run from the repository root, as its suites expect. `test` enforces 95% branch-inclusive coverage over oneharness_sdk; `e2e` builds and installs the release-stamped wheels and is not part of `test`.",
+  "//": "The Python SDK, on the oldest supported interpreter (python/.python-version). Its targets run from the repository root, as its suites expect. `build` stages the release-stamped package (scripts/python-sdk-pack.mjs) and builds its wheel and sdist into python/dist/sdk-dist, as the release's build-python-sdk job does. `test` enforces 95% branch-inclusive coverage over oneharness_sdk; `e2e` builds and installs the release-stamped wheels and is not part of `test`.",
   "implicitDependencies": [
     "sdk-contract",
     "oneharness",
@@ -60,6 +60,26 @@
         "parallel": false
       }
     },
+    "build": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "node -e \"require('fs').rmSync('python/dist/sdk-dist',{recursive:true,force:true})\"",
+          "bash -c 'set -euo pipefail; package=\"$(node scripts/python-sdk-pack.mjs)\"; uv build --quiet --out-dir python/dist/sdk-dist \"$package\"'"
+        ],
+        "parallel": false
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/python-sdk-pack.mjs",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/LICENSE"
+      ],
+      "outputs": [
+        "{workspaceRoot}/python/dist/sdk",
+        "{workspaceRoot}/python/dist/sdk-dist"
+      ]
+    },
     "test": {
       "executor": "nx:run-commands",
       "options": {
@@ -99,7 +119,8 @@
       },
       "dependsOn": [
         "oneharness:build",
-        "oneharness-mock-harness:build"
+        "oneharness-mock-harness:build",
+        "build"
       ],
       "inputs": [
         "default",

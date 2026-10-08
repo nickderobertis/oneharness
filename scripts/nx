@@ -20,6 +20,10 @@ if ! command -v node >/dev/null 2>&1; then
   echo "nx: Nx runs on Node, which is not on PATH; install Node (22, as CI does) and re-run." >&2
   exit 1
 fi
+if ! command -v just >/dev/null 2>&1; then
+  echo "nx: just is not on PATH; it runs the locked workspace install ('just js-install'). Install just (.tool-versions pins it) and re-run." >&2
+  exit 1
+fi
 if ! command -v bun >/dev/null 2>&1; then
   echo "nx: bun is not on PATH; it installs Nx from the root bun.lock. Install bun (https://bun.sh) and re-run 'just bootstrap'." >&2
   exit 1
@@ -27,9 +31,10 @@ fi
 
 stamp=node_modules/.bun-install-stamp
 if [ ! -f node_modules/nx/package.json ] || [ ! -f "$stamp" ] || [ bun.lock -nt "$stamp" ] || [ package.json -nt "$stamp" ]; then
-  if ! out="$(bun install --frozen-lockfile 2>&1)"; then
-    printf '%s\n' "$out" >&2
-    echo "nx: 'bun install --frozen-lockfile' failed (above). If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check access to the npm registry, then re-run 'just bootstrap'." >&2
+  # The justfile's `js-install` is the one implementation of the locked install
+  # (quiet on success, bun's own reason on failure); this only decides when.
+  if ! just --justfile "$root/justfile" --working-directory "$root" js-install; then
+    echo "nx: the locked workspace install failed (above); fix it, then re-run 'just bootstrap'." >&2
     exit 1
   fi
   touch "$stamp"

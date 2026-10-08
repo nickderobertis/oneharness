@@ -10,7 +10,7 @@
 		"type:distribution": ["type:app"],
 		"type:e2e": ["type:app", "type:fixture", "type:lib", "type:contract"],
 		"type:test": ["type:app", "type:fixture", "type:lib", "type:contract"],
-		"type:tooling": ["type:app", "type:fixture", "type:lib"],
+		"type:tooling": ["type:app", "type:fixture", "type:lib", "type:contract"],
 		"type:live-support": ["type:app", "type:fixture", "type:contract"],
 		"type:live": ["type:app", "type:distribution", "type:live-support"],
 		"type:explore": ["type:app", "type:live-support"],

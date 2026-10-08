@@ -8,7 +8,8 @@
   ],
   "//": "The SDKs' conformance to the capability manifest: the checks that read each SDK's hand-written client and README, and the parity table that audits them. A leaf that reads the SDKs through its inputs rather than depending on them, so an SDK edit re-runs it without reaching the binary, the contract or the other SDK.",
   "implicitDependencies": [
-    "oneharness-core"
+    "oneharness-core",
+    "sdk-contract"
   ],
   "namedInputs": {
     "default": [

@@ -6,7 +6,7 @@
     "type:tooling",
     "lang:bash"
   ],
-  "//": "The release lifecycle's own scripts and their hermetic tests. `package-crates`, `semver-check` and `probe-live` reach crates.io or the public registries, so they are uncached and outside the affected tier: `just gate` and ci.yml's `package`/`semver` jobs run them by name.",
+  "//": "llmlint: ignore-file[shell_test_tiers_stay_split] check-package-crates.sh and check-semver-check.sh build a scratch git history or call the real justfile locally, measured at 0 to 1 s each, offline, with no installs or network, so the cost the rule guards against (every unrelated script edit paying for a slow or networked suite) does not arise; a suite here that becomes slower or networked belongs in an -integration project like workspace-integration. The release lifecycle's own scripts and their hermetic tests. `package-crates`, `semver-check` and `probe-live` reach crates.io or the public registries, so they are uncached and outside the affected tier: `just gate` and ci.yml's `package`/`semver` jobs run them by name.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",

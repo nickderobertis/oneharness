@@ -44,14 +44,14 @@ declared="$(printf '%s' "$bundle" | node -e '
     for (const c of JSON.parse(raw).capabilities) console.log(c.method);
   });
 ')"
-marked="$(grep -hoE '^// capability: [A-Za-z]+' tests/library.rs tests/library_surface.rs \
-  | sed 's|^// capability: ||' | sort -u)"
+marked="$(grep -hoE '^// capability: [A-Za-z]+' tests/library.rs tests/library_surface.rs |
+  sed 's|^// capability: ||' | sort -u)"
 
 missing=""
 while IFS= read -r method; do
   [ -n "$method" ] || continue
   printf '%s\n' "$marked" | grep -qx "$method" || missing="$missing $method"
-done <<< "$declared"
+done <<<"$declared"
 
 if [ -n "$missing" ]; then
   echo "check-capability-surface: no Rust test exercises:$missing" >&2

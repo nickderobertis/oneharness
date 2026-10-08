@@ -262,13 +262,17 @@ for poll in $(seq 1 "$wait_attempts"); do
   read_jobs
   case "$check_state" in
     success)
-      decide false "CI run $run_id check jobs concluded success for $sha ($run_url), each one a full sweep of this tree; publishing without sweeping it again." ;;
+      decide false "CI run $run_id check jobs concluded success for $sha ($run_url), each one a full sweep of this tree; publishing without sweeping it again."
+      ;;
     failure)
-      refuse "CI run $run_id check job $job_id ($job_name) concluded $job_why for $sha" "the run is ${run_url:-<no URL>}" "fix the commit and release the fix" ;;
+      refuse "CI run $run_id check job $job_id ($job_name) concluded $job_why for $sha" "the run is ${run_url:-<no URL>}" "fix the commit and release the fix"
+      ;;
     elsewhere)
-      refuse "CI run $run_id check job $job_name has no success verdict for $sha ($job_why)" "the run is ${run_url:-<no URL>}; the release runs on Ubuntu, so the sweep it could run here cannot verify that platform" "re-run $job_name in CI run $run_id until it sweeps successfully, or dispatch $workflow with tier=all on the release tag, then re-run this release" ;;
+      refuse "CI run $run_id check job $job_name has no success verdict for $sha ($job_why)" "the run is ${run_url:-<no URL>}; the release runs on Ubuntu, so the sweep it could run here cannot verify that platform" "re-run $job_name in CI run $run_id until it sweeps successfully, or dispatch $workflow with tier=all on the release tag, then re-run this release"
+      ;;
     here)
-      decide true "CI run $run_id check job $job_name has no success verdict for $sha ($job_why) and every other check job swept it; running the gate here on Ubuntu (the full sweep, just check all)." ;;
+      decide true "CI run $run_id check job $job_name has no success verdict for $sha ($job_why) and every other check job swept it; running the gate here on Ubuntu (the full sweep, just check all)."
+      ;;
   esac
   if [ "$poll" -lt "$wait_attempts" ]; then sleep "$wait_delay"; fi
 done

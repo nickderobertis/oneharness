@@ -24,12 +24,12 @@ set -uo pipefail
 ID="${1:?usage: explore-control.sh <harness-id|all>}"
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "explore-control: python3 is required to drive the JSON-RPC/HTTP control protocols. Install it ('apt-get install python3' / 'brew install python3' / https://www.python.org/downloads/) and rerun this script." >&2
-    exit 2
+  echo "explore-control: python3 is required to drive the JSON-RPC/HTTP control protocols. Install it ('apt-get install python3' / 'brew install python3' / https://www.python.org/downloads/) and rerun this script." >&2
+  exit 2
 fi
 
 case "$(uname -s 2>/dev/null || echo unknown)" in
-MINGW* | MSYS* | CYGWIN*)
+  MINGW* | MSYS* | CYGWIN*)
     echo "explore-control: control sockets and these stdio/unix-socket protocols are unix-only" >&2
     exit 0
     ;;

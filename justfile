@@ -18,14 +18,17 @@ default:
 
 # Set up from a clean clone: toolchain components + every ecosystem's one
 # locked resolve (Cargo, the Bun workspace that also carries Nx, the uv
-# workspace under python/), the llmlint toolchain and the pre-push hook. The
-# `llvm-tools-preview` component is what `cargo llvm-cov` needs to instrument
-# each crate's tests for the coverage floor.
+# workspace under python/), the pinned shell toolchain, the llmlint toolchain
+# and the pre-push hook. The `llvm-tools-preview` component is what `cargo
+# llvm-cov` needs to instrument each crate's tests for the coverage floor;
+# scripts/shell-tools.sh installs the shellcheck, shfmt and (on Linux) kcov
+# that .shell-tool-versions pins.
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
     @just js-install
     uv sync --project python --frozen --no-install-workspace --quiet
+    @bash scripts/shell-tools.sh install
     ./scripts/setup-llmlint.sh
     git config core.hooksPath .githooks
 
@@ -85,7 +88,9 @@ format:
 
 # The coverage floors: Rust's 95% lines over every crate's instrumented run
 # (rust-coverage, which runs each Rust `test` first and is skipped on Windows),
-# beside the Node SDK's and the Python SDK's own floors in their `test` targets.
+# the shell line floor over every project's kcov-measured shell test steps
+# (shell-coverage, Linux only), and the Node SDK's and the Python SDK's own
+# floors in their `test` targets.
 coverage tier="affected": (_tier "coverage" tier)
 
 # Browsable Rust coverage report (kept out of the gate): one instrumented run of

@@ -6,16 +6,33 @@
     "type:tooling",
     "lang:bash"
   ],
-  "//": "The repository's shell, Node and Python tooling, owned here by path so every script belongs to a project. Its `lint` is the repository-wide shellcheck, plus the check that every shell script checks out LF on Windows. It depends on sdk-contract because the SDK conformance scripts here (sdk-coverage.mjs, parity-audit.mjs) import that project's schema generator. Which project RUNS a script is a separate question each one answers through its inputs \u2014 the drift gates are ci-contracts, release-tooling, e2e-support and workspace; the installer is install-surface; the live and exploration drivers are the live-* and explore-* projects \u2014 so a script change selects this lint and the projects whose targets read that script, nothing else.",
+  "//": "The repository's shell, Node and Python tooling, owned here by path so every script belongs to a project. Its `format` is shfmt and its `lint` shellcheck over every shell script here (scripts/shell-check.sh, with the pinned tools of .shell-tool-versions), plus the check that every shell script checks out LF on Windows. It depends on sdk-contract because the SDK conformance scripts here (sdk-coverage.mjs, parity-audit.mjs) import that project's schema generator. Which project RUNS a script is a separate question each one answers through its inputs \u2014 the drift gates are ci-contracts, release-tooling, e2e-support and workspace; the installer is install-surface; the live and exploration drivers are the live-* and explore-* projects \u2014 so a script change selects this lint and the projects whose targets read that script, nothing else.",
   "implicitDependencies": [
     "sdk-contract"
   ],
   "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh format scripts"
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
+      ]
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh format-write scripts"
+      }
+    },
     "lint": {
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash -c \"shellcheck scripts/*.sh scripts/nx\"",
+          "bash scripts/shell-check.sh lint scripts",
           "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh --shell"
         ],
         "parallel": false
@@ -24,7 +41,9 @@
         "default",
         "^default",
         "{workspaceRoot}/.gitattributes",
-        "{workspaceRoot}/.githooks/**/*"
+        "{workspaceRoot}/.githooks/**/*",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
       ]
     }
   }

@@ -51,20 +51,28 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-usage-enforce.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-control-probes.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-control-probe-http.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-control-enforce.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh",
-          "bash scripts/with-portable-sed.sh scripts/e2e-variants-test.sh"
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-usage-enforce.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probes.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probe-http.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-enforce.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/e2e-variants-test.sh"
         ],
         "parallel": false
       },
       "dependsOn": [
         "oneharness:build",
         "oneharness-mock-harness:build"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/e2e-support"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "shellTestRunner"
       ]
     }
   }

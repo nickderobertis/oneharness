@@ -80,8 +80,14 @@ LAST_CMD=""
 
 # Resolve a built binary path, tolerating the Windows `.exe` suffix.
 exe_path() {
-  if [ -x "$1" ]; then printf '%s' "$1"; return 0; fi
-  if [ -x "$1.exe" ]; then printf '%s' "$1.exe"; return 0; fi
+  if [ -x "$1" ]; then
+    printf '%s' "$1"
+    return 0
+  fi
+  if [ -x "$1.exe" ]; then
+    printf '%s' "$1.exe"
+    return 0
+  fi
   return 1
 }
 
@@ -148,8 +154,14 @@ resolve_oneharness() {
     if [ "$rel" -nt "$deb" ]; then printf '%s' "$rel"; else printf '%s' "$deb"; fi
     return 0
   fi
-  [ -n "$rel" ] && { printf '%s' "$rel"; return 0; }
-  [ -n "$deb" ] && { printf '%s' "$deb"; return 0; }
+  [ -n "$rel" ] && {
+    printf '%s' "$rel"
+    return 0
+  }
+  [ -n "$deb" ] && {
+    printf '%s' "$deb"
+    return 0
+  }
   build_via_just build "the oneharness binary"
   exe_path target/debug/oneharness || fail "could not find oneharness after build" \
     "" "" "run 'just build' and retry"
@@ -158,7 +170,10 @@ resolve_oneharness() {
 resolve_mock() {
   local c
   for c in target/release/oneharness-mock-harness target/debug/oneharness-mock-harness; do
-    if p="$(exe_path "$c")"; then printf '%s' "$p"; return 0; fi
+    if p="$(exe_path "$c")"; then
+      printf '%s' "$p"
+      return 0
+    fi
   done
   build_via_just build-mock-harness "the mock-harness fixture"
   exe_path target/debug/oneharness-mock-harness || fail \
@@ -184,23 +199,23 @@ fi
 #    installed binary runs. This keeps the installer covered in the gate
 #    without touching the network or depending on an already-published release.
 if [ "$MODE" = install ]; then
-install_dir="$(mktemp -d)"
-LAST_CMD="bash scripts/install-e2e.sh <oneharness-bin> <install-dir>"
-if ! out="$(bash scripts/install-e2e.sh "$oh" "$install_dir" 2>&1)"; then
-  fail "installer e2e failed" "$LAST_CMD" "$out" \
-    "inspect scripts/install.sh and scripts/install-e2e.sh"
-fi
-if ! installed="$(exe_path "$install_dir/oneharness")"; then
-  fail "installer did not create an executable oneharness" "$LAST_CMD" "$out"
-fi
-installed_ver="$("$installed" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
-if [ -n "$crate_ver" ] && [ -n "$installed_ver" ] && [ "$crate_ver" != "$installed_ver" ]; then
-  fail "installed binary is v$installed_ver but Cargo.toml is v$crate_ver" \
-    "$installed --version" "$out"
-fi
-rm -rf "$install_dir"
-echo "smoke: ok (installer — release-shaped archive installed through scripts/install.sh)"
-exit 0
+  install_dir="$(mktemp -d)"
+  LAST_CMD="bash scripts/install-e2e.sh <oneharness-bin> <install-dir>"
+  if ! out="$(bash scripts/install-e2e.sh "$oh" "$install_dir" 2>&1)"; then
+    fail "installer e2e failed" "$LAST_CMD" "$out" \
+      "inspect scripts/install.sh and scripts/install-e2e.sh"
+  fi
+  if ! installed="$(exe_path "$install_dir/oneharness")"; then
+    fail "installer did not create an executable oneharness" "$LAST_CMD" "$out"
+  fi
+  installed_ver="$("$installed" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+  if [ -n "$crate_ver" ] && [ -n "$installed_ver" ] && [ "$crate_ver" != "$installed_ver" ]; then
+    fail "installed binary is v$installed_ver but Cargo.toml is v$crate_ver" \
+      "$installed --version" "$out"
+  fi
+  rm -rf "$install_dir"
+  echo "smoke: ok (installer — release-shaped archive installed through scripts/install.sh)"
+  exit 0
 fi
 
 # 0b. npm packaging e2e: assemble the host's per-platform npm package from the
@@ -262,63 +277,63 @@ assert_contains "$out" '"available"'
 
 # 3. `run --all --print-command` — build every adapter's argv, execute nothing.
 LAST_CMD="$oh run --all --print-command --prompt <prompt> --compact"
-out="$($oh run --all --print-command --prompt "$PROMPT" --compact)" \
-  || fail "print-command dry run exited non-zero" "$LAST_CMD"
+out="$($oh run --all --print-command --prompt "$PROMPT" --compact)" ||
+  fail "print-command dry run exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"dry_run":true'
 assert_contains "$out" '"status":"planned"'
 n_run="$(count_matches "$out" '"harness":')"
-[ "$n_run" = "$n_list" ] \
-  || fail "print-command planned $n_run harness(es) but list has $n_list" "$LAST_CMD" "$out"
+[ "$n_run" = "$n_list" ] ||
+  fail "print-command planned $n_run harness(es) but list has $n_list" "$LAST_CMD" "$out"
 
 # 3b. Unified config: a planted project oneharness.toml supplies the selection
 #     and model with no flags. ONEHARNESS_NO_CONFIG is suspended just for this
 #     step, and the user-level file is pinned to a planted empty one so the
 #     developer's real config never leaks in.
 cfg_dir="$(mktemp -d)"
-printf 'harnesses = ["claude-code"]\nmodel = "smoke-model"\n' > "$cfg_dir/oneharness.toml"
-: > "$cfg_dir/user.toml"
+printf 'harnesses = ["claude-code"]\nmodel = "smoke-model"\n' >"$cfg_dir/oneharness.toml"
+: >"$cfg_dir/user.toml"
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh run --prompt <prompt> --cwd $cfg_dir --print-command --compact"
 out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
-  "$oh" run --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" \
-  || fail "config-driven dry run exited non-zero" "$LAST_CMD" "" \
-       "the oneharness.toml project config layer is broken"
+  "$oh" run --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" ||
+  fail "config-driven dry run exited non-zero" "$LAST_CMD" "" \
+    "the oneharness.toml project config layer is broken"
 assert_contains "$out" '"--model","smoke-model"' "project config model was not applied"
 n_cfg="$(count_matches "$out" '"harness":')"
-[ "$n_cfg" = "1" ] \
-  || fail "config selection planned $n_cfg harness(es), expected 1 (claude-code)" "$LAST_CMD" "$out"
+[ "$n_cfg" = "1" ] ||
+  fail "config selection planned $n_cfg harness(es), expected 1 (claude-code)" "$LAST_CMD" "$out"
 
 # 3b-env. The ONEHARNESS_<FIELD> environment overrides layer above the files and
 #     below the flags: ONEHARNESS_MODEL must beat the planted project model.
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml ONEHARNESS_MODEL=env-model $oh run --harness claude-code --prompt <prompt> --cwd $cfg_dir --print-command --compact"
 out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" ONEHARNESS_MODEL="env-model" \
-  "$oh" run --harness claude-code --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" \
-  || fail "env-override dry run exited non-zero" "$LAST_CMD" "" \
-       "the ONEHARNESS_* environment override layer is broken"
+  "$oh" run --harness claude-code --prompt "$PROMPT" --cwd "$cfg_dir" --print-command --compact)" ||
+  fail "env-override dry run exited non-zero" "$LAST_CMD" "" \
+    "the ONEHARNESS_* environment override layer is broken"
 assert_contains "$out" '"--model","env-model"' "ONEHARNESS_MODEL did not override the project config model"
 
 # 3c. `config` — the layering debug surface: the planted model must be shown
 #     with the project file attributed as its source.
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh config --cwd $cfg_dir --compact"
 out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
-  "$oh" config --cwd "$cfg_dir" --compact)" \
-  || fail "config command exited non-zero" "$LAST_CMD"
+  "$oh" config --cwd "$cfg_dir" --compact)" ||
+  fail "config command exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"value":"smoke-model"' "config value reporting is broken"
 assert_contains "$out" 'oneharness.toml' "config source attribution is broken"
 
 # 3d. `sync` — materialize a permission rule into a harness's own config file
 #     (the file-based delivery for allow/deny/hooks), and prove idempotency.
-printf 'allowed_tools = ["Bash(echo *)"]\n' >> "$cfg_dir/oneharness.toml"
+printf 'allowed_tools = ["Bash(echo *)"]\n' >>"$cfg_dir/oneharness.toml"
 LAST_CMD="ONEHARNESS_CONFIG=$cfg_dir/user.toml $oh sync --harness claude-code --cwd $cfg_dir --compact"
 out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
-  "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" \
-  || fail "sync exited non-zero" "$LAST_CMD"
+  "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" ||
+  fail "sync exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"status":"created"' "sync did not create the harness config file"
-grep -qF 'Bash(echo *)' "$cfg_dir/.claude/settings.json" \
-  || fail "synced rule missing from .claude/settings.json" "$LAST_CMD" \
-       "$(cat "$cfg_dir/.claude/settings.json" 2>/dev/null || echo '<missing>')"
+grep -qF 'Bash(echo *)' "$cfg_dir/.claude/settings.json" ||
+  fail "synced rule missing from .claude/settings.json" "$LAST_CMD" \
+    "$(cat "$cfg_dir/.claude/settings.json" 2>/dev/null || echo '<missing>')"
 out="$(oh_hermetic ONEHARNESS_CONFIG="$cfg_dir/user.toml" \
-  "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" \
-  || fail "re-sync exited non-zero" "$LAST_CMD"
+  "$oh" sync --harness claude-code --cwd "$cfg_dir" --compact)" ||
+  fail "re-sync exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"status":"unchanged"' "sync is not idempotent"
 rm -rf "$cfg_dir"
 
@@ -329,8 +344,8 @@ mock="$(resolve_mock)"
 mock_stdout='{"type":"result","result":"pong","session_id":"smoke-sess","total_cost_usd":0.0012,"usage":{"input_tokens":42,"output_tokens":1}}'
 LAST_CMD="ONEHARNESS_BIN_CLAUDE_CODE=$mock MOCK_STDOUT=<claude-json> $oh run --harness claude-code --prompt <prompt> --compact"
 out="$(ONEHARNESS_BIN_CLAUDE_CODE="$mock" MOCK_STDOUT="$mock_stdout" \
-  "$oh" run --harness claude-code --prompt "$PROMPT" --compact)" \
-  || fail "mock run exited non-zero" "$LAST_CMD"
+  "$oh" run --harness claude-code --prompt "$PROMPT" --compact)" ||
+  fail "mock run exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"status":"ok"' "the mock spawn/parse path is broken"
 assert_contains "$out" '"text":"pong"' "json:result extraction is broken"
 assert_contains "$out" '"usage_source":"json"' "usage normalization is broken"
@@ -345,8 +360,8 @@ oc_stdout='{"type":"step_start","sessionID":"ses_smoke","part":{}}
 {"type":"step_finish","sessionID":"ses_smoke","part":{"cost":0.002,"tokens":{"input":3,"output":5}}}'
 LAST_CMD="ONEHARNESS_BIN_OPENCODE=$mock MOCK_STDOUT=<opencode-jsonl> $oh run --harness opencode --prompt <prompt> --compact"
 out="$(ONEHARNESS_BIN_OPENCODE="$mock" MOCK_STDOUT="$oc_stdout" \
-  "$oh" run --harness opencode --prompt "$PROMPT" --compact)" \
-  || fail "opencode mock run exited non-zero" "$LAST_CMD"
+  "$oh" run --harness opencode --prompt "$PROMPT" --compact)" ||
+  fail "opencode mock run exited non-zero" "$LAST_CMD"
 assert_contains "$out" '"usage_source":"json:summed-steps"' "opencode per-step usage summing is broken"
 assert_contains "$out" '"input_tokens":43' "opencode token summing is broken"
 assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing is broken"
@@ -356,12 +371,12 @@ assert_contains "$out" '"session_id":"ses_smoke"' "camelCase sessionID surfacing
 #    portable path that works for every harness; the mock returns a conforming
 #    object so the validator passes and `structured`/`schema_valid` are emitted.
 schema_dir="$(mktemp -d)"
-printf '{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}' > "$schema_dir/person.json"
+printf '{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"integer"}},"required":["name","age"],"additionalProperties":false}' >"$schema_dir/person.json"
 LAST_CMD="ONEHARNESS_BIN_CRUSH=$mock MOCK_STDOUT=<conforming-json> $oh run --harness crush --prompt <prompt> --schema $schema_dir/person.json --compact"
 out="$(ONEHARNESS_BIN_CRUSH="$mock" MOCK_STDOUT='{"name":"Ada","age":36}' \
-  "$oh" run --harness crush --prompt "$PROMPT" --schema "$schema_dir/person.json" --compact)" \
-  || fail "structured-output run exited non-zero" "$LAST_CMD" "$out" \
-       "the --schema validate path is broken"
+  "$oh" run --harness crush --prompt "$PROMPT" --schema "$schema_dir/person.json" --compact)" ||
+  fail "structured-output run exited non-zero" "$LAST_CMD" "$out" \
+    "the --schema validate path is broken"
 assert_contains "$out" '"schema_valid":true' "schema validation is broken"
 # serde_json serializes object keys sorted, so `age` precedes `name`.
 assert_contains "$out" '"structured":{"age":36,"name":"Ada"}' "structured value extraction is broken"
@@ -376,12 +391,12 @@ LAST_CMD="ONEHARNESS_BIN_CODEX=$mock $oh run --harness codex --prompt <prompt> -
 out="$(ONEHARNESS_BIN_CODEX="$mock" MOCK_STDOUT='{"type":"turn.started"}
 {"type":"item.completed","item":{"id":"m1","type":"agent_message","text":"hi"}}
 {"type":"turn.completed"}' \
-  "$oh" run --harness codex --prompt "$PROMPT" --history --history-dir "$hist_dir" --bypass --compact)" \
-  || fail "history run exited non-zero" "$LAST_CMD" "$out" "the --history write path is broken"
+  "$oh" run --harness codex --prompt "$PROMPT" --history --history-dir "$hist_dir" --bypass --compact)" ||
+  fail "history run exited non-zero" "$LAST_CMD" "$out" "the --history write path is broken"
 assert_contains "$out" '"history_file":' "history_file was not reported"
 LAST_CMD="$oh history list --all-projects --history-dir $hist_dir --compact"
-out="$("$oh" history list --all-projects --history-dir "$hist_dir" --compact)" \
-  || fail "history list exited non-zero" "$LAST_CMD" "$out"
+out="$("$oh" history list --all-projects --history-dir "$hist_dir" --compact)" ||
+  fail "history list exited non-zero" "$LAST_CMD" "$out"
 assert_contains "$out" '"harnesses":["codex"]' "history list did not surface the recorded session"
 rm -rf "$hist_dir"
 
@@ -392,20 +407,20 @@ init_path="$init_dir/oneharness.toml"
 LAST_CMD="$oh init $init_path"
 out="$("$oh" init "$init_path")" || fail "init exited non-zero" "$LAST_CMD" "$out"
 assert_contains "$out" "wrote" "init did not confirm the written path"
-grep -qF 'run_mode = "fallback"' "$init_path" \
-  || fail "scaffolded config missing run_mode" "$LAST_CMD" "$(cat "$init_path" 2>/dev/null)"
+grep -qF 'run_mode = "fallback"' "$init_path" ||
+  fail "scaffolded config missing run_mode" "$LAST_CMD" "$(cat "$init_path" 2>/dev/null)"
 # The scaffold must be a config the loader accepts (round-trip through `config`).
 LAST_CMD="$oh config --config $init_path --compact"
-out="$(oh_hermetic "$oh" config --config "$init_path" --compact)" \
-  || fail "scaffolded config does not parse via 'oneharness config'" "$LAST_CMD" "$out"
+out="$(oh_hermetic "$oh" config --config "$init_path" --compact)" ||
+  fail "scaffolded config does not parse via 'oneharness config'" "$LAST_CMD" "$out"
 assert_contains "$out" '"value":"fallback"' "scaffolded run_mode did not load"
 # Safe by default: a second init without --force is refused (exit 2), with --force it succeeds.
 LAST_CMD="$oh init $init_path"
 if "$oh" init "$init_path" >/dev/null 2>&1; then
   fail "init overwrote an existing file without --force" "$LAST_CMD"
 fi
-"$oh" init "$init_path" --force >/dev/null \
-  || fail "init --force did not overwrite" "$oh init $init_path --force"
+"$oh" init "$init_path" --force >/dev/null ||
+  fail "init --force did not overwrite" "$oh init $init_path --force"
 rm -rf "$init_dir"
 
 if [ "$LIVE" -eq 0 ]; then

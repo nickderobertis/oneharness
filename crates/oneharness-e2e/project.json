@@ -53,8 +53,8 @@
         "commands": [
           "bash scripts/cargo-test.sh oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness",
           "bash scripts/with-symlinked-tmp.sh bash scripts/cargo-test.sh oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness --uninstrumented",
-          "bash scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-smoke-env.sh"
+          "bash scripts/shell-test.sh oneharness-e2e scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh",
+          "bash scripts/shell-test.sh oneharness-e2e scripts/with-portable-sed.sh scripts/check-smoke-env.sh"
         ],
         "parallel": false
       },
@@ -70,10 +70,12 @@
         "{workspaceRoot}/scripts/smoke.sh",
         "{workspaceRoot}/scripts/check-smoke-env.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp.sh",
-        "{workspaceRoot}/scripts/with-symlinked-tmp-test.sh"
+        "{workspaceRoot}/scripts/with-symlinked-tmp-test.sh",
+        "shellTestRunner"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-e2e.profdata"
+        "{workspaceRoot}/target/coverage/oneharness-e2e.profdata",
+        "{workspaceRoot}/target/coverage/shell/oneharness-e2e"
       ],
       "parallelism": false,
       "dependsOn": [

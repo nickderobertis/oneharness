@@ -458,12 +458,12 @@ git -C "$seed" config user.name Test
 mkdir -p "$seed/scripts" "$seed/crates/oneharness-core/src"
 cp scripts/package-crates.sh "$seed/scripts/package-crates.sh"
 printf '[package]\nname = "oneharness-core"\nversion = "0.6.11"\n' \
-  > "$seed/crates/oneharness-core/Cargo.toml"
-printf 'pub fn seed() {}\n' > "$seed/crates/oneharness-core/src/lib.rs"
+  >"$seed/crates/oneharness-core/Cargo.toml"
+printf 'pub fn seed() {}\n' >"$seed/crates/oneharness-core/src/lib.rs"
 git -C "$seed" add -A
 git -C "$seed" commit -qm 'chore: seed the release fixture'
 git -C "$seed" tag -a -m 'core release' oneharness-core-v0.6.11
-printf 'pub fn seed() {}\npub fn added() {}\n' > "$seed/crates/oneharness-core/src/lib.rs"
+printf 'pub fn seed() {}\npub fn added() {}\n' >"$seed/crates/oneharness-core/src/lib.rs"
 git -C "$seed" commit -qam 'fix(core): change the packaged API'
 git -C "$seed" tag -a -m 'release' v0.6.14
 git -C "$seed" remote add origin "$origin"

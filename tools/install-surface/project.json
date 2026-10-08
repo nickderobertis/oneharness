@@ -22,7 +22,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/smoke.sh --install"
+          "bash scripts/shell-test.sh install-surface scripts/smoke.sh --install"
         ],
         "parallel": false
       },
@@ -32,7 +32,11 @@
       "inputs": [
         "default",
         "^default",
-        "{workspaceRoot}/scripts/smoke.sh"
+        "{workspaceRoot}/scripts/smoke.sh",
+        "shellTestRunner"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/install-surface"
       ]
     }
   }

@@ -6,10 +6,12 @@ remote=${1:-origin}
 base=${2:-}
 
 git check-ref-format --allow-onelevel "refs/remotes/$remote" >/dev/null 2>&1 || {
-  echo "comparison-base: '$remote' is not a valid remote name" >&2; exit 2;
+  echo "comparison-base: '$remote' is not a valid remote name" >&2
+  exit 2
 }
 git remote get-url "$remote" >/dev/null 2>&1 || {
-  echo "comparison-base: remote '$remote' does not exist; pass a configured remote" >&2; exit 2;
+  echo "comparison-base: remote '$remote' does not exist; pass a configured remote" >&2
+  exit 2
 }
 if [[ -z $base ]]; then
   symbolic=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
@@ -31,10 +33,12 @@ if [[ -z $base ]]; then
   exit 2
 fi
 git check-ref-format --branch "$base" >/dev/null 2>&1 || {
-  echo "comparison-base: '$base' is not a valid branch name" >&2; exit 2;
+  echo "comparison-base: '$base' is not a valid branch name" >&2
+  exit 2
 }
 ref="$remote/$base"
 git show-ref --verify --quiet "refs/remotes/$ref" || {
-  echo "comparison-base: '$ref' is missing; fetch '$remote' or choose an existing base" >&2; exit 2;
+  echo "comparison-base: '$ref' is missing; fetch '$remote' or choose an existing base" >&2
+  exit 2
 }
 printf '%s\n' "$ref"

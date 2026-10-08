@@ -1,0 +1,46 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "shell-toolchain",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:bash"
+  ],
+  "//": "The shell toolchain's own suites, in a project of their own so their real-tool runs are selected by what they read and by nothing an unrelated suite reads: the pins against the installed shellcheck, shfmt and kcov and the installer's cold installs and refusals (check-shell-tools.sh), the format and lint targets through the real pinned tools over a scratch repository (check-shell-check.sh), and the shell coverage floor through the real kcov collecting and merging a scratch project's step (check-shell-coverage.sh). Its inputs are what those runs read.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/check-shell-tools.sh",
+      "{workspaceRoot}/scripts/check-shell-check.sh",
+      "{workspaceRoot}/scripts/check-shell-coverage.sh",
+      "{workspaceRoot}/scripts/shell-tools.sh",
+      "{workspaceRoot}/scripts/shell-check.sh",
+      "{workspaceRoot}/scripts/shell-test.sh",
+      "{workspaceRoot}/scripts/shell-coverage.sh",
+      "{workspaceRoot}/scripts/shell-trace-env.sh",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/.shell-tool-versions"
+    ]
+  },
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/shell-test.sh shell-toolchain scripts/with-portable-sed.sh scripts/check-shell-tools.sh",
+          "bash scripts/shell-test.sh shell-toolchain scripts/with-portable-sed.sh scripts/check-shell-check.sh",
+          "bash scripts/shell-test.sh shell-toolchain scripts/with-portable-sed.sh scripts/check-shell-coverage.sh"
+        ],
+        "parallel": false
+      },
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/shell-toolchain"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "shellTestRunner"
+      ]
+    }
+  }
+}

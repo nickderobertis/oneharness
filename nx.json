@@ -22,6 +22,12 @@
         "env": "OS"
       }
     ],
+    "shellTestRunner": [
+      "{workspaceRoot}/scripts/shell-test.sh",
+      "{workspaceRoot}/scripts/shell-tools.sh",
+      "{workspaceRoot}/scripts/shell-trace-env.sh",
+      "{workspaceRoot}/.shell-tool-versions"
+    ],
     "jsToolchain": [
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/bun.lock"

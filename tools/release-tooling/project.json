@@ -53,18 +53,26 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/with-portable-sed.sh scripts/check-ci-verdict.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-verify-published.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-publish-crates.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-package-crates.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-semver-check.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-publish-npm.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-release-targets.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-release-targets-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-release-probe.sh"
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-ci-verdict.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-verify-published.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-publish-crates.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-package-crates.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-semver-check.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-publish-npm.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-release-targets.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-release-targets-test.sh",
+          "bash scripts/shell-test.sh release-tooling scripts/with-portable-sed.sh scripts/check-release-probe.sh"
         ],
         "parallel": false
-      }
+      },
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/release-tooling"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "shellTestRunner"
+      ]
     },
     "package-crates": {
       "executor": "nx:run-commands",

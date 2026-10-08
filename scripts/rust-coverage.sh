@@ -67,7 +67,10 @@ specs="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
     }
   });
 ')"
-[ -n "$specs" ] || { echo "rust-coverage: no Rust project's test runs scripts/cargo-test.sh; there is nothing to measure; restore a Rust project's test target that runs scripts/cargo-test.sh in its project.json" >&2; exit 1; }
+[ -n "$specs" ] || {
+  echo "rust-coverage: no Rust project's test runs scripts/cargo-test.sh; there is nothing to measure; restore a Rust project's test target that runs scripts/cargo-test.sh in its project.json" >&2
+  exit 1
+}
 
 # The objects first, for this tree; then the profiles, each run's own.
 records=()
@@ -96,7 +99,10 @@ done <<<"$specs"
 # replaces cleaned the workspace's objects first.) So every executable that is
 # not one of these runs' own is removed before the report; a file is matched by
 # identity, as cargo hard-links each binary it uplifts.
-[ -s "$artifacts" ] || { echo "rust-coverage: rebuilding the instrumented selections named no executable, so the report would read only stale objects; check that cargo-llvm-cov passes --cargo-message-format through to nextest (just bootstrap installs a version that does)" >&2; exit 1; }
+[ -s "$artifacts" ] || {
+  echo "rust-coverage: rebuilding the instrumented selections named no executable, so the report would read only stale objects; check that cargo-llvm-cov passes --cargo-message-format through to nextest (just bootstrap installs a version that does)" >&2
+  exit 1
+}
 node -e '
   const fs = require("fs");
   const path = require("path");
@@ -124,7 +130,10 @@ node -e '
 # each is placed there under the extension the report collects.
 cargo llvm-cov clean --profraw-only
 for record in "${records[@]}"; do
-  [[ "$record" =~ ^[a-z0-9_-]+$ ]] || { echo "rust-coverage: '$record' is not a record name; fix the --record argument of the Rust project.json test target that passes it (lowercase letters, digits, '_' and '-')" >&2; exit 2; }
+  [[ "$record" =~ ^[a-z0-9_-]+$ ]] || {
+    echo "rust-coverage: '$record' is not a record name; fix the --record argument of the Rust project.json test target that passes it (lowercase letters, digits, '_' and '-')" >&2
+    exit 2
+  }
   if [ ! -s "target/coverage/$record.profdata" ]; then
     echo "coverage: no profile for $record at target/coverage/$record.profdata; its test target never ran instrumented. Run 'just coverage' (it runs every Rust test target first)." >&2
     exit 1
@@ -138,7 +147,10 @@ done
 # leaving the report on its default package selection.
 names="$(cargo metadata --no-deps --format-version 1 --locked --offline |
   node -e 'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{for(const p of JSON.parse(s).packages)console.log(p.name)})')"
-[ -n "$names" ] || { echo "rust-coverage: cargo metadata named no workspace member to report on; check the [workspace] members in the root Cargo.toml with 'cargo metadata --no-deps --offline --locked'" >&2; exit 1; }
+[ -n "$names" ] || {
+  echo "rust-coverage: cargo metadata named no workspace member to report on; check the [workspace] members in the root Cargo.toml with 'cargo metadata --no-deps --offline --locked'" >&2
+  exit 1
+}
 members=()
 while IFS= read -r member; do members+=(-p "$member"); done <<<"$names"
 

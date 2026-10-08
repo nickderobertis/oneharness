@@ -59,20 +59,28 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-e2e-matrix-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-workflows.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-workflows-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-setup-just.sh",
-          "bash scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-ci-gate-tier.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-local-gate.sh"
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-pr-title-e2e.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-e2e-matrix.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-e2e-matrix-test.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows-test.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-setup-just.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-ci-gate-tier.sh",
+          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-local-gate.sh"
         ],
         "parallel": false
-      }
+      },
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/ci-contracts"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "shellTestRunner"
+      ]
     }
   }
 }

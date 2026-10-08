@@ -35,10 +35,10 @@ oh_long_prompt_enforce qwen
 # malformed write would break this run, so it is the format drift alarm.
 sandbox="$(mktemp -d)"
 printf '[harness.qwen]\nallowed_tools = ["run_shell_command(ls)"]\ndenied_tools = ["run_shell_command(rm)"]\n' \
-    > "$sandbox/oneharness.toml"
+  >"$sandbox/oneharness.toml"
 ONEHARNESS_NO_CONFIG='' "$(oh_bin)" sync --harness qwen --cwd "$sandbox" \
-    --config "$sandbox/oneharness.toml" --compact >/dev/null \
-    || fail "qwen: oneharness sync failed"
+  --config "$sandbox/oneharness.toml" --compact >/dev/null ||
+  fail "qwen: oneharness sync failed"
 marker="$(oh_marker)"
 oh_run qwen "$(oh_prompt "$marker")" --cwd "$sandbox"
 oh_assert_echoed qwen "$marker"

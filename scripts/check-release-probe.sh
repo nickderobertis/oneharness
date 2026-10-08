@@ -32,7 +32,10 @@ trap 'rm -rf "$work"' EXIT
 
 fail() {
   echo "check-release-probe: $1" >&2
-  [ -s "$work/err" ] && { echo "  the probe's stderr:" >&2; cat "$work/err" >&2; }
+  [ -s "$work/err" ] && {
+    echo "  the probe's stderr:" >&2
+    cat "$work/err" >&2
+  }
   exit 1
 }
 

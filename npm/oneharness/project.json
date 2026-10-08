@@ -33,7 +33,7 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/smoke.sh --npm"
+          "bash scripts/shell-test.sh npm-launcher scripts/smoke.sh --npm"
         ],
         "parallel": false
       },
@@ -43,7 +43,11 @@
       "inputs": [
         "default",
         "^default",
-        "{workspaceRoot}/scripts/smoke.sh"
+        "{workspaceRoot}/scripts/smoke.sh",
+        "shellTestRunner"
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/npm-launcher"
       ]
     }
   }

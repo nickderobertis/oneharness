@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "githooks",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:bash"
+  ],
+  "//": "The committed git hooks (`just bootstrap` points core.hooksPath here): `pre-push` runs `just gate`. Owned here by path so the hook's shell is formatted (shfmt) and linted (shellcheck) like every other script; the hooks have no tests of their own beyond the gate they run.",
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh format .githooks"
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/shell-check.sh",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
+      ]
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh format-write .githooks"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh lint .githooks"
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/shell-check.sh",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
+      ]
+    }
+  }
+}

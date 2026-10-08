@@ -23,11 +23,11 @@
 set -euo pipefail
 
 for required in REPO TITLE BODY; do
-	if [ -z "${!required:-}" ]; then
-		echo "report-scheduled-failure: \$$required is empty or unset, so there is nothing to file" >&2
-		echo "  Next: the caller supplies all three. In CI that is the \`report a scheduled failure\` step in the workflow that failed — give it \`env: $required: …\`. Run it by hand with REPO=owner/name TITLE=… BODY=… bash scripts/report-scheduled-failure.sh" >&2
-		exit 2
-	fi
+  if [ -z "${!required:-}" ]; then
+    echo "report-scheduled-failure: \$$required is empty or unset, so there is nothing to file" >&2
+    echo "  Next: the caller supplies all three. In CI that is the \`report a scheduled failure\` step in the workflow that failed — give it \`env: $required: …\`. Run it by hand with REPO=owner/name TITLE=… BODY=… bash scripts/report-scheduled-failure.sh" >&2
+    exit 2
+  fi
 done
 
 # One place every `gh` failure is answered, because the three that can plausibly
@@ -37,32 +37,32 @@ done
 #   $1 what was being attempted, $2 gh's exit status, $3 what gh wrote
 # shellcheck disable=SC2153  # TITLE is an input, not a typo for the `title` the listing loop reads
 gh_failed() {
-	local what="$1" status="$2" said="$3"
-	echo "report-scheduled-failure: $what failed (gh exited $status)" >&2
-	if [ -n "$said" ]; then
-		printf '%s\n' "$said" | sed 's/^/    gh: /' >&2
-	else
-		echo "    gh: (said nothing)" >&2
-	fi
-	case "$said" in
-	*"gh auth login"* | *"authentication"* | *"HTTP 401"* | *"Bad credentials"*)
-		echo "  Next: this run has no usable credential. In CI, pass \`env: GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}\` to the step; locally, run \`gh auth login\`." >&2
-		;;
-	*"HTTP 403"* | *"Resource not accessible"* | *"not authorized"*)
-		echo "  Next: the credential works but may not write issues on $REPO. Give the workflow \`permissions: issues: write\` (a scheduled run gets no more than the workflow declares), and check that issues are enabled on the repository." >&2
-		;;
-	*"HTTP 404"*)
-		echo "  Next: \`$REPO\` did not resolve — check \$REPO for a typo, and that the token can see a private repository." >&2
-		;;
-	*"HTTP 422"* | *"Validation Failed"* | *"Invalid search query"*)
-		echo "  Next: GitHub rejected the request itself rather than the caller — \$TITLE is the likeliest cause, since it is interpolated into a search query. Reproduce with: gh issue list --repo $REPO --state open --search '$TITLE in:title'" >&2
-		;;
-	*)
-		echo "  Next: reproduce the command above with \`gh --repo $REPO\` and read its error. The three causes worth ruling out first are the credential (\`gh auth status\`), the workflow's \`issues: write\` permission, and \$TITLE." >&2
-		;;
-	esac
-	echo "  The failure being reported is NOT lost: it is the red run at ${RUN_URL:-<no RUN_URL was passed>}." >&2
-	exit 1
+  local what="$1" status="$2" said="$3"
+  echo "report-scheduled-failure: $what failed (gh exited $status)" >&2
+  if [ -n "$said" ]; then
+    printf '%s\n' "$said" | sed 's/^/    gh: /' >&2
+  else
+    echo "    gh: (said nothing)" >&2
+  fi
+  case "$said" in
+    *"gh auth login"* | *"authentication"* | *"HTTP 401"* | *"Bad credentials"*)
+      echo "  Next: this run has no usable credential. In CI, pass \`env: GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}\` to the step; locally, run \`gh auth login\`." >&2
+      ;;
+    *"HTTP 403"* | *"Resource not accessible"* | *"not authorized"*)
+      echo "  Next: the credential works but may not write issues on $REPO. Give the workflow \`permissions: issues: write\` (a scheduled run gets no more than the workflow declares), and check that issues are enabled on the repository." >&2
+      ;;
+    *"HTTP 404"*)
+      echo "  Next: \`$REPO\` did not resolve — check \$REPO for a typo, and that the token can see a private repository." >&2
+      ;;
+    *"HTTP 422"* | *"Validation Failed"* | *"Invalid search query"*)
+      echo "  Next: GitHub rejected the request itself rather than the caller — \$TITLE is the likeliest cause, since it is interpolated into a search query. Reproduce with: gh issue list --repo $REPO --state open --search '$TITLE in:title'" >&2
+      ;;
+    *)
+      echo "  Next: reproduce the command above with \`gh --repo $REPO\` and read its error. The three causes worth ruling out first are the credential (\`gh auth status\`), the workflow's \`issues: write\` permission, and \$TITLE." >&2
+      ;;
+  esac
+  echo "  The failure being reported is NOT lost: it is the red run at ${RUN_URL:-<no RUN_URL was passed>}." >&2
+  exit 1
 }
 
 # shellcheck disable=SC2153  # BODY is an input, not a typo for the local below
@@ -78,7 +78,7 @@ trap 'rm -f "$said"' EXIT
 # exact title is matched below rather than trusted from it.
 status=0
 listed="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
-	--json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>"$said")" || status=$?
+  --json number,title --jq '.[] | "\(.number)\t\(.title)"' 2>"$said")" || status=$?
 [ "$status" -eq 0 ] || gh_failed "looking for an open issue titled \"$TITLE\"" "$status" "$(cat "$said")"
 
 # The title is compared here rather than inside the `--jq` program: `gh`'s
@@ -87,18 +87,18 @@ listed="$(gh issue list --repo "$REPO" --state open --search "$TITLE in:title" \
 # string. The number is likewise checked before it is used to address anything.
 existing=""
 while IFS=$'\t' read -r number title; do
-	[ -n "$number" ] || continue
-	case "$number" in
-	*[!0-9]*)
-		echo "report-scheduled-failure: gh listed an issue whose number is not a number (\"$number\")" >&2
-		echo "  Next: \`gh issue list --repo $REPO --state open --json number,title\` no longer answers what this expects — refusing rather than addressing a comment at it. Check the installed gh version." >&2
-		exit 1
-		;;
-	esac
-	if [ "$title" = "$TITLE" ]; then
-		existing="$number"
-		break
-	fi
+  [ -n "$number" ] || continue
+  case "$number" in
+    *[!0-9]*)
+      echo "report-scheduled-failure: gh listed an issue whose number is not a number (\"$number\")" >&2
+      echo "  Next: \`gh issue list --repo $REPO --state open --json number,title\` no longer answers what this expects — refusing rather than addressing a comment at it. Check the installed gh version." >&2
+      exit 1
+      ;;
+  esac
+  if [ "$title" = "$TITLE" ]; then
+    existing="$number"
+    break
+  fi
 done <<<"$listed"
 
 # On success `gh` answers with the URL it wrote to, which is the one thing a
@@ -112,14 +112,14 @@ done <<<"$listed"
 # subprocess and the assertions read the argv it actually invoked — which is the
 # closest a check can get without making the repository the fixture.
 if [ -n "$existing" ]; then
-	status=0
-	where="$(gh issue comment "$existing" --repo "$REPO" --body "$body" 2>"$said")" || status=$?
-	[ "$status" -eq 0 ] || gh_failed "commenting on #$existing" "$status" "$(cat "$said")"
-	echo "report-scheduled-failure: commented on #$existing — $where"
+  status=0
+  where="$(gh issue comment "$existing" --repo "$REPO" --body "$body" 2>"$said")" || status=$?
+  [ "$status" -eq 0 ] || gh_failed "commenting on #$existing" "$status" "$(cat "$said")"
+  echo "report-scheduled-failure: commented on #$existing — $where"
 else
-	status=0
-	where="$(gh issue create --repo "$REPO" --title "$TITLE" --body "$body" 2>"$said")" || status=$?
-	[ "$status" -eq 0 ] || gh_failed "opening an issue titled \"$TITLE\"" "$status" "$(cat "$said")"
-	echo "report-scheduled-failure: opened a new issue — $where"
+  status=0
+  where="$(gh issue create --repo "$REPO" --title "$TITLE" --body "$body" 2>"$said")" || status=$?
+  [ "$status" -eq 0 ] || gh_failed "opening an issue titled \"$TITLE\"" "$status" "$(cat "$said")"
+  echo "report-scheduled-failure: opened a new issue — $where"
 fi
 # llmlint: ignore-end[changed_behavior_has_e2e]

@@ -37,12 +37,12 @@ trap 'rm -rf "$tmp"' EXIT
 install_line='bun install --frozen-lockfile'
 
 fail() {
-    echo "check-js-install: $1" >&2
-    echo "  Restore the contract: scripts/nx installs the root Bun workspace ('$install_line')" >&2
-    echo "  before Nx runs whenever the install is missing or older than bun.lock, quiet on" >&2
-    echo "  success and loud on failure, and bootstrap reaches 'just js-install'; and it" >&2
-    echo "  keeps Nx's stdout and exit status its own while replaying failed-task logs to stderr." >&2
-    exit 1
+  echo "check-js-install: $1" >&2
+  echo "  Restore the contract: scripts/nx installs the root Bun workspace ('$install_line')" >&2
+  echo "  before Nx runs whenever the install is missing or older than bun.lock, quiet on" >&2
+  echo "  success and loud on failure, and bootstrap reaches 'just js-install'; and it" >&2
+  echo "  keeps Nx's stdout and exit status its own while replaying failed-task logs to stderr." >&2
+  exit 1
 }
 
 # An isolated checkout holding just enough for the gate recipes and `bootstrap`
@@ -52,6 +52,11 @@ fixture="$tmp/checkout"
 mkdir -p "$fixture/scripts" "$fixture/.just-tmp"
 cp "$root/justfile" "$root/package.json" "$root/bun.lock" "$fixture/"
 cp "$root/scripts/nx" "$root/scripts/nx-base.sh" "$root/scripts/setup-llmlint.sh" "$fixture/scripts/"
+# The pinned shell toolchain's installer downloads; scripts/check-shell-tools.sh
+# drives the real one, so here it only records that bootstrap reached it.
+cat >"$fixture/scripts/shell-tools.sh" <<'STUB'
+printf 'shell-tools %s\n' "$*" >> "$CALL_LOG"
+STUB
 git -C "$fixture" init -q
 
 bin="$tmp/bin"
@@ -71,7 +76,7 @@ if [ "${1:-}" = install ]; then
 fi
 STUB
 for tool in cargo rustup uv; do
-    cat >"$bin/$tool" <<'STUB'
+  cat >"$bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
@@ -86,25 +91,25 @@ ln -s "$(command -v node)" "$bin/node"
 ln -s "$(command -v git)" "$bin/git"
 
 run_recipe() {
-    local log="$1"
-    shift
-    : >"$log"
-    CALL_LOG="$log" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
-        just --justfile "$fixture/justfile" --working-directory "$fixture" "$@" \
-        >"$tmp/out" 2>"$tmp/err" || {
-        cat "$tmp/err" >&2
-        fail "'just $*' failed against the stubbed fixture"
-    }
+  local log="$1"
+  shift
+  : >"$log"
+  CALL_LOG="$log" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
+    just --justfile "$fixture/justfile" --working-directory "$fixture" "$@" \
+    >"$tmp/out" 2>"$tmp/err" || {
+    cat "$tmp/err" >&2
+    fail "'just $*' failed against the stubbed fixture"
+  }
 }
 
 # The line number of the first call matching $2, or nothing when it never ran.
 # "Never ran" is the case this gate exists to report, so it must return empty
 # rather than let `pipefail` abort the script before the diagnostic below.
 first_call() {
-    grep -Fxn "$2" "$1" | head -1 | cut -d: -f1 || true
+  grep -Fxn "$2" "$1" | head -1 | cut -d: -f1 || true
 }
 first_nx() {
-    grep -n '^nx ' "$1" | head -1 | cut -d: -f1 || true
+  grep -n '^nx ' "$1" | head -1 | cut -d: -f1 || true
 }
 
 # A fresh checkout: no node_modules at all.
@@ -112,33 +117,35 @@ run_recipe "$tmp/fresh.calls" check all
 installed_at="$(first_call "$tmp/fresh.calls" "$install_line")"
 nx_at="$(first_nx "$tmp/fresh.calls")"
 [[ -n "$installed_at" ]] ||
-    fail "'just check all' never ran '$install_line' in a fresh checkout, so it assumes an already-bootstrapped one"
+  fail "'just check all' never ran '$install_line' in a fresh checkout, so it assumes an already-bootstrapped one"
 [[ -n "$nx_at" ]] || fail "'just check all' never reached Nx; this gate is checking the wrong recipe"
 [[ "$installed_at" -lt "$nx_at" ]] ||
-    fail "the workspace was installed at call $installed_at, after Nx ran at call $nx_at"
+  fail "the workspace was installed at call $installed_at, after Nx ran at call $nx_at"
 grep -q '^nx run-many --all ' "$tmp/fresh.calls" ||
-    fail "'just check all' did not hand the full sweep to 'nx run-many --all'"
+  fail "'just check all' did not hand the full sweep to 'nx run-many --all'"
 if grep -q 'packages installed' "$tmp/out" "$tmp/err"; then
-    fail "the install printed on success; every gate run would carry that noise"
+  fail "the install printed on success; every gate run would carry that noise"
 fi
 
 # Installed and current: no second install.
 run_recipe "$tmp/warm.calls" check all
 [[ -z "$(first_call "$tmp/warm.calls" "$install_line")" ]] ||
-    fail "a current install was installed again; every gate run would pay for it"
+  fail "a current install was installed again; every gate run would pay for it"
 
 # A lockfile newer than the install: install again before Nx.
 sleep 1
 touch "$fixture/bun.lock"
 run_recipe "$tmp/stale.calls" check all
 [[ -n "$(first_call "$tmp/stale.calls" "$install_line")" ]] ||
-    fail "a bun.lock newer than the install did not reinstall, so Nx would run on stale dependencies"
+  fail "a bun.lock newer than the install did not reinstall, so Nx would run on stale dependencies"
 
 run_recipe "$tmp/bootstrap.calls" bootstrap
 [[ -n "$(first_call "$tmp/bootstrap.calls" "$install_line")" ]] ||
-    fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
+  fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
 [[ -n "$(first_call "$tmp/bootstrap.calls" 'uv sync --project python --frozen --no-install-workspace --quiet')" ]] ||
-    fail "bootstrap no longer syncs the uv workspace; a clean clone would have no Python SDK environment"
+  fail "bootstrap no longer syncs the uv workspace; a clean clone would have no Python SDK environment"
+[[ -n "$(first_call "$tmp/bootstrap.calls" 'shell-tools install')" ]] ||
+  fail "bootstrap no longer installs the pinned shell toolchain; a clean clone could not run the shell format, lint or coverage targets"
 
 # The wrapper's own streams: Nx's stdout (`show projects --json`, say) reaches
 # the caller untouched while its stderr stays stderr, and a failed run keeps
@@ -154,11 +161,11 @@ run_recipe "$tmp/bootstrap.calls" bootstrap
 # NX_CACHE_DIRECTORY exactly as a real run's does.
 real_nx_module="$root/node_modules/nx/dist/src/tasks-runner/terminal-output-path.js"
 [[ -f "$real_nx_module" ]] ||
-    fail "the installed Nx no longer ships $real_nx_module; scripts/nx locates task logs through it — update both"
+  fail "the installed Nx no longer ships $real_nx_module; scripts/nx locates task logs through it — update both"
 summary="$root/node_modules/nx/dist/src/tasks-runner/life-cycles/summary-terminal-output-life-cycle.js"
 # shellcheck disable=SC2016 # the JavaScript template literal is matched as text, not expanded
 grep -qF 'full log: ${(0, terminal_output_path_1.terminalOutputPathForHash)(task.hash)}' "$summary" ||
-    fail "the installed Nx no longer prints each failed task's 'full log:' path from terminalOutputPathForHash ($summary); update scripts/nx's replay to what it prints now"
+  fail "the installed Nx no longer prints each failed task's 'full log:' path from terminalOutputPathForHash ($summary); update scripts/nx's replay to what it prints now"
 printf '{}\n' >"$fixture/nx.json"
 mkdir -p "$fixture/node_modules/nx/src/tasks-runner"
 forward="$fixture/node_modules/nx/src/tasks-runner/terminal-output-path.js"
@@ -174,33 +181,43 @@ if (fail) {
 }
 STUB
 run_nx() {
-    local status=0
-    CALL_LOG="$tmp/nx.calls" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
-        "$fixture/scripts/nx" show projects --json >"$tmp/nx.out" 2>"$tmp/nx.err" || status=$?
-    echo "$status"
+  local status=0
+  CALL_LOG="$tmp/nx.calls" PATH="$bin:/usr/bin:/bin" HOME="$tmp/home" \
+    "$fixture/scripts/nx" show projects --json >"$tmp/nx.out" 2>"$tmp/nx.err" || status=$?
+  echo "$status"
 }
-[[ "$(run_nx)" -eq 0 ]] || { cat "$tmp/nx.err" >&2; fail "scripts/nx failed a passing Nx run"; }
+[[ "$(run_nx)" -eq 0 ]] || {
+  cat "$tmp/nx.err" >&2
+  fail "scripts/nx failed a passing Nx run"
+}
 [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] ||
-    fail "scripts/nx changed Nx's stdout (got: $(cat "$tmp/nx.out")); machine-readable output must pass through untouched"
+  fail "scripts/nx changed Nx's stdout (got: $(cat "$tmp/nx.out")); machine-readable output must pass through untouched"
 grep -qxF 'nx-stub: diagnostics' "$tmp/nx.err" || fail "scripts/nx lost Nx's stderr"
 
 # One failed run advertising $1 (colon-separated paths): Nx's status survives,
 # nothing reaches stdout, and nothing outside the area is read.
 failed_run() {
-    local nx_status
-    NX_STUB_FAIL="$1"
-    export NX_STUB_FAIL
-    nx_status="$(run_nx)"
-    unset NX_STUB_FAIL
-    [[ "$nx_status" -eq 3 ]] || { cat "$tmp/nx.err" >&2; fail "scripts/nx turned Nx's exit status 3 into $nx_status"; }
-    [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed run's task-log replay leaked onto stdout"
-    if grep -qF 'secret:' "$tmp/nx.err" || grep -q '^set ' "$tmp/nx.err"; then
-        cat "$tmp/nx.err" >&2; fail "scripts/nx read a file outside Nx's task-log area because a 'full log:' line named it"
-    fi
+  local nx_status
+  NX_STUB_FAIL="$1"
+  export NX_STUB_FAIL
+  nx_status="$(run_nx)"
+  unset NX_STUB_FAIL
+  [[ "$nx_status" -eq 3 ]] || {
+    cat "$tmp/nx.err" >&2
+    fail "scripts/nx turned Nx's exit status 3 into $nx_status"
+  }
+  [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed run's task-log replay leaked onto stdout"
+  if grep -qF 'secret:' "$tmp/nx.err" || grep -q '^set ' "$tmp/nx.err"; then
+    cat "$tmp/nx.err" >&2
+    fail "scripts/nx read a file outside Nx's task-log area because a 'full log:' line named it"
+  fi
 }
 refused() {
-    grep -qF "the task log $1 is not a file in this workspace's Nx task-log area ($2)" "$tmp/nx.err" ||
-        { cat "$tmp/nx.err" >&2; fail "a 'full log:' path outside the task-log area ($1) was not named as refused"; }
+  grep -qF "the task log $1 is not a file in this workspace's Nx task-log area ($2)" "$tmp/nx.err" ||
+    {
+      cat "$tmp/nx.err" >&2
+      fail "a 'full log:' path outside the task-log area ($1) was not named as refused"
+    }
 }
 
 # Nx names paths from its physical working directory (macOS's temp dir sits
@@ -214,11 +231,11 @@ echo 'secret: a file outside the task-log area' >"$tmp/task-logs/outside.log"
 ln -s "$tmp/task-logs/outside.log" "$area/4242"
 failed_run "$area/1234567890:$area/9999:$tmp/task-logs/outside.log:$area/4242:$area/../../../justfile:$area/subdir"
 grep -qxF 'error[E0425]: the failing task output' "$tmp/nx.err" ||
-    fail "a failed run did not replay the advertised task log to stderr"
+  fail "a failed run did not replay the advertised task log to stderr"
 grep -qF "the task log $area/9999 is not readable on this machine; re-run the failed task" "$tmp/nx.err" ||
-    fail "an advertised task log this machine cannot read was skipped silently"
+  fail "an advertised task log this machine cannot read was skipped silently"
 for outside in "$tmp/task-logs/outside.log" "$area/4242" "$area/../../../justfile" "$area/subdir"; do
-    refused "$outside" "$area"
+  refused "$outside" "$area"
 done
 
 # A cache directory configured through NX_CACHE_DIRECTORY moves the area with
@@ -228,7 +245,7 @@ mkdir -p "$custom"
 echo 'error: output kept in the configured cache' >"$custom/777"
 NX_CACHE_DIRECTORY="$tmp/custom-cache" failed_run "$custom/777:$area/1234567890"
 grep -qxF 'error: output kept in the configured cache' "$tmp/nx.err" ||
-    fail "a task log in the NX_CACHE_DIRECTORY cache was not replayed"
+  fail "a task log in the NX_CACHE_DIRECTORY cache was not replayed"
 grep -q '^error\[E0425\]' "$tmp/nx.err" && fail "a log outside the configured cache directory was replayed"
 refused "$area/1234567890" "$custom"
 
@@ -238,7 +255,10 @@ mkdir -p "$fixture/configured-cache/terminalOutputs"
 echo 'error: output kept in the nx.json cache' >"$fixture/configured-cache/terminalOutputs/616"
 failed_run "$fixture_phys/configured-cache/terminalOutputs/616:$area/1234567890"
 grep -qxF 'error: output kept in the nx.json cache' "$tmp/nx.err" ||
-    { cat "$tmp/nx.err" >&2; fail "a task log in nx.json's cacheDirectory was not replayed"; }
+  {
+    cat "$tmp/nx.err" >&2
+    fail "a task log in nx.json's cacheDirectory was not replayed"
+  }
 grep -q '^error\[E0425\]' "$tmp/nx.err" && fail "a log outside nx.json's cacheDirectory was replayed"
 refused "$area/1234567890" "$fixture_phys/configured-cache/terminalOutputs"
 printf '{}\n' >"$fixture/nx.json"
@@ -267,9 +287,12 @@ rm "$fixture/linked-cache"
 echo 'locked' >"$area/31337"
 chmod 000 "$area/31337"
 if [[ ! -r "$area/31337" ]]; then
-    failed_run "$area/31337"
-    grep -qF "the task log $area/31337 is Nx's own but could not be read (EACCES" "$tmp/nx.err" ||
-        { cat "$tmp/nx.err" >&2; fail "an unreadable task log was not reported with the read error"; }
+  failed_run "$area/31337"
+  grep -qF "the task log $area/31337 is Nx's own but could not be read (EACCES" "$tmp/nx.err" ||
+    {
+      cat "$tmp/nx.err" >&2
+      fail "an unreadable task log was not reported with the read error"
+    }
 fi
 chmod 600 "$area/31337"
 
@@ -278,7 +301,10 @@ chmod 600 "$area/31337"
 rm "$forward"
 failed_run "$area/1234567890"
 grep -qF "the task log $area/1234567890 is not read: the installed Nx did not say where it keeps task logs" "$tmp/nx.err" ||
-    { cat "$tmp/nx.err" >&2; fail "a missing Nx task-log module was not reported with its next action"; }
+  {
+    cat "$tmp/nx.err" >&2
+    fail "a missing Nx task-log module was not reported with its next action"
+  }
 grep -q 'at Module\|node:internal' "$tmp/nx.err" && fail "a missing Nx task-log module printed a stack trace"
 
 # A replay that itself fails — here a node that dies running it — is named,
@@ -295,11 +321,17 @@ STUB
 chmod +x "$crash_bin/node"
 status=0
 NX_STUB_FAIL="$area/1234567890" CALL_LOG="$tmp/nx.calls" PATH="$crash_bin:/usr/bin:/bin" HOME="$tmp/home" \
-    "$fixture/scripts/nx" show projects --json >"$tmp/nx.out" 2>"$tmp/nx.err" || status=$?
-[[ "$status" -eq 3 ]] || { cat "$tmp/nx.err" >&2; fail "a failed task-log replay turned Nx's exit status 3 into $status"; }
+  "$fixture/scripts/nx" show projects --json >"$tmp/nx.out" 2>"$tmp/nx.err" || status=$?
+[[ "$status" -eq 3 ]] || {
+  cat "$tmp/nx.err" >&2
+  fail "a failed task-log replay turned Nx's exit status 3 into $status"
+}
 [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed task-log replay changed Nx's stdout"
 grep -qF "nx: replaying the failed tasks' logs failed (above); the run's own result stands" "$tmp/nx.err" ||
-    { cat "$tmp/nx.err" >&2; fail "a failed task-log replay was not named"; }
+  {
+    cat "$tmp/nx.err" >&2
+    fail "a failed task-log replay was not named"
+  }
 
 # A bun that fails the way a stale lockfile really does: the reason survives,
 # Nx never runs, and the message names a next action.
@@ -318,17 +350,17 @@ rm -rf "$fixture/node_modules"
 : >"$tmp/loud.calls"
 status=0
 CALL_LOG="$tmp/loud.calls" PATH="$failing_bin:/usr/bin:/bin" HOME="$tmp/home" \
-    just --justfile "$fixture/justfile" --working-directory "$fixture" check all \
-    >"$tmp/out" 2>"$tmp/err" || status=$?
+  just --justfile "$fixture/justfile" --working-directory "$fixture" check all \
+  >"$tmp/out" 2>"$tmp/err" || status=$?
 [[ "$status" -ne 0 ]] ||
-    fail "a failing '$install_line' left 'just check all' green; the gate would run on absent dependencies"
+  fail "a failing '$install_line' left 'just check all' green; the gate would run on absent dependencies"
 grep -qF 'error: lockfile had changes, but lockfile is frozen' "$tmp/err" || {
-    cat "$tmp/err" >&2
-    fail "the failed install swallowed bun's own output; the reason must survive to the reader"
+  cat "$tmp/err" >&2
+  fail "the failed install swallowed bun's own output; the reason must survive to the reader"
 }
 grep -qF "just bootstrap" "$tmp/err" || fail "the failed install named no next action"
 if grep -q '^nx ' "$tmp/loud.calls"; then
-    fail "Nx ran after the workspace install failed"
+  fail "Nx ran after the workspace install failed"
 fi
 
 echo "check-js-install: ok"

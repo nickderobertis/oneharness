@@ -1,0 +1,9 @@
+# The shell toolchain, pinned once for every project that owns shell
+# (`.tool-versions` format: one tool and exactly one version per line).
+# scripts/shell-tools.sh is the only reader: `just bootstrap` (and so CI)
+# installs these exact versions, and every format, lint and coverage target
+# runs them through it, refusing any other. Kept out of `.tool-versions`, which
+# pins `just` alone for asdf/mise, because kcov has no asdf/mise plugin.
+shellcheck 0.11.0
+shfmt 3.14.1
+kcov 43

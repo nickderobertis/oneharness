@@ -52,7 +52,7 @@
       "options": {
         "commands": [
           "bash scripts/cargo-test.sh oneharness --with oneharness-mock-harness --features oneharness/mock-harness --filter \"kind(test)\" --record oneharness-integration",
-          "bash scripts/with-portable-sed.sh scripts/check-capability-surface.sh"
+          "bash scripts/shell-test.sh oneharness-integration scripts/with-portable-sed.sh scripts/check-capability-surface.sh"
         ],
         "parallel": false
       },
@@ -61,10 +61,12 @@
         "^default",
         "rustTestRunner",
         "{workspaceRoot}/docs/history-index.md",
-        "{workspaceRoot}/scripts/check-capability-surface.sh"
+        "{workspaceRoot}/scripts/check-capability-surface.sh",
+        "shellTestRunner"
       ],
       "outputs": [
-        "{workspaceRoot}/target/coverage/oneharness-integration.profdata"
+        "{workspaceRoot}/target/coverage/oneharness-integration.profdata",
+        "{workspaceRoot}/target/coverage/shell/oneharness-integration"
       ],
       "parallelism": false
     }

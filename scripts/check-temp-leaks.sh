@@ -30,7 +30,7 @@ fi
 
 # `/tmp` as well as `$TMPDIR`: the control tests root their sockets there
 # deliberately, because a socket path is an address with a `sun_path` budget.
-IFS=':' read -r -a scratch_roots <<< "${OH_SCRATCH_ROOTS:-${TMPDIR:-/tmp}:/tmp}"
+IFS=':' read -r -a scratch_roots <<<"${OH_SCRATCH_ROOTS:-${TMPDIR:-/tmp}:/tmp}"
 # A list of nothing but separators names no root, and sweeping none of them would
 # read as a clean run.
 named=0
@@ -73,7 +73,11 @@ vanished_entry() {
   [ "$path" != "$line" ] || return 1
   path=${path%: No such file or directory}
   [ "$path" != "${line#find: }" ] || return 1
-  case "$path" in "'"*"'") path=${path#"'"}; path=${path%"'"} ;; esac
+  case "$path" in "'"*"'")
+    path=${path#"'"}
+    path=${path%"'"}
+    ;;
+  esac
   name=${path#"$root/"}
   [ "$name" != "$path" ] && [ -n "$name" ] && [ "${name#*/}" = "$name" ]
 }
@@ -91,7 +95,7 @@ snapshot() {
   for dir in "${scratch_roots[@]}"; do
     [ -n "$dir" ] || continue
     if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
-      if grep -qxF -- "$dir" <<< "$present_before"; then
+      if grep -qxF -- "$dir" <<<"$present_before"; then
         echo "check-temp-leaks: cannot watch scratch root '$dir': it was removed while the command ran." >&2
         echo "  fix: leave the scratch roots in place while the command runs, then re-run." >&2
         return 2
@@ -199,10 +203,10 @@ named_for_a_live_process_lacking_the_run_marker() {
     environment=$(ps eww -o command= -p "$pid" 2>/dev/null) || return 1
     command=$(ps ww -o command= -p "$pid" 2>/dev/null) || return 1
     [ "${#environment}" -gt "${#command}" ] || return 1
-    environment=$(tr ' ' '\n' <<< "$environment")
+    environment=$(tr ' ' '\n' <<<"$environment")
   fi
   [ -n "$environment" ] || return 1
-  ! grep -qxF "$run_marker" <<< "$environment"
+  ! grep -qxF "$run_marker" <<<"$environment"
 }
 if [ -n "$leaked" ]; then
   kept="" left_out=""
@@ -212,7 +216,7 @@ if [ -n "$leaked" ]; then
     else
       kept+="$dir"$'\n'
     fi
-  done <<< "$leaked"
+  done <<<"$leaked"
   leaked=${kept%$'\n'}
   # Said rather than dropped, on one line: a descendant of this run that cleared
   # its own environment reads exactly like another checkout's run.
@@ -233,13 +237,13 @@ if [ -n "$leaked" ]; then
   node_suite="${prefix}sdk-"
   python_suite="${prefix}python-"
   names=$(printf '%s\n' "$leaked" | sed 's#.*/##')
-  if grep -q "^$node_suite" <<< "$names"; then
+  if grep -q "^$node_suite" <<<"$names"; then
     echo "  fix ($node_suite*): make each with scratch(), scratchSync() or controlScratch() from npm/oneharness-sdk/test/scratch.mjs, then remove what they hold: registerScratchCleanup() from scratch-hook.mjs in a test file, or process.on('exit', removeScratch) in a script such as test/package-e2e.mjs." >&2
   fi
-  if grep -q "^$python_suite" <<< "$names"; then
+  if grep -q "^$python_suite" <<<"$names"; then
     echo "  fix ($python_suite*): make each with scratch() or control_scratch() from python/oneharness-sdk/test/scratch.py, which registers its removal with the test case — or, outside a test case, scratch_dir() in package_e2e.py, which its ExitStack removes." >&2
   fi
-  if grep -v "^$node_suite" <<< "$names" | grep -q -v "^$python_suite"; then
+  if grep -v "^$node_suite" <<<"$names" | grep -q -v "^$python_suite"; then
     echo "  fix: own each one with oneharness_core::io::scratch::ScratchDir, which removes it when the test ends — including when the test panics." >&2
   fi
   # Named either way, but a command that failed keeps its status: the leak is

@@ -9,7 +9,8 @@
 # journeys, and from the SDK contract to an SDK that consumes it — plus a crate
 # edge Cargo has and the graph lost, and holds the check to rejecting each with
 # that edge named — and the AGENTS.md project record and the Rust coverage
-# floor's list of test runs falling out of step with the graph, and a graph Nx
+# floor's list of test runs falling out of step with the graph, the shell test
+# runner's files missing from its named input or a shell test's inputs, and a graph Nx
 # cannot compute failing without leaving the check's scratch behind. Nx computes
 # every graph here for real; nothing is stubbed.
 #
@@ -119,6 +120,37 @@ cp "$tmp/saved.json" "$ws/tools/rust-coverage/project.json"
 [ "$status" -ne 0 ] || fail "a coverage floor that no longer depends on oneharness-e2e's test should have failed the check"
 grep -qF "does not depend on oneharness-e2e:test" "$tmp/err" ||
   fail "the check failed but did not name the Rust test run the floor leaves out"
+
+# The shell test runner's inputs: a file scripts/shell-test.sh reads that
+# nx.json's shellTestRunner leaves out, and a shell-test project whose `test`
+# drops the named input — either replays stale results when the runner changes.
+cp "$ws/nx.json" "$tmp/saved.json"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const nx = JSON.parse(fs.readFileSync(file, "utf8"));
+  nx.namedInputs.shellTestRunner = nx.namedInputs.shellTestRunner.filter((i) => !i.endsWith("/shell-trace-env.sh"));
+  fs.writeFileSync(file, JSON.stringify(nx, null, 2) + "\n");
+' "$ws/nx.json"
+check
+cp "$tmp/saved.json" "$ws/nx.json"
+[ "$status" -ne 0 ] || fail "a shellTestRunner input missing scripts/shell-trace-env.sh should have failed the check"
+grep -qF "does not list scripts/shell-trace-env.sh" "$tmp/err" ||
+  fail "the check failed but did not name the runner file the named input leaves out"
+
+cp "$ws/tools/ci-contracts/project.json" "$tmp/saved.json"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const project = JSON.parse(fs.readFileSync(file, "utf8"));
+  project.targets.test.inputs = project.targets.test.inputs.filter((i) => i !== "shellTestRunner");
+  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+' "$ws/tools/ci-contracts/project.json"
+check
+cp "$tmp/saved.json" "$ws/tools/ci-contracts/project.json"
+[ "$status" -ne 0 ] || fail "a shell-test project whose test drops shellTestRunner should have failed the check"
+grep -qF "ci-contracts:test runs scripts/shell-test.sh but does not list the shellTestRunner" "$tmp/err" ||
+  fail "the check failed but did not name the test target missing the runner's inputs"
 
 # A graph Nx cannot compute (an nx.json plugin it cannot load): the check fails
 # naming that, and still gives back the scratch directory it made for the graph.

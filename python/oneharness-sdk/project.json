@@ -6,7 +6,7 @@
     "type:sdk",
     "lang:python"
   ],
-  "//": "The Python SDK, on the oldest supported interpreter (python/.python-version). Its targets run from the repository root, as its suites expect. `build` stages the release-stamped package (scripts/python-sdk-pack.mjs) and builds its wheel and sdist into python/dist/sdk-dist, as the release's build-python-sdk job does. `test` enforces 95% branch-inclusive coverage over oneharness_sdk; `e2e` builds and installs the release-stamped wheels and is not part of `test`.",
+  "//": "The Python SDK, on the oldest supported interpreter (python/.python-version). Its targets run from the repository root, as its suites expect. `build` stages the release-stamped package (scripts/python-sdk-pack.mjs) and builds its wheel and sdist into python/dist/sdk-dist, as the release's build-python-sdk job does. `test` enforces 95% branch-inclusive coverage over oneharness_sdk; `e2e` builds and installs the release-stamped wheels and is not part of `test`. `test` and `e2e` each run alone (`parallelism: false`), since scripts/check-temp-leaks.sh can tell another live run's scratch from this one's only by reading its maker's environment, which Windows does not expose: run beside each other there, each read the other's live scratch as its own leak.",
   "implicitDependencies": [
     "sdk-contract",
     "oneharness",
@@ -95,6 +95,7 @@
           "PYTHONPATH": "python/oneharness-sdk/src"
         }
       },
+      "parallelism": false,
       "dependsOn": [
         "oneharness:build",
         "oneharness-mock-harness:build"
@@ -117,6 +118,7 @@
         ],
         "parallel": false
       },
+      "parallelism": false,
       "dependsOn": [
         "oneharness:build",
         "oneharness-mock-harness:build",

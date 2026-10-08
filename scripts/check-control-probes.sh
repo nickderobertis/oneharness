@@ -18,13 +18,13 @@ probe="$root/scripts/explore_control.py"
 
 bin="${ONEHARNESS_BIN:-$root/target/debug/oneharness}"
 if [ ! -x "$bin" ]; then
-    echo "check-control-probes: skipped ($bin is not built; run 'just build')"
-    exit 0
+  echo "check-control-probes: skipped ($bin is not built; run 'just build')"
+  exit 0
 fi
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "check-control-probes: skipped (python3 is not installed; the probe it checks needs it)"
-    exit 0
+  echo "check-control-probes: skipped (python3 is not installed; the probe it checks needs it)"
+  exit 0
 fi
 
 ONEHARNESS_NO_CONFIG=1 "$bin" list --format json >"${TMPDIR:-/tmp}/oh-control-registry.$$.json"

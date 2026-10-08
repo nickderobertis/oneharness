@@ -52,7 +52,9 @@ follow-ups (see "After the main task").
   `shapes/library.md`, `intersections/rust-cli.md`).
 - **Language(s):** Rust, TypeScript, Python, and Bash. Bash is gate code, not
   only setup: `scripts/` holds the smoke, install and live e2e drivers and the
-  drift checks (and their tests) the tooling projects run.
+  drift checks (and their tests) the tooling projects run. The target shell is
+  bash, under `set -euo pipefail`, on Linux, macOS and Git Bash; only
+  `scripts/install.sh` is POSIX `sh`, for `curl | sh`.
 - **References composed:** `base.md`, `project-graph.md`, `shapes/cli.md`,
   `shapes/library.md`, `languages/rust.md`, `languages/typescript.md`,
   `languages/python.md`, `languages/bash.md`, `intersections/rust-cli.md`,
@@ -65,7 +67,8 @@ follow-ups (see "After the main task").
   `history-compat`, `mock-responder`, `harness-captures`, `sdk-contract`,
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
   `install-surface`, `release-tooling`, `ci-contracts`, `e2e-support`,
-  `workspace`, `workspace-integration`, `rust-coverage`, `scripts`, the paid `live-*` suites (claude,
+  `workspace`, `workspace-integration`, `rust-coverage`, `shell-coverage`,
+  `shell-toolchain`, `scripts`, `githooks`, the paid `live-*` suites (claude,
   codex, opencode, goose, qwen, crush, copilot, cursor, schema, control,
   variants) and the dispatch-only `explore-*` probes (control, cursor-stdin,
   events, hooks).
@@ -85,7 +88,11 @@ follow-ups (see "After the main task").
   stays on rustup, not asdf. Rust line coverage is measured on Linux/macOS and
   skipped on Windows, where llvm-cov does not attribute the integration tests'
   subprocess-spawned binary coverage (a tooling limitation — the binary reads ~0%
-  there); the functional gate still runs on all three platforms.
+  there); the functional gate still runs on all three platforms. The shell
+  toolchain — shfmt and shellcheck (each shell project's `format` and `lint`),
+  kcov for coverage, and no bats (the shell tests are bash scripts) — is pinned
+  once in `.shell-tool-versions`, not `.tool-versions` (kcov has no asdf/mise
+  plugin), and installed by `just bootstrap` (`scripts/shell-tools.sh`).
 
 ## Project graph
 <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
@@ -139,8 +146,8 @@ repo-level `coverage` — and each target calls its own language's tool.
 
 Use the `just` recipes; do not hand-roll equivalents.
 
-- `just bootstrap` — set up from a clean clone (toolchain, llmlint, dependencies,
-  and the committed pre-push hook).
+- `just bootstrap` — set up from a clean clone (toolchain, the pinned shell
+  tools, llmlint, dependencies, and the committed pre-push hook).
 - `just check` — the gate's affected tier; `just check all` — the full sweep
   (*Project graph*). Must pass before any commit or PR.
 - `just gate` — pre-push superset: `check`, dependency/license audit, crate
@@ -268,9 +275,13 @@ Use the `just` recipes; do not hand-roll equivalents.
 - **Coverage is a hard gate**: 95% lines for the Rust crates, over the union of
   every crate's instrumented `test` run (the `rust-coverage` project); 95% for
   the Node SDK (`coverageThreshold = 0.95`) and 95% branch-inclusive for the
-  Python SDK (`fail_under = 95`), each in its own `test`. A user-visible change
-  ships with a test that fails without it, and the coverage number keeps a
-  behavior the tests never execute from slipping in unseen. Find the gaps with
+  Python SDK (`fail_under = 95`), each in its own `test`; 54% lines for shell
+  (the `shell-coverage` project, Linux only), below 95 because its denominator
+  counts scripts the gate never runs, the paid live suites first — the
+  measurement and the full reason are in `tools/shell-coverage/AGENTS.md`. A
+  user-visible change ships with a test
+  that fails without it, and the coverage number keeps a behavior the tests
+  never execute from slipping in unseen. Find the gaps with
   `just coverage-html`; raise the tests, never lower a floor.
 - The execution path is proven **hermetically** by a mock harness binary (the
   `oneharness-mock-harness` crate, around the responder in

@@ -18,18 +18,18 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 fail() {
-    echo "check-codex-usage-schema-test: $1" >&2
-    echo "  rerun with 'bash -x scripts/check-codex-usage-schema-test.sh' to inspect the failing case" >&2
-    exit 1
+  echo "check-codex-usage-schema-test: $1" >&2
+  echo "  rerun with 'bash -x scripts/check-codex-usage-schema-test.sh' to inspect the failing case" >&2
+  exit 1
 }
 
 # A `codex` whose `app-server generate-json-schema --out DIR` behaves as
 # `$mode` dictates. Written fresh per case so PATH holds exactly one.
 write_fake_codex() {
-    local mode="$1" bin="$tmp/bin"
-    rm -rf "$bin"
-    mkdir -p "$bin"
-    cat >"$bin/codex" <<FAKE
+  local mode="$1" bin="$tmp/bin"
+  rm -rf "$bin"
+  mkdir -p "$bin"
+  cat >"$bin/codex" <<FAKE
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "\${1:-}" = "--version" ]; then
@@ -65,28 +65,28 @@ case "$mode" in
         ;;
 esac
 FAKE
-    chmod +x "$bin/codex"
-    printf '%s' "$bin"
+  chmod +x "$bin/codex"
+  printf '%s' "$bin"
 }
 
 # Trimmed to `$1` plus the system essentials so the scripted `codex` is the only
 # one the gate can resolve, and returns the gate's status instead of aborting.
 run_gate() {
-    local extra_path="$1" out="$2"
-    set +e
-    PATH="$extra_path:/usr/bin:/bin" "$gate" >"$out" 2>&1
-    local status=$?
-    set -e
-    printf '%s' "$status"
+  local extra_path="$1" out="$2"
+  set +e
+  PATH="$extra_path:/usr/bin:/bin" "$gate" >"$out" 2>&1
+  local status=$?
+  set -e
+  printf '%s' "$status"
 }
 
 assert_contains() {
-    local file="$1" pattern="$2" description="$3"
-    grep -qF "$pattern" "$file" || {
-        echo "--- captured output ---" >&2
-        cat "$file" >&2
-        fail "$description"
-    }
+  local file="$1" pattern="$2" description="$3"
+  grep -qF "$pattern" "$file" || {
+    echo "--- captured output ---" >&2
+    cat "$file" >&2
+    fail "$description"
+  }
 }
 
 empty="$tmp/empty-bin"
@@ -94,42 +94,42 @@ mkdir -p "$empty"
 status="$(run_gate "$empty" "$tmp/skip.log")"
 [ "$status" = "0" ] || fail "a missing codex must skip (exit 0), got exit $status"
 assert_contains "$tmp/skip.log" "skipped" \
-    "the skip must announce itself rather than passing silently"
+  "the skip must announce itself rather than passing silently"
 assert_contains "$tmp/skip.log" "codex is not installed" \
-    "the skip must name why it skipped"
+  "the skip must name why it skipped"
 
 status="$(run_gate "$(write_fake_codex match)" "$tmp/ok.log")"
 [ "$status" = "0" ] || {
-    cat "$tmp/ok.log" >&2
-    fail "a matching schema must pass, got exit $status"
+  cat "$tmp/ok.log" >&2
+  fail "a matching schema must pass, got exit $status"
 }
 assert_contains "$tmp/ok.log" "check-codex-usage-schema: ok" \
-    "a pass must report a pass, not a skip"
+  "a pass must report a pass, not a skip"
 grep -qF "skipped" "$tmp/ok.log" &&
-    fail "a real run must not report itself as skipped"
+  fail "a real run must not report itself as skipped"
 
 status="$(run_gate "$(write_fake_codex generator-failure)" "$tmp/genfail.log")"
 [ "$status" = "1" ] || fail "a failing generator must fail the gate, got exit $status"
 assert_contains "$tmp/genfail.log" "unrecognized subcommand" \
-    "the generator's own error must be preserved"
+  "the generator's own error must be preserved"
 assert_contains "$tmp/genfail.log" "update this script to the new command" \
-    "a generator failure must name a concrete next action"
+  "a generator failure must name a concrete next action"
 
 status="$(run_gate "$(write_fake_codex missing-output)" "$tmp/missing.log")"
 [ "$status" = "1" ] || fail "a missing generated file must fail the gate, got exit $status"
 assert_contains "$tmp/missing.log" "no longer emits v2/GetAccountRateLimitsResponse.json" \
-    "a moved response must be reported as moved, not as a diff"
+  "a moved response must be reported as moved, not as a diff"
 assert_contains "$tmp/missing.log" "parse_codex_rate_limits" \
-    "the failure must point at the parser that depends on the shape"
+  "the failure must point at the parser that depends on the shape"
 
 status="$(run_gate "$(write_fake_codex drift)" "$tmp/drift.log")"
 [ "$status" = "1" ] || fail "a drifted schema must fail the gate, got exit $status"
 assert_contains "$tmp/drift.log" "pctUsed" \
-    "the diff must show what actually changed"
+  "the diff must show what actually changed"
 assert_contains "$tmp/drift.log" "the codex rate-limits contract drifted" \
-    "drift must be named as drift"
+  "drift must be named as drift"
 assert_contains "$tmp/drift.log" "would otherwise become a silent zero" \
-    "the failure must say why the drift matters"
+  "the failure must say why the drift matters"
 
 # The diff must survive the way `just lint-workflows` invokes the gate — stdout
 # suppressed. A drift report whose diff went to /dev/null tells a reader the
@@ -141,6 +141,6 @@ status=$?
 set -e
 [ "$status" = "1" ] || fail "drift must still fail with stdout suppressed, got exit $status"
 assert_contains "$tmp/drift-stderr.log" "pctUsed" \
-    "the diff must reach stderr, so 'just lint-workflows' still shows what changed"
+  "the diff must reach stderr, so 'just lint-workflows' still shows what changed"
 
 echo "check-codex-usage-schema-test: ok"

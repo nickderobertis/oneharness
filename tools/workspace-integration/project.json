@@ -43,14 +43,22 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/with-portable-sed.sh scripts/check-nx-base.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-js-install.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-nx-graph-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh"
+          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-nx-base.sh",
+          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-js-install.sh",
+          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-nx-graph-test.sh",
+          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh",
+          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh"
         ],
         "parallel": false
-      }
+      },
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/workspace-integration"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "shellTestRunner"
+      ]
     }
   }
 }

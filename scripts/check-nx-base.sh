@@ -18,6 +18,7 @@ fail() {
   echo "check-nx-base: $1" >&2
   [ -s "$tmp/out" ] && sed 's/^/  stdout: /' "$tmp/out" >&2
   [ -s "$tmp/err" ] && sed 's/^/  stderr: /' "$tmp/err" >&2
+  echo "  Next: restore that behaviour in scripts/nx-base.sh (or the justfile recipe that calls it), then re-run 'bash scripts/check-nx-base.sh'." >&2
   exit 1
 }
 

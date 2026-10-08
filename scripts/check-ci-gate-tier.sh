@@ -21,6 +21,7 @@ fail() {
   echo "check-ci-gate-tier: $1" >&2
   [ -s "$tmp/out" ] && sed 's/^/  stdout: /' "$tmp/out" >&2
   [ -s "$tmp/err" ] && sed 's/^/  stderr: /' "$tmp/err" >&2
+  echo "  Next: restore that behaviour in scripts/ci-gate-tier.sh or .github/workflows/ci.yml, then re-run 'bash scripts/check-ci-gate-tier.sh'." >&2
   exit 1
 }
 

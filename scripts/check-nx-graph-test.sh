@@ -38,6 +38,7 @@ ln -s "$root/node_modules" "$ws/node_modules"
 fail() {
   echo "check-nx-graph-test: $1" >&2
   [ -s "$tmp/err" ] && sed 's/^/  check said: /' "$tmp/err" >&2
+  echo "  Next: restore that refusal in scripts/check-nx-graph.mjs (or tools/workspace/boundaries.json), then re-run 'bash scripts/check-nx-graph-test.sh'." >&2
   exit 1
 }
 

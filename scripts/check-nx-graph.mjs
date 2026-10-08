@@ -76,7 +76,7 @@ for (const [name, node] of Object.entries(graph.nodes)) {
 	if (types.length !== 1) {
 		failures.push(`${name} carries ${types.length} type tags (${types.join(", ") || "none"}); give it exactly one`);
 	} else if (!(types[0] in allow)) {
-		failures.push(`${name} is tagged ${types[0]}, which tools/workspace/boundaries.json does not declare`);
+		failures.push(`${name} is tagged ${types[0]}, which tools/workspace/boundaries.json does not declare; retag it with a declared type or declare this one there`);
 	} else {
 		typeOf.set(name, types[0]);
 	}
@@ -93,7 +93,7 @@ for (const [source, dependencies] of Object.entries(graph.dependencies)) {
 		if (from === undefined || to === undefined) continue;
 		if (!allow[from].includes(to)) {
 			failures.push(
-				`${source} (${from}) -> ${target} (${to}) is a dependency ${from} may not have; ${from} may depend only on ${allow[from].join(", ") || "nothing"} (tools/workspace/boundaries.json)`,
+				`${source} (${from}) -> ${target} (${to}) is a dependency ${from} may not have; ${from} may depend only on ${allow[from].join(", ") || "nothing"} (tools/workspace/boundaries.json), so remove the edge or move the shared code into a project it may depend on`,
 			);
 		}
 	}
@@ -150,19 +150,19 @@ const rustTests = Object.keys(graph.nodes)
 	.sort();
 const coverage = graph.nodes["rust-coverage"]?.data.targets.coverage;
 if (coverage === undefined) {
-	failures.push("there is no rust-coverage:coverage target to enforce the Rust floor");
+	failures.push("there is no rust-coverage:coverage target to enforce the Rust floor; restore it in tools/rust-coverage/project.json");
 } else {
 	const covered = [...(coverage.dependsOn?.[0]?.projects ?? [])].sort();
 	for (const name of rustTests.filter((n) => !covered.includes(n))) {
 		failures.push(`rust-coverage:coverage does not depend on ${name}:test, so that crate's coverage is outside the floor; add it to the dependsOn projects`);
 	}
 	for (const name of covered.filter((n) => !rustTests.includes(n))) {
-		failures.push(`rust-coverage:coverage depends on ${name}:test, which is not a Rust project's test`);
+		failures.push(`rust-coverage:coverage depends on ${name}:test, which is not a Rust project's test; remove it from the dependsOn projects`);
 	}
 	// scripts/rust-coverage.sh reads each run's profile record off the same
 	// project definitions, so a run that is not cargo-test.sh leaves none.
 	for (const name of rustTests.filter((n) => recordOf(n) === undefined)) {
-		failures.push(`${name}:test does not run scripts/cargo-test.sh, so it leaves no coverage profile for the Rust floor`);
+		failures.push(`${name}:test does not run scripts/cargo-test.sh, so it leaves no coverage profile for the Rust floor; make its first test command 'bash scripts/cargo-test.sh <crate>', as every Rust project's is`);
 	}
 }
 
@@ -185,13 +185,13 @@ if (!record) {
 		failures.push(`AGENTS.md's "Projects in the graph" record does not name ${name}; add it`);
 	}
 	for (const name of [...listed].filter((n) => !(n in graph.nodes)).sort()) {
-		failures.push(`AGENTS.md's "Projects in the graph" record names ${name}, which is not a project in the graph`);
+		failures.push(`AGENTS.md's "Projects in the graph" record names ${name}, which is not a project in the graph; remove it`);
 	}
 }
 
 if (failures.length > 0) {
 	for (const failure of failures) console.error(`check-nx-graph: ${failure}`);
-	console.error(`check-nx-graph: ${failures.length} boundary violation(s) in the project graph`);
+	console.error(`check-nx-graph: ${failures.length} boundary violation(s) in the project graph; fix each as it says, then re-run 'node scripts/check-nx-graph.mjs'`);
 	process.exit(1);
 }
 console.log(`check-nx-graph: ok (${Object.keys(graph.nodes).length} projects, ${edges.size} edges within their boundaries)`);

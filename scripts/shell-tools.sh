@@ -39,7 +39,6 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
 }
 pins="$root/.shell-tool-versions"
 
-# Exit with status $1 after the message $2 and each fix line after it.
 refuse() {
   local status="$1"
   shift
@@ -217,10 +216,13 @@ extract() {
       if command -v unzip >/dev/null 2>&1; then
         unzip -q "$archive" -d "$into"
       else
+        local zip_win into_win
+        zip_win="$(cygpath -w "$archive")" || return 1
+        into_win="$(cygpath -w "$into")" || return 1
         # The paths reach PowerShell as data, never as part of its source, so
         # the `$env:` references are PowerShell's to expand.
         # shellcheck disable=SC2016
-        OH_ZIP="$(cygpath -w "$archive")" OH_INTO="$(cygpath -w "$into")" \
+        OH_ZIP="$zip_win" OH_INTO="$into_win" \
           powershell.exe -NoProfile -Command 'Expand-Archive -LiteralPath $env:OH_ZIP -DestinationPath $env:OH_INTO'
       fi
       ;;

@@ -121,6 +121,7 @@ expect 1 "no SHA-256 recorded for shfmt_v9.9.9_" "an install of a version with n
 # Malformed pins are refused, never read as their first version.
 for case in "two versions|shfmt 4.5.6 4.5.7|not exactly one version" \
   "two lines|shfmt 4.5.6;shfmt 4.5.6|more than one line" \
+  "a bare second line|shfmt 4.5.6;shfmt|more than one line" \
   "no line|# shfmt removed|has no shfmt line" \
   "not a version|shfmt latest|not exactly one version"; do
   IFS='|' read -r name line want <<<"$case"

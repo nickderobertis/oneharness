@@ -96,7 +96,7 @@ steps="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
   "fix: run each shell test as 'bash scripts/shell-test.sh <project> scripts/<name>.sh [args...]', or update the reader here"
 
 work="$(mktemp -d)" || fail "could not create a scratch directory (above)" "fix: check that ${TMPDIR:-/tmp} is writable and has room, then re-run"
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" || echo "shell-coverage: could not remove its scratch $work (above); remove it by hand" >&2' EXIT
 kcov="$(bash scripts/shell-tools.sh path kcov)"
 
 reports=()

@@ -55,15 +55,19 @@ usage() {
 # The pinned version of $1: exactly one x.y.z (or kcov's bare integer) on
 # exactly one line, so a line listing two versions can never pin the first.
 pin() {
-  local lines
+  local lines count
   [ -f "$pins" ] || die "no $pins to read the $1 pin from" "fix: restore .shell-tool-versions at the repository root"
-  lines="$(awk -v tool="$1" '$1 == tool { $1 = ""; sub(/^[ \t]+/, ""); print }' "$pins")" ||
+  # Lines naming the tool are counted before any is read, so a second one —
+  # even a bare name with no version — can never go unseen.
+  count="$(awk -v tool="$1" '$1 == tool { n++ } END { print n + 0 }' "$pins")" ||
     die "could not read $pins (above)" "fix: restore its read permission (or 'git checkout -- .shell-tool-versions'), then re-run"
-  case "$(printf '%s' "$lines" | grep -c . || true)" in
+  case "$count" in
     1) ;;
     0) die ".shell-tool-versions has no $1 line" "fix: pin it as '$1 <version>'" ;;
     *) die ".shell-tool-versions names $1 on more than one line" "fix: keep exactly one '$1 <version>' line" ;;
   esac
+  lines="$(awk -v tool="$1" '$1 == tool { $1 = ""; sub(/^[ \t]+/, ""); print }' "$pins")" ||
+    die "could not read $pins (above)" "fix: restore its read permission (or 'git checkout -- .shell-tool-versions'), then re-run"
   [[ "$lines" =~ ^[0-9]+(\.[0-9]+)*$ ]] ||
     die ".shell-tool-versions pins $1 as '$lines', which is not exactly one version" "fix: write it as '$1 <version>', e.g. '$1 1.2.3'"
   printf '%s\n' "$lines"
@@ -96,7 +100,10 @@ esac
 
 # Every download and staging directory, removed however the run ends.
 scratch=()
-cleanup() { [ "${#scratch[@]}" -eq 0 ] || rm -rf "${scratch[@]}"; }
+cleanup() {
+  [ "${#scratch[@]}" -eq 0 ] || rm -rf "${scratch[@]}" ||
+    printf 'shell-tools: could not remove its scratch (above); remove what is left of %s by hand\n' "${scratch[*]}" >&2
+}
 trap cleanup EXIT
 
 bin_of() { printf '%s/%s-%s/bin/%s%s\n' "$tools_dir" "$1" "$2" "$1" "$exe"; }

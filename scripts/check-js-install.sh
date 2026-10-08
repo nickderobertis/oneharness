@@ -162,7 +162,8 @@ grep -qF 'full log: ${(0, terminal_output_path_1.terminalOutputPathForHash)(task
 printf '{}\n' >"$fixture/nx.json"
 mkdir -p "$fixture/node_modules/nx/src/tasks-runner"
 forward="$fixture/node_modules/nx/src/tasks-runner/terminal-output-path.js"
-printf 'module.exports = require(%s);\n' "$(node -p 'JSON.stringify(process.argv[1])' "$real_nx_module")" >"$forward"
+real_nx_literal="$(node -p 'JSON.stringify(process.argv[1])' "$real_nx_module")"
+printf 'module.exports = require(%s);\n' "$real_nx_literal" >"$forward"
 cat >"$fixture/node_modules/nx/dist/bin/nx.js" <<'STUB'
 const fail = process.env.NX_STUB_FAIL;
 process.stdout.write('["oneharness"]\n');
@@ -230,6 +231,17 @@ grep -qxF 'error: output kept in the configured cache' "$tmp/nx.err" ||
     fail "a task log in the NX_CACHE_DIRECTORY cache was not replayed"
 grep -q '^error\[E0425\]' "$tmp/nx.err" && fail "a log outside the configured cache directory was replayed"
 refused "$area/1234567890" "$custom"
+
+# A cache directory configured in nx.json moves the area the same way.
+printf '{"cacheDirectory": "configured-cache"}\n' >"$fixture/nx.json"
+mkdir -p "$fixture/configured-cache/terminalOutputs"
+echo 'error: output kept in the nx.json cache' >"$fixture/configured-cache/terminalOutputs/616"
+failed_run "$fixture_phys/configured-cache/terminalOutputs/616:$area/1234567890"
+grep -qxF 'error: output kept in the nx.json cache' "$tmp/nx.err" ||
+    { cat "$tmp/nx.err" >&2; fail "a task log in nx.json's cacheDirectory was not replayed"; }
+grep -q '^error\[E0425\]' "$tmp/nx.err" && fail "a log outside nx.json's cacheDirectory was replayed"
+refused "$area/1234567890" "$fixture_phys/configured-cache/terminalOutputs"
+printf '{}\n' >"$fixture/nx.json"
 
 # A task-log area that is itself a link elsewhere authorizes nothing, and an
 # authorized log this machine cannot read says why.

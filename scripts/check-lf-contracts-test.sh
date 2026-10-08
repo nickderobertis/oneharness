@@ -74,4 +74,25 @@ if ! bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; th
   fail "a pinned extensionless bash script should pass the --shell check"
 fi
 
+# The --shell enumeration fails loudly, with its next action, rather than
+# checking a shorter list: outside a git checkout git cannot list the scripts,
+# and a tracked script that cannot be read is named.
+rm -rf "$fixture/.git"
+if bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; then
+  fail "the --shell check passed where git could not list the tracked scripts"
+fi
+grep -qF "git could not list the tracked shell scripts" "$work/out" ||
+  fail "a failed listing of the tracked scripts was not named"
+git -C "$fixture" init -q
+git -C "$fixture" add -A
+chmod 000 "$fixture/scripts/tool"
+if [ ! -r "$fixture/scripts/tool" ]; then
+  if bash "$fixture/scripts/check-lf-contracts.sh" --shell >"$work/out" 2>&1; then
+    fail "the --shell check passed over a tracked script it could not read"
+  fi
+  grep -qF "could not read the tracked file scripts/tool" "$work/out" ||
+    fail "an unreadable tracked script was not named"
+fi
+chmod 644 "$fixture/scripts/tool"
+
 echo "check-lf-contracts-test: the LF gate goes red for a CRLF contract, an unreadable one and an unpinned shell script"

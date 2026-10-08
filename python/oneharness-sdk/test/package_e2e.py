@@ -131,6 +131,7 @@ def main(stack: ExitStack) -> None:
     # (no resolve against an index; `oneharness-cli` is outside the dev resolve,
     # python/pyproject.toml). The offline install below then proves the built
     # wheels need nothing more than that.
+    # llmlint: ignore-block[async_typed_clients_at_boundaries] This is a sequential packaging journey run as a script, not a service: like every other step in it (uv build, uv venv, uv pip install), this one invokes the uv CLI the release itself uses and cannot proceed until it exits, with no event loop and no other work to overlap, so an async client would only wrap the same wait.
     subprocess.run(
         [
             "uv",
@@ -148,6 +149,7 @@ def main(stack: ExitStack) -> None:
         env={**os.environ, "UV_PROJECT_ENVIRONMENT": str(environment)},
         check=True,
     )
+    # llmlint: ignore-end[async_typed_clients_at_boundaries]
     subprocess.run(
         [
             "uv",

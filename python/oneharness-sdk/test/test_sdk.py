@@ -9,7 +9,7 @@ import re
 import sys
 import tempfile
 import unittest
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -24,6 +24,7 @@ from oneharness_sdk import (
     OneHarness,
     OneHarnessProcessError,
     RunReport,
+    SyncOptions,
 )
 from oneharness_sdk._client import (
     _CAPABILITIES,
@@ -40,7 +41,7 @@ from .scratch import control_scratch, scratch
 
 
 @contextmanager
-def without_ambient_overrides() -> Iterator[None]:
+def without_ambient_overrides() -> Generator[None, None, None]:
     """Hide the machine's own `ONEHARNESS_*` overrides from the spawned CLI.
 
     The client passes the parent environment through, so a developer box — or an
@@ -378,7 +379,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         first = await stream.__anext__()
         self.assertEqual(first["event"]["name"], "first")
-        await cast("Any", stream).aclose()
+        assert isinstance(stream, AsyncGenerator)
+        await stream.aclose()
         await asyncio.sleep(0.7)
         self.assertNotIn("COMPLETE", log.read_text(encoding="utf-8"))
 
@@ -436,7 +438,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             # `run_stream` is typed as an `AsyncIterator`, which declares no
             # `aclose`; the generator it returns has one, and closing it ends
             # the still-running subprocess.
-            await cast("Any", stream).aclose()
+            assert isinstance(stream, AsyncGenerator)
+            await stream.aclose()
 
     async def test_history_watch_filters_records_and_closes(self) -> None:
         """Resume after one record and filter later records without duplication."""
@@ -474,7 +477,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(envelope["record"]["prompt"], "resumed record")
         self.assertEqual(envelope["record"]["history_id"], records[2]["history_id"])
         self.assertNotEqual(envelope["record"]["history_id"], records[0]["history_id"])
-        await cast("Any", watch).aclose()
+        assert isinstance(watch, AsyncGenerator)
+        await watch.aclose()
 
     async def test_history_lookup_and_watch_read_exactly_the_window_named(self) -> None:
         """Find a dated record inside its lookup or watch window and never outside it."""
@@ -498,10 +502,15 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         # only the id, name and timestamp this test turns on are hand-set.
         template = await record_today(str(scratch(self, "window-template")), "template")
         template_file = Path(template["history_file"])
-        line = next(
-            json.loads(candidate)
-            for candidate in template_file.read_text(encoding="utf-8").splitlines()
-            if json.loads(candidate)["type"] == "run"
+        # cast: `json.loads` returns Any; every history line is a JSON object,
+        # which the `["type"]` read selecting this one already relied on.
+        line = cast(
+            "dict[str, object]",
+            next(
+                json.loads(candidate)
+                for candidate in template_file.read_text(encoding="utf-8").splitlines()
+                if json.loads(candidate)["type"] == "run"
+            ),
         )
         history_dir = str(scratch(self, "window"))
         slug = template_file.parent.name
@@ -587,10 +596,13 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         ]
         for lookup, expected in lookups:
             with self.subTest(lookup=lookup):
+                found: Optional[str] = None
                 try:
-                    found: Optional[str] = (await client.history(lookup))[0]["name"]
+                    name = (await client.history(lookup))[0]["name"]
+                    assert isinstance(name, str)
+                    found = name
                 except HistoryNotFoundError:
-                    found = None
+                    pass
                 self.assertEqual(found, expected)
 
         # A run recorded now lands in today's segment: what every watch window
@@ -695,6 +707,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_inputs_are_strict_before_spawning(self) -> None:
         """Reject unknown and malformed fields without reaching a missing binary."""
+        # cast: each `cast("Any", ...)` in this test hands a method the input its
+        # typed options forbid, since the runtime refusal is what is under test.
         client = OneHarness(executable=str(ROOT / "missing-oneharness"))
         with self.assertRaisesRegex(ContractError, "invalid oneharness run options"):
             await client.run(cast("Any", {"prompt": "typo", "harneses": ["codex"]}))
@@ -829,12 +843,12 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             'allowed_tools = ["Bash(echo:*)"]\n', encoding="utf-8"
         )
         client = self.layered(project)
-        options: Any = {"cwd": str(project), "harnesses": ["claude-code"]}
+        options: SyncOptions = {"cwd": str(project), "harnesses": ["claude-code"]}
         with without_ambient_overrides():
             # `--check` exits non-zero precisely because a file *would* change,
             # and the method has to surface that as the report rather than as a
             # raise.
-            planned = await client.sync(cast("Any", {**options, "check": True}))
+            planned = await client.sync({**options, "check": True})
             self.assertEqual(self.claude(planned), "created")
             # Still `created` on the real write, which is what proves the check
             # reported the status a write would reach while writing nothing.
@@ -871,7 +885,9 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
     def claude(self, report: Any) -> str:
         """Return the claude-code result's status from one sync report."""
         results = [item for item in report["results"] if item["harness"] == "claude-code"]
-        return cast("str", results[0]["status"])
+        status = results[0]["status"]
+        assert isinstance(status, str)
+        return status
 
     def test_a_python_keyword_option_still_renders_its_cli_flag(self) -> None:
         """`sync --global` reaches argv through the `global_` public spelling.
@@ -1052,10 +1068,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                 ),
             }
         )
-        self.assertIsNotNone(blocked)
-        self.assertEqual(
-            json.loads(cast("str", blocked))["hookSpecificOutput"]["permissionDecision"], "deny"
-        )
+        assert blocked is not None
+        self.assertEqual(json.loads(blocked)["hookSpecificOutput"]["permissionDecision"], "deny")
 
         # An allowed call is said with silence, so `None` is the answer rather
         # than a missing one.
@@ -1094,9 +1108,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
                 "event": json.dumps({"tool_name": "Bash", "tool_input": {"command": "cat secret"}}),
             }
         )
-        self.assertEqual(
-            json.loads(cast("str", verdict))["hookSpecificOutput"]["permissionDecision"], "deny"
-        )
+        assert verdict is not None
+        self.assertEqual(json.loads(verdict)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("cat secret", spy.read_text(encoding="utf-8"))
 
     async def test_interrupt_refuses_a_session_no_run_is_serving(self) -> None:

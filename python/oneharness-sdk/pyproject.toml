@@ -35,9 +35,9 @@ dependencies = [
 # (`python/uv.lock`) for every Python the package supports, 3.9 included.
 [dependency-groups]
 dev = [
-    "coverage==7.10.7",
-    "mypy==1.19.1",
+    "coverage[toml]==7.10.7",
     "ruff==0.14.13",
+    "ty==0.0.85",
     "types-jsonschema==4.25.1.20251009",
 ]
 
@@ -73,10 +73,20 @@ ignore = [
     "S607", # Tests intentionally resolve required developer tools from PATH.
 ]
 
-[tool.mypy]
-python_version = "3.9"
-strict = true
-warn_unreachable = true
+# ty has no single strict switch, so every rule is an error, the off-by-default
+# soundness rules included, and each ty release's new rules join them. The
+# strict checks ty has no rule for are listed in AGENTS.md.
+[tool.ty.environment]
+python-version = "3.9"
+
+[tool.ty.src]
+include = ["src", "scripts", "test"]
+
+[tool.ty.rules]
+all = "error"
+
+[tool.ty.terminal]
+error-on-warning = true
 
 [tool.coverage.run]
 branch = true

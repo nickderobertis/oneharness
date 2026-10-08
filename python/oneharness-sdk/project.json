@@ -55,7 +55,7 @@
       "options": {
         "commands": [
           "uv sync --project python --frozen --no-install-workspace --quiet",
-          "uv run --project python --frozen --no-sync mypy --config-file python/oneharness-sdk/pyproject.toml python/oneharness-sdk/src python/oneharness-sdk/scripts python/oneharness-sdk/test"
+          "uv run --project python --frozen --no-sync ty check --project python/oneharness-sdk"
         ],
         "parallel": false
       }

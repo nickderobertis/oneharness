@@ -2,12 +2,15 @@
 
 Subtree rules for the shell line-coverage floor.
 
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] The create-repo bash reference admits a shell floor below 95% only with its reason recorded in AGENTS.md, and this repository's baseline task requires the measurement the approved floor rests on beside it: the figures are the floor's standing justification, which a future raise is compared against, not a session log. -->
 - **The floor is 54% lines** (`SHELL_COVERAGE_MIN`, default 54, in
   `scripts/shell-coverage.sh`), below the 95% default as the create-repo bash
   reference allows with a recorded reason, and still enforced: `coverage` fails
-  below it. It rests on a merged measurement of 56.19% of every shell script
-  under `scripts/` and `.githooks/` (9662 lines over 48 test steps; kcov 43,
-  Linux aarch64). Raise it as tests land; never lower it.
+  below it. Its basis: a merged kcov 43 measurement of 56.19% over every shell
+  script under `scripts/` and `.githooks/` (9662 lines, 48 test steps, Linux).
+  Raise floor and basis together, from a fresh `just coverage` run, as tests
+  land; never lower it.
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - **Why it is below 95.** The denominator is every script, so what the gate
   never runs counts at zero: the paid `live-*` suites and `explore-*` probes
   (and most of their shared `e2e-lib.sh`), `install.sh` (POSIX `sh` run by

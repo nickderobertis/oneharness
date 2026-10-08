@@ -226,6 +226,11 @@ verify_trust_root_independence() {
 # demand. The checksum here shares the mirror's origin (refused), so the Sigstore
 # attestation is the ONLY thing that can authorize the install — isolating the
 # gate. Pass -> installs; fail -> aborts.
+# llmlint: ignore-block[e2e_not_mocked] A real verifier needs a genuine bundle
+# signed by the release's OIDC identity, which exists only once a release is cut;
+# that real boundary is driven by release.yml's verify-attestation job (real
+# cosign and sigstore-python over the published bundle). This offline e2e owns
+# only install.sh's gating on the verdict, so the verifier is the one stubbed seam.
 verify_attestation_gate() {
   local mirror probe stubdir log tool
   mirror="$work/att-mirror"
@@ -264,6 +269,7 @@ STUB
   fi
   say "install-e2e: Sigstore attestation gate verified (a verifier runs; a failed attestation aborts)"
 }
+# llmlint: ignore-end[e2e_not_mocked]
 
 # Prove install.sh picks the right artifact for every host it supports, not
 # only for the one this runs on. Each host is posed through the inputs install.sh

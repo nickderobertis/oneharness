@@ -20,6 +20,10 @@
 #
 # Usage: scripts/explore-hooks.sh <harness-id>
 # Auth/model come from the environment the workflow sets (same as the e2e jobs).
+# llmlint: ignore-file[tool_output_is_signal] This is an investigative probe, not
+# a gate step: its hook-event payloads and marker-file dumps ARE the findings a reader runs it to obtain (same
+# contract as explore-control.sh). Quiet-on-success would leave it with nothing to
+# report.
 set -uo pipefail
 
 ID="${1:?usage: explore-hooks.sh <harness-id>}"

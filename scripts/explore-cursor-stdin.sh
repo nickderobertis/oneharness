@@ -18,6 +18,10 @@
 # Usage: scripts/explore-cursor-stdin.sh
 # Auth (CURSOR_API_KEY) and model (CURSOR_E2E_MODEL / OH_MODEL) come from the
 # environment the workflow sets, same as the e2e-cursor job.
+# llmlint: ignore-file[tool_output_is_signal] This is an investigative probe, not
+# a gate step: its per-invocation transcripts and VERDICT lines ARE the findings a reader runs it to obtain (same
+# contract as explore-control.sh). Quiet-on-success would leave it with nothing to
+# report.
 set -uo pipefail
 
 WORK="$(mktemp -d)"

@@ -44,17 +44,19 @@ fi
 nx_bin="$(node -e 'const p = require.resolve("nx/package.json"); process.stdout.write(require("path").join(p, "..", require(p).bin.nx))')"
 
 # Outside a terminal Nx ends a failed run with "full log: <path>" per failed task
-# instead of its output — a path on whichever machine ran it, which a CI log
-# reader cannot open. So a failed run prints those logs here, after the summary.
+# (on stderr) instead of its output — a path on whichever machine ran it, which
+# a CI log reader cannot open. So a failed run prints those logs here, after the
+# summary, to stderr. Only stderr passes through the copy that finds them: the
+# descriptor swap keeps Nx's stdout (`show projects --json`, say) its own.
 log="$(mktemp)"
 trap 'rm -f "$log"' EXIT
 status=0
-node "$nx_bin" "$@" 2>&1 | tee "$log" || status=$?
+{ node "$nx_bin" "$@" 2>&1 1>&3 3>&- | tee "$log" >&2 3>&-; } 3>&1 || status=$?
 if [ "$status" -ne 0 ]; then
   sed -n 's/^[[:space:]]*full log: //p' "$log" | while IFS= read -r task_log; do
     [ -f "$task_log" ] || continue
-    printf '\n----- %s -----\n' "$task_log"
-    cat "$task_log"
+    printf '\n----- %s -----\n' "$task_log" >&2
+    cat "$task_log" >&2
   done
 fi
 exit "$status"

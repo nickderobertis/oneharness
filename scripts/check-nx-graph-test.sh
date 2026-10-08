@@ -31,7 +31,7 @@ mkdir -p "$ws"
 # The working tree as it stands — tracked and new files, never ignored build
 # output — so the check is exercised against exactly what is about to be pushed.
 git ls-files -z --cached --others --exclude-standard |
-  while IFS= read -r -d '' f; do [ -e "$f" ] && printf '%s\0' "$f"; done |
+  while IFS= read -r -d '' f; do if [ -e "$f" ]; then printf '%s\0' "$f"; fi; done |
   tar --null -T - -cf - | tar -xf - -C "$ws"
 ln -s "$root/node_modules" "$ws/node_modules"
 

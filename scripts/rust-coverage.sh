@@ -42,7 +42,10 @@ if [[ "${OS:-}" == "Windows_NT" ]]; then
   echo "coverage: skipped on Windows (llvm-cov subprocess attribution under-reports; measured on Linux/macOS — see scripts/rust-coverage.sh)"
   exit 0
 fi
-[[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "rust-coverage: COVERAGE_MIN '$floor' is not a percentage; unset it for the 95 default or set a number such as 95" >&2; exit 2; }
+if ! [[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]] || ! awk -v f="$floor" 'BEGIN { exit !(f <= 100) }'; then
+  echo "rust-coverage: COVERAGE_MIN '$floor' is not a percentage from 0 to 100; unset it for the 95 default or set a number such as 95" >&2
+  exit 2
+fi
 
 # Each Rust test run's cargo-test.sh arguments, one run per line and one
 # argument per unit-separator-delimited field, from the project definitions

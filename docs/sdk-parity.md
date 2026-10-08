@@ -131,7 +131,7 @@ each row below also runs alone with `bash scripts/nx run-many -p <project> -t <t
 
 | Project | Targets | What it holds in place |
 | --- | --- | --- |
-| `oneharness` | `test` | `tests/capability.rs` and `tests/library_surface.rs` |
+| `oneharness-integration` | `test` | `tests/capability.rs` and `tests/library_surface.rs` |
 | `sdk-conformance` | `test` | `tests/sdk_conformance.rs`, `scripts/check-sdk-coverage.sh` and `scripts/check-parity-audit.sh` |
 | `node-sdk` | `lint`, `typecheck`, `test`, `e2e` | the TypeScript client's generated-contract drift check, lint, types, unit suite and packaged-CLI e2e (`just sdk-check`) |
 | `python-sdk` | `lint`, `typecheck`, `test`, `e2e` | the same for the Python client, on the oldest supported interpreter (`just python-sdk-check`) |

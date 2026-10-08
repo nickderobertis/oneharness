@@ -253,10 +253,10 @@ function outputTable(declared, bundles) {
  */
 const PARITY_TARGETS = [
 	{
-		project: "oneharness",
-		file: "src/project.json",
+		project: "oneharness-integration",
+		file: "tests/project.json",
 		targets: ["test"],
-		runs: ["scripts/cargo-test.sh oneharness"],
+		runs: ['scripts/cargo-test.sh oneharness --with oneharness-mock-harness --features oneharness/mock-harness --filter "kind(test)"'],
 		holds: "`tests/capability.rs` and `tests/library_surface.rs`",
 	},
 	{

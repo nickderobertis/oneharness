@@ -27,7 +27,7 @@
       "{workspaceRoot}/scripts/check-parity-audit.sh",
       "{workspaceRoot}/scripts/with-portable-sed.sh",
       "{workspaceRoot}/justfile",
-      "{workspaceRoot}/src/project.json",
+      "{workspaceRoot}/tests/project.json",
       "{workspaceRoot}/npm/oneharness-sdk/project.json",
       "{workspaceRoot}/python/oneharness-sdk/project.json"
     ]

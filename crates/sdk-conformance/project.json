@@ -21,7 +21,7 @@
       "{workspaceRoot}/docs/sdk-parity.md",
       "{workspaceRoot}/scripts/sdk-coverage.mjs",
       "{workspaceRoot}/scripts/parity-audit.mjs",
-      "{workspaceRoot}/scripts/sdk-generator.mjs",
+      "{workspaceRoot}/crates/sdk-contract/sdk-generator.mjs",
       "{workspaceRoot}/scripts/check-sdk-coverage.sh",
       "{workspaceRoot}/scripts/check-sdk-coverage-test.sh",
       "{workspaceRoot}/scripts/check-parity-audit.sh",

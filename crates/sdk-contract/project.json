@@ -14,8 +14,7 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
-      "rustToolchain",
-      "{workspaceRoot}/scripts/sdk-generator.mjs"
+      "rustToolchain"
     ]
   },
   "targets": {

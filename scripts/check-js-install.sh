@@ -67,10 +67,6 @@ if [ "${1:-}" = install ]; then
   mkdir -p node_modules/nx/dist/bin
   printf '{"name":"nx","bin":{"nx":"./dist/bin/nx.js"}}\n' > node_modules/nx/package.json
   printf 'require("fs").appendFileSync(process.env.CALL_LOG, "nx " + process.argv.slice(2).join(" ") + "\\n");\n' > node_modules/nx/dist/bin/nx.js
-  # Where Nx keeps its task logs, as the real package defines it (the default
-  # `<workspace>/.nx/cache`); scripts/nx reads only logs inside it.
-  mkdir -p node_modules/nx/src/utils
-  printf 'exports.cacheDir = require("path").join(process.cwd(), ".nx", "cache");\n' > node_modules/nx/src/utils/cache-directory.js
   echo "bun: 248 packages installed [596.00ms]"
 fi
 STUB
@@ -146,11 +142,27 @@ run_recipe "$tmp/bootstrap.calls" bootstrap
 
 # The wrapper's own streams: Nx's stdout (`show projects --json`, say) reaches
 # the caller untouched while its stderr stays stderr, and a failed run keeps
-# Nx's exit status and replays each advertised task log that resolves inside
-# this workspace's Nx task-log area. A "full log:" line is subprocess output,
-# so one naming a file anywhere else — directly, or through a symlink planted
-# in the area — is named and refused, never read; one this machine cannot read
-# is named with how to see that task's output.
+# Nx's exit status and replays each advertised task log that is the file Nx
+# itself would write for that hash. A "full log:" line is subprocess output, so
+# one naming anything else — a file elsewhere, a symlink planted in the area, a
+# `..` escape, a directory — is named and refused, never read; one this machine
+# cannot read is named with how to see that task's output.
+#
+# Where task logs live is not stubbed: the wrapper asks Nx's own
+# `terminalOutputPathForHash`, so the fixture forwards that one module to the
+# real installed package, and its cache directory follows nx.json and
+# NX_CACHE_DIRECTORY exactly as a real run's does.
+real_nx_module="$root/node_modules/nx/dist/src/tasks-runner/terminal-output-path.js"
+[[ -f "$real_nx_module" ]] ||
+    fail "the installed Nx no longer ships $real_nx_module; scripts/nx locates task logs through it — update both"
+summary="$root/node_modules/nx/dist/src/tasks-runner/life-cycles/summary-terminal-output-life-cycle.js"
+# shellcheck disable=SC2016 # the JavaScript template literal is matched as text, not expanded
+grep -qF 'full log: ${(0, terminal_output_path_1.terminalOutputPathForHash)(task.hash)}' "$summary" ||
+    fail "the installed Nx no longer prints each failed task's 'full log:' path from terminalOutputPathForHash ($summary); update scripts/nx's replay to what it prints now"
+printf '{}\n' >"$fixture/nx.json"
+mkdir -p "$fixture/node_modules/nx/src/tasks-runner"
+forward="$fixture/node_modules/nx/src/tasks-runner/terminal-output-path.js"
+printf 'module.exports = require(%s);\n' "$(node -p 'JSON.stringify(process.argv[1])' "$real_nx_module")" >"$forward"
 cat >"$fixture/node_modules/nx/dist/bin/nx.js" <<'STUB'
 const fail = process.env.NX_STUB_FAIL;
 process.stdout.write('["oneharness"]\n');
@@ -170,27 +182,58 @@ run_nx() {
 [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] ||
     fail "scripts/nx changed Nx's stdout (got: $(cat "$tmp/nx.out")); machine-readable output must pass through untouched"
 grep -qxF 'nx-stub: diagnostics' "$tmp/nx.err" || fail "scripts/nx lost Nx's stderr"
+
+# One failed run advertising $1 (colon-separated paths): Nx's status survives,
+# nothing reaches stdout, and nothing outside the area is read.
+failed_run() {
+    local nx_status
+    NX_STUB_FAIL="$1"
+    export NX_STUB_FAIL
+    nx_status="$(run_nx)"
+    unset NX_STUB_FAIL
+    [[ "$nx_status" -eq 3 ]] || { cat "$tmp/nx.err" >&2; fail "scripts/nx turned Nx's exit status 3 into $nx_status"; }
+    [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed run's task-log replay leaked onto stdout"
+    if grep -qF 'secret:' "$tmp/nx.err" || grep -q '^set ' "$tmp/nx.err"; then
+        cat "$tmp/nx.err" >&2; fail "scripts/nx read a file outside Nx's task-log area because a 'full log:' line named it"
+    fi
+}
+refused() {
+    grep -qF "the task log $1 is not a file in this workspace's Nx task-log area ($2)" "$tmp/nx.err" ||
+        { cat "$tmp/nx.err" >&2; fail "a 'full log:' path outside the task-log area ($1) was not named as refused"; }
+}
+
 area="$fixture/.nx/cache/terminalOutputs"
-mkdir -p "$area" "$tmp/task-logs"
+mkdir -p "$area/subdir" "$tmp/task-logs"
 echo 'error[E0425]: the failing task output' >"$area/1234567890"
 echo 'secret: a file outside the task-log area' >"$tmp/task-logs/outside.log"
 ln -s "$tmp/task-logs/outside.log" "$area/4242"
-export NX_STUB_FAIL="$area/1234567890:$area/9999:$tmp/task-logs/outside.log:$area/4242:$area/../../../justfile"
-nx_status="$(run_nx)"
-unset NX_STUB_FAIL
-[[ "$nx_status" -eq 3 ]] || fail "scripts/nx turned Nx's exit status 3 into $nx_status"
-[[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed run's task-log replay leaked onto stdout"
+failed_run "$area/1234567890:$area/9999:$tmp/task-logs/outside.log:$area/4242:$area/../../../justfile:$area/subdir"
 grep -qxF 'error[E0425]: the failing task output' "$tmp/nx.err" ||
     fail "a failed run did not replay the advertised task log to stderr"
 grep -qF "the task log $area/9999 is not readable on this machine; re-run the failed task" "$tmp/nx.err" ||
     fail "an advertised task log this machine cannot read was skipped silently"
-if grep -qF 'secret: a file outside the task-log area' "$tmp/nx.err" || grep -q '^set ' "$tmp/nx.err"; then
-    fail "scripts/nx read a file outside Nx's task-log area because a 'full log:' line named it"
-fi
-for outside in "$tmp/task-logs/outside.log" "$area/4242" "$area/../../../justfile"; do
-    grep -qF "the task log $outside is outside this workspace's Nx task-log area" "$tmp/nx.err" ||
-        fail "a 'full log:' path outside the task-log area ($outside) was not named as refused"
+for outside in "$tmp/task-logs/outside.log" "$area/4242" "$area/../../../justfile" "$area/subdir"; do
+    refused "$outside" "$area"
 done
+
+# A cache directory configured through NX_CACHE_DIRECTORY moves the area with
+# it: a log there is replayed, and one at the default location is refused.
+custom="$tmp/custom-cache/terminalOutputs"
+mkdir -p "$custom"
+echo 'error: output kept in the configured cache' >"$custom/777"
+NX_CACHE_DIRECTORY="$tmp/custom-cache" failed_run "$custom/777:$area/1234567890"
+grep -qxF 'error: output kept in the configured cache' "$tmp/nx.err" ||
+    fail "a task log in the NX_CACHE_DIRECTORY cache was not replayed"
+grep -q '^error\[E0425\]' "$tmp/nx.err" && fail "a log outside the configured cache directory was replayed"
+refused "$area/1234567890" "$custom"
+
+# An Nx that cannot say where it keeps logs: Nx's status still stands and the
+# log is named with the next action, not a stack trace.
+rm "$forward"
+failed_run "$area/1234567890"
+grep -qF "the task log $area/1234567890 is not read: the installed Nx did not say where it keeps task logs" "$tmp/nx.err" ||
+    { cat "$tmp/nx.err" >&2; fail "a missing Nx task-log module was not reported with its next action"; }
+grep -q 'at Module\|node:internal' "$tmp/nx.err" && fail "a missing Nx task-log module printed a stack trace"
 
 # A bun that fails the way a stale lockfile really does: the reason survives,
 # Nx never runs, and the message names a next action.

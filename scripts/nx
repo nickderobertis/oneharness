@@ -54,33 +54,54 @@ status=0
 { node "$nx_bin" "$@" 2>&1 1>&3 3>&- | tee "$log" >&2 3>&-; } 3>&1 || status=$?
 if [ "$status" -ne 0 ]; then
   # A "full log:" path is text from a subprocess's stderr, so it is read only
-  # once it resolves (symlinks and `..` followed) to a file directly inside the
-  # task-log area Nx itself writes for this workspace —
-  # `<cacheDir>/terminalOutputs/<hash>`, with `cacheDir` taken from Nx's own
-  # definition (nx.json's `cacheDirectory`, NX_CACHE_DIRECTORY) — never to an
-  # arbitrary path a line on stderr happens to name. Node does the resolving so
-  # a Windows drive path compares the same way Nx wrote it.
-  sed -n 's/^[[:space:]]*full log: //p' "$log" | node -e '
+  # when it resolves (symlinks and `..` followed) to the very file Nx itself
+  # would write that task's output to in this workspace, and not through a link
+  # to somewhere else. That file is what Nx's own `terminalOutputPathForHash`
+  # returns for the path's last segment as the hash, and that
+  # function is the one source of the layout (`<cacheDir>/terminalOutputs/<hash>`,
+  # cacheDir from nx.json or NX_CACHE_DIRECTORY), so nothing here restates it,
+  # and a path anywhere else is named and refused rather than read. Node does
+  # the resolving so a Windows drive path compares the way Nx wrote it, and it
+  # never throws: every failure is a verdict below, so the replay cannot replace
+  # Nx's exit status with its own.
+  if ! sed -n 's/^[[:space:]]*full log: //p' "$log" | node -e '
     const fs = require("fs"), path = require("path");
     const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
-    const area = real(path.join(require("nx/src/utils/cache-directory").cacheDir, "terminalOutputs"));
+    const isFile = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
+    let logFor = null, area = "", broken = "";
+    try {
+      logFor = require("nx/src/tasks-runner/terminal-output-path").terminalOutputPathForHash;
+      area = path.dirname(logFor("hash"));
+    } catch (error) {
+      broken = String(error && error.message ? error.message : error).split("\n")[0];
+    }
     for (const named of fs.readFileSync(0, "utf8").split(/\r?\n/).filter(Boolean)) {
       const p = real(named);
-      const inside = p && area && path.dirname(p) === area && /^[A-Za-z0-9]+$/.test(path.basename(p)) && fs.statSync(p).isFile();
-      process.stdout.write([!p ? "missing" : inside ? "ok" : "outside", inside ? p : named, area || ""].join("\t") + "\n");
-    }' | while IFS=$'\t' read -r verdict task_log area; do
+      // The area resolved, the hash not: a symlink planted in the area under
+      // a hash-like name resolves elsewhere, so it cannot match.
+      const own = logFor && logFor(path.basename(named));
+      const expected = own && real(path.dirname(own)) ? path.join(real(path.dirname(own)), path.basename(own)) : null;
+      const verdict = !logFor ? "unlocated" : !p ? "missing" : p === expected && isFile(p) ? "ok" : "outside";
+      process.stdout.write([verdict, verdict === "ok" ? p : named, broken || area].join("\t") + "\n");
+    }' | while IFS=$'\t' read -r verdict task_log detail; do
+    rerun='re-run the failed task above alone (scripts/nx run <project>:<target>) to see its output.'
     case "$verdict" in
       ok)
         printf '\n----- %s -----\n' "$task_log" >&2
         cat "$task_log" >&2
         ;;
       outside)
-        printf '\nnx: the task log %s is outside this workspace'"'"'s Nx task-log area (%s), so it is not read; re-run the failed task above alone (scripts/nx run <project>:<target>) to see its output.\n' "$task_log" "${area:-<cacheDir>/terminalOutputs}" >&2
+        printf '\nnx: the task log %s is not a file in this workspace'"'"'s Nx task-log area (%s), so it is not read; %s\n' "$task_log" "$detail" "$rerun" >&2
+        ;;
+      unlocated)
+        printf '\nnx: the task log %s is not read: the installed Nx did not say where it keeps task logs (%s); run '"'"'just js-install'"'"', then %s\n' "$task_log" "$detail" "$rerun" >&2
         ;;
       *)
-        printf '\nnx: the task log %s is not readable on this machine; re-run the failed task above alone (scripts/nx run <project>:<target>) to see its output.\n' "$task_log" >&2
+        printf '\nnx: the task log %s is not readable on this machine; %s\n' "$task_log" "$rerun" >&2
         ;;
     esac
-  done
+  done; then
+    echo "nx: replaying the failed tasks' logs failed (above); the run's own result stands — re-run a failed task alone (scripts/nx run <project>:<target>) to see its output." >&2
+  fi
 fi
 exit "$status"

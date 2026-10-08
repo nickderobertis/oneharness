@@ -34,12 +34,20 @@ rerun="bash scripts/check-lf-contracts.sh"
 if [ "${1:-}" = --shell ]; then
   rerun+=" --shell"
   contracts=()
+  # Each step stands alone so `set -e` sees it fail: a listing git could not
+  # produce, or a script it could not read, stops the gate rather than leaving
+  # a shorter list that passes.
+  tracked="$(git ls-files -- scripts .githooks)"
   while IFS= read -r path; do
     case "$path" in
+      '') ;;
       *.sh) contracts+=("$path") ;;
-      *) if head -n 1 "$path" | grep -Eq '^#!.*[/ ](ba)?sh([[:space:]]|$)'; then contracts+=("$path"); fi ;;
+      *)
+        first="$(head -n 1 -- "$path")"
+        if [[ "$first" =~ ^\#!.*[/\ ](ba)?sh([[:space:]]|$) ]]; then contracts+=("$path"); fi
+        ;;
     esac
-  done < <(git ls-files -- scripts .githooks)
+  done <<<"$tracked"
 elif [ "$#" -gt 0 ]; then
   contracts=("$@")
 else

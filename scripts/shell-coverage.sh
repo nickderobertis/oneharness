@@ -138,9 +138,14 @@ read -r rate covered total < <(node -e '
     console.error("the merged report has no list of scripts, each with a file name");
     process.exit(1);
   }
+  const outside = merged.files.filter((f) => !f.file.startsWith(`${root}/scripts/`) && !f.file.startsWith(`${root}/.githooks/`));
+  if (outside.length > 0) {
+    console.error(`the merged report counts files outside scripts/ and .githooks/: ${outside.map((f) => f.file).join(", ")}`);
+    process.exit(1);
+  }
   const count = (value) => (/^[0-9]+$/u.test(String(value)) ? Number(value) : NaN);
   const rows = merged.files
-    .map((f) => ({ file: f.file.startsWith(root + "/") ? f.file.slice(root.length + 1) : f.file, covered: count(f.covered_lines), total: count(f.total_lines) }))
+    .map((f) => ({ file: f.file.slice(root.length + 1), covered: count(f.covered_lines), total: count(f.total_lines) }))
     .sort((a, b) => a.covered / (a.total || 1) - b.covered / (b.total || 1) || a.file.localeCompare(b.file));
   const bad = rows.filter((r) => !Number.isSafeInteger(r.covered) || !Number.isSafeInteger(r.total) || r.covered > r.total);
   if (rows.length === 0 || bad.length > 0) {

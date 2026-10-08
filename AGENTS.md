@@ -275,13 +275,11 @@ Use the `just` recipes; do not hand-roll equivalents.
 - **Coverage is a hard gate**: 95% lines for the Rust crates, over the union of
   every crate's instrumented `test` run (the `rust-coverage` project); 95% for
   the Node SDK (`coverageThreshold = 0.95`) and 95% branch-inclusive for the
-  Python SDK (`fail_under = 95`), each in its own `test`; 54% lines for shell,
-  over every script under `scripts/` and `.githooks/` (the `shell-coverage`
-  project, Linux only — kcov is source-built there alone; measured 55.54% with
-  kcov 43). Shell sits below 95 because the gate cannot reach the paid live
-  suites and probes, `install.sh` (POSIX sh, which kcov's bash engine cannot
-  trace), the Rust test and coverage drivers, or the tracing hook itself
-  (`tools/shell-coverage/AGENTS.md`). A user-visible change ships with a test
+  Python SDK (`fail_under = 95`), each in its own `test`; 54% lines for shell
+  (the `shell-coverage` project, Linux only), below 95 because its denominator
+  counts scripts the gate never runs, the paid live suites first — the
+  measurement and the full reason are in `tools/shell-coverage/AGENTS.md`. A
+  user-visible change ships with a test
   that fails without it, and the coverage number keeps a behavior the tests
   never execute from slipping in unseen. Find the gaps with
   `just coverage-html`; raise the tests, never lower a floor.

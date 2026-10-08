@@ -167,7 +167,7 @@ mkdir -p "$double_tools/kcov-$pinned_kcov/bin"
 cat >"$double_tools/kcov-$pinned_kcov/bin/kcov" <<'SH'
 #!/usr/bin/env bash
 # The first non-option argument is the output directory; a merge writes the
-# report KCOV_DOUBLE_REPORT holds.
+# report KCOV_DOUBLE_REPORT holds, with ROOT standing for the checkout.
 set -euo pipefail
 merge=0
 for arg in "$@"; do
@@ -176,7 +176,7 @@ for arg in "$@"; do
     -*) ;;
     *)
       mkdir -p "$arg/kcov-merged"
-      [ "$merge" = 0 ] || printf '%s\n' "$KCOV_DOUBLE_REPORT" >"$arg/kcov-merged/coverage.json"
+      [ "$merge" = 0 ] || printf '%s\n' "${KCOV_DOUBLE_REPORT//ROOT/$PWD}" >"$arg/kcov-merged/coverage.json"
       exit 0
       ;;
   esac
@@ -193,8 +193,9 @@ done <<'REPORTS'
 {"files": 3}|has no list of scripts
 {"files": [{"covered_lines": "1", "total_lines": "2"}]}|has no list of scripts
 {"files": []}|lists 0 scripts
-{"files": [{"file": "scripts/a.sh", "covered_lines": "5", "total_lines": "2"}]}|unreadable line counts for: scripts/a.sh
-{"files": [{"file": "scripts/b.sh", "covered_lines": "-1", "total_lines": "2"}]}|unreadable line counts for: scripts/b.sh
+{"files": [{"file": "ROOT/scripts/a.sh", "covered_lines": "5", "total_lines": "2"}]}|unreadable line counts for: scripts/a.sh
+{"files": [{"file": "ROOT/scripts/b.sh", "covered_lines": "-1", "total_lines": "2"}]}|unreadable line counts for: scripts/b.sh
+{"files": [{"file": "/elsewhere/c.sh", "covered_lines": "1", "total_lines": "2"}]}|counts files outside scripts/ and .githooks/: /elsewhere/c.sh
 REPORTS
 
 # A failing step keeps its own exit status through kcov.

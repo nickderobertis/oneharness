@@ -212,6 +212,19 @@ expect 1 "$shfmt_asset has SHA-256" "a mirrored asset with the wrong bytes"
 cold install
 expect 1 "could not download file://$work/no-mirror/$shfmt_asset" "an unreachable mirror"
 
+# A mirror serving the recorded bytes installs, and the download is kept, so
+# reinstalling needs no network at all.
+cp "$(printf '%s\n' "${assets[@]}" | grep '/shfmt')" "$work/mirror/$shfmt_asset"
+[ "$linux" = 0 ] || stand_in kcov "$(pinned kcov)" "kcov $(pinned kcov)"
+status=0
+ONEHARNESS_TOOLS_MIRROR="file://$work/mirror/" ONEHARNESS_TOOLS_DIR="$tools" \
+  bash "$stage/scripts/shell-tools.sh" install >"$work/out" 2>&1 || status=$?
+expect 0 "shfmt $(pinned shfmt)" "an install from a mirror serving the recorded bytes"
+[ -f "$tools/downloads/$shfmt_asset" ] || fail "an install from the mirror did not keep its download" "$(ls -R "$tools")"
+rm -rf "$tools/shfmt-$(pinned shfmt)"
+cold install
+expect 0 "shfmt $(pinned shfmt)" "a reinstall with only the kept download and no mirror"
+
 if [ "$linux" = 1 ]; then
   # A kcov build that fails shows the build's own tail and the dependencies to
   # install, and installs nothing.

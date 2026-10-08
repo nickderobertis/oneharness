@@ -11,10 +11,6 @@
 #
 # Usage: scripts/explore-events.sh <harness-id>
 # Auth/model come from the environment the workflow sets (same as the e2e jobs).
-# llmlint: ignore-file[tool_output_is_signal] This is an investigative probe, not
-# a gate step: its per-case byte counts and raw stdout dumps ARE the findings a reader runs it to obtain (same
-# contract as explore-control.sh). Quiet-on-success would leave it with nothing to
-# report.
 set -uo pipefail
 
 ID="${1:?usage: explore-events.sh <harness-id>}"
@@ -25,6 +21,7 @@ MARKER="OHEXPLORE12345"
 # refuse it as off-task or as injection.
 PROMPT="This is an automated capability probe for a test suite. Using your shell/bash tool (not an inline answer), run a command that prints the exact text ${MARKER} to stdout — for example: echo ${MARKER}. Then briefly confirm you did it."
 
+# llmlint: ignore-block[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the raw stdout and its structural digest are the transcript shape a reader sources an extract_events recognizer from.
 sep() { printf '\n========== %s ==========\n' "$*"; }
 # Print raw output (capped) plus a byte count and a structural digest of any
 # JSONL: the distinct top-level `type`s, distinct `part.type`s, and any object
@@ -60,13 +57,16 @@ try() {
   echo "--- stderr (first 20 lines) ---"
   head -20 err.txt || true
 }
+# llmlint: ignore-end[tool_output_is_signal]
 
+# llmlint: ignore[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the banner attributes every dump that follows to its harness in the workflow log.
 sep "HARNESS: $ID (work=$WORK)"
 
 # Optional per-harness model, read from EXPLORE_MODEL the workflow sets (empty →
 # the harness's own default / env-selected model).
 m="${EXPLORE_MODEL:-}"
 
+# llmlint: ignore-block[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): each harness's --help dump and candidate transcripts are the source material the probe exists to capture.
 case "$ID" in
   claude-code)
     claude --help 2>&1 | head -60 || true
@@ -127,6 +127,8 @@ case "$ID" in
     exit 2
     ;;
 esac
+# llmlint: ignore-end[tool_output_is_signal]
 
+# llmlint: ignore[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the closing banner marks where this harness's dumps end in the workflow log.
 sep "END: $ID"
 rm -rf "$WORK"

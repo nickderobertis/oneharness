@@ -18,10 +18,6 @@
 # Usage: scripts/explore-cursor-stdin.sh
 # Auth (CURSOR_API_KEY) and model (CURSOR_E2E_MODEL / OH_MODEL) come from the
 # environment the workflow sets, same as the e2e-cursor job.
-# llmlint: ignore-file[tool_output_is_signal] This is an investigative probe, not
-# a gate step: its per-invocation transcripts and VERDICT lines ARE the findings a reader runs it to obtain (same
-# contract as explore-control.sh). Quiet-on-success would leave it with nothing to
-# report.
 set -uo pipefail
 
 WORK="$(mktemp -d)"
@@ -36,6 +32,7 @@ MODEL="${CURSOR_E2E_MODEL:-${OH_MODEL:-}}"
 MODEL_ARGS=()
 [ -n "$MODEL" ] && MODEL_ARGS=(-m "$MODEL")
 
+# llmlint: ignore[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the section banner is how a reader finds each candidate's transcript in the workflow log.
 sep() { printf '\n========== %s ==========\n' "$*"; }
 
 # A fresh high-entropy marker per candidate, so a marker that surfaces proves THAT
@@ -53,6 +50,7 @@ prompt_for() {
 # encoded by the caller via how it invokes (we pass the whole command).
 #   $1 label   $2 marker   $3 mode: "pos" (positional) | "pipe" (stdin)
 #   $4.. the cursor-agent args (WITHOUT the prompt for pipe mode)
+# llmlint: ignore-block[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): each candidate's argv, exit, captured stdout/stderr and marker verdict are the evidence a reader runs it to obtain; quiet-on-success would discard the finding.
 VERDICTS=()
 run_candidate() {
   local label="$1" marker="$2" mode="$3"
@@ -78,11 +76,14 @@ run_candidate() {
   echo "--- MARKER $marker found in stdout: $found (exit=$rc) ---"
   VERDICTS+=("$label: marker=$found exit=$rc mode=$mode")
 }
+# llmlint: ignore-end[tool_output_is_signal]
 
+# llmlint: ignore-block[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the CLI's version and prompt/stdin help lines record which cursor-agent build the verdicts below were observed on.
 echo "cursor-agent version:"
 "$BIN" --version 2>&1 | head -3 || true
 echo "cursor-agent --help (prompt/stdin-relevant lines):"
 "$BIN" --help 2>&1 | grep -iE 'print|stdin|prompt|format|force|input' | head -40 || true
+# llmlint: ignore-end[tool_output_is_signal]
 
 # --- candidates -------------------------------------------------------------
 # Control: positional prompt (the form oneharness uses today). MUST work, else
@@ -103,6 +104,7 @@ run_candidate "pipe: -p with '-' sentinel" "$(marker)" pipe \
   -p --output-format text --force "${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"}" -
 
 # --- verdict ----------------------------------------------------------------
+# llmlint: ignore-block[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the verdict table and its interpretation are the probe's answer to the stdin question.
 sep "VERDICT SUMMARY"
 printf '%s\n' "${VERDICTS[@]}"
 cat <<'NOTE'
@@ -116,3 +118,4 @@ INTERPRETATION:
   stdin-only prompt headlessly — leave large_input NONE (inline) and record the
   refutation in the registry comment + README matrix.
 NOTE
+# llmlint: ignore-end[tool_output_is_signal]

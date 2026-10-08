@@ -20,10 +20,6 @@
 #
 # Usage: scripts/explore-hooks.sh <harness-id>
 # Auth/model come from the environment the workflow sets (same as the e2e jobs).
-# llmlint: ignore-file[tool_output_is_signal] This is an investigative probe, not
-# a gate step: its hook-event payloads and marker-file dumps ARE the findings a reader runs it to obtain (same
-# contract as explore-control.sh). Quiet-on-success would leave it with nothing to
-# report.
 set -uo pipefail
 
 ID="${1:?usage: explore-hooks.sh <harness-id>}"
@@ -42,6 +38,7 @@ P_REWRITE="This is an automated capability probe for a test suite. Using your sh
 P_REPLACE="This is an automated capability probe for a test suite. Using your shell/bash tool, run exactly this command: echo probe-echo-${M} — then report the EXACT stdout text the command printed, verbatim."
 P_READ="This is an automated capability probe for a test suite. Using your file-read tool (not shell), read the file real.txt in the current directory and report its exact contents verbatim."
 
+# llmlint: ignore[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the section banner is how a reader finds each experiment's dump in the workflow log.
 sep() { printf '\n========== %s ==========\n' "$*"; }
 
 # mk_hook <path> [needle] [verdict-json]: write a hook script that appends its
@@ -69,6 +66,7 @@ reset() {
   : >"$HOOK_LOG"
 }
 
+# llmlint: ignore-block[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the hook payloads received, the marker files present and each run's captured output are the ground truth a reader runs it to obtain.
 # What actually happened: the hook events received (truncated — payloads can
 # embed file contents) and which marker files exist. ORIG present = the original
 # command ran (rewrite NOT honored); REWRITTEN present = the rewrite ran.
@@ -119,6 +117,7 @@ try() {
   fi
   probe_state
 }
+# llmlint: ignore-end[tool_output_is_signal]
 
 # Fixture pair for the file-read redirect experiment: the agent is asked to read
 # real.txt; a rewrite hook redirects the read to mock.txt.
@@ -127,6 +126,7 @@ mk_read_fixtures() {
   printf 'MOCKFILE_%s the-mock-content\n' "$M" >"$WORK/mock.txt"
 }
 
+# llmlint: ignore[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the banner attributes every experiment that follows to its harness in the workflow log.
 sep "HARNESS: $ID (work=$WORK)"
 
 # Optional per-harness model, read from EXPLORE_MODEL the workflow sets (empty →
@@ -388,5 +388,6 @@ EOF
     ;;
 esac
 
+# llmlint: ignore[tool_output_is_signal] Investigative probe, not a gate step (same contract as explore-control.sh): the closing banner marks where this harness's experiments end in the workflow log.
 sep "END: $ID"
 rm -rf "$WORK"

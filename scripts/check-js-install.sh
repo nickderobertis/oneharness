@@ -52,6 +52,11 @@ fixture="$tmp/checkout"
 mkdir -p "$fixture/scripts" "$fixture/.just-tmp"
 cp "$root/justfile" "$root/package.json" "$root/bun.lock" "$fixture/"
 cp "$root/scripts/nx" "$root/scripts/nx-base.sh" "$root/scripts/setup-llmlint.sh" "$fixture/scripts/"
+# The pinned shell toolchain's installer downloads; scripts/check-shell-tools.sh
+# drives the real one, so here it only records that bootstrap reached it.
+cat >"$fixture/scripts/shell-tools.sh" <<'STUB'
+printf 'shell-tools %s\n' "$*" >> "$CALL_LOG"
+STUB
 git -C "$fixture" init -q
 
 bin="$tmp/bin"
@@ -139,6 +144,8 @@ run_recipe "$tmp/bootstrap.calls" bootstrap
   fail "bootstrap no longer reaches '$install_line'; a clean clone would be left without it"
 [[ -n "$(first_call "$tmp/bootstrap.calls" 'uv sync --project python --frozen --no-install-workspace --quiet')" ]] ||
   fail "bootstrap no longer syncs the uv workspace; a clean clone would have no Python SDK environment"
+[[ -n "$(first_call "$tmp/bootstrap.calls" 'shell-tools install')" ]] ||
+  fail "bootstrap no longer installs the pinned shell toolchain; a clean clone could not run the shell format, lint or coverage targets"
 
 # The wrapper's own streams: Nx's stdout (`show projects --json`, say) reaches
 # the caller untouched while its stderr stays stderr, and a failed run keeps

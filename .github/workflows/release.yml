@@ -113,7 +113,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         if: steps.verdict.outputs.needs_check == 'true'
         with:
-          tool: just,nextest,cargo-llvm-cov,shellcheck
+          tool: just,nextest,cargo-llvm-cov
+      # `just bootstrap` builds the pinned kcov from source here (Linux), as
+      # ci.yml's check job does on a cold cache.
+      - name: Install kcov's build dependencies
+        if: steps.verdict.outputs.needs_check == 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y -q binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev
       - if: steps.verdict.outputs.needs_check == 'true'
         run: just bootstrap
       # needs_check is true only when CI's Ubuntu check job alone has no

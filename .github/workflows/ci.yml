@@ -62,7 +62,20 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - uses: taiki-e/install-action@v2
         with:
-          tool: just,nextest,cargo-llvm-cov,shellcheck
+          tool: just,nextest,cargo-llvm-cov
+      # The pinned shell toolchain (.shell-tool-versions) that `just bootstrap`
+      # installs through scripts/shell-tools.sh: shellcheck and shfmt are
+      # release downloads, kcov a source build on Linux alone, so only a cold
+      # cache there needs kcov's build dependencies.
+      - name: Restore the pinned shell toolchain
+        id: shell-tools
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/oneharness/tools
+          key: shell-tools-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.shell-tool-versions', 'scripts/shell-tools.sh') }}
+      - name: Install kcov's build dependencies
+        if: runner.os == 'Linux' && steps.shell-tools.outputs.cache-hit != 'true'
+        run: sudo apt-get update -q && sudo apt-get install -y -q binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev
       - name: Bootstrap
         run: just bootstrap
       - name: Select the gate tier

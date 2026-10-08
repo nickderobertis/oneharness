@@ -490,6 +490,11 @@ bootstrap_bin="$tmp/bootstrap-bin"
 mkdir -p "$bootstrap_repo/scripts" "$bootstrap_repo/npm/oneharness-sdk" "$bootstrap_bin"
 cp "$root/justfile" "$bootstrap_repo/justfile"
 cp "$root/scripts/setup-llmlint.sh" "$bootstrap_repo/scripts/setup-llmlint.sh"
+# The pinned shell toolchain's installer downloads, so it is stubbed like the
+# package managers; scripts/check-shell-tools.sh drives the real one.
+cat >"$bootstrap_repo/scripts/shell-tools.sh" <<'STUB'
+printf 'shell-tools %s\n' "$*" >> "$CALL_LOG"
+STUB
 git -C "$bootstrap_repo" init -q
 for tool in rustup cargo bun uv; do
   cat >"$bootstrap_bin/$tool" <<'STUB'
@@ -503,6 +508,8 @@ CALL_LOG="$log" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
   just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
 assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.23' "$log" \
   "bootstrap did not run the llmlint installer"
+assert_file_contains 'shell-tools install' "$log" \
+  "bootstrap did not install the pinned shell toolchain"
 hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath)
 [[ $hooks_path == .githooks ]] || {
   echo "check-local-gate: bootstrap installed hooksPath '$hooks_path', expected '.githooks'" >&2

@@ -47,6 +47,8 @@
       "Bash(cargo deny:*)",
       "Bash(gh-secrets:*)",
       "Bash(shellcheck:*)",
+      "Bash(shfmt:*)",
+      "Bash(bash scripts/shell-tools.sh install)",
       "Bash(bash scripts/nx show projects)",
       "Bash(actionlint:*)",
       "Bash(rustup component add:*)",

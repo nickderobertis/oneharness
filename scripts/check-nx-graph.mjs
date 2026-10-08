@@ -17,10 +17,10 @@
 //     crate edges as `implicitDependencies`; a restatement nothing reconciles
 //     would let affected selection silently skip a dependent crate.
 //
-// And two restatements of the project set are held to it: the root AGENTS.md's
-// "Projects in the graph" record, and the Rust `test` runs rust-coverage depends
-// on — a Rust project missing there would leave its crate's coverage silently
-// out of the floor.
+// And three restatements of the project set are held to it: the root AGENTS.md's
+// "Projects in the graph" record, the Rust `test` runs rust-coverage depends on —
+// a Rust project missing there would leave its crate's coverage silently out of
+// the floor — and the shell test steps shell-coverage depends on, likewise.
 //
 // Quiet on success: one line. Node built-ins only.
 import { execFileSync } from "node:child_process";
@@ -169,6 +169,26 @@ if (coverage === undefined) {
 	// project definitions, so a run that is not cargo-test.sh leaves none.
 	for (const name of rustTests.filter((n) => recordOf(n) === undefined)) {
 		failures.push(`${name}:test does not run scripts/cargo-test.sh, so it leaves no coverage profile for the Rust floor; make its first test command 'bash scripts/cargo-test.sh <crate>', as every Rust project's is`);
+	}
+}
+
+// The shell floor covers every project whose `test` runs a shell test step.
+const shellTests = Object.keys(graph.nodes)
+	.filter((name) => {
+		const options = graph.nodes[name].data.targets.test?.options ?? {};
+		return [...(options.commands ?? []), options.command ?? ""].some((c) => /^bash scripts\/shell-test\.sh /u.test(c));
+	})
+	.sort();
+const shellCoverage = graph.nodes["shell-coverage"]?.data.targets.coverage;
+if (shellCoverage === undefined) {
+	failures.push("there is no shell-coverage:coverage target to enforce the shell floor; restore it in tools/shell-coverage/project.json");
+} else {
+	const covered = [...(shellCoverage.dependsOn?.[0]?.projects ?? [])].sort();
+	for (const name of shellTests.filter((n) => !covered.includes(n))) {
+		failures.push(`shell-coverage:coverage does not depend on ${name}:test, so its shell test steps may not have run when the floor reads them; add it to the dependsOn projects`);
+	}
+	for (const name of covered.filter((n) => !shellTests.includes(n))) {
+		failures.push(`shell-coverage:coverage depends on ${name}:test, which runs no scripts/shell-test.sh step; remove it from the dependsOn projects`);
 	}
 }
 

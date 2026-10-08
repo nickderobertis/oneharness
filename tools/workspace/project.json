@@ -59,13 +59,23 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
-          "bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh"
+          "bash scripts/shell-test.sh workspace scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh",
+          "bash scripts/shell-test.sh workspace scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh",
+          "bash scripts/shell-test.sh workspace scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh",
+          "bash scripts/shell-test.sh workspace scripts/with-portable-sed.sh scripts/check-lf-contracts.sh"
         ],
         "parallel": false
-      }
+      },
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell/workspace"
+      ],
+      "inputs": [
+        "default",
+        "^default",
+        "{workspaceRoot}/scripts/shell-test.sh",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
+      ]
     },
     "supply-chain": {
       "executor": "nx:run-commands",

@@ -33,7 +33,10 @@ fail() {
 # project definitions that declare them (tools/*, sdk-conformance, the e2e and
 # binary projects).
 # `check-temp-leaks.sh` and `cargo-test.sh` are excluded: they run a suite
-# rather than being a drift gate.
+# rather than being a drift gate. A `test` step runs under scripts/shell-test.sh
+# (kcov, for the shell coverage floor), which is read through to the command it
+# runs; a `test` step that bypasses it is printed as UNMEASURED, since the
+# floor could not read what it executed.
 # The single-quoted program is JavaScript.
 # shellcheck disable=SC2016
 steps="$(node -e '
@@ -42,9 +45,14 @@ steps="$(node -e '
   const files = execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", "*project.json"], { encoding: "utf8" })
     .split("\n").filter((file) => file && fs.existsSync(file));
   for (const file of files) {
-    for (const target of Object.values(JSON.parse(fs.readFileSync(file, "utf8")).targets ?? {})) {
+    for (const [name, target] of Object.entries(JSON.parse(fs.readFileSync(file, "utf8")).targets ?? {})) {
       const options = target.options ?? {};
-      for (const command of [...(options.commands ?? []), options.command ?? ""]) {
+      for (const raw of [...(options.commands ?? []), options.command ?? ""]) {
+        const measured = /^bash scripts\/shell-test\.sh \S+ /.test(raw);
+        const command = raw.replace(/^bash scripts\/shell-test\.sh \S+ /, "bash ");
+        if (name === "test" && !measured && /^bash scripts\/with-portable-sed\.sh /.test(command)) {
+          console.log(`UNMEASURED ${file}: ${raw}`);
+        }
         if (/^bash scripts\/with-portable-sed\.sh /.test(command)
           || (/^bash scripts\/(check-[a-z0-9-]+|[a-z0-9-]+-test)\.sh\b/.test(command) && !/^bash scripts\/(check-temp-leaks|cargo-test)\.sh /.test(command))) {
           console.log(`${file}: ${command}`);
@@ -53,6 +61,11 @@ steps="$(node -e '
     }
   }
 ')"
+unmeasured="$(printf '%s\n' "$steps" | sed -n 's/^UNMEASURED //p')"
+[ -z "$unmeasured" ] || fail "a test step runs a drift script outside scripts/shell-test.sh, so the shell coverage floor cannot read what it ran" \
+  "$unmeasured" \
+  "fix: write it as 'bash scripts/shell-test.sh <project> scripts/with-portable-sed.sh scripts/<name>.sh [args...]'"
+steps="$(printf '%s\n' "$steps" | grep -v '^UNMEASURED ' || true)"
 [ -n "$steps" ] || fail "read no drift-script steps from the project definitions" \
   "fix: keep each project's drift steps as 'bash scripts/with-portable-sed.sh scripts/<name>.sh', or update the reader here"
 unwrapped="$(printf '%s\n' "$steps" | grep -vE ': bash scripts/with-portable-sed\.sh scripts/[^ ]+\.sh( [^ ]+)*$' || true)"

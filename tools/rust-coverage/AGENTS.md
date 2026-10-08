@@ -4,7 +4,7 @@ Subtree rules for the Rust line-coverage floor.
 
 - **Coverage is enforced at the skill default, 95% lines** (`COVERAGE_MIN`,
   default 95, in `scripts/rust-coverage.sh`), via `cargo llvm-cov` — an external
-  tool, handled like `cargo-deny` and shellcheck: CI installs it
+  tool, handled like `cargo-deny`: CI installs it
   (`cargo-llvm-cov` + the `llvm-tools-preview` rustup component, added by `just
   bootstrap`) and this project's `coverage` (part of `just check`) fails the gate
   below the bar.

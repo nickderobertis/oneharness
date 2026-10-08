@@ -1,0 +1,62 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "shell-coverage",
+  "projectType": "library",
+  "tags": [
+    "type:coverage",
+    "lang:bash"
+  ],
+  "//": "llmlint: ignore-file[expensive_tests_stay_behind_their_own_edge] JSON has no comment to scope this to `coverage`, which is what it is about: the shell line floor is ONE report over every project's shell test steps, so it depends on every `test` that runs scripts/shell-test.sh, the binary e2e journeys included, by design — leaving any out would let those scripts' coverage slip outside the floor (scripts/check-nx-graph.mjs refuses exactly that). Each `test` is still selected by the graph and replays its kcov report from the cache when its inputs are unchanged. The shell line floor: `kcov --merge` over every step's report in target/coverage/shell/<project>/, joined with every script under scripts/ and .githooks/ at zero so an untested one lowers the rate, thresholded by scripts/shell-coverage.sh (kcov has no fail-under flag). Selected through its inputs whenever a shell script changes, never through project-graph edges: its `dependsOn` orders tasks and adds no project dependency. Skipped on macOS and Windows, where the pinned kcov is not built (tools/shell-coverage/AGENTS.md).",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/**/*.sh",
+      "{workspaceRoot}/scripts/nx",
+      "{workspaceRoot}/.githooks/**/*",
+      "{workspaceRoot}/.shell-tool-versions"
+    ]
+  },
+  "targets": {
+    "coverage": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/shell-coverage.sh"
+        ],
+        "parallel": false
+      },
+      "dependsOn": [
+        {
+          "projects": [
+            "ci-contracts",
+            "e2e-support",
+            "install-surface",
+            "npm-launcher",
+            "oneharness-e2e",
+            "oneharness-integration",
+            "release-tooling",
+            "sdk-conformance",
+            "workspace",
+            "workspace-integration"
+          ],
+          "target": "test"
+        }
+      ],
+      "inputs": [
+        "default",
+        {
+          "dependentTasksOutputFiles": "**/coverage.json",
+          "transitive": false
+        },
+        "{workspaceRoot}/**/project.json",
+        {
+          "env": "SHELL_COVERAGE_MIN"
+        }
+      ],
+      "outputs": [
+        "{workspaceRoot}/target/coverage/shell-coverage.txt",
+        "{workspaceRoot}/target/coverage/shell/merged"
+      ]
+    }
+  }
+}

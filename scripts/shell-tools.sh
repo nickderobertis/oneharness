@@ -191,7 +191,7 @@ fetch() {
 
 extract() {
   local archive="$1" into="$2"
-  mkdir -p "$into"
+  mkdir -p "$into" || return 1
   case "$archive" in
     *.zip)
       if command -v unzip >/dev/null 2>&1; then

@@ -15,7 +15,7 @@
 # and a failing kcov build each install nothing and say how to recover.
 #
 # Quiet on success, one line. On failure it names the case and what it saw.
-set -euo pipefail
+set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -46,6 +46,15 @@ if [ "$linux" = 1 ]; then
     fail "the pinned kcov did not run; run 'just bootstrap' first" "$out"
   [ "$out" = "kcov $(pinned kcov)" ] || fail "the kcov it runs is not the pinned $(pinned kcov)" "$out"
 fi
+
+# A setup step that fails (a scratch directory, a copy, a write) says which,
+# rather than ending the run on the bare error.
+setup_failed() {
+  # Once, from the shell the step ran in, not again from each enclosing one.
+  [ "$BASH_SUBSHELL" = 0 ] || return 0
+  echo "check-shell-tools: \`$1\` failed at line $2 (above); fix: check that ${TMPDIR:-/tmp} and target/ are writable and have room, then rerun 'bash scripts/check-shell-tools.sh'" >&2
+}
+trap 'setup_failed "$BASH_COMMAND" "$LINENO"' ERR
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

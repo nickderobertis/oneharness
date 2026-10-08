@@ -95,7 +95,7 @@ steps="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
 [ -n "$steps" ] || fail "read no shell test steps from the project definitions" \
   "fix: run each shell test as 'bash scripts/shell-test.sh <project> scripts/<name>.sh [args...]', or update the reader here"
 
-work="$(mktemp -d)"
+work="$(mktemp -d)" || fail "could not create a scratch directory (above)" "fix: check that ${TMPDIR:-/tmp} is writable and has room, then re-run"
 trap 'rm -rf "$work"' EXIT
 kcov="$(bash scripts/shell-tools.sh path kcov)"
 
@@ -116,13 +116,14 @@ done <<<"$steps"
   "${missing[@]}" \
   "fix: run this through Nx ('bash scripts/nx run shell-coverage:coverage'), which runs every test first"
 
-printf '#!/usr/bin/env bash\ntrue\n' >"$work/noop.sh"
+printf '#!/usr/bin/env bash\ntrue\n' >"$work/noop.sh" ||
+  fail "could not write the baseline's no-op script in $work (above)" "fix: check that ${TMPDIR:-/tmp} is writable and has room, then re-run"
 include="$root/scripts,$root/.githooks"
 "$kcov" "--bash-parse-files-in-dir=$include" "--include-path=$include" "$work/baseline" "$work/noop.sh" >/dev/null ||
   fail "kcov could not parse the scripts under scripts/ and .githooks/ for the baseline (above)" \
     "fix: run 'bash -n' on the script kcov names to find its syntax error; if none, reinstall kcov with 'just bootstrap'"
 merged="target/coverage/shell/merged"
-rm -rf "$merged"
+rm -rf "$merged" || fail "could not clear the previous merged report $merged (above)" "fix: check that target/coverage is writable, then re-run"
 "$kcov" --merge "$merged" "$work/baseline" "${reports[@]}" >/dev/null ||
   fail "kcov could not merge the ${#reports[@]} shell test reports (above)" \
     "fix: delete target/coverage/shell and rerun through Nx with --skip-nx-cache, which writes every report afresh"

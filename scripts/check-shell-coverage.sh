@@ -19,7 +19,7 @@
 # run uninstrumented and the floor must say it was skipped.
 #
 # Quiet on success, one line. On failure it names the case and what it saw.
-set -euo pipefail
+set -Eeuo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
@@ -31,6 +31,15 @@ fail() {
   echo "  fix: restore that behaviour in scripts/shell-test.sh or scripts/shell-coverage.sh, then rerun 'bash scripts/check-shell-coverage.sh'" >&2
   exit 1
 }
+
+# A setup step that fails (a scratch directory, a copy, a write) says which,
+# rather than ending the run on the bare error.
+setup_failed() {
+  # Once, from the shell the step ran in, not again from each enclosing one.
+  [ "$BASH_SUBSHELL" = 0 ] || return 0
+  echo "check-shell-coverage: \`$1\` failed at line $2 (above); fix: check that ${TMPDIR:-/tmp} and target/ are writable and have room, then rerun 'bash scripts/check-shell-coverage.sh'" >&2
+}
+trap 'setup_failed "$BASH_COMMAND" "$LINENO"' ERR
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

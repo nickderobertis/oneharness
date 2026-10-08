@@ -238,7 +238,7 @@ install_one() {
   fi
   dest="$tools_dir/$tool-$version"
   stage="$dest.partial.$$"
-  work="$(mktemp -d)"
+  work="$(mktemp -d)" || die "could not create a scratch directory (above)" "fix: check that ${TMPDIR:-/tmp} is writable and has room, then rerun 'just bootstrap'"
   scratch+=("$work" "$stage")
   name="$(asset_name "$tool" "$version")"
   mkdir -p "$stage/bin" || die "could not create $stage" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
@@ -270,7 +270,7 @@ install_one() {
   # The staged tree moves into place whole (kcov's build bakes its prefix
   # into nothing it reads at run time). Whatever was at $dest failed the
   # version check above, so it is no install of this pin worth keeping.
-  rm -rf "$dest"
+  rm -rf "$dest" || die "could not remove the stale $dest (above)" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
   mv "$stage" "$dest" ||
     die "could not move the staged $tool $version into $dest" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
 }

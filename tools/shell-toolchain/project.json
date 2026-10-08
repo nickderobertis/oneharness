@@ -6,7 +6,7 @@
     "type:tooling",
     "lang:bash"
   ],
-  "//": "The shell toolchain's own suites, apart from every other project so a shell-tool edit runs only these and nothing else reruns them: the pins against the installed shellcheck, shfmt and kcov and the installer's cold installs and refusals (check-shell-tools.sh), the format and lint targets through the real pinned tools over a scratch repository (check-shell-check.sh), and the shell coverage floor through the real kcov collecting and merging a scratch project's step (check-shell-coverage.sh). Its inputs are what those runs read.",
+  "//": "The shell toolchain's own suites, in a project of their own so their real-tool runs are selected by what they read and by nothing an unrelated suite reads: the pins against the installed shellcheck, shfmt and kcov and the installer's cold installs and refusals (check-shell-tools.sh), the format and lint targets through the real pinned tools over a scratch repository (check-shell-check.sh), and the shell coverage floor through the real kcov collecting and merging a scratch project's step (check-shell-coverage.sh). Its inputs are what those runs read.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",

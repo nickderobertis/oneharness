@@ -92,8 +92,10 @@ fi
 
 id="$(run_id "$@")"
 out="$root/target/coverage/shell/$project/$id"
-rm -rf "$out"
-mkdir -p "$out"
+if ! { rm -rf "$out" && mkdir -p "$out"; }; then
+  echo "shell-test: could not prepare the report directory $out (above); fix: check that target/ is writable and its disk has room, then rerun the step" >&2
+  exit 1
+fi
 kcov="$(bash scripts/shell-tools.sh path kcov)"
 # --bash-dont-parse-binary-dir: record the files this step ran, not every
 # script beside it at 0% — shell-coverage.sh adds the full set itself, parsed

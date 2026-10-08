@@ -49,7 +49,10 @@ while IFS= read -r path; do
   case "$path" in
     *.sh) files+=("$path") ;;
     *)
-      first="$(head -n 1 -- "$path")"
+      first="$(head -n 1 -- "$path")" || {
+        echo "shell-check: could not read $path (above); fix: restore its read permission, or 'git checkout -- $path', then re-run" >&2
+        exit 1
+      }
       if [[ "$first" =~ ^\#!.*[/\ ](ba)?sh([[:space:]]|$) ]]; then files+=("$path"); fi
       ;;
   esac
@@ -70,7 +73,10 @@ case "$mode" in
     echo "shell-check: shfmt ok (${#files[@]} scripts under $*)"
     ;;
   format-write)
-    bash "$tools" exec shfmt "${style[@]}" -w -- "${files[@]}"
+    if ! bash "$tools" exec shfmt "${style[@]}" -w -- "${files[@]}"; then
+      echo "shell-check: shfmt could not rewrite the scripts above; fix the parse error it names (or make the file writable), then re-run 'just format'" >&2
+      exit 1
+    fi
     ;;
   lint)
     if ! bash "$tools" exec shellcheck -- "${files[@]}"; then

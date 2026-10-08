@@ -76,10 +76,15 @@ shift
   exit 2
 }
 script="$1"
-[[ "$script" == scripts/*.sh ]] && [ -f "$script" ] || {
-  echo "shell-test: '$script' is not a script under scripts/; name the step as scripts/<name>.sh" >&2
+# The step must physically be one of scripts/'s own files: no `..`, and no
+# link out of the directory kcov measures.
+if [[ "$script" == scripts/*.sh && "$script" != */../* && -f "$script" ]] &&
+  [ "$(cd "$(dirname "$script")" && pwd -P)" = "$(cd scripts && pwd -P)" ] && [ ! -L "$script" ]; then
+  :
+else
+  echo "shell-test: '$script' is not a script in scripts/; name the step as scripts/<name>.sh" >&2
   exit 2
-}
+fi
 
 if [ "$(uname -s)" != Linux ]; then
   exec bash "$@"

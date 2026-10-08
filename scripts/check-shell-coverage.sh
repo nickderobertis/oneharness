@@ -153,4 +153,12 @@ status=0
 (cd "$stage" && DEMO_EXIT=3 bash scripts/shell-test.sh demo scripts/demo-test.sh) >"$work/out" 2>&1 || status=$?
 [ "$status" = 3 ] || fail "a step exiting 3 under kcov exited $status" "$(cat "$work/out")"
 
+# A step must be one of scripts/'s own files, not a path or link out of it.
+ln -s "$stage/demo/project.json" "$stage/scripts/linked.sh"
+for outside in scripts/../demo/project.json scripts/linked.sh scripts/missing.sh; do
+  status=0
+  (cd "$stage" && bash scripts/shell-test.sh demo "$outside") >"$work/out" 2>&1 || status=$?
+  expect 2 "is not a script in scripts/" "a step naming $outside"
+done
+
 echo "check-shell-coverage: ok"

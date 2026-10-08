@@ -189,7 +189,6 @@ fetch() {
     die "could not keep $name in $tools_dir/downloads" "fix: check that $tools_dir is writable and its disk has room, then rerun 'just bootstrap'"
 }
 
-# Unpack archive $1 into directory $2.
 extract() {
   local archive="$1" into="$2"
   mkdir -p "$into"
@@ -198,7 +197,11 @@ extract() {
       if command -v unzip >/dev/null 2>&1; then
         unzip -q "$archive" -d "$into"
       else
-        powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$archive")' -DestinationPath '$(cygpath -w "$into")'"
+        # The paths reach PowerShell as data, never as part of its source, so
+        # the `$env:` references are PowerShell's to expand.
+        # shellcheck disable=SC2016
+        OH_ZIP="$(cygpath -w "$archive")" OH_INTO="$(cygpath -w "$into")" \
+          powershell.exe -NoProfile -Command 'Expand-Archive -LiteralPath $env:OH_ZIP -DestinationPath $env:OH_INTO'
       fi
       ;;
     *) tar -xzf "$archive" -C "$into" ;;
@@ -227,7 +230,7 @@ build_kcov() {
 }
 
 install_one() {
-  local tool="$1" version bin dest stage work name found old
+  local tool="$1" version bin dest stage work name found
   version="$(pin "$tool")"
   bin="$(bin_of "$tool" "$version")"
   if [ -x "$bin" ] && reports_version "$tool" "$version" "$bin"; then
@@ -235,9 +238,8 @@ install_one() {
   fi
   dest="$tools_dir/$tool-$version"
   stage="$dest.partial.$$"
-  old="$dest.old.$$"
   work="$(mktemp -d)"
-  scratch+=("$work" "$stage" "$old")
+  scratch+=("$work" "$stage")
   name="$(asset_name "$tool" "$version")"
   mkdir -p "$stage/bin" || die "could not create $stage" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
   fetch "$tool" "$version" "$name" "$work/$name"
@@ -266,16 +268,11 @@ install_one() {
       "it says: $("$stage/bin/$tool$exe" --version 2>&1 | head -n 2 | tr '\n' ' ')" \
       "fix: check the asset recorded for $tool in scripts/shell-tools.sh"
   # The staged tree moves into place whole (kcov's build bakes its prefix
-  # into nothing it reads at run time). A previous install is set aside first
-  # and put back if the move fails, so a failed install never leaves less
-  # than it found.
-  if [ -e "$dest" ]; then
-    mv "$dest" "$old" || die "could not set aside the previous $dest" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
-  fi
-  if ! mv "$stage" "$dest"; then
-    [ ! -e "$old" ] || mv "$old" "$dest" || true
+  # into nothing it reads at run time). Whatever was at $dest failed the
+  # version check above, so it is no install of this pin worth keeping.
+  rm -rf "$dest"
+  mv "$stage" "$dest" ||
     die "could not move the staged $tool $version into $dest" "fix: check that $tools_dir is writable, then rerun 'just bootstrap'"
-  fi
 }
 
 resolve() {

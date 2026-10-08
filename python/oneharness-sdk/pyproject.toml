@@ -38,6 +38,7 @@ dev = [
     "coverage==7.10.7",
     "mypy==1.19.1",
     "ruff==0.14.13",
+    "ty==0.0.85",
     "types-jsonschema==4.25.1.20251009",
 ]
 
@@ -77,6 +78,21 @@ ignore = [
 python_version = "3.9"
 strict = true
 warn_unreachable = true
+
+# ty has no single strict switch, so every rule is an error, the off-by-default
+# soundness rules included: no weaker than mypy's `strict`, and it grows with
+# each ty release. The mypy checks ty has no counterpart for are in AGENTS.md.
+[tool.ty.environment]
+python-version = "3.9"
+
+[tool.ty.src]
+include = ["src", "scripts", "test"]
+
+[tool.ty.rules]
+all = "error"
+
+[tool.ty.terminal]
+error-on-warning = true
 
 [tool.coverage.run]
 branch = true

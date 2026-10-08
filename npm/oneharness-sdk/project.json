@@ -6,7 +6,7 @@
     "type:sdk",
     "lang:typescript"
   ],
-  "//": "The Node SDK. `test` is the unit suite under bun's 95% coverageThreshold (bunfig.toml); `e2e` is the packed-artifact journey and is not part of `test`. Both drive this checkout's built binary and mock harness.",
+  "//": "The Node SDK. `test` is the unit suite under bun's 95% coverageThreshold (bunfig.toml); `e2e` is the packed-artifact journey and is not part of `test`. Both drive this checkout's built binary and mock harness. `test` and `e2e` each run alone (`parallelism: false`), since scripts/check-temp-leaks.sh can tell another live run's scratch from this one's only by reading its maker's environment, which Windows does not expose: run beside each other there, each read the other's live scratch as its own leak.",
   "implicitDependencies": [
     "sdk-contract",
     "oneharness",
@@ -84,6 +84,7 @@
         "parallel": false,
         "cwd": "{projectRoot}"
       },
+      "parallelism": false,
       "dependsOn": [
         "oneharness:build",
         "oneharness-mock-harness:build"
@@ -113,6 +114,7 @@
         "parallel": false,
         "cwd": "{projectRoot}"
       },
+      "parallelism": false,
       "dependsOn": [
         "build",
         "oneharness:build",

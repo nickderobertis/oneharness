@@ -227,6 +227,22 @@ grep -qxF 'error: output kept in the configured cache' "$tmp/nx.err" ||
 grep -q '^error\[E0425\]' "$tmp/nx.err" && fail "a log outside the configured cache directory was replayed"
 refused "$area/1234567890" "$custom"
 
+# A task-log area that is itself a link elsewhere authorizes nothing, and an
+# authorized log this machine cannot read says why.
+mkdir -p "$tmp/linked-cache" "$tmp/elsewhere"
+echo 'secret: behind a linked task-log area' >"$tmp/elsewhere/555"
+ln -s "$tmp/elsewhere" "$tmp/linked-cache/terminalOutputs"
+NX_CACHE_DIRECTORY="$tmp/linked-cache" failed_run "$tmp/linked-cache/terminalOutputs/555"
+refused "$tmp/linked-cache/terminalOutputs/555" "$tmp/linked-cache/terminalOutputs"
+echo 'locked' >"$area/31337"
+chmod 000 "$area/31337"
+if [[ ! -r "$area/31337" ]]; then
+    failed_run "$area/31337"
+    grep -qF "the task log $area/31337 is Nx's own but could not be read (EACCES" "$tmp/nx.err" ||
+        { cat "$tmp/nx.err" >&2; fail "an unreadable task log was not reported with the read error"; }
+fi
+chmod 600 "$area/31337"
+
 # An Nx that cannot say where it keeps logs: Nx's status still stands and the
 # log is named with the next action, not a stack trace.
 rm "$forward"

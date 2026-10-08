@@ -21,7 +21,8 @@
 # replayed counts or carry code the tree no longer has — failing the floor or,
 # worse, passing it. So each run's selection is first rebuilt, build-only, for
 # this tree: a no-op when nothing changed, and otherwise exactly the objects the
-# replayed profile came from.
+# replayed profile came from. Every other object is then removed, since the
+# report would read it too.
 #
 # Windows is skipped with its reason: llvm-cov does not attribute the coverage of
 # subprocess-spawned binaries there, so the binary crate reads as ~0%. The floor
@@ -68,9 +69,10 @@ specs="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
 # The objects first, for this tree; then the profiles, each run's own.
 records=()
 build_log="$(mktemp)"
-trap 'rm -f "$build_log"' EXIT
+artifacts="$(mktemp)"
+trap 'rm -f "$build_log" "$artifacts"' EXIT
 while IFS=$'\x1f' read -r -a args; do
-  if ! bash scripts/cargo-test.sh "${args[@]}" --build-only >"$build_log" 2>&1; then
+  if ! bash scripts/cargo-test.sh "${args[@]}" --build-only >>"$artifacts" 2>"$build_log"; then
     cat "$build_log" >&2
     echo "rust-coverage: rebuilding the instrumented objects for '${args[*]}' failed (above); fix the build and re-run 'just coverage'" >&2
     exit 1
@@ -81,6 +83,38 @@ while IFS=$'\x1f' read -r -a args; do
   done
   records+=("$record")
 done <<<"$specs"
+
+# The report reads EVERY executable under target/llvm-cov-target named for a
+# workspace target, not only the ones these runs built: an object a different
+# build left there — an older tree's, restored by CI's target-directory cache, or
+# a selection no project runs any more — has its own symbol hash, so its
+# functions map to no profile and its regions, laid out for the source it was
+# built from, count as lines no test executed. (The single `--workspace` run this
+# replaces cleaned the workspace's objects first.) So every executable that is
+# not one of these runs' own is removed before the report; a file is matched by
+# identity, as cargo hard-links each binary it uplifts.
+[ -s "$artifacts" ] || { echo "rust-coverage: rebuilding the instrumented selections named no executable, so the report would read only stale objects; check that cargo-llvm-cov passes --cargo-message-format through to nextest (just bootstrap installs a version that does)" >&2; exit 1; }
+node -e '
+  const fs = require("fs");
+  const path = require("path");
+  const id = (s) => s.dev + ":" + s.ino;
+  const keep = new Set(
+    fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((f) => id(fs.statSync(f))),
+  );
+  const notObjects = new Set([".d", ".rlib", ".rmeta", ".so", ".dylib", ".dll"]);
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const file = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (!["incremental", ".fingerprint", "build"].includes(entry.name)) walk(file);
+      } else if (entry.isFile() && !notObjects.has(path.extname(entry.name))) {
+        const stat = fs.statSync(file);
+        if ((stat.mode & 0o111) !== 0 && !keep.has(id(stat))) fs.rmSync(file);
+      }
+    }
+  };
+  walk("target/llvm-cov-target/debug");
+' "$artifacts"
 
 # The report collects every profile in target/llvm-cov-target. A record is an
 # indexed profile, which llvm-profdata merges exactly as it does a raw one, so

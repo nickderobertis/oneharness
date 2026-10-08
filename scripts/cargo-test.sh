@@ -29,8 +29,9 @@
 # `--uninstrumented` asks for that plain run on any platform (the
 # symlinked-TMPDIR replay of the e2e journeys, which re-runs a suite already
 # measured). `--build-only` builds that same instrumented selection and runs
-# nothing: scripts/rust-coverage.sh uses it so the objects a report reads are
-# this tree's, whichever profiles the cache replayed.
+# nothing, printing the path of each executable that selection is:
+# scripts/rust-coverage.sh uses it so the objects a report reads are this tree's,
+# whichever profiles the cache replayed.
 #
 # Quiet on success apart from nextest's summary; a failure prints in full.
 set -euo pipefail
@@ -95,9 +96,24 @@ if [ "$build_only" -eq 1 ]; then
   [ "$instrumented" -eq 1 ] || usage "--build-only builds the instrumented selection; it cannot be --uninstrumented"
   # Coverage is not measured on Windows, so there is nothing to keep current.
   [[ "${OS:-}" == "Windows_NT" ]] && exit 0
+  # Cargo's own artifact messages say which executables this selection is: each
+  # one built or found fresh goes to stdout, one path per line, and every
+  # compiler diagnostic to stderr as cargo renders it.
   RUSTFLAGS="${RUSTFLAGS} -C linker=$root/scripts/coverage-linker.sh" \
     cargo llvm-cov --no-report nextest "${packages[@]}" ${features[@]+"${features[@]}"} \
-    -E 'none()' --no-tests=pass --locked --status-level none --final-status-level none
+    -E 'none()' --no-tests=pass --locked --status-level none --final-status-level none \
+    --cargo-message-format json-diagnostic-rendered-ansi |
+    node -e '
+      let input = "";
+      process.stdin.on("data", (d) => { input += d; }).on("end", () => {
+        for (const line of input.split("\n")) {
+          if (!line.startsWith("{")) continue;
+          const message = JSON.parse(line);
+          if (message.reason === "compiler-artifact" && message.executable) console.log(message.executable);
+          else if (message.reason === "compiler-message" && message.message?.rendered) process.stderr.write(message.message.rendered);
+        }
+      });
+    '
   exit 0
 fi
 

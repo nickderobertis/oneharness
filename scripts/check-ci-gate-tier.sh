@@ -100,6 +100,25 @@ expect_refusal "neither 'affected' nor 'all'"
 
 run_case "schedule" EVENT_NAME=schedule
 expect_refusal "has no gate tier"
+
+run_case "a GITHUB_OUTPUT the step cannot append to" EVENT_NAME=workflow_dispatch DISPATCH_TIER=all GITHUB_OUTPUT="$tmp/missing/gh"
+expect_refusal "could not append 'tier=all'"
+
+# Without origin/main there is no merge base for a dispatched affected tier.
+g update-ref -d refs/remotes/origin/main
+run_case "dispatch of the affected tier without origin/main" EVENT_NAME=workflow_dispatch DISPATCH_TIER=affected
+expect_refusal "no origin/main in this clone"
+g update-ref refs/remotes/origin/main "$main_tip"
+
+# A root commit with no history in common with main: a base it cannot reach,
+# and a push whose HEAD has no parent to fall back to.
+g checkout -q --orphan unrelated
+g commit -q --allow-empty -m unrelated-root
+run_case "pull request sharing no history with its base" EVENT_NAME=pull_request HEAD_REF=unrelated BASE_SHA="$main_tip"
+expect_refusal "shares no history with the base $main_tip"
+run_case "push of a root commit with no previous tip" EVENT_NAME=push BEFORE=0000000000000000000000000000000000000000
+expect_refusal "HEAD has no parent"
+g checkout -q main
 : "$first"
 
 # ci.yml: the `check` job keeps its context names, takes a full-depth checkout,

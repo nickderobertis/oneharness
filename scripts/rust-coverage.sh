@@ -41,7 +41,7 @@ if [[ "${OS:-}" == "Windows_NT" ]]; then
   echo "coverage: skipped on Windows (llvm-cov subprocess attribution under-reports; measured on Linux/macOS — see scripts/rust-coverage.sh)"
   exit 0
 fi
-[[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "rust-coverage: COVERAGE_MIN '$floor' is not a percentage" >&2; exit 2; }
+[[ "$floor" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "rust-coverage: COVERAGE_MIN '$floor' is not a percentage; unset it for the 95 default or set a number such as 95" >&2; exit 2; }
 
 # Each Rust test run's cargo-test.sh arguments, one run per line and one
 # argument per unit-separator-delimited field, from the project definitions
@@ -87,7 +87,7 @@ done <<<"$specs"
 # each is placed there under the extension the report collects.
 cargo llvm-cov clean --profraw-only
 for record in "${records[@]}"; do
-  [[ "$record" =~ ^[a-z0-9_-]+$ ]] || { echo "rust-coverage: '$record' is not a record name" >&2; exit 2; }
+  [[ "$record" =~ ^[a-z0-9_-]+$ ]] || { echo "rust-coverage: '$record' is not a record name; fix the --record argument of the Rust project.json test target that passes it (lowercase letters, digits, '_' and '-')" >&2; exit 2; }
   if [ ! -s "target/coverage/$record.profdata" ]; then
     echo "coverage: no profile for $record at target/coverage/$record.profdata; its test target never ran instrumented. Run 'just coverage' (it runs every Rust test target first)." >&2
     exit 1

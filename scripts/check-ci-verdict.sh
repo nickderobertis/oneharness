@@ -843,6 +843,22 @@ GH_PULLS='[[{"number":42,"merged_at":"2026-01-02T00:00:00Z","base":{"ref":"main"
 expect_refused
 expect_said "$tmp/err" "release pull request fields behind $SHA_UNDER_TEST were unreadable"
 
+# A tree lookup that answers, but not with a tree sha, is no tree to compare.
+printf '%s %s\n' "$PR_HEAD" not-a-tree >"$tmp/bad-trees"
+GH_PULLS="$(release_pr)" GH_TREES="$tmp/bad-trees" run_case "{\"workflow_runs\":[$(pr_run 312 success success success)]}" \
+  "a tree lookup answering with no tree sha"
+expect_refused
+expect_said "$tmp/err" "the tree of $PR_HEAD was unreadable"
+
+# The pull requests endpoint answering with something other than pages of pull
+# requests: an error object, and text that is not JSON at all.
+for answer in '[{"message":"Not Found"}]' 'not json'; do
+  GH_PULLS="$answer" run_case "{\"workflow_runs\":[$(pr_run 313 success success success)]}" \
+    "a pull requests answer of $answer"
+  expect_refused
+  expect_said "$tmp/err" "the pull requests behind $SHA_UNDER_TEST were unreadable"
+done
+
 # Keep the four prose copies of the fallback rule aligned with the contract in
 # scripts/ci-verdict.sh.
 #

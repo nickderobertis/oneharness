@@ -37,6 +37,7 @@ run_id() {
     case "$arg" in
       *.sh)
         id="$(basename "$arg" .sh)"
+        id="${id//[^A-Za-z0-9_-]/_}"
         seen=1
         ;;
       *)
@@ -46,7 +47,9 @@ run_id() {
         ;;
     esac
   done
-  [ -n "$id" ] || {
+  # Every character outside [A-Za-z0-9_-] became `_`, so the id is one plain
+  # path component; this holds it to that.
+  [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || {
     echo "shell-test: no .sh script among '$*' to name the run after" >&2
     exit 2
   }

@@ -108,6 +108,10 @@ pins "shellcheck 1.2.4" "shfmt 4.5.6" "kcov 78"
 run exec shellcheck --version
 expect 1 "shellcheck 1.2.4 (the .shell-tool-versions pin) is not installed" "a bumped pin with the old version installed"
 grep -Fq "run 'just bootstrap'" "$work/out" || fail "a missing tool did not name 'just bootstrap'" "$(cat "$work/out")"
+# Nor does a binary at the pinned path that reports another version run.
+stand_in shellcheck 1.2.4 "version: 1.2.3"
+run exec shellcheck -V
+expect 1 "does not report shellcheck 1.2.4" "a binary at the pinned path reporting another version"
 
 # A version with no recorded checksum is refused before anything is fetched.
 pins "shellcheck 1.2.3" "shfmt 9.9.9" "kcov 78"

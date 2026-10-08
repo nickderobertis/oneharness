@@ -178,6 +178,10 @@ cat >"$double_tools/kcov-$pinned_kcov/bin/kcov" <<'SH'
 # The first non-option argument is the output directory; a merge writes the
 # report KCOV_DOUBLE_REPORT holds, with ROOT standing for the checkout.
 set -euo pipefail
+if [ "${1:-}" = --version ]; then
+  echo "kcov $KCOV_DOUBLE_VERSION"
+  exit 0
+fi
 merge=0
 for arg in "$@"; do
   case "$arg" in
@@ -194,7 +198,7 @@ SH
 chmod +x "$double_tools/kcov-$pinned_kcov/bin/kcov"
 while IFS='|' read -r report says; do
   status=0
-  (cd "$stage" && KCOV_DOUBLE_REPORT="$report" ONEHARNESS_TOOLS_DIR="$double_tools" SHELL_COVERAGE_MIN=1 \
+  (cd "$stage" && KCOV_DOUBLE_REPORT="$report" KCOV_DOUBLE_VERSION="$pinned_kcov" ONEHARNESS_TOOLS_DIR="$double_tools" SHELL_COVERAGE_MIN=1 \
     bash scripts/shell-coverage.sh) >"$work/out" 2>&1 || status=$?
   expect 1 "could not read line counts from the merged report" "a merged report of $report"
   grep -Fq -- "$says" "$work/out" || fail "a merged report of $report was refused without saying '$says'" "$(cat "$work/out")"
@@ -211,6 +215,10 @@ REPORTS
 status=0
 (cd "$stage" && DEMO_EXIT=3 bash scripts/shell-test.sh demo scripts/demo-test.sh) >"$work/out" 2>&1 || status=$?
 [ "$status" = 3 ] || fail "a step exiting 3 under kcov exited $status" "$(cat "$work/out")"
+
+# A step's run id is one plain path component, however its scripts are named.
+id="$(cd "$stage" && bash scripts/shell-test.sh --id scripts/demo-test.sh ../...sh)"
+[ "$id" = "__" ] || fail "a step whose script is named '...sh' ran as '$id', not one plain component"
 
 # A step must be one of scripts/'s own files, not a path or link out of it.
 ln -s "$stage/demo/project.json" "$stage/scripts/linked.sh"

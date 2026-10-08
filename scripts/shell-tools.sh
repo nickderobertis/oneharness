@@ -57,7 +57,8 @@ usage() {
 pin() {
   local lines
   [ -f "$pins" ] || die "no $pins to read the $1 pin from" "fix: restore .shell-tool-versions at the repository root"
-  lines="$(awk -v tool="$1" '$1 == tool { $1 = ""; sub(/^[ \t]+/, ""); print }' "$pins")"
+  lines="$(awk -v tool="$1" '$1 == tool { $1 = ""; sub(/^[ \t]+/, ""); print }' "$pins")" ||
+    die "could not read $pins (above)" "fix: restore its read permission (or 'git checkout -- .shell-tool-versions'), then re-run"
   case "$(printf '%s' "$lines" | grep -c . || true)" in
     1) ;;
     0) die ".shell-tool-versions has no $1 line" "fix: pin it as '$1 <version>'" ;;
@@ -181,7 +182,8 @@ fetch() {
   [ -z "$mirror" ] || url="$mirror/$name"
   curl --fail --silent --show-error --location --retry 3 --output "$file" "$url" ||
     die "could not download $url" "fix: check network access to it (or unset ONEHARNESS_TOOLS_MIRROR), then rerun 'just bootstrap'"
-  got="$(sha256 "$file")"
+  got="$(sha256 "$file")" ||
+    die "could not checksum $file (above)" "fix: install sha256sum (coreutils) or shasum, then rerun 'just bootstrap'"
   [ "$got" = "$want" ] ||
     die "$name has SHA-256 $got, but $want is recorded for it; nothing was installed" \
       "fix: do not trust the download; re-check the release's digest (and any ONEHARNESS_TOOLS_MIRROR) before changing scripts/shell-tools.sh"
@@ -247,7 +249,8 @@ install_one() {
     shellcheck)
       extract "$work/$name" "$work/x" ||
         die "could not unpack $name (above)" "fix: delete $tools_dir/downloads/$name, then rerun 'just bootstrap'"
-      found="$(find "$work/x" -type f -name "shellcheck$exe" | head -n 1)"
+      found="$(find "$work/x" -type f -name "shellcheck$exe" | head -n 1)" ||
+        die "could not search the unpacked $name (above)" "fix: check that ${TMPDIR:-/tmp} is readable, then rerun 'just bootstrap'"
       [ -n "$found" ] || die "$name holds no shellcheck$exe to install" "fix: check the asset recorded for shellcheck in scripts/shell-tools.sh"
       cp "$found" "$stage/bin/shellcheck$exe" ||
         die "could not stage shellcheck from $name" "fix: check that $tools_dir is writable and its disk has room, then rerun 'just bootstrap'"
@@ -262,7 +265,8 @@ install_one() {
       build_kcov "$version" "$stage" "$work/x/kcov-$version" "$work/build.log"
       ;;
   esac
-  chmod +x "$stage/bin/$tool$exe" 2>/dev/null || true
+  chmod +x "$stage/bin/$tool$exe" ||
+    die "could not make the staged $tool executable (above)" "fix: keep ONEHARNESS_TOOLS_DIR on a filesystem that allows executables (not noexec), then rerun 'just bootstrap'"
   reports_version "$tool" "$version" "$stage/bin/$tool$exe" ||
     die "the $tool just staged does not report version $version; nothing was installed" \
       "it says: $("$stage/bin/$tool$exe" --version 2>&1 | head -n 2 | tr '\n' ' ')" \
@@ -287,6 +291,9 @@ resolve() {
   [ -x "$bin" ] ||
     die "$tool $version (the .shell-tool-versions pin) is not installed at $bin" \
       "fix: run 'just bootstrap' (or 'bash scripts/shell-tools.sh install')"
+  reports_version "$tool" "$version" "$bin" ||
+    die "$bin does not report $tool $version, the .shell-tool-versions pin" \
+      "fix: run 'just bootstrap', which replaces it"
   printf '%s\n' "$bin"
 }
 

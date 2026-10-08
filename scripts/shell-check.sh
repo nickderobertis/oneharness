@@ -43,6 +43,10 @@ if ! listed="$(git ls-files --cached --others --exclude-standard -- "$@")"; then
   echo "shell-check: git could not list the files under $* (above); run this from a git checkout" >&2
   exit 1
 fi
+if ! sorted="$(printf '%s\n' "$listed" | sort -u)"; then
+  echo "shell-check: could not sort the file list (above); fix: check that sort is on PATH, then re-run" >&2
+  exit 1
+fi
 files=()
 while IFS= read -r path; do
   [ -n "$path" ] && [ -f "$path" ] || continue
@@ -56,7 +60,7 @@ while IFS= read -r path; do
       if [[ "$first" =~ ^\#!.*[/\ ](ba)?sh([[:space:]]|$) ]]; then files+=("$path"); fi
       ;;
   esac
-done < <(printf '%s\n' "$listed" | sort -u)
+done <<<"$sorted"
 [ "${#files[@]}" -gt 0 ] || {
   echo "shell-check: found no shell scripts under $*; a project owning none declares no shell targets" >&2
   exit 1

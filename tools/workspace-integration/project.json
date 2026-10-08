@@ -6,10 +6,14 @@
     "type:workspace",
     "lang:bash"
   ],
-  "//": "The repository-wide suites that drive real host tools rather than stubbed ones, split from `workspace`'s offline tests so an edit to an unrelated hygiene script never pays for them: the boundary check's refusals, proven by Nx computing each graph for real over a scratch copy of the tree, and the build recipes' failure diagnostics, proven through real just and cargo runs. Its inputs are what those runs read.",
+  "//": "The repository-wide suites that drive real host tools rather than stubbed ones, split from `workspace`'s offline tests so an edit to an unrelated hygiene script never pays for them: the affected tier's base derivation driven through the real `just check`, the self-sufficient workspace install driven through the real justfile and scripts/nx, the boundary check's refusals, proven by Nx computing each graph for real over a scratch copy of the tree, and the build recipes' failure diagnostics, proven through real just and cargo runs. Its inputs are what those runs read.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/nx-base.sh",
+      "{workspaceRoot}/scripts/check-nx-base.sh",
+      "{workspaceRoot}/scripts/check-js-install.sh",
+      "{workspaceRoot}/scripts/setup-llmlint.sh",
       "{workspaceRoot}/scripts/check-nx-graph-test.sh",
       "{workspaceRoot}/scripts/check-nx-graph.mjs",
       "{workspaceRoot}/scripts/check-build-mock-harness.sh",
@@ -32,6 +36,8 @@
       "executor": "nx:run-commands",
       "options": {
         "commands": [
+          "bash scripts/with-portable-sed.sh scripts/check-nx-base.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-js-install.sh",
           "bash scripts/with-portable-sed.sh scripts/check-nx-graph-test.sh",
           "bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh"
         ],

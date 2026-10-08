@@ -14,6 +14,15 @@
 # Quiet on success, one line. On failure it names the case and what it saw.
 set -Eeuo pipefail
 
+# A setup step that fails (resolving the checkout, a scratch directory, a
+# copy, a write) says which, rather than ending the run on the bare error.
+setup_failed() {
+  # Once, from the shell the step ran in, not again from each enclosing one.
+  [ "$BASH_SUBSHELL" = 0 ] || return 0
+  echo "check-shell-check: \`$1\` failed at line $2 (above); fix: check that the checkout, ${TMPDIR:-/tmp} and target/ are readable, writable and have room, then rerun 'bash scripts/check-shell-check.sh'" >&2
+}
+trap 'setup_failed "$BASH_COMMAND" "$LINENO"' ERR
+
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
@@ -24,15 +33,6 @@ fail() {
   echo "  fix: restore that behaviour in scripts/shell-check.sh, then rerun 'bash scripts/check-shell-check.sh'" >&2
   exit 1
 }
-
-# A setup step that fails (a scratch directory, a copy, a write) says which,
-# rather than ending the run on the bare error.
-setup_failed() {
-  # Once, from the shell the step ran in, not again from each enclosing one.
-  [ "$BASH_SUBSHELL" = 0 ] || return 0
-  echo "check-shell-check: \`$1\` failed at line $2 (above); fix: check that ${TMPDIR:-/tmp} and target/ are writable and have room, then rerun 'bash scripts/check-shell-check.sh'" >&2
-}
-trap 'setup_failed "$BASH_COMMAND" "$LINENO"' ERR
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT

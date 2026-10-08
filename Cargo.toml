@@ -46,8 +46,10 @@ path = "src/main.rs"
 
 [features]
 # Compiles `oneharness-core`'s usage-sweep fault injectors into this build, so
-# the hermetic suites can drive them. Enabled by every Rust `test` target; the
-# fake harness executable itself is the `oneharness-mock-harness` crate.
+# the hermetic suites can drive them. Enabled by the `test` targets that run
+# this crate against the mock (its unit, integration and e2e suites, and
+# history-compat); the fake harness executable itself is the
+# `oneharness-mock-harness` crate.
 mock-harness = ["oneharness-core/mock-harness"]
 # Enables `oneharness-core`'s schema generation (`sdk_schema`). The generator
 # the language SDKs run is the `oneharness-sdk-contract` crate's example.

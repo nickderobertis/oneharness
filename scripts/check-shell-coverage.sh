@@ -13,7 +13,9 @@
 # ones it did not, and the floor must pass below the measured rate, fail above
 # it, fail when a second untested script joins the measured set, and refuse a
 # step whose report is missing, undeclared or misnamed, and a merged report
-# kcov wrote wrongly. A failing step keeps its own exit status through kcov.
+# kcov wrote wrongly, a line count that is not a non-negative integer among it
+# (an array, object, boolean, null or empty string). A failing step keeps its
+# own exit status through kcov.
 #
 # kcov is built on Linux only (scripts/shell-tools.sh); elsewhere the step must
 # run uninstrumented and the floor must say it was skipped.
@@ -209,8 +211,21 @@ done <<'REPORTS'
 {"files": []}|lists 0 scripts
 {"files": [{"file": "ROOT/scripts/a.sh", "covered_lines": "5", "total_lines": "2"}]}|unreadable line counts for: scripts/a.sh
 {"files": [{"file": "ROOT/scripts/b.sh", "covered_lines": "-1", "total_lines": "2"}]}|unreadable line counts for: scripts/b.sh
+{"files": [{"file": "ROOT/scripts/d.sh", "covered_lines": [5], "total_lines": "9"}]}|unreadable line counts for: scripts/d.sh
+{"files": [{"file": "ROOT/scripts/e.sh", "covered_lines": "1", "total_lines": ["9"]}]}|unreadable line counts for: scripts/e.sh
+{"files": [{"file": "ROOT/scripts/f.sh", "covered_lines": {"n": 1}, "total_lines": "9"}]}|unreadable line counts for: scripts/f.sh
+{"files": [{"file": "ROOT/scripts/g.sh", "covered_lines": true, "total_lines": "9"}]}|unreadable line counts for: scripts/g.sh
+{"files": [{"file": "ROOT/scripts/h.sh", "covered_lines": null, "total_lines": "9"}]}|unreadable line counts for: scripts/h.sh
+{"files": [{"file": "ROOT/scripts/i.sh", "covered_lines": "", "total_lines": "9"}]}|unreadable line counts for: scripts/i.sh
+{"files": [{"file": "ROOT/scripts/j.sh", "covered_lines": 1.5, "total_lines": "9"}]}|unreadable line counts for: scripts/j.sh
 {"files": [{"file": "/elsewhere/c.sh", "covered_lines": "1", "total_lines": "2"}]}|counts files outside scripts/ and .githooks/: /elsewhere/c.sh
 REPORTS
+# Each count as kcov writes it, a string of digits, or as a plain integer, is read.
+status=0
+(cd "$stage" && KCOV_DOUBLE_REPORT='{"files": [{"file": "ROOT/scripts/k.sh", "covered_lines": 3, "total_lines": "4"}]}' \
+  KCOV_DOUBLE_VERSION="$pinned_kcov" ONEHARNESS_TOOLS_DIR="$double_tools" SHELL_COVERAGE_MIN=1 \
+  bash scripts/shell-coverage.sh) >"$work/out" 2>&1 || status=$?
+expect 0 "shell-coverage: ok (75.00% of 4 shell lines" "a merged report counting in integers and digit strings"
 
 # A failing step keeps its own exit status through kcov.
 status=0

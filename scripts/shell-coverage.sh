@@ -150,7 +150,12 @@ read -r rate covered total < <(node -e '
     console.error(`the merged report counts files outside scripts/ and .githooks/: ${outside.map((f) => f.file).join(", ")}`);
     process.exit(1);
   }
-  const count = (value) => (/^[0-9]+$/u.test(String(value)) ? Number(value) : NaN);
+  // kcov writes each count as a string of digits; a number is read as one too,
+  // and anything else (an array, object, boolean, null, "") is unreadable.
+  const count = (value) =>
+    (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) || (typeof value === "string" && /^[0-9]+$/u.test(value))
+      ? Number(value)
+      : NaN;
   const rows = merged.files
     .map((f) => ({ file: f.file.slice(root.length + 1), covered: count(f.covered_lines), total: count(f.total_lines) }))
     .sort((a, b) => a.covered / (a.total || 1) - b.covered / (b.total || 1) || a.file.localeCompare(b.file));

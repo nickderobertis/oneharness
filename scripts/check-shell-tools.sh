@@ -33,7 +33,7 @@ pinned() { awk -v t="$1" '$1 == t { print $2 }' .shell-tool-versions; }
 # The toolchain this checkout's targets run is the pinned one.
 out="$(bash scripts/shell-tools.sh exec shellcheck --version)" ||
   fail "the pinned shellcheck did not run; run 'just bootstrap' first" "$out"
-grep -qx "version: $(pinned shellcheck)" <<<"${out//$'\r'/}" ||
+grep -Fqx "version: $(pinned shellcheck)" <<<"${out//$'\r'/}" ||
   fail "the shellcheck it runs is not the pinned $(pinned shellcheck)" "$out"
 out="$(bash scripts/shell-tools.sh exec shfmt --version)" ||
   fail "the pinned shfmt did not run; run 'just bootstrap' first" "$out"

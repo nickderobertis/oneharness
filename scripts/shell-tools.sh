@@ -160,7 +160,7 @@ reports_version() {
   out="$("$bin" --version 2>&1)" || return 1
   out="${out//$'\r'/}"
   case "$tool" in
-    shellcheck) grep -qx "version: $version" <<<"$out" ;;
+    shellcheck) grep -Fqx "version: $version" <<<"$out" ;;
     shfmt) [ "$out" = "v$version" ] || [ "$out" = "$version" ] ;;
     kcov) [ "$out" = "kcov $version" ] ;;
   esac

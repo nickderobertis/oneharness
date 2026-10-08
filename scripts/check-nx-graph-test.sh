@@ -9,8 +9,9 @@
 # journeys, and from the SDK contract to an SDK that consumes it — plus a crate
 # edge Cargo has and the graph lost, and holds the check to rejecting each with
 # that edge named — and the AGENTS.md project record and the Rust coverage
-# floor's list of test runs falling out of step with the graph. Nx computes every
-# graph here for real; nothing is stubbed.
+# floor's list of test runs falling out of step with the graph, and a graph Nx
+# cannot compute failing without leaving the check's scratch behind. Nx computes
+# every graph here for real; nothing is stubbed.
 #
 # Quiet on success, one line.
 set -euo pipefail
@@ -118,5 +119,25 @@ cp "$tmp/saved.json" "$ws/tools/rust-coverage/project.json"
 [ "$status" -ne 0 ] || fail "a coverage floor that no longer depends on oneharness-e2e's test should have failed the check"
 grep -qF "does not depend on oneharness-e2e:test" "$tmp/err" ||
   fail "the check failed but did not name the Rust test run the floor leaves out"
+
+# A graph Nx cannot compute (an nx.json plugin it cannot load): the check fails
+# naming that, and still gives back the scratch directory it made for the graph.
+mkdir -p "$tmp/check-tmp"
+cp "$ws/nx.json" "$tmp/saved.json"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const nx = JSON.parse(fs.readFileSync(file, "utf8"));
+  nx.plugins = [...(nx.plugins ?? []), "./no-such-nx-plugin.js"];
+  fs.writeFileSync(file, JSON.stringify(nx, null, 2) + "\n");
+' "$ws/nx.json"
+status=0
+(cd "$ws" && TMPDIR="$tmp/check-tmp" NODE_DISABLE_COMPILE_CACHE=1 NX_DAEMON=false NX_NO_CLOUD=true node scripts/check-nx-graph.mjs) >"$tmp/out" 2>"$tmp/err" || status=$?
+cp "$tmp/saved.json" "$ws/nx.json"
+[ "$status" -ne 0 ] || fail "a project graph Nx cannot compute should have failed the check"
+grep -qF 'Nx could not compute the project graph' "$tmp/err" ||
+  fail "the check failed but did not say Nx could not compute the graph"
+leftover="$(find "$tmp/check-tmp" -mindepth 1 -maxdepth 1 -name 'check-nx-graph-*' -print -quit)"
+[ -z "$leftover" ] || fail "a failed graph computation left its scratch directory behind ($leftover)"
 
 echo "check-nx-graph-test: ok"

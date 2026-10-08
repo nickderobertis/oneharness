@@ -50,8 +50,11 @@ const allow = rules.allow ?? {};
 const nxPackage = createRequire(join(root, "package.json")).resolve("nx/package.json");
 const nxBin = join(dirname(nxPackage), JSON.parse(readFileSync(nxPackage, "utf8")).bin.nx);
 
+// `die` exits on the spot, which would skip a `finally`; so a failed graph is
+// recorded and reported only after the scratch directory is gone.
 const scratch = mkdtempSync(join(tmpdir(), "check-nx-graph-"));
 let graph;
+let graphError;
 try {
 	const file = join(scratch, "graph.json");
 	try {
@@ -60,14 +63,17 @@ try {
 			stdio: ["ignore", "ignore", "pipe"],
 			env: { ...process.env, NX_DAEMON: "false", NX_NO_CLOUD: "true", NX_TUI: "false" },
 		});
+		graph = JSON.parse(readFileSync(file, "utf8")).graph;
 	} catch (error) {
-		die(
-			`Nx could not compute the project graph:\n${String(error.stderr ?? error.message).trim()}\n  fix: run 'bash scripts/nx show projects' to see the same error, repair the project definition it names, and re-run.`,
-		);
+		graphError = String(error.stderr ?? error.message).trim();
 	}
-	graph = JSON.parse(readFileSync(file, "utf8")).graph;
 } finally {
 	rmSync(scratch, { recursive: true, force: true });
+}
+if (graphError !== undefined) {
+	die(
+		`Nx could not compute the project graph:\n${graphError}\n  fix: run 'bash scripts/nx show projects' to see the same error, repair the project definition it names, and re-run.`,
+	);
 }
 
 const typeOf = new Map();

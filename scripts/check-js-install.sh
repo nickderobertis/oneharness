@@ -67,6 +67,10 @@ if [ "${1:-}" = install ]; then
   mkdir -p node_modules/nx/dist/bin
   printf '{"name":"nx","bin":{"nx":"./dist/bin/nx.js"}}\n' > node_modules/nx/package.json
   printf 'require("fs").appendFileSync(process.env.CALL_LOG, "nx " + process.argv.slice(2).join(" ") + "\\n");\n' > node_modules/nx/dist/bin/nx.js
+  # Where Nx keeps its task logs, as the real package defines it (the default
+  # `<workspace>/.nx/cache`); scripts/nx reads only logs inside it.
+  mkdir -p node_modules/nx/src/utils
+  printf 'exports.cacheDir = require("path").join(process.cwd(), ".nx", "cache");\n' > node_modules/nx/src/utils/cache-directory.js
   echo "bun: 248 packages installed [596.00ms]"
 fi
 STUB
@@ -142,14 +146,17 @@ run_recipe "$tmp/bootstrap.calls" bootstrap
 
 # The wrapper's own streams: Nx's stdout (`show projects --json`, say) reaches
 # the caller untouched while its stderr stays stderr, and a failed run keeps
-# Nx's exit status and replays each advertised task log — or, for one this
-# machine cannot read, names it and how to see that task's output.
+# Nx's exit status and replays each advertised task log that resolves inside
+# this workspace's Nx task-log area. A "full log:" line is subprocess output,
+# so one naming a file anywhere else — directly, or through a symlink planted
+# in the area — is named and refused, never read; one this machine cannot read
+# is named with how to see that task's output.
 cat >"$fixture/node_modules/nx/dist/bin/nx.js" <<'STUB'
 const fail = process.env.NX_STUB_FAIL;
 process.stdout.write('["oneharness"]\n');
 process.stderr.write("nx-stub: diagnostics\n");
 if (fail) {
-  process.stderr.write(`  full log: ${fail}/present.log\n  full log: ${fail}/absent.log\n`);
+  process.stderr.write(fail.split(":").map((p) => `  full log: ${p}\n`).join(""));
   process.exit(3);
 }
 STUB
@@ -163,17 +170,27 @@ run_nx() {
 [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] ||
     fail "scripts/nx changed Nx's stdout (got: $(cat "$tmp/nx.out")); machine-readable output must pass through untouched"
 grep -qxF 'nx-stub: diagnostics' "$tmp/nx.err" || fail "scripts/nx lost Nx's stderr"
-mkdir -p "$tmp/task-logs"
-echo 'error[E0425]: the failing task output' >"$tmp/task-logs/present.log"
-export NX_STUB_FAIL="$tmp/task-logs"
+area="$fixture/.nx/cache/terminalOutputs"
+mkdir -p "$area" "$tmp/task-logs"
+echo 'error[E0425]: the failing task output' >"$area/1234567890"
+echo 'secret: a file outside the task-log area' >"$tmp/task-logs/outside.log"
+ln -s "$tmp/task-logs/outside.log" "$area/4242"
+export NX_STUB_FAIL="$area/1234567890:$area/9999:$tmp/task-logs/outside.log:$area/4242:$area/../../../justfile"
 nx_status="$(run_nx)"
 unset NX_STUB_FAIL
 [[ "$nx_status" -eq 3 ]] || fail "scripts/nx turned Nx's exit status 3 into $nx_status"
 [[ "$(cat "$tmp/nx.out")" == '["oneharness"]' ]] || fail "a failed run's task-log replay leaked onto stdout"
 grep -qxF 'error[E0425]: the failing task output' "$tmp/nx.err" ||
     fail "a failed run did not replay the advertised task log to stderr"
-grep -qF "the task log $tmp/task-logs/absent.log is not readable on this machine; re-run the failed task" "$tmp/nx.err" ||
+grep -qF "the task log $area/9999 is not readable on this machine; re-run the failed task" "$tmp/nx.err" ||
     fail "an advertised task log this machine cannot read was skipped silently"
+if grep -qF 'secret: a file outside the task-log area' "$tmp/nx.err" || grep -q '^set ' "$tmp/nx.err"; then
+    fail "scripts/nx read a file outside Nx's task-log area because a 'full log:' line named it"
+fi
+for outside in "$tmp/task-logs/outside.log" "$area/4242" "$area/../../../justfile"; do
+    grep -qF "the task log $outside is outside this workspace's Nx task-log area" "$tmp/nx.err" ||
+        fail "a 'full log:' path outside the task-log area ($outside) was not named as refused"
+done
 
 # A bun that fails the way a stale lockfile really does: the reason survives,
 # Nx never runs, and the message names a next action.

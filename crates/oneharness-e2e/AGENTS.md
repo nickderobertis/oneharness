@@ -29,6 +29,3 @@ Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the buil
   directory under the same instrumentation, and `workspace_bin` reads them from
   there. Paths into the repository go through `repo_root()`, since a test runs
   with this crate's directory as its working directory.
-- `test` also replays the journeys with `$TMPDIR` reached through a symlink
-  (`scripts/with-symlinked-tmp.sh`, Linux only), the spelling macOS gives every
-  temp path, and runs the smoke through `scripts/check-smoke-env.sh`.

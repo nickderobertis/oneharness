@@ -6,8 +6,6 @@ capability tables, to the registry without a credential or a model call. The sui
 themselves are governed by `live/AGENTS.md`.
 
 - **Deterministic, so in the gate** — unlike the `live-*` projects it serves. A
-  change to a live helper is proven here first (`check-usage-enforce.sh`,
-  `check-control-enforce.sh`, `check-copilot-login-probe.sh`,
-  `check-codex-usage-schema*.sh`, `check-control-probe*.sh`,
-  `e2e-variants-test.sh`), against this checkout's built binary and mock
-  harness; the paid suite that uses it runs only from its own workflow.
+  change to a live helper is proven here first, by a hermetic test against this
+  checkout's built binary and mock harness; the paid suite that uses it runs
+  only from its own workflow.

@@ -76,7 +76,7 @@ _tier target tier:
 test tier="affected": (_tier "test,e2e" tier)
 
 # Lint (clippy -D warnings, rustdoc, biome, ruff, shellcheck, the project-graph
-# boundaries) and type-check (tsc, mypy).
+# boundaries) and type-check (tsc, ty).
 lint tier="affected": (_tier "lint,typecheck" tier)
 
 # Verify formatting without modifying files.
@@ -216,7 +216,7 @@ sdk-build: js-install
 # Strict SDK gates, one project at a time: every gate target of the Node SDK
 # (generated-contract drift, biome, tsc, the unit suite under its 95% coverage
 # threshold, the build, and the packed-artifact e2e) or of the Python SDK
-# (generated-contract drift, ruff, mypy on Python 3.9, the unit suite under 95%
+# (generated-contract drift, ruff, ty on Python 3.9, the unit suite under 95%
 # branch-inclusive coverage, and the release-stamped wheel e2e).
 sdk-check:
     bash scripts/nx run-many -p node-sdk -t format,lint,typecheck,build,test,e2e

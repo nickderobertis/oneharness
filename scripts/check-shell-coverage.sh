@@ -68,7 +68,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 [ "$(bash scripts/demo.sh covered)" = "demo: covered" ]
 bash -eu -o pipefail -c 'bash scripts/demo.sh covered >/dev/null'
-if [ -n "${KCOV_BASH_XTRACEFD:-}" ]; then
+# A descriptor number, never anything else: eval would run whatever it holds.
+if [[ "${KCOV_BASH_XTRACEFD:-}" =~ ^[0-9]+$ ]]; then
   eval "bash scripts/demo.sh covered >/dev/null ${KCOV_BASH_XTRACEFD}>&-"
 fi
 exit "${DEMO_EXIT:-0}"

@@ -10,8 +10,7 @@ registry harness.
   counterpart to `smoke-live`: each check drives ONE real harness with its own
   model/provider config and asserts the marker round-trips (status ok + marker
   surfaced), so CI gets a per-harness pass/fail.
-- `scripts/check-e2e-matrix.sh` holds the PR-matrix contract
-  (`live/pr-matrix/AGENTS.md`). When adding a harness, keep this slim-PR +
+- `scripts/check-e2e-matrix.sh` holds the PR-matrix contract. When adding a harness, keep this slim-PR +
   on-demand-dispatch shape (copy an existing `e2e-<id>.yml` matrix block); put a
   new harness in the Linux-only PR set unless it exercises a platform-specific
   spawn path (like the `.cmd`-shim bypass) worth pinning on every PR. Add a new

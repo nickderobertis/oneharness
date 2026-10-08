@@ -16,7 +16,10 @@ Subtree rules for the Rust line-coverage floor.
 - **Replayed profiles are read against this tree's objects.** Each `test`
   caches its merged profile; `coverage` rebuilds the instrumented objects
   before reporting, so a stale build can never drop replayed counts or pass a
-  floor the tree should fail.
+  floor the tree should fail. It then removes every other executable under
+  `target/llvm-cov-target`: `report` reads them all, and one an older build
+  left there (CI restores the target directory from cache) adds lines no test
+  ran.
 - The threshold is line coverage, not region/branch: the hermetic mock-harness
   suite drives whole user journeys (high-leverage line coverage), and a few
   I/O-failure arms in `crates/oneharness-core/src/io/runner.rs` (spawn/wait

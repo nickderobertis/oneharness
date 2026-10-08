@@ -164,11 +164,19 @@ sha256() {
   fi
 }
 
-# What the installed binary says its version is must be the pin.
+# What the installed binary says its version is must be the pin. What it said
+# (and the exit status of a probe that failed) stays in $reported, so a refusal
+# can quote it.
+reported=""
 reports_version() {
-  local tool="$1" version="$2" bin="$3" out
-  out="$("$bin" --version 2>&1)" || return 1
+  local tool="$1" version="$2" bin="$3" out status=0
+  out="$("$bin" --version 2>&1)" || status=$?
   out="${out//$'\r'/}"
+  reported="$(head -n 2 <<<"$out" | tr '\n' ' ')"
+  if [ "$status" -ne 0 ]; then
+    reported+="(--version exited $status)"
+    return 1
+  fi
   case "$tool" in
     shellcheck) grep -Fqx "version: $version" <<<"$out" ;;
     shfmt) [ "$out" = "v$version" ] || [ "$out" = "$version" ] ;;
@@ -279,7 +287,7 @@ install_one() {
     die "could not make the staged $tool executable (above)" "fix: keep ONEHARNESS_TOOLS_DIR on a filesystem that allows executables (not noexec), then rerun 'just bootstrap'"
   reports_version "$tool" "$version" "$stage/bin/$tool$exe" ||
     die "the $tool just staged does not report version $version; nothing was installed" \
-      "it says: $("$stage/bin/$tool$exe" --version 2>&1 | head -n 2 | tr '\n' ' ')" \
+      "it says: $reported" \
       "fix: check the asset recorded for $tool in scripts/shell-tools.sh"
   # The staged tree moves into place whole (kcov's build bakes its prefix
   # into nothing it reads at run time). Whatever was at $dest failed the
@@ -303,6 +311,7 @@ resolve() {
       "fix: run 'just bootstrap' (or 'bash scripts/shell-tools.sh install')"
   reports_version "$tool" "$version" "$bin" ||
     die "$bin does not report $tool $version, the .shell-tool-versions pin" \
+      "it says: $reported" \
       "fix: run 'just bootstrap', which replaces it"
   printf '%s\n' "$bin"
 }

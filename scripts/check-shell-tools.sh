@@ -112,6 +112,13 @@ grep -Fq "run 'just bootstrap'" "$work/out" || fail "a missing tool did not name
 stand_in shellcheck 1.2.4 "version: 1.2.3"
 run exec shellcheck -V
 expect 1 "does not report shellcheck 1.2.4" "a binary at the pinned path reporting another version"
+grep -Fq "it says: version: 1.2.3" "$work/out" || fail "a wrong version was refused without quoting what the binary said" "$(cat "$work/out")"
+# A binary whose version probe itself fails: the refusal keeps its diagnostic
+# and exit status rather than reading as a plain version mismatch.
+printf '#!/usr/bin/env bash\necho "shellcheck: error while loading shared libraries" >&2\nexit 127\n' \
+  >"$tools/shellcheck-1.2.4/bin/shellcheck$exe"
+run exec shellcheck -V
+expect 1 "it says: shellcheck: error while loading shared libraries (--version exited 127)" "a binary whose --version fails"
 
 # A version with no recorded checksum is refused before anything is fetched.
 pins "shellcheck 1.2.3" "shfmt 9.9.9" "kcov 78"

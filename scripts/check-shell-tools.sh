@@ -150,6 +150,15 @@ for case in "two versions|shfmt 4.5.6 4.5.7|not exactly one version" \
   expect 1 "$want" "a pin file with $name for shfmt"
 done
 
+# A CRLF checkout of the pin file (Windows, core.autocrlf=true) pins the same
+# versions, and a bare second line under it is still counted.
+printf 'shellcheck 1.2.3\r\nshfmt 4.5.6\r\nkcov 78\r\n' >"$stage/.shell-tool-versions"
+run exec shfmt -d some/file.sh
+expect 0 "shfmt ran: -d some/file.sh" "a pin file with CRLF line endings"
+printf 'shellcheck 1.2.3\r\nshfmt 4.5.6\r\nshfmt\r\nkcov 78\r\n' >"$stage/.shell-tool-versions"
+run exec shfmt --version
+expect 1 "more than one line" "a CRLF pin file with a bare second shfmt line"
+
 pins "shellcheck 1.2.3" "shfmt 4.5.6" "kcov 78"
 status=0
 ONEHARNESS_TOOLS_DIR=relative/tools bash "$stage/scripts/shell-tools.sh" path shfmt >"$work/out" 2>&1 || status=$?

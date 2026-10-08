@@ -60,15 +60,17 @@ pin() {
   local lines count
   [ -f "$pins" ] || die "no $pins to read the $1 pin from" "fix: restore .shell-tool-versions at the repository root"
   # Lines naming the tool are counted before any is read, so a second one —
-  # even a bare name with no version — can never go unseen.
-  count="$(awk -v tool="$1" '$1 == tool { n++ } END { print n + 0 }' "$pins")" ||
+  # even a bare name with no version — can never go unseen. Each line's
+  # trailing carriage return is dropped first, in this awk and the next, so a
+  # CRLF checkout of the pin file reads as the same pins rather than as none.
+  count="$(awk -v tool="$1" '{ sub(/\r$/, "") } $1 == tool { n++ } END { print n + 0 }' "$pins")" ||
     die "could not read $pins (above)" "fix: restore its read permission (or 'git checkout -- .shell-tool-versions'), then re-run"
   case "$count" in
     1) ;;
     0) die ".shell-tool-versions has no $1 line" "fix: pin it as '$1 <version>'" ;;
     *) die ".shell-tool-versions names $1 on more than one line" "fix: keep exactly one '$1 <version>' line" ;;
   esac
-  lines="$(awk -v tool="$1" '$1 == tool { $1 = ""; sub(/^[ \t]+/, ""); print }' "$pins")" ||
+  lines="$(awk -v tool="$1" '{ sub(/\r$/, "") } $1 == tool { $1 = ""; sub(/^[ \t]+/, ""); print }' "$pins")" ||
     die "could not read $pins (above)" "fix: restore its read permission (or 'git checkout -- .shell-tool-versions'), then re-run"
   [[ "$lines" =~ ^[0-9]+(\.[0-9]+)*$ ]] ||
     die ".shell-tool-versions pins $1 as '$lines', which is not exactly one version" "fix: write it as '$1 <version>', e.g. '$1 1.2.3'"

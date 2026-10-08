@@ -47,6 +47,16 @@ def cargo_version() -> str:
     raise AssertionError("Cargo.toml has no root package version")
 
 
+def requires_dist(wheel: Path) -> list[str]:
+    """Return the `Requires-Dist` entries a built wheel declares."""
+    with zipfile.ZipFile(wheel) as archive:
+        metadata_name = next(
+            name for name in archive.namelist() if name.endswith(".dist-info/METADATA")
+        )
+        metadata = email.message_from_bytes(archive.read(metadata_name))
+    return list(metadata.get_all("Requires-Dist", []))
+
+
 def main(stack: ExitStack) -> None:
     """Build, inspect, install offline, and consume the release-stamped wheels."""
     version = cargo_version()
@@ -122,6 +132,31 @@ def main(stack: ExitStack) -> None:
     )
     scripts = environment / ("Scripts" if os.name == "nt" else "bin")
     python = scripts / ("python.exe" if os.name == "nt" else "python")
+    # The offline install resolves the wheels' requirements from uv's cache
+    # alone, and the locked `uv sync` before this run never reads the index
+    # pages that resolve needs, so on an empty cache (every hosted runner) it
+    # fails with "jsonschema was not found in the cache". So this run provisions
+    # them itself, installing into the fresh environment every third-party
+    # requirement the two built wheels declare — read from their own metadata,
+    # so a new dependency is provisioned without an edit here. `oneharness-cli`
+    # is left out: it must come from the wheel built above, never an index. The
+    # offline install below then proves the wheels need nothing more.
+    third_party = [
+        requirement
+        for wheel in (sdk_wheels[0], cli_wheels[0])
+        for requirement in requires_dist(wheel)
+        if not requirement.startswith("oneharness-cli")
+    ]
+    if not third_party:
+        raise AssertionError(
+            "the SDK wheel declares no third-party requirement (expected jsonschema), "
+            "so this run would not prove the offline install provisions one"
+        )
+    subprocess.run(
+        ["uv", "pip", "install", "--python", str(python), *third_party],
+        cwd=ROOT,
+        check=True,
+    )
     subprocess.run(
         [
             "uv",

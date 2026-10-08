@@ -21,8 +21,14 @@
 # or each finding with its file, line and code) and says how to fix it.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$root"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "shell-check: could not resolve the repository root from ${BASH_SOURCE[0]}; run it from a checkout as 'bash scripts/shell-check.sh'" >&2
+  exit 2
+}
+cd "$root" || {
+  echo "shell-check: could not enter the repository root $root; check that it exists and is readable, then re-run" >&2
+  exit 2
+}
 
 usage() {
   echo "shell-check: usage: scripts/shell-check.sh format|format-write|lint <dir>..." >&2

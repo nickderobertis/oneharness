@@ -29,8 +29,14 @@
 # target/coverage/shell/merged/, the target's declared outputs.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$root"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "shell-coverage: could not resolve the repository root from ${BASH_SOURCE[0]}; run it from a checkout as 'bash scripts/shell-coverage.sh'" >&2
+  exit 2
+}
+cd "$root" || {
+  echo "shell-coverage: could not enter the repository root $root; check that it exists and is readable, then re-run" >&2
+  exit 2
+}
 
 # The floor, below the 95% default for the reasons tools/shell-coverage/AGENTS.md
 # records with the measurement it rests on. Raised as tests land; never lowered.

@@ -33,7 +33,10 @@
 # Quiet on success, one line; a failure names the tool, the step and the fix.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "shell-tools: could not resolve the repository root from ${BASH_SOURCE[0]}; run it from a checkout as 'bash scripts/shell-tools.sh'" >&2
+  exit 2
+}
 pins="$root/.shell-tool-versions"
 
 # Exit with status $1 after the message $2 and each fix line after it.

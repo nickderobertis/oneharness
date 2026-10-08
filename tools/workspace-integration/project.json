@@ -1,0 +1,42 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "workspace-integration",
+  "projectType": "library",
+  "tags": [
+    "type:workspace",
+    "lang:bash"
+  ],
+  "//": "The repository-wide suites that drive real host tools rather than stubbed ones, split from `workspace`'s offline tests so an edit to an unrelated hygiene script never pays for them: the boundary check's refusals, proven by Nx computing each graph for real over a scratch copy of the tree, and the build recipes' failure diagnostics, proven through real just and cargo runs. Its inputs are what those runs read.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/check-nx-graph-test.sh",
+      "{workspaceRoot}/scripts/check-nx-graph.mjs",
+      "{workspaceRoot}/scripts/check-build-mock-harness.sh",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/scripts/nx",
+      "{workspaceRoot}/tools/workspace/boundaries.json",
+      "{workspaceRoot}/AGENTS.md",
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/crates/*/Cargo.toml",
+      "{workspaceRoot}/**/project.json"
+    ]
+  },
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "bash scripts/with-portable-sed.sh scripts/check-nx-graph-test.sh",
+          "bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh"
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

@@ -6,7 +6,7 @@
     "type:workspace",
     "lang:bash"
   ],
-  "//": "Repository-wide checks no single project owns: the project-graph boundary and Cargo-edge check, the Nx base derivation, scratch-space hygiene across every suite, the LF contract, and the checks that `just check` and `just bootstrap` stay self-sufficient. `supply-chain` (cargo deny + machete) reads the network advisory database, so it is uncached and outside the affected tier; `just deps-check` and ci.yml's `deny` job run it by name.",
+  "//": "Repository-wide checks no single project owns: the project-graph boundary and Cargo-edge check, the Nx base derivation, scratch-space hygiene across every suite, the LF contract, and the checks that `just check` and `just bootstrap` stay self-sufficient. The suites that drive real host tools — the boundary check's refusals and the build recipes' diagnostics — are `workspace-integration`'s. `supply-chain` (cargo deny + machete) reads the network advisory database, so it is uncached and outside the affected tier; `just deps-check` and ci.yml's `deny` job run it by name.",
   "implicitDependencies": [
     "harness-captures"
   ],
@@ -15,7 +15,6 @@
       "{projectRoot}/**/*",
       "{workspaceRoot}/scripts/nx-base.sh",
       "{workspaceRoot}/scripts/check-nx-base.sh",
-      "{workspaceRoot}/scripts/check-nx-graph-test.sh",
       "{workspaceRoot}/scripts/cargo-test.sh",
       "{workspaceRoot}/scripts/coverage-linker.sh",
       "{workspaceRoot}/scripts/check-temp-leaks.sh",
@@ -25,11 +24,11 @@
       "{workspaceRoot}/scripts/check-lf-contracts.sh",
       "{workspaceRoot}/scripts/check-lf-contracts-test.sh",
       "{workspaceRoot}/scripts/check-js-install.sh",
-      "{workspaceRoot}/scripts/check-build-mock-harness.sh",
       "{workspaceRoot}/scripts/session-setup.sh",
       "{workspaceRoot}/scripts/nx",
       "{workspaceRoot}/scripts/check-nx-graph.mjs",
       "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/AGENTS.md",
       "{workspaceRoot}/nx.json",
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/bun.lock",
@@ -62,14 +61,12 @@
       "options": {
         "commands": [
           "bash scripts/with-portable-sed.sh scripts/check-nx-base.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-nx-graph-test.sh",
           "bash scripts/with-portable-sed.sh scripts/check-temp-leaks-test.sh",
           "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes.sh",
           "bash scripts/with-portable-sed.sh scripts/check-scratch-prefixes-test.sh",
           "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh",
           "bash scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-js-install.sh",
-          "bash scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh"
+          "bash scripts/with-portable-sed.sh scripts/check-js-install.sh"
         ],
         "parallel": false
       }

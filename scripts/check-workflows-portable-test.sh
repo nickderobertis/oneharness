@@ -55,10 +55,10 @@ steps="$(node -e '
 ')"
 [ -n "$steps" ] || fail "read no drift-script steps from the project definitions" \
   "fix: keep each project's drift steps as 'bash scripts/with-portable-sed.sh scripts/<name>.sh', or update the reader here"
-unwrapped="$(printf '%s\n' "$steps" | grep -vE ': bash scripts/with-portable-sed\.sh scripts/[^ ]+\.sh$' || true)"
+unwrapped="$(printf '%s\n' "$steps" | grep -vE ': bash scripts/with-portable-sed\.sh scripts/[^ ]+\.sh( [^ ]+)*$' || true)"
 [ -z "$unwrapped" ] || fail "a drift step bypasses scripts/with-portable-sed.sh, so its sed calls go unchecked" \
   "$unwrapped" \
-  "fix: write it as 'bash scripts/with-portable-sed.sh scripts/<name>.sh'"
+  "fix: write it as 'bash scripts/with-portable-sed.sh scripts/<name>.sh [args...]'"
 
 printf 'x\n' >"$work/file"
 printf 'sed -i %q %q\n' 's/x/y/' "$work/file" >"$work/bare.sh"

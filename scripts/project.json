@@ -16,7 +16,7 @@
       "options": {
         "commands": [
           "bash -c \"shellcheck scripts/*.sh scripts/nx\"",
-          "bash scripts/check-lf-contracts.sh --shell"
+          "bash scripts/with-portable-sed.sh scripts/check-lf-contracts.sh --shell"
         ],
         "parallel": false
       },

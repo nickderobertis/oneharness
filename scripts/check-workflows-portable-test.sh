@@ -156,7 +156,10 @@ to_crlf() {
 # CR-CR-LF, a bare LF and a stray CR all fail, mixed or not.
 is_crlf() {
   local text
-  text="$(cat "$1"; printf x)"
+  text="$(
+    cat "$1"
+    printf x
+  )"
   text="${text%x}"
   [[ "$text" == *$'\r\n' ]] || return 1
   text="${text//$'\r\n'/}"

@@ -272,16 +272,16 @@ grep -Fq "$fork_guard" "$work/notignored.yml" || {
   echo "  fix: restore the fork guard in $notignored, or update this fixture to its new spelling" >&2
   exit 1
 }
-grep -Fv "$fork_guard" "$work/notignored.yml" >"$notignored" \
-  || fixture_fail "notignored.yml without its fork guard" "$notignored"
+grep -Fv "$fork_guard" "$work/notignored.yml" >"$notignored" ||
+  fixture_fail "notignored.yml without its fork guard" "$notignored"
 expect_notignored_refusal "notignored.yml without its fork guard" "skip fork pull requests"
 
-printf '  llmlint:\n    needs: suppressions\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' >>"$notignored" \
-  || fixture_fail "a second job in notignored.yml" "$notignored"
+printf '  llmlint:\n    needs: suppressions\n    runs-on: ubuntu-latest\n    steps:\n      - run: "true"\n' >>"$notignored" ||
+  fixture_fail "a second job in notignored.yml" "$notignored"
 expect_notignored_refusal "a second job in notignored.yml" "must define exactly one job, 'suppressions'"
 
-printf '      - uses: nickderobertis/notignored@v0\n' >>"$ci" \
-  || fixture_fail "notignored inside ci.yml" "$ci"
+printf '      - uses: nickderobertis/notignored@v0\n' >>"$ci" ||
+  fixture_fail "notignored inside ci.yml" "$ci"
 expect_notignored_refusal "notignored inside ci.yml" "ci.yml runs nickderobertis/notignored"
 
 echo 'check-workflows-e2e: ok'

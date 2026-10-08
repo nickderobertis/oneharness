@@ -30,14 +30,14 @@ assert_file_contains() {
 
 assert_line_count() {
   local expected=$1 file=$2 description=$3 actual
-  actual=$(wc -l < "$file")
+  actual=$(wc -l <"$file")
   [[ $actual -eq $expected ]] || {
     echo "check-local-gate: $description; expected $expected lines in $file, found $actual" >&2
     return 1
   }
 }
 
-cat > "$tmp/bin/llmlint" <<'STUB'
+cat >"$tmp/bin/llmlint" <<'STUB'
 #!/usr/bin/env bash
 # The gate fingerprints the judge before deciding whether to replay a verdict.
 # Those two reads cost nothing and are not judge rolls, so they stay out of the
@@ -64,7 +64,7 @@ if [[ ${1:-} == --diff && ${JUDGE_FAIL:-0} == 1 ]]; then
   exit 4
 fi
 STUB
-cat > "$tmp/bin/oneharness" <<'STUB'
+cat >"$tmp/bin/oneharness" <<'STUB'
 #!/usr/bin/env bash
 printf 'oneharness %s\n' "$*" >> "$CALL_LOG"
 case ${PROBE_MODE:-available} in
@@ -87,7 +87,7 @@ case ${PROBE_MODE:-available} in
     ;;
 esac
 STUB
-cat > "$tmp/bin/$primary_harness" <<'STUB'
+cat >"$tmp/bin/$primary_harness" <<'STUB'
 #!/usr/bin/env bash
 read -r key
 [[ $key == test-key ]]
@@ -113,7 +113,7 @@ fixture_root="$tmp/local-gate-fixture"
 mkdir -p "$fixture_root/scripts"
 cp "$root/scripts/local-llmlint-gate.sh" "$root/scripts/local-llmlint-gate-lib.sh" \
   "$fixture_root/scripts/"
-printf 'harnesses = ["../invalid"]\n' > "$fixture_root/oneharness.toml"
+printf 'harnesses = ["../invalid"]\n' >"$fixture_root/oneharness.toml"
 if "$fixture_root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/invalid-harness"; then
   echo "check-local-gate: invalid primary harness unexpectedly succeeded" >&2
   exit 1
@@ -128,13 +128,13 @@ assert_file_contains \
   "llmlint: oneharness.toml must declare a valid first harness in 'harnesses'" \
   "$tmp/invalid-harness" "missing invalid primary harness diagnostic"
 
-printf 'harnesses = ["fixture-harness"]\n' > "$fixture_root/oneharness.toml"
+printf 'harnesses = ["fixture-harness"]\n' >"$fixture_root/oneharness.toml"
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" OPENAI_API_KEY=test-key \
   "$fixture_root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/unavailable-harness"
 assert_file_contains \
   "llmlint: judge skipped locally (committed primary harness 'fixture-harness' unavailable)" \
   "$tmp/unavailable-harness" "missing unavailable primary harness diagnostic"
-: > "$log"
+: >"$log"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
   "$root/scripts/local-llmlint-gate.sh" HEAD
@@ -144,7 +144,7 @@ assert_file_contains \
   "no-key path did not probe the configured fallback"
 assert_file_contains 'llmlint --diff --diff-base HEAD' "$log" \
   "no-key path did not invoke the judge after a successful probe"
-: > "$log"
+: >"$log"
 # That green was recorded. Every case below shares its tree, base and stub judge,
 # and each is about a path that has to be *reached* rather than replayed, so drop
 # the record; replay has its own section further down.
@@ -156,7 +156,7 @@ assert_file_contains \
   'llmlint: judge skipped locally (no configured harness is available and authenticated)' \
   "$tmp/skip" "missing unavailable fallback diagnostic"
 assert_line_count 2 "$log" "unavailable path should validate and probe without judging"
-: > "$log"
+: >"$log"
 
 if CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=error \
   "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/probe-error"; then
@@ -173,7 +173,7 @@ assert_file_contains \
   "llmlint: oneharness availability probe failed; check harness authentication and run 'oneharness run --config oneharness.toml --prompt test'" \
   "$tmp/probe-error" \
   "genuine probe error was treated as an unavailable skip"
-: > "$log"
+: >"$log"
 
 if CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" PROBE_MODE=invalid \
   "$root/scripts/local-llmlint-gate.sh" HEAD 2>"$tmp/invalid-report"; then
@@ -183,7 +183,7 @@ fi
 assert_file_contains \
   "llmlint: oneharness availability probe returned an invalid report; run 'oneharness run --config oneharness.toml --prompt test' to diagnose" \
   "$tmp/invalid-report" "invalid probe report was not rejected"
-: > "$log"
+: >"$log"
 
 mv "$tmp/bin/oneharness" "$tmp/oneharness"
 CALL_LOG="$log" PATH="$tmp/bin:/usr/bin:/bin" HOME="$tmp/home" \
@@ -191,7 +191,7 @@ CALL_LOG="$log" PATH="$tmp/bin:/usr/bin:/bin" HOME="$tmp/home" \
 assert_file_contains 'llmlint: judge skipped locally (oneharness unavailable)' \
   "$tmp/no-oneharness" "missing oneharness did not skip clearly"
 mv "$tmp/oneharness" "$tmp/bin/oneharness"
-: > "$log"
+: >"$log"
 
 if (cd "$tmp" && PATH="bin:/usr/bin:/bin" llmlint_judge_available "$root/oneharness.toml") \
   2>"$tmp/relative-oneharness"; then
@@ -221,7 +221,7 @@ fi
   echo "check-local-gate: judge finding exited $status, expected 4" >&2
   exit 1
 }
-: > "$log"
+: >"$log"
 
 CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" OPENAI_API_KEY=test-key \
   "$root/scripts/local-llmlint-gate.sh" HEAD
@@ -252,13 +252,13 @@ verdict_status=0
 # Run the gate in the scratch repo against the `base` branch. Extra arguments are
 # `NAME=VALUE` overrides for that one invocation.
 verdict_gate() {
-  : > "$log"
+  : >"$log"
   verdict_status=0
   (
     cd "$verdict_repo"
     env -u OPENAI_API_KEY CALL_LOG="$log" PATH="$tmp/bin:$PATH" HOME="$tmp/home" \
       XDG_CACHE_HOME="$tmp/verdicts" "$@" ./scripts/local-llmlint-gate.sh base
-  ) > "$tmp/verdict-out" 2>&1 || verdict_status=$?
+  ) >"$tmp/verdict-out" 2>&1 || verdict_status=$?
 }
 
 # $1 description, $2 expected judge rolls, $3 expected exit status
@@ -295,7 +295,7 @@ grep -q 'replaying the green verdict' "$tmp/verdict-out" || {
 }
 
 # Content, not just tracked content: the judge reads untracked-unignored files too.
-printf 'first\n' > "$verdict_repo/marker"
+printf 'first\n' >"$verdict_repo/marker"
 verdict_gate
 assert_verdict "a changed tree" 1 0
 verdict_gate
@@ -324,7 +324,7 @@ assert_verdict "the original judge build" 0 0
 
 # A finding is never recorded: the next run must ask again rather than replay a
 # verdict that was red.
-printf 'second\n' > "$verdict_repo/marker"
+printf 'second\n' >"$verdict_repo/marker"
 verdict_gate JUDGE_FAIL=1
 assert_verdict "a judge finding" 1 4
 verdict_gate
@@ -340,7 +340,7 @@ grep -q 'ONEHARNESS_LLMLINT_REJUDGE=1' "$tmp/verdict-out" || {
   exit 1
 }
 # ...nor records one, so the next ordinary run still has to judge.
-printf 'third\n' > "$verdict_repo/marker"
+printf 'third\n' >"$verdict_repo/marker"
 verdict_gate ONEHARNESS_LLMLINT_REJUDGE=1
 assert_verdict "a forced roll on an unrecorded tree" 1 0
 verdict_gate
@@ -352,7 +352,7 @@ assert_verdict "the run after that green was recorded" 0 0
 # rolls, and records nothing — the next run has to roll too. Failing open toward
 # judging is the only safe direction: the alternative replays a verdict that may
 # belong to a different judge.
-printf 'fourth\n' > "$verdict_repo/marker"
+printf 'fourth\n' >"$verdict_repo/marker"
 verdict_gate JUDGE_CONFIG_FAIL=1
 assert_verdict "a judge whose configuration cannot be read" 1 0
 grep -q 'cannot identify this verdict' "$tmp/verdict-out" || {
@@ -420,7 +420,7 @@ entry=$(verdict_entry) || exit 1
   IFS= read -r key_line
   IFS= read -r base_line
   IFS= read -r stamp_line
-} < "$entry"
+} <"$entry"
 
 # $1 description; the remaining arguments are the lines written over the stored
 # record, or none at all for an empty file.
@@ -428,9 +428,9 @@ assert_record_rejected() {
   local description=$1
   shift
   if [[ $# -eq 0 ]]; then
-    : > "$entry"
+    : >"$entry"
   else
-    printf '%s\n' "$@" > "$entry"
+    printf '%s\n' "$@" >"$entry"
   fi
   verdict_gate
   assert_verdict "$description" 1 0
@@ -455,7 +455,7 @@ assert_record_rejected "a record with a line appended after its timestamp" \
 # damaged records rather than every record.
 verdict_gate
 assert_verdict "the undamaged record the last run wrote" 0 0
-: > "$log"
+: >"$log"
 
 git init -q --bare "$tmp/remote.git"
 git init -q -b main "$tmp/repo"
@@ -471,7 +471,7 @@ resolved_base=$(cd "$tmp/repo" && "$root/scripts/comparison-base.sh" origin)
   exit 1
 }
 
-cat > "$tmp/bin/just" <<'STUB'
+cat >"$tmp/bin/just" <<'STUB'
 #!/usr/bin/env bash
 [[ -z ${GIT_DIR:-} ]]
 printf 'just %s\n' "$*" >> "$CALL_LOG"
@@ -492,7 +492,7 @@ cp "$root/justfile" "$bootstrap_repo/justfile"
 cp "$root/scripts/setup-llmlint.sh" "$bootstrap_repo/scripts/setup-llmlint.sh"
 git -C "$bootstrap_repo" init -q
 for tool in rustup cargo bun uv; do
-  cat > "$bootstrap_bin/$tool" <<'STUB'
+  cat >"$bootstrap_bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
 STUB
@@ -517,12 +517,12 @@ installer_home="$tmp/installer-home"
 installer_err="$tmp/installer-err"
 {
   mkdir -p "$installer_home/.local/bin" &&
-    cat > "$installer_home/.local/bin/uv" <<'STUB' &&
+    cat >"$installer_home/.local/bin/uv" <<'STUB' &&
 #!/usr/bin/env bash
 printf 'uv %s\n' "$*" >> "$CALL_LOG"
 exit "${UV_STATUS:-0}"
 STUB
-    cat > "$installer_home/.local/bin/llmlint" <<'STUB' &&
+    cat >"$installer_home/.local/bin/llmlint" <<'STUB' &&
 #!/usr/bin/env bash
 printf 'llmlint %s\n' "$*" >> "$CALL_LOG"
 STUB
@@ -548,31 +548,31 @@ wording_fix="restore that message in scripts/setup-llmlint.sh, or update this ex
 # Fails unless the installer exits 0 and reaches its final doctor call.
 run_installer() {
   local uv_status=$1 env_file=$2 status=0
-  : > "$log" || installer_fail "case could not reset $log" "make $tmp writable, then re-run"
+  : >"$log" || installer_fail "case could not reset $log" "make $tmp writable, then re-run"
   CALL_LOG="$log" UV_STATUS="$uv_status" HOME="$installer_home" CLAUDE_ENV_FILE="$env_file" \
-    bash "$root/scripts/setup-llmlint.sh" 2> "$installer_err" || status=$?
+    bash "$root/scripts/setup-llmlint.sh" 2>"$installer_err" || status=$?
   [[ $status -eq 0 ]] || installer_fail "exited $status; it must always exit 0" "$guard_fix"
   grep -q '^llmlint doctor' "$log" || installer_fail "stopped before 'llmlint doctor'" "$guard_fix"
 }
 
 run_installer 1 ''
-grep -Fq 'llmlint-cli install failed (continuing)' "$installer_err" \
-  || installer_fail "did not report a failed install as continuing" "$wording_fix"
+grep -Fq 'llmlint-cli install failed (continuing)' "$installer_err" ||
+  installer_fail "did not report a failed install as continuing" "$wording_fix"
 
 run_installer 0 "$tmp/missing-dir/env"
-grep -Fq "could not write $tmp/missing-dir/env (continuing)" "$installer_err" \
-  || installer_fail "did not report an unwritable CLAUDE_ENV_FILE" "$wording_fix"
+grep -Fq "could not write $tmp/missing-dir/env (continuing)" "$installer_err" ||
+  installer_fail "did not report an unwritable CLAUDE_ENV_FILE" "$wording_fix"
 if grep -Fq 'exported PATH' "$installer_err"; then
   installer_fail "claimed to export PATH after the env file write failed" \
     "return before logging success when the CLAUDE_ENV_FILE append fails"
 fi
 
 run_installer 0 "$tmp/session-env"
-grep -Fq 'exported PATH' "$installer_err" \
-  || installer_fail "did not report a writable CLAUDE_ENV_FILE as exported" "$wording_fix"
+grep -Fq 'exported PATH' "$installer_err" ||
+  installer_fail "did not report a writable CLAUDE_ENV_FILE as exported" "$wording_fix"
 
 # A diagnostic that cannot be written (stderr closed) must not end the run.
-{ : > "$log" && : > "$installer_err"; } || installer_fail "case could not reset its logs" "make $tmp writable, then re-run"
+{ : >"$log" && : >"$installer_err"; } || installer_fail "case could not reset its logs" "make $tmp writable, then re-run"
 status=0
 CALL_LOG="$log" UV_STATUS=1 HOME="$installer_home" CLAUDE_ENV_FILE="$tmp/session-env" \
   bash "$root/scripts/setup-llmlint.sh" 2>&- || status=$?

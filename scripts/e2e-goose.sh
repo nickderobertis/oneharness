@@ -16,7 +16,7 @@ export GOOSE_PROVIDER="${GOOSE_PROVIDER:-openai}"
 export GOOSE_MODEL="${GOOSE_MODEL:-${GOOSE_E2E_MODEL:-gpt-4o-mini}}"
 need_env "Goose provider key" OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY
 
-export OH_MODEL=""  # oneharness intentionally does not map --model for goose
+export OH_MODEL="" # oneharness intentionally does not map --model for goose
 marker="$(oh_marker)"
 oh_run goose "$(oh_prompt "$marker")"
 oh_assert_echoed goose "$marker"

@@ -11,7 +11,7 @@ need jq
 # Codex authenticates from its own login (CI makes one from OPENAI_API_KEY with
 # `codex login --with-api-key`), so an existing login is auth enough.
 if [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
-    need_env "OpenAI auth" OPENAI_API_KEY
+  need_env "OpenAI auth" OPENAI_API_KEY
 fi
 
 export OH_MODEL="${CODEX_E2E_MODEL:-}"

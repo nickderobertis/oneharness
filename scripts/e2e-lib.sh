@@ -30,7 +30,10 @@ OH_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # --- reporting -------------------------------------------------------------
 
 note() { printf '%s\n' "$*" >&2; }
-fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf 'FAIL: %s\n' "$*" >&2
+  exit 1
+}
 
 # A skip is "something that should be present is absent" — the right stance on a
 # developer box (no harness installed, no auth, no jq). But in CI every e2e
@@ -47,12 +50,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # the platform at the matrix level (see e2e-schema.yml). skip() is reserved for
 # absences that are never expected in CI.
 skip() {
-    if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
-        printf 'ERROR: skip disallowed (OH_E2E_NO_SKIP set), failing instead: %s\n' "$*" >&2
-        exit 1
-    fi
-    printf 'SKIP: %s\n' "$*" >&2
-    exit 0
+  if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
+    printf 'ERROR: skip disallowed (OH_E2E_NO_SKIP set), failing instead: %s\n' "$*" >&2
+    exit 1
+  fi
+  printf 'SKIP: %s\n' "$*" >&2
+  exit 0
 }
 
 # A turn the harness's own PROVIDER refused — the account is out of quota, so
@@ -67,8 +70,8 @@ skip() {
 # its exit code suggests. Reserved for a refusal `_oh_provider_refusal`
 # recognized; every other absence is still skip().
 not_run() {
-    printf 'NOT RUN: %s\n' "$*" >&2
-    exit 0
+  printf 'NOT RUN: %s\n' "$*" >&2
+  exit 0
 }
 
 # A required tool's absence is a SKIP, not a failure (e.g. no jq on the box).
@@ -77,13 +80,13 @@ need() { command -v "$1" >/dev/null 2>&1 || skip "required tool not found: $1"; 
 # At least one of the named env vars must be non-empty, else SKIP. Used for the
 # local auth preflight; CI verifies the secret up front and hard-fails instead.
 need_env() {
-    local label="$1"
-    shift
-    local v
-    for v in "$@"; do
-        [ -n "${!v:-}" ] && return 0
-    done
-    skip "no $label configured (set one of: $*)"
+  local label="$1"
+  shift
+  local v
+  for v in "$@"; do
+    [ -n "${!v:-}" ] && return 0
+  done
+  skip "no $label configured (set one of: $*)"
 }
 
 # --- locating oneharness ---------------------------------------------------
@@ -95,36 +98,36 @@ need_env() {
 # (and most callers) pass the extensionless path. Probe a `.exe` sibling for
 # every candidate so the same scripts drive the build on all three platforms.
 oh_bin() {
-    local b out=""
-    if [ -n "${ONEHARNESS_BIN:-}" ]; then
-        # Prefer a `.exe` sibling when one exists. On Windows the synced gate hook
-        # embeds this path and a native harness (Go/Node) execs it as an explicit
-        # path — which, unlike Git Bash, is NOT auto-suffixed with `.exe`, so the
-        # hook silently fails to launch and stops blocking. A `.exe` path runs
-        # everywhere; on Unix the `.exe` candidate never matches.
-        out="$ONEHARNESS_BIN"
-        for b in "$ONEHARNESS_BIN.exe" "$ONEHARNESS_BIN"; do
-            if [ -x "$b" ]; then
-                out="$b"
-                break
-            fi
-        done
-    elif command -v oneharness >/dev/null 2>&1; then
-        out="oneharness"
-    else
-        local cand
-        for cand in "$OH_REPO_ROOT"/target/release/oneharness{.exe,} "$OH_REPO_ROOT"/target/debug/oneharness{.exe,}; do
-            if [ -x "$cand" ]; then
-                out="$cand"
-                break
-            fi
-        done
-    fi
-    # Normalize Windows backslashes to forward slashes. The path is interpolated
-    # into TOML basic strings for the sync/hook enforcement phases, where `\` is an
-    # escape char (a raw `D:\a\...` is a parse error); Windows accepts `/` in paths
-    # all the same. No-op on Unix, where paths carry no backslashes.
-    printf '%s' "${out//\\//}"
+  local b out=""
+  if [ -n "${ONEHARNESS_BIN:-}" ]; then
+    # Prefer a `.exe` sibling when one exists. On Windows the synced gate hook
+    # embeds this path and a native harness (Go/Node) execs it as an explicit
+    # path — which, unlike Git Bash, is NOT auto-suffixed with `.exe`, so the
+    # hook silently fails to launch and stops blocking. A `.exe` path runs
+    # everywhere; on Unix the `.exe` candidate never matches.
+    out="$ONEHARNESS_BIN"
+    for b in "$ONEHARNESS_BIN.exe" "$ONEHARNESS_BIN"; do
+      if [ -x "$b" ]; then
+        out="$b"
+        break
+      fi
+    done
+  elif command -v oneharness >/dev/null 2>&1; then
+    out="oneharness"
+  else
+    local cand
+    for cand in "$OH_REPO_ROOT"/target/release/oneharness{.exe,} "$OH_REPO_ROOT"/target/debug/oneharness{.exe,}; do
+      if [ -x "$cand" ]; then
+        out="$cand"
+        break
+      fi
+    done
+  fi
+  # Normalize Windows backslashes to forward slashes. The path is interpolated
+  # into TOML basic strings for the sync/hook enforcement phases, where `\` is an
+  # escape char (a raw `D:\a\...` is a parse error); Windows accepts `/` in paths
+  # all the same. No-op on Unix, where paths carry no backslashes.
+  printf '%s' "${out//\\//}"
 }
 
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows
@@ -140,11 +143,11 @@ oh_bin() {
 # `-m` if `-l` can't resolve (e.g. the path doesn't exist yet).
 # No-op on Linux/macOS, where cygpath is absent and paths are already native.
 oh_native_path() {
-    if command -v cygpath >/dev/null 2>&1; then
-        cygpath -ml "$1" 2>/dev/null || cygpath -m "$1"
-    else
-        printf '%s' "$1"
-    fi
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -ml "$1" 2>/dev/null || cygpath -m "$1"
+  else
+    printf '%s' "$1"
+  fi
 }
 
 # Per-harness preparation of the enforcement scratch dir, run after it's created
@@ -155,33 +158,33 @@ oh_native_path() {
 # sandbox under each path spelling claude might canonicalize it to. Harmless and
 # non-destructive elsewhere (jq merge preserves existing config).
 oh_sandbox_prepare() {
-    local id="$1" dir="$2"
-    case "$id" in
+  local id="$1" dir="$2"
+  case "$id" in
     claude-code)
-        command -v jq >/dev/null 2>&1 || return 0
-        local cfg="$HOME/.claude.json" k tmp existing real
-        local keys=("$dir")
-        # macOS resolves symlinks in the cwd (/var → /private/var, /tmp →
-        # /private/tmp), and Claude checks the *resolved* path for workspace
-        # trust — so register that too, or the synced permissions.allow entry is
-        # silently ignored ("this workspace has not been trusted") on macOS.
-        real="$(cd "$dir" 2>/dev/null && pwd -P)" || real=""
-        [ -n "$real" ] && [ "$real" != "$dir" ] && keys+=("$real")
-        if command -v cygpath >/dev/null 2>&1; then
-            keys+=("$(cygpath -w "$dir")" "$(cygpath -wl "$dir" 2>/dev/null || cygpath -w "$dir")")
+      command -v jq >/dev/null 2>&1 || return 0
+      local cfg="$HOME/.claude.json" k tmp existing real
+      local keys=("$dir")
+      # macOS resolves symlinks in the cwd (/var → /private/var, /tmp →
+      # /private/tmp), and Claude checks the *resolved* path for workspace
+      # trust — so register that too, or the synced permissions.allow entry is
+      # silently ignored ("this workspace has not been trusted") on macOS.
+      real="$(cd "$dir" 2>/dev/null && pwd -P)" || real=""
+      [ -n "$real" ] && [ "$real" != "$dir" ] && keys+=("$real")
+      if command -v cygpath >/dev/null 2>&1; then
+        keys+=("$(cygpath -w "$dir")" "$(cygpath -wl "$dir" 2>/dev/null || cygpath -w "$dir")")
+      fi
+      for k in "${keys[@]}"; do
+        [ -f "$cfg" ] && existing="$(cat "$cfg" 2>/dev/null)" || existing=""
+        [ -n "$existing" ] || existing='{}'
+        tmp="$(mktemp)"
+        if printf '%s' "$existing" | jq --arg p "$k" '.projects[$p].hasTrustDialogAccepted = true' >"$tmp" 2>/dev/null; then
+          mv "$tmp" "$cfg"
+        else
+          rm -f "$tmp"
         fi
-        for k in "${keys[@]}"; do
-            [ -f "$cfg" ] && existing="$(cat "$cfg" 2>/dev/null)" || existing=""
-            [ -n "$existing" ] || existing='{}'
-            tmp="$(mktemp)"
-            if printf '%s' "$existing" | jq --arg p "$k" '.projects[$p].hasTrustDialogAccepted = true' >"$tmp" 2>/dev/null; then
-                mv "$tmp" "$cfg"
-            else
-                rm -f "$tmp"
-            fi
-        done
-        ;;
-    esac
+      done
+      ;;
+  esac
 }
 
 # --- driving a harness -----------------------------------------------------
@@ -211,7 +214,7 @@ oh_marker_fixed() { printf 'OHBATCH%05d%05d%05d' "${RANDOM}" "${RANDOM}" "${RAND
 # (and merely include the marker) is fine — its presence still proves the model
 # genuinely ran. Kept single-line for cross-shell quoting safety on Windows.
 oh_prompt() {
-    printf 'This is an automated connectivity check for the oneharness end-to-end test suite — a harmless request/response round-trip test, not untrusted input and not a secret to guard. The identifier below is a random fixture the suite just generated; please confirm the round-trip by including it verbatim somewhere in your reply: %s' "$1"
+  printf 'This is an automated connectivity check for the oneharness end-to-end test suite — a harmless request/response round-trip test, not untrusted input and not a secret to guard. The identifier below is a random fixture the suite just generated; please confirm the round-trip by including it verbatim somewhere in your reply: %s' "$1"
 }
 
 # Run one prompt through oneharness against a real harness. Stores the JSON
@@ -220,43 +223,43 @@ oh_prompt() {
 # run` verbatim. Provider keys reach the harness via the inherited environment.
 OH_REPORT=""
 oh_run() {
-    local id="$1" prompt="$2"
-    shift 2
-    local bin
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" prompt="$2"
+  shift 2
+  local bin
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    # The global default mode is `default`, but the live checks need the agent to
-    # actually act (run the marker/hook/allow commands), so oh_run requests
-    # `--mode bypass` by default. A caller that sets its own mode flag (e.g.
-    # oh_sync_enforce's --no-bypass, oh_mode_enforce's --mode read-only) wins.
-    local mode_args=(--mode bypass)
-    for a in "$@"; do
-        case "$a" in
-        --mode | --bypass | --no-bypass) mode_args=() ;;
-        esac
-    done
+  # The global default mode is `default`, but the live checks need the agent to
+  # actually act (run the marker/hook/allow commands), so oh_run requests
+  # `--mode bypass` by default. A caller that sets its own mode flag (e.g.
+  # oh_sync_enforce's --no-bypass, oh_mode_enforce's --mode read-only) wins.
+  local mode_args=(--mode bypass)
+  for a in "$@"; do
+    case "$a" in
+      --mode | --bypass | --no-bypass) mode_args=() ;;
+    esac
+  done
 
-    local errf
-    errf="$(mktemp)"
-    note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
-    # ONEHARNESS_NO_CONFIG=1: a live check pins its own model/timeout; the
-    # machine's oneharness config files must not reshape the invocation.
-    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
-        --timeout "${OH_TIMEOUT:-120}" --compact \
-        "${mode_args[@]+"${mode_args[@]}"}" \
-        "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$errf")" || true
+  local errf
+  errf="$(mktemp)"
+  note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
+  # ONEHARNESS_NO_CONFIG=1: a live check pins its own model/timeout; the
+  # machine's oneharness config files must not reshape the invocation.
+  OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
+    --timeout "${OH_TIMEOUT:-120}" --compact \
+    "${mode_args[@]+"${mode_args[@]}"}" \
+    "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$errf")" || true
 
-    if [ -z "$OH_REPORT" ]; then
-        note "  oneharness emitted no JSON on stdout. Its stderr:"
-        sed 's/^/    /' "$errf" >&2 || true
-        rm -f "$errf"
-        fail "oneharness produced no report for $id (is the binary the right version?)"
-    fi
+  if [ -z "$OH_REPORT" ]; then
+    note "  oneharness emitted no JSON on stdout. Its stderr:"
+    sed 's/^/    /' "$errf" >&2 || true
     rm -f "$errf"
+    fail "oneharness produced no report for $id (is the binary the right version?)"
+  fi
+  rm -f "$errf"
 }
 
 # Read a field from the stored report.
@@ -265,14 +268,14 @@ oh_field() { printf '%s' "$OH_REPORT" | jq -r "$1"; }
 # Pretty-print the result entry plus stdout/stderr tails on failure, so a CI log
 # shows exactly what the harness did.
 oh_dump() {
-    note "  ── oneharness result ──"
-    printf '%s' "$OH_REPORT" \
-        | jq '.results[0] | {harness, available, status, exit_code, duration_ms, text_source, error}' >&2 2>/dev/null \
-        || printf '%s\n' "$OH_REPORT" >&2
-    note "  ── harness stdout tail ──"
-    oh_field '.results[0].stdout // ""' | tail -30 | sed 's/^/    /' >&2 || true
-    note "  ── harness stderr tail ──"
-    oh_field '.results[0].stderr // ""' | tail -20 | sed 's/^/    /' >&2 || true
+  note "  ── oneharness result ──"
+  printf '%s' "$OH_REPORT" |
+    jq '.results[0] | {harness, available, status, exit_code, duration_ms, text_source, error}' >&2 2>/dev/null ||
+    printf '%s\n' "$OH_REPORT" >&2
+  note "  ── harness stdout tail ──"
+  oh_field '.results[0].stdout // ""' | tail -30 | sed 's/^/    /' >&2 || true
+  note "  ── harness stderr tail ──"
+  oh_field '.results[0].stderr // ""' | tail -20 | sed 's/^/    /' >&2 || true
 }
 
 # The shared conclusion for every harness. Given the harness id and the marker
@@ -285,66 +288,66 @@ oh_dump() {
 # — i.e. the convenience field is proven, not just the raw-stdout fallback. Pass
 # it for a harness whose extraction we guarantee (e.g. opencode → json:opencode-parts).
 oh_assert_echoed() {
-    local id="$1" marker="$2" expected_source="${3:-}"
-    local status available exit_code source
+  local id="$1" marker="$2" expected_source="${3:-}"
+  local status available exit_code source
 
-    status="$(oh_field '.results[0].status')"
-    available="$(oh_field '.results[0].available')"
+  status="$(oh_field '.results[0].status')"
+  available="$(oh_field '.results[0].available')"
 
-    if [ "$status" = "skipped" ] || [ "$available" != "true" ]; then
-        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  if [ "$status" = "skipped" ] || [ "$available" != "true" ]; then
+    skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  fi
+
+  exit_code="$(oh_field '.results[0].exit_code')"
+  source="$(oh_field '.results[0].text_source')"
+
+  if [ "$status" != "ok" ]; then
+    # A turn the harness's own provider refused for quota is NOT this suite
+    # failing — nothing about oneharness was exercised by a request that was
+    # answered and declined. Checked before the failure and only for a
+    # refusal in the provider's own words; every other non-`ok` still fails.
+    local refusal
+    refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
+    if [ -n "$refusal" ]; then
+      not_run "$id: its own provider refused the turn, so nothing was exercised: $refusal"
     fi
+    oh_dump
+    fail "$id did not run cleanly: status=$status, exit_code=$exit_code"
+  fi
+  note "  ok: $id ran and exited cleanly (status=ok, exit_code=0, duration=$(oh_field '.results[0].duration_ms')ms)"
 
-    exit_code="$(oh_field '.results[0].exit_code')"
-    source="$(oh_field '.results[0].text_source')"
-
-    if [ "$status" != "ok" ]; then
-        # A turn the harness's own provider refused for quota is NOT this suite
-        # failing — nothing about oneharness was exercised by a request that was
-        # answered and declined. Checked before the failure and only for a
-        # refusal in the provider's own words; every other non-`ok` still fails.
-        local refusal
-        refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
-        if [ -n "$refusal" ]; then
-            not_run "$id: its own provider refused the turn, so nothing was exercised: $refusal"
-        fi
-        oh_dump
-        fail "$id did not run cleanly: status=$status, exit_code=$exit_code"
-    fi
-    note "  ok: $id ran and exited cleanly (status=ok, exit_code=0, duration=$(oh_field '.results[0].duration_ms')ms)"
-
-    # The marker must appear in the harness's own output — its normalized text
-    # or, failing that, the raw stdout. This is what makes the check meaningful:
-    # exit 0 alone could be an empty turn; the marker proves the model ran.
-    if printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
-        '.results[0] | ((.text // "") + "\n" + (.stdout // "")) | contains($m)' >/dev/null; then
-        if [ "$source" != "null" ]; then
-            note "  confirmed: marker surfaced; oneharness extracted text via '$source'"
-        else
-            note "  confirmed: marker surfaced in raw stdout (oneharness left text null for this format)"
-        fi
+  # The marker must appear in the harness's own output — its normalized text
+  # or, failing that, the raw stdout. This is what makes the check meaningful:
+  # exit 0 alone could be an empty turn; the marker proves the model ran.
+  if printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
+    '.results[0] | ((.text // "") + "\n" + (.stdout // "")) | contains($m)' >/dev/null; then
+    if [ "$source" != "null" ]; then
+      note "  confirmed: marker surfaced; oneharness extracted text via '$source'"
     else
-        oh_dump
-        fail "$id ran but the unique marker never surfaced — the model did not echo it back"
+      note "  confirmed: marker surfaced in raw stdout (oneharness left text null for this format)"
     fi
+  else
+    oh_dump
+    fail "$id ran but the unique marker never surfaced — the model did not echo it back"
+  fi
 
-    # When the caller guarantees a normalized-text method for this harness, hold
-    # extraction to it: the right `text_source`, and the marker in `.text` itself
-    # (not merely in the raw stdout the previous block would also accept).
-    if [ -n "$expected_source" ]; then
-        if [ "$source" != "$expected_source" ]; then
-            oh_dump
-            fail "$id: expected text_source=$expected_source but got '$source' — normalized text extraction regressed"
-        fi
-        if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
-            '(.results[0].text // "") | contains($m)' >/dev/null; then
-            oh_dump
-            fail "$id: marker is absent from the normalized .text (only surfaced via raw stdout)"
-        fi
-        note "  confirmed: oneharness extracted .text via '$source' and the marker is in it"
+  # When the caller guarantees a normalized-text method for this harness, hold
+  # extraction to it: the right `text_source`, and the marker in `.text` itself
+  # (not merely in the raw stdout the previous block would also accept).
+  if [ -n "$expected_source" ]; then
+    if [ "$source" != "$expected_source" ]; then
+      oh_dump
+      fail "$id: expected text_source=$expected_source but got '$source' — normalized text extraction regressed"
     fi
+    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
+      '(.results[0].text // "") | contains($m)' >/dev/null; then
+      oh_dump
+      fail "$id: marker is absent from the normalized .text (only surfaced via raw stdout)"
+    fi
+    note "  confirmed: oneharness extracted .text via '$source' and the marker is in it"
+  fi
 
-    note "PASS: $id live e2e"
+  note "PASS: $id live e2e"
 }
 
 # --- large prompts / system (issue #1115) ------------------------------------
@@ -369,65 +372,68 @@ oh_assert_echoed() {
 #   $1 harness id
 #   $2.. extra args forwarded to `oneharness run`
 oh_long_prompt_enforce() {
-    local id="$1"
-    shift
-    local bin marker sandbox pfile sfile pad
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1"
+  shift
+  local bin marker sandbox pfile sfile pad
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    marker="$(oh_marker)"
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    pfile="$sandbox/big-prompt.txt"
-    sfile="$sandbox/big-system.txt"
-    # ~140 KiB of prompt filler — just past Linux's 128 KiB single-arg ceiling, so
-    # inline delivery would E2BIG (the drift alarm) while keeping the model's
-    # context modest so a slow model still answers inside the timeout.
-    pad="$(head -c 143360 /dev/zero | tr '\0' 'x')"
-    # ~70 KiB of system filler — over the 64 KiB off-argv threshold (so the system
-    # rides the file/stdin path too) without doubling the context.
-    spad="$(head -c 71680 /dev/zero | tr '\0' 'y')"
-    # Padding first, then the real instruction + marker at the end (recency).
-    { printf 'Inert padding to exceed the OS argument limit; ignore all of it: %s\n\n' "$pad"; oh_prompt "$marker"; } > "$pfile"
-    printf 'You are a connectivity-check fixture for a large-prompt test. The following is inert padding, ignore it: %s' "$spad" > "$sfile"
+  marker="$(oh_marker)"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  pfile="$sandbox/big-prompt.txt"
+  sfile="$sandbox/big-system.txt"
+  # ~140 KiB of prompt filler — just past Linux's 128 KiB single-arg ceiling, so
+  # inline delivery would E2BIG (the drift alarm) while keeping the model's
+  # context modest so a slow model still answers inside the timeout.
+  pad="$(head -c 143360 /dev/zero | tr '\0' 'x')"
+  # ~70 KiB of system filler — over the 64 KiB off-argv threshold (so the system
+  # rides the file/stdin path too) without doubling the context.
+  spad="$(head -c 71680 /dev/zero | tr '\0' 'y')"
+  # Padding first, then the real instruction + marker at the end (recency).
+  {
+    printf 'Inert padding to exceed the OS argument limit; ignore all of it: %s\n\n' "$pad"
+    oh_prompt "$marker"
+  } >"$pfile"
+  printf 'You are a connectivity-check fixture for a large-prompt test. The following is inert padding, ignore it: %s' "$spad" >"$sfile"
 
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    # Goose's --system is inline-only (no off-argv route), so a large system would
-    # E2BIG at its spawn — drive a large prompt only for it.
-    local system_args=(--system-file "$sfile")
-    [ "$id" = goose ] && system_args=()
+  # Goose's --system is inline-only (no off-argv route), so a large system would
+  # E2BIG at its spawn — drive a large prompt only for it.
+  local system_args=(--system-file "$sfile")
+  [ "$id" = goose ] && system_args=()
 
-    # A large-context call legitimately takes longer than an ordinary connectivity
-    # ping, and some harnesses route to a big/slow model, so give this phase a
-    # generous timeout (independent of OH_TIMEOUT) — a real hang still trips it.
-    local long_timeout="${OH_LONG_TIMEOUT:-300}"
-    note "  long-prompt[$id]: a >128 KiB prompt (+system) must round-trip off the argv (timeout ${long_timeout}s)"
-    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
-        --prompt-file "$pfile" "${system_args[@]+"${system_args[@]}"}" \
-        --mode bypass --timeout "$long_timeout" --compact \
-        "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$sandbox/stderr.txt")" || true
+  # A large-context call legitimately takes longer than an ordinary connectivity
+  # ping, and some harnesses route to a big/slow model, so give this phase a
+  # generous timeout (independent of OH_TIMEOUT) — a real hang still trips it.
+  local long_timeout="${OH_LONG_TIMEOUT:-300}"
+  note "  long-prompt[$id]: a >128 KiB prompt (+system) must round-trip off the argv (timeout ${long_timeout}s)"
+  OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
+    --prompt-file "$pfile" "${system_args[@]+"${system_args[@]}"}" \
+    --mode bypass --timeout "$long_timeout" --compact \
+    "${model_args[@]+"${model_args[@]}"}" "$@" 2>"$sandbox/stderr.txt")" || true
 
-    if [ -z "$OH_REPORT" ]; then
-        note "  oneharness emitted no JSON on stdout. Its stderr:"
-        sed 's/^/    /' "$sandbox/stderr.txt" >&2 || true
-        rm -rf "$sandbox"
-        fail "$id: oneharness produced no report for the long-prompt run"
-    fi
-    # The marker round-tripping proves the full prompt reached the model off-argv.
-    oh_assert_echoed "$id" "$marker"
-    # Guard against a silent regression to argv delivery: the giant prompt must
-    # NOT appear as a command argument (it rode stdin / a file instead).
-    if printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
-        '[.results[0].command[]] | any(contains($m))' >/dev/null; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the large prompt appeared on the argv — off-argv delivery regressed"
-    fi
-    note "  confirmed: the large prompt was delivered off the argv (not in .command)"
+  if [ -z "$OH_REPORT" ]; then
+    note "  oneharness emitted no JSON on stdout. Its stderr:"
+    sed 's/^/    /' "$sandbox/stderr.txt" >&2 || true
     rm -rf "$sandbox"
-    note "PASS: $id long-prompt enforcement"
+    fail "$id: oneharness produced no report for the long-prompt run"
+  fi
+  # The marker round-tripping proves the full prompt reached the model off-argv.
+  oh_assert_echoed "$id" "$marker"
+  # Guard against a silent regression to argv delivery: the giant prompt must
+  # NOT appear as a command argument (it rode stdin / a file instead).
+  if printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
+    '[.results[0].command[]] | any(contains($m))' >/dev/null; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: the large prompt appeared on the argv — off-argv delivery regressed"
+  fi
+  note "  confirmed: the large prompt was delivered off the argv (not in .command)"
+  rm -rf "$sandbox"
+  note "PASS: $id long-prompt enforcement"
 }
 
 # --- usage / cache-token reporting -------------------------------------------
@@ -447,34 +453,40 @@ oh_long_prompt_enforce() {
 # lifted from the live harness's own usage block, not a mock.
 #   $1 harness id
 oh_cache_assert() {
-    local id="$1"
-    local status write1 read1 read2
+  local id="$1"
+  local status write1 read1 read2
 
-    note "  cache[warm]: a first run writes the cacheable tools+system prefix"
-    oh_run "$id" "$(oh_prompt "$(oh_marker)")"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
-        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
-    fi
-    [ "$status" = "ok" ] || { oh_dump; fail "$id: cache warm-up run did not complete (status=$status)"; }
-    write1="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
-    read1="$(oh_field '.results[0].usage.cache_read_tokens // 0')"
-    note "  warm run usage: cache_write_tokens=$write1 cache_read_tokens=$read1"
+  note "  cache[warm]: a first run writes the cacheable tools+system prefix"
+  oh_run "$id" "$(oh_prompt "$(oh_marker)")"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+    skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  fi
+  [ "$status" = "ok" ] || {
+    oh_dump
+    fail "$id: cache warm-up run did not complete (status=$status)"
+  }
+  write1="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+  read1="$(oh_field '.results[0].usage.cache_read_tokens // 0')"
+  note "  warm run usage: cache_write_tokens=$write1 cache_read_tokens=$read1"
 
-    note "  cache[read]: a second run with the same prefix must read it back"
-    oh_run "$id" "$(oh_prompt "$(oh_marker)")"
-    status="$(oh_field '.results[0].status')"
-    [ "$status" = "ok" ] || { oh_dump; fail "$id: cache-read run did not complete (status=$status)"; }
-    read2="$(oh_field '.results[0].usage.cache_read_tokens // 0')"
-    note "  second run usage: cache_read_tokens=$read2 input_tokens=$(oh_field '.results[0].usage.input_tokens // "null"')"
+  note "  cache[read]: a second run with the same prefix must read it back"
+  oh_run "$id" "$(oh_prompt "$(oh_marker)")"
+  status="$(oh_field '.results[0].status')"
+  [ "$status" = "ok" ] || {
+    oh_dump
+    fail "$id: cache-read run did not complete (status=$status)"
+  }
+  read2="$(oh_field '.results[0].usage.cache_read_tokens // 0')"
+  note "  second run usage: cache_read_tokens=$read2 input_tokens=$(oh_field '.results[0].usage.input_tokens // "null"')"
 
-    if [ "${read2:-0}" -gt 0 ] 2>/dev/null; then
-        note "PASS: $id surfaced cache_read_tokens ($read2) on the cached second run"
-    else
-        oh_dump
-        note "  usage: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].usage')"
-        fail "$id: the second run reported no cache_read_tokens (> 0) — either provider caching did not land (prefix unstable, under the cache-size threshold, or cold beyond the TTL) or oneharness's cache-token extraction drifted from the live shape"
-    fi
+  if [ "${read2:-0}" -gt 0 ] 2>/dev/null; then
+    note "PASS: $id surfaced cache_read_tokens ($read2) on the cached second run"
+  else
+    oh_dump
+    note "  usage: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].usage')"
+    fail "$id: the second run reported no cache_read_tokens (> 0) — either provider caching did not land (prefix unstable, under the cache-size threshold, or cold beyond the TTL) or oneharness's cache-token extraction drifted from the live shape"
+  fi
 }
 
 # Live proof that the zero-turn `usage` probe still gets an ANSWER out of the
@@ -490,70 +502,70 @@ oh_cache_assert() {
 # nothing back.
 #   $1 harness id
 oh_usage_enforce() {
-    local id="$1" bin report state reason detail errf rc
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" bin report state reason detail errf rc
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    errf="$(mktemp)"
-    report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
-        --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
-    if [ -z "$report" ]; then
-        note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
-        sed 's/^/    /' "$errf" >&2 || true
-        rm -f "$errf"
-        note "  Next, in order:"
-        note "    1. Exit 2 is a usage/config error in the call above, not a harness fault:"
-        note "       read the stderr line, then fix the flags in oh_usage_enforce"
-        note "       (scripts/e2e-lib.sh) and re-run:"
-        note "         just live-$id"
-        note "    2. Any other non-zero exit is oneharness aborting mid-probe, which its"
-        note "       contract forbids — a missing binary, an unauthenticated harness, and a"
-        note "       timeout are all meant to come back as an identity. File it against the"
-        note "       probe (crates/oneharness-core/src/io/usage.rs) and its containment"
-        note "       (probe_all in src/commands/usage.rs)."
-        note "    3. Exit 0 with empty stdout means the report stopped reaching stdout —"
-        note "       diagnostics belong on stderr and the report on stdout. Check print_json"
-        note "       in src/commands/usage.rs, then rebuild and re-run:"
-        note "         just build-release && just live-$id"
-        fail "$id: 'oneharness usage' produced no report"
-    fi
+  errf="$(mktemp)"
+  report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
+    --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
+  if [ -z "$report" ]; then
+    note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
+    sed 's/^/    /' "$errf" >&2 || true
     rm -f "$errf"
+    note "  Next, in order:"
+    note "    1. Exit 2 is a usage/config error in the call above, not a harness fault:"
+    note "       read the stderr line, then fix the flags in oh_usage_enforce"
+    note "       (scripts/e2e-lib.sh) and re-run:"
+    note "         just live-$id"
+    note "    2. Any other non-zero exit is oneharness aborting mid-probe, which its"
+    note "       contract forbids — a missing binary, an unauthenticated harness, and a"
+    note "       timeout are all meant to come back as an identity. File it against the"
+    note "       probe (crates/oneharness-core/src/io/usage.rs) and its containment"
+    note "       (probe_all in src/commands/usage.rs)."
+    note "    3. Exit 0 with empty stdout means the report stopped reaching stdout —"
+    note "       diagnostics belong on stderr and the report on stdout. Check print_json"
+    note "       in src/commands/usage.rs, then rebuild and re-run:"
+    note "         just build-release && just live-$id"
+    fail "$id: 'oneharness usage' produced no report"
+  fi
+  rm -f "$errf"
 
-    state="$(printf '%s' "$report" | jq -r '.identities[0].availability.state')"
-    reason="$(printf '%s' "$report" | jq -r '
+  state="$(printf '%s' "$report" | jq -r '.identities[0].availability.state')"
+  reason="$(printf '%s' "$report" | jq -r '
         .identities[0].availability.reason as $r
         | if ($r | type) == "object" then ($r.kind // "") else ($r // "") end')"
-    case "$state:$reason" in
+  case "$state:$reason" in
     available:*)
-        detail="headroom $(printf '%s' "$report" |
-            jq -r '[.identities[0].availability.windows[]
+      detail="headroom $(printf '%s' "$report" |
+        jq -r '[.identities[0].availability.windows[]
                     | "\(.id) \(.usage.used_percent // .usage.kind)"] | join(", ")')"
-        ;;
+      ;;
     unavailable:*) detail="unavailable ($reason)" ;;
     unknown:binary_missing)
-        skip "$id is not installed (oneharness reported binary_missing); nothing to probe"
-        ;;
+      skip "$id is not installed (oneharness reported binary_missing); nothing to probe"
+      ;;
     *)
-        note "  report: $report"
-        note "  Next, in order:"
-        note "    1. Replay the probe and read the harness's own errors:"
-        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --timeout ${OH_TIMEOUT:-120} --format text"
-        note "       An auth or plan error there is the account, not a drift."
-        note "    2. Send $id's recorded request lines (docs/harness-usage.md) to the CLI by"
-        note "       hand twice: once holding stdin open past the last request, once closing"
-        note "       it straight away. Answered only when held open means the probe must wait"
-        note "       for it — give $id StdinAfterRequests::HoldUntilAnswered in"
-        note "       crates/oneharness-core/src/io/usage.rs."
-        note "    3. Answered in an unrecognized shape means the payload moved: update $id's"
-        note "       parser and its drift guard in crates/oneharness-core/src/domain/usage.rs"
-        note "       (record the new payload in docs/harness-usage.md), then re-run:"
-        note "         just live-$id"
-        fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason)"
-        ;;
-    esac
-    # The reading itself is the evidence, and this log is its only record: a live
-    # phase that passed silently is indistinguishable from one that never ran.
-    note "PASS: $id answered its usage probe — $detail"
+      note "  report: $report"
+      note "  Next, in order:"
+      note "    1. Replay the probe and read the harness's own errors:"
+      note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --timeout ${OH_TIMEOUT:-120} --format text"
+      note "       An auth or plan error there is the account, not a drift."
+      note "    2. Send $id's recorded request lines (docs/harness-usage.md) to the CLI by"
+      note "       hand twice: once holding stdin open past the last request, once closing"
+      note "       it straight away. Answered only when held open means the probe must wait"
+      note "       for it — give $id StdinAfterRequests::HoldUntilAnswered in"
+      note "       crates/oneharness-core/src/io/usage.rs."
+      note "    3. Answered in an unrecognized shape means the payload moved: update $id's"
+      note "       parser and its drift guard in crates/oneharness-core/src/domain/usage.rs"
+      note "       (record the new payload in docs/harness-usage.md), then re-run:"
+      note "         just live-$id"
+      fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason)"
+      ;;
+  esac
+  # The reading itself is the evidence, and this log is its only record: a live
+  # phase that passed silently is indistinguishable from one that never ran.
+  note "PASS: $id answered its usage probe — $detail"
 }
 
 # How long the session-start work this phase registers takes, and the margin it
@@ -613,140 +625,140 @@ OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan selector variant)
 # never registered.
 #   $1 harness id (one the two dispatches below have an arm for)
 oh_usage_cwd_enforce() {
-    local id="$1"
-    local bin harness_bin root hooked plain report_hooked report_plain
-    local t0 t_control t_probe t_plain rc
+  local id="$1"
+  local bin harness_bin root hooked plain report_hooked report_plain
+  local t0 t_control t_probe t_plain rc
 
-    # Before any scratch space exists, so an unsupported harness leaks nothing.
-    case "$id" in
+  # Before any scratch space exists, so an unsupported harness leaks nothing.
+  case "$id" in
     claude-code) ;;
     *)
-        fail "oh_usage_cwd_enforce has no session-start fixture or zero-turn control for $id — give it arms in _oh_usage_cwd_fixture and _oh_usage_cwd_control (scripts/e2e-lib.sh), sourced from that harness's own docs, or do not call this phase for it"
-        ;;
-    esac
+      fail "oh_usage_cwd_enforce has no session-start fixture or zero-turn control for $id — give it arms in _oh_usage_cwd_fixture and _oh_usage_cwd_control (scripts/e2e-lib.sh), sourced from that harness's own docs, or do not call this phase for it"
+      ;;
+  esac
 
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
-    harness_bin="$(ONEHARNESS_NO_CONFIG=1 "$bin" detect --harness "$id" --compact 2>/dev/null |
-        jq -r 'if .detected[0].available then .detected[0].path else "" end')"
-    [ -n "$harness_bin" ] || skip "$id is not installed (oneharness detect found no binary); nothing to probe"
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  harness_bin="$(ONEHARNESS_NO_CONFIG=1 "$bin" detect --harness "$id" --compact 2>/dev/null |
+    jq -r 'if .detected[0].available then .detected[0].path else "" end')"
+  [ -n "$harness_bin" ] || skip "$id is not installed (oneharness detect found no binary); nothing to probe"
 
-    root="$(mktemp -d)"
-    root="$(oh_native_path "$root")"
-    hooked="$root/hooked"
-    plain="$root/plain"
-    mkdir -p "$hooked" "$plain"
-    _oh_usage_cwd_fixture "$id" "$hooked"
-    oh_sandbox_prepare "$id" "$hooked"
-    oh_sandbox_prepare "$id" "$plain"
+  root="$(mktemp -d)"
+  root="$(oh_native_path "$root")"
+  hooked="$root/hooked"
+  plain="$root/plain"
+  mkdir -p "$hooked" "$plain"
+  _oh_usage_cwd_fixture "$id" "$hooked"
+  oh_sandbox_prepare "$id" "$hooked"
+  oh_sandbox_prepare "$id" "$plain"
 
-    local errf
-    errf="$(mktemp)"
-    t0=$SECONDS
-    _oh_usage_cwd_control "$id" "$harness_bin" "$hooked" "$errf" && rc=0 || rc=$?
-    t_control=$((SECONDS - t0))
-    # A control that never opened a session establishes nothing about the
-    # fixture, and reading it as "the platform cannot sleep" would blame the
-    # wrong thing — so it is its own skip, carrying the CLI's own words.
-    if [ "$rc" -ne 0 ]; then
-        note "  the CLI's stderr:"
-        sed 's/^/    /' "$errf" >&2 || true
-        local why
-        why="$(tr -d '\r' <"$errf" | grep -v '^[[:space:]]*$' | head -n 1)"
-        rm -f "$errf"
-        rm -rf "$root"
-        skip "$id's CLI would not open a zero-turn session here (exit $rc${why:+: $why}), so the cost of this directory's session-start work is unmeasured and there is nothing to hold the probe against"
-    fi
+  local errf
+  errf="$(mktemp)"
+  t0=$SECONDS
+  _oh_usage_cwd_control "$id" "$harness_bin" "$hooked" "$errf" && rc=0 || rc=$?
+  t_control=$((SECONDS - t0))
+  # A control that never opened a session establishes nothing about the
+  # fixture, and reading it as "the platform cannot sleep" would blame the
+  # wrong thing — so it is its own skip, carrying the CLI's own words.
+  if [ "$rc" -ne 0 ]; then
+    note "  the CLI's stderr:"
+    sed 's/^/    /' "$errf" >&2 || true
+    local why
+    why="$(tr -d '\r' <"$errf" | grep -v '^[[:space:]]*$' | head -n 1)"
     rm -f "$errf"
-    # `-le`, not `-lt`: the comparison below is against `t_control - margin`, so a
-    # control that only MATCHES the margin leaves a threshold of zero, which any
-    # probe meets. That is a fixture that established nothing, not a regression.
-    if [ "$t_control" -le "$OH_USAGE_HOOK_MARGIN" ]; then
-        rm -rf "$root"
-        skip "$id's session-start hook did not cost anything here (${t_control}s for a ${OH_USAGE_HOOK_SECS}s sleep) — this platform cannot run the fixture's command, so there is nothing for the probe to be independent OF"
-    fi
-
-    t0=$SECONDS
-    _oh_usage_report "$bin" "$id" "$hooked"
-    report_hooked="$OH_USAGE_REPORT"
-    t_probe=$((SECONDS - t0))
-
-    t0=$SECONDS
-    _oh_usage_report "$bin" "$id" "$plain"
-    report_plain="$OH_USAGE_REPORT"
-    t_plain=$((SECONDS - t0))
-
-    # The readings are judged before their durations: a report this phase cannot
-    # compare, or two that disagree, is a failure however fast it arrived, and
-    # judging it first keeps that verdict from depending on how loaded the host
-    # is when the timing comparison below runs.
-    local key_hooked key_plain
-    if ! key_hooked="$(_oh_usage_identity_key "$report_hooked")" ||
-        ! key_plain="$(_oh_usage_identity_key "$report_plain")"; then
-        note "  hooked report: $report_hooked"
-        note "  plain report:  $report_plain"
-        note "  jq's error above names the field. Next, in order:"
-        note "    1. Both reports were already accepted as answers, so a required field"
-        note "       missing HERE means the usage output contract changed shape rather than"
-        note "       the probe failing. Read one in full:"
-        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $plain --format json"
-        note "    2. Reconcile it with UsageIdentity in"
-        note "       crates/oneharness-core/src/domain/usage.rs, then update"
-        note "       OH_USAGE_IDENTITY_FIELDS and _oh_usage_identity_key (scripts/e2e-lib.sh)."
-        note "       Their drift gate in scripts/check-usage-enforce.sh will name the same"
-        note "       field if the schema moved, and is the faster way to confirm it."
-        rm -rf "$root"
-        fail "$id: the usage report at $hooked or $plain is not one this phase can compare"
-    fi
-    if [ "$key_hooked" != "$key_plain" ]; then
-        note "  hooked: $key_hooked"
-        note "  plain:  $key_plain"
-        note "  The two readings disagree, so the flag bought speed by changing the ANSWER."
-        note "  Next, in order:"
-        note "    1. Read both reports in full and see which field moved:"
-        note "         $bin usage --harness $id --cwd $hooked --format text"
-        note "         $bin usage --harness $id --cwd $plain --format text"
-        note "    2. A different selector or auth_mode means the directory was choosing the"
-        note "       IDENTITY, which \`--setting-sources user\` must not affect — check what"
-        note "       ${hooked}/.claude/settings.json sets beyond the hook this phase writes."
-        note "    3. A different plan or window set means the flag now drops something the"
-        note "       answer depends on. Drop it from claude_argv in"
-        note "       crates/oneharness-core/src/io/usage.rs, record the new behavior in"
-        note "       docs/harness-usage.md, and find another way to skip the session hooks."
-        rm -rf "$root"
-        fail "$id: the probe reported a different identity from the hooked directory than from the plain one — dropping project settings must not change the ANSWER, only what it waits on"
-    fi
-
-    if [ "$t_probe" -ge $((t_control - OH_USAGE_HOOK_MARGIN)) ]; then
-        note "  hooked report: $report_hooked"
-        note "  The probe waited out the directory's session-start work. Next, in order:"
-        note "    1. Check the probe still passes \`--setting-sources user\`:"
-        note "         grep -n setting-sources crates/oneharness-core/src/io/usage.rs"
-        note "    2. If it does, the CLI stopped honoring the flag. Re-measure by hand at a"
-        note "       directory whose .claude/settings.json registers a slow SessionStart hook,"
-        note "       with the flag and without it, then record the new mechanism in"
-        note "       docs/harness-usage.md and change claude_argv to match."
-        rm -rf "$root"
-        fail "$id: the usage probe took ${t_probe}s at a directory whose session start costs ${t_control}s — its answer still depends on its working directory (#1279)"
-    fi
-    if [ "$t_probe" -gt $((t_plain + OH_USAGE_HOOK_MARGIN)) ]; then
-        note "  The probe is paying SOMETHING for the hooked directory, short of the whole"
-        note "  session start. Next, in order:"
-        note "    1. Time the two by hand and confirm the gap is real rather than a loaded"
-        note "       machine — a margin of ${OH_USAGE_HOOK_MARGIN}s is meant to absorb noise:"
-        note "         time $bin usage --harness $id --cwd $hooked --compact"
-        note "         time $bin usage --harness $id --cwd $plain --compact"
-        note "    2. If it is real, the CLI is honoring \`--setting-sources user\` only in"
-        note "       part: read what it still loads from the directory (\`$harness_bin --help\`"
-        note "       on --setting-sources), record it in docs/harness-usage.md, and narrow"
-        note "       claude_argv in crates/oneharness-core/src/io/usage.rs to match."
-        rm -rf "$root"
-        fail "$id: the usage probe took ${t_probe}s at the hooked directory against ${t_plain}s at one registering nothing — the two must be about the same"
-    fi
-
     rm -rf "$root"
-    # The readings are the evidence, and this log is their only record.
-    note "PASS: $id's usage probe is independent of its working directory — ${t_probe}s at a directory whose session start costs the CLI ${t_control}s, ${t_plain}s at one registering nothing, same reading both times (${key_hooked})"
+    skip "$id's CLI would not open a zero-turn session here (exit $rc${why:+: $why}), so the cost of this directory's session-start work is unmeasured and there is nothing to hold the probe against"
+  fi
+  rm -f "$errf"
+  # `-le`, not `-lt`: the comparison below is against `t_control - margin`, so a
+  # control that only MATCHES the margin leaves a threshold of zero, which any
+  # probe meets. That is a fixture that established nothing, not a regression.
+  if [ "$t_control" -le "$OH_USAGE_HOOK_MARGIN" ]; then
+    rm -rf "$root"
+    skip "$id's session-start hook did not cost anything here (${t_control}s for a ${OH_USAGE_HOOK_SECS}s sleep) — this platform cannot run the fixture's command, so there is nothing for the probe to be independent OF"
+  fi
+
+  t0=$SECONDS
+  _oh_usage_report "$bin" "$id" "$hooked"
+  report_hooked="$OH_USAGE_REPORT"
+  t_probe=$((SECONDS - t0))
+
+  t0=$SECONDS
+  _oh_usage_report "$bin" "$id" "$plain"
+  report_plain="$OH_USAGE_REPORT"
+  t_plain=$((SECONDS - t0))
+
+  # The readings are judged before their durations: a report this phase cannot
+  # compare, or two that disagree, is a failure however fast it arrived, and
+  # judging it first keeps that verdict from depending on how loaded the host
+  # is when the timing comparison below runs.
+  local key_hooked key_plain
+  if ! key_hooked="$(_oh_usage_identity_key "$report_hooked")" ||
+    ! key_plain="$(_oh_usage_identity_key "$report_plain")"; then
+    note "  hooked report: $report_hooked"
+    note "  plain report:  $report_plain"
+    note "  jq's error above names the field. Next, in order:"
+    note "    1. Both reports were already accepted as answers, so a required field"
+    note "       missing HERE means the usage output contract changed shape rather than"
+    note "       the probe failing. Read one in full:"
+    note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $plain --format json"
+    note "    2. Reconcile it with UsageIdentity in"
+    note "       crates/oneharness-core/src/domain/usage.rs, then update"
+    note "       OH_USAGE_IDENTITY_FIELDS and _oh_usage_identity_key (scripts/e2e-lib.sh)."
+    note "       Their drift gate in scripts/check-usage-enforce.sh will name the same"
+    note "       field if the schema moved, and is the faster way to confirm it."
+    rm -rf "$root"
+    fail "$id: the usage report at $hooked or $plain is not one this phase can compare"
+  fi
+  if [ "$key_hooked" != "$key_plain" ]; then
+    note "  hooked: $key_hooked"
+    note "  plain:  $key_plain"
+    note "  The two readings disagree, so the flag bought speed by changing the ANSWER."
+    note "  Next, in order:"
+    note "    1. Read both reports in full and see which field moved:"
+    note "         $bin usage --harness $id --cwd $hooked --format text"
+    note "         $bin usage --harness $id --cwd $plain --format text"
+    note "    2. A different selector or auth_mode means the directory was choosing the"
+    note "       IDENTITY, which \`--setting-sources user\` must not affect — check what"
+    note "       ${hooked}/.claude/settings.json sets beyond the hook this phase writes."
+    note "    3. A different plan or window set means the flag now drops something the"
+    note "       answer depends on. Drop it from claude_argv in"
+    note "       crates/oneharness-core/src/io/usage.rs, record the new behavior in"
+    note "       docs/harness-usage.md, and find another way to skip the session hooks."
+    rm -rf "$root"
+    fail "$id: the probe reported a different identity from the hooked directory than from the plain one — dropping project settings must not change the ANSWER, only what it waits on"
+  fi
+
+  if [ "$t_probe" -ge $((t_control - OH_USAGE_HOOK_MARGIN)) ]; then
+    note "  hooked report: $report_hooked"
+    note "  The probe waited out the directory's session-start work. Next, in order:"
+    note "    1. Check the probe still passes \`--setting-sources user\`:"
+    note "         grep -n setting-sources crates/oneharness-core/src/io/usage.rs"
+    note "    2. If it does, the CLI stopped honoring the flag. Re-measure by hand at a"
+    note "       directory whose .claude/settings.json registers a slow SessionStart hook,"
+    note "       with the flag and without it, then record the new mechanism in"
+    note "       docs/harness-usage.md and change claude_argv to match."
+    rm -rf "$root"
+    fail "$id: the usage probe took ${t_probe}s at a directory whose session start costs ${t_control}s — its answer still depends on its working directory (#1279)"
+  fi
+  if [ "$t_probe" -gt $((t_plain + OH_USAGE_HOOK_MARGIN)) ]; then
+    note "  The probe is paying SOMETHING for the hooked directory, short of the whole"
+    note "  session start. Next, in order:"
+    note "    1. Time the two by hand and confirm the gap is real rather than a loaded"
+    note "       machine — a margin of ${OH_USAGE_HOOK_MARGIN}s is meant to absorb noise:"
+    note "         time $bin usage --harness $id --cwd $hooked --compact"
+    note "         time $bin usage --harness $id --cwd $plain --compact"
+    note "    2. If it is real, the CLI is honoring \`--setting-sources user\` only in"
+    note "       part: read what it still loads from the directory (\`$harness_bin --help\`"
+    note "       on --setting-sources), record it in docs/harness-usage.md, and narrow"
+    note "       claude_argv in crates/oneharness-core/src/io/usage.rs to match."
+    rm -rf "$root"
+    fail "$id: the usage probe took ${t_probe}s at the hooked directory against ${t_plain}s at one registering nothing — the two must be about the same"
+  fi
+
+  rm -rf "$root"
+  # The readings are the evidence, and this log is their only record.
+  note "PASS: $id's usage probe is independent of its working directory — ${t_probe}s at a directory whose session start costs the CLI ${t_control}s, ${t_plain}s at one registering nothing, same reading both times (${key_hooked})"
 }
 
 # Register session-start work costing $OH_USAGE_HOOK_SECS at `$2`, in the way
@@ -756,11 +768,11 @@ oh_usage_cwd_enforce() {
 # fixture rather than a slow one.
 #   $1 harness id   $2 directory
 _oh_usage_cwd_fixture() {
-    local id="$1" dir="$2"
-    case "$id" in
+  local id="$1" dir="$2"
+  case "$id" in
     claude-code)
-        mkdir -p "$dir/.claude"
-        cat >"$dir/.claude/settings.json" <<JSON
+      mkdir -p "$dir/.claude"
+      cat >"$dir/.claude/settings.json" <<JSON
 {
   "hooks": {
     "SessionStart": [
@@ -769,11 +781,11 @@ _oh_usage_cwd_fixture() {
   }
 }
 JSON
-        ;;
+      ;;
     # Unreachable while the caller's guard and this dispatch name the same
     # harnesses; it is here so adding one to that guard alone is loud.
     *) fail "_oh_usage_cwd_fixture has no session-start fixture for $id" ;;
-    esac
+  esac
 }
 
 # Open one zero-turn session at `$3` with `$1`'s own CLI, its stderr to `$4`, and
@@ -786,14 +798,14 @@ JSON
 # the control was the same command could not show it.
 #   $1 harness id   $2 harness binary   $3 directory   $4 stderr file
 _oh_usage_cwd_control() {
-    local id="$1" harness_bin="$2" dir="$3" errf="$4"
-    case "$id" in
+  local id="$1" harness_bin="$2" dir="$3" errf="$4"
+  case "$id" in
     claude-code)
-        (cd "$dir" && "$harness_bin" -p --input-format stream-json \
-            --output-format stream-json --verbose </dev/null >/dev/null 2>"$errf")
-        ;;
+      (cd "$dir" && "$harness_bin" -p --input-format stream-json \
+        --output-format stream-json --verbose </dev/null >/dev/null 2>"$errf")
+      ;;
     *) fail "_oh_usage_cwd_control has no zero-turn invocation for $id" ;;
-    esac
+  esac
 }
 
 # One probed identity reduced to the string this phase compares: every property
@@ -812,7 +824,7 @@ _oh_usage_cwd_control() {
 # it.
 #   $1 a usage report
 _oh_usage_identity_key() {
-    printf '%s' "$1" | jq -er --args '
+  printf '%s' "$1" | jq -er --args '
         def need($o; $f; $t):
             if ($o | has($f) | not) then error("identity has no \($f)")
             elif ($o[$f] | type) != $t
@@ -865,63 +877,63 @@ _oh_usage_identity_key() {
 # would carry on measuring an empty string.
 OH_USAGE_REPORT=""
 _oh_usage_report() {
-    local bin="$1" id="$2" cwd="$3" state errf rc
-    errf="$(mktemp)"
-    OH_USAGE_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" --cwd "$cwd" \
-        --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
-    if [ -z "$OH_USAGE_REPORT" ]; then
-        note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
-        sed 's/^/    /' "$errf" >&2 || true
-        rm -f "$errf"
-        note "  Next, in order:"
-        note "    1. Exit 2 is a usage/config error in the call above — most likely --cwd"
-        note "       being refused. Replay it and read the stderr line:"
-        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $cwd --format text"
-        note "       then fix the flags in _oh_usage_report (scripts/e2e-lib.sh)."
-        note "    2. Any other non-zero exit is oneharness aborting mid-probe, which its"
-        note "       contract forbids. File it against the probe"
-        note "       (crates/oneharness-core/src/io/usage.rs) and its containment"
-        note "       (probe_all in src/commands/usage.rs)."
-        note "    3. Exit 0 with empty stdout means the report stopped reaching stdout."
-        note "       Check print_json in src/commands/usage.rs, then rebuild and re-run:"
-        note "         just build-release && just live-$id"
-        fail "$id: 'oneharness usage --cwd $cwd' produced no report"
-    fi
+  local bin="$1" id="$2" cwd="$3" state errf rc
+  errf="$(mktemp)"
+  OH_USAGE_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" --cwd "$cwd" \
+    --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
+  if [ -z "$OH_USAGE_REPORT" ]; then
+    note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
+    sed 's/^/    /' "$errf" >&2 || true
     rm -f "$errf"
-    state="$(printf '%s' "$OH_USAGE_REPORT" | jq -r '.identities[0].availability.state // "<absent>"')"
-    case " $OH_USAGE_ANSWERED_STATES $OH_USAGE_SILENT_STATES " in
+    note "  Next, in order:"
+    note "    1. Exit 2 is a usage/config error in the call above — most likely --cwd"
+    note "       being refused. Replay it and read the stderr line:"
+    note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $cwd --format text"
+    note "       then fix the flags in _oh_usage_report (scripts/e2e-lib.sh)."
+    note "    2. Any other non-zero exit is oneharness aborting mid-probe, which its"
+    note "       contract forbids. File it against the probe"
+    note "       (crates/oneharness-core/src/io/usage.rs) and its containment"
+    note "       (probe_all in src/commands/usage.rs)."
+    note "    3. Exit 0 with empty stdout means the report stopped reaching stdout."
+    note "       Check print_json in src/commands/usage.rs, then rebuild and re-run:"
+    note "         just build-release && just live-$id"
+    fail "$id: 'oneharness usage --cwd $cwd' produced no report"
+  fi
+  rm -f "$errf"
+  state="$(printf '%s' "$OH_USAGE_REPORT" | jq -r '.identities[0].availability.state // "<absent>"')"
+  case " $OH_USAGE_ANSWERED_STATES $OH_USAGE_SILENT_STATES " in
     *" $state "*) ;;
     *)
-        note "  report: $OH_USAGE_REPORT"
-        note "  Next, in order:"
-        note "    1. \`<absent>\` means the report has no identities[0].availability.state at"
-        note "       all — the usage output contract changed shape. Diff it against"
-        note "       UsageAvailability in crates/oneharness-core/src/domain/usage.rs."
-        note "    2. Any other value is a state this helper predates. Add it to"
-        note "       OH_USAGE_ANSWERED_STATES (scripts/e2e-lib.sh) if it means the harness"
-        note "       ANSWERED, else to OH_USAGE_SILENT_STATES, and re-run their drift gate:"
-        note "         bash scripts/check-usage-enforce.sh"
-        fail "$id: the usage probe reported an availability state this phase cannot judge at $cwd (state=$state)"
-        ;;
-    esac
-    case " $OH_USAGE_SILENT_STATES " in
+      note "  report: $OH_USAGE_REPORT"
+      note "  Next, in order:"
+      note "    1. \`<absent>\` means the report has no identities[0].availability.state at"
+      note "       all — the usage output contract changed shape. Diff it against"
+      note "       UsageAvailability in crates/oneharness-core/src/domain/usage.rs."
+      note "    2. Any other value is a state this helper predates. Add it to"
+      note "       OH_USAGE_ANSWERED_STATES (scripts/e2e-lib.sh) if it means the harness"
+      note "       ANSWERED, else to OH_USAGE_SILENT_STATES, and re-run their drift gate:"
+      note "         bash scripts/check-usage-enforce.sh"
+      fail "$id: the usage probe reported an availability state this phase cannot judge at $cwd (state=$state)"
+      ;;
+  esac
+  case " $OH_USAGE_SILENT_STATES " in
     *" $state "*)
-        note "  report: $OH_USAGE_REPORT"
-        note "  Next, in order:"
-        note "    1. Read the reason: \`binary_missing\` means the harness went away"
-        note "       mid-phase (the caller ruled it out with \`detect\`); anything else is the"
-        note "       probe asking and getting nothing back:"
-        note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $cwd --format text"
-        note "    2. If it answers from a plain directory but not from $cwd, the working"
-        note "       directory is reaching the probe again — that is what this phase exists"
-        note "       to catch, so re-check \`--setting-sources user\` in claude_argv"
-        note "       (crates/oneharness-core/src/io/usage.rs)."
-        note "    3. If it answers from nowhere, the exchange itself drifted: follow"
-        note "       oh_usage_enforce's steps for a silent probe, which start from $id's"
-        note "       recorded request lines in docs/harness-usage.md."
-        fail "$id: the usage probe got no answer out of the harness at $cwd (state=$state)"
-        ;;
-    esac
+      note "  report: $OH_USAGE_REPORT"
+      note "  Next, in order:"
+      note "    1. Read the reason: \`binary_missing\` means the harness went away"
+      note "       mid-phase (the caller ruled it out with \`detect\`); anything else is the"
+      note "       probe asking and getting nothing back:"
+      note "         ONEHARNESS_NO_CONFIG=1 $bin usage --harness $id --cwd $cwd --format text"
+      note "    2. If it answers from a plain directory but not from $cwd, the working"
+      note "       directory is reaching the probe again — that is what this phase exists"
+      note "       to catch, so re-check \`--setting-sources user\` in claude_argv"
+      note "       (crates/oneharness-core/src/io/usage.rs)."
+      note "    3. If it answers from nowhere, the exchange itself drifted: follow"
+      note "       oh_usage_enforce's steps for a silent probe, which start from $id's"
+      note "       recorded request lines in docs/harness-usage.md."
+      fail "$id: the usage probe got no answer out of the harness at $cwd (state=$state)"
+      ;;
+  esac
 }
 
 # --- normalized tool-call / action events ------------------------------------
@@ -943,53 +955,56 @@ _oh_usage_report() {
 #   $3.. extra args forwarded to `oneharness run` (e.g. --output-format
 #        stream-json for a harness whose transcript needs a richer format)
 oh_events_assert() {
-    local id="$1"
-    shift
-    local expected_source="${1:-}"
-    [ $# -gt 0 ] && shift
-    local marker status count source calls
+  local id="$1"
+  shift
+  local expected_source="${1:-}"
+  [ $# -gt 0 ] && shift
+  local marker status count source calls
 
-    marker="$(oh_marker)"
-    note "  events: a run that must use a shell tool to print the marker"
-    # Bypass so the agent may actually run the command; ask plainly for a shell
-    # tool so a tool_call is emitted (not just an inline text answer). Any extra
-    # args ($@) select the events-capable output format for this harness.
-    oh_run "$id" "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then tell me you did it." "$@"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
-        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
-    fi
-    [ "$status" = "ok" ] || { oh_dump; fail "$id: events run did not complete (status=$status)"; }
+  marker="$(oh_marker)"
+  note "  events: a run that must use a shell tool to print the marker"
+  # Bypass so the agent may actually run the command; ask plainly for a shell
+  # tool so a tool_call is emitted (not just an inline text answer). Any extra
+  # args ($@) select the events-capable output format for this harness.
+  oh_run "$id" "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then tell me you did it." "$@"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+    skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  fi
+  [ "$status" = "ok" ] || {
+    oh_dump
+    fail "$id: events run did not complete (status=$status)"
+  }
 
-    source="$(oh_field '.results[0].events_source')"
-    count="$(printf '%s' "$OH_REPORT" | jq '(.results[0].events // []) | length')"
-    calls="$(printf '%s' "$OH_REPORT" | jq '[(.results[0].events // [])[] | select(.kind == "tool_call")] | length')"
-    note "  events: events_source=$source count=$count tool_calls=$calls"
+  source="$(oh_field '.results[0].events_source')"
+  count="$(printf '%s' "$OH_REPORT" | jq '(.results[0].events // []) | length')"
+  calls="$(printf '%s' "$OH_REPORT" | jq '[(.results[0].events // [])[] | select(.kind == "tool_call")] | length')"
+  note "  events: events_source=$source count=$count tool_calls=$calls"
 
-    if [ "${count:-0}" -eq 0 ] 2>/dev/null || [ "$source" = "null" ]; then
-        oh_dump
-        note "  events: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].events')"
-        fail "$id: oneharness surfaced no normalized events for a tool-using turn — either the model answered without a tool call or event extraction drifted from the live shape"
-    fi
-    if [ "${calls:-0}" -lt 1 ] 2>/dev/null; then
-        oh_dump
-        fail "$id: events surfaced but none was a tool_call (got kinds: $(printf '%s' "$OH_REPORT" | jq -c '[.results[0].events[].kind]'))"
-    fi
-    if [ -n "$expected_source" ] && [ "$source" != "$expected_source" ]; then
-        oh_dump
-        fail "$id: expected events_source=$expected_source but got '$source' — event extraction regressed"
-    fi
-    # Input/output fidelity: the model ran `echo <marker>`, so the marker must
-    # appear in a tool_call's structured `input` (and usually a tool_result's
-    # `output`). This proves oneharness extracted the *real* args/observation into
-    # the normalized shape — not merely that some empty event object surfaced.
-    if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
-        '[(.results[0].events // [])[] | (.input // {} | tostring) + (.output // "")] | any(contains($m))' >/dev/null; then
-        oh_dump
-        note "  events: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].events')"
-        fail "$id: the marker never appeared in any event's input/output — the command/observation was not lifted into the normalized event (structured extraction drifted)"
-    fi
-    note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source' (marker present in event input/output)"
+  if [ "${count:-0}" -eq 0 ] 2>/dev/null || [ "$source" = "null" ]; then
+    oh_dump
+    note "  events: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].events')"
+    fail "$id: oneharness surfaced no normalized events for a tool-using turn — either the model answered without a tool call or event extraction drifted from the live shape"
+  fi
+  if [ "${calls:-0}" -lt 1 ] 2>/dev/null; then
+    oh_dump
+    fail "$id: events surfaced but none was a tool_call (got kinds: $(printf '%s' "$OH_REPORT" | jq -c '[.results[0].events[].kind]'))"
+  fi
+  if [ -n "$expected_source" ] && [ "$source" != "$expected_source" ]; then
+    oh_dump
+    fail "$id: expected events_source=$expected_source but got '$source' — event extraction regressed"
+  fi
+  # Input/output fidelity: the model ran `echo <marker>`, so the marker must
+  # appear in a tool_call's structured `input` (and usually a tool_result's
+  # `output`). This proves oneharness extracted the *real* args/observation into
+  # the normalized shape — not merely that some empty event object surfaced.
+  if ! printf '%s' "$OH_REPORT" | jq -e --arg m "$marker" \
+    '[(.results[0].events // [])[] | (.input // {} | tostring) + (.output // "")] | any(contains($m))' >/dev/null; then
+    oh_dump
+    note "  events: $(printf '%s' "$OH_REPORT" | jq -c '.results[0].events')"
+    fail "$id: the marker never appeared in any event's input/output — the command/observation was not lifted into the normalized event (structured extraction drifted)"
+  fi
+  note "PASS: $id surfaced $calls normalized tool_call event(s) via '$source' (marker present in event input/output)"
 }
 
 # Live proof of the STREAMING path: `oneharness run --stream --format json` (the
@@ -1001,39 +1016,39 @@ oh_events_assert() {
 #   $1 harness id
 #   $2.. extra run args
 oh_stream_assert() {
-    local id="$1"
-    shift
-    local bin marker out events_lines result_lines
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1"
+  shift
+  local bin marker out events_lines result_lines
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    marker="$(oh_marker)"
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  marker="$(oh_marker)"
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    note "  stream: a --stream run must emit event lines then a result line"
-    out="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
-        --prompt "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then confirm." \
-        --stream --format json --mode bypass --timeout "${OH_TIMEOUT:-120}" \
-        "${model_args[@]+"${model_args[@]}"}" "$@" 2>/dev/null)" || true
+  note "  stream: a --stream run must emit event lines then a result line"
+  out="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
+    --prompt "Using your shell/bash tool, run a command that prints the exact text ${marker} to stdout, then confirm." \
+    --stream --format json --mode bypass --timeout "${OH_TIMEOUT:-120}" \
+    "${model_args[@]+"${model_args[@]}"}" "$@" 2>/dev/null)" || true
 
-    if [ -z "$out" ]; then
-        fail "$id: --stream produced no output"
-    fi
-    # Each line is a JSON object with a "type" discriminator.
-    events_lines="$(printf '%s\n' "$out" | jq -rc 'select(.type == "event") | .event.kind' 2>/dev/null | grep -c . || true)"
-    result_lines="$(printf '%s\n' "$out" | jq -rc 'select(.type == "result") | .report.results[0].status' 2>/dev/null | grep -c . || true)"
-    note "  stream: event lines=$events_lines result lines=$result_lines"
+  if [ -z "$out" ]; then
+    fail "$id: --stream produced no output"
+  fi
+  # Each line is a JSON object with a "type" discriminator.
+  events_lines="$(printf '%s\n' "$out" | jq -rc 'select(.type == "event") | .event.kind' 2>/dev/null | grep -c . || true)"
+  result_lines="$(printf '%s\n' "$out" | jq -rc 'select(.type == "result") | .report.results[0].status' 2>/dev/null | grep -c . || true)"
+  note "  stream: event lines=$events_lines result lines=$result_lines"
 
-    if [ "${result_lines:-0}" -lt 1 ] 2>/dev/null; then
-        printf '%s\n' "$out" | tail -5 | sed 's/^/    /' >&2
-        fail "$id: --stream emitted no terminal result line"
-    fi
-    if [ "${events_lines:-0}" -lt 1 ] 2>/dev/null; then
-        printf '%s\n' "$out" | tail -8 | sed 's/^/    /' >&2
-        fail "$id: --stream emitted no incremental event line for a tool-using turn"
-    fi
-    note "PASS: $id streamed $events_lines event line(s) then a result line"
+  if [ "${result_lines:-0}" -lt 1 ] 2>/dev/null; then
+    printf '%s\n' "$out" | tail -5 | sed 's/^/    /' >&2
+    fail "$id: --stream emitted no terminal result line"
+  fi
+  if [ "${events_lines:-0}" -lt 1 ] 2>/dev/null; then
+    printf '%s\n' "$out" | tail -8 | sed 's/^/    /' >&2
+    fail "$id: --stream emitted no incremental event line for a tool-using turn"
+  fi
+  note "PASS: $id streamed $events_lines event line(s) then a result line"
 }
 
 # --- same-prefix batch caching ----------------------------------------------
@@ -1057,59 +1072,65 @@ oh_stream_assert() {
 #     shared --system, the token saving the mode promises.
 # $1 harness id.
 oh_batch_fork_enforce() {
-    local id="$1" bin status count warm_write fan_write_max fan_read_min
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" bin status count warm_write fan_write_max fan_read_min
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    local prompts=()
-    for _ in 1 2 3 4; do prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
-    note "  batch[min-tokens/fork]: warm prompt[0] as a session, fork it for the fan-out"
-    _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${prompts[@]}"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
-        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
-    fi
-    [ "$(oh_field '.batch.strategy')" = "min-tokens" ] || { oh_dump; fail "$id: report is not a batch (.batch missing)"; }
-    count="$(printf '%s' "$OH_REPORT" | jq '.results | length')"
-    [ "$count" = "${#prompts[@]}" ] || { oh_dump; fail "$id: batch returned $count results for ${#prompts[@]} prompts"; }
-    _oh_batch_all_ok "$id" "min-tokens"
-    if [ "$(oh_field '.batch.forked')" != "true" ]; then
-        oh_dump
-        fail "$id: the batch did not fork (.batch.forked != true) — the warm-up exposed no session id, or the harness is not fork-capable"
-    fi
+  local prompts=()
+  for _ in 1 2 3 4; do prompts+=("$(oh_prompt "$(oh_marker_fixed)")"); done
+  note "  batch[min-tokens/fork]: warm prompt[0] as a session, fork it for the fan-out"
+  _oh_batch_run "$id" min-tokens "$(_oh_batch_system)" "${prompts[@]}"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
+    skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  fi
+  [ "$(oh_field '.batch.strategy')" = "min-tokens" ] || {
+    oh_dump
+    fail "$id: report is not a batch (.batch missing)"
+  }
+  count="$(printf '%s' "$OH_REPORT" | jq '.results | length')"
+  [ "$count" = "${#prompts[@]}" ] || {
+    oh_dump
+    fail "$id: batch returned $count results for ${#prompts[@]} prompts"
+  }
+  _oh_batch_all_ok "$id" "min-tokens"
+  if [ "$(oh_field '.batch.forked')" != "true" ]; then
+    oh_dump
+    fail "$id: the batch did not fork (.batch.forked != true) — the warm-up exposed no session id, or the harness is not fork-capable"
+  fi
 
-    warm_write="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
-    fan_write_max="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_write_tokens // 0] | max')"
-    fan_read_min="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_read_tokens // 0] | min')"
-    note "  usage: warm-up cache_write=$warm_write; fan-out max cache_write=$fan_write_max, min cache_read=$fan_read_min"
-    note "  per-result usage: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
+  warm_write="$(oh_field '.results[0].usage.cache_write_tokens // 0')"
+  fan_write_max="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_write_tokens // 0] | max')"
+  fan_read_min="$(printf '%s' "$OH_REPORT" | jq '[.results[1:][].usage.cache_read_tokens // 0] | min')"
+  note "  usage: warm-up cache_write=$warm_write; fan-out max cache_write=$fan_write_max, min cache_read=$fan_read_min"
+  note "  per-result usage: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].usage]')"
 
-    # Positive control: the warm-up must have written the cacheable prefix.
-    if ! [ "${warm_write:-0}" -gt 0 ] 2>/dev/null; then
-        oh_dump
-        fail "$id: the warm-up wrote no cache (cache_write=$warm_write) — the shared prefix is not cacheable, so fork reuse cannot be measured"
-    fi
-    # Every fanned-out fork must have READ the warmed prefix...
-    if ! [ "${fan_read_min:-0}" -gt 0 ] 2>/dev/null; then
-        oh_dump
-        fail "$id: a fanned-out fork read no cache (min cache_read=$fan_read_min) — the fork did not reuse the warmed session"
-    fi
-    # ...and WRITTEN LESS than the warm-up (it did not re-write the shared --system).
-    if [ "${fan_write_max:-0}" -lt "${warm_write:-0}" ] 2>/dev/null; then
-        note "PASS: $id min-tokens forked the warmed session and saved writes — fan-out cache_write (max $fan_write_max) < warm-up cache_write ($warm_write)"
-    else
-        oh_dump
-        fail "$id: a fanned-out fork wrote as much as the warm-up (max fan-out cache_write=$fan_write_max >= warm-up=$warm_write) — the fork did not reuse the shared prefix, so min-tokens saved nothing"
-    fi
+  # Positive control: the warm-up must have written the cacheable prefix.
+  if ! [ "${warm_write:-0}" -gt 0 ] 2>/dev/null; then
+    oh_dump
+    fail "$id: the warm-up wrote no cache (cache_write=$warm_write) — the shared prefix is not cacheable, so fork reuse cannot be measured"
+  fi
+  # Every fanned-out fork must have READ the warmed prefix...
+  if ! [ "${fan_read_min:-0}" -gt 0 ] 2>/dev/null; then
+    oh_dump
+    fail "$id: a fanned-out fork read no cache (min cache_read=$fan_read_min) — the fork did not reuse the warmed session"
+  fi
+  # ...and WRITTEN LESS than the warm-up (it did not re-write the shared --system).
+  if [ "${fan_write_max:-0}" -lt "${warm_write:-0}" ] 2>/dev/null; then
+    note "PASS: $id min-tokens forked the warmed session and saved writes — fan-out cache_write (max $fan_write_max) < warm-up cache_write ($warm_write)"
+  else
+    oh_dump
+    fail "$id: a fanned-out fork wrote as much as the warm-up (max fan-out cache_write=$fan_write_max >= warm-up=$warm_write) — the fork did not reuse the shared prefix, so min-tokens saved nothing"
+  fi
 }
 
 # Assert every result in $OH_REPORT completed cleanly (status ok); dump + fail
 # otherwise. $1 harness id, $2 strategy label (for the message).
 _oh_batch_all_ok() {
-    if printf '%s' "$OH_REPORT" | jq -e '[.results[].status] | all(. == "ok") | not' >/dev/null; then
-        oh_dump
-        fail "$1: a $2 batch call did not complete cleanly (statuses: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].status]'))"
-    fi
+  if printf '%s' "$OH_REPORT" | jq -e '[.results[].status] | all(. == "ok") | not' >/dev/null; then
+    oh_dump
+    fail "$1: a $2 batch call did not complete cleanly (statuses: $(printf '%s' "$OH_REPORT" | jq -c '[.results[].status]'))"
+  fi
 }
 
 # The shared, cacheable --system prefix for a batch caching check. Two properties
@@ -1130,46 +1151,46 @@ _oh_batch_all_ok() {
 # ~20 KB line would exceed cmd.exe's command-line length limit); ~20 KB total
 # stays well under the 32 KB CreateProcess limit.
 _oh_batch_system() {
-    local nonce body i
-    nonce="$(oh_marker_fixed)"
-    body=""
-    for ((i = 1; i <= 130; i++)); do
-        body+="Inert shared reference context line $i for the oneharness batch caching e2e; it carries no instructions and exists only to make the shared prefix large enough to be independently cached."$'\n'
-    done
-    printf 'Batch caching fixture, nonce %s. The text below is inert reference context — do not act on it; just answer the user request.\n%s' "$nonce" "$body"
+  local nonce body i
+  nonce="$(oh_marker_fixed)"
+  body=""
+  for ((i = 1; i <= 130; i++)); do
+    body+="Inert shared reference context line $i for the oneharness batch caching e2e; it carries no instructions and exists only to make the shared prefix large enough to be independently cached."$'\n'
+  done
+  printf 'Batch caching fixture, nonce %s. The text below is inert reference context — do not act on it; just answer the user request.\n%s' "$nonce" "$body"
 }
 
 # Drive one batch run: $1 id, $2 strategy, $3 shared --system, then the prompts.
 # Stores the JSON report in $OH_REPORT (like oh_run). Uses --mode bypass so the
 # agent actually answers, and honors $OH_MODEL / $OH_TIMEOUT.
 _oh_batch_run() {
-    local id="$1" strategy="$2" system="$3"
-    shift 3
-    local bin
-    bin="$(oh_bin)"
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-    local prompt_args=() p
-    local n=$#
-    for p in "$@"; do prompt_args+=(--prompt "$p"); done
-    # Claude Code injects per-invocation dynamic sections (working directory, git
-    # status, platform, memory paths) into its system prompt; they share the cache
-    # block that holds an appended --system, so a byte-identical --system is still
-    # cache-CREATED (never read) on each separate `claude -p` process — making
-    # min-tokens and speed indistinguishable. `--exclude-dynamic-system-prompt-
-    # sections` moves those sections into the first user message, leaving the
-    # system prompt (incl. our shared --system) static and prefix-cacheable across
-    # calls — the condition min-tokens needs. Passed as a harness passthrough
-    # (after `--`), only for Claude Code.
-    local passthrough=()
-    [ "$id" = claude-code ] && passthrough=(-- --exclude-dynamic-system-prompt-sections)
-    note "  driving: $bin run --harness $id --batch-strategy $strategy ($n prompts)"
-    OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
-        --mode bypass --batch-strategy "$strategy" --system "$system" \
-        --timeout "${OH_TIMEOUT:-120}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" "${prompt_args[@]}" \
-        "${passthrough[@]+"${passthrough[@]}"}" 2>/dev/null)" || true
-    [ -n "$OH_REPORT" ] || fail "$id: oneharness produced no report for the $strategy batch"
+  local id="$1" strategy="$2" system="$3"
+  shift 3
+  local bin
+  bin="$(oh_bin)"
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  local prompt_args=() p
+  local n=$#
+  for p in "$@"; do prompt_args+=(--prompt "$p"); done
+  # Claude Code injects per-invocation dynamic sections (working directory, git
+  # status, platform, memory paths) into its system prompt; they share the cache
+  # block that holds an appended --system, so a byte-identical --system is still
+  # cache-CREATED (never read) on each separate `claude -p` process — making
+  # min-tokens and speed indistinguishable. `--exclude-dynamic-system-prompt-
+  # sections` moves those sections into the first user message, leaving the
+  # system prompt (incl. our shared --system) static and prefix-cacheable across
+  # calls — the condition min-tokens needs. Passed as a harness passthrough
+  # (after `--`), only for Claude Code.
+  local passthrough=()
+  [ "$id" = claude-code ] && passthrough=(-- --exclude-dynamic-system-prompt-sections)
+  note "  driving: $bin run --harness $id --batch-strategy $strategy ($n prompts)"
+  OH_REPORT="$(ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" \
+    --mode bypass --batch-strategy "$strategy" --system "$system" \
+    --timeout "${OH_TIMEOUT:-120}" --compact \
+    "${model_args[@]+"${model_args[@]}"}" "${prompt_args[@]}" \
+    "${passthrough[@]+"${passthrough[@]}"}" 2>/dev/null)" || true
+  [ -n "$OH_REPORT" ] || fail "$id: oneharness produced no report for the $strategy batch"
 }
 
 # --- sync enforcement --------------------------------------------------------
@@ -1187,83 +1208,83 @@ _oh_batch_run() {
 # The `present` phase is the positive control: without it, `absent` would pass
 # vacuously on a harness that can't execute anything headlessly.
 oh_sync_enforce() {
-    local id="$1" toml="$2" file="$3" expect="$4" label="$5"
-    local bin sandbox out
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" toml="$2" file="$3" expect="$4" label="$5"
+  local bin sandbox out
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    printf '%s\n' "$toml" > "$sandbox/oneharness.toml"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  printf '%s\n' "$toml" >"$sandbox/oneharness.toml"
 
-    note "  enforce[$label]: syncing policy into $id's own config file"
-    # --config pins the exact planted file (no discovery), and the explicit
-    # empty ONEHARNESS_NO_CONFIG guards against a hermetic wrapper's env.
-    if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness "$id" \
-        --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$sandbox"
-        fail "$id: oneharness sync failed ($label phase)"
-    fi
-    if ! printf '%s' "$out" | grep -qF '"status":"created"'; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$sandbox"
-        fail "$id: sync did not create the harness config file ($label phase)"
-    fi
-    note "  sync wrote: $out"
-
-    local prompt
-    # Kept to one physical line for simplicity. oneharness now spawns a multi-line
-    # argument on Windows too (it bypasses the npm `.cmd` shim — see
-    # crates/oneharness-core/src/domain/shim.rs; e2e-claude.sh proves it live), so
-    # this is no longer a hard constraint, but a single line keeps the fixture
-    # prompt trivially quoting-safe across all shells.
-    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
-    # --no-bypass is `--mode default`, which oneharness refuses for harnesses
-    # whose default ask flow would hang headlessly (opencode/cursor). Here the
-    # synced allow rule is exactly what stops the prompt from firing, so opt in
-    # with --permit-prompts; the per-harness timeout still bounds any hang.
-    oh_run "$id" "$prompt" --no-bypass --permit-prompts --cwd "$sandbox"
-
-    local status
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-
-    case "$expect" in
-        present)
-            if [ -e "$sandbox/$file" ]; then
-                note "  ok[$label]: the synced allow rule let the command run under --no-bypass"
-            else
-                oh_dump
-                # Show the synced config the harness should have honored, so a
-                # Windows "not honored" failure reveals write-location vs matching.
-                local cf
-                while IFS= read -r cf; do
-                    note "  (debug) $cf:"
-                    sed 's/^/    /' "$cf" >&2 2>/dev/null || true
-                done < <(find "$sandbox" -type f -name '*.json' 2>/dev/null)
-                rm -rf "$sandbox"
-                fail "$id: 'touch $file' did not run despite the synced allow rule (status=$status) — the $label phase is the positive control, so either the synced file is not honored or the rule syntax drifted"
-            fi
-            ;;
-        absent)
-            if [ -e "$sandbox/$file" ]; then
-                oh_dump
-                rm -rf "$sandbox"
-                fail "$id: 'touch $file' executed DESPITE the synced deny policy — enforcement is broken"
-            fi
-            note "  ok[$label]: the denied command did not execute"
-            ;;
-        *)
-            rm -rf "$sandbox"
-            fail "oh_sync_enforce: bad expectation '$expect' (use present|absent)"
-            ;;
-    esac
+  note "  enforce[$label]: syncing policy into $id's own config file"
+  # --config pins the exact planted file (no discovery), and the explicit
+  # empty ONEHARNESS_NO_CONFIG guards against a hermetic wrapper's env.
+  if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness "$id" \
+    --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
+    printf '%s\n' "$out" >&2
     rm -rf "$sandbox"
+    fail "$id: oneharness sync failed ($label phase)"
+  fi
+  if ! printf '%s' "$out" | grep -qF '"status":"created"'; then
+    printf '%s\n' "$out" >&2
+    rm -rf "$sandbox"
+    fail "$id: sync did not create the harness config file ($label phase)"
+  fi
+  note "  sync wrote: $out"
+
+  local prompt
+  # Kept to one physical line for simplicity. oneharness now spawns a multi-line
+  # argument on Windows too (it bypasses the npm `.cmd` shim — see
+  # crates/oneharness-core/src/domain/shim.rs; e2e-claude.sh proves it live), so
+  # this is no longer a hard constraint, but a single line keeps the fixture
+  # prompt trivially quoting-safe across all shells.
+  prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually invoke your shell tool with that exact command — never assume or decide on your own that it is not permitted; attempt it. Use only the shell tool. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+  # --no-bypass is `--mode default`, which oneharness refuses for harnesses
+  # whose default ask flow would hang headlessly (opencode/cursor). Here the
+  # synced allow rule is exactly what stops the prompt from firing, so opt in
+  # with --permit-prompts; the per-harness timeout still bounds any hang.
+  oh_run "$id" "$prompt" --no-bypass --permit-prompts --cwd "$sandbox"
+
+  local status
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ]; then
+    rm -rf "$sandbox"
+    skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  fi
+
+  case "$expect" in
+    present)
+      if [ -e "$sandbox/$file" ]; then
+        note "  ok[$label]: the synced allow rule let the command run under --no-bypass"
+      else
+        oh_dump
+        # Show the synced config the harness should have honored, so a
+        # Windows "not honored" failure reveals write-location vs matching.
+        local cf
+        while IFS= read -r cf; do
+          note "  (debug) $cf:"
+          sed 's/^/    /' "$cf" >&2 2>/dev/null || true
+        done < <(find "$sandbox" -type f -name '*.json' 2>/dev/null)
+        rm -rf "$sandbox"
+        fail "$id: 'touch $file' did not run despite the synced allow rule (status=$status) — the $label phase is the positive control, so either the synced file is not honored or the rule syntax drifted"
+      fi
+      ;;
+    absent)
+      if [ -e "$sandbox/$file" ]; then
+        oh_dump
+        rm -rf "$sandbox"
+        fail "$id: 'touch $file' executed DESPITE the synced deny policy — enforcement is broken"
+      fi
+      note "  ok[$label]: the denied command did not execute"
+      ;;
+    *)
+      rm -rf "$sandbox"
+      fail "oh_sync_enforce: bad expectation '$expect' (use present|absent)"
+      ;;
+  esac
+  rm -rf "$sandbox"
 }
 
 # A shell-safe scratch file name for the enforcement phases.
@@ -1274,19 +1295,19 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 # $3 and any further codex flags. Its whole output lands in $_OH_CODEX_OUT.
 _OH_CODEX_OUT=""
 _oh_codex_direct() {
-    local proj="$1" home="$2" prompt="$3"
-    shift 3
-    local model_args=() limit_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
-    command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
-    _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
-        "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check \
-        "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
-    local refusal
-    refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"
-    if [ -n "$refusal" ]; then
-        not_run "codex: the provider refused the turn, so the synced-rules phase proved nothing: $refusal"
-    fi
+  local proj="$1" home="$2" prompt="$3"
+  shift 3
+  local model_args=() limit_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
+  command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
+  _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
+    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check \
+    "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
+  local refusal
+  refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"
+  if [ -n "$refusal" ]; then
+    not_run "codex: the provider refused the turn, so the synced-rules phase proved nothing: $refusal"
+  fi
 }
 
 # Model-free proof that the rules `sync` writes match the argv Codex checks on
@@ -1299,56 +1320,56 @@ _oh_codex_direct() {
 # parse_powershell_command_into_plain_commands) — so this is where a Linux run
 # shows the synced rule matching what a Windows Codex asks about.
 oh_codex_rules_match() {
-    local bin scratch cfg out rules file dir argv want got status
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
-    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+  local bin scratch cfg out rules file dir argv want got status
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
 
-    scratch="$(mktemp -d)"
-    file="rules-allow-${RANDOM}${RANDOM}.txt"
-    dir="rules-deny-${RANDOM}${RANDOM}"
-    cfg="$scratch/oneharness.toml"
-    printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-        "$file" "$file" "$dir" >"$cfg"
-    if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
-        --config "$(oh_native_path "$cfg")" --compact 2>&1)"; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$scratch"
-        fail "codex: oneharness sync failed — fix the error above, then rerun \`just live-codex\`"
+  scratch="$(mktemp -d)"
+  file="rules-allow-${RANDOM}${RANDOM}.txt"
+  dir="rules-deny-${RANDOM}${RANDOM}"
+  cfg="$scratch/oneharness.toml"
+  printf '[harness.codex]\nallowed_tools = ["Bash(rm -f %s:*)", "Bash(Remove-Item -Force %s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+    "$file" "$file" "$dir" >"$cfg"
+  if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$(oh_native_path "$scratch")" \
+    --config "$(oh_native_path "$cfg")" --compact 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    rm -rf "$scratch"
+    fail "codex: oneharness sync failed — fix the error above, then rerun \`just live-codex\`"
+  fi
+  rules="$scratch/.codex/rules/oneharness.rules"
+  # One case per line: the decision Codex must reach, then the argv it checks.
+  while IFS=' ' read -r want argv; do
+    status=0
+    # shellcheck disable=SC2086 # argv is space-separated words by construction
+    out="$(codex execpolicy check --rules "$(oh_native_path "$rules")" $argv 2>"$scratch/check.err")" || status=$?
+    if [ "$status" -ne 0 ]; then
+      printf '%s\n' "$out" >&2
+      cat "$scratch/check.err" >&2
+      rm -rf "$scratch"
+      fail "codex-rules-match: \`codex execpolicy check --rules $rules $argv\` exited $status (output above) — if it names the rules file, check that sync wrote $rules; otherwise check that \`codex --version\` still has the \`execpolicy check\` subcommand"
     fi
-    rules="$scratch/.codex/rules/oneharness.rules"
-    # One case per line: the decision Codex must reach, then the argv it checks.
-    while IFS=' ' read -r want argv; do
-        status=0
-        # shellcheck disable=SC2086 # argv is space-separated words by construction
-        out="$(codex execpolicy check --rules "$(oh_native_path "$rules")" $argv 2>"$scratch/check.err")" || status=$?
-        if [ "$status" -ne 0 ]; then
-            printf '%s\n' "$out" >&2
-            cat "$scratch/check.err" >&2
-            rm -rf "$scratch"
-            fail "codex-rules-match: \`codex execpolicy check --rules $rules $argv\` exited $status (output above) — if it names the rules file, check that sync wrote $rules; otherwise check that \`codex --version\` still has the \`execpolicy check\` subcommand"
-        fi
-        status=0
-        got="$(printf '%s\n' "$out" | jq -r '.decision // "unmatched"' 2>&1)" || status=$?
-        if [ "$status" -ne 0 ]; then
-            printf '%s\n%s\n' "$out" "$got" >&2
-            rm -rf "$scratch"
-            fail "codex-rules-match: jq exited $status reading \`codex execpolicy check\`'s answer for [$argv] (answer and jq error above) — codex no longer prints its decision as JSON; check \`codex execpolicy check --help\` for the release \`codex --version\` names"
-        fi
-        if [ "$got" != "$want" ]; then
-            sed 's/^/    /' "$rules" >&2
-            rm -rf "$scratch"
-            fail "codex: execpolicy decided '$got' for [$argv] against the synced rules above, expected '$want' — if the file above renders [$argv]'s rule differently, fix the codex rendering in domain::sync; if it renders it as expected, codex's prefix_rule matching changed, so re-read codex-rs/execpolicy for the release \`codex --version\` names"
-        fi
-    done <<CASES
+    status=0
+    got="$(printf '%s\n' "$out" | jq -r '.decision // "unmatched"' 2>&1)" || status=$?
+    if [ "$status" -ne 0 ]; then
+      printf '%s\n%s\n' "$out" "$got" >&2
+      rm -rf "$scratch"
+      fail "codex-rules-match: jq exited $status reading \`codex execpolicy check\`'s answer for [$argv] (answer and jq error above) — codex no longer prints its decision as JSON; check \`codex execpolicy check --help\` for the release \`codex --version\` names"
+    fi
+    if [ "$got" != "$want" ]; then
+      sed 's/^/    /' "$rules" >&2
+      rm -rf "$scratch"
+      fail "codex: execpolicy decided '$got' for [$argv] against the synced rules above, expected '$want' — if the file above renders [$argv]'s rule differently, fix the codex rendering in domain::sync; if it renders it as expected, codex's prefix_rule matching changed, so re-read codex-rs/execpolicy for the release \`codex --version\` names"
+    fi
+  done <<CASES
 allow rm -f $file
 allow Remove-Item -Force $file
 forbidden mkdir $dir
 unmatched rm -f other.txt
 CASES
-    # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran, and it names the Windows argv the synced rule was checked against.
-    note "  ok[codex-rules-match]: codex's execpolicy allows [rm -f $file] and the Windows-lowered [Remove-Item -Force $file], forbids [mkdir $dir]"
-    rm -rf "$scratch"
+  # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran, and it names the Windows argv the synced rule was checked against.
+  note "  ok[codex-rules-match]: codex's execpolicy allows [rm -f $file] and the Windows-lowered [Remove-Item -Force $file], forbids [mkdir $dir]"
+  rm -rf "$scratch"
 }
 
 # Print (never run) the forced-delete command for $1, spelled for the shell
@@ -1358,10 +1379,10 @@ CASES
 # (codex-rs/shell-command/src/powershell.rs,
 # parse_powershell_command_into_plain_commands) and `rm -f` had matched.
 _oh_codex_render_forced_delete() {
-    case "$(uname -s)" in
-        MINGW* | MSYS* | CYGWIN*) printf 'Remove-Item -Force %s' "$1" ;;
-        *) printf 'rm -f %s' "$1" ;;
-    esac
+  case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) printf 'Remove-Item -Force %s' "$1" ;;
+    *) printf 'rm -f %s' "$1" ;;
+  esac
 }
 
 # Live proof that a DIRECTLY started Codex honors the execpolicy rules
@@ -1383,92 +1404,92 @@ _oh_codex_render_forced_delete() {
 # CODEX_HOME: auth.json copied from the existing login, and a config.toml that
 # trusts only the scratch project — the user's own ~/.codex is never written.
 oh_codex_rules_enforce() {
-    local bin auth scratch home proj cfg real out rules dir file del
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
-    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
-    auth="${CODEX_HOME:-$HOME/.codex}/auth.json"
-    [ -f "$auth" ] || skip "no codex login at $auth (run \`codex login\`)"
+  local bin auth scratch home proj cfg real out rules dir file del
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+  auth="${CODEX_HOME:-$HOME/.codex}/auth.json"
+  [ -f "$auth" ] || skip "no codex login at $auth (run \`codex login\`)"
 
-    scratch="$(mktemp -d)"
-    home="$scratch/codex-home"
-    proj="$scratch/project"
-    mkdir -p "$home" "$proj"
-    cp "$auth" "$home/auth.json"
-    real="$(cd "$proj" && pwd -P)"
-    # Trust every spelling Codex may resolve the project to (macOS's
-    # /private/var, Windows's native path), each named once.
-    printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")" \
-        | sort -u \
-        | jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
-    dir="rules-deny-${RANDOM}${RANDOM}"
-    file="$(oh_enforce_file rules-allow)"
-    del="$(_oh_codex_render_forced_delete "$file")"
-    touch "$proj/$file"
-    local deny_prompt allow_prompt
-    deny_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: mkdir $dir. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not create the directory any other way; reply with the single word DENIED and stop."
-    allow_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: $del. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not remove the file any other way; reply with the single word DENIED and stop."
-    local bypass=(--dangerously-bypass-approvals-and-sandbox)
+  scratch="$(mktemp -d)"
+  home="$scratch/codex-home"
+  proj="$scratch/project"
+  mkdir -p "$home" "$proj"
+  cp "$auth" "$home/auth.json"
+  real="$(cd "$proj" && pwd -P)"
+  # Trust every spelling Codex may resolve the project to (macOS's
+  # /private/var, Windows's native path), each named once.
+  printf '%s\n' "$proj" "$real" "$(oh_native_path "$proj")" "$(oh_native_path "$real")" |
+    sort -u |
+    jq -R -r '"[projects.\(tojson)]\ntrust_level = \"trusted\"\n"' >"$home/config.toml"
+  dir="rules-deny-${RANDOM}${RANDOM}"
+  file="$(oh_enforce_file rules-allow)"
+  del="$(_oh_codex_render_forced_delete "$file")"
+  touch "$proj/$file"
+  local deny_prompt allow_prompt
+  deny_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: mkdir $dir. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not create the directory any other way; reply with the single word DENIED and stop."
+  allow_prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory with your shell tool, then stop: $del. Do not use any other command or tool. If that command is rejected or fails, do not retry and do not remove the file any other way; reply with the single word DENIED and stop."
+  local bypass=(--dangerously-bypass-approvals-and-sandbox)
 
-    _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
-    if [ ! -d "$proj/$dir" ]; then
-        printf '%s\n' "$_OH_CODEX_OUT" >&2
-        rm -rf "$scratch"
-        fail "codex: the control run did not create $dir with no rule synced, so the deny half would prove nothing — read the transcript above for why the model did not run mkdir, then rerun \`just live-codex\`"
-    fi
-    rmdir "$proj/$dir"
-    _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
-    if [ ! -e "$proj/$file" ]; then
-        printf '%s\n' "$_OH_CODEX_OUT" >&2
-        rm -rf "$scratch"
-        fail "codex: the control run removed $file with no rule synced, so the allow half would prove nothing — if the transcript shows codex ran $del itself, its dangerous-command check no longer refuses it: pick a command codex-rs/shell-command's is_dangerous_command still refuses and use it here"
-    fi
-    # The file surviving is not enough: a delete the SHELL failed (PowerShell
-    # refusing `rm -f`) leaves it too, and then the allow half proves nothing.
-    # The control counts only when Codex itself refused the command.
-    if ! printf '%s\n' "$_OH_CODEX_OUT" | grep -qF 'rejected: '; then
-        printf '%s\n' "$_OH_CODEX_OUT" >&2
-        rm -rf "$scratch"
-        fail "codex: $file survived the control run but codex never refused '$del' — the command failed some other way (read the transcript above), so the allow half would prove nothing; fix the spelling in _oh_codex_render_forced_delete"
-    fi
-
-    cfg="$scratch/oneharness.toml"
-    # Each rule names only the scratch path its half needs.
-    printf '[harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
-        "$del" "$dir" >"$cfg"
-    if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
-        --config "$cfg" --compact 2>&1)"; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$scratch"
-        fail "codex: oneharness sync failed — fix the error above, then rerun \`just live-codex\`"
-    fi
-    rules="$proj/.codex/rules/oneharness.rules"
-    if ! printf '%s' "$out" | grep -qF '"status":"created"' || [ ! -f "$rules" ]; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$scratch"
-        fail "codex: sync did not create $rules — check that \`oneharness list\` still reports codex's sync_file as .codex/rules/oneharness.rules"
-    fi
-
-    _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
-    if [ -d "$proj/$dir" ]; then
-        printf '%s\n' "$_OH_CODEX_OUT" >&2
-        sed 's/^/    /' "$rules" >&2
-        rm -rf "$scratch"
-        fail "codex: mkdir $dir ran DESPITE the synced denied_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> mkdir $dir\` whether it matches"
-    fi
-    local refused
-    refused="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -o 'rejected: [^"\\]*' | head -n 1 || true)"
-
-    _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
-    if [ -e "$proj/$file" ]; then
-        printf '%s\n' "$_OH_CODEX_OUT" >&2
-        sed 's/^/    /' "$rules" >&2
-        rm -rf "$scratch"
-        fail "codex: $del was still refused with the synced allowed_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> $del\` whether it matches"
-    fi
-    # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran and passed, and it quotes Codex's own refusal — the evidence that the synced rule, not something else, decided.
-    note "  ok[codex-rules]: before sync mkdir ran and $del was refused; after it, mkdir was ${refused:-refused} and $del ran"
+  _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
+  if [ ! -d "$proj/$dir" ]; then
+    printf '%s\n' "$_OH_CODEX_OUT" >&2
     rm -rf "$scratch"
+    fail "codex: the control run did not create $dir with no rule synced, so the deny half would prove nothing — read the transcript above for why the model did not run mkdir, then rerun \`just live-codex\`"
+  fi
+  rmdir "$proj/$dir"
+  _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
+  if [ ! -e "$proj/$file" ]; then
+    printf '%s\n' "$_OH_CODEX_OUT" >&2
+    rm -rf "$scratch"
+    fail "codex: the control run removed $file with no rule synced, so the allow half would prove nothing — if the transcript shows codex ran $del itself, its dangerous-command check no longer refuses it: pick a command codex-rs/shell-command's is_dangerous_command still refuses and use it here"
+  fi
+  # The file surviving is not enough: a delete the SHELL failed (PowerShell
+  # refusing `rm -f`) leaves it too, and then the allow half proves nothing.
+  # The control counts only when Codex itself refused the command.
+  if ! printf '%s\n' "$_OH_CODEX_OUT" | grep -qF 'rejected: '; then
+    printf '%s\n' "$_OH_CODEX_OUT" >&2
+    rm -rf "$scratch"
+    fail "codex: $file survived the control run but codex never refused '$del' — the command failed some other way (read the transcript above), so the allow half would prove nothing; fix the spelling in _oh_codex_render_forced_delete"
+  fi
+
+  cfg="$scratch/oneharness.toml"
+  # Each rule names only the scratch path its half needs.
+  printf '[harness.codex]\nallowed_tools = ["Bash(%s:*)"]\ndenied_tools = ["Bash(mkdir %s:*)"]\n' \
+    "$del" "$dir" >"$cfg"
+  if ! out="$(ONEHARNESS_NO_CONFIG='' "$bin" sync --harness codex --cwd "$proj" \
+    --config "$cfg" --compact 2>&1)"; then
+    printf '%s\n' "$out" >&2
+    rm -rf "$scratch"
+    fail "codex: oneharness sync failed — fix the error above, then rerun \`just live-codex\`"
+  fi
+  rules="$proj/.codex/rules/oneharness.rules"
+  if ! printf '%s' "$out" | grep -qF '"status":"created"' || [ ! -f "$rules" ]; then
+    printf '%s\n' "$out" >&2
+    rm -rf "$scratch"
+    fail "codex: sync did not create $rules — check that \`oneharness list\` still reports codex's sync_file as .codex/rules/oneharness.rules"
+  fi
+
+  _oh_codex_direct "$proj" "$home" "$deny_prompt" "${bypass[@]}"
+  if [ -d "$proj/$dir" ]; then
+    printf '%s\n' "$_OH_CODEX_OUT" >&2
+    sed 's/^/    /' "$rules" >&2
+    rm -rf "$scratch"
+    fail "codex: mkdir $dir ran DESPITE the synced denied_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> mkdir $dir\` whether it matches"
+  fi
+  local refused
+  refused="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -o 'rejected: [^"\\]*' | head -n 1 || true)"
+
+  _oh_codex_direct "$proj" "$home" "$allow_prompt" "${bypass[@]}"
+  if [ -e "$proj/$file" ]; then
+    printf '%s\n' "$_OH_CODEX_OUT" >&2
+    sed 's/^/    /' "$rules" >&2
+    rm -rf "$scratch"
+    fail "codex: $del was still refused with the synced allowed_tools rule — the rules file is not honored; in a trusted project, \`codex debug prompt-input\` shows whether it loaded and \`codex execpolicy check --rules <file> $del\` whether it matches"
+  fi
+  # llmlint: ignore[tool_output_is_signal] The phase's one verdict line: a skip also exits 0, so without it a lane transcript cannot show this phase ran and passed, and it quotes Codex's own refusal — the evidence that the synced rule, not something else, decided.
+  note "  ok[codex-rules]: before sync mkdir ran and $del was refused; after it, mkdir was ${refused:-refused} and $del ran"
+  rm -rf "$scratch"
 }
 
 # --- approval-mode enforcement ----------------------------------------------
@@ -1485,54 +1506,54 @@ oh_codex_rules_enforce() {
 # Only call this for a (harness, mode) that `oneharness list` marks supported.
 #   $1 harness id   $2 mode to test (read-only | plan; default read-only)
 oh_mode_enforce() {
-    local id="$1" mode="${2:-read-only}"
-    local bin sandbox file status
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" mode="${2:-read-only}"
+  local bin sandbox file status
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    file="$(oh_enforce_file "$mode")"
-    local prompt
-    prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually attempt your shell tool with that exact command. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  file="$(oh_enforce_file "$mode")"
+  local prompt
+  prompt="You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command in the current directory, then stop: touch $file. Rules: you MUST actually attempt your shell tool with that exact command. Only if that tool invocation itself fails or is rejected: do NOT create the file by any other means (no file-write or edit tools) — reply with the single word DENIED and stop."
 
-    note "  mode-enforce[$mode]: the write must be blocked under --mode $mode"
-    oh_run "$id" "$prompt" --mode "$mode" --cwd "$sandbox"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-    if [ -e "$sandbox/$file" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: --mode $mode did NOT block the write ($file was created) — the $mode mapping is not honored (or its flag drifted)"
-    fi
-    note "  ok[$mode]: the write was blocked"
-
-    note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
-    oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
-    if [ ! -e "$sandbox/$file" ]; then
-        # An agent whose provider refused the turn wrote nothing because it never
-        # ran, not because `bypass` stopped it — and reading that as a broken
-        # positive control condemns the whole phase for someone else's quota.
-        # Checked BEFORE the failure, and only for a refusal in the provider's
-        # own words; anything else still fails here.
-        local refusal
-        refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
-        if [ -n "$refusal" ]; then
-            rm -rf "$sandbox"
-            not_run "$id: its own provider refused the turn, so the $mode positive control never ran: $refusal"
-        fi
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: positive control failed ($file absent under --mode bypass) — the $mode block can't be trusted (does the harness run shell headlessly?)"
-    fi
-    note "  ok[bypass]: the command ran"
-
+  note "  mode-enforce[$mode]: the write must be blocked under --mode $mode"
+  oh_run "$id" "$prompt" --mode "$mode" --cwd "$sandbox"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ]; then
     rm -rf "$sandbox"
-    note "PASS: $id $mode enforcement"
+    skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  fi
+  if [ -e "$sandbox/$file" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: --mode $mode did NOT block the write ($file was created) — the $mode mapping is not honored (or its flag drifted)"
+  fi
+  note "  ok[$mode]: the write was blocked"
+
+  note "  mode-enforce[bypass]: the same command must run under --mode bypass (control)"
+  oh_run "$id" "$prompt" --mode bypass --cwd "$sandbox"
+  if [ ! -e "$sandbox/$file" ]; then
+    # An agent whose provider refused the turn wrote nothing because it never
+    # ran, not because `bypass` stopped it — and reading that as a broken
+    # positive control condemns the whole phase for someone else's quota.
+    # Checked BEFORE the failure, and only for a refusal in the provider's
+    # own words; anything else still fails here.
+    local refusal
+    refusal="$(printf '%s' "$OH_REPORT" | _oh_provider_refusal)"
+    if [ -n "$refusal" ]; then
+      rm -rf "$sandbox"
+      not_run "$id: its own provider refused the turn, so the $mode positive control never ran: $refusal"
+    fi
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: positive control failed ($file absent under --mode bypass) — the $mode block can't be trusted (does the harness run shell headlessly?)"
+  fi
+  note "  ok[bypass]: the command ran"
+
+  rm -rf "$sandbox"
+  note "PASS: $id $mode enforcement"
 }
 
 # Live proof that a CONTINUED turn runs under the same sandbox mode as the turn
@@ -1572,134 +1593,134 @@ oh_mode_enforce() {
 # a caller's override and the mode governs both turns alike.
 #   $1 harness id, $2 mode (auto | read-only | plan), $3.. extra run args
 oh_resume_mode_enforce() {
-    local id="$1" mode="$2"
-    shift 2
-    local bin sandbox store name marker file status phase text refusal probe
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" mode="$2"
+  shift 2
+  local bin sandbox store name marker file status phase text refusal probe
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    mkdir -p "$sandbox/work"
-    # A real repo: codex refuses to run outside one (`untrusted_directory`)
-    # unless the directory is trusted, and trusting it is not this phase's job.
-    git init -q "$sandbox/work" 2>/dev/null || true
-    probe=""
-    _oh_sandbox_starts "$id" "$mode" "$sandbox/work" || probe="$_OH_SANDBOX_PROBE"
-    store="$sandbox/sessions"
-    name="ohresume${RANDOM}"
-    marker="$(oh_marker_fixed)"
-    file="$(oh_enforce_file "resume-$mode")"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  mkdir -p "$sandbox/work"
+  # A real repo: codex refuses to run outside one (`untrusted_directory`)
+  # unless the directory is trusted, and trusting it is not this phase's job.
+  git init -q "$sandbox/work" 2>/dev/null || true
+  probe=""
+  _oh_sandbox_starts "$id" "$mode" "$sandbox/work" || probe="$_OH_SANDBOX_PROBE"
+  store="$sandbox/sessions"
+  name="ohresume${RANDOM}"
+  marker="$(oh_marker_fixed)"
+  file="$(oh_enforce_file "resume-$mode")"
 
-    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
-        "Remember this exact word for the rest of our conversation: $marker. Do not run any tools. Reply with only the word OK." \
-        "$sandbox/first.json" "$sandbox/first.err" "$@"
-    status="$(_oh_result_status "$sandbox/first.json")"
-    if [ "$status" = "skipped" ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" \
+    "Remember this exact word for the rest of our conversation: $marker. Do not run any tools. Reply with only the word OK." \
+    "$sandbox/first.json" "$sandbox/first.err" "$@"
+  status="$(_oh_result_status "$sandbox/first.json")"
+  if [ "$status" = "skipped" ]; then
+    rm -rf "$sandbox"
+    skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  fi
+  if [ "$status" != "ok" ]; then
+    refusal="$(_oh_provider_refusal <"$sandbox/first.json" 2>/dev/null)" || refusal=""
+    if [ -n "$refusal" ]; then
+      rm -rf "$sandbox"
+      not_run "$id: its own provider refused turn one, so the $mode resume was never reached: $refusal"
     fi
-    if [ "$status" != "ok" ]; then
-        refusal="$(_oh_provider_refusal <"$sandbox/first.json" 2>/dev/null)" || refusal=""
-        if [ -n "$refusal" ]; then
-            rm -rf "$sandbox"
-            not_run "$id: its own provider refused turn one, so the $mode resume was never reached: $refusal"
-        fi
-        _oh_control_evidence "$sandbox/work" "$sandbox/first.json"
-        note "  first turn stderr: $(head -c 800 "$sandbox/first.err" 2>/dev/null || true)"
-        rm -rf "$sandbox"
-        fail "$id: turn one under --mode $mode did not complete (status=${status:-<no report>}) — the fresh turn is not what this phase tests, but without it there is no session to continue; read the turn-one stderr above, confirm \`codex exec\` runs in a scratch git repo under --mode $mode, then rerun \`just live-codex\`"
-    fi
-    if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
-        "$sandbox/first.json" >/dev/null 2>&1; then
-        rm -rf "$sandbox"
-        fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>')); check \`oneharness list\` still reports $id session_capable and that its --json stream carries thread_id, then rerun \`just live-codex\`"
-    fi
+    _oh_control_evidence "$sandbox/work" "$sandbox/first.json"
+    note "  first turn stderr: $(head -c 800 "$sandbox/first.err" 2>/dev/null || true)"
+    rm -rf "$sandbox"
+    fail "$id: turn one under --mode $mode did not complete (status=${status:-<no report>}) — the fresh turn is not what this phase tests, but without it there is no session to continue; read the turn-one stderr above, confirm \`codex exec\` runs in a scratch git repo under --mode $mode, then rerun \`just live-codex\`"
+  fi
+  if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
+    "$sandbox/first.json" >/dev/null 2>&1; then
+    rm -rf "$sandbox"
+    fail "$id: turn one stored no session token, so turn two could not resume anything ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>')); check \`oneharness list\` still reports $id session_capable and that its --json stream carries thread_id, then rerun \`just live-codex\`"
+  fi
 
-    local ask_touch
-    ask_touch="You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation."
+  local ask_touch
+  ask_touch="You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation."
+  _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
+    "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+  # Under a no-mutation mode the model sometimes declines outright — it sees
+  # the read-only sandbox and never calls the tool (observed live on codex
+  # 0.159: a reasoning item and the word, no call). That proves nothing
+  # either way, so it gets ONE more resumed turn, as `oh_mock_enforce` does
+  # for an agent that never fired the hook. Anything else is judged as run.
+  if [ "$mode" = read-only ] && [ "$(_oh_result_status "$sandbox/second.json")" = ok ] &&
+    ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
-        "$sandbox/second.json" "$sandbox/second.err" --events "$@"
-    # Under a no-mutation mode the model sometimes declines outright — it sees
-    # the read-only sandbox and never calls the tool (observed live on codex
-    # 0.159: a reasoning item and the word, no call). That proves nothing
-    # either way, so it gets ONE more resumed turn, as `oh_mock_enforce` does
-    # for an agent that never fired the hook. Anything else is judged as run.
-    if [ "$mode" = read-only ] && [ "$(_oh_result_status "$sandbox/second.json")" = ok ] \
-        && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
-        _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
-            "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+      "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+  fi
+  status="$(_oh_result_status "$sandbox/second.json")"
+  if [ "$status" != "ok" ]; then
+    refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
+    if [ -n "$refusal" ]; then
+      rm -rf "$sandbox"
+      not_run "$id: its own provider refused the resumed turn under --mode $mode: $refusal"
     fi
-    status="$(_oh_result_status "$sandbox/second.json")"
-    if [ "$status" != "ok" ]; then
-        refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
-        if [ -n "$refusal" ]; then
-            rm -rf "$sandbox"
-            not_run "$id: its own provider refused the resumed turn under --mode $mode: $refusal"
-        fi
-        note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
-        note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | head -c 800)"
-        note "  second turn oneharness stderr: $(head -c 800 "$sandbox/second.err" 2>/dev/null || true)"
-        rm -rf "$sandbox"
-        fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one; read the harness stderr above for the argument codex rejected and fix that mode's resume arm in \`argv_codex\` (domain/harness.rs), then rerun \`just live-codex\`"
-    fi
-    if ! jq -e '.results[0].command | index("resume") != null' "$sandbox/second.json" >/dev/null 2>&1; then
-        rm -rf "$sandbox"
-        fail "$id: turn two did not run the resume argv ($(jq -c '.results[0].command' "$sandbox/second.json")) — nothing about a resumed turn was exercised; check the session store kept turn one's token and that \`run --session\` feeds it to the resume argv"
-    fi
-    phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
-    if [ "$phase" != "continue" ]; then
-        rm -rf "$sandbox"
-        fail "$id: turn two reported session phase=$phase, not continue — a fresh thread is not a resumed one; inspect \`domain::session\`'s create-vs-continue decision for this store and rerun"
-    fi
-    text="$(jq -r '.results[0].text // ""' "$sandbox/second.json")"
-    case "$text" in
+    note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
+    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | head -c 800)"
+    note "  second turn oneharness stderr: $(head -c 800 "$sandbox/second.err" 2>/dev/null || true)"
+    rm -rf "$sandbox"
+    fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one; read the harness stderr above for the argument codex rejected and fix that mode's resume arm in \`argv_codex\` (domain/harness.rs), then rerun \`just live-codex\`"
+  fi
+  if ! jq -e '.results[0].command | index("resume") != null' "$sandbox/second.json" >/dev/null 2>&1; then
+    rm -rf "$sandbox"
+    fail "$id: turn two did not run the resume argv ($(jq -c '.results[0].command' "$sandbox/second.json")) — nothing about a resumed turn was exercised; check the session store kept turn one's token and that \`run --session\` feeds it to the resume argv"
+  fi
+  phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
+  if [ "$phase" != "continue" ]; then
+    rm -rf "$sandbox"
+    fail "$id: turn two reported session phase=$phase, not continue — a fresh thread is not a resumed one; inspect \`domain::session\`'s create-vs-continue decision for this store and rerun"
+  fi
+  text="$(jq -r '.results[0].text // ""' "$sandbox/second.json")"
+  case "$text" in
     *"$marker"*) ;;
     *)
-        note "  second turn text: $(printf '%s' "$text" | head -c 500)"
-        rm -rf "$sandbox"
-        fail "$id: turn two reported phase=continue under --mode $mode but did not recall the word turn one established — the resume carried no conversation; compare turn two's \`thread_id\` frame with turn one's token and check \`codex exec resume <id>\` still reopens that thread"
-        ;;
-    esac
+      note "  second turn text: $(printf '%s' "$text" | head -c 500)"
+      rm -rf "$sandbox"
+      fail "$id: turn two reported phase=continue under --mode $mode but did not recall the word turn one established — the resume carried no conversation; compare turn two's \`thread_id\` frame with turn one's token and check \`codex exec resume <id>\` still reopens that thread"
+      ;;
+  esac
 
-    if [ -n "$probe" ]; then
-        rm -rf "$sandbox"
-        note "sandbox half NOT PROVEN on this host: $id's own sandbox for --mode $mode cannot start here, so whether turn two's touch of $file was written or blocked says nothing about the mode ($probe); the #1372 half held: turn two ran as the resume argv on session $name, status ok, phase continue, and recalled $marker"
-        return 0
-    fi
-
-    case "$mode" in
-    auto)
-        if [ ! -e "$sandbox/work/$file" ]; then
-            _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
-            rm -rf "$sandbox"
-            fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had; read the probe and stderr above — a probe that ran means the resumed argv lost the sandbox, so check the \`-c sandbox_mode=\` arm in \`argv_codex\`"
-        fi
-        ;;
-    *)
-        if [ -e "$sandbox/work/$file" ]; then
-            rm -rf "$sandbox"
-            fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had; check the resumed argv carries \`-c sandbox_mode=read-only\` last (\`argv_with_caller_args\`) and that codex still honors it"
-        fi
-        # The attempt is demanded of `read-only` only. `plan` prepends an
-        # instruction NOT to act, so a model that declines the touch there is
-        # obeying the mode, not dodging the test; its sandbox is the very
-        # `-c sandbox_mode=read-only` that read-only's attempted-and-blocked
-        # write proves live, and the argv unit tests
-        # (`codex_resumed_turn_carries_the_sandbox_as_config_per_mode`) pin the
-        # two modes' resumed sandbox tokens as identical.
-        if [ "$mode" = "read-only" ] && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
-            _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
-            rm -rf "$sandbox"
-            fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing; read the events and text above — if the model declined, tighten the turn-two prompt; if codex dropped the item, check \`exec --json\` still emits \`command_execution\` for an exit-0 command"
-        fi
-        ;;
-    esac
-
+  if [ -n "$probe" ]; then
     rm -rf "$sandbox"
-    # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
-    note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
+    note "sandbox half NOT PROVEN on this host: $id's own sandbox for --mode $mode cannot start here, so whether turn two's touch of $file was written or blocked says nothing about the mode ($probe); the #1372 half held: turn two ran as the resume argv on session $name, status ok, phase continue, and recalled $marker"
+    return 0
+  fi
+
+  case "$mode" in
+    auto)
+      if [ ! -e "$sandbox/work/$file" ]; then
+        _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
+        rm -rf "$sandbox"
+        fail "$id: the resumed turn under --mode auto did not create $file — a continued turn must keep the workspace-write sandbox the fresh turn had; read the probe and stderr above — a probe that ran means the resumed argv lost the sandbox, so check the \`-c sandbox_mode=\` arm in \`argv_codex\`"
+      fi
+      ;;
+    *)
+      if [ -e "$sandbox/work/$file" ]; then
+        rm -rf "$sandbox"
+        fail "$id: the resumed turn under --mode $mode created $file — a continued turn escaped the read-only sandbox the fresh turn had; check the resumed argv carries \`-c sandbox_mode=read-only\` last (\`argv_with_caller_args\`) and that codex still honors it"
+      fi
+      # The attempt is demanded of `read-only` only. `plan` prepends an
+      # instruction NOT to act, so a model that declines the touch there is
+      # obeying the mode, not dodging the test; its sandbox is the very
+      # `-c sandbox_mode=read-only` that read-only's attempted-and-blocked
+      # write proves live, and the argv unit tests
+      # (`codex_resumed_turn_carries_the_sandbox_as_config_per_mode`) pin the
+      # two modes' resumed sandbox tokens as identical.
+      if [ "$mode" = "read-only" ] && ! _oh_touch_attempted "$sandbox/second.json" "$file"; then
+        _oh_resume_mode_evidence "$id" "$sandbox/work" "$sandbox/second.json"
+        rm -rf "$sandbox"
+        fail "$id: under --mode read-only the resumed turn left $file uncreated but never attempted the touch — the sandbox was not exercised, so its absence proves nothing; read the events and text above — if the model declined, tighten the turn-two prompt; if codex dropped the item, check \`exec --json\` still emits \`command_execution\` for an exit-0 command"
+      fi
+      ;;
+  esac
+
+  rm -rf "$sandbox"
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+  note "PASS: $id resumed session $name under --mode $mode: turn two recalled $marker and its touch of $file was $([ "$mode" = auto ] && printf 'written' || printf 'blocked')"
 }
 
 # Model-free drift gate for the config-override spellings oneharness reads in
@@ -1713,36 +1734,36 @@ oh_resume_mode_enforce() {
 # feature flag rather than `sandbox_mode` for exactly that reason; the parse is
 # one clap argument whatever the key (`CliConfigOverrides::raw_overrides`).
 oh_codex_config_override_order() {
-    command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
-    local spelling first last
-    for spelling in "-c" "--config" "--config=" "-c<kv>"; do
-        for first in true false; do
-            last="$([ "$first" = true ] && printf false || printf true)"
-            # The spelling under test comes last: its value must win.
-            _oh_codex_spell "$spelling" "features.hooks=$last"
-            _oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}"
-            [ "$_OH_FEATURE_VAL" = "$last" ] \
-                || fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — that spelling is not a config override codex applies last-wins; drop it from \`sets_codex_sandbox_mode\` (domain/harness.rs) or restate the mode after every caller arg"
-            # And first: the plain `-c` after it must win.
-            _oh_codex_spell "$spelling" "features.hooks=$first"
-            _oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last"
-            [ "$_OH_FEATURE_VAL" = "$last" ] \
-                || fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
-        done
+  command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+  local spelling first last
+  for spelling in "-c" "--config" "--config=" "-c<kv>"; do
+    for first in true false; do
+      last="$([ "$first" = true ] && printf false || printf true)"
+      # The spelling under test comes last: its value must win.
+      _oh_codex_spell "$spelling" "features.hooks=$last"
+      _oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}"
+      [ "$_OH_FEATURE_VAL" = "$last" ] ||
+        fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — that spelling is not a config override codex applies last-wins; drop it from \`sets_codex_sandbox_mode\` (domain/harness.rs) or restate the mode after every caller arg"
+      # And first: the plain `-c` after it must win.
+      _oh_codex_spell "$spelling" "features.hooks=$first"
+      _oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last"
+      [ "$_OH_FEATURE_VAL" = "$last" ] ||
+        fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
     done
-    # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
-    note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
+  done
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+  note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
 }
 
 # One spelling of a config override, as argv words in $_OH_SPELLED.
 #   $1 spelling (-c | --config | --config= | -c<kv>), $2 key=value
 _OH_SPELLED=()
 _oh_codex_spell() {
-    case "$1" in
+  case "$1" in
     -c | --config) _OH_SPELLED=("$1" "$2") ;;
     --config=) _OH_SPELLED=("--config=$2") ;;
     -c\<kv\>) _OH_SPELLED=("-c$2") ;;
-    esac
+  esac
 }
 
 # The effective value of codex's `hooks` feature under the given args, in
@@ -1751,11 +1772,11 @@ _oh_codex_spell() {
 _OH_FEATURE_VAL=""
 _OH_FEATURE_ERR=""
 _oh_codex_feature_value() {
-    local err
-    err="$(mktemp)"
-    _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk '$1 == "hooks" { print $NF }' | tr -d '\r')" || true
-    _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
-    rm -f "$err"
+  local err
+  err="$(mktemp)"
+  _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk '$1 == "hooks" { print $NF }' | tr -d '\r')" || true
+  _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
+  rm -f "$err"
 }
 
 # Whether the harness's own OS sandbox for `mode` can START on this host,
@@ -1766,20 +1787,20 @@ _oh_codex_feature_value() {
 #   $1 harness id, $2 mode, $3 directory to probe in
 _OH_SANDBOX_PROBE=""
 _oh_sandbox_starts() {
-    local id="$1" mode="$2" dir="$3" sandbox out rc=0
-    _OH_SANDBOX_PROBE=""
-    [ "$id" = codex ] || return 0
-    case "$mode" in
+  local id="$1" mode="$2" dir="$3" sandbox out rc=0
+  _OH_SANDBOX_PROBE=""
+  [ "$id" = codex ] || return 0
+  case "$mode" in
     auto) sandbox=workspace-write ;;
     read-only | plan) sandbox=read-only ;;
     *) return 0 ;;
-    esac
-    out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'echo ohprobe-ran' </dev/null 2>&1)" || rc=$?
-    case "$rc:$out" in
+  esac
+  out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'echo ohprobe-ran' </dev/null 2>&1)" || rc=$?
+  case "$rc:$out" in
     0:*ohprobe-ran*) return 0 ;;
-    esac
-    _OH_SANDBOX_PROBE="\`codex sandbox -c sandbox_mode=$sandbox\` exited $rc: $(printf '%s' "$out" | tr -d '\000' | tail -c 400)"
-    return 1
+  esac
+  _OH_SANDBOX_PROBE="\`codex sandbox -c sandbox_mode=$sandbox\` exited $rc: $(printf '%s' "$out" | tr -d '\000' | tail -c 400)"
+  return 1
 }
 
 # Why a resumed turn's write came out as it did, for a failure. The turn's own
@@ -1789,28 +1810,28 @@ _oh_sandbox_starts() {
 # host cannot run looks, in the events, exactly like a model that never tried.
 #   $1 harness id, $2 the turn's cwd, $3 its report
 _oh_resume_mode_evidence() {
-    local id="$1" dir="$2" report="$3" sandbox out rc
-    note "  second turn events: $(jq -c '.results[0].events' "$report" | head -c 800)"
-    note "  second turn text: $(jq -r '.results[0].text // ""' "$report" | head -c 500)"
-    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$report" | tail -c 800)"
-    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$report" | tail -n 6 | cut -c1-300)"
-    [ "$id" = codex ] || return 0
-    for sandbox in workspace-write read-only; do
-        # A sandbox that cannot start exits non-zero, which is the evidence
-        # itself — captured, never allowed to end the script under `set -e`.
-        rc=0
-        out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'touch ohprobe.txt; echo probe-touch-exit=$?' </dev/null 2>&1)" || rc=$?
-        note "  codex sandbox probe ($sandbox, exit $rc): $(printf '%s' "$out" | tr -d '\000' | tail -c 600)"
-        rm -f "$dir/ohprobe.txt"
-    done
+  local id="$1" dir="$2" report="$3" sandbox out rc
+  note "  second turn events: $(jq -c '.results[0].events' "$report" | head -c 800)"
+  note "  second turn text: $(jq -r '.results[0].text // ""' "$report" | head -c 500)"
+  note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$report" | tail -c 800)"
+  note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$report" | tail -n 6 | cut -c1-300)"
+  [ "$id" = codex ] || return 0
+  for sandbox in workspace-write read-only; do
+    # A sandbox that cannot start exits non-zero, which is the evidence
+    # itself — captured, never allowed to end the script under `set -e`.
+    rc=0
+    out="$(cd "$dir" && codex sandbox -c "sandbox_mode=$sandbox" -- bash -c 'touch ohprobe.txt; echo probe-touch-exit=$?' </dev/null 2>&1)" || rc=$?
+    note "  codex sandbox probe ($sandbox, exit $rc): $(printf '%s' "$out" | tr -d '\000' | tail -c 600)"
+    rm -f "$dir/ohprobe.txt"
+  done
 }
 
 # Whether a turn's normalized tool events show a `touch` of the file.
 #   $1 report, $2 file name
 _oh_touch_attempted() {
-    jq -e --arg f "$2" \
-        '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
-        "$1" >/dev/null 2>&1
+  jq -e --arg f "$2" \
+    '[(.results[0].events // [])[] | select(.kind == "tool_call") | (.input // {} | tostring)] | any(contains("touch") and contains($f))' \
+    "$1" >/dev/null 2>&1
 }
 
 # One ordinary (non-control) turn on a named session handle, under `--mode`.
@@ -1819,14 +1840,14 @@ _oh_touch_attempted() {
 #   $1 id, $2 mode, $3 session name, $4 store dir, $5 cwd, $6 prompt,
 #   $7 report, $8 stderr, $9.. extra run args
 _oh_resume_mode_turn() {
-    local id="$1" mode="$2" name="$3" store="$4" cwd="$5" prompt="$6" report="$7" err="$8"
-    shift 8
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-    ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
-        --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
-        --timeout "${OH_TIMEOUT:-300}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
+  local id="$1" mode="$2" name="$3" store="$4" cwd="$5" prompt="$6" report="$7" err="$8"
+  shift 8
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
+    --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
+    --timeout "${OH_TIMEOUT:-300}" --compact \
+    "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
 }
 
 # Live proof that `--mode edit` AUTO-APPROVES file edits — the reliably-testable
@@ -1848,34 +1869,34 @@ _oh_resume_mode_turn() {
 # already `allow`, so the check can't distinguish its env mapping and it is omitted
 # (its `OPENCODE_CONFIG_CONTENT` injection is pinned hermetically instead). $1 id.
 oh_edit_enforce() {
-    local id="$1"
-    local bin sandbox editfile status
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1"
+  local bin sandbox editfile status
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    editfile="$(oh_enforce_file edited)"
-    local prompt
-    prompt="You are a non-interactive test fixture in a scratch directory. Using your file-writing/editing tool (do NOT use the shell), create a file named $editfile containing the single word ok, then stop. If that tool call is rejected, reply with the single word DENIED and stop — do not use the shell or any other tool or workaround."
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  editfile="$(oh_enforce_file edited)"
+  local prompt
+  prompt="You are a non-interactive test fixture in a scratch directory. Using your file-writing/editing tool (do NOT use the shell), create a file named $editfile containing the single word ok, then stop. If that tool call is rejected, reply with the single word DENIED and stop — do not use the shell or any other tool or workaround."
 
-    note "  edit-enforce: a file edit must be auto-approved under --mode edit"
-    oh_run "$id" "$prompt" --mode edit --cwd "$sandbox"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-    if [ ! -e "$sandbox/$editfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: --mode edit did NOT auto-approve the file edit ($editfile absent) — edit mode must auto-approve edits (its argv/env mapping may have drifted)"
-    fi
-    note "  ok[edit]: the file edit was auto-approved"
-
+  note "  edit-enforce: a file edit must be auto-approved under --mode edit"
+  oh_run "$id" "$prompt" --mode edit --cwd "$sandbox"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ]; then
     rm -rf "$sandbox"
-    note "PASS: $id edit enforcement"
+    skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  fi
+  if [ ! -e "$sandbox/$editfile" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: --mode edit did NOT auto-approve the file edit ($editfile absent) — edit mode must auto-approve edits (its argv/env mapping may have drifted)"
+  fi
+  note "  ok[edit]: the file edit was auto-approved"
+
+  rm -rf "$sandbox"
+  note "PASS: $id edit enforcement"
 }
 
 # Live proof that a CONTROLLED turn runs under the mode's own policy — the half
@@ -1909,24 +1930,24 @@ oh_edit_enforce() {
 # party's outage as a control-mode violation.
 #   $1 harness id
 oh_control_mode_enforce() {
-    local id="$1" attempt attempts=3 started=$SECONDS status
-    # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, for the same reason `oh_control_enforce` states above it: the retries are a backstop for a turn that never starts, so a phase that passes on its third attempt every night is a phase about to fail — and a transcript that only ever printed one final line could never say so, in a CI-only suite nobody can attach a debugger to.
-    for attempt in $(seq 1 "$attempts"); do
-        status=0
-        _oh_control_mode_enforce_once "$id" || status=$?
-        if [ "$status" -eq 0 ]; then
-            note "  ok: a controlled turn under --mode default ended (attempt $attempt of $attempts, $((SECONDS - started))s)"
-            return 0
-        fi
-        # A REFUSED turn is not the same as a failed one, and only the failed one
-        # is worth another window: a quota does not refill inside this suite.
-        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
-            return "$_OH_NOT_RUN"
-        fi
-        note "  control-mode: attempt $attempt was retired by the harness's own turn failing, not by the mode; retrying"
-    done
-    # llmlint: ignore-end[tool_output_is_signal]
-    fail "$id: a controlled turn under --mode default never got far enough to end — the harness's own turn failed on all $attempts attempts ($((SECONDS - started))s), so its provider or credential is what to look at first, not the control path. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read \`results[0].stdout\` for the error the harness reported; if it names a provider, a key or a model, fix that before reading any of this feature's code"
+  local id="$1" attempt attempts=3 started=$SECONDS status
+  # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, for the same reason `oh_control_enforce` states above it: the retries are a backstop for a turn that never starts, so a phase that passes on its third attempt every night is a phase about to fail — and a transcript that only ever printed one final line could never say so, in a CI-only suite nobody can attach a debugger to.
+  for attempt in $(seq 1 "$attempts"); do
+    status=0
+    _oh_control_mode_enforce_once "$id" || status=$?
+    if [ "$status" -eq 0 ]; then
+      note "  ok: a controlled turn under --mode default ended (attempt $attempt of $attempts, $((SECONDS - started))s)"
+      return 0
+    fi
+    # A REFUSED turn is not the same as a failed one, and only the failed one
+    # is worth another window: a quota does not refill inside this suite.
+    if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+      return "$_OH_NOT_RUN"
+    fi
+    note "  control-mode: attempt $attempt was retired by the harness's own turn failing, not by the mode; retrying"
+  done
+  # llmlint: ignore-end[tool_output_is_signal]
+  fail "$id: a controlled turn under --mode default never got far enough to end — the harness's own turn failed on all $attempts attempts ($((SECONDS - started))s), so its provider or credential is what to look at first, not the control path. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read \`results[0].stdout\` for the error the harness reported; if it names a provider, a key or a model, fix that before reading any of this feature's code"
 }
 
 # One attempt. Returns 0 when the turn ended, 1 when the harness's own turn
@@ -1934,70 +1955,70 @@ oh_control_mode_enforce() {
 # provider refused the turn outright (no verdict, and no retry either). Anything
 # else calls fail().
 _oh_control_mode_enforce_once() {
-    local id="$1"
-    local bin sandbox store name report status
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1"
+  local bin sandbox store name report status
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    store="$sandbox/store"
-    name="mode-$id"
-    report="$sandbox/report.json"
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  store="$sandbox/store"
+  name="mode-$id"
+  report="$sandbox/report.json"
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
-        --harness "$id" --prompt "Reply with the single word READY and stop." \
-        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
-        --mode default --timeout "${OH_TIMEOUT:-120}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err"; then
-        : # a non-zero exit is still an ENDED turn; only the status below decides
-    fi
-    # The report is a subprocess's output, so it is parsed rather than trusted:
-    # a run that produced no readable status did not demonstrate a turn ending,
-    # and defaulting that to "fine" is how a phase goes green having proven
-    # nothing. Only the statuses that mean the turn ENDED are accepted.
-    status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
-    # Ahead of the status, because a refusal outranks it in BOTH directions. A
-    # turn the provider declined ends promptly and cleanly — copilot answered a
-    # quota refusal with `{"stopReason":"end_turn"}` in three seconds — so
-    # reading `ok` off it would pass this phase having never put the mode's
-    # policy to a single question.
-    if _oh_note_provider_refusal "$id" "$report"; then
-        rm -rf "$sandbox"
-        return "$_OH_NOT_RUN"
-    fi
-    case "$status" in
-    skipped)
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-        ;;
-    ok | nonzero)
-        : # the turn ended, which is what this phase asserts
-        ;;
-    *)
-        # The same evidence an inconclusive interrupt attempt leaves, for the
-        # same reason: the frames are where the harness says whether it was
-        # asked to do anything, and `text` says whether it answered — which is
-        # what separates "the mode's policy never arrived" from "it answered and
-        # only its ENDING never came".
-        _oh_control_evidence "$sandbox" "$report"
-        # And the frames are also where the harness says it never got that far.
-        # A turn its own provider REFUSED was already answered above; this is the
-        # other half — a turn that failed on its own and may well succeed on the
-        # next window, so it is retried rather than reported.
-        if [ -n "$(_oh_harness_errors "$report")" ]; then
-            rm -rf "$sandbox"
-            return 1
-        fi
-        rm -rf "$sandbox"
-        fail "$id: a controlled turn under --mode default did not end cleanly (status=${status:-<no readable status in the report>}) — the harness may be waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read the report's \`results[0].stdout\` for the last protocol frame it saw; if the harness asked permission and nothing answered, the fix is in \`domain::dialogue\`, and if it never asked, compare the launch argv against \`domain::control\`'s control_mode_parity grid"
-        ;;
-    esac
+  if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+    --harness "$id" --prompt "Reply with the single word READY and stop." \
+    --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+    --mode default --timeout "${OH_TIMEOUT:-120}" --compact \
+    "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err"; then
+    : # a non-zero exit is still an ENDED turn; only the status below decides
+  fi
+  # The report is a subprocess's output, so it is parsed rather than trusted:
+  # a run that produced no readable status did not demonstrate a turn ending,
+  # and defaulting that to "fine" is how a phase goes green having proven
+  # nothing. Only the statuses that mean the turn ENDED are accepted.
+  status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
+  # Ahead of the status, because a refusal outranks it in BOTH directions. A
+  # turn the provider declined ends promptly and cleanly — copilot answered a
+  # quota refusal with `{"stopReason":"end_turn"}` in three seconds — so
+  # reading `ok` off it would pass this phase having never put the mode's
+  # policy to a single question.
+  if _oh_note_provider_refusal "$id" "$report"; then
     rm -rf "$sandbox"
-    return 0
+    return "$_OH_NOT_RUN"
+  fi
+  case "$status" in
+    skipped)
+      rm -rf "$sandbox"
+      skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+      ;;
+    ok | nonzero)
+      : # the turn ended, which is what this phase asserts
+      ;;
+    *)
+      # The same evidence an inconclusive interrupt attempt leaves, for the
+      # same reason: the frames are where the harness says whether it was
+      # asked to do anything, and `text` says whether it answered — which is
+      # what separates "the mode's policy never arrived" from "it answered and
+      # only its ENDING never came".
+      _oh_control_evidence "$sandbox" "$report"
+      # And the frames are also where the harness says it never got that far.
+      # A turn its own provider REFUSED was already answered above; this is the
+      # other half — a turn that failed on its own and may well succeed on the
+      # next window, so it is retried rather than reported.
+      if [ -n "$(_oh_harness_errors "$report")" ]; then
+        rm -rf "$sandbox"
+        return 1
+      fi
+      rm -rf "$sandbox"
+      fail "$id: a controlled turn under --mode default did not end cleanly (status=${status:-<no readable status in the report>}) — the harness may be waiting on a permission request oneharness did not answer, or the mode's own policy did not reach the controlled launch. Next: run \`oneharness run --harness $id --control --session probe --mode default --prompt hi\` and read the report's \`results[0].stdout\` for the last protocol frame it saw; if the harness asked permission and nothing answered, the fix is in \`domain::dialogue\`, and if it never asked, compare the launch argv against \`domain::control\`'s control_mode_parity grid"
+      ;;
+  esac
+  rm -rf "$sandbox"
+  return 0
 }
 
 # --- hook enforcement --------------------------------------------------------
@@ -2035,73 +2056,73 @@ _oh_control_mode_enforce_once() {
 # spaces), so it carries no quoted arguments: the marker and the oneharness path
 # must be space-free.
 oh_hook_enforce() {
-    local id="$1" scope="${2:-project}"
-    local bin sandbox marker denyfile allowfile out status home
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" scope="${2:-project}"
+  local bin sandbox marker denyfile allowfile out status home
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    # A real repo: some harnesses only discover project-scoped hooks inside one.
-    git init -q "$sandbox" 2>/dev/null || true
-    marker="OHGATEBLOCK${RANDOM}${RANDOM}"
-    denyfile="$sandbox/$marker.txt"
-    allowfile="$sandbox/ohgate-allowed-${RANDOM}${RANDOM}.txt"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  # A real repo: some harnesses only discover project-scoped hooks inside one.
+  git init -q "$sandbox" 2>/dev/null || true
+  marker="OHGATEBLOCK${RANDOM}${RANDOM}"
+  denyfile="$sandbox/$marker.txt"
+  allowfile="$sandbox/ohgate-allowed-${RANDOM}${RANDOM}.txt"
 
-    cat > "$sandbox/oneharness.toml" <<TOML
+  cat >"$sandbox/oneharness.toml" <<TOML
 [[hooks]]
 command = "$bin gate $id --deny-if-contains $marker"
 harnesses = ["$id"]
 plugin_name = "ohgate"
 TOML
 
-    # For a global sync, point HOME/XDG at the sandbox so the install lands where
-    # the run will read it; the same env is passed to the harness via --env.
-    local sync_vars=(ONEHARNESS_NO_CONFIG=) sync_global=() run_extra=()
-    if [ "$scope" = global ]; then
-        home="$sandbox/home"
-        mkdir -p "$home"
-        sync_vars+=("HOME=$home" "XDG_CONFIG_HOME=$sandbox/xdg")
-        sync_global=(--global)
-        run_extra=(--env "HOME=$home" --env "XDG_CONFIG_HOME=$sandbox/xdg")
-    fi
+  # For a global sync, point HOME/XDG at the sandbox so the install lands where
+  # the run will read it; the same env is passed to the harness via --env.
+  local sync_vars=(ONEHARNESS_NO_CONFIG=) sync_global=() run_extra=()
+  if [ "$scope" = global ]; then
+    home="$sandbox/home"
+    mkdir -p "$home"
+    sync_vars+=("HOME=$home" "XDG_CONFIG_HOME=$sandbox/xdg")
+    sync_global=(--global)
+    run_extra=(--env "HOME=$home" --env "XDG_CONFIG_HOME=$sandbox/xdg")
+  fi
 
-    note "  hook-enforce: syncing a gate hook into $id's own config ($scope scope)"
-    if ! out="$(env "${sync_vars[@]}" "$bin" sync --harness "$id" "${sync_global[@]+"${sync_global[@]}"}" \
-        --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
-        printf '%s\n' "$out" >&2
-        rm -rf "$sandbox"
-        fail "$id: oneharness sync failed to install the gate hook"
-    fi
-
-    local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
-
-    note "  hook-enforce[deny]: the gate must block the marked command under bypass"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-    if [ -e "$denyfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the gate did NOT block — $denyfile was created despite the deny marker, so the installed hook is not honored (or its file format drifted)"
-    fi
-    note "  ok[deny]: the gate blocked the marked command"
-
-    note "  hook-enforce[allow]: an unmarked command must run (positive control)"
-    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
-    if [ ! -e "$allowfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the positive-control command never ran ($allowfile absent) — the deny phase cannot be trusted as a real block (does the harness run shell headlessly?)"
-    fi
-    note "  ok[allow]: the unmarked command ran"
-
+  note "  hook-enforce: syncing a gate hook into $id's own config ($scope scope)"
+  if ! out="$(env "${sync_vars[@]}" "$bin" sync --harness "$id" "${sync_global[@]+"${sync_global[@]}"}" \
+    --cwd "$sandbox" --config "$sandbox/oneharness.toml" --compact 2>&1)"; then
+    printf '%s\n' "$out" >&2
     rm -rf "$sandbox"
-    note "PASS: $id hook enforcement"
+    fail "$id: oneharness sync failed to install the gate hook"
+  fi
+
+  local rules='Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means.'
+
+  note "  hook-enforce[deny]: the gate must block the marked command under bypass"
+  oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ]; then
+    rm -rf "$sandbox"
+    skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  fi
+  if [ -e "$denyfile" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: the gate did NOT block — $denyfile was created despite the deny marker, so the installed hook is not honored (or its file format drifted)"
+  fi
+  note "  ok[deny]: the gate blocked the marked command"
+
+  note "  hook-enforce[allow]: an unmarked command must run (positive control)"
+  oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $allowfile. $rules" --cwd "$sandbox" "${run_extra[@]+"${run_extra[@]}"}"
+  if [ ! -e "$allowfile" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: the positive-control command never ran ($allowfile absent) — the deny phase cannot be trusted as a real block (does the harness run shell headlessly?)"
+  fi
+  note "  ok[allow]: the unmarked command ran"
+
+  rm -rf "$sandbox"
+  note "PASS: $id hook enforcement"
 }
 
 # Live proof that out-of-band turn control actually STOPS work: drive a real
@@ -2145,59 +2166,59 @@ TOML
 # The run's own status, or the empty string when no report was written. Used to
 # tell a harness that failed on its own from one that broke a control contract.
 _oh_result_status() {
-    [ -s "$1" ] || return 0
-    jq -r '.results[0].status // ""' "$1" 2>/dev/null || true
+  [ -s "$1" ] || return 0
+  jq -r '.results[0].status // ""' "$1" 2>/dev/null || true
 }
 
 #   $1 sandbox directory, $2 report path
 _oh_control_evidence() {
-    local sandbox="$1" report="$2"
-    if [ -s "$sandbox/run.err" ]; then
-        note "  evidence: last stderr from the run —"
-        tail -n 20 "$sandbox/run.err" | sed 's/^/    /' >&2 || true
-    else
-        note "  evidence: the run wrote nothing to stderr"
-    fi
-    if [ -s "$report" ] && jq -e . "$report" >/dev/null 2>&1; then
-        note "  evidence: result —"
-        jq -r '.results[0] | "    status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind // "none")",
+  local sandbox="$1" report="$2"
+  if [ -s "$sandbox/run.err" ]; then
+    note "  evidence: last stderr from the run —"
+    tail -n 20 "$sandbox/run.err" | sed 's/^/    /' >&2 || true
+  else
+    note "  evidence: the run wrote nothing to stderr"
+  fi
+  if [ -s "$report" ] && jq -e . "$report" >/dev/null 2>&1; then
+    note "  evidence: result —"
+    jq -r '.results[0] | "    status=\(.status) exit_code=\(.exit_code) failure_kind=\(.failure_kind // "none")",
                              "    error=\(.error // "none")",
                              "    text=\((.text // "")[0:300])"' \
-            "$report" >&2 || true
-        # The transcript, last. For a turn driven over a protocol it is the only
-        # place the SERVER speaks: the launcher's stderr says a run failed and
-        # the `error` says how oneharness saw it end, but why the harness
-        # refused, errored or never started a turn is in the frames it sent. Its
-        # absence is what left three opencode attempts, nine minutes apart, with
-        # nothing between them but "the control server closed the event stream".
-        note "  evidence: last frames the harness sent —"
-        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
-            | tail -n 15 | cut -c1-400 | sed 's/^/    /' >&2 || true
-        # And the kinds of frame it sent at all, deduped. A turn that never ends
-        # is usually a recognizer that no longer matches rather than a harness
-        # that did nothing, and the `type` a run never saw is invisible in a
-        # tail of the ones it did — this is the whole vocabulary in one line.
-        note "  evidence: frame types seen —"
-        # `tr -d '\r'` before the join, because the Windows runner's `sort` ends
-        # its lines CRLF: joining those on '\n' alone leaves a CR between every
-        # pair, and a CR is a line break to every log viewer — so the one line
-        # this evidence exists to be came out as one type per line.
-        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
-            | jq -R -r 'fromjson? | .type // empty' 2>/dev/null \
-            | sort -u | tr -d '\r' | tr '\n' ' ' | sed 's/^/    /' >&2 || true
-        printf '\n' >&2
-        # And any error a frame carried, in full. The tail above truncates each
-        # line to keep a transcript readable, which is exactly long enough to
-        # print `Provider request failed with HT` and stop — and whether that
-        # ends 401, 429 or 500 is the entire difference between a credential, a
-        # rate limit, and the harness having a bad night.
-        note "  evidence: errors the harness reported —"
-        jq -r '.results[0].stdout // ""' "$report" 2>/dev/null \
-            | jq -R -r 'fromjson? | .. | objects | select(has("message")) | .message' 2>/dev/null \
-            | sort -u | tail -n 5 | cut -c1-300 | sed 's/^/    /' >&2 || true
-    else
-        note "  evidence: no parseable report was written (the run had not finished)"
-    fi
+      "$report" >&2 || true
+    # The transcript, last. For a turn driven over a protocol it is the only
+    # place the SERVER speaks: the launcher's stderr says a run failed and
+    # the `error` says how oneharness saw it end, but why the harness
+    # refused, errored or never started a turn is in the frames it sent. Its
+    # absence is what left three opencode attempts, nine minutes apart, with
+    # nothing between them but "the control server closed the event stream".
+    note "  evidence: last frames the harness sent —"
+    jq -r '.results[0].stdout // ""' "$report" 2>/dev/null |
+      tail -n 15 | cut -c1-400 | sed 's/^/    /' >&2 || true
+    # And the kinds of frame it sent at all, deduped. A turn that never ends
+    # is usually a recognizer that no longer matches rather than a harness
+    # that did nothing, and the `type` a run never saw is invisible in a
+    # tail of the ones it did — this is the whole vocabulary in one line.
+    note "  evidence: frame types seen —"
+    # `tr -d '\r'` before the join, because the Windows runner's `sort` ends
+    # its lines CRLF: joining those on '\n' alone leaves a CR between every
+    # pair, and a CR is a line break to every log viewer — so the one line
+    # this evidence exists to be came out as one type per line.
+    jq -r '.results[0].stdout // ""' "$report" 2>/dev/null |
+      jq -R -r 'fromjson? | .type // empty' 2>/dev/null |
+      sort -u | tr -d '\r' | tr '\n' ' ' | sed 's/^/    /' >&2 || true
+    printf '\n' >&2
+    # And any error a frame carried, in full. The tail above truncates each
+    # line to keep a transcript readable, which is exactly long enough to
+    # print `Provider request failed with HT` and stop — and whether that
+    # ends 401, 429 or 500 is the entire difference between a credential, a
+    # rate limit, and the harness having a bad night.
+    note "  evidence: errors the harness reported —"
+    jq -r '.results[0].stdout // ""' "$report" 2>/dev/null |
+      jq -R -r 'fromjson? | .. | objects | select(has("message")) | .message' 2>/dev/null |
+      sort -u | tail -n 5 | cut -c1-300 | sed 's/^/    /' >&2 || true
+  else
+    note "  evidence: no parseable report was written (the run had not finished)"
+  fi
 }
 
 # A named handle under `--control` must either CONTINUE one conversation or
@@ -2215,109 +2236,109 @@ _oh_control_evidence() {
 # whether a controlled turn ends.
 #   $1 harness id, $2 mechanism (for the refusal's own wording)
 oh_control_session_enforce() {
-    local id="$1" mechanism="$2"
-    local bin sandbox store name marker status text phase first_status
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" mechanism="$2"
+  local bin sandbox store name marker status text phase first_status
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    store="$sandbox/sessions"
-    name="ohses${RANDOM}"
-    marker="$(oh_marker_fixed)"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  store="$sandbox/sessions"
+  name="ohses${RANDOM}"
+  marker="$(oh_marker_fixed)"
 
-    note "  control-session: turn one on session $name ($id)"
-    status=0
-    _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
-        "Remember this exact word for the rest of our conversation: $marker. Reply with only the word OK." \
-        "$sandbox/first.json" "$sandbox/first.err" || status=$?
-    if [ "$status" -ne 0 ] && _oh_note_provider_refusal "$id" "$sandbox/first.json"; then
-        rm -rf "$sandbox"
-        return "$_OH_NOT_RUN"
-    fi
-    first_status="$status"
-    # What turn two is judged against is the stored CONVERSATION, so that — not a
-    # clean exit — is what turn one has to leave behind. Whether a controlled
-    # turn ever ENDS is a different property, owned by `oh_control_mode_enforce`
-    # and already a declared gap on opencode (its uninterrupted controlled turn
-    # runs out its timeout and exits non-zero), so demanding exit 0 here would
-    # retire the continuation check on a harness for a reason that has nothing to
-    # do with continuing. A turn one that established nothing still fails, below,
-    # whatever its exit code was — and on a mechanism that CAN continue, a turn
-    # one the model never saw fails again at the marker.
-    if [ "$status" -ne 0 ]; then
-        note "  first turn exited $status (status=$(jq -r '[.results[].status] | join(",")' "$sandbox/first.json" 2>/dev/null || echo '<no report>')); the handle is what turn two needs, so read on"
-        note "  first turn stderr: $(head -c 500 "$sandbox/first.err" 2>/dev/null || true)"
-    fi
-    if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
-        "$sandbox/first.json" >/dev/null 2>&1; then
-        rm -rf "$sandbox"
-        fail "$id: the first controlled turn left no conversation on a fresh handle — a create that stores no token is a handle turn two cannot be judged against, in either direction ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
-    fi
-
-    note "  control-session: turn two on the SAME handle — continue it, or refuse loudly"
-    status=0
-    _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
-        "What was the exact word I asked you to remember? Reply with only that word." \
-        "$sandbox/second.json" "$sandbox/second.err" || status=$?
-
-    # The refusal: this mechanism drives its own turn and cannot reopen a
-    # conversation, so oneharness says so before anything spawns.
-    if [ "$status" -eq 2 ] && grep -qF "$mechanism" "$sandbox/second.err" \
-        && grep -qF "cannot be continued" "$sandbox/second.err"; then
-        note "PASS: $id refused to continue a handle its mechanism cannot reopen ($mechanism)"
-        rm -rf "$sandbox"
-        return 0
-    fi
-    if [ "$status" -ne 0 ]; then
-        if _oh_note_provider_refusal "$id" "$sandbox/second.json"; then
-            rm -rf "$sandbox"
-            return "$_OH_NOT_RUN"
-        fi
-        note "  second turn stderr: $(head -c 500 "$sandbox/second.err" 2>/dev/null || true)"
-        rm -rf "$sandbox"
-        fail "$id: the second controlled turn on the handle neither continued it nor refused it — it failed for some third reason (exit $status)"
-    fi
-
-    # The continue: the report must say so, and the conversation must actually
-    # carry what turn one established. `phase` alone proved nothing before this
-    # change — it read `continue` while a brand-new thread ran the turn.
-    phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
-    if [ "$phase" != "continue" ]; then
-        rm -rf "$sandbox"
-        fail "$id: the second turn ran but reported phase=$phase — a handle that neither continued nor refused is the silent fresh start this phase exists to catch"
-    fi
-    text="$(jq -r '[.results[] | ((.text // "") + "\n" + (.stdout // ""))] | join("\n")' "$sandbox/second.json")"
-    case "$text" in
-    *"$marker"*)
-        note "PASS: $id continued ONE conversation across two controlled turns (the second turn recalled $marker)"
-        ;;
-    *)
-        note "  second turn text: $(printf '%s' "$text" | head -c 500)"
-        [ "$first_status" -eq 0 ] || note "  (turn one exited $first_status, so read its evidence above before this one: a conversation the model never saw carries nothing either)"
-        rm -rf "$sandbox"
-        fail "$id: the second turn reported phase=continue but the conversation did not carry the word turn one established — the handle resumed nothing, which is exactly what a fresh thread reported as a continue looks like"
-        ;;
-    esac
+  note "  control-session: turn one on session $name ($id)"
+  status=0
+  _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
+    "Remember this exact word for the rest of our conversation: $marker. Reply with only the word OK." \
+    "$sandbox/first.json" "$sandbox/first.err" || status=$?
+  if [ "$status" -ne 0 ] && _oh_note_provider_refusal "$id" "$sandbox/first.json"; then
     rm -rf "$sandbox"
+    return "$_OH_NOT_RUN"
+  fi
+  first_status="$status"
+  # What turn two is judged against is the stored CONVERSATION, so that — not a
+  # clean exit — is what turn one has to leave behind. Whether a controlled
+  # turn ever ENDS is a different property, owned by `oh_control_mode_enforce`
+  # and already a declared gap on opencode (its uninterrupted controlled turn
+  # runs out its timeout and exits non-zero), so demanding exit 0 here would
+  # retire the continuation check on a harness for a reason that has nothing to
+  # do with continuing. A turn one that established nothing still fails, below,
+  # whatever its exit code was — and on a mechanism that CAN continue, a turn
+  # one the model never saw fails again at the marker.
+  if [ "$status" -ne 0 ]; then
+    note "  first turn exited $status (status=$(jq -r '[.results[].status] | join(",")' "$sandbox/first.json" 2>/dev/null || echo '<no report>')); the handle is what turn two needs, so read on"
+    note "  first turn stderr: $(head -c 500 "$sandbox/first.err" 2>/dev/null || true)"
+  fi
+  if ! jq -e '.session.phase == "create" and (.session.token // null) != null' \
+    "$sandbox/first.json" >/dev/null 2>&1; then
+    rm -rf "$sandbox"
+    fail "$id: the first controlled turn left no conversation on a fresh handle — a create that stores no token is a handle turn two cannot be judged against, in either direction ($(jq -c '.session' "$sandbox/first.json" 2>/dev/null || echo '<no session block>'))"
+  fi
+
+  note "  control-session: turn two on the SAME handle — continue it, or refuse loudly"
+  status=0
+  _oh_control_session_turn "$id" "$name" "$store" "$sandbox" \
+    "What was the exact word I asked you to remember? Reply with only that word." \
+    "$sandbox/second.json" "$sandbox/second.err" || status=$?
+
+  # The refusal: this mechanism drives its own turn and cannot reopen a
+  # conversation, so oneharness says so before anything spawns.
+  if [ "$status" -eq 2 ] && grep -qF "$mechanism" "$sandbox/second.err" &&
+    grep -qF "cannot be continued" "$sandbox/second.err"; then
+    note "PASS: $id refused to continue a handle its mechanism cannot reopen ($mechanism)"
+    rm -rf "$sandbox"
+    return 0
+  fi
+  if [ "$status" -ne 0 ]; then
+    if _oh_note_provider_refusal "$id" "$sandbox/second.json"; then
+      rm -rf "$sandbox"
+      return "$_OH_NOT_RUN"
+    fi
+    note "  second turn stderr: $(head -c 500 "$sandbox/second.err" 2>/dev/null || true)"
+    rm -rf "$sandbox"
+    fail "$id: the second controlled turn on the handle neither continued it nor refused it — it failed for some third reason (exit $status)"
+  fi
+
+  # The continue: the report must say so, and the conversation must actually
+  # carry what turn one established. `phase` alone proved nothing before this
+  # change — it read `continue` while a brand-new thread ran the turn.
+  phase="$(jq -r '.session.phase // "null"' "$sandbox/second.json")"
+  if [ "$phase" != "continue" ]; then
+    rm -rf "$sandbox"
+    fail "$id: the second turn ran but reported phase=$phase — a handle that neither continued nor refused is the silent fresh start this phase exists to catch"
+  fi
+  text="$(jq -r '[.results[] | ((.text // "") + "\n" + (.stdout // ""))] | join("\n")' "$sandbox/second.json")"
+  case "$text" in
+    *"$marker"*)
+      note "PASS: $id continued ONE conversation across two controlled turns (the second turn recalled $marker)"
+      ;;
+    *)
+      note "  second turn text: $(printf '%s' "$text" | head -c 500)"
+      [ "$first_status" -eq 0 ] || note "  (turn one exited $first_status, so read its evidence above before this one: a conversation the model never saw carries nothing either)"
+      rm -rf "$sandbox"
+      fail "$id: the second turn reported phase=continue but the conversation did not carry the word turn one established — the handle resumed nothing, which is exactly what a fresh thread reported as a continue looks like"
+      ;;
+  esac
+  rm -rf "$sandbox"
 }
 
 # One controlled turn on a named handle.
 #   $1 id, $2 session name, $3 store dir, $4 cwd, $5 prompt, $6 report, $7 stderr
 _oh_control_session_turn() {
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-    # These turns ask for no tools at all, so the grant buys nothing here — but
-    # the mode has to be one EVERY control mechanism ends a turn under, and
-    # `default` is not (a controlled opencode turn under it does not end; see
-    # `known_gap` in e2e-control.sh). Confined to a fresh mktemp sandbox, like
-    # every other oh_*_enforce phase.
-    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
-    ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$1" --prompt "$5" \
-        --control --session "$2" --session-dir "$3" --cwd "$4" \
-        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" >"$6" 2>"$7"
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  # These turns ask for no tools at all, so the grant buys nothing here — but
+  # the mode has to be one EVERY control mechanism ends a turn under, and
+  # `default` is not (a controlled opencode turn under it does not end; see
+  # `known_gap` in e2e-control.sh). Confined to a fresh mktemp sandbox, like
+  # every other oh_*_enforce phase.
+  local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+  ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$1" --prompt "$5" \
+    --control --session "$2" --session-dir "$3" --cwd "$4" \
+    "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
+    "${model_args[@]+"${model_args[@]}"}" >"$6" 2>"$7"
 }
 
 # A controlled turn must run under the model a HARNESS-SCOPED config key names,
@@ -2327,302 +2348,302 @@ _oh_control_session_turn() {
 # different path, so it cannot show a per-harness model failing to.
 #   $1 harness id, $2 the model the config names
 oh_control_model_enforce() {
-    local id="$1" model="$2"
-    local bin sandbox store report status requested observed kind
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
-    # The model is written into a TOML string, so it is held to a model id's
-    # own alphabet before anything is planted: a quote or a newline in
-    # CODEX_E2E_MODEL would otherwise rewrite the config rather than name one.
-    case "$model" in
+  local id="$1" model="$2"
+  local bin sandbox store report status requested observed kind
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  # The model is written into a TOML string, so it is held to a model id's
+  # own alphabet before anything is planted: a quote or a newline in
+  # CODEX_E2E_MODEL would otherwise rewrite the config rather than name one.
+  case "$model" in
     '' | *[!A-Za-z0-9._:/-]*)
-        fail "$id: '$model' is not a model id (letters, digits, and ._:/- only); set CODEX_E2E_MODEL to the model this identity should run"
-        ;;
-    esac
+      fail "$id: '$model' is not a model id (letters, digits, and ._:/- only); set CODEX_E2E_MODEL to the model this identity should run"
+      ;;
+  esac
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    store="$sandbox/store"
-    report="$sandbox/report.json"
-    printf '[harness.%s]\nmodel = "%s"\n' "$id" "$model" >"$sandbox/oneharness.toml"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  store="$sandbox/store"
+  report="$sandbox/report.json"
+  printf '[harness.%s]\nmodel = "%s"\n' "$id" "$model" >"$sandbox/oneharness.toml"
 
-    note "  control-model: one controlled turn with $model under [harness.$id] only (no --model)"
-    # --config pins the planted file and the explicit empty ONEHARNESS_NO_CONFIG
-    # guards against a hermetic wrapper's env, exactly as oh_sync_enforce does.
-    # These turns ask for no tools at all, so the grant buys nothing here — but
-    # the mode has to be one EVERY control mechanism ends a turn under, and
-    # `default` is not (see `known_gap` in e2e-control.sh). Confined to a fresh
-    # mktemp sandbox, like every other oh_*_enforce phase.
-    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
-    # llmlint: ignore-block[boundary_inputs_validated] Both timeouts are the suite-wide knobs every sibling phase forwards the same way, and each consumer validates its own: `timeout(1)` refuses a malformed duration, and `--timeout` is a clap-validated value oneharness rejects as a usage error before anything spawns.
-    if ! ONEHARNESS_NO_CONFIG='' timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
-        --config "$sandbox/oneharness.toml" \
-        --harness "$id" --prompt "Reply with the single word READY and stop." \
-        --control --session "model-$id" --session-dir "$store" --cwd "$sandbox" \
-        "${grant[@]}" --timeout "${OH_TIMEOUT:-120}" --compact \
-        >"$report" 2>"$sandbox/run.err"; then
-        : # a non-zero exit is data the report explains; the fields below decide
-    fi
-    # llmlint: ignore-end[boundary_inputs_validated]
-    if _oh_note_provider_refusal "$id" "$report"; then
-        rm -rf "$sandbox"
-        return "$_OH_NOT_RUN"
-    fi
-    status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
-    requested="$(jq -er '.results[0].model' <"$report" 2>/dev/null || true)"
-    observed="$(jq -er '.results[0].observed_model' <"$report" 2>/dev/null || true)"
-    kind="$(jq -er '.results[0].failure_kind' <"$report" 2>/dev/null || true)"
-    if [ "$status" = skipped ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-    fi
-    if [ "$requested" != "$model" ]; then
-        _oh_control_evidence "$sandbox" "$report"
-        rm -rf "$sandbox"
-        fail "$id: the report's model is '${requested:-<null>}', not the '$model' the [harness.$id] key named — the per-harness model never resolved for the controlled turn"
-    fi
-    if [ -z "$observed" ]; then
-        _oh_control_evidence "$sandbox" "$report"
-        rm -rf "$sandbox"
-        fail "$id: the report carries no observed_model — the server's own statement of the thread's model (\`thread/start\` response \`result.model\`) was not read back, so a wrong model would spend the turn silently again. Next: read \`results[0].stdout\` for the thread/start response and compare it with \`domain::dialogue\`'s open arm"
-    fi
-    if [ "$observed" != "$requested" ]; then
-        _oh_control_evidence "$sandbox" "$report"
-        rm -rf "$sandbox"
-        fail "$id: the server would run this thread under '$observed', not the requested '$requested' (status=$status, failure_kind=${kind:-null}) — the config's model is not reaching the wire, or the identity cannot serve it; either way oneharness refused the turn rather than spending it"
-    fi
-    if [ "$status" != ok ]; then
-        _oh_control_evidence "$sandbox" "$report"
-        rm -rf "$sandbox"
-        fail "$id: the turn ran under the requested model '$requested' but did not end cleanly (status=$status)"
-    fi
-    note "PASS: $id ran a controlled turn under the [harness.$id] model, and the server reported running $observed"
+  note "  control-model: one controlled turn with $model under [harness.$id] only (no --model)"
+  # --config pins the planted file and the explicit empty ONEHARNESS_NO_CONFIG
+  # guards against a hermetic wrapper's env, exactly as oh_sync_enforce does.
+  # These turns ask for no tools at all, so the grant buys nothing here — but
+  # the mode has to be one EVERY control mechanism ends a turn under, and
+  # `default` is not (see `known_gap` in e2e-control.sh). Confined to a fresh
+  # mktemp sandbox, like every other oh_*_enforce phase.
+  local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+  # llmlint: ignore-block[boundary_inputs_validated] Both timeouts are the suite-wide knobs every sibling phase forwards the same way, and each consumer validates its own: `timeout(1)` refuses a malformed duration, and `--timeout` is a clap-validated value oneharness rejects as a usage error before anything spawns.
+  if ! ONEHARNESS_NO_CONFIG='' timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+    --config "$sandbox/oneharness.toml" \
+    --harness "$id" --prompt "Reply with the single word READY and stop." \
+    --control --session "model-$id" --session-dir "$store" --cwd "$sandbox" \
+    "${grant[@]}" --timeout "${OH_TIMEOUT:-120}" --compact \
+    >"$report" 2>"$sandbox/run.err"; then
+    : # a non-zero exit is data the report explains; the fields below decide
+  fi
+  # llmlint: ignore-end[boundary_inputs_validated]
+  if _oh_note_provider_refusal "$id" "$report"; then
     rm -rf "$sandbox"
-    return 0
+    return "$_OH_NOT_RUN"
+  fi
+  status="$(jq -er '.results[0].status' <"$report" 2>/dev/null || true)"
+  requested="$(jq -er '.results[0].model' <"$report" 2>/dev/null || true)"
+  observed="$(jq -er '.results[0].observed_model' <"$report" 2>/dev/null || true)"
+  kind="$(jq -er '.results[0].failure_kind' <"$report" 2>/dev/null || true)"
+  if [ "$status" = skipped ]; then
+    rm -rf "$sandbox"
+    skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
+  fi
+  if [ "$requested" != "$model" ]; then
+    _oh_control_evidence "$sandbox" "$report"
+    rm -rf "$sandbox"
+    fail "$id: the report's model is '${requested:-<null>}', not the '$model' the [harness.$id] key named — the per-harness model never resolved for the controlled turn"
+  fi
+  if [ -z "$observed" ]; then
+    _oh_control_evidence "$sandbox" "$report"
+    rm -rf "$sandbox"
+    fail "$id: the report carries no observed_model — the server's own statement of the thread's model (\`thread/start\` response \`result.model\`) was not read back, so a wrong model would spend the turn silently again. Next: read \`results[0].stdout\` for the thread/start response and compare it with \`domain::dialogue\`'s open arm"
+  fi
+  if [ "$observed" != "$requested" ]; then
+    _oh_control_evidence "$sandbox" "$report"
+    rm -rf "$sandbox"
+    fail "$id: the server would run this thread under '$observed', not the requested '$requested' (status=$status, failure_kind=${kind:-null}) — the config's model is not reaching the wire, or the identity cannot serve it; either way oneharness refused the turn rather than spending it"
+  fi
+  if [ "$status" != ok ]; then
+    _oh_control_evidence "$sandbox" "$report"
+    rm -rf "$sandbox"
+    fail "$id: the turn ran under the requested model '$requested' but did not end cleanly (status=$status)"
+  fi
+  note "PASS: $id ran a controlled turn under the [harness.$id] model, and the server reported running $observed"
+  rm -rf "$sandbox"
+  return 0
 }
 
 oh_control_enforce() {
-    local id="$1" expected_mechanism="$2"
-    # Three attempts, not two: an inconclusive attempt is a model that refused or
-    # raced, and a harness that declines this fixture outright (answers `ok` in
-    # under ten seconds having run no tool at all) would retire the phase on
-    # model mood rather than on control behavior. Retrying cannot hide a
-    # regression — every real contract violation below calls `fail` on the spot,
-    # and only a turn that proved NOTHING comes back here.
-    #
-    # It is a backstop, not the mechanism: the workload each attempt drives is
-    # sized so a turn CANNOT finish it inside the interrupt window (see the
-    # prompt below), so a harness that needs the retries is telling you
-    # something. Which attempt won is reported for exactly that reason — a phase
-    # that passes on the third every night is a phase about to fail.
-    local attempt attempts=3 started=$SECONDS status
-    for attempt in $(seq 1 "$attempts"); do
-        status=0
-        _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism" || status=$?
-        if [ "$status" -eq 0 ]; then
-            note "PASS: $id control enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
-            return 0
-        fi
-        # A turn the provider refused never started, so there is nothing to
-        # retry: the quota will not refill inside this suite. The attempt already
-        # said so in the provider's own words; hand the verdict up rather than
-        # spending two more windows to reach the same non-answer.
-        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
-            return "$_OH_NOT_RUN"
-        fi
-        note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
-    done
-    fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts ($((SECONDS - started))s)"
+  local id="$1" expected_mechanism="$2"
+  # Three attempts, not two: an inconclusive attempt is a model that refused or
+  # raced, and a harness that declines this fixture outright (answers `ok` in
+  # under ten seconds having run no tool at all) would retire the phase on
+  # model mood rather than on control behavior. Retrying cannot hide a
+  # regression — every real contract violation below calls `fail` on the spot,
+  # and only a turn that proved NOTHING comes back here.
+  #
+  # It is a backstop, not the mechanism: the workload each attempt drives is
+  # sized so a turn CANNOT finish it inside the interrupt window (see the
+  # prompt below), so a harness that needs the retries is telling you
+  # something. Which attempt won is reported for exactly that reason — a phase
+  # that passes on the third every night is a phase about to fail.
+  local attempt attempts=3 started=$SECONDS status
+  for attempt in $(seq 1 "$attempts"); do
+    status=0
+    _oh_control_enforce_once "$id" "$attempt" "$expected_mechanism" || status=$?
+    if [ "$status" -eq 0 ]; then
+      note "PASS: $id control enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
+      return 0
+    fi
+    # A turn the provider refused never started, so there is nothing to
+    # retry: the quota will not refill inside this suite. The attempt already
+    # said so in the provider's own words; hand the verdict up rather than
+    # spending two more windows to reach the same non-answer.
+    if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+      return "$_OH_NOT_RUN"
+    fi
+    note "  control-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
+  done
+  fail "$id: the turn never stayed in flight long enough to interrupt across $attempts attempts ($((SECONDS - started))s)"
 }
 
 # One attempt. Returns 0 on a proven interrupt, 1 when the turn ended too early
 # to prove anything (retryable). Any real contract violation calls fail().
 _oh_control_enforce_once() {
-    local id="$1" attempt="$2" expected_mechanism="$3"
-    local bin sandbox store name socket count frozen frozen_after report
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" attempt="$2" expected_mechanism="$3"
+  local bin sandbox store name socket count frozen frozen_after report
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    git init -q "$sandbox" 2>/dev/null || true
-    store="$sandbox/sessions"
-    name="ohctl${attempt}${RANDOM}"
-    socket="$store/control/$name.sock"
-    report="$sandbox/report.json"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  git init -q "$sandbox" 2>/dev/null || true
+  store="$sandbox/sessions"
+  name="ohctl${attempt}${RANDOM}"
+  socket="$store/control/$name.sock"
+  report="$sandbox/report.json"
 
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    # Many small steps with a pause between each: the turn must still be running
-    # when the interrupt arrives, and each step must be individually observable.
-    # `steps` is the ceiling the assertion below reads too, so the prompt and the
-    # "did it merely finish?" test can never drift apart.
-    #
-    # The PAUSE is what makes staying in flight a property of the workload rather
-    # than of how fast the model happens to be. The interrupt lands as soon as
-    # two steps exist and the assertion is over ~18s later, while the work asked
-    # for is $steps × $pause seconds of sleeping — so no agent can outrun the
-    # window, and one that batches every file into a single command (the failure
-    # the ONE-PER-TOOL-CALL wording exists for) is still sleeping when the abort
-    # arrives. Three attempts remain as a backstop for a turn that never starts;
-    # they are not how this phase stays in flight.
-    local steps=60 pause=3 last
-    last="$(printf 'step-%03d.txt' "$steps")"
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+  # Many small steps with a pause between each: the turn must still be running
+  # when the interrupt arrives, and each step must be individually observable.
+  # `steps` is the ceiling the assertion below reads too, so the prompt and the
+  # "did it merely finish?" test can never drift apart.
+  #
+  # The PAUSE is what makes staying in flight a property of the workload rather
+  # than of how fast the model happens to be. The interrupt lands as soon as
+  # two steps exist and the assertion is over ~18s later, while the work asked
+  # for is $steps × $pause seconds of sleeping — so no agent can outrun the
+  # window, and one that batches every file into a single command (the failure
+  # the ONE-PER-TOOL-CALL wording exists for) is still sleeping when the abort
+  # arrives. Three attempts remain as a backstop for a turn that never starts;
+  # they are not how this phase stays in flight.
+  local steps=60 pause=3 last
+  last="$(printf 'step-%03d.txt' "$steps")"
+  local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
 
-    # The turn must actually run shell commands for there to be work to stop, so a
-    # narrower mode would make the freeze assertion vacuous. Confined to a fresh
-    # mktemp sandbox, like every other oh_*_enforce phase.
-    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
-    note "  control-enforce: starting a controlled run ($id, session $name)"
-    ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
-        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
-        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
-    local run_pid=$!
+  # The turn must actually run shell commands for there to be work to stop, so a
+  # narrower mode would make the freeze assertion vacuous. Confined to a fresh
+  # mktemp sandbox, like every other oh_*_enforce phase.
+  local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+  note "  control-enforce: starting a controlled run ($id, session $name)"
+  ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
+    --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+    "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
+    "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
+  local run_pid=$!
 
-    # The socket must appear at the documented path while the run is alive.
-    if ! _oh_wait_for 60 test -S "$socket"; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
-        rm -rf "$sandbox"
-        fail "$id: no control socket appeared at $socket (--control did not open one)"
-    fi
-    note "  ok: control socket present at $socket"
-
-    # Wait until the agent is demonstrably working: at least two steps done, so
-    # a frozen count afterwards means something real stopped. A run that has
-    # already EXITED will never produce them, so stop waiting the moment it does
-    # — waiting out the full window on a dead run is how three opencode attempts
-    # cost nine minutes to report one thing three times.
-    if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        note "  control-enforce: the agent never produced two steps"
-        _oh_control_evidence "$sandbox" "$report"
-        # An agent that did no work because its own provider refused the turn is
-        # not this feature failing to keep a turn in flight.
-        if _oh_note_provider_refusal "$id" "$report"; then
-            rm -rf "$sandbox"
-            return "$_OH_NOT_RUN"
-        fi
-        rm -rf "$sandbox"
-        return 1
-    fi
-    # The other way the wait settles: the run is over. Whether
-    # it did two steps first or none, there is nothing in flight to interrupt.
-    if ! kill -0 "$run_pid" 2>/dev/null; then
-        wait "$run_pid" 2>/dev/null || true
-        note "  control-enforce: the run ended before any work could be interrupted ($(_oh_step_count "$sandbox") step files)"
-        _oh_control_evidence "$sandbox" "$report"
-        # The shape a quota refusal takes: the turn ends in seconds having run
-        # nothing, and only the message it carried says why.
-        if _oh_note_provider_refusal "$id" "$report"; then
-            rm -rf "$sandbox"
-            return "$_OH_NOT_RUN"
-        fi
-        rm -rf "$sandbox"
-        return 1
-    fi
-    # A turn that already wrote every file it was asked for has nothing left to
-    # stop, so a frozen count afterwards is what finishing looks like, not what
-    # an interrupt looks like. Inconclusive, never a pass.
-    count="$(_oh_step_count "$sandbox")"
-    if [ "$count" -ge "$steps" ]; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        note "  control-enforce: the agent finished all $steps steps before the interrupt could land"
-        return 1
-    fi
-
-    note "  control-enforce: interrupting from a separate process"
-    local frame
-    frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --compact 2>&1)" || {
-        # A turn that ended between the count check and the interrupt answers
-        # `no_active_turn` — retryable, not a regression.
-        if printf '%s' "$frame" | grep -q no_active_turn; then
-            kill "$run_pid" 2>/dev/null || true
-            wait "$run_pid" 2>/dev/null || true
-            rm -rf "$sandbox"
-            return 1
-        fi
-        printf '%s\n' "$frame" >&2
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        fail "$id: the interrupt was refused"
-    }
-    local ok mechanism
-    ok="$(printf '%s' "$frame" | jq -r '.ok')"
-    mechanism="$(printf '%s' "$frame" | jq -r '.mechanism // ""')"
-    [ "$ok" = "true" ] || {
-        printf '%s\n' "$frame" >&2
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        fail "$id: the interrupt response was not ok"
-    }
-    if ! _oh_control_mechanism_matches "$mechanism" "$expected_mechanism"; then
-        rm -rf "$sandbox"
-        fail "$id: the interrupt response carried mechanism '$mechanism', expected '$expected_mechanism'"
-    fi
-    note "  ok: interrupt served by mechanism '$mechanism'"
-
-    # THE assertion: the work is frozen. Sample right after the interrupt (with
-    # a beat for an in-flight tool call to land), then again 15s later.
-    sleep 3
-    frozen="$(_oh_step_count "$sandbox")"
-    # Same trap on the other side of the interrupt: a turn that raced to the
-    # ceiling in the seconds it took to send the frame would hold at $steps for
-    # any window you cared to watch, and that reading is indistinguishable from a
-    # completed turn. Retry rather than bank it.
-    if [ "$frozen" -ge "$steps" ]; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        note "  control-enforce: the count reached all $steps steps, so a freeze proves nothing"
-        return 1
-    fi
-    sleep 15
-    frozen_after="$(_oh_step_count "$sandbox")"
-    if [ "$frozen_after" != "$frozen" ]; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the 15s after the interrupt, so the '$mechanism' interrupt is not honored"
-    fi
-    note "  ok: work frozen at $frozen step files for 15s after the interrupt"
-
+  # The socket must appear at the documented path while the run is alive.
+  if ! _oh_wait_for 60 test -S "$socket"; then
+    kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    # The run must have ended on its own (not been killed) and recorded the
-    # interrupt, and the session must have survived.
-    if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served")' "$report" >/dev/null 2>&1; then
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
-        head -c 2000 "$report" >&2 || true
-        rm -rf "$sandbox"
-        fail "$id: the run report did not record a served interrupt"
-    fi
-    if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
-        rm -rf "$sandbox"
-        fail "$id: the session did not survive the interrupt (no token was captured), so the turn was destroyed rather than redirected"
-    fi
-    if [ -e "$socket" ]; then
-        rm -rf "$sandbox"
-        fail "$id: the control socket outlived the run ($socket still present)"
-    fi
-    note "  ok: report records the interrupt, session survived, socket removed"
-
+    sed 's/^/    /' "$sandbox/run.err" >&2 || true
     rm -rf "$sandbox"
-    return 0
+    fail "$id: no control socket appeared at $socket (--control did not open one)"
+  fi
+  note "  ok: control socket present at $socket"
+
+  # Wait until the agent is demonstrably working: at least two steps done, so
+  # a frozen count afterwards means something real stopped. A run that has
+  # already EXITED will never produce them, so stop waiting the moment it does
+  # — waiting out the full window on a dead run is how three opencode attempts
+  # cost nine minutes to report one thing three times.
+  if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    note "  control-enforce: the agent never produced two steps"
+    _oh_control_evidence "$sandbox" "$report"
+    # An agent that did no work because its own provider refused the turn is
+    # not this feature failing to keep a turn in flight.
+    if _oh_note_provider_refusal "$id" "$report"; then
+      rm -rf "$sandbox"
+      return "$_OH_NOT_RUN"
+    fi
+    rm -rf "$sandbox"
+    return 1
+  fi
+  # The other way the wait settles: the run is over. Whether
+  # it did two steps first or none, there is nothing in flight to interrupt.
+  if ! kill -0 "$run_pid" 2>/dev/null; then
+    wait "$run_pid" 2>/dev/null || true
+    note "  control-enforce: the run ended before any work could be interrupted ($(_oh_step_count "$sandbox") step files)"
+    _oh_control_evidence "$sandbox" "$report"
+    # The shape a quota refusal takes: the turn ends in seconds having run
+    # nothing, and only the message it carried says why.
+    if _oh_note_provider_refusal "$id" "$report"; then
+      rm -rf "$sandbox"
+      return "$_OH_NOT_RUN"
+    fi
+    rm -rf "$sandbox"
+    return 1
+  fi
+  # A turn that already wrote every file it was asked for has nothing left to
+  # stop, so a frozen count afterwards is what finishing looks like, not what
+  # an interrupt looks like. Inconclusive, never a pass.
+  count="$(_oh_step_count "$sandbox")"
+  if [ "$count" -ge "$steps" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    note "  control-enforce: the agent finished all $steps steps before the interrupt could land"
+    return 1
+  fi
+
+  note "  control-enforce: interrupting from a separate process"
+  local frame
+  frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --compact 2>&1)" || {
+    # A turn that ended between the count check and the interrupt answers
+    # `no_active_turn` — retryable, not a regression.
+    if printf '%s' "$frame" | grep -q no_active_turn; then
+      kill "$run_pid" 2>/dev/null || true
+      wait "$run_pid" 2>/dev/null || true
+      rm -rf "$sandbox"
+      return 1
+    fi
+    printf '%s\n' "$frame" >&2
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the interrupt was refused"
+  }
+  local ok mechanism
+  ok="$(printf '%s' "$frame" | jq -r '.ok')"
+  mechanism="$(printf '%s' "$frame" | jq -r '.mechanism // ""')"
+  [ "$ok" = "true" ] || {
+    printf '%s\n' "$frame" >&2
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the interrupt response was not ok"
+  }
+  if ! _oh_control_mechanism_matches "$mechanism" "$expected_mechanism"; then
+    rm -rf "$sandbox"
+    fail "$id: the interrupt response carried mechanism '$mechanism', expected '$expected_mechanism'"
+  fi
+  note "  ok: interrupt served by mechanism '$mechanism'"
+
+  # THE assertion: the work is frozen. Sample right after the interrupt (with
+  # a beat for an in-flight tool call to land), then again 15s later.
+  sleep 3
+  frozen="$(_oh_step_count "$sandbox")"
+  # Same trap on the other side of the interrupt: a turn that raced to the
+  # ceiling in the seconds it took to send the frame would hold at $steps for
+  # any window you cared to watch, and that reading is indistinguishable from a
+  # completed turn. Retry rather than bank it.
+  if [ "$frozen" -ge "$steps" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    note "  control-enforce: the count reached all $steps steps, so a freeze proves nothing"
+    return 1
+  fi
+  sleep 15
+  frozen_after="$(_oh_step_count "$sandbox")"
+  if [ "$frozen_after" != "$frozen" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the 15s after the interrupt, so the '$mechanism' interrupt is not honored"
+  fi
+  note "  ok: work frozen at $frozen step files for 15s after the interrupt"
+
+  wait "$run_pid" 2>/dev/null || true
+  # The run must have ended on its own (not been killed) and recorded the
+  # interrupt, and the session must have survived.
+  if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served")' "$report" >/dev/null 2>&1; then
+    sed 's/^/    /' "$sandbox/run.err" >&2 || true
+    head -c 2000 "$report" >&2 || true
+    rm -rf "$sandbox"
+    fail "$id: the run report did not record a served interrupt"
+  fi
+  if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
+    rm -rf "$sandbox"
+    fail "$id: the session did not survive the interrupt (no token was captured), so the turn was destroyed rather than redirected"
+  fi
+  if [ -e "$socket" ]; then
+    rm -rf "$sandbox"
+    fail "$id: the control socket outlived the run ($socket still present)"
+  fi
+  note "  ok: report records the interrupt, session survived, socket removed"
+
+  rm -rf "$sandbox"
+  return 0
 }
 
 _oh_control_mechanism_matches() {
-    [ -n "$2" ] && [ "$1" = "$2" ]
+  [ -n "$2" ] && [ "$1" = "$2" ]
 }
 
 # Live proof that an interrupt's REDIRECTION is delivered: drive a real turn
@@ -2647,26 +2668,26 @@ _oh_control_mechanism_matches() {
 # above `oh_control_enforce`: a CI log needs them to attribute a failure inside a
 # multi-minute two-turn exchange to the step that produced it.
 oh_control_redirect_enforce() {
-    local id="$1"
-    # Attempts and duration reported for the same reason as `oh_control_enforce`:
-    # the retries are a backstop for a turn that never starts, so a harness
-    # spending them is the finding, and a transcript that never says which
-    # attempt won cannot tell anyone that.
-    local attempt attempts=3 started=$SECONDS status
-    for attempt in $(seq 1 "$attempts"); do
-        status=0
-        _oh_control_redirect_enforce_once "$id" "$attempt" || status=$?
-        if [ "$status" -eq 0 ]; then
-            note "PASS: $id redirection enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
-            return 0
-        fi
-        # Nothing to retry: the provider refused, and it will refuse again.
-        if [ "$status" -eq "$_OH_NOT_RUN" ]; then
-            return "$_OH_NOT_RUN"
-        fi
-        note "  redirect-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
-    done
-    fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts ($((SECONDS - started))s)"
+  local id="$1"
+  # Attempts and duration reported for the same reason as `oh_control_enforce`:
+  # the retries are a backstop for a turn that never starts, so a harness
+  # spending them is the finding, and a transcript that never says which
+  # attempt won cannot tell anyone that.
+  local attempt attempts=3 started=$SECONDS status
+  for attempt in $(seq 1 "$attempts"); do
+    status=0
+    _oh_control_redirect_enforce_once "$id" "$attempt" || status=$?
+    if [ "$status" -eq 0 ]; then
+      note "PASS: $id redirection enforcement (attempt $attempt of $attempts, $((SECONDS - started))s)"
+      return 0
+    fi
+    # Nothing to retry: the provider refused, and it will refuse again.
+    if [ "$status" -eq "$_OH_NOT_RUN" ]; then
+      return "$_OH_NOT_RUN"
+    fi
+    note "  redirect-enforce: attempt $attempt was inconclusive (the turn ended, or finished every step, before the interrupt landed); retrying"
+  done
+  fail "$id: the turn never stayed in flight long enough to redirect across $attempts attempts ($((SECONDS - started))s)"
 }
 
 # Report what a control-suite run actually proved, and decide whether a PARTIAL
@@ -2701,220 +2722,220 @@ oh_control_redirect_enforce() {
 #   $4 ids that ran and failed, $5 ids whose provider refused (with reasons),
 #   $6 ids carrying a known gap (with reasons)
 oh_control_report_outcome() {
-    local proven="$1" skipped="$2" took="$3" failed="${4:-}" refused="${5:-}" gaps="${6:-}"
-    # Everything that did not run, whatever kept it from running — one list, so
-    # a reader counting harnesses against the registry does not have to.
-    local not_run="$skipped"
-    if [ -n "$refused" ]; then
-        not_run="${not_run:+$not_run }$refused"
+  local proven="$1" skipped="$2" took="$3" failed="${4:-}" refused="${5:-}" gaps="${6:-}"
+  # Everything that did not run, whatever kept it from running — one list, so
+  # a reader counting harnesses against the registry does not have to.
+  local not_run="$skipped"
+  if [ -n "$refused" ]; then
+    not_run="${not_run:+$not_run }$refused"
+  fi
+  if [ -n "$failed" ]; then
+    fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${not_run:-none}) after $took"
+  fi
+  if [ -z "$proven" ]; then
+    skip "no controllable harness proved anything after $took (unproven: ${not_run:-none})"
+  fi
+  if [ -n "$refused" ]; then
+    note "NOT RUN (the provider refused the turn): $refused"
+  fi
+  if [ -n "$gaps" ]; then
+    note "KNOWN GAP (reported, not proven): $gaps"
+  fi
+  if [ -n "$skipped" ]; then
+    if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
+      fail "no credentials for: $skipped (OH_E2E_NO_SKIP is set, so every controllable harness must actually run; proven: $proven)"
     fi
-    if [ -n "$failed" ]; then
-        fail "turn control is NOT honored by: $failed (proven: ${proven:-none}; not run: ${not_run:-none}) after $took"
-    fi
-    if [ -z "$proven" ]; then
-        skip "no controllable harness proved anything after $took (unproven: ${not_run:-none})"
-    fi
-    if [ -n "$refused" ]; then
-        note "NOT RUN (the provider refused the turn): $refused"
-    fi
-    if [ -n "$gaps" ]; then
-        note "KNOWN GAP (reported, not proven): $gaps"
-    fi
-    if [ -n "$skipped" ]; then
-        if [ -n "${OH_E2E_NO_SKIP:-}" ]; then
-            fail "no credentials for: $skipped (OH_E2E_NO_SKIP is set, so every controllable harness must actually run; proven: $proven)"
-        fi
-        note "NOT PROVEN THIS RUN (no credentials): $skipped"
-    fi
-    note "PASS: turn control and redirection honored by every harness proven here: $proven (in $took)"
+    note "NOT PROVEN THIS RUN (no credentials): $skipped"
+  fi
+  note "PASS: turn control and redirection honored by every harness proven here: $proven (in $took)"
 }
 
 # One attempt. Returns 0 on a proven redirection, 1 when the turn ended too early
 # to prove anything (retryable). Any real contract violation calls fail().
 _oh_control_redirect_enforce_once() {
-    local id="$1" attempt="$2"
-    local bin sandbox store name socket count frozen frozen_after report marker redirected
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1" attempt="$2"
+  local bin sandbox store name socket count frozen frozen_after report marker redirected
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    git init -q "$sandbox" 2>/dev/null || true
-    store="$sandbox/sessions"
-    name="ohred${attempt}${RANDOM}"
-    socket="$store/control/$name.sock"
-    report="$sandbox/report.json"
-    # The redirected work names a file nothing else in this sandbox could create,
-    # so its presence can only mean the message reached the agent.
-    marker="ohredirect${RANDOM}${RANDOM}"
-    redirected="$sandbox/$marker.txt"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  git init -q "$sandbox" 2>/dev/null || true
+  store="$sandbox/sessions"
+  name="ohred${attempt}${RANDOM}"
+  socket="$store/control/$name.sock"
+  report="$sandbox/report.json"
+  # The redirected work names a file nothing else in this sandbox could create,
+  # so its presence can only mean the message reached the agent.
+  marker="ohredirect${RANDOM}${RANDOM}"
+  redirected="$sandbox/$marker.txt"
 
-    local model_args=()
-    [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  local model_args=()
+  [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-    # Same workload, and same reason it is paced: see `_oh_control_enforce_once`.
-    local steps=60 pause=3 last
-    last="$(printf 'step-%03d.txt' "$steps")"
-    local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
-    local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
+  # Same workload, and same reason it is paced: see `_oh_control_enforce_once`.
+  local steps=60 pause=3 last
+  last="$(printf 'step-%03d.txt' "$steps")"
+  local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+  local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
 
-    # The turn must actually run shell commands for there to be work to stop and
-    # work to redirect to. Confined to a fresh mktemp sandbox, like every other
-    # oh_*_enforce phase.
-    local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
-    note "  redirect-enforce: starting a controlled run ($id, session $name)"
-    ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
-        --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
-        "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
-        "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
-    local run_pid=$!
+  # The turn must actually run shell commands for there to be work to stop and
+  # work to redirect to. Confined to a fresh mktemp sandbox, like every other
+  # oh_*_enforce phase.
+  local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
+  note "  redirect-enforce: starting a controlled run ($id, session $name)"
+  ONEHARNESS_NO_CONFIG=1 "$bin" run --harness "$id" --prompt "$prompt" \
+    --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
+    "${grant[@]}" --timeout "${OH_TIMEOUT:-300}" --compact \
+    "${model_args[@]+"${model_args[@]}"}" >"$report" 2>"$sandbox/run.err" &
+  local run_pid=$!
 
-    if ! _oh_wait_for 60 test -S "$socket"; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
-        rm -rf "$sandbox"
-        fail "$id: no control socket appeared at $socket (--control did not open one)"
-    fi
-
-    if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        note "  redirect-enforce: the agent never produced two steps"
-        _oh_control_evidence "$sandbox" "$report"
-        # See `_oh_control_enforce_once`: a turn the provider refused never ran,
-        # so it says nothing about redirection either.
-        if _oh_note_provider_refusal "$id" "$report"; then
-            rm -rf "$sandbox"
-            return "$_OH_NOT_RUN"
-        fi
-        rm -rf "$sandbox"
-        return 1
-    fi
-    if ! kill -0 "$run_pid" 2>/dev/null; then
-        wait "$run_pid" 2>/dev/null || true
-        note "  redirect-enforce: the run ended before any work could be redirected ($(_oh_step_count "$sandbox") step files)"
-        _oh_control_evidence "$sandbox" "$report"
-        if _oh_note_provider_refusal "$id" "$report"; then
-            rm -rf "$sandbox"
-            return "$_OH_NOT_RUN"
-        fi
-        rm -rf "$sandbox"
-        return 1
-    fi
-    count="$(_oh_step_count "$sandbox")"
-    if [ "$count" -ge "$steps" ]; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        note "  redirect-enforce: the agent finished all $steps steps before the interrupt could land"
-        return 1
-    fi
-
-    note "  redirect-enforce: interrupting WITH a redirection from a separate process"
-    local frame
-    frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --input "$redirect" --compact 2>&1)" || {
-        if printf '%s' "$frame" | grep -q no_active_turn; then
-            kill "$run_pid" 2>/dev/null || true
-            wait "$run_pid" 2>/dev/null || true
-            rm -rf "$sandbox"
-            return 1
-        fi
-        printf '%s\n' "$frame" >&2
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        fail "$id: the interrupt carrying a redirection was refused"
-    }
-    if ! printf '%s' "$frame" | jq -e '.ok == true and .redirected == true' >/dev/null 2>&1; then
-        printf '%s\n' "$frame" >&2
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        fail "$id: the answer did not say the redirection was taken (expected ok+redirected)"
-    fi
-    note "  ok: the run took the redirection"
-
-    # Half one: the original work stopped. Sampled after a beat for an in-flight
-    # tool call, then again — the redirected turn must not be the old one
-    # carrying on.
-    sleep 5
-    frozen="$(_oh_step_count "$sandbox")"
-    if [ "$frozen" -ge "$steps" ]; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        note "  redirect-enforce: the count reached all $steps steps, so a freeze proves nothing"
-        return 1
-    fi
-
-    # Half two: the redirected work was DONE — by this same dispatch, with no
-    # second `oneharness run`. This is what an interrupt that dropped the message
-    # would fail.
-    # A literal bound, like every other wait here: the redirected turn is one
-    # short tool call, and `OH_TIMEOUT` is the RUN's budget — reaching shell
-    # arithmetic through an unvalidated environment value is a different thing
-    # from being handed to oneharness, which validates it.
-    if ! _oh_wait_for 180 test -e "$redirected"; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        # The run's own verdict separates the two ways this fails: a redirected
-        # turn the harness never ran, versus one it refused — which its status
-        # and error say and its stderr does not.
-        _oh_control_evidence "$sandbox" "$report"
-        # A harness whose OWN turn errored proves nothing either way: a message
-        # cannot be delivered to a session the harness itself just failed, so
-        # calling that a lost redirection accuses this feature of another's
-        # fault. It is the same inconclusive outcome as a turn that ended too
-        # early, and retries like one — opencode reaches it often enough on its
-        # own that treating it as a contract violation makes the suite lie.
-        # Every other ending stays a hard failure: the redirection WAS committed
-        # and the work never happened.
-        if [ "$(_oh_result_status "$report")" = "nonzero" ]; then
-            note "  redirect-enforce: the harness's own turn failed, so nothing here is a verdict on the redirection"
-            rm -rf "$sandbox"
-            return 1
-        fi
-        rm -rf "$sandbox"
-        fail "$id: the redirection never reached the agent ($marker.txt was never created), so \`interrupt --input\` stopped the turn and lost the message"
-    fi
-    note "  ok: the redirected work was done by the same dispatch"
-
-    frozen_after="$(_oh_step_count "$sandbox")"
-    if [ "$frozen_after" != "$frozen" ]; then
-        kill "$run_pid" 2>/dev/null || true
-        wait "$run_pid" 2>/dev/null || true
-        rm -rf "$sandbox"
-        fail "$id: the original work did NOT stop — step files went from $frozen to $frozen_after after the interrupt, so the redirection was queued behind a turn that kept running"
-    fi
-    note "  ok: the original work stayed frozen at $frozen step files"
-
+  if ! _oh_wait_for 60 test -S "$socket"; then
+    kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served") and (.[0].redirected == true)' "$report" >/dev/null 2>&1; then
-        sed 's/^/    /' "$sandbox/run.err" >&2 || true
-        head -c 2000 "$report" >&2 || true
-        rm -rf "$sandbox"
-        fail "$id: the run report did not record a served REDIRECTED interrupt"
-    fi
-    if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
-        rm -rf "$sandbox"
-        fail "$id: the session did not survive the redirection (no token was captured)"
-    fi
-    note "  ok: report records the redirection and the session survived"
-
+    sed 's/^/    /' "$sandbox/run.err" >&2 || true
     rm -rf "$sandbox"
-    return 0
+    fail "$id: no control socket appeared at $socket (--control did not open one)"
+  fi
+
+  if ! _oh_wait_for 180 _oh_control_wait_settled "$sandbox" "$run_pid"; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    note "  redirect-enforce: the agent never produced two steps"
+    _oh_control_evidence "$sandbox" "$report"
+    # See `_oh_control_enforce_once`: a turn the provider refused never ran,
+    # so it says nothing about redirection either.
+    if _oh_note_provider_refusal "$id" "$report"; then
+      rm -rf "$sandbox"
+      return "$_OH_NOT_RUN"
+    fi
+    rm -rf "$sandbox"
+    return 1
+  fi
+  if ! kill -0 "$run_pid" 2>/dev/null; then
+    wait "$run_pid" 2>/dev/null || true
+    note "  redirect-enforce: the run ended before any work could be redirected ($(_oh_step_count "$sandbox") step files)"
+    _oh_control_evidence "$sandbox" "$report"
+    if _oh_note_provider_refusal "$id" "$report"; then
+      rm -rf "$sandbox"
+      return "$_OH_NOT_RUN"
+    fi
+    rm -rf "$sandbox"
+    return 1
+  fi
+  count="$(_oh_step_count "$sandbox")"
+  if [ "$count" -ge "$steps" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    note "  redirect-enforce: the agent finished all $steps steps before the interrupt could land"
+    return 1
+  fi
+
+  note "  redirect-enforce: interrupting WITH a redirection from a separate process"
+  local frame
+  frame="$(ONEHARNESS_NO_CONFIG=1 "$bin" interrupt --session "$name" --session-dir "$store" --cwd "$sandbox" --input "$redirect" --compact 2>&1)" || {
+    if printf '%s' "$frame" | grep -q no_active_turn; then
+      kill "$run_pid" 2>/dev/null || true
+      wait "$run_pid" 2>/dev/null || true
+      rm -rf "$sandbox"
+      return 1
+    fi
+    printf '%s\n' "$frame" >&2
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the interrupt carrying a redirection was refused"
+  }
+  if ! printf '%s' "$frame" | jq -e '.ok == true and .redirected == true' >/dev/null 2>&1; then
+    printf '%s\n' "$frame" >&2
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the answer did not say the redirection was taken (expected ok+redirected)"
+  fi
+  note "  ok: the run took the redirection"
+
+  # Half one: the original work stopped. Sampled after a beat for an in-flight
+  # tool call, then again — the redirected turn must not be the old one
+  # carrying on.
+  sleep 5
+  frozen="$(_oh_step_count "$sandbox")"
+  if [ "$frozen" -ge "$steps" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    note "  redirect-enforce: the count reached all $steps steps, so a freeze proves nothing"
+    return 1
+  fi
+
+  # Half two: the redirected work was DONE — by this same dispatch, with no
+  # second `oneharness run`. This is what an interrupt that dropped the message
+  # would fail.
+  # A literal bound, like every other wait here: the redirected turn is one
+  # short tool call, and `OH_TIMEOUT` is the RUN's budget — reaching shell
+  # arithmetic through an unvalidated environment value is a different thing
+  # from being handed to oneharness, which validates it.
+  if ! _oh_wait_for 180 test -e "$redirected"; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    # The run's own verdict separates the two ways this fails: a redirected
+    # turn the harness never ran, versus one it refused — which its status
+    # and error say and its stderr does not.
+    _oh_control_evidence "$sandbox" "$report"
+    # A harness whose OWN turn errored proves nothing either way: a message
+    # cannot be delivered to a session the harness itself just failed, so
+    # calling that a lost redirection accuses this feature of another's
+    # fault. It is the same inconclusive outcome as a turn that ended too
+    # early, and retries like one — opencode reaches it often enough on its
+    # own that treating it as a contract violation makes the suite lie.
+    # Every other ending stays a hard failure: the redirection WAS committed
+    # and the work never happened.
+    if [ "$(_oh_result_status "$report")" = "nonzero" ]; then
+      note "  redirect-enforce: the harness's own turn failed, so nothing here is a verdict on the redirection"
+      rm -rf "$sandbox"
+      return 1
+    fi
+    rm -rf "$sandbox"
+    fail "$id: the redirection never reached the agent ($marker.txt was never created), so \`interrupt --input\` stopped the turn and lost the message"
+  fi
+  note "  ok: the redirected work was done by the same dispatch"
+
+  frozen_after="$(_oh_step_count "$sandbox")"
+  if [ "$frozen_after" != "$frozen" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the original work did NOT stop — step files went from $frozen to $frozen_after after the interrupt, so the redirection was queued behind a turn that kept running"
+  fi
+  note "  ok: the original work stayed frozen at $frozen step files"
+
+  wait "$run_pid" 2>/dev/null || true
+  if ! jq -e '.control.interrupts | length >= 1 and (.[0].outcome == "served") and (.[0].redirected == true)' "$report" >/dev/null 2>&1; then
+    sed 's/^/    /' "$sandbox/run.err" >&2 || true
+    head -c 2000 "$report" >&2 || true
+    rm -rf "$sandbox"
+    fail "$id: the run report did not record a served REDIRECTED interrupt"
+  fi
+  if ! jq -e '.session.token != null' "$report" >/dev/null 2>&1; then
+    rm -rf "$sandbox"
+    fail "$id: the session did not survive the redirection (no token was captured)"
+  fi
+  note "  ok: report records the redirection and the session survived"
+
+  rm -rf "$sandbox"
+  return 0
 }
 
 # How many observable work artifacts the agent has produced so far. A glob
 # rather than `ls | grep` so a name shellcheck worries about can never miscount.
 _oh_step_count() {
-    local dir="$1" file count=0
-    for file in "$dir"/step-*; do
-        [ -e "$file" ] && count=$((count + 1))
-    done
-    printf '%s' "$count"
+  local dir="$1" file count=0
+  for file in "$dir"/step-*; do
+    [ -e "$file" ] && count=$((count + 1))
+  done
+  printf '%s' "$count"
 }
 
 # llmlint: ignore-end[tool_output_is_signal]
@@ -2922,7 +2943,7 @@ _oh_step_count() {
 # Whether `dir` holds at least `want` work artifacts — the predicate form of
 # `_oh_step_count`, so waiting on it needs no shell expression.
 _oh_steps_at_least() {
-    [ "$(_oh_step_count "$1")" -ge "$2" ]
+  [ "$(_oh_step_count "$1")" -ge "$2" ]
 }
 
 # The errors the HARNESS itself reported on its event stream, one per line, or
@@ -2935,11 +2956,11 @@ _oh_steps_at_least() {
 # failures) and a bare string (its `session.error`).
 #   $1 report path
 _oh_harness_errors() {
-    [ -s "$1" ] || return 0
-    jq -r '.results[0].stdout // ""' "$1" 2>/dev/null \
-        | jq -R -r 'fromjson? | .. | objects | select(has("error")) | .error
-                    | if type == "object" then (.message? // empty) else (select(type == "string")) end' 2>/dev/null \
-        || true
+  [ -s "$1" ] || return 0
+  jq -r '.results[0].stdout // ""' "$1" 2>/dev/null |
+    jq -R -r 'fromjson? | .. | objects | select(has("error")) | .error
+                    | if type == "object" then (.message? // empty) else (select(type == "string")) end' 2>/dev/null ||
+    true
 }
 
 # `_oh_harness_errors` above tells a turn that FAILED from one that ran. This
@@ -2973,23 +2994,23 @@ _OH_PROVIDER_REFUSAL_RE='usage limit|quota exceeded|exceeded your current quota|
 # report on STDIN, because the callers hold one in two shapes: a file for the
 # control phases, the `$OH_REPORT` string for the per-harness ones.
 _oh_provider_refusal() {
-    local report transcript
-    report="$(cat)"
-    transcript="$(printf '%s' "$report" | jq -r '.results[0].stdout // ""' 2>/dev/null || true)"
-    {
-        # What oneharness normalized, how it saw the run end, and what the CLI
-        # itself printed. `stderr` is not optional here: copilot's ordinary `-p`
-        # run states the refusal ONLY there, exits 1, and leaves `text`, `error`
-        # and `stdout` all empty — so a reader that skipped it would call the
-        # same refusal a broken harness.
-        printf '%s' "$report" | jq -r '.results[0] | (.text // ""), (.error // ""), (.stderr // "")' 2>/dev/null || true
-        # Every string inside the harness's own frames: on a driven turn the
-        # refusal is the text of a message, not a field of a result.
-        printf '%s\n' "$transcript" | jq -R -r 'fromjson? | .. | strings' 2>/dev/null || true
-        # And the transcript as it came, for a harness whose headless output is
-        # not JSON at all.
-        printf '%s\n' "$transcript"
-    } | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true
+  local report transcript
+  report="$(cat)"
+  transcript="$(printf '%s' "$report" | jq -r '.results[0].stdout // ""' 2>/dev/null || true)"
+  {
+    # What oneharness normalized, how it saw the run end, and what the CLI
+    # itself printed. `stderr` is not optional here: copilot's ordinary `-p`
+    # run states the refusal ONLY there, exits 1, and leaves `text`, `error`
+    # and `stdout` all empty — so a reader that skipped it would call the
+    # same refusal a broken harness.
+    printf '%s' "$report" | jq -r '.results[0] | (.text // ""), (.error // ""), (.stderr // "")' 2>/dev/null || true
+    # Every string inside the harness's own frames: on a driven turn the
+    # refusal is the text of a message, not a field of a result.
+    printf '%s\n' "$transcript" | jq -R -r 'fromjson? | .. | strings' 2>/dev/null || true
+    # And the transcript as it came, for a harness whose headless output is
+    # not JSON at all.
+    printf '%s\n' "$transcript"
+  } | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true
 }
 
 # Exit status a control phase returns for a turn the provider refused, so
@@ -3005,17 +3026,17 @@ _OH_NOT_RUN=3
 # there is gone by the time the verdict is written.
 #   $1 harness id, $2 report path
 _oh_note_provider_refusal() {
-    local id="$1" refusal kind
-    [ -s "$2" ] || return 1
-    refusal="$(_oh_provider_refusal <"$2")" || refusal=""
-    [ -n "$refusal" ] || return 1
-    kind="$(printf '%s' "$refusal" | grep -o -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1)" || kind=""
-    kind="$(printf '%s' "${kind:-quota}" | tr '[:upper:]' '[:lower:]')"
-    note "  NOT RUN: $id — its own provider refused this turn, so nothing follows from it about turn control: $refusal"
-    if [ -n "${OH_NOT_RUN_FILE:-}" ]; then
-        printf '%s (provider refused: %s)\n' "$id" "$kind" >"$OH_NOT_RUN_FILE"
-    fi
-    return 0
+  local id="$1" refusal kind
+  [ -s "$2" ] || return 1
+  refusal="$(_oh_provider_refusal <"$2")" || refusal=""
+  [ -n "$refusal" ] || return 1
+  kind="$(printf '%s' "$refusal" | grep -o -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1)" || kind=""
+  kind="$(printf '%s' "${kind:-quota}" | tr '[:upper:]' '[:lower:]')"
+  note "  NOT RUN: $id — its own provider refused this turn, so nothing follows from it about turn control: $refusal"
+  if [ -n "${OH_NOT_RUN_FILE:-}" ]; then
+    printf '%s (provider refused: %s)\n' "$id" "$kind" >"$OH_NOT_RUN_FILE"
+  fi
+  return 0
 }
 
 # Whether the wait for a turn to get going is over — either because it did (two
@@ -3024,7 +3045,7 @@ _oh_note_provider_refusal() {
 # reads which of the two happened and reports them differently.
 #   $1 sandbox directory, $2 the run's pid
 _oh_control_wait_settled() {
-    _oh_steps_at_least "$1" 2 || ! kill -0 "$2" 2>/dev/null
+  _oh_steps_at_least "$1" 2 || ! kill -0 "$2" 2>/dev/null
 }
 
 # Poll `command…` until it succeeds or `seconds` elapse. Returns 1 on timeout.
@@ -3036,16 +3057,16 @@ _oh_control_wait_settled() {
 # input — under `eval` any shell syntax in one stops being a path and becomes
 # part of the expression.
 _oh_wait_for() {
-    local seconds="$1" waited=0
-    shift
-    while [ "$waited" -lt "$seconds" ]; do
-        if "$@"; then
-            return 0
-        fi
-        sleep 1
-        waited=$((waited + 1))
-    done
-    return 1
+  local seconds="$1" waited=0
+  shift
+  while [ "$waited" -lt "$seconds" ]; do
+    if "$@"; then
+      return 0
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  return 1
 }
 
 # The ACP `initialize` frame `oh_copilot_login_ready` opens with. Declared here
@@ -3076,62 +3097,62 @@ _OH_ACP_INITIALIZE='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"pro
 # phase, so the reason has to reach the transcript: "copilot skipped" with no
 # answer attached is the silent skip this function exists to end.
 oh_copilot_login_ready() {
-    local bin="${1:-copilot}"
-    command -v "$bin" >/dev/null 2>&1 || return 1
-    command -v jq >/dev/null 2>&1 || return 1
+  local bin="${1:-copilot}"
+  command -v "$bin" >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
 
-    # The deadline bounds two loops and a `-lt` comparison, so a value that is
-    # not a positive whole number is a broken probe rather than a slow one — and
-    # it would surface as `oh_copilot_login_ready` returning "no login", i.e. as
-    # copilot being retired again for a reason that has nothing to do with
-    # copilot. Loud, like every other bad setting this suite takes.
-    local seconds="${OH_COPILOT_LOGIN_PROBE_SECONDS:-45}"
-    case "$seconds" in
+  # The deadline bounds two loops and a `-lt` comparison, so a value that is
+  # not a positive whole number is a broken probe rather than a slow one — and
+  # it would surface as `oh_copilot_login_ready` returning "no login", i.e. as
+  # copilot being retired again for a reason that has nothing to do with
+  # copilot. Loud, like every other bad setting this suite takes.
+  local seconds="${OH_COPILOT_LOGIN_PROBE_SECONDS:-45}"
+  case "$seconds" in
     '' | *[!0-9]*) fail "OH_COPILOT_LOGIN_PROBE_SECONDS must be a positive whole number of seconds, got '$seconds'" ;;
-    esac
-    [ "$seconds" -gt 0 ] || fail "OH_COPILOT_LOGIN_PROBE_SECONDS must be greater than zero, got '$seconds'"
+  esac
+  [ "$seconds" -gt 0 ] || fail "OH_COPILOT_LOGIN_PROBE_SECONDS must be greater than zero, got '$seconds'"
 
-    local dir writer agent frame new verdict=1
-    dir="$(mktemp -d)"
-    mkfifo "$dir/in"
-    new="$(jq -nc --arg cwd "$dir" '{jsonrpc:"2.0",id:2,method:"session/new",params:{cwd:$cwd,mcpServers:[]}}')"
+  local dir writer agent frame new verdict=1
+  dir="$(mktemp -d)"
+  mkfifo "$dir/in"
+  new="$(jq -nc --arg cwd "$dir" '{jsonrpc:"2.0",id:2,method:"session/new",params:{cwd:$cwd,mcpServers:[]}}')"
 
-    # stdin stays open until the answer lands: copilot answers `session/new`
-    # asynchronously, and an EOF drops the reply in flight — which would read
-    # exactly like a logged-out copilot (the same `StdinAfterRequests` trap that
-    # once reported a readable codex quota as unreadable).
-    (
-        printf '%s\n%s\n' "$_OH_ACP_INITIALIZE" "$new"
-        local waited=0
-        while [ ! -e "$dir/answered" ] && [ "$waited" -lt "$seconds" ]; do
-            sleep 1
-            waited=$((waited + 1))
-        done
-    ) >"$dir/in" 2>/dev/null &
-    writer=$!
-    "$bin" --acp <"$dir/in" >"$dir/out" 2>"$dir/err" &
-    agent=$!
+  # stdin stays open until the answer lands: copilot answers `session/new`
+  # asynchronously, and an EOF drops the reply in flight — which would read
+  # exactly like a logged-out copilot (the same `StdinAfterRequests` trap that
+  # once reported a readable codex quota as unreadable).
+  (
+    printf '%s\n%s\n' "$_OH_ACP_INITIALIZE" "$new"
+    local waited=0
+    while [ ! -e "$dir/answered" ] && [ "$waited" -lt "$seconds" ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+  ) >"$dir/in" 2>/dev/null &
+  writer=$!
+  "$bin" --acp <"$dir/in" >"$dir/out" 2>"$dir/err" &
+  agent=$!
 
-    if _oh_wait_for "$seconds" _oh_acp_answer "$dir/out" >/dev/null; then
-        frame="$(_oh_acp_answer "$dir/out")"
-        # A non-empty STRING id, not merely a present one: this is a protocol
-        # response from another process, and the only reading that means "a
-        # session opened" is one the phase could go on to use.
-        if printf '%s' "$frame" | jq -e '(.result.sessionId | type) == "string" and (.result.sessionId | length) > 0' >/dev/null 2>&1; then
-            verdict=0
-        else
-            note "  copilot has no usable login: ACP session/new answered $(printf '%s' "$frame" | jq -c '.error // .result')"
-        fi
+  if _oh_wait_for "$seconds" _oh_acp_answer "$dir/out" >/dev/null; then
+    frame="$(_oh_acp_answer "$dir/out")"
+    # A non-empty STRING id, not merely a present one: this is a protocol
+    # response from another process, and the only reading that means "a
+    # session opened" is one the phase could go on to use.
+    if printf '%s' "$frame" | jq -e '(.result.sessionId | type) == "string" and (.result.sessionId | length) > 0' >/dev/null 2>&1; then
+      verdict=0
     else
-        note "  copilot has no usable login: ACP session/new went unanswered for ${seconds}s"
+      note "  copilot has no usable login: ACP session/new answered $(printf '%s' "$frame" | jq -c '.error // .result')"
     fi
+  else
+    note "  copilot has no usable login: ACP session/new went unanswered for ${seconds}s"
+  fi
 
-    : >"$dir/answered"
-    wait "$writer" 2>/dev/null || true
-    kill "$agent" 2>/dev/null || true
-    wait "$agent" 2>/dev/null || true
-    rm -rf "$dir"
-    return "$verdict"
+  : >"$dir/answered"
+  wait "$writer" 2>/dev/null || true
+  kill "$agent" 2>/dev/null || true
+  wait "$agent" 2>/dev/null || true
+  rm -rf "$dir"
+  return "$verdict"
 }
 # llmlint: ignore-end[tool_output_is_signal]
 
@@ -3140,19 +3161,19 @@ oh_copilot_login_ready() {
 # agent interleaves `session/update` notifications with its replies, and a line
 # still being written must never be read as a verdict.
 _oh_acp_answer() {
-    local line
-    # The transcript is opened by a background redirect, so the first poll can
-    # arrive before the file exists. That is "no answer yet", not an error to
-    # print — a stray `No such file or directory` in a live log is one more
-    # thing to rule out when a phase goes wrong.
-    [ -r "$1" ] || return 1
-    while IFS= read -r line; do
-        if printf '%s' "$line" | jq -e 'select(.id == 2) | has("result") or has("error")' >/dev/null 2>&1; then
-            printf '%s' "$line"
-            return 0
-        fi
-    done <"$1"
-    return 1
+  local line
+  # The transcript is opened by a background redirect, so the first poll can
+  # arrive before the file exists. That is "no answer yet", not an error to
+  # print — a stray `No such file or directory` in a live log is one more
+  # thing to rule out when a phase goes wrong.
+  [ -r "$1" ] || return 1
+  while IFS= read -r line; do
+    if printf '%s' "$line" | jq -e 'select(.id == 2) | has("result") or has("error")' >/dev/null 2>&1; then
+      printf '%s' "$line"
+      return 0
+    fi
+  done <"$1"
+  return 1
 }
 
 # Live proof that `run --mock-rules` — the single-flag ephemeral mock — is
@@ -3172,149 +3193,149 @@ _oh_acp_answer() {
 #
 #   $1 harness id
 oh_mock_enforce() {
-    local id="$1"
-    local bin sandbox marker origfile mockfile rulesfile spyfile status
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1"
+  local bin sandbox marker origfile mockfile rulesfile spyfile status
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    # A real repo: some harnesses only discover project-scoped hooks inside one.
-    git init -q "$sandbox" 2>/dev/null || true
-    marker="OHMOCKORIG${RANDOM}${RANDOM}"
-    origfile="$sandbox/$marker.txt"
-    mockfile="$sandbox/ohmock-rewritten-${RANDOM}${RANDOM}.txt"
-    rulesfile="$sandbox/mock-rules.json"
-    spyfile="$sandbox/mock-spy.jsonl"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  # A real repo: some harnesses only discover project-scoped hooks inside one.
+  git init -q "$sandbox" 2>/dev/null || true
+  marker="OHMOCKORIG${RANDOM}${RANDOM}"
+  origfile="$sandbox/$marker.txt"
+  mockfile="$sandbox/ohmock-rewritten-${RANDOM}${RANDOM}.txt"
+  rulesfile="$sandbox/mock-rules.json"
+  spyfile="$sandbox/mock-spy.jsonl"
 
-    # The ruleset: rewrite the marked command to touch the MOCK file instead.
-    # Every rewrite-capable harness's shell tool takes (and exposes) its command
-    # in a `command` input field, so one input object serves them all — and the
-    # MATCH here uses a per-field `input.command.regex` predicate (the marker is
-    # alphanumeric, a valid literal regex), so this phase is also the live proof
-    # of regex + input-field matching against real harness events on every
-    # rewrite harness. (Stub/deny phases keep `event_contains`, so both matcher
-    # styles stay live-covered.)
-    cat > "$rulesfile" <<JSON
+  # The ruleset: rewrite the marked command to touch the MOCK file instead.
+  # Every rewrite-capable harness's shell tool takes (and exposes) its command
+  # in a `command` input field, so one input object serves them all — and the
+  # MATCH here uses a per-field `input.command.regex` predicate (the marker is
+  # alphanumeric, a valid literal regex), so this phase is also the live proof
+  # of regex + input-field matching against real harness events on every
+  # rewrite harness. (Stub/deny phases keep `event_contains`, so both matcher
+  # styles stay live-covered.)
+  cat >"$rulesfile" <<JSON
 {"rules":[{"match":{"input":{"command":{"regex":"$marker"}}},"action":{"rewrite":{"input":{"command":"touch $mockfile"},"message":"rewritten by oh_mock_enforce"}}}]}
 JSON
 
-    # Up to two attempts: a model occasionally refuses the fixture framing and
-    # never invokes its shell tool at all — visible as an EMPTY spy log (the
-    # hook never fired), which is agent flakiness, not a verdict-shape failure.
-    # Only that case is retried; a fired hook with a wrong outcome fails hard.
-    local attempt
-    for attempt in 1 2; do
-        rm -f "$spyfile"
-        note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
-        status="$(oh_field '.results[0].status')"
-        if [ "$status" = "skipped" ]; then
-            rm -rf "$sandbox"
-            skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-        fi
-        if [ -s "$spyfile" ]; then
-            break
-        fi
-        note "  note: the spy log is empty — the agent never attempted the tool call (a refusal, not a hook failure)"
-    done
-    if [ ! -s "$spyfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the rewrite path could not be exercised (a prompt-robustness problem, not a verdict-shape one)"
+  # Up to two attempts: a model occasionally refuses the fixture framing and
+  # never invokes its shell tool at all — visible as an EMPTY spy log (the
+  # hook never fired), which is agent flakiness, not a verdict-shape failure.
+  # Only that case is retried; a fired hook with a wrong outcome fails hard.
+  local attempt
+  for attempt in 1 2; do
+    rm -f "$spyfile"
+    note "  mock-enforce[rewrite]: the marked command must run REWRITTEN under bypass (attempt $attempt)"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $origfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Use only the shell tool, and do NOT create the file by any other means." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+      rm -rf "$sandbox"
+      skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
     fi
-    if [ ! -e "$mockfile" ]; then
-        oh_dump
-        head -5 "$spyfile" >&2
-        rm -rf "$sandbox"
-        fail "$id: the rewrite was NOT honored ($mockfile absent although the hook fired — see the spy records above) — the harness ignored or misparsed the mock_rewrite verdict shape (drift)"
+    if [ -s "$spyfile" ]; then
+      break
     fi
-    if [ -e "$origfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the ORIGINAL command still ran ($origfile exists) — the rewrite did not substitute the input"
-    fi
-    note "  ok[rewrite]: the rewritten command ran and the original did not"
+    note "  note: the spy log is empty — the agent never attempted the tool call (a refusal, not a hook failure)"
+  done
+  if [ ! -s "$spyfile" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the rewrite path could not be exercised (a prompt-robustness problem, not a verdict-shape one)"
+  fi
+  if [ ! -e "$mockfile" ]; then
+    oh_dump
+    head -5 "$spyfile" >&2
+    rm -rf "$sandbox"
+    fail "$id: the rewrite was NOT honored ($mockfile absent although the hook fired — see the spy records above) — the harness ignored or misparsed the mock_rewrite verdict shape (drift)"
+  fi
+  if [ -e "$origfile" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: the ORIGINAL command still ran ($origfile exists) — the rewrite did not substitute the input"
+  fi
+  note "  ok[rewrite]: the rewritten command ran and the original did not"
 
-    if ! jq -e -s 'map(select(.action == "rewrite")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
-        oh_dump
-        [ -f "$spyfile" ] && head -5 "$spyfile" >&2
-        rm -rf "$sandbox"
-        fail "$id: the spy log recorded no rewrite action ($spyfile) — the spy channel is broken even though the rewrite executed"
-    fi
-    if ! grep -q "$marker" "$spyfile"; then
-        rm -rf "$sandbox"
-        fail "$id: the spy log lost the ORIGINAL command (marker $marker absent) — it must record pre-rewrite intent"
-    fi
-    note "  ok[spy]: the spy log preserved the original event"
+  if ! jq -e -s 'map(select(.action == "rewrite")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
+    oh_dump
+    [ -f "$spyfile" ] && head -5 "$spyfile" >&2
+    rm -rf "$sandbox"
+    fail "$id: the spy log recorded no rewrite action ($spyfile) — the spy channel is broken even though the rewrite executed"
+  fi
+  if ! grep -q "$marker" "$spyfile"; then
+    rm -rf "$sandbox"
+    fail "$id: the spy log lost the ORIGINAL command (marker $marker absent) — it must record pre-rewrite intent"
+  fi
+  note "  ok[spy]: the spy log preserved the original event"
 
-    # Ephemerality: after the run, no CONFIG file in the workspace may still
-    # mention the mock hook (the snapshotted files were restored, created ones
-    # removed; claude's delivery never wrote into the workspace at all). The
-    # rules/spy files are ours and carry no hook command, so a text hit is
-    # residue. -I ignores binary files: a harness's own runtime artifacts (e.g.
-    # crush's .crush/crush.db session database) may journal whatever config the
-    # run loaded — that is the harness recording history, not a missed restore.
-    if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
-        grep -rIlF "mock $id --rules" "$sandbox" >&2
-        rm -rf "$sandbox"
-        fail "$id: the ephemeral mock hook left residue in the workspace (files above) — the restore did not run or missed a file"
-    fi
-    note "  ok[ephemeral]: the workspace carries no trace of the hook"
+  # Ephemerality: after the run, no CONFIG file in the workspace may still
+  # mention the mock hook (the snapshotted files were restored, created ones
+  # removed; claude's delivery never wrote into the workspace at all). The
+  # rules/spy files are ours and carry no hook command, so a text hit is
+  # residue. -I ignores binary files: a harness's own runtime artifacts (e.g.
+  # crush's .crush/crush.db session database) may journal whatever config the
+  # run loaded — that is the harness recording history, not a missed restore.
+  if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+    grep -rIlF "mock $id --rules" "$sandbox" >&2
+    rm -rf "$sandbox"
+    fail "$id: the ephemeral mock hook left residue in the workspace (files above) — the restore did not run or missed a file"
+  fi
+  note "  ok[ephemeral]: the workspace carries no trace of the hook"
 
-    # Stub enforcement: the `stub` action declares only the OUTPUT; oneharness
-    # generates the printf rewrite itself, so the stub's text becomes the tool's
-    # genuine result — the live proof of the declare-the-output mock.
-    #
-    # The assertion observes the TOOL RESULT, not the model's prose. The stub's
-    # contract is "the declared text is what the tool returns"; whether the model
-    # then repeats it is model behavior, not oneharness's, and asserting on it is
-    # flaky — a capable model reads the coercive "you MUST repeat this verbatim"
-    # framing (or a stubbed output it can't reconcile) as a prompt injection and
-    # lectures instead of relaying (observed live — opencode/haiku, twice). So we
-    # ask (plainly, no coercion) the model to run the command, pass `--events` so
-    # the tool transcript lands in the result's raw `stdout`, and assert the
-    # marker surfaced there (the tool output) OR in the extracted `text` (the
-    # fallback for crush, whose headless output carries no transcript). The
-    # marker cannot appear unless the stub rule matched and its printf executed,
-    # so a hit proves the stub end to end regardless of what the model says.
-    local stubmark stubrules stubspy blob
-    stubmark="OHSTUBOUT${RANDOM}${RANDOM}"
-    stubrules="$sandbox/stub-rules.json"
-    stubspy="$sandbox/stub-spy.jsonl"
-    cat > "$stubrules" <<JSON
+  # Stub enforcement: the `stub` action declares only the OUTPUT; oneharness
+  # generates the printf rewrite itself, so the stub's text becomes the tool's
+  # genuine result — the live proof of the declare-the-output mock.
+  #
+  # The assertion observes the TOOL RESULT, not the model's prose. The stub's
+  # contract is "the declared text is what the tool returns"; whether the model
+  # then repeats it is model behavior, not oneharness's, and asserting on it is
+  # flaky — a capable model reads the coercive "you MUST repeat this verbatim"
+  # framing (or a stubbed output it can't reconcile) as a prompt injection and
+  # lectures instead of relaying (observed live — opencode/haiku, twice). So we
+  # ask (plainly, no coercion) the model to run the command, pass `--events` so
+  # the tool transcript lands in the result's raw `stdout`, and assert the
+  # marker surfaced there (the tool output) OR in the extracted `text` (the
+  # fallback for crush, whose headless output carries no transcript). The
+  # marker cannot appear unless the stub rule matched and its printf executed,
+  # so a hit proves the stub end to end regardless of what the model says.
+  local stubmark stubrules stubspy blob
+  stubmark="OHSTUBOUT${RANDOM}${RANDOM}"
+  stubrules="$sandbox/stub-rules.json"
+  stubspy="$sandbox/stub-spy.jsonl"
+  cat >"$stubrules" <<JSON
 {"rules":[{"match":{"event_contains":"ohstub-probe"},"action":{"stub":{"output":"$stubmark"}}}]}
 JSON
-    for attempt in 1 2; do
-        rm -f "$stubspy"
-        note "  mock-enforce[stub]: the stub's output must become the tool result (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run this command to read a status token, then tell me the token it printed: cat ohstub-probe.txt" --cwd "$sandbox" --events --mock-rules "$stubrules" --spy-file "$stubspy"
-        [ -s "$stubspy" ] && break
-        note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
-    done
-    if [ ! -s "$stubspy" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the agent never invoked its shell tool for the stub phase (spy log empty)"
-    fi
-    if ! jq -e -s 'map(select(.action == "stub")) | length >= 1' "$stubspy" >/dev/null 2>&1; then
-        rm -rf "$sandbox"
-        fail "$id: the spy log recorded no stub action ($stubspy)"
-    fi
-    # The tool transcript (raw stdout) plus the extracted answer — the marker in
-    # either proves the stub's printf ran and produced the declared output.
-    blob="$(oh_field '.results[0].stdout // ""')$(oh_field '.results[0].text // ""')"
-    if ! printf '%s' "$blob" | grep -q "$stubmark"; then
-        oh_dump
-        head -5 "$stubspy" >&2
-        rm -rf "$sandbox"
-        fail "$id: the stubbed output ($stubmark) never surfaced as the tool result — the generated printf rewrite was not honored"
-    fi
-    note "  ok[stub]: the stub's output became the tool result"
-
+  for attempt in 1 2; do
+    rm -f "$stubspy"
+    note "  mock-enforce[stub]: the stub's output must become the tool result (attempt $attempt)"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run this command to read a status token, then tell me the token it printed: cat ohstub-probe.txt" --cwd "$sandbox" --events --mock-rules "$stubrules" --spy-file "$stubspy"
+    [ -s "$stubspy" ] && break
+    note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
+  done
+  if [ ! -s "$stubspy" ]; then
+    oh_dump
     rm -rf "$sandbox"
-    note "PASS: $id mock rewrite + stub enforcement (run --mock-rules)"
+    fail "$id: the agent never invoked its shell tool for the stub phase (spy log empty)"
+  fi
+  if ! jq -e -s 'map(select(.action == "stub")) | length >= 1' "$stubspy" >/dev/null 2>&1; then
+    rm -rf "$sandbox"
+    fail "$id: the spy log recorded no stub action ($stubspy)"
+  fi
+  # The tool transcript (raw stdout) plus the extracted answer — the marker in
+  # either proves the stub's printf ran and produced the declared output.
+  blob="$(oh_field '.results[0].stdout // ""')$(oh_field '.results[0].text // ""')"
+  if ! printf '%s' "$blob" | grep -q "$stubmark"; then
+    oh_dump
+    head -5 "$stubspy" >&2
+    rm -rf "$sandbox"
+    fail "$id: the stubbed output ($stubmark) never surfaced as the tool result — the generated printf rewrite was not honored"
+  fi
+  note "  ok[stub]: the stub's output became the tool result"
+
+  rm -rf "$sandbox"
+  note "PASS: $id mock rewrite + stub enforcement (run --mock-rules)"
 }
 
 # Live proof that a `run --mock-rules` DENY is honored — for a harness whose
@@ -3328,62 +3349,62 @@ JSON
 #
 #   $1 harness id
 oh_mock_deny_enforce() {
-    local id="$1"
-    local bin sandbox marker denyfile rulesfile spyfile status attempt
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  local id="$1"
+  local bin sandbox marker denyfile rulesfile spyfile status attempt
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    oh_sandbox_prepare "$id" "$sandbox"
-    git init -q "$sandbox" 2>/dev/null || true
-    marker="OHMOCKDENY${RANDOM}${RANDOM}"
-    denyfile="$sandbox/$marker.txt"
-    rulesfile="$sandbox/mock-rules.json"
-    spyfile="$sandbox/mock-spy.jsonl"
-    cat > "$rulesfile" <<JSON
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  oh_sandbox_prepare "$id" "$sandbox"
+  git init -q "$sandbox" 2>/dev/null || true
+  marker="OHMOCKDENY${RANDOM}${RANDOM}"
+  denyfile="$sandbox/$marker.txt"
+  rulesfile="$sandbox/mock-rules.json"
+  spyfile="$sandbox/mock-spy.jsonl"
+  cat >"$rulesfile" <<JSON
 {"rules":[{"match":{"event_contains":"$marker"},"action":{"deny":{"message":"blocked by oh_mock_deny_enforce"}}}]}
 JSON
 
-    for attempt in 1 2; do
-        rm -f "$spyfile"
-        note "  mock-deny[deny]: the marked command must be blocked under bypass (attempt $attempt)"
-        oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Only if that tool invocation itself is rejected: do NOT create the file by any other means — reply with the single word DENIED and stop." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
-        status="$(oh_field '.results[0].status')"
-        if [ "$status" = "skipped" ]; then
-            rm -rf "$sandbox"
-            skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
-        fi
-        [ -s "$spyfile" ] && break
-        note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
-    done
-    if [ ! -s "$spyfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the deny path could not be exercised"
+  for attempt in 1 2; do
+    rm -f "$spyfile"
+    note "  mock-deny[deny]: the marked command must be blocked under bypass (attempt $attempt)"
+    oh_run "$id" "You are a non-interactive test fixture in a scratch directory. Execute exactly this shell command, then stop: touch $denyfile. Rules: you MUST actually invoke your shell tool with that exact command — never decide on your own that it is not permitted; attempt it. Only if that tool invocation itself is rejected: do NOT create the file by any other means — reply with the single word DENIED and stop." --cwd "$sandbox" --mock-rules "$rulesfile" --spy-file "$spyfile"
+    status="$(oh_field '.results[0].status')"
+    if [ "$status" = "skipped" ]; then
+      rm -rf "$sandbox"
+      skip "$id is not installed (oneharness reported status=skipped); nothing to verify"
     fi
-    if ! jq -e -s 'map(select(.action == "deny")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
-        oh_dump
-        head -5 "$spyfile" >&2
-        rm -rf "$sandbox"
-        fail "$id: the spy log recorded no deny action ($spyfile) — the rules never matched the marked call"
-    fi
-    if [ -e "$denyfile" ]; then
-        oh_dump
-        rm -rf "$sandbox"
-        fail "$id: the mock deny was NOT honored ($denyfile was created despite a recorded deny verdict) — the deny shape is not applied (drift)"
-    fi
-    note "  ok[deny]: the verdict was recorded and the command did not run"
-
-    if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
-        grep -rIlF "mock $id --rules" "$sandbox" >&2
-        rm -rf "$sandbox"
-        fail "$id: the ephemeral mock hook left residue in the workspace (files above)"
-    fi
-    note "  ok[ephemeral]: the workspace carries no trace of the hook"
-
+    [ -s "$spyfile" ] && break
+    note "  note: the spy log is empty — the agent never attempted the tool call; retrying"
+  done
+  if [ ! -s "$spyfile" ]; then
+    oh_dump
     rm -rf "$sandbox"
-    note "PASS: $id mock deny enforcement (run --mock-rules)"
+    fail "$id: the agent never invoked its shell tool in $attempt attempts (spy log empty) — the deny path could not be exercised"
+  fi
+  if ! jq -e -s 'map(select(.action == "deny")) | length >= 1' "$spyfile" >/dev/null 2>&1; then
+    oh_dump
+    head -5 "$spyfile" >&2
+    rm -rf "$sandbox"
+    fail "$id: the spy log recorded no deny action ($spyfile) — the rules never matched the marked call"
+  fi
+  if [ -e "$denyfile" ]; then
+    oh_dump
+    rm -rf "$sandbox"
+    fail "$id: the mock deny was NOT honored ($denyfile was created despite a recorded deny verdict) — the deny shape is not applied (drift)"
+  fi
+  note "  ok[deny]: the verdict was recorded and the command did not run"
+
+  if grep -rIqF "mock $id --rules" "$sandbox" 2>/dev/null; then
+    grep -rIlF "mock $id --rules" "$sandbox" >&2
+    rm -rf "$sandbox"
+    fail "$id: the ephemeral mock hook left residue in the workspace (files above)"
+  fi
+  note "  ok[ephemeral]: the workspace carries no trace of the hook"
+
+  rm -rf "$sandbox"
+  note "PASS: $id mock deny enforcement (run --mock-rules)"
 }
 
 # --- structured output enforcement -------------------------------------------
@@ -3405,60 +3426,60 @@ JSON
 #
 #   $1 harness id
 oh_schema_enforce() {
-    local id="$1"
-    local bin sandbox schema marker status valid token attempts
+  local id="$1"
+  local bin sandbox schema marker status valid token attempts
 
-    bin="$(oh_bin)"
-    [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-    sandbox="$(mktemp -d)"
-    sandbox="$(oh_native_path "$sandbox")"
-    marker="OHSCHEMA${RANDOM}${RANDOM}${RANDOM}"
-    schema="$sandbox/schema.json"
-    # additionalProperties:false + required keeps the constraint tight, so a
-    # passing validation is a real conformance, not a vacuous match.
-    printf '%s' '{"type":"object","properties":{"token":{"type":"string"},"ok":{"type":"boolean"}},"required":["token","ok"],"additionalProperties":false}' > "$schema"
+  sandbox="$(mktemp -d)"
+  sandbox="$(oh_native_path "$sandbox")"
+  marker="OHSCHEMA${RANDOM}${RANDOM}${RANDOM}"
+  schema="$sandbox/schema.json"
+  # additionalProperties:false + required keeps the constraint tight, so a
+  # passing validation is a real conformance, not a vacuous match.
+  printf '%s' '{"type":"object","properties":{"token":{"type":"string"},"ok":{"type":"boolean"}},"required":["token","ok"],"additionalProperties":false}' >"$schema"
 
-    # One physical line, and NO embedded double quotes: an npm-installed harness
-    # is a `.cmd` shim on Windows, and cmd.exe's `%*` forwarding mangles a
-    # quote-containing argument (truncating it) — the same discipline the other
-    # e2e prompts follow. (The quote-heavy schema itself rides `--json-schema`,
-    # which is why the live schema check is scoped to Linux/macOS; see e2e-schema.yml.)
-    local prompt="This is an automated structured-output check for the oneharness end-to-end test suite. Reply with a JSON object that has a token field set to exactly $marker and an ok field set to the boolean true. Output only that JSON object: no preamble, no explanation, no code fences."
-    oh_run "$id" "$prompt" --schema "$schema"
+  # One physical line, and NO embedded double quotes: an npm-installed harness
+  # is a `.cmd` shim on Windows, and cmd.exe's `%*` forwarding mangles a
+  # quote-containing argument (truncating it) — the same discipline the other
+  # e2e prompts follow. (The quote-heavy schema itself rides `--json-schema`,
+  # which is why the live schema check is scoped to Linux/macOS; see e2e-schema.yml.)
+  local prompt="This is an automated structured-output check for the oneharness end-to-end test suite. Reply with a JSON object that has a token field set to exactly $marker and an ok field set to the boolean true. Output only that JSON object: no preamble, no explanation, no code fences."
+  oh_run "$id" "$prompt" --schema "$schema"
 
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
-        rm -rf "$sandbox"
-        skip "$id is not installed (oneharness reported status=$status); nothing to verify"
-    fi
-
-    valid="$(oh_field '.results[0].schema_valid')"
-    attempts="$(oh_field '.results[0].schema_attempts')"
-    if [ "$status" != "ok" ] || [ "$valid" != "true" ]; then
-        oh_dump
-        note "  schema_valid:  $valid"
-        note "  schema_error:  $(oh_field '.results[0].schema_error // "null"')"
-        note "  structured:    $(printf '%s' "$OH_REPORT" | jq -c '.results[0].structured // "null"')"
-        rm -rf "$sandbox"
-        fail "$id: --schema run did not yield a schema-valid result (status=$status, schema_valid=$valid, attempts=$attempts)"
-    fi
-    note "  ok: $id returned schema-valid structured output (attempts=$attempts)"
-
-    # The marker must round-trip into the validated value, proving the schema
-    # reached the model and the right object was extracted — not a lucky empty
-    # object that happened to validate.
-    token="$(oh_field '.results[0].structured.token? // ""')"
-    if [ "$token" != "$marker" ]; then
-        oh_dump
-        note "  structured:    $(printf '%s' "$OH_REPORT" | jq -c '.results[0].structured // "null"')"
-        rm -rf "$sandbox"
-        fail "$id: the marker did not round-trip into .structured.token (got '$token')"
-    fi
-    note "  confirmed: the marker round-tripped into .structured.token"
-
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "skipped" ] || [ "$(oh_field '.results[0].available')" != "true" ]; then
     rm -rf "$sandbox"
-    note "PASS: $id schema enforcement"
+    skip "$id is not installed (oneharness reported status=$status); nothing to verify"
+  fi
+
+  valid="$(oh_field '.results[0].schema_valid')"
+  attempts="$(oh_field '.results[0].schema_attempts')"
+  if [ "$status" != "ok" ] || [ "$valid" != "true" ]; then
+    oh_dump
+    note "  schema_valid:  $valid"
+    note "  schema_error:  $(oh_field '.results[0].schema_error // "null"')"
+    note "  structured:    $(printf '%s' "$OH_REPORT" | jq -c '.results[0].structured // "null"')"
+    rm -rf "$sandbox"
+    fail "$id: --schema run did not yield a schema-valid result (status=$status, schema_valid=$valid, attempts=$attempts)"
+  fi
+  note "  ok: $id returned schema-valid structured output (attempts=$attempts)"
+
+  # The marker must round-trip into the validated value, proving the schema
+  # reached the model and the right object was extracted — not a lucky empty
+  # object that happened to validate.
+  token="$(oh_field '.results[0].structured.token? // ""')"
+  if [ "$token" != "$marker" ]; then
+    oh_dump
+    note "  structured:    $(printf '%s' "$OH_REPORT" | jq -c '.results[0].structured // "null"')"
+    rm -rf "$sandbox"
+    fail "$id: the marker did not round-trip into .structured.token (got '$token')"
+  fi
+  note "  confirmed: the marker round-tripped into .structured.token"
+
+  rm -rf "$sandbox"
+  note "PASS: $id schema enforcement"
 }
 
 # Live proof that `--reasoning <effort>` is DELIVERED and honored end to end — the
@@ -3481,26 +3502,26 @@ oh_schema_enforce() {
 # the caller must set OH_MODEL before invoking this for it (guard with an
 # `if [ -n "$OH_MODEL" ]` / `note`, not skip()). $1 id, $2 valid effort, $3 bogus.
 oh_reasoning_enforce() {
-    local id="$1" effort="$2" bogus="${3:-banana-not-an-effort}"
-    local marker status
+  local id="$1" effort="$2" bogus="${3:-banana-not-an-effort}"
+  local marker status
 
-    marker="$(oh_marker)"
-    note "  reasoning-enforce[$effort]: --reasoning must be accepted and the run must complete"
-    oh_run "$id" "$(oh_prompt "$marker")" --reasoning "$effort"
-    # Shared conclusion: SKIP if not installed, FAIL if it didn't run cleanly or
-    # the marker never surfaced, else the reasoning delivery reached the CLI
-    # without breaking the run.
-    oh_assert_echoed "$id" "$marker"
-    note "  ok[$effort]: --reasoning $effort was accepted and the run completed end to end"
+  marker="$(oh_marker)"
+  note "  reasoning-enforce[$effort]: --reasoning must be accepted and the run must complete"
+  oh_run "$id" "$(oh_prompt "$marker")" --reasoning "$effort"
+  # Shared conclusion: SKIP if not installed, FAIL if it didn't run cleanly or
+  # the marker never surfaced, else the reasoning delivery reached the CLI
+  # without breaking the run.
+  oh_assert_echoed "$id" "$marker"
+  note "  ok[$effort]: --reasoning $effort was accepted and the run completed end to end"
 
-    note "  reasoning-enforce[bogus=$bogus]: a harness that validates effort should reject it"
-    oh_run "$id" "$(oh_prompt "$(oh_marker)")" --reasoning "$bogus"
-    status="$(oh_field '.results[0].status')"
-    if [ "$status" = "nonzero" ]; then
-        note "  confirmed: $id rejected a bogus effort (status=nonzero) — the value is parsed/honored, not ignored"
-    else
-        note "  note: $id did not reject a bogus effort (status=$status) — it accepts the flag but may not validate the value; honoring not provable here"
-    fi
+  note "  reasoning-enforce[bogus=$bogus]: a harness that validates effort should reject it"
+  oh_run "$id" "$(oh_prompt "$(oh_marker)")" --reasoning "$bogus"
+  status="$(oh_field '.results[0].status')"
+  if [ "$status" = "nonzero" ]; then
+    note "  confirmed: $id rejected a bogus effort (status=nonzero) — the value is parsed/honored, not ignored"
+  else
+    note "  note: $id did not reject a bogus effort (status=$status) — it accepts the flag but may not validate the value; honoring not provable here"
+  fi
 
-    note "PASS: $id reasoning enforcement"
+  note "PASS: $id reasoning enforcement"
 }

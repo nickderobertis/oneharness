@@ -15,8 +15,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 probe="$root/scripts/explore_control.py"
 
 if ! command -v python3 >/dev/null 2>&1; then
-    echo "check-control-probe-http: skipped (python3 is not installed; the probe it checks needs it)"
-    exit 0
+  echo "check-control-probe-http: skipped (python3 is not installed; the probe it checks needs it)"
+  exit 0
 fi
 
 python3 - "$probe" <<'PY'

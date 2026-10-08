@@ -57,19 +57,19 @@ note "PASS: cursor sync enforcement"
 # Linux/macOS. See the README support matrix.
 # https://forum.cursor.com/t/agent-cli-on-windows-no-way-to-configure-shell-hardcoded-to-powershell-no-shell-flag-or-config-option/151858
 if [ "${OS:-}" = "Windows_NT" ]; then
-    note "» hook enforcement: SKIPPED on windows-latest (cursor-agent hook-shell bug; see README)"
-    note "» mock enforcement: SKIPPED on windows-latest (same cursor-agent hook-shell bug)"
+  note "» hook enforcement: SKIPPED on windows-latest (cursor-agent hook-shell bug; see README)"
+  note "» mock enforcement: SKIPPED on windows-latest (same cursor-agent hook-shell bug)"
 else
-    note "» hook enforcement: the synced gate must block a marked command"
-    oh_hook_enforce cursor
+  note "» hook enforcement: the synced gate must block a marked command"
+  oh_hook_enforce cursor
 
-    # Mock enforcement: `run --mock-rules` installs .cursor/hooks.json
-    # ephemerally (restored afterwards); cursor honors
-    # `{"permission":"allow","updated_input":…}` on its `preToolUse` event
-    # (probe-verified headlessly 2026-07-06), which the hook binding wires
-    # alongside the three before* events.
-    note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
-    oh_mock_enforce cursor
+  # Mock enforcement: `run --mock-rules` installs .cursor/hooks.json
+  # ephemerally (restored afterwards); cursor honors
+  # `{"permission":"allow","updated_input":…}` on its `preToolUse` event
+  # (probe-verified headlessly 2026-07-06), which the hook binding wires
+  # alongside the three before* events.
+  note "» mock enforcement: run --mock-rules must rewrite a marked command's input"
+  oh_mock_enforce cursor
 fi
 
 # Approval-mode enforcement: `read-only` is Cursor's native `--mode ask` and
@@ -88,9 +88,9 @@ oh_mode_enforce cursor plan
 # is configured. This is the LAST phase, so mutating OH_MODEL here is safe.
 reasoning_model="${CURSOR_E2E_REASONING_MODEL:-${OH_MODEL:-}}"
 if [ -n "$reasoning_model" ]; then
-    note "» reasoning: --reasoning must ride the model id and be accepted (model: $reasoning_model)"
-    OH_MODEL="$reasoning_model"
-    oh_reasoning_enforce cursor high
+  note "» reasoning: --reasoning must ride the model id and be accepted (model: $reasoning_model)"
+  OH_MODEL="$reasoning_model"
+  oh_reasoning_enforce cursor high
 else
-    note "» reasoning: SKIPPED (set CURSOR_E2E_REASONING_MODEL or CURSOR_E2E_MODEL to test)"
+  note "» reasoning: SKIPPED (set CURSOR_E2E_REASONING_MODEL or CURSOR_E2E_MODEL to test)"
 fi

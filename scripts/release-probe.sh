@@ -156,11 +156,11 @@ esac
 # substitution's stripping and is validated rather than silently tidied away.
 version=""
 if command -v jq >/dev/null 2>&1; then
-  version="$( { jq -j --argjson paths "$paths" \
+  version="$({ jq -j --argjson paths "$paths" \
     '[$paths[] as $p | getpath($p)] | map(select(type == "string" and length > 0)) | first // ""' \
-    < "$response" 2>"$work/read-error" && printf X; } )" || version="__unreadable__"
+    <"$response" 2>"$work/read-error" && printf X; })" || version="__unreadable__"
 elif command -v python3 >/dev/null 2>&1; then
-  version="$( { python3 -c '
+  version="$({ python3 -c '
 import json, sys
 
 paths = json.loads(sys.argv[1])
@@ -175,7 +175,7 @@ for path in paths:
     if isinstance(value, str) and value:
         sys.stdout.write(value)
         break
-' "$paths" < "$response" 2>"$work/read-error" && printf X; } )" || version="__unreadable__"
+' "$paths" <"$response" 2>"$work/read-error" && printf X; })" || version="__unreadable__"
 else
   unanswered "neither jq nor python3 is available to read the $registry response; install one and retry"
 fi

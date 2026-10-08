@@ -288,10 +288,10 @@ expect_said "$tmp/err" "CI runs for $SHA_UNDER_TEST were unreadable"
 expect_said "$tmp/err" "2 JSON documents"
 
 for mutation in '.check_jobs[0].id = 1.5' \
-                '.check_jobs[0].head_sha = "2222222222222222222222222222222222222222"' \
-                '.check_jobs[0].status = "unknown"' \
-                '.check_jobs[1] |= (.status = "in_progress" | .conclusion = "failure")' \
-                '.check_jobs[0].name = "check (bad\tname)"'; do
+  '.check_jobs[0].head_sha = "2222222222222222222222222222222222222222"' \
+  '.check_jobs[0].status = "unknown"' \
+  '.check_jobs[1] |= (.status = "in_progress" | .conclusion = "failure")' \
+  '.check_jobs[0].name = "check (bad\tname)"'; do
   fixture="$(run_with_jobs 125 success success success success | jq -c "$mutation")"
   run_case "{\"workflow_runs\":[$fixture]}" "an invalid check job field: $mutation"
   expect_refused
@@ -533,10 +533,10 @@ expect_said "$tmp/err" "1 run(s) in CI's answer"
 # A run with no readable head_sha: there is no telling WHOSE it is, so the
 # selector refuses rather than guess whether it is ours.
 for anonymous in '{"id":92,"status":"completed","conclusion":"failure"}' \
-                 '{"id":93,"head_sha":null,"status":"completed","conclusion":"failure"}' \
-                 '{"id":94,"head_sha":{},"status":"completed","conclusion":"failure"}' \
-                 '{"id":116,"head_sha":"not-a-commit","status":"completed","conclusion":"failure"}' \
-                 '{"id":117,"head_sha":"abc1234","status":"completed","conclusion":"failure"}'; do
+  '{"id":93,"head_sha":null,"status":"completed","conclusion":"failure"}' \
+  '{"id":94,"head_sha":{},"status":"completed","conclusion":"failure"}' \
+  '{"id":116,"head_sha":"not-a-commit","status":"completed","conclusion":"failure"}' \
+  '{"id":117,"head_sha":"abc1234","status":"completed","conclusion":"failure"}'; do
   run_case "{\"workflow_runs\":[$anonymous]}" "a run whose head_sha cannot be read: $anonymous"
   expect_refused
   expect_said "$tmp/err" "1 run(s) in CI's answer"
@@ -545,7 +545,7 @@ done
 # One of OURS with no readable status: neither finished nor pending, so it would
 # vanish from both counts and leave the commit looking untouched by CI.
 for statusless in '{"id":95,"head_sha":"SHA","conclusion":"failure"}' \
-                  '{"id":96,"head_sha":"SHA","status":7,"conclusion":"failure"}'; do
+  '{"id":96,"head_sha":"SHA","status":7,"conclusion":"failure"}'; do
   run_case "{\"workflow_runs\":[${statusless//SHA/$SHA_UNDER_TEST}]}" \
     "a run of ours whose status cannot be read: $statusless"
   expect_refused

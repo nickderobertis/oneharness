@@ -30,7 +30,7 @@ llmlint_cache_dir() {
   [[ -n $base ]] || base=${HOME:+$HOME/.cache}
   [[ $base == /* ]] || return 1
   case $base in
-  *$'\n'*) return 1 ;;
+    *$'\n'*) return 1 ;;
   esac
   printf '%s/oneharness/llmlint-gate\n' "$base"
 }

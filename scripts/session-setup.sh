@@ -10,26 +10,26 @@ readonly ORIG_PATH="$PATH"
 log() { printf 'session-setup: %s\n' "$*" >&2; }
 
 if [[ -n "${CI:-}" ]]; then
-    exit 0
+  exit 0
 fi
 
 export PATH="${BIN_DIR}:${PATH}"
 if ! command -v just >/dev/null 2>&1; then
-    if command -v uv >/dev/null 2>&1; then
-        uv tool install --upgrade "rust-just>=${JUST_MIN}" >&2 \
-            || log "rust-just install failed (continuing)"
-    else
-        log "uv not found; cannot install just"
-    fi
+  if command -v uv >/dev/null 2>&1; then
+    uv tool install --upgrade "rust-just>=${JUST_MIN}" >&2 ||
+      log "rust-just install failed (continuing)"
+  else
+    log "uv not found; cannot install just"
+  fi
 fi
 
 if [[ -n "${CLAUDE_ENV_FILE:-}" && ":${ORIG_PATH}:" != *":${BIN_DIR}:"* ]]; then
-    printf 'export PATH=%q\n' "${BIN_DIR}:${PATH}" >>"$CLAUDE_ENV_FILE"
+  printf 'export PATH=%q\n' "${BIN_DIR}:${PATH}" >>"$CLAUDE_ENV_FILE"
 fi
 
 setup_llmlint="$(dirname "$0")/setup-llmlint.sh"
 if [[ -x "$setup_llmlint" ]]; then
-    "$setup_llmlint" || log "setup-llmlint.sh reported an issue (continuing)"
+  "$setup_llmlint" || log "setup-llmlint.sh reported an issue (continuing)"
 fi
 
 exit 0

@@ -13,8 +13,8 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v jq >/dev/null 2>&1; then
-    echo "check-usage-enforce: skipped (jq is not installed; oh_usage_enforce parses its report with it)"
-    exit 0
+  echo "check-usage-enforce: skipped (jq is not installed; oh_usage_enforce parses its report with it)"
+  exit 0
 fi
 
 tmp="$(mktemp -d)"
@@ -35,36 +35,36 @@ chmod +x "$tmp/oneharness"
 # every failure has the same three next actions and they live here rather than
 # eighteen times over.
 fail() {
-    echo "check-usage-enforce: $1" >&2
-    echo "  Next, in order:" >&2
-    echo "    1. See the helper's whole output for the case that failed:" >&2
-    echo "         bash -x scripts/check-usage-enforce.sh" >&2
-    echo "    2. If the helper changed on purpose, the case above is now the stale half —" >&2
-    echo "       update it in this file to the branch's new wording." >&2
-    echo "    3. If it did not, the branch regressed: fix it in scripts/e2e-lib.sh, whose" >&2
-    echo "       oh_usage_* helpers are the code under test here." >&2
-    echo "       A SKIP where a PASS was expected usually means the stub never ran — check" >&2
-    echo "       the FAKE_* variables the failing case sets." >&2
-    exit 1
+  echo "check-usage-enforce: $1" >&2
+  echo "  Next, in order:" >&2
+  echo "    1. See the helper's whole output for the case that failed:" >&2
+  echo "         bash -x scripts/check-usage-enforce.sh" >&2
+  echo "    2. If the helper changed on purpose, the case above is now the stale half —" >&2
+  echo "       update it in this file to the branch's new wording." >&2
+  echo "    3. If it did not, the branch regressed: fix it in scripts/e2e-lib.sh, whose" >&2
+  echo "       oh_usage_* helpers are the code under test here." >&2
+  echo "       A SKIP where a PASS was expected usually means the stub never ran — check" >&2
+  echo "       the FAKE_* variables the failing case sets." >&2
+  exit 1
 }
 
 # Drive oh_usage_enforce once against the stubbed report, in a subshell because
 # its skip/fail paths exit. Captures stdout+stderr in $out and the code in $rc.
 drive() {
-    local stdout="$1" exit_code="$2" no_skip="${3:-}"
-    set +e
-    out="$(
-        FAKE_STDOUT="$stdout" FAKE_EXIT="$exit_code" \
-            FAKE_STDERR="codex: the app-server went away" \
-            ONEHARNESS_BIN="$tmp/oneharness" OH_E2E_NO_SKIP="$no_skip" \
-            bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'; oh_usage_enforce codex" 2>&1
-    )"
-    rc=$?
-    set -e
+  local stdout="$1" exit_code="$2" no_skip="${3:-}"
+  set +e
+  out="$(
+    FAKE_STDOUT="$stdout" FAKE_EXIT="$exit_code" \
+      FAKE_STDERR="codex: the app-server went away" \
+      ONEHARNESS_BIN="$tmp/oneharness" OH_E2E_NO_SKIP="$no_skip" \
+      bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'; oh_usage_enforce codex" 2>&1
+  )"
+  rc=$?
+  set -e
 }
 
 identity() {
-    printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s}]}' "$1"
+  printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s}]}' "$1"
 }
 
 # 1. Absent: nothing to probe, so the phase steps aside rather than reporting
@@ -72,8 +72,8 @@ identity() {
 drive "$(identity '{"state":"unknown","reason":{"kind":"binary_missing","bin":"codex"}}')" 0
 [ "$rc" -eq 0 ] || fail "an absent harness must exit 0, got $rc: $out"
 case "$out" in
-*"SKIP:"*"not installed"*"nothing to probe"*) ;;
-*) fail "an absent harness must skip with a stated reason, got: $out" ;;
+  *"SKIP:"*"not installed"*"nothing to probe"*) ;;
+  *) fail "an absent harness must skip with a stated reason, got: $out" ;;
 esac
 
 # 2. Installed but silent: exactly the drift this phase exists to catch. It must
@@ -81,8 +81,8 @@ esac
 drive "$(identity '{"state":"unknown","reason":{"kind":"probe_failed","message":"no answer"}}')" 0
 [ "$rc" -eq 1 ] || fail "an unanswered probe must fail, got exit $rc: $out"
 case "$out" in
-*"Next, in order:"*"HoldUntilAnswered"*"FAIL:"*"no answer out of the harness"*) ;;
-*) fail "an unanswered probe must fail with its next actions, got: $out" ;;
+  *"Next, in order:"*"HoldUntilAnswered"*"FAIL:"*"no answer out of the harness"*) ;;
+  *) fail "an unanswered probe must fail with its next actions, got: $out" ;;
 esac
 
 # 3. The same absence, in CI. Every e2e workflow installs its harness up front,
@@ -96,8 +96,8 @@ drive "$(identity '{"state":"unknown","reason":{"kind":"binary_missing","bin":"c
 drive "" 2
 [ "$rc" -eq 1 ] || fail "an empty report must fail, got exit $rc: $out"
 case "$out" in
-*"exited 2"*"Next, in order:"*"usage/config error"*"FAIL:"*"produced no report"*) ;;
-*) fail "an empty report must name the exit code and a next action, got: $out" ;;
+  *"exited 2"*"Next, in order:"*"usage/config error"*"FAIL:"*"produced no report"*) ;;
+  *) fail "an empty report must name the exit code and a next action, got: $out" ;;
 esac
 
 # 5. An answer — either flavour, since CI's API-key identity honestly reports
@@ -106,15 +106,15 @@ esac
 drive "$(identity '{"state":"unavailable","reason":"api_key_auth"}')" 0
 [ "$rc" -eq 0 ] || fail "an answered probe must pass, got exit $rc: $out"
 case "$out" in
-*"PASS:"*"unavailable (api_key_auth)"*) ;;
-*) fail "an answered probe must log the reading it got, got: $out" ;;
+  *"PASS:"*"unavailable (api_key_auth)"*) ;;
+  *) fail "an answered probe must log the reading it got, got: $out" ;;
 esac
 
 drive "$(identity '{"state":"available","windows":[{"id":"codex","usage":{"used_percent":31}}]}')" 0
 [ "$rc" -eq 0 ] || fail "a reported headroom must pass, got exit $rc: $out"
 case "$out" in
-*"PASS:"*"headroom codex 31"*) ;;
-*) fail "a reported headroom must be logged, got: $out" ;;
+  *"PASS:"*"headroom codex 31"*) ;;
+  *) fail "a reported headroom must be logged, got: $out" ;;
 esac
 
 # The sibling phase holds a different distinction: whether the probe's ANSWER
@@ -166,35 +166,35 @@ chmod +x "$tmp/oneharness-cwd"
 # Drive oh_usage_cwd_enforce once, under a throwaway HOME so the workspace-trust
 # preparation it runs cannot touch the developer's own ~/.claude.json.
 drive_cwd() {
-    local harness_bin="$1" hook_sleep="$2" probe_sleep="$3" hooked="$4" plain="$5"
-    local id="${6:-claude-code}"
-    local home
-    home="$(mktemp -d)"
-    set +e
-    out="$(
-        FAKE_HARNESS_BIN="$harness_bin" FAKE_HOOK_SLEEP="$hook_sleep" \
-            FAKE_HARNESS_ERROR="${FAKE_HARNESS_ERROR:-}" \
-            FAKE_PROBE_SLEEP="$probe_sleep" FAKE_HOOKED="$hooked" FAKE_PLAIN="$plain" \
-            HOME="$home" ONEHARNESS_BIN="$tmp/oneharness-cwd" \
-            bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
+  local harness_bin="$1" hook_sleep="$2" probe_sleep="$3" hooked="$4" plain="$5"
+  local id="${6:-claude-code}"
+  local home
+  home="$(mktemp -d)"
+  set +e
+  out="$(
+    FAKE_HARNESS_BIN="$harness_bin" FAKE_HOOK_SLEEP="$hook_sleep" \
+      FAKE_HARNESS_ERROR="${FAKE_HARNESS_ERROR:-}" \
+      FAKE_PROBE_SLEEP="$probe_sleep" FAKE_HOOKED="$hooked" FAKE_PLAIN="$plain" \
+      HOME="$home" ONEHARNESS_BIN="$tmp/oneharness-cwd" \
+      bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'
                      OH_USAGE_HOOK_MARGIN=1
                      oh_usage_cwd_enforce $id" 2>&1
-    )"
-    rc=$?
-    set -e
-    rm -rf "$home"
+  )"
+  rc=$?
+  set -e
+  rm -rf "$home"
 }
 
 reading() {
-    printf '{"identities":[{"harness":"claude-code","plan":"%s","auth_mode":"subscription","selector":{"kind":"env_path","env":"CLAUDE_CONFIG_DIR","path":"/h/.claude"},"availability":{"state":"available","windows":[{"id":"five_hour"}]}}]}' "$1"
+  printf '{"identities":[{"harness":"claude-code","plan":"%s","auth_mode":"subscription","selector":{"kind":"env_path","env":"CLAUDE_CONFIG_DIR","path":"/h/.claude"},"availability":{"state":"available","windows":[{"id":"five_hour"}]}}]}' "$1"
 }
 
 # 6. Absent harness: nothing to point at a directory, so the phase steps aside.
 drive_cwd "" "" "" "$(reading max)" "$(reading max)"
 [ "$rc" -eq 0 ] || fail "an absent harness must exit 0 for the cwd phase, got $rc: $out"
 case "$out" in
-*"SKIP:"*"not installed"*"nothing to probe"*) ;;
-*) fail "an absent harness must skip with a stated reason, got: $out" ;;
+  *"SKIP:"*"not installed"*"nothing to probe"*) ;;
+  *) fail "an absent harness must skip with a stated reason, got: $out" ;;
 esac
 
 # 7. A fixture that costs nothing: the platform could not run the hook command,
@@ -203,19 +203,19 @@ esac
 drive_cwd "$tmp/claude" "" "" "$(reading max)" "$(reading max)"
 [ "$rc" -eq 0 ] || fail "an unfired fixture must exit 0, got $rc: $out"
 case "$out" in
-*"SKIP:"*"did not cost anything here"*) ;;
-*) fail "an unfired fixture must skip naming what did not happen, got: $out" ;;
+  *"SKIP:"*"did not cost anything here"*) ;;
+  *) fail "an unfired fixture must skip naming what did not happen, got: $out" ;;
 esac
 
 # 7b. A control that would not open a session at all establishes nothing about
 #     the fixture, so it skips carrying the CLI's own words rather than blaming
 #     the platform for a sleep it never got to.
 FAKE_HARNESS_ERROR="Error: this workspace has not been trusted" \
-    drive_cwd "$tmp/claude" "" "" "$(reading max)" "$(reading max)"
+  drive_cwd "$tmp/claude" "" "" "$(reading max)" "$(reading max)"
 [ "$rc" -eq 0 ] || fail "a refused control must exit 0, got $rc: $out"
 case "$out" in
-*"SKIP:"*"would not open a zero-turn session"*"has not been trusted"*) ;;
-*) fail "a refused control must skip in the CLI's own words, got: $out" ;;
+  *"SKIP:"*"would not open a zero-turn session"*"has not been trusted"*) ;;
+  *) fail "a refused control must skip in the CLI's own words, got: $out" ;;
 esac
 
 # 8. The regression itself: the probe pays the directory's session-start cost.
@@ -224,8 +224,8 @@ esac
 drive_cwd "$tmp/claude" 4 4 "$(reading max)" "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a probe that waited out the hook must fail, got exit $rc: $out"
 case "$out" in
-*"Next, in order:"*"setting-sources"*"FAIL:"*"depends on its working directory"*) ;;
-*) fail "the regression must fail with its next actions, got: $out" ;;
+  *"Next, in order:"*"setting-sources"*"FAIL:"*"depends on its working directory"*) ;;
+  *) fail "the regression must fail with its next actions, got: $out" ;;
 esac
 
 # 9. The fix in place: the probe answers without paying, and answers the same
@@ -233,8 +233,8 @@ esac
 drive_cwd "$tmp/claude" 4 "" "$(reading max)" "$(reading max)"
 [ "$rc" -eq 0 ] || fail "an independent probe must pass, got exit $rc: $out"
 case "$out" in
-*"PASS:"*"independent of its working directory"*) ;;
-*) fail "an independent probe must log its readings, got: $out" ;;
+  *"PASS:"*"independent of its working directory"*) ;;
+  *) fail "an independent probe must log its readings, got: $out" ;;
 esac
 
 # 10. Fast but different: dropping the directory's settings must change what the
@@ -243,88 +243,88 @@ esac
 drive_cwd "$tmp/claude" 4 "" "$(reading pro)" "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a changed reading must fail even when fast, got exit $rc: $out"
 case "$out" in
-*"FAIL:"*"different identity from the hooked directory"*) ;;
-*) fail "a changed reading must say what differed, got: $out" ;;
+  *"FAIL:"*"different identity from the hooked directory"*) ;;
+  *) fail "a changed reading must say what differed, got: $out" ;;
 esac
 
 # 11. A probe that learned nothing has no duration to compare, so `unknown` is a
 #     failure rather than a fast pass — the phase would otherwise read a probe
 #     that asked and got no reply as one that answered without waiting.
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","availability":{"state":"unknown","reason":{"kind":"probe_failed"}}}]}' \
-    "$(reading max)"
+  '{"identities":[{"harness":"claude-code","availability":{"state":"unknown","reason":{"kind":"probe_failed"}}}]}' \
+  "$(reading max)"
 [ "$rc" -eq 1 ] || fail "an unanswered probe must fail, got exit $rc: $out"
 case "$out" in
-*"Next, in order:"*"FAIL:"*"got no answer out of the harness"*) ;;
-*) fail "an unanswered probe must fail with its next actions, got: $out" ;;
+  *"Next, in order:"*"FAIL:"*"got no answer out of the harness"*) ;;
+  *) fail "an unanswered probe must fail with its next actions, got: $out" ;;
 esac
 
 # 12. The report is external input: a state the phase has never heard of, and a
 #     report carrying no state at all, must be refused rather than measured as a
 #     good answer that happened to arrive quickly.
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","availability":{"state":"throttled"}}]}' \
-    "$(reading max)"
+  '{"identities":[{"harness":"claude-code","availability":{"state":"throttled"}}]}' \
+  "$(reading max)"
 [ "$rc" -eq 1 ] || fail "an unrecognized state must fail, got exit $rc: $out"
 case "$out" in
-*"FAIL:"*"cannot judge"*"state=throttled"*) ;;
-*) fail "an unrecognized state must name it, got: $out" ;;
+  *"FAIL:"*"cannot judge"*"state=throttled"*) ;;
+  *) fail "an unrecognized state must name it, got: $out" ;;
 esac
 
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","availability":{}}]}' \
-    "$(reading max)"
+  '{"identities":[{"harness":"claude-code","availability":{}}]}' \
+  "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a stateless report must fail, got exit $rc: $out"
 case "$out" in
-*"FAIL:"*"cannot judge"*"state=<absent>"*) ;;
-*) fail "a stateless report must say the field was absent, got: $out" ;;
+  *"FAIL:"*"cannot judge"*"state=<absent>"*) ;;
+  *) fail "a stateless report must say the field was absent, got: $out" ;;
 esac
 
 # 13. A report the probe accepted as an ANSWER can still be one the comparison
 #     cannot judge. Two equally malformed reports produce two equal keys, so a
 #     comparison that skipped validation would read that as proof.
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}' \
-    '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}'
+  '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}' \
+  '{"identities":[{"harness":"claude-code","selector":{},"availability":{"state":"available","windows":[]}}]}'
 [ "$rc" -eq 1 ] || fail "a report missing a required identity field must fail, got exit $rc: $out"
 case "$out" in
-*"identity has no auth_mode"*"FAIL:"*"not one this phase can compare"*) ;;
-*) fail "a missing required field must be named, got: $out" ;;
+  *"identity has no auth_mode"*"FAIL:"*"not one this phase can compare"*) ;;
+  *) fail "a missing required field must be named, got: $out" ;;
 esac
 
 # 14. And a field the key does not cover is refused rather than ignored: an
 #     identity gaining one is a difference the comparison would otherwise call
 #     "the same attribution".
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","tenant":"acme","availability":{"state":"available","windows":[]}}]}' \
-    "$(reading max)"
+  '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","tenant":"acme","availability":{"state":"available","windows":[]}}]}' \
+  "$(reading max)"
 [ "$rc" -eq 1 ] || fail "an unknown identity field must fail, got exit $rc: $out"
 case "$out" in
-*"identity carries unknown field(s): tenant"*) ;;
-*) fail "an unknown identity field must be named, got: $out" ;;
+  *"identity carries unknown field(s): tenant"*) ;;
+  *) fail "an unknown identity field must be named, got: $out" ;;
 esac
 
 # 15. An OPTIONAL property is optional, not untyped: present but null, it would
 #     otherwise join the key as the same empty value a second malformed report
 #     contributes, and the two would compare equal.
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","plan":null,"availability":{"state":"available","windows":[]}}]}' \
-    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","plan":null,"availability":{"state":"available","windows":[]}}]}'
+  '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","plan":null,"availability":{"state":"available","windows":[]}}]}' \
+  '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","plan":null,"availability":{"state":"available","windows":[]}}]}'
 [ "$rc" -eq 1 ] || fail "a present-but-null optional field must fail, got exit $rc: $out"
 case "$out" in
-*"plan is null, not string"*) ;;
-*) fail "a mistyped optional field must name its type, got: $out" ;;
+  *"plan is null, not string"*) ;;
+  *) fail "a mistyped optional field must name its type, got: $out" ;;
 esac
 
 # 16. The windows are reduced into the key, so a window that carries no id is a
 #     window the comparison cannot tell from any other.
 drive_cwd "$tmp/claude" 4 "" \
-    '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","availability":{"state":"available","windows":[{"usage":{}}]}}]}' \
-    "$(reading max)"
+  '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","availability":{"state":"available","windows":[{"usage":{}}]}}]}' \
+  "$(reading max)"
 [ "$rc" -eq 1 ] || fail "a window without an id must fail, got exit $rc: $out"
 case "$out" in
-*"a window has no id"*) ;;
-*) fail "a window without an id must say so, got: $out" ;;
+  *"a window has no id"*) ;;
+  *) fail "a window without an id must say so, got: $out" ;;
 esac
 
 # 17. The phase's fixture and its control are the harness's OWN mechanisms, so a
@@ -334,8 +334,8 @@ esac
 drive_cwd "$tmp/claude" 4 "" "$(reading max)" "$(reading max)" codex
 [ "$rc" -eq 1 ] || fail "an unsupported harness must fail, got exit $rc: $out"
 case "$out" in
-*"FAIL:"*"no session-start fixture or zero-turn control for codex"*) ;;
-*) fail "an unsupported harness must name what it lacks, got: $out" ;;
+  *"FAIL:"*"no session-start fixture or zero-turn control for codex"*) ;;
+  *) fail "an unsupported harness must name what it lacks, got: $out" ;;
 esac
 
 # The usage output contract, held against the one place it is defined.

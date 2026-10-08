@@ -29,7 +29,10 @@ probe=scripts/release-probe.sh
 
 fail() {
   echo "release-probe-live: $1" >&2
-  [ -s "$work/err" ] && { echo "  the probe's stderr:" >&2; cat "$work/err" >&2; }
+  [ -s "$work/err" ] && {
+    echo "  the probe's stderr:" >&2
+    cat "$work/err" >&2
+  }
   exit 1
 }
 

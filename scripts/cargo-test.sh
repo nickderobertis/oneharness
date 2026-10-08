@@ -60,25 +60,31 @@ while [ "$#" -gt 0 ]; do
     --with)
       [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--with needs a cargo package name"
       packages+=(-p "$2")
-      shift 2 ;;
+      shift 2
+      ;;
     --features)
       [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9_/,-]+$ ]] || usage "--features needs a comma-separated feature list"
       features=(--features "$2")
-      shift 2 ;;
+      shift 2
+      ;;
     --filter)
       [ "$#" -ge 2 ] && [ -n "$2" ] || usage "--filter needs a nextest filterset"
       filterset="$2"
-      shift 2 ;;
+      shift 2
+      ;;
     --record)
       [ "$#" -ge 2 ] && [[ "$2" =~ ^[a-z0-9_-]+$ ]] || usage "--record needs a record name"
       record="$2"
-      shift 2 ;;
+      shift 2
+      ;;
     --uninstrumented)
       instrumented=0
-      shift ;;
+      shift
+      ;;
     --build-only)
       build_only=1
-      shift ;;
+      shift
+      ;;
     *) usage "unknown argument '$1'" ;;
   esac
 done

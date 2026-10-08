@@ -73,7 +73,9 @@ steps="$(git ls-files --cached --others --exclude-standard '*project.json' | nod
           const match = step.match(/^bash scripts\/shell-test\.sh (\S+) (.+)$/u);
           if (!match) continue;
           const output = `{workspaceRoot}/target/coverage/shell/${match[1]}`;
-          if (match[1] !== project.name) {
+          if (!/^[a-z0-9-]+$/u.test(match[1])) {
+            problems.push(`${file}: ${project.name}:${name} runs a step as project "${match[1]}", which is not an Nx project name`);
+          } else if (match[1] !== project.name) {
             problems.push(`${file}: ${project.name}:${name} runs a step as project ${match[1]}; name ${project.name} in it`);
           } else if (!(target.outputs ?? []).includes(output)) {
             problems.push(`${file}: ${project.name}:${name} runs shell-test.sh but does not declare ${output} as an output`);

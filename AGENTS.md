@@ -68,7 +68,7 @@ follow-ups (see "After the main task").
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
   `install-surface`, `release-tooling`, `ci-contracts`, `e2e-support`,
   `workspace`, `workspace-integration`, `rust-coverage`, `shell-coverage`,
-  `scripts`, `githooks`, the paid `live-*` suites (claude,
+  `shell-toolchain`, `scripts`, `githooks`, the paid `live-*` suites (claude,
   codex, opencode, goose, qwen, crush, copilot, cursor, schema, control,
   variants) and the dispatch-only `explore-*` probes (control, cursor-stdin,
   events, hooks).

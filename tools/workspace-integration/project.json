@@ -6,7 +6,7 @@
     "type:workspace",
     "lang:bash"
   ],
-  "//": "The repository-wide suites that drive real host tools rather than stubbed ones, split from `workspace`'s offline tests so an edit to an unrelated hygiene script never pays for them: the affected tier's base derivation driven through the real `just check`, the self-sufficient workspace install driven through the real justfile and scripts/nx, the boundary check's refusals, proven by Nx computing each graph for real over a scratch copy of the tree, the build recipes' failure diagnostics, proven through real just and cargo runs, the LF gate's refusals, proven by real git checkouts of scratch repositories under Windows conversion rules, and the shell toolchain's: its pins against the installed shellcheck, shfmt and kcov, the format and lint targets through the real pinned tools over a scratch repository, and the shell coverage floor through the real kcov collecting and merging a scratch project's step. Its inputs are what those runs read.",
+  "//": "The repository-wide suites that drive real host tools rather than stubbed ones, split from `workspace`'s offline tests so an edit to an unrelated hygiene script never pays for them: the affected tier's base derivation driven through the real `just check`, the self-sufficient workspace install driven through the real justfile and scripts/nx, the boundary check's refusals, proven by Nx computing each graph for real over a scratch copy of the tree, the build recipes' failure diagnostics, proven through real just and cargo runs, and the LF gate's refusals, proven by real git checkouts of scratch repositories under Windows conversion rules. Its inputs are what those runs read.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
@@ -35,16 +35,7 @@
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/Cargo.lock",
       "{workspaceRoot}/crates/*/Cargo.toml",
-      "{workspaceRoot}/**/project.json",
-      "{workspaceRoot}/scripts/check-shell-coverage.sh",
-      "{workspaceRoot}/scripts/shell-coverage.sh",
-      "{workspaceRoot}/scripts/shell-test.sh",
-      "{workspaceRoot}/scripts/shell-trace-env.sh",
-      "{workspaceRoot}/scripts/shell-tools.sh",
-      "{workspaceRoot}/.shell-tool-versions",
-      "{workspaceRoot}/scripts/check-shell-tools.sh",
-      "{workspaceRoot}/scripts/check-shell-check.sh",
-      "{workspaceRoot}/scripts/shell-check.sh"
+      "{workspaceRoot}/**/project.json"
     ]
   },
   "targets": {
@@ -56,10 +47,7 @@
           "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-js-install.sh",
           "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-nx-graph-test.sh",
           "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-build-mock-harness.sh",
-          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh",
-          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-shell-tools.sh",
-          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-shell-check.sh",
-          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-shell-coverage.sh"
+          "bash scripts/shell-test.sh workspace-integration scripts/with-portable-sed.sh scripts/check-lf-contracts-test.sh"
         ],
         "parallel": false
       },

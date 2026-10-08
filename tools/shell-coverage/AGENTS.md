@@ -31,4 +31,4 @@ Subtree rules for the shell line-coverage floor.
   `BASH_ENV` helper with `scripts/shell-trace-env.sh`, which traces only where
   kcov's descriptor is still open and keeps `PS4` valid under `bash -u -c`;
   kcov's own helper put trace lines on stderr and broke `set -u` recipes
-  (`check-shell-coverage.sh` holds both).
+  (`check-shell-coverage.sh`, in `shell-toolchain`, holds both).

@@ -12,8 +12,8 @@
 # its stderr, its report must count the demo script's lines it ran and not the
 # ones it did not, and the floor must pass below the measured rate, fail above
 # it, fail when a second untested script joins the measured set, and refuse a
-# step whose report is missing or whose project is misnamed. A failing step
-# keeps its own exit status through kcov.
+# step whose report is missing, undeclared or misnamed, and a merged report
+# kcov wrote wrongly. A failing step keeps its own exit status through kcov.
 #
 # kcov is built on Linux only (scripts/shell-tools.sh); elsewhere the step must
 # run uninstrumented and the floor must say it was skipped.
@@ -147,6 +147,55 @@ git -C "$stage" checkout --quiet -- demo/project.json
 
 floor abc
 expect 2 "is not a percentage" "a malformed floor"
+
+# A step whose target does not declare its report as an output, or that names
+# no Nx project, is refused: the cache would never restore its report.
+cp "$stage/demo/project.json" "$work/project.json"
+sed 's/"outputs": \[[^]]*\]/"outputs": []/' "$work/project.json" >"$stage/demo/project.json"
+floor 1
+expect 1 "does not declare {workspaceRoot}/target/coverage/shell/demo as an output" "a step whose report is no output"
+sed 's/shell-test.sh demo /shell-test.sh ..\/demo /' "$work/project.json" >"$stage/demo/project.json"
+floor 1
+expect 1 'runs a step as project "../demo", which is not an Nx project name' "a step naming a path, not a project"
+git -C "$stage" checkout --quiet -- demo/project.json
+
+# A merged report kcov wrote wrongly is refused, never read as a rate: a kcov
+# double in a tools directory of its own stands in for the merge.
+double_tools="$work/double-tools"
+pinned_kcov="$(awk '$1 == "kcov" { print $2 }' .shell-tool-versions)"
+mkdir -p "$double_tools/kcov-$pinned_kcov/bin"
+cat >"$double_tools/kcov-$pinned_kcov/bin/kcov" <<'SH'
+#!/usr/bin/env bash
+# The first non-option argument is the output directory; a merge writes the
+# report KCOV_DOUBLE_REPORT holds.
+set -euo pipefail
+merge=0
+for arg in "$@"; do
+  case "$arg" in
+    --merge) merge=1 ;;
+    -*) ;;
+    *)
+      mkdir -p "$arg/kcov-merged"
+      [ "$merge" = 0 ] || printf '%s\n' "$KCOV_DOUBLE_REPORT" >"$arg/kcov-merged/coverage.json"
+      exit 0
+      ;;
+  esac
+done
+SH
+chmod +x "$double_tools/kcov-$pinned_kcov/bin/kcov"
+while IFS='|' read -r report says; do
+  status=0
+  (cd "$stage" && KCOV_DOUBLE_REPORT="$report" ONEHARNESS_TOOLS_DIR="$double_tools" SHELL_COVERAGE_MIN=1 \
+    bash scripts/shell-coverage.sh) >"$work/out" 2>&1 || status=$?
+  expect 1 "could not read line counts from the merged report" "a merged report of $report"
+  grep -Fq -- "$says" "$work/out" || fail "a merged report of $report was refused without saying '$says'" "$(cat "$work/out")"
+done <<'REPORTS'
+{"files": 3}|has no list of scripts
+{"files": [{"covered_lines": "1", "total_lines": "2"}]}|has no list of scripts
+{"files": []}|lists 0 scripts
+{"files": [{"file": "scripts/a.sh", "covered_lines": "5", "total_lines": "2"}]}|unreadable line counts for: scripts/a.sh
+{"files": [{"file": "scripts/b.sh", "covered_lines": "-1", "total_lines": "2"}]}|unreadable line counts for: scripts/b.sh
+REPORTS
 
 # A failing step keeps its own exit status through kcov.
 status=0

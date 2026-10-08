@@ -36,6 +36,7 @@
             "oneharness-integration",
             "release-tooling",
             "sdk-conformance",
+            "shell-toolchain",
             "workspace",
             "workspace-integration"
           ],

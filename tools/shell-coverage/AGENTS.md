@@ -5,9 +5,9 @@ Subtree rules for the shell line-coverage floor.
 - **The floor is 54% lines** (`SHELL_COVERAGE_MIN`, default 54, in
   `scripts/shell-coverage.sh`), below the 95% default as the create-repo bash
   reference allows with a recorded reason, and still enforced: `coverage` fails
-  below it. It rests on a merged measurement of 55.54% of every shell script
-  under `scripts/` and `.githooks/` (kcov 43, Linux aarch64). Raise it as tests
-  land; never lower it.
+  below it. It rests on a merged measurement of 56.19% of every shell script
+  under `scripts/` and `.githooks/` (9662 lines over 48 test steps; kcov 43,
+  Linux aarch64). Raise it as tests land; never lower it.
 - **Why it is below 95.** The denominator is every script, so what the gate
   never runs counts at zero: the paid `live-*` suites and `explore-*` probes
   (and most of their shared `e2e-lib.sh`), `install.sh` (POSIX `sh` run by
@@ -28,6 +28,10 @@ Subtree rules for the shell line-coverage floor.
   refuses a missing one), reads the steps off the project definitions, refuses
   one that left no report, and merges them with a zero baseline of every
   script, so a new untested script lowers the rate rather than vanishing.
+  Every such `test` lists nx.json's `shellTestRunner` named input: every file
+  `shell-test.sh` reads, transitively (`check-nx-graph.mjs` derives that set
+  from its code and refuses a gap), so a runner change never replays a stale
+  report.
 - **Tracing must not change what a test sees.** `shell-test.sh` replaces kcov's
   `BASH_ENV` helper with `scripts/shell-trace-env.sh`, which traces only where
   kcov's descriptor is still open and keeps `PS4` valid under `bash -u -c`;

@@ -63,8 +63,11 @@ drive() {
   set -e
 }
 
+# An identity report; its reset credits default to a reported zero.
+no_credits='{"state":"reported","available_count":0,"credits":[]}'
 identity() {
-  printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s}]}' "$1"
+  printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s,"reset_credits":%s}]}' \
+    "$1" "${2:-$no_credits}"
 }
 
 # 1. Absent: nothing to probe, so the phase steps aside rather than reporting
@@ -115,6 +118,38 @@ drive "$(identity '{"state":"available","windows":[{"id":"codex","usage":{"used_
 case "$out" in
   *"PASS:"*"headroom codex 31"*) ;;
   *) fail "a reported headroom must be logged, got: $out" ;;
+esac
+
+# 5b. The reset credits are logged beside the reading, and a report whose
+#     identity lacks them, or whose summary did not parse, fails: absent is a
+#     report this phase cannot trust, and `unreadable` is the summary drifting.
+headroom='{"state":"available","windows":[{"id":"codex","usage":{"used_percent":31}}]}'
+drive "$(identity "$headroom" '{"state":"reported","available_count":3,"credits":[{"id":"a"}]}')" 0
+[ "$rc" -eq 0 ] || fail "reported credits must pass, got exit $rc: $out"
+case "$out" in
+  *"PASS:"*"reset credits reported 3 (1 listed)"*) ;;
+  *) fail "reported credits must be logged with their count, got: $out" ;;
+esac
+
+drive "$(identity '{"state":"unavailable","reason":"api_key_auth"}' '{"state":"unknown","reason":{"kind":"no_answer"}}')" 0
+[ "$rc" -eq 0 ] || fail "credits with no answer to read must pass, got exit $rc: $out"
+case "$out" in
+  *"PASS:"*"reset credits unknown no_answer"*) ;;
+  *) fail "an unknown credits reason must be logged, got: $out" ;;
+esac
+
+drive "$(identity "$headroom" '{"state":"unknown","reason":{"kind":"unreadable","message":"no availableCount"}}')" 0
+[ "$rc" -eq 1 ] || fail "an unreadable credits summary must fail, got exit $rc: $out"
+case "$out" in
+  *"Next, in order:"*"FAIL:"*"reset_credits=unknown unreadable: no availableCount"*) ;;
+  *) fail "an unreadable credits summary must fail with its message, got: $out" ;;
+esac
+
+drive "$(printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s}]}' "$headroom")" 0
+[ "$rc" -eq 1 ] || fail "an identity without reset_credits must fail, got exit $rc: $out"
+case "$out" in
+  *"FAIL:"*"reset_credits=<absent>"*) ;;
+  *) fail "an identity without reset_credits must say so, got: $out" ;;
 esac
 
 # The sibling phase holds a different distinction: whether the probe's ANSWER

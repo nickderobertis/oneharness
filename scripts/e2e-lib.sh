@@ -502,7 +502,7 @@ oh_cache_assert() {
 # nothing back.
 #   $1 harness id
 oh_usage_enforce() {
-  local id="$1" bin report state reason detail errf rc
+  local id="$1" bin report state reason detail credits errf rc
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -563,9 +563,34 @@ oh_usage_enforce() {
       fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason)"
       ;;
   esac
+  # Every identity carries its reset credits, always serialized, so an absent
+  # field is a report this phase cannot trust and `unreadable` is the harness's
+  # credits summary drifting out from under the parser.
+  credits="$(printf '%s' "$report" | jq -r '
+        .identities[0].reset_credits as $c
+        | if ($c | type) != "object" then "<absent>"
+          elif $c.state == "reported"
+          then "reported \($c.available_count) (\($c.credits | if . == null then "count only" else "\(length) listed" end))"
+          elif $c.state == "unknown" and ($c.reason | type) == "object"
+          then "unknown \($c.reason.kind)\(if $c.reason.message then ": \($c.reason.message)" else "" end)"
+          else "<unrecognized> \($c | tostring)" end')"
+  case "$credits" in
+    "<absent>" | "unknown unreadable"* | "<unrecognized>"*)
+      note "  report: $report"
+      note "  Next, in order:"
+      note "    1. <absent> means the report lost its reset_credits field: every identity"
+      note "       must carry it (UsageIdentity in crates/oneharness-core/src/domain/usage.rs)."
+      note "    2. unreadable means $id's credits summary no longer parses. Regenerate the"
+      note "       schema snapshot (scripts/check-codex-usage-schema.sh), update the parser"
+      note "       (codex_reset_credits in crates/oneharness-core/src/domain/usage.rs), and"
+      note "       record the new shape in docs/harness-usage.md, then re-run:"
+      note "         just live-$id"
+      fail "$id: the usage report's reset credits are not readable (reset_credits=$credits)"
+      ;;
+  esac
   # The reading itself is the evidence, and this log is its only record: a live
   # phase that passed silently is indistinguishable from one that never ran.
-  note "PASS: $id answered its usage probe — $detail"
+  note "PASS: $id answered its usage probe — $detail; reset credits $credits"
 }
 
 # How long the session-start work this phase registers takes, and the margin it
@@ -591,7 +616,7 @@ OH_USAGE_SILENT_STATES="unknown"
 # Every property `UsageIdentity` declares. The equivalence key covers all of
 # them, and refuses a report carrying one it does not know, so a field added to
 # the identity cannot slip past the comparison as "the same attribution".
-OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan selector variant)
+OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan reset_credits selector variant)
 
 # Live proof that the zero-turn `usage` probe's answer does not depend on WHERE
 # it runs — the drift alarm for `--setting-sources user` in the claude probe's
@@ -816,7 +841,10 @@ _oh_usage_cwd_control() {
 # from the same run: two EQUALLY malformed reports produce two equal keys, and
 # the phase would read that as proof that nothing changed. `plan` and `variant`
 # are optional in the contract (an API-key session reports no plan), so they
-# render as `<absent>` rather than failing. A property outside
+# render as `<absent>` rather than failing. `reset_credits` joins the key whole,
+# and as `<absent>` from a report written before it existed — both probes of one
+# run come from the same binary, so they carry it or lack it together. A
+# property outside
 # $OH_USAGE_IDENTITY_FIELDS is refused, so a field added to the identity cannot
 # pass through the comparison unexamined.
 #
@@ -858,7 +886,9 @@ _oh_usage_identity_key() {
             need($i; "auth_mode"; "string"),
             opt($i; "plan"),
             need($a; "state"; "string"),
-            ($window_ids | tostring) ]
+            ($window_ids | tostring),
+            (if ($i | has("reset_credits") | not) then "<absent>"
+             else need($i; "reset_credits"; "object") | tostring end) ]
         | join(" | ")' "${OH_USAGE_IDENTITY_FIELDS[@]}"
 }
 

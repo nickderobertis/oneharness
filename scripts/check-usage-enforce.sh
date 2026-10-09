@@ -146,6 +146,13 @@ case "$out" in
   *) fail "an unreadable credits summary must fail with its message, got: $out" ;;
 esac
 
+drive "$(identity "$headroom" '{"state":"reported","available_count":18446744073709551615}')" 0
+[ "$rc" -eq 0 ] || fail "the largest u64 count must pass, got exit $rc: $out"
+case "$out" in
+  *"PASS:"*"reset credits reported 18446744073709551615 (count only)"*) ;;
+  *) fail "the largest u64 count must be logged exactly, got: $out" ;;
+esac
+
 drive "$(identity "$headroom" '{"state":"reported","available_count":2}')" 0
 [ "$rc" -eq 0 ] || fail "a count-only summary must pass, got exit $rc: $out"
 case "$out" in
@@ -166,6 +173,8 @@ for malformed in \
   '{"state":"spent"}|state "spent" is not one' \
   '[]|reset_credits is array' \
   '{"state":"reported","available_count":18446744073709551616}|not a u64' \
+  '{"state":"reported","available_count":9007199254740992.5}|not a u64' \
+  '{"state":"reported","available_count":1e3}|not a u64' \
   '{"state":"reported","available_count":1,"credits":[7]}|credits[0] is number' \
   '{"state":"reported","available_count":1,"credits":[{"id":"a"}]}|credits[0] has no status' \
   '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":1}]}|credits[0].granted_at is number' \
@@ -496,7 +505,7 @@ count="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[]
     | select(.properties.state.const == "reported") | .properties.available_count
     | "\(.type) \(.format) \(.minimum)"' "$schema")" ||
   unreadable_schema count
-[ "$count" = "integer uint64 0" ] || fail "ResetCredits.available_count is now [$count], not the u64 credits_line validates (scripts/e2e-lib.sh)"
+[ "$count" = "integer uint64 0" ] || fail "ResetCredits.available_count is now [$count], not the u64 is_u64 validates (scripts/e2e-lib.sh)"
 
 # The states credits_line branches on are spelled in its jq source.
 credit_states="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[].properties.state.const' "$schema")" ||

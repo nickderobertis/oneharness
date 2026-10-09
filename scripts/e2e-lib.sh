@@ -617,8 +617,9 @@ OH_USAGE_SILENT_STATES="unknown"
 OH_USAGE_CREDITS_UNKNOWN_KINDS="no_reader no_answer not_reported unreadable"
 OH_USAGE_CREDIT_REQUIRED_FIELDS="id status reset_type granted_at"
 OH_USAGE_CREDIT_OPTIONAL_FIELDS="expires_at title description"
-# `available_count` is a u64; jq compares in doubles, so 2^64 is the bound.
-OH_USAGE_CREDITS_COUNT_LIMIT=18446744073709551616
+# `available_count` is a u64. jq holds numbers as doubles but (from 1.7) keeps
+# a literal's spelling, so the count is validated as decimal text, not by value.
+OH_USAGE_CREDITS_COUNT_MAX=18446744073709551615
 
 # jq definitions validating one identity's `reset_credits` and rendering it as
 # the line this phase logs; anything off-contract is a jq error naming the
@@ -628,7 +629,7 @@ OH_USAGE_CREDITS_JQ="
     def credit_kinds: \"$OH_USAGE_CREDITS_UNKNOWN_KINDS\" | split(\" \");
     def credit_required: \"$OH_USAGE_CREDIT_REQUIRED_FIELDS\" | split(\" \");
     def credit_optional: \"$OH_USAGE_CREDIT_OPTIONAL_FIELDS\" | split(\" \");
-    def credit_count_limit: $OH_USAGE_CREDITS_COUNT_LIMIT;"'
+    def credit_count_max: \"$OH_USAGE_CREDITS_COUNT_MAX\";"'
     def credit_row($at):
         if type != "object" then error("reset_credits.credits[\($at)] is \(type), not object")
         else . as $row
@@ -648,20 +649,24 @@ OH_USAGE_CREDITS_JQ="
              else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string") end),
           $row
         end;
+    def is_u64:
+        type == "number"
+        and (tojson | test("^(0|[1-9][0-9]*)$"))
+        and (tojson | length < (credit_count_max | length)
+             or (length == (credit_count_max | length) and . <= credit_count_max));
     def credits_line:
         if has("reset_credits") | not then "<absent>"
         else .reset_credits as $c
         | if ($c | type) != "object" then error("reset_credits is \($c | type), not object")
           elif $c.state == "reported" then
               ($c.available_count) as $n
-              | if ($n | type) != "number" or $n < 0 or ($n | floor) != $n
-                   or $n >= credit_count_limit
+              | if ($n | is_u64 | not)
                 then error("reset_credits.available_count is \($n | tojson), not a u64")
-                elif ($c.credits | type) == "null" then "reported \($n) (count only)"
+                elif ($c.credits | type) == "null" then "reported \($n | tojson) (count only)"
                 elif ($c.credits | type) == "array"
                 then ([range(0; $c.credits | length) as $at | $c.credits[$at] | credit_row($at)]
                       | length) as $rows
-                     | "reported \($n) (\($rows) listed)"
+                     | "reported \($n | tojson) (\($rows) listed)"
                 else error("reset_credits.credits is \($c.credits | type), not array") end
           elif $c.state == "unknown" then
               if ($c.reason | type) != "object"

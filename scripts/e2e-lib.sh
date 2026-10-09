@@ -502,7 +502,7 @@ oh_cache_assert() {
 # nothing back.
 #   $1 harness id
 oh_usage_enforce() {
-  local id="$1" bin report state reason detail errf rc
+  local id="$1" bin report state reason detail credits errf rc
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -535,11 +535,16 @@ oh_usage_enforce() {
   reason="$(printf '%s' "$report" | jq -r '
         .identities[0].availability.reason as $r
         | if ($r | type) == "object" then ($r.kind // "") else ($r // "") end')"
+  # A Windows jq ends its lines CRLF and command substitution removes only the
+  # trailing newline, so the carriage returns are dropped before matching.
+  state="${state//$'\r'/}"
+  reason="${reason//$'\r'/}"
   case "$state:$reason" in
     available:*)
       detail="headroom $(printf '%s' "$report" |
         jq -r '[.identities[0].availability.windows[]
                     | "\(.id) \(.usage.used_percent // .usage.kind)"] | join(", ")')"
+      detail="${detail//$'\r'/}"
       ;;
     unavailable:*) detail="unavailable ($reason)" ;;
     unknown:binary_missing)
@@ -563,9 +568,34 @@ oh_usage_enforce() {
       fail "$id: the usage probe got no answer out of the harness (state=$state, reason=$reason)"
       ;;
   esac
+  # Every identity carries its reset credits, always serialized, so an absent
+  # field is a report this phase cannot trust and `unreadable` is the harness's
+  # credits summary drifting out from under the parser. A summary this phase
+  # cannot validate is reported as `<malformed>` with jq's reason. A Windows jq
+  # ends its lines CRLF and command substitution removes only the trailing
+  # newline, so every carriage return is dropped before the line is matched.
+  credits="$(printf '%s' "$report" |
+    jq -r "$OH_USAGE_CREDITS_JQ"' .identities[0] | credits_line' 2>&1)" ||
+    credits="<malformed> ${credits#jq: error (at <stdin>:0): }"
+  credits="${credits//$'\r'/}"
+  case "$credits" in
+    "<absent>" | "unknown unreadable"* | "<malformed>"*)
+      note "  report: $report"
+      note "  Next, in order:"
+      note "    1. <absent> or <malformed> means the report's reset_credits field is"
+      note "       missing or off-contract: every identity must carry a valid one"
+      note "       (ResetCredits in crates/oneharness-core/src/domain/usage.rs)."
+      note "    2. unreadable means $id's credits summary no longer parses. Regenerate the"
+      note "       schema snapshot (scripts/check-codex-usage-schema.sh), update the parser"
+      note "       (codex_reset_credits in crates/oneharness-core/src/domain/usage.rs), and"
+      note "       record the new shape in docs/harness-usage.md, then re-run:"
+      note "         just live-$id"
+      fail "$id: the usage report's reset credits are not readable (reset_credits=$credits)"
+      ;;
+  esac
   # The reading itself is the evidence, and this log is its only record: a live
   # phase that passed silently is indistinguishable from one that never ran.
-  note "PASS: $id answered its usage probe — $detail"
+  note "PASS: $id answered its usage probe — $detail; reset credits $credits"
 }
 
 # How long the session-start work this phase registers takes, and the margin it
@@ -588,10 +618,98 @@ OH_USAGE_HOOK_MARGIN=10
 OH_USAGE_ANSWERED_STATES="available unavailable"
 OH_USAGE_SILENT_STATES="unknown"
 
+# The `reset_credits` contract as much as this phase validates it, each list a
+# restatement of Rust held against the generated `usage_report` schema by
+# scripts/check-usage-enforce.sh: the `ResetCreditsUnknown` kinds, and a
+# `ResetCredit` row's required and optional properties — every one a string.
+OH_USAGE_CREDITS_UNKNOWN_KINDS="no_reader no_answer not_reported unreadable"
+OH_USAGE_CREDIT_REQUIRED_FIELDS="id status reset_type granted_at"
+OH_USAGE_CREDIT_OPTIONAL_FIELDS="expires_at title description"
+# The row fields that are `UtcInstant`s, held to its canonical RFC 3339 spelling
+# by `is_utc_instant`: the shape by regex and every field's range, February 30
+# included, by jq arithmetic. Not `fromdateiso8601`, which goes through the
+# platform's C time functions and refuses `9999-12-31T23:59:59Z` on Windows.
+# tests/fixtures/utc-instant-matrix.json holds this to the Rust parser.
+OH_USAGE_CREDIT_INSTANT_FIELDS="granted_at expires_at"
+# `available_count` is a u64. jq holds numbers as doubles but (from 1.7) keeps
+# a literal's spelling, so the count is validated as decimal text, not by value.
+OH_USAGE_CREDITS_COUNT_MAX=18446744073709551615
+
+# jq definitions validating one identity's `reset_credits` and rendering it as
+# the line this phase logs; anything off-contract is a jq error naming the
+# field. The lists above are spliced in, so callers pass no arguments.
+# shellcheck disable=SC2016 # The double-quoted head expands $OH_USAGE_* in the shell on purpose; the single-quoted jq body's `$` names are jq variables that must reach jq unexpanded.
+OH_USAGE_CREDITS_JQ="
+    def credit_kinds: \"$OH_USAGE_CREDITS_UNKNOWN_KINDS\" | split(\" \");
+    def credit_required: \"$OH_USAGE_CREDIT_REQUIRED_FIELDS\" | split(\" \");
+    def credit_optional: \"$OH_USAGE_CREDIT_OPTIONAL_FIELDS\" | split(\" \");
+    def credit_instants: \"$OH_USAGE_CREDIT_INSTANT_FIELDS\" | split(\" \");
+    def credit_count_max: \"$OH_USAGE_CREDITS_COUNT_MAX\";"'
+    def is_utc_instant:
+        (capture("^(?<y>[0-9]{4})-(?<mo>[0-9]{2})-(?<d>[0-9]{2})T(?<h>[0-9]{2}):(?<mi>[0-9]{2}):(?<s>[0-9]{2})Z$")
+         | map_values(tonumber)) as $n
+        | ($n.y % 4 == 0 and ($n.y % 100 != 0 or $n.y % 400 == 0)) as $leap
+        | [31, (if $leap then 29 else 28 end), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as $days
+        | $n.mo >= 1 and $n.mo <= 12 and $n.d >= 1 and $n.d <= $days[$n.mo - 1]
+          and $n.h <= 23 and $n.mi <= 59 and $n.s <= 59;
+    def credit_row($at):
+        if type != "object" then error("reset_credits.credits[\($at)] is \(type), not object")
+        else . as $row
+        | ((keys - credit_required - credit_optional) as $extra
+           | if ($extra | length) > 0
+             then error("reset_credits.credits[\($at)] carries unknown field(s): \($extra | join(", "))")
+             else . end)
+        | (credit_required[] as $f
+           | if ($row | has($f) | not)
+             then error("reset_credits.credits[\($at)] has no \($f)")
+             elif ($row[$f] | type) != "string"
+             then error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string")
+             else empty end),
+          (credit_optional[] as $f
+           | if ($row | has($f) | not) or ($row[$f] | type) == "string" or $row[$f] == null
+             then empty
+             else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string") end),
+          (credit_instants[] as $f
+           | if ($row[$f] | type) != "string" then empty
+             elif [$row[$f] | is_utc_instant] == [true] then empty
+             else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | tojson), not a UTC instant") end),
+          $row
+        end;
+    def is_u64:
+        type == "number"
+        and (tojson | test("^(0|[1-9][0-9]*)$"))
+        and (tojson | length < (credit_count_max | length)
+             or (length == (credit_count_max | length) and . <= credit_count_max));
+    def credits_line:
+        if has("reset_credits") | not then "<absent>"
+        else .reset_credits as $c
+        | if ($c | type) != "object" then error("reset_credits is \($c | type), not object")
+          elif $c.state == "reported" then
+              ($c.available_count) as $n
+              | if ($n | is_u64 | not)
+                then error("reset_credits.available_count is \($n | tojson), not a u64")
+                elif ($c.credits | type) == "null" then "reported \($n | tojson) (count only)"
+                elif ($c.credits | type) == "array"
+                then ([range(0; $c.credits | length) as $at | $c.credits[$at] | credit_row($at)]
+                      | length) as $rows
+                     | "reported \($n | tojson) (\($rows) listed)"
+                else error("reset_credits.credits is \($c.credits | type), not array") end
+          elif $c.state == "unknown" then
+              if ($c.reason | type) != "object"
+              then error("reset_credits.reason is \($c.reason | type), not object")
+              elif ($c.reason.kind | IN(credit_kinds[]) | not)
+              then error("reset_credits.reason.kind \($c.reason.kind | tojson) is not one this phase knows")
+              elif $c.reason.kind != "unreadable" then "unknown \($c.reason.kind)"
+              elif ($c.reason.message | type) != "string"
+              then error("reset_credits.reason.message is \($c.reason.message | type), not string")
+              else "unknown unreadable: \($c.reason.message)" end
+          else error("reset_credits.state \($c.state | tojson) is not one this phase knows") end
+        end;'
+
 # Every property `UsageIdentity` declares. The equivalence key covers all of
 # them, and refuses a report carrying one it does not know, so a field added to
 # the identity cannot slip past the comparison as "the same attribution".
-OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan selector variant)
+OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan reset_credits selector variant)
 
 # Live proof that the zero-turn `usage` probe's answer does not depend on WHERE
 # it runs — the drift alarm for `--setting-sources user` in the claude probe's
@@ -710,6 +828,9 @@ oh_usage_cwd_enforce() {
     rm -rf "$root"
     fail "$id: the usage report at $hooked or $plain is not one this phase can compare"
   fi
+  # A Windows jq ends the key CRLF; drop the carriage return before comparing.
+  key_hooked="${key_hooked//$'\r'/}"
+  key_plain="${key_plain//$'\r'/}"
   if [ "$key_hooked" != "$key_plain" ]; then
     note "  hooked: $key_hooked"
     note "  plain:  $key_plain"
@@ -816,7 +937,11 @@ _oh_usage_cwd_control() {
 # from the same run: two EQUALLY malformed reports produce two equal keys, and
 # the phase would read that as proof that nothing changed. `plan` and `variant`
 # are optional in the contract (an API-key session reports no plan), so they
-# render as `<absent>` rather than failing. A property outside
+# render as `<absent>` rather than failing. `reset_credits` is validated like
+# the live phase's (credits_line) and joins the key whole, or as `<absent>` from
+# a report written before it existed — both probes of one
+# run come from the same binary, so they carry it or lack it together. A
+# property outside
 # $OH_USAGE_IDENTITY_FIELDS is refused, so a field added to the identity cannot
 # pass through the comparison unexamined.
 #
@@ -824,7 +949,7 @@ _oh_usage_cwd_control() {
 # it.
 #   $1 a usage report
 _oh_usage_identity_key() {
-  printf '%s' "$1" | jq -er --args '
+  printf '%s' "$1" | jq -er --args "$OH_USAGE_CREDITS_JQ"'
         def need($o; $f; $t):
             if ($o | has($f) | not) then error("identity has no \($f)")
             elif ($o[$f] | type) != $t
@@ -858,7 +983,10 @@ _oh_usage_identity_key() {
             need($i; "auth_mode"; "string"),
             opt($i; "plan"),
             need($a; "state"; "string"),
-            ($window_ids | tostring) ]
+            ($window_ids | tostring),
+            (($i | credits_line) as $validated
+             | if ($i | has("reset_credits")) then ($i.reset_credits | tostring)
+               else $validated end) ]
         | join(" | ")' "${OH_USAGE_IDENTITY_FIELDS[@]}"
 }
 

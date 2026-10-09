@@ -83,6 +83,8 @@ import type {
   QuotaAmount,
   QuotaCounters,
   QuotaUnit,
+  ResetCredit,
+  ResetCreditsUnknown,
   UnavailableReason,
   UnknownReason,
   UsageAvailability,
@@ -99,6 +101,7 @@ export type ControlShape = ControlReport["mechanism"];
 export type IdentitySelector = UsageIdentity["selector"];
 export type IncompleteRunType = IncompleteHistoryRun["type"];
 export type ModeHeadless = ModeInfo["headless"];
+export type ResetCredits = UsageIdentity["reset_credits"];
 export type SessionPhase = SessionReport["phase"];
 export type UsedPercent = number;
 
@@ -2889,6 +2892,47 @@ export const QuotaCountersSchema: z.ZodType<QuotaCounters> = z.looseObject({
 
 export const QuotaUnitSchema: z.ZodType<QuotaUnit> = z.union([z.literal("ai_credits"), z.literal("unspecified")]);
 
+export const ResetCreditSchema: z.ZodType<ResetCredit> = z.looseObject({
+  description: z.union([z.string(), z.null()]).optional(),
+  expires_at: z.union([z.lazy(() => UtcInstantSchema), z.null()]).optional(),
+  granted_at: z.lazy(() => UtcInstantSchema).refine((value) => value !== undefined, { message: "Required" }),
+  id: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  reset_type: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  status: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  title: z.union([z.string(), z.null()]).optional(),
+});
+
+export const ResetCreditsSchema: z.ZodType<ResetCredits> = z.union([
+  z.looseObject({
+    available_count: z
+      .int()
+      .gte(0)
+      .refine((value) => value !== undefined, { message: "Required" }),
+    credits: z.union([z.array(z.lazy(() => ResetCreditSchema)), z.null()]).optional(),
+    state: z.literal("reported").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    reason: z.lazy(() => ResetCreditsUnknownSchema).refine((value) => value !== undefined, { message: "Required" }),
+    state: z.literal("unknown").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+]);
+
+export const ResetCreditsUnknownSchema: z.ZodType<ResetCreditsUnknown> = z.union([
+  z.looseObject({
+    kind: z.literal("no_reader").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    kind: z.literal("no_answer").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    kind: z.literal("not_reported").refine((value) => value !== undefined, { message: "Required" }),
+  }),
+  z.looseObject({
+    kind: z.literal("unreadable").refine((value) => value !== undefined, { message: "Required" }),
+    message: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  }),
+]);
+
 export const RuleChangeSchema: z.ZodType<RuleChange> = z.looseObject({
   list: z.union([z.lazy(() => RuleListSchema), z.null()]).optional(),
   rule: z.string().refine((value) => value !== undefined, { message: "Required" }),
@@ -3178,6 +3222,7 @@ export const UsageIdentitySchema: z.ZodType<UsageIdentity> = z.looseObject({
   availability: z.lazy(() => UsageAvailabilitySchema).refine((value) => value !== undefined, { message: "Required" }),
   harness: z.string().refine((value) => value !== undefined, { message: "Required" }),
   plan: z.union([z.string(), z.null()]).optional(),
+  reset_credits: z.lazy(() => ResetCreditsSchema).refine((value) => value !== undefined, { message: "Required" }),
   selector: z.lazy(() => IdentitySelectorSchema).refine((value) => value !== undefined, { message: "Required" }),
   variant: z.union([z.string(), z.null()]).optional(),
 });

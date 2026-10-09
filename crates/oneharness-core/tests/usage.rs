@@ -13,8 +13,9 @@ use oneharness_core::domain::config::VariantName;
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
     parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage, QuotaAmount,
-    QuotaCounters, QuotaUnit, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
-    UsageReport, UsageWindow, UsedPercent, UtcInstant, WindowDuration, WindowUsage, SCHEMA_VERSION,
+    QuotaCounters, QuotaUnit, ResetCredit, ResetCreditStatus, ResetCredits, ResetCreditsUnknown,
+    UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity, UsageReport, UsageWindow,
+    UsedPercent, UtcInstant, WindowDuration, WindowUsage, SCHEMA_VERSION,
 };
 use serde_json::Value;
 
@@ -28,6 +29,56 @@ const CLAUDE_STREAM: &str = r#"{"type":"system","subtype":"init","apiKeySource":
 /// reply first, then the rate-limit reply, so a consumer must match on id.
 const CODEX_EXCHANGE: &str = r#"{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/0.145.0"}}
 {"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"12.34"},"individualLimit":null,"spendControlReached":false,"planType":"pro","rateLimitReachedType":null},"rateLimitsByLimitId":{"codex":{"limitId":"codex","limitName":null,"primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"pro","rateLimitReachedType":null},"limit_model_x":{"limitId":"limit_model_x","limitName":"GPT-5.3 Codex","primary":{"usedPercent":12,"windowDurationMins":10080,"resetsAt":1785000000},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":"pro","rateLimitReachedType":null}},"rateLimitResetCredits":{"availableCount":0,"credits":[]}}}"#;
+
+/// A `rateLimitResetCredits` summary shaped from a real three-credit answer,
+/// with its credit ids elided: one expiring credit fully described, one that
+/// does not expire with no display text, one expiring sooner.
+fn three_credit_summary() -> Value {
+    serde_json::json!({
+        "availableCount": 3,
+        "credits": [
+            {
+                "id": "RateLimitResetCredit_…a",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_200_000,
+                "expiresAt": 1_792_800_000,
+                "title": "Full reset",
+                "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+            },
+            {
+                "id": "RateLimitResetCredit_…b",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_200_000,
+                "expiresAt": null,
+                "title": null,
+                "description": null
+            },
+            {
+                "id": "RateLimitResetCredit_…c",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_000_000,
+                "expiresAt": 1_791_000_000,
+                "title": "Full reset",
+                "description": null
+            }
+        ]
+    })
+}
+
+/// codex's rate-limit reply with its `rateLimitResetCredits` replaced —
+/// `None` removes the key, as a codex predating it answers.
+fn codex_with_credits(summary: Option<Value>) -> Value {
+    let mut response = codex_response(CODEX_EXCHANGE, 2);
+    let result = response["result"].as_object_mut().expect("a result object");
+    match summary {
+        Some(summary) => result.insert("rateLimitResetCredits".to_string(), summary),
+        None => result.remove("rateLimitResetCredits"),
+    };
+    response
+}
 
 /// The `GET /copilot_internal/user` response body.
 const COPILOT_BODY: &str = r#"{"copilot_plan":"individual","access_type_sku":"monthly_subscriber_quota","quota_reset_date":"2026-08-01","quota_reset_date_utc":"2026-08-01T00:00:00.000Z","token_based_billing":true,"quota_snapshots":{"chat":{"unlimited":true,"percent_remaining":100.0,"has_quota":true,"entitlement":0,"remaining":0,"credits_used":0,"overage_permitted":false,"quota_reset_at":0},"premium_interactions":{"unlimited":false,"percent_remaining":0.0,"has_quota":false,"entitlement":1500,"credits_used":13518,"remaining":-12019,"overage_permitted":false,"quota_reset_at":0}}}"#;
@@ -655,7 +706,9 @@ const GOLDEN: &str = include_str!("../../../tests/fixtures/usage-report-v01.json
 /// length is derived from its key, one whose length the harness stated, one
 /// whose length cannot be established at all, a model-scoped window, an
 /// unlimited quota, a metered quota with counters, an affirmative unavailable,
-/// and an unknown. If a shape is not here, the golden does not pin it.
+/// an unknown, and reset credits listed (expiring and not), known by count
+/// only, unanswered and unread. If a shape is not here, the golden does not pin
+/// it.
 fn golden_report() -> UsageReport {
     let mut claude = claude_payload(CLAUDE_STREAM);
     // A codename key carrying real data. Every one observed so far was null,
@@ -686,7 +739,7 @@ fn golden_report() -> UsageReport {
                     env: "CODEX_HOME".to_string(),
                     path: "/home/u/.codex".to_string(),
                 },
-                parse_codex_rate_limits(&codex_response(CODEX_EXCHANGE, 2)),
+                parse_codex_rate_limits(&codex_with_credits(Some(three_credit_summary()))),
             ),
             UsageIdentity::new(
                 "copilot",
@@ -756,6 +809,37 @@ fn golden_report() -> UsageReport {
                 IdentitySelector::Ambient,
                 ParsedUsage::unknown(UnknownReason::Unprobed),
             ),
+            // Reset credits known only by count: `credits` is omitted.
+            UsageIdentity::new(
+                "codex",
+                IdentitySelector::EnvPath {
+                    env: "CODEX_HOME".to_string(),
+                    path: "/home/u/.codex-count".to_string(),
+                },
+                parse_codex_rate_limits(&codex_with_credits(Some(
+                    serde_json::json!({"availableCount": 2, "credits": null}),
+                ))),
+            ),
+            // A codex answering without a credits summary, and one whose
+            // summary could not be read: both still report their windows.
+            UsageIdentity::new(
+                "codex",
+                IdentitySelector::EnvPath {
+                    env: "CODEX_HOME".to_string(),
+                    path: "/home/u/.codex-old".to_string(),
+                },
+                parse_codex_rate_limits(&codex_with_credits(None)),
+            ),
+            UsageIdentity::new(
+                "codex",
+                IdentitySelector::EnvPath {
+                    env: "CODEX_HOME".to_string(),
+                    path: "/home/u/.codex-odd".to_string(),
+                },
+                parse_codex_rate_limits(&codex_with_credits(Some(
+                    serde_json::json!({"availableCount": -1}),
+                ))),
+            ),
         ],
     )
 }
@@ -766,6 +850,9 @@ fn unavailable(reason: UnavailableReason) -> ParsedUsage {
         auth_mode: AuthMode::Unknown,
         plan: None,
         availability: UsageAvailability::Unavailable { reason },
+        reset_credits: ResetCredits::Unknown {
+            reason: ResetCreditsUnknown::NoReader,
+        },
     }
 }
 
@@ -1105,6 +1192,9 @@ fn an_overage_percentage_and_a_deficit_survive_construction_and_the_wire() {
                 auth_mode: AuthMode::Subscription,
                 plan: Some("individual".to_string()),
                 availability: UsageAvailability::from_windows(vec![window]),
+                reset_credits: ResetCredits::Unknown {
+                    reason: ResetCreditsUnknown::NoReader,
+                },
             },
         )],
     );
@@ -1352,6 +1442,56 @@ fn codex_schema_snapshot_still_declares_every_field_the_parser_reads() {
         schema["definitions"]["RateLimitWindow"]["required"],
         serde_json::json!(["usedPercent"])
     );
+    // The reset-credits summary: a missing name here would turn a real count
+    // into `not_reported` for every account at once.
+    assert!(
+        declares(&schema, None, "rateLimitResetCredits"),
+        "the response no longer declares `rateLimitResetCredits`"
+    );
+    for property in ["availableCount", "credits"] {
+        assert!(
+            declares(&schema, Some("RateLimitResetCreditsSummary"), property),
+            "RateLimitResetCreditsSummary no longer declares `{property}`"
+        );
+    }
+    assert_eq!(
+        schema["definitions"]["RateLimitResetCreditsSummary"]["required"],
+        serde_json::json!(["availableCount"]),
+        "`availableCount` is what an absent one is read as malformed against"
+    );
+    for property in [
+        "id",
+        "resetType",
+        "status",
+        "grantedAt",
+        "expiresAt",
+        "title",
+        "description",
+    ] {
+        assert!(
+            declares(&schema, Some("RateLimitResetCredit"), property),
+            "RateLimitResetCredit no longer declares `{property}`"
+        );
+    }
+    assert_eq!(
+        schema["definitions"]["RateLimitResetCredit"]["required"],
+        serde_json::json!(["grantedAt", "id", "resetType", "status"]),
+        "the parser refuses a row missing exactly these"
+    );
+    // The two words the text view treats as expiry evidence must still be
+    // values codex can send.
+    for (definition, value) in [
+        ("RateLimitResetCreditStatus", "available"),
+        ("RateLimitResetType", "codexRateLimits"),
+    ] {
+        assert!(
+            schema["definitions"][definition]["enum"]
+                .as_array()
+                .is_some_and(|values| values.iter().any(|v| v == value)),
+            "{definition} no longer carries `{value}`"
+        );
+    }
+
     // The plan vocabulary is kept verbatim rather than mapped onto Claude's, so
     // the enum only has to remain a string — but it must remain present.
     assert!(
@@ -1375,4 +1515,376 @@ fn a_payload_shaped_like_the_snapshot_parses_into_headroom() {
     ));
     assert_eq!(parsed.plan.as_deref(), Some("pro"));
     assert_eq!(used_percent(&parsed.availability, "codex/primary"), 31.0);
+}
+
+fn codex_credits(response: &Value) -> ResetCredits {
+    parse_codex_rate_limits(response).reset_credits
+}
+
+fn listed(credits: &ResetCredits) -> (u64, Option<&[ResetCredit]>) {
+    match credits {
+        ResetCredits::Reported {
+            available_count,
+            credits,
+        } => (*available_count, credits.as_deref()),
+        ResetCredits::Unknown { reason } => panic!("expected reported credits, got {reason:?}"),
+    }
+}
+
+#[test]
+fn a_payload_shaped_like_the_snapshot_parses_into_reported_credits() {
+    let credits = codex_credits(&codex_with_credits(Some(three_credit_summary())));
+
+    let (count, rows) = listed(&credits);
+    assert_eq!(count, 3);
+    let rows = rows.expect("the credits were listed");
+    assert_eq!(
+        rows[0],
+        ResetCredit {
+            id: "RateLimitResetCredit_…a".to_string(),
+            status: ResetCreditStatus::Available,
+            reset_type: "codexRateLimits".to_string().into(),
+            granted_at: UtcInstant::from_epoch(1_790_200_000),
+            expires_at: Some(UtcInstant::from_epoch(1_792_800_000)),
+            title: Some("Full reset".to_string()),
+            description: Some(
+                "Thanks for using Codex! You've been granted one free rate limit reset."
+                    .to_string()
+            ),
+        }
+    );
+    assert_eq!(
+        rows[1].expires_at, None,
+        "`expiresAt: null` does not expire"
+    );
+    assert_eq!(
+        (rows[1].title.as_deref(), rows[1].description.as_deref()),
+        (None, None)
+    );
+
+    // Through the JSON a consumer reads: absent, never null.
+    let json = serde_json::to_value(&credits).expect("serializes");
+    assert_eq!(json["state"], "reported");
+    assert_eq!(json["available_count"], 3);
+    assert_eq!(json["credits"][0]["granted_at"], "2026-09-23T21:46:40Z");
+    assert_eq!(json["credits"][0]["expires_at"], "2026-10-24T00:00:00Z");
+    for omitted in ["expires_at", "title", "description"] {
+        assert_eq!(json["credits"][1].get(omitted), None, "{omitted}: {json}");
+    }
+}
+
+#[test]
+fn an_answer_without_a_credits_summary_is_not_reported_never_zero() {
+    for summary in [None, Some(Value::Null)] {
+        let parsed = parse_codex_rate_limits(&codex_with_credits(summary.clone()));
+        assert_eq!(
+            parsed.reset_credits,
+            ResetCredits::Unknown {
+                reason: ResetCreditsUnknown::NotReported
+            },
+            "summary {summary:?}"
+        );
+        assert!(matches!(
+            parsed.availability,
+            UsageAvailability::Available { .. }
+        ));
+    }
+}
+
+#[test]
+fn a_count_without_details_keeps_the_count_and_omits_the_list() {
+    let credits = codex_credits(&codex_with_credits(Some(
+        serde_json::json!({"availableCount": 4, "credits": null}),
+    )));
+    assert_eq!(listed(&credits), (4, None));
+    let json = serde_json::to_value(&credits).expect("serializes");
+    assert_eq!(
+        json,
+        serde_json::json!({"state": "reported", "available_count": 4})
+    );
+
+    // Absent `credits` is the same answer as `null`.
+    let absent = codex_credits(&codex_with_credits(Some(
+        serde_json::json!({"availableCount": 4}),
+    )));
+    assert_eq!(absent, credits);
+}
+
+#[test]
+fn a_capped_list_keeps_the_harness_count_as_the_total() {
+    let mut summary = three_credit_summary();
+    summary["availableCount"] = 7.into();
+    let credits = codex_credits(&codex_with_credits(Some(summary)));
+    let (count, rows) = listed(&credits);
+    assert_eq!(
+        count, 7,
+        "the count is the harness's, never the list's length"
+    );
+    assert_eq!(rows.map(<[ResetCredit]>::len), Some(3));
+
+    let none = codex_credits(&codex_with_credits(Some(
+        serde_json::json!({"availableCount": 0, "credits": []}),
+    )));
+    assert_eq!(
+        listed(&none),
+        (0, Some(&[][..])),
+        "no credits is a reported zero"
+    );
+}
+
+#[test]
+fn an_unseen_status_or_reset_type_is_reported_verbatim_and_the_probe_succeeds() {
+    let mut summary = three_credit_summary();
+    summary["credits"][0]["status"] = "frozen".into();
+    summary["credits"][1]["resetType"] = "claudeWeekly".into();
+    let parsed = parse_codex_rate_limits(&codex_with_credits(Some(summary)));
+
+    assert!(matches!(
+        parsed.availability,
+        UsageAvailability::Available { .. }
+    ));
+    let (_, rows) = listed(&parsed.reset_credits);
+    let rows = rows.expect("listed");
+    assert_eq!(rows[0].status.as_str(), "frozen");
+    assert_eq!(rows[1].reset_type.as_str(), "claudeWeekly");
+    assert!(matches!(rows[0].status, ResetCreditStatus::Unrecognized(_)));
+
+    assert!(!rows[0].is_recognized_available("codex"));
+    assert!(!rows[1].is_recognized_available("codex"));
+    assert!(rows[2].is_recognized_available("codex"));
+    assert!(
+        !rows[2].is_recognized_available("claude-code"),
+        "a reset type is recognized per harness"
+    );
+}
+
+#[test]
+fn a_malformed_summary_is_unreadable_and_leaves_the_reading_untouched() {
+    let baseline = parse_codex_rate_limits(&codex_with_credits(None));
+    let row = |field: &str, value: Value| {
+        let mut summary = three_credit_summary();
+        summary["credits"][1][field] = value;
+        summary
+    };
+    let without = |field: &str| {
+        let mut summary = three_credit_summary();
+        summary["credits"][1]
+            .as_object_mut()
+            .expect("a row")
+            .remove(field);
+        summary
+    };
+    let cases = [
+        (serde_json::json!([]), "rather than an object"),
+        (serde_json::json!({"credits": []}), "no `availableCount`"),
+        (serde_json::json!({"availableCount": -1}), "negative"),
+        (serde_json::json!({"availableCount": 1.5}), "fractional"),
+        (serde_json::json!({"availableCount": "3"}), "a string"),
+        (
+            serde_json::json!({"availableCount": 1, "credits": "x"}),
+            "array or null",
+        ),
+        (
+            serde_json::json!({"availableCount": 1, "credits": [7]}),
+            "credits[0]` is a number",
+        ),
+        (without("id"), "credits[1]` carries no `id`"),
+        (without("status"), "no `status`"),
+        (without("resetType"), "no `resetType`"),
+        (without("grantedAt"), "no `grantedAt`"),
+        (
+            row("grantedAt", "yesterday".into()),
+            "`grantedAt` that is a string",
+        ),
+        (
+            row("expiresAt", 1.5.into()),
+            "`expiresAt` that is a fractional",
+        ),
+        (
+            row("expiresAt", i64::MAX.into()),
+            "outside the four-digit years",
+        ),
+        (row("title", 3.into()), "`title` that is a number"),
+        (row("status", Value::Null), "`status` that is null"),
+    ];
+    for (summary, expected) in cases {
+        let parsed = parse_codex_rate_limits(&codex_with_credits(Some(summary.clone())));
+        match &parsed.reset_credits {
+            ResetCredits::Unknown {
+                reason: ResetCreditsUnknown::Unreadable { message },
+            } => assert!(
+                message.contains(expected),
+                "{summary}: `{message}` should say {expected:?}"
+            ),
+            other => panic!("{summary} parsed as {other:?}, not unreadable"),
+        }
+        assert_eq!(parsed.availability, baseline.availability, "{summary}");
+        assert_eq!(
+            (parsed.auth_mode, &parsed.plan),
+            (baseline.auth_mode, &baseline.plan)
+        );
+    }
+}
+
+#[test]
+fn a_codex_identity_with_no_rate_limit_answer_has_no_answer_to_read_credits_from() {
+    let no_answer = ResetCredits::Unknown {
+        reason: ResetCreditsUnknown::NoAnswer,
+    };
+    for message in [
+        "chatgpt authentication required to read rate limits",
+        "codex account authentication required to read rate limits",
+        "backend unreachable",
+    ] {
+        let parsed = parse_codex_rate_limits(&serde_json::json!({
+            "id": 2, "error": {"code": -32600, "message": message}
+        }));
+        assert_eq!(parsed.reset_credits, no_answer, "{message}");
+    }
+    // A probe that failed or never ran: nothing was read.
+    for parsed in [
+        ParsedUsage::unknown(UnknownReason::binary_missing("codex")),
+        parse_codex_rate_limits(&serde_json::json!({"id": 2})),
+    ] {
+        assert_eq!(parsed.reset_credits, no_answer);
+    }
+}
+
+#[test]
+fn a_harness_with_no_credits_reader_says_so_whatever_its_probe_did() {
+    // A failed claude probe is not a missing answer from a credits reader:
+    // there is no reader, and the identity says that rather than `no_answer`.
+    for (harness, parsed) in [
+        ("claude-code", ParsedUsage::unknown(UnknownReason::Unprobed)),
+        (
+            "claude-code",
+            parse_claude_get_usage(&claude_payload(CLAUDE_STREAM)),
+        ),
+        (
+            "copilot",
+            parse_copilot_user(&serde_json::from_str(COPILOT_BODY).expect("a JSON body")),
+        ),
+        (
+            "cursor",
+            parse_cursor_about(&serde_json::json!({"subscriptionTier": "Team"})),
+        ),
+        ("goose", unavailable(UnavailableReason::NoPlanQuota)),
+    ] {
+        let identity = UsageIdentity::new(harness, IdentitySelector::Ambient, parsed);
+        assert_eq!(
+            identity.reset_credits,
+            ResetCredits::Unknown {
+                reason: ResetCreditsUnknown::NoReader
+            },
+            "{harness}"
+        );
+    }
+}
+
+#[test]
+fn a_v0_1_report_written_before_reset_credits_reads_them_as_no_reader() {
+    let mut json: Value = serde_json::from_str(GOLDEN).expect("valid JSON");
+    for identity in json["identities"].as_array_mut().expect("identities") {
+        identity
+            .as_object_mut()
+            .expect("an identity")
+            .remove("reset_credits");
+    }
+    let report: UsageReport = serde_json::from_value(json).expect("the older report deserializes");
+    for identity in &report.identities {
+        assert_eq!(
+            identity.reset_credits,
+            ResetCredits::Unknown {
+                reason: ResetCreditsUnknown::NoReader
+            },
+            "{}",
+            identity.harness
+        );
+    }
+}
+
+#[test]
+fn control_characters_in_credit_strings_are_flattened_on_parse_and_on_read() {
+    let mut summary = three_credit_summary();
+    summary["credits"][0]["id"] = "id\u{1b}[2J".into();
+    summary["credits"][0]["status"] = "avail\u{7}able".into();
+    summary["credits"][0]["resetType"] = "codex\rRateLimits".into();
+    summary["credits"][0]["title"] = "Full\u{1b}[31m reset".into();
+    summary["credits"][0]["description"] = "line\nbreak".into();
+    let parsed = UsageIdentity::new(
+        "codex",
+        IdentitySelector::Ambient,
+        parse_codex_rate_limits(&codex_with_credits(Some(summary))),
+    );
+
+    let mut wire = serde_json::to_value(&parsed).expect("serializes");
+    // The same escapes arriving in a report this crate never parsed.
+    wire["reset_credits"]["credits"][1]["id"] = "b\u{9b}31m".into();
+    wire["reset_credits"]["credits"][1]["title"] = "t\u{8}".into();
+    let read: UsageIdentity = serde_json::from_value(wire).expect("deserializes");
+    let unreadable: UsageIdentity = serde_json::from_value(serde_json::json!({
+        "harness": "codex",
+        "selector": {"kind": "ambient"},
+        "auth_mode": "unknown",
+        "availability": {"state": "unknown", "reason": {"kind": "unprobed"}},
+        "reset_credits": {
+            "state": "unknown",
+            "reason": {"kind": "unreadable", "message": "bad\u{1b}[2J summary"}
+        }
+    }))
+    .expect("deserializes");
+
+    for identity in [&parsed, &read, &unreadable] {
+        let text = serde_json::to_string(&identity.reset_credits).expect("serializes");
+        let decoded: Value = serde_json::from_str(&text).expect("JSON");
+        let mut strings = Vec::new();
+        collect_strings(&decoded, &mut strings);
+        for string in strings {
+            assert!(
+                !string.chars().any(char::is_control),
+                "`{string:?}` kept a control character"
+            );
+        }
+    }
+    let (_, rows) = listed(&parsed.reset_credits);
+    assert_eq!(
+        rows.expect("listed")[0].title.as_deref(),
+        Some("Full [31m reset")
+    );
+}
+
+fn collect_strings(value: &Value, into: &mut Vec<String>) {
+    match value {
+        Value::String(text) => into.push(text.clone()),
+        Value::Array(items) => items.iter().for_each(|item| collect_strings(item, into)),
+        Value::Object(map) => map.values().for_each(|item| collect_strings(item, into)),
+        _ => {}
+    }
+}
+
+/// The instants `scripts/e2e-lib.sh`'s live phase holds a credit's timestamps
+/// to, shared with `scripts/check-usage-enforce.sh` so the two validators
+/// cannot disagree: every canonical one parses and re-spells as itself, and
+/// every invalid one is refused.
+#[test]
+fn the_shared_utc_instant_matrix_matches_the_parser() {
+    let matrix: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/utc-instant-matrix.json"
+    ))
+    .expect("the matrix is JSON");
+    let cases = |key: &str| -> Vec<String> {
+        matrix[key]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|case| case.as_str().expect("a string").to_string())
+            .collect()
+    };
+    for canonical in cases("canonical") {
+        let instant: UtcInstant = canonical.parse().expect(&canonical);
+        assert_eq!(instant.as_str(), canonical);
+    }
+    for invalid in cases("invalid") {
+        assert!(invalid.parse::<UtcInstant>().is_err(), "{invalid} parsed");
+    }
 }

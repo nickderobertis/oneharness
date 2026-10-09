@@ -24505,6 +24505,332 @@ fn the_codex_usage_probe_sends_exactly_the_zero_turn_handshake_in_order() {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] These drive the real built `oneharness usage` binary end to end; only the codex app-server is replaced, by the repository's own subprocess double (oneharness-mock-harness), because a real account cannot be made to answer with a capped list, an unseen status, a malformed summary or an auth refusal on demand, and the probe's real-account read is held by the live suite (oh_usage_enforce in scripts/e2e-lib.sh).
+/// codex's `account/rateLimits/read` reply carrying a three-credit
+/// `rateLimitResetCredits` summary, shaped from a real answer with its ids
+/// elided.
+fn codex_usage_response_with_credits() -> String {
+    let mut response: Value =
+        serde_json::from_str(&codex_usage_response()).expect("the reply is JSON");
+    response["result"]["rateLimitResetCredits"] = serde_json::json!({
+        "availableCount": 3,
+        "credits": [
+            {
+                "id": "RateLimitResetCredit_…a",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_200_000,
+                "expiresAt": 1_792_800_000,
+                "title": "Full reset",
+                "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+            },
+            {
+                "id": "RateLimitResetCredit_…b",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_200_000,
+                "expiresAt": null,
+                "title": null,
+                "description": null
+            },
+            {
+                "id": "RateLimitResetCredit_…c",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_000_000,
+                "expiresAt": 1_791_000_000,
+                "title": "Full reset",
+                "description": null
+            }
+        ]
+    });
+    response.to_string()
+}
+
+#[test]
+fn usage_reports_a_codex_identitys_reset_credits_in_json_and_text() {
+    let stdin = ProbeStdin::new("codex-credits");
+    let probe = |format: &str| {
+        run(
+            &[
+                "usage",
+                "--harness",
+                "codex,claude-code",
+                "--bin",
+                &bin_override("codex"),
+                "--bin",
+                &missing_bin("claude-code"),
+                "--format",
+                format,
+            ],
+            &[
+                ("MOCK_REPLY_AFTER_LINES", "3"),
+                ("MOCK_STDOUT", &codex_usage_response_with_credits()),
+                ("MOCK_REQUEST_FILE", &stdin.env()),
+            ],
+        )
+    };
+
+    let output = probe("json");
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let report = json_stdout(&output);
+    assert_eq!(report["schema_version"], "0.1");
+    let codex = usage_identity(&report, "codex");
+    assert_eq!(codex["availability"]["state"], "available");
+    assert_eq!(
+        codex["reset_credits"],
+        serde_json::json!({
+            "state": "reported",
+            "available_count": 3,
+            "credits": [
+                {
+                    "id": "RateLimitResetCredit_…a",
+                    "status": "available",
+                    "reset_type": "codexRateLimits",
+                    "granted_at": "2026-09-23T21:46:40Z",
+                    "expires_at": "2026-10-24T00:00:00Z",
+                    "title": "Full reset",
+                    "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+                },
+                {
+                    "id": "RateLimitResetCredit_…b",
+                    "status": "available",
+                    "reset_type": "codexRateLimits",
+                    "granted_at": "2026-09-23T21:46:40Z"
+                },
+                {
+                    "id": "RateLimitResetCredit_…c",
+                    "status": "available",
+                    "reset_type": "codexRateLimits",
+                    "granted_at": "2026-09-21T14:13:20Z",
+                    "expires_at": "2026-10-03T04:00:00Z",
+                    "title": "Full reset"
+                }
+            ]
+        })
+    );
+    assert_eq!(
+        usage_identity(&report, "claude-code")["reset_credits"],
+        serde_json::json!({"state": "unknown", "reason": {"kind": "no_reader"}}),
+        "a harness with no credits reader says so, never zero"
+    );
+    // Reading the credits changed nothing the probe sends: the same three
+    // requests, the last of them the read-only rate-limit read.
+    let methods: Vec<Value> = stdin
+        .requests()
+        .iter()
+        .map(|request| request["method"].clone())
+        .collect();
+    assert_eq!(
+        methods,
+        ["initialize", "initialized", "account/rateLimits/read"],
+        "{}",
+        stdin.text()
+    );
+
+    let output = probe("text");
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("  reset credits: 3 available · soonest expires 2026-10-03T04:00:00Z\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  reset credits: unknown — not read for this harness\n"),
+        "{text}"
+    );
+}
+
+/// The `reset credits:` line `oneharness usage` prints for one codex identity
+/// whose answer carries `summary` (`None` removes the key).
+fn codex_reset_credits_line(summary: Option<Value>) -> String {
+    let mut response: Value =
+        serde_json::from_str(&codex_usage_response()).expect("the reply is JSON");
+    if let Some(summary) = summary {
+        response["result"]["rateLimitResetCredits"] = summary;
+    }
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &bin_override("codex"),
+            "--format",
+            "text",
+        ],
+        &[
+            ("MOCK_REPLY_AFTER_LINES", "3"),
+            ("MOCK_STDOUT", &response.to_string()),
+        ],
+    );
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("  reset credits: "))
+        .collect();
+    assert_eq!(lines.len(), 1, "one line per identity: {text}");
+    lines[0].to_string()
+}
+
+fn codex_credit_row(status: &str, reset_type: &str, expires_at: Option<i64>) -> Value {
+    serde_json::json!({
+        "id": "RateLimitResetCredit_…",
+        "resetType": reset_type,
+        "status": status,
+        "grantedAt": 1_790_000_000,
+        "expiresAt": expires_at,
+        "title": null,
+        "description": null
+    })
+}
+
+#[test]
+fn usage_text_names_a_soonest_expiry_only_when_the_listed_credits_cover_the_count() {
+    let available = |expires_at| codex_credit_row("available", "codexRateLimits", expires_at);
+    let summary = |count: u64, credits: Option<Vec<Value>>| {
+        Some(serde_json::json!({"availableCount": count, "credits": credits}))
+    };
+    // 1_791_000_000 is 2026-10-03T04:00:00Z; 1_792_800_000 is 2026-10-24.
+    let cases = [
+        (summary(0, Some(vec![])), "none available"),
+        (
+            summary(
+                0,
+                Some(vec![
+                    codex_credit_row("redeemed", "codexRateLimits", None),
+                    codex_credit_row("available", "unknown", Some(1_791_000_000)),
+                ]),
+            ),
+            "none available · 2 listed with unrecognized status or type",
+        ),
+        (
+            summary(
+                2,
+                Some(vec![
+                    available(Some(1_792_800_000)),
+                    available(Some(1_791_000_000)),
+                ]),
+            ),
+            "2 available · soonest expires 2026-10-03T04:00:00Z",
+        ),
+        (
+            summary(2, Some(vec![available(None), available(None)])),
+            "2 available · none expire",
+        ),
+        (
+            summary(2, Some(vec![])),
+            "2 available · expiry unknown (0 of 2 listed)",
+        ),
+        (
+            summary(2, None),
+            "2 available · expiry unknown (0 of 2 listed)",
+        ),
+        (
+            summary(
+                3,
+                Some(vec![available(Some(1_792_800_000)), available(None)]),
+            ),
+            "3 available · earliest known expiry 2026-10-24T00:00:00Z \
+             (2 of 3 listed; account-wide soonest unknown)",
+        ),
+        (
+            summary(3, Some(vec![available(None)])),
+            "3 available · expiry unknown (1 of 3 listed)",
+        ),
+        (
+            summary(
+                2,
+                Some(vec![
+                    available(None),
+                    codex_credit_row("redeeming", "codexRateLimits", Some(1_791_000_000)),
+                    codex_credit_row("available", "unknown", Some(1_791_000_000)),
+                ]),
+            ),
+            "2 available · expiry unknown (1 of 2 listed) \
+             · 2 listed with unrecognized status or type",
+        ),
+        (None, "unknown — the harness's answer carried no summary"),
+        (
+            Some(serde_json::json!({"availableCount": -1})),
+            "unknown — unreadable: `rateLimitResetCredits.availableCount` is a negative \
+             integer rather than a non-negative integer",
+        ),
+    ];
+    for (summary, expected) in cases {
+        assert_eq!(
+            codex_reset_credits_line(summary.clone()),
+            expected,
+            "summary {summary:?}"
+        );
+    }
+}
+
+#[test]
+fn usage_reports_no_answer_for_the_credits_of_a_codex_identity_without_a_rate_limit_answer() {
+    let no_answer = serde_json::json!({"state": "unknown", "reason": {"kind": "no_answer"}});
+    let api_key = r#"{"id":2,"error":{"code":-32600,"message":"chatgpt authentication required to read rate limits"}}"#;
+    let logged_out = r#"{"id":2,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}"#;
+    for (case, bin, stdout, availability) in [
+        ("api key", bin_override("codex"), api_key, "unavailable"),
+        (
+            "not logged in",
+            bin_override("codex"),
+            logged_out,
+            "unavailable",
+        ),
+        ("failed", bin_override("codex"), "not json-rpc", "unknown"),
+        ("missing binary", missing_bin("codex"), "", "unknown"),
+    ] {
+        let output = run(
+            &[
+                "usage",
+                "--harness",
+                "codex",
+                "--bin",
+                &bin,
+                "--timeout",
+                "10",
+            ],
+            &[("MOCK_REPLY_AFTER_LINES", "3"), ("MOCK_STDOUT", stdout)],
+        );
+        assert!(
+            output.status.success(),
+            "{case}: exit {:?}",
+            output.status.code()
+        );
+        let codex = usage_identity(&json_stdout(&output), "codex");
+        assert_eq!(
+            codex["availability"]["state"], availability,
+            "{case}: {codex}"
+        );
+        assert_eq!(codex["reset_credits"], no_answer, "{case}: {codex}");
+    }
+
+    let output = run(
+        &[
+            "usage",
+            "--harness",
+            "codex",
+            "--bin",
+            &missing_bin("codex"),
+            "--format",
+            "text",
+        ],
+        &[],
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains(
+            "  reset credits: unknown — the probe got no rate-limit answer to read them from\n"
+        ),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+// llmlint: ignore-end[e2e_not_mocked]
+
 /// The `probe_failed` message a caller reads for the one probed identity in a
 /// report, which is the whole of what a probe that learned nothing hands over.
 fn probe_failure_message(report: &Value) -> String {

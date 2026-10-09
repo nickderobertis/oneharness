@@ -336,10 +336,19 @@ pub struct UsageIdentity {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     pub availability: UsageAvailability,
+    /// The banked reset credits this identity holds, always serialized so its
+    /// absence is never read as "none". A report written before the field
+    /// existed reads it as `unknown` / `no_reader`.
+    pub reset_credits: ResetCredits,
 }
 
 impl UsageIdentity {
     /// Attach a parsed payload to the identity it was probed for.
+    ///
+    /// A harness whose probe reads no reset credits reports
+    /// [`ResetCreditsUnknown::NoReader`] whatever the payload's outcome — a
+    /// failed claude probe has no credits reader to have failed, so `no_answer`
+    /// would wrongly imply one exists.
     // llmlint: ignore[invalid_states_unrepresentable] This established infallible public constructor is source-compatible for sibling probes; oneharness calls it only with a resolved registry spec id, while untrusted reports enter through `UsageIdentityWire` and are registry-validated before exposure.
     #[must_use]
     pub fn new(harness: &str, selector: IdentitySelector, parsed: ParsedUsage) -> Self {
@@ -350,6 +359,11 @@ impl UsageIdentity {
             auth_mode: parsed.auth_mode,
             plan: parsed.plan,
             availability: parsed.availability,
+            reset_credits: if reads_reset_credits(harness) {
+                parsed.reset_credits
+            } else {
+                NO_READER
+            },
         }
     }
 
@@ -392,6 +406,8 @@ struct UsageIdentityWire {
     #[serde(default)]
     plan: Option<String>,
     availability: UsageAvailability,
+    #[serde(default)]
+    reset_credits: ResetCredits,
 }
 
 impl TryFrom<UsageIdentityWire> for UsageIdentity {
@@ -418,6 +434,7 @@ impl TryFrom<UsageIdentityWire> for UsageIdentity {
             auth_mode: wire.auth_mode,
             plan: wire.plan,
             availability: wire.availability,
+            reset_credits: wire.reset_credits,
         };
         flatten_identity(&mut identity);
         if harness::by_id(&identity.harness).is_none() {
@@ -475,6 +492,34 @@ fn flatten_identity(identity: &mut UsageIdentity) {
             UnknownReason::Unprobed => {}
         },
     }
+    match &mut identity.reset_credits {
+        ResetCredits::Reported { credits, .. } => {
+            for credit in credits.iter_mut().flatten() {
+                flatten_credit(credit);
+            }
+        }
+        ResetCredits::Unknown {
+            reason: ResetCreditsUnknown::Unreadable { message },
+        } => flatten(message),
+        ResetCredits::Unknown { .. } => {}
+    }
+}
+
+/// Flatten one credit's strings; its instants cannot hold a control character.
+fn flatten_credit(credit: &mut ResetCredit) {
+    // `status` and `reset_type` need no flattening: classifying a word
+    // flattens it, so neither can hold a control character.
+    flatten(&mut credit.id);
+    flatten_optional(&mut credit.title);
+    flatten_optional(&mut credit.description);
+}
+
+/// Decided from the registry rather than the payload, so an unknown or
+/// non-probing harness id falls to `no_reader` instead of `no_answer`.
+fn reads_reset_credits(harness: &str) -> bool {
+    harness::by_id(harness)
+        .and_then(|spec| spec.usage.probe())
+        .is_some_and(|probe| probe.reads_reset_credits())
 }
 
 fn flatten(text: &mut String) {
@@ -636,6 +681,221 @@ impl UnknownReason {
         Self::BinaryMissing {
             bin: without_control_chars(bin),
         }
+    }
+}
+
+/// The banked rate-limit **reset credits** an identity holds — capacity a window
+/// at 100% used does not show. Harness-neutral: codex fills it from its
+/// `rateLimitResetCredits` summary, and a harness with no reader says so.
+///
+/// Like [`UsageAvailability`], `unknown` means only that nothing was learned and
+/// is never zero: "no credits" is exactly `reported` with an `available_count`
+/// of 0.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ResetCredits {
+    /// The harness answered with a credits summary.
+    Reported {
+        /// The harness's own count, and the authoritative total — never derived
+        /// from `credits`, which the harness may cap below it.
+        available_count: u64,
+        /// The credits the harness listed. Absent when it reported only the
+        /// count; present — possibly empty, possibly shorter than
+        /// `available_count` — when it listed them.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        credits: Option<Vec<ResetCredit>>,
+    },
+    /// Nothing was learned about this identity's credits.
+    Unknown { reason: ResetCreditsUnknown },
+}
+
+const NO_READER: ResetCredits = ResetCredits::Unknown {
+    reason: ResetCreditsUnknown::NoReader,
+};
+
+const NO_ANSWER: ResetCredits = ResetCredits::Unknown {
+    reason: ResetCreditsUnknown::NoAnswer,
+};
+
+impl Default for ResetCredits {
+    /// What a report written before the field existed says: nothing was read.
+    fn default() -> Self {
+        NO_READER
+    }
+}
+
+/// Why an identity's reset credits are unknown.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ResetCreditsUnknown {
+    /// This oneharness reads no reset credits for this harness.
+    NoReader,
+    /// The probe produced no rate-limit answer to read credits from — the
+    /// identity's `availability` says why.
+    NoAnswer,
+    /// The harness answered, but its answer carried no credits summary.
+    NotReported,
+    /// A summary was present but structurally malformed.
+    Unreadable { message: String },
+}
+
+/// One listed reset credit. `status` and `reset_type` are the harness's own
+/// words, **verbatim** like [`UsageIdentity::plan`], so a value this release
+/// has never seen is reported as itself rather than refused.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ResetCredit {
+    /// The harness's opaque identifier for this credit.
+    pub id: String,
+    /// The credit's status as the harness spells it (codex: `available`,
+    /// `redeeming`, `redeemed`, `unknown`).
+    pub status: ResetCreditStatus,
+    /// What the credit resets, as the harness spells it (codex:
+    /// `codexRateLimits`).
+    pub reset_type: ResetCreditType,
+    pub granted_at: UtcInstant,
+    /// When the credit expires. Absent when the harness said it does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<UtcInstant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl ResetCredit {
+    /// Whether this row is an available credit of a reset type `harness`'s
+    /// probe recognizes ([`UsageProbe::recognized_reset_types`]) — the only
+    /// rows a renderer may count as evidence about when the identity's credits
+    /// expire. Any other row is still reported, but says nothing a reader can
+    /// rely on about the identity's spendable credits.
+    #[must_use]
+    pub fn is_recognized_available(&self, harness: &str) -> bool {
+        self.status == ResetCreditStatus::Available
+            && harness::by_id(harness)
+                .and_then(|spec| spec.usage.probe())
+                .is_some_and(|probe| {
+                    probe
+                        .recognized_reset_types()
+                        .contains(&self.reset_type.as_str())
+                })
+    }
+}
+
+/// A status word this release does not recognize, kept verbatim with its
+/// control characters flattened. Built only by classifying a status, so it
+/// never holds `available`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognizedStatus(String);
+
+impl UnrecognizedStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The schema of a verbatim harness word: a plain string, inlined so the wire
+/// shape stays exactly the one the field always had.
+fn verbatim_word_schema() -> schemars::Schema {
+    schemars::json_schema!({ "type": "string" })
+}
+
+/// A credit's status. This release recognizes one word, `available` — the only
+/// status the expiry rule reads; any other word (codex's `redeeming`,
+/// `redeemed` and `unknown` among them) is kept as itself in
+/// [`ResetCreditStatus::Unrecognized`]. Serialized as the harness's verbatim
+/// word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ResetCreditStatus {
+    /// `available`: the credit can be spent.
+    Available,
+    Unrecognized(UnrecognizedStatus),
+}
+
+impl ResetCreditStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Available => "available",
+            Self::Unrecognized(word) => word.as_str(),
+        }
+    }
+}
+
+impl From<String> for ResetCreditStatus {
+    /// Flattens control characters, then classifies the word.
+    fn from(word: String) -> Self {
+        let word = without_control_chars(&word);
+        match word.as_str() {
+            "available" => Self::Available,
+            _ => Self::Unrecognized(UnrecognizedStatus(word)),
+        }
+    }
+}
+
+impl From<ResetCreditStatus> for String {
+    fn from(status: ResetCreditStatus) -> Self {
+        match status {
+            ResetCreditStatus::Available => "available".to_string(),
+            ResetCreditStatus::Unrecognized(word) => word.0,
+        }
+    }
+}
+
+impl schemars::JsonSchema for ResetCreditStatus {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ResetCreditStatus".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        verbatim_word_schema()
+    }
+}
+
+/// What a credit resets: the harness's own word, kept verbatim with its
+/// control characters flattened. Which words a reader may rely on is the
+/// harness's to say, so recognition lives on its probe
+/// ([`UsageProbe::recognized_reset_types`]) rather than in this shared type.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub struct ResetCreditType(String);
+
+impl ResetCreditType {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<String> for ResetCreditType {
+    /// Flattens control characters.
+    fn from(word: String) -> Self {
+        Self(without_control_chars(&word))
+    }
+}
+
+impl From<ResetCreditType> for String {
+    fn from(reset_type: ResetCreditType) -> Self {
+        reset_type.0
+    }
+}
+
+impl schemars::JsonSchema for ResetCreditType {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ResetCreditType".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        verbatim_word_schema()
     }
 }
 
@@ -919,16 +1179,19 @@ pub struct ParsedUsage {
     pub auth_mode: AuthMode,
     pub plan: Option<String>,
     pub availability: UsageAvailability,
+    pub reset_credits: ResetCredits,
 }
 
 impl ParsedUsage {
-    /// An identity nothing is known about — no probe ran, or one failed.
+    /// An identity nothing is known about — no probe ran, or one failed — so
+    /// there was no answer to read credits from either.
     #[must_use]
     pub fn unknown(reason: UnknownReason) -> Self {
         Self {
             auth_mode: AuthMode::Unknown,
             plan: None,
             availability: UsageAvailability::Unknown { reason },
+            reset_credits: NO_ANSWER,
         }
     }
 }
@@ -1027,6 +1290,24 @@ impl UsageProbe {
     #[must_use]
     pub fn spawns_harness(&self) -> bool {
         !matches!(self, Self::CopilotUserEndpoint)
+    }
+
+    /// Whether this probe reads the identity's [`ResetCredits`]. Only codex's
+    /// answer carries them today.
+    #[must_use]
+    pub fn reads_reset_credits(&self) -> bool {
+        matches!(self, Self::CodexAppServer)
+    }
+
+    /// The reset types this probe's harness names that this release
+    /// recognizes — the only credits a renderer may count as evidence about
+    /// when the identity's credits expire.
+    #[must_use]
+    pub fn recognized_reset_types(&self) -> &'static [&'static str] {
+        match self {
+            Self::CodexAppServer => &["codexRateLimits"],
+            Self::ClaudeGetUsage | Self::CopilotUserEndpoint | Self::CursorAbout => &[],
+        }
     }
 
     /// How much this probe can report. Cursor's is the lone
@@ -1305,6 +1586,7 @@ pub fn parse_claude_get_usage(payload: &Value) -> ParsedUsage {
         auth_mode,
         plan,
         availability,
+        reset_credits: NO_READER,
     }
 }
 
@@ -1517,6 +1799,7 @@ pub fn parse_codex_rate_limits(response: &Value) -> ParsedUsage {
         auth_mode: AuthMode::Subscription,
         plan,
         availability: UsageAvailability::from_windows(windows),
+        reset_credits: codex_reset_credits(result),
     }
 }
 
@@ -1538,6 +1821,149 @@ fn codex_error(message: &str) -> ParsedUsage {
         auth_mode,
         plan: None,
         availability: UsageAvailability::Unavailable { reason },
+        // An auth refusal is no rate-limit answer at all.
+        reset_credits: NO_ANSWER,
+    }
+}
+
+/// Read codex's `rateLimitResetCredits` summary off a successful result.
+///
+/// The summary is optional and nullable in the generated schema, so absent and
+/// `null` are both `not_reported` — an older codex, or an account the backend
+/// had nothing to say about — never zero. A malformed summary is `unreadable`
+/// and leaves the rest of the reading untouched: credits are a sibling of the
+/// windows, not a precondition for them.
+fn codex_reset_credits(result: &Value) -> ResetCredits {
+    let summary = match result.get("rateLimitResetCredits") {
+        None | Some(Value::Null) => {
+            return ResetCredits::Unknown {
+                reason: ResetCreditsUnknown::NotReported,
+            }
+        }
+        Some(summary) => summary,
+    };
+    codex_reset_credit_summary(summary).unwrap_or_else(|message| ResetCredits::Unknown {
+        reason: ResetCreditsUnknown::Unreadable { message },
+    })
+}
+
+fn codex_reset_credit_summary(summary: &Value) -> Result<ResetCredits, String> {
+    if !summary.is_object() {
+        return Err(format!(
+            "`rateLimitResetCredits` is {} rather than an object",
+            json_type_name(summary)
+        ));
+    }
+    let available_count = match summary.get("availableCount") {
+        Some(count) => count.as_u64().ok_or_else(|| {
+            format!(
+                "`rateLimitResetCredits.availableCount` is {} rather than a \
+                 non-negative integer",
+                json_number_name(count)
+            )
+        })?,
+        None => return Err("`rateLimitResetCredits` carries no `availableCount`".to_string()),
+    };
+    let credits = match summary.get("credits") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(rows)) => Some(
+            rows.iter()
+                .enumerate()
+                .map(|(at, row)| {
+                    codex_reset_credit(row)
+                        .map_err(|why| format!("`rateLimitResetCredits.credits[{at}]` {why}"))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Some(other) => {
+            return Err(format!(
+                "`rateLimitResetCredits.credits` is {} rather than an array or null",
+                json_type_name(other)
+            ))
+        }
+    };
+    Ok(ResetCredits::Reported {
+        available_count,
+        credits,
+    })
+}
+
+/// The error is a fragment the caller prefixes with the row's index, so a
+/// malformed row is named in the `unreadable` message.
+fn codex_reset_credit(row: &Value) -> Result<ResetCredit, String> {
+    if !row.is_object() {
+        return Err(format!("is {} rather than an object", json_type_name(row)));
+    }
+    let required_text = |field: &str| -> Result<String, String> {
+        match row.get(field) {
+            Some(Value::String(text)) => Ok(without_control_chars(text)),
+            Some(other) => Err(format!(
+                "carries a `{field}` that is {} rather than a string",
+                json_type_name(other)
+            )),
+            None => Err(format!("carries no `{field}`")),
+        }
+    };
+    let optional_text = |field: &str| -> Result<Option<String>, String> {
+        match row.get(field) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::String(text)) => Ok(Some(without_control_chars(text))),
+            Some(other) => Err(format!(
+                "carries a `{field}` that is {} rather than a string or null",
+                json_type_name(other)
+            )),
+        }
+    };
+    let instant = |field: &str, value: &Value| -> Result<UtcInstant, String> {
+        let what = match value.as_i64() {
+            Some(secs) => match epoch_instant(secs) {
+                Some(instant) => return Ok(instant),
+                None => "outside the four-digit years",
+            },
+            None => json_number_name(value),
+        };
+        Err(format!(
+            "carries a `{field}` that is {what} rather than epoch seconds"
+        ))
+    };
+    let granted_at = match row.get("grantedAt") {
+        Some(value) => instant("grantedAt", value)?,
+        None => return Err("carries no `grantedAt`".to_string()),
+    };
+    // Absent and `null` alike are the schema's "does not expire".
+    let expires_at = match row.get("expiresAt") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(instant("expiresAt", value)?),
+    };
+    Ok(ResetCredit {
+        id: required_text("id")?,
+        status: required_text("status")?.into(),
+        reset_type: required_text("resetType")?.into(),
+        granted_at,
+        expires_at,
+        title: optional_text("title")?,
+        description: optional_text("description")?,
+    })
+}
+
+/// An epoch-seconds instant, when its canonical spelling is one a reader can
+/// parse back — a value whose year leaves four digits is not.
+fn epoch_instant(secs: i64) -> Option<UtcInstant> {
+    let instant = UtcInstant::from_epoch(secs);
+    instant
+        .as_str()
+        .parse::<UtcInstant>()
+        .is_ok_and(|parsed| parsed == instant)
+        .then_some(instant)
+}
+
+/// [`json_type_name`], refined for a number that is not a usable integer.
+fn json_number_name(value: &Value) -> &'static str {
+    match value {
+        Value::Number(number) if number.is_i64() => "a negative integer",
+        Value::Number(number) if number.is_u64() => "an out-of-range integer",
+        Value::Number(_) => "a fractional number",
+        other => json_type_name(other),
     }
 }
 
@@ -1659,6 +2085,7 @@ pub fn parse_copilot_user(body: &Value) -> ParsedUsage {
         auth_mode: AuthMode::Subscription,
         plan,
         availability: UsageAvailability::from_windows(windows),
+        reset_credits: NO_READER,
     }
 }
 
@@ -1773,6 +2200,7 @@ pub fn parse_copilot_http(status: u16, body: &str) -> ParsedUsage {
             availability: UsageAvailability::Unavailable {
                 reason: UnavailableReason::NotLoggedIn,
             },
+            reset_credits: NO_READER,
         };
     }
     if status != 200 {
@@ -1872,6 +2300,7 @@ pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
             availability: UsageAvailability::Unavailable {
                 reason: UnavailableReason::NoHeadroomReader,
             },
+            reset_credits: NO_READER,
         },
         None => ParsedUsage {
             auth_mode: AuthMode::Unknown,
@@ -1879,6 +2308,7 @@ pub fn parse_cursor_about(payload: &Value) -> ParsedUsage {
             availability: UsageAvailability::Unavailable {
                 reason: UnavailableReason::NotLoggedIn,
             },
+            reset_credits: NO_READER,
         },
     }
 }

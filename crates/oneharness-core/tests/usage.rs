@@ -1859,3 +1859,30 @@ fn collect_strings(value: &Value, into: &mut Vec<String>) {
         _ => {}
     }
 }
+
+/// The instants `scripts/e2e-lib.sh`'s live phase holds a credit's timestamps
+/// to, shared with `scripts/check-usage-enforce.sh` so the two validators
+/// cannot disagree: every canonical one parses and re-spells as itself, and
+/// every invalid one is refused.
+#[test]
+fn the_shared_utc_instant_matrix_matches_the_parser() {
+    let matrix: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/utc-instant-matrix.json"
+    ))
+    .expect("the matrix is JSON");
+    let cases = |key: &str| -> Vec<String> {
+        matrix[key]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|case| case.as_str().expect("a string").to_string())
+            .collect()
+    };
+    for canonical in cases("canonical") {
+        let instant: UtcInstant = canonical.parse().expect(&canonical);
+        assert_eq!(instant.as_str(), canonical);
+    }
+    for invalid in cases("invalid") {
+        assert!(invalid.parse::<UtcInstant>().is_err(), "{invalid} parsed");
+    }
+}

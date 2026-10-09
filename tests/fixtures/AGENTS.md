@@ -1,8 +1,10 @@
 # AGENTS (harness-captures)
 
 Subtree rules for the captured harness output — the external CLIs' own wire
-formats every parser here is held to — and the SDK acceptance matrix
-(`sdk-contract-matrix.json`).
+formats every parser here is held to — and two acceptance matrices, which are
+contracts rather than captures: the SDK's (`sdk-contract-matrix.json`) and the
+UTC instants `scripts/e2e-lib.sh` and `UtcInstant` must agree on
+(`utc-instant-matrix.json`).
 
 - **A capture comes from a real run, never from imagination.** Record it from the
   CLI itself (the `explore-*` probes dump live output for exactly this) and keep

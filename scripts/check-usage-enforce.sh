@@ -63,7 +63,8 @@ drive() {
   set -e
 }
 
-# An identity report; its reset credits default to a reported zero.
+# An identity report. Cases about availability pass a valid reported zero for
+# the reset credits, so only the branch under test can fail them.
 no_credits='{"state":"reported","available_count":0,"credits":[]}'
 identity() {
   printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s,"reset_credits":%s}]}' \
@@ -196,6 +197,22 @@ case "$out" in
   *"FAIL:"*"reset_credits=<absent>"*) ;;
   *) fail "an identity without reset_credits must say so, got: $out" ;;
 esac
+
+# 5c. A credit's timestamps are held to what the Rust parser accepts, through
+#     the matrix its own test reads: every canonical instant passes and every
+#     invalid one — an impossible date included — is refused.
+matrix="$root/tests/fixtures/utc-instant-matrix.json"
+for kind in canonical invalid; do
+  instants="$(jq -er --arg kind "$kind" '.[$kind][]' "$matrix")" || fail "could not read .$kind from $matrix"
+  while IFS= read -r instant; do
+    drive "$(identity "$headroom" "{\"state\":\"reported\",\"available_count\":1,\"credits\":[{\"id\":\"a\",\"status\":\"available\",\"reset_type\":\"x\",\"granted_at\":\"2026-09-01T00:00:00Z\",\"expires_at\":\"$instant\"}]}")" 0
+    case "$kind:$rc" in
+      canonical:0 | invalid:1) ;;
+      canonical:*) fail "the canonical instant $instant must pass, got exit $rc: $out" ;;
+      invalid:*) fail "the invalid instant $instant must be refused, got exit $rc: $out" ;;
+    esac
+  done <<<"$instants"
+done
 
 # The sibling phase holds a different distinction: whether the probe's ANSWER
 # still depends on the directory it was pointed at (#1279). Only a real Claude
@@ -455,7 +472,7 @@ esac
 # The lists are read out of the helper rather than retyped here: a gate that
 # restated them would be a third copy, and would pass while the helper drifted.
 schema="$root/npm/oneharness-sdk/src/generated/schemas.json"
-declared="$(bash -c "source '$root/scripts/e2e-lib.sh'
+declared="$(bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh' || exit 1
     printf '%s\n' \"\$OH_USAGE_ANSWERED_STATES \$OH_USAGE_SILENT_STATES\"
     printf '%s\n' \"\${OH_USAGE_IDENTITY_FIELDS[*]}\"
     printf '%s\n' \"\$OH_USAGE_CREDITS_UNKNOWN_KINDS\"

@@ -501,8 +501,8 @@ soonest expiry, or says none expire, only when the listed credits that are
 `codexRateLimits`) account for the whole count. Otherwise it gives the earliest
 expiry among those rows as the earliest *known* one, or says expiry is unknown,
 with how many of the count were listed — a capped list's soonest is not the
-account's — and counts any listed row left out for an unrecognized status or
-type.
+account's. A count of 0 reads `none available`. Every form, `none available`
+included, counts any listed row left out for an unrecognized status or type.
 
 ## Per-identity attribution
 

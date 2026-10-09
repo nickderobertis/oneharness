@@ -117,13 +117,17 @@ fn reset_credits_label(harness: &str, credits: &ResetCredits) -> String {
             credits,
         } => (*available_count, credits.as_deref()),
     };
-    if count == 0 {
-        return "none available".to_string();
-    }
     let (recognized, unrecognized): (Vec<&ResetCredit>, Vec<&ResetCredit>) = listed
         .unwrap_or_default()
         .iter()
         .partition(|credit| credit.is_recognized_available(harness));
+    let unrecognized = match unrecognized.len() {
+        0 => String::new(),
+        left_out => format!(" · {left_out} listed with unrecognized status or type"),
+    };
+    if count == 0 {
+        return format!("none available{unrecognized}");
+    }
     let soonest = recognized
         .iter()
         .filter_map(|credit| credit.expires_at.as_ref())
@@ -138,10 +142,6 @@ fn reset_credits_label(harness: &str, credits: &ResetCredits) -> String {
              account-wide soonest unknown)"
         ),
         (false, None) => format!("expiry unknown ({listed_count} of {count} listed)"),
-    };
-    let unrecognized = match unrecognized.len() {
-        0 => String::new(),
-        left_out => format!(" · {left_out} listed with unrecognized status or type"),
     };
     format!("{count} available · {expiry}{unrecognized}")
 }
@@ -599,6 +599,17 @@ mod tests {
             "2 available · earliest known expiry 2026-10-24T00:00:00Z \
              (1 of 2 listed; account-wide soonest unknown) \
              · 1 listed with unrecognized status or type"
+        );
+        // A count of 0 still says what was listed beside it.
+        assert_eq!(
+            line(
+                0,
+                Some(vec![
+                    credit("redeemed", "codexRateLimits", None),
+                    credit("available", "unknown", Some("2026-10-01T00:00:00Z")),
+                ])
+            ),
+            "none available · 2 listed with unrecognized status or type"
         );
         for text in [redeeming, other_type] {
             assert_claims_nothing_account_wide(&text);

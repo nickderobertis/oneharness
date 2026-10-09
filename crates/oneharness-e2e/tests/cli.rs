@@ -24697,6 +24697,16 @@ fn usage_text_names_a_soonest_expiry_only_when_the_listed_credits_cover_the_coun
         (summary(0, Some(vec![])), "none available"),
         (
             summary(
+                0,
+                Some(vec![
+                    codex_credit_row("redeemed", "codexRateLimits", None),
+                    codex_credit_row("available", "unknown", Some(1_791_000_000)),
+                ]),
+            ),
+            "none available · 2 listed with unrecognized status or type",
+        ),
+        (
+            summary(
                 2,
                 Some(vec![
                     available(Some(1_792_800_000)),

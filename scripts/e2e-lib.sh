@@ -568,8 +568,7 @@ oh_usage_enforce() {
   # credits summary drifting out from under the parser. A summary this phase
   # cannot validate is reported as `<malformed>` with jq's reason.
   credits="$(printf '%s' "$report" |
-    jq -r --arg kinds "$OH_USAGE_CREDITS_UNKNOWN_KINDS" \
-      "$OH_USAGE_CREDITS_JQ"' .identities[0] | credits_line' 2>&1)" ||
+    jq -r "$OH_USAGE_CREDITS_JQ"' .identities[0] | credits_line' 2>&1)" ||
     credits="<malformed> ${credits#jq: error (at <stdin>:0): }"
   case "$credits" in
     "<absent>" | "unknown unreadable"* | "<malformed>"*)
@@ -611,16 +610,44 @@ OH_USAGE_HOOK_MARGIN=10
 OH_USAGE_ANSWERED_STATES="available unavailable"
 OH_USAGE_SILENT_STATES="unknown"
 
-# The `ResetCredits` unknown reasons this phase recognizes, held against the
-# generated `usage_report` schema by scripts/check-usage-enforce.sh like the
-# lists above. Its two states, `reported` and `unknown`, are held there too.
+# The `reset_credits` contract as much as this phase validates it, each list a
+# restatement of Rust held against the generated `usage_report` schema by
+# scripts/check-usage-enforce.sh: the `ResetCreditsUnknown` kinds, and a
+# `ResetCredit` row's required and optional properties — every one a string.
 OH_USAGE_CREDITS_UNKNOWN_KINDS="no_reader no_answer not_reported unreadable"
+OH_USAGE_CREDIT_REQUIRED_FIELDS="id status reset_type granted_at"
+OH_USAGE_CREDIT_OPTIONAL_FIELDS="expires_at title description"
+# `available_count` is a u64; jq compares in doubles, so 2^64 is the bound.
+OH_USAGE_CREDITS_COUNT_LIMIT=18446744073709551616
 
 # jq definitions validating one identity's `reset_credits` and rendering it as
 # the line this phase logs; anything off-contract is a jq error naming the
-# field. Callers pass `--arg kinds "$OH_USAGE_CREDITS_UNKNOWN_KINDS"`.
+# field. The lists above are spliced in, so callers pass no arguments.
 # shellcheck disable=SC2016 # jq source: the `$` names are jq variables.
-OH_USAGE_CREDITS_JQ='
+OH_USAGE_CREDITS_JQ="
+    def credit_kinds: \"$OH_USAGE_CREDITS_UNKNOWN_KINDS\" | split(\" \");
+    def credit_required: \"$OH_USAGE_CREDIT_REQUIRED_FIELDS\" | split(\" \");
+    def credit_optional: \"$OH_USAGE_CREDIT_OPTIONAL_FIELDS\" | split(\" \");
+    def credit_count_limit: $OH_USAGE_CREDITS_COUNT_LIMIT;"'
+    def credit_row($at):
+        if type != "object" then error("reset_credits.credits[\($at)] is \(type), not object")
+        else . as $row
+        | ((keys - credit_required - credit_optional) as $extra
+           | if ($extra | length) > 0
+             then error("reset_credits.credits[\($at)] carries unknown field(s): \($extra | join(", "))")
+             else . end)
+        | (credit_required[] as $f
+           | if ($row | has($f) | not)
+             then error("reset_credits.credits[\($at)] has no \($f)")
+             elif ($row[$f] | type) != "string"
+             then error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string")
+             else empty end),
+          (credit_optional[] as $f
+           | if ($row | has($f) | not) or ($row[$f] | type) == "string" or $row[$f] == null
+             then empty
+             else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string") end),
+          $row
+        end;
     def credits_line:
         if has("reset_credits") | not then "<absent>"
         else .reset_credits as $c
@@ -628,15 +655,18 @@ OH_USAGE_CREDITS_JQ='
           elif $c.state == "reported" then
               ($c.available_count) as $n
               | if ($n | type) != "number" or $n < 0 or ($n | floor) != $n
-                then error("reset_credits.available_count is \($n | tojson), not a non-negative integer")
+                   or $n >= credit_count_limit
+                then error("reset_credits.available_count is \($n | tojson), not a u64")
                 elif ($c.credits | type) == "null" then "reported \($n) (count only)"
                 elif ($c.credits | type) == "array"
-                then "reported \($n) (\($c.credits | length) listed)"
+                then ([range(0; $c.credits | length) as $at | $c.credits[$at] | credit_row($at)]
+                      | length) as $rows
+                     | "reported \($n) (\($rows) listed)"
                 else error("reset_credits.credits is \($c.credits | type), not array") end
           elif $c.state == "unknown" then
               if ($c.reason | type) != "object"
               then error("reset_credits.reason is \($c.reason | type), not object")
-              elif ($kinds | split(" ") | index([$c.reason.kind]) | not)
+              elif ($c.reason.kind | IN(credit_kinds[]) | not)
               then error("reset_credits.reason.kind \($c.reason.kind | tojson) is not one this phase knows")
               elif $c.reason.kind != "unreadable" then "unknown \($c.reason.kind)"
               elif ($c.reason.message | type) != "string"
@@ -885,8 +915,7 @@ _oh_usage_cwd_control() {
 # it.
 #   $1 a usage report
 _oh_usage_identity_key() {
-  printf '%s' "$1" | jq -er --arg kinds "$OH_USAGE_CREDITS_UNKNOWN_KINDS" --args \
-    "$OH_USAGE_CREDITS_JQ"'
+  printf '%s' "$1" | jq -er --args "$OH_USAGE_CREDITS_JQ"'
         def need($o; $f; $t):
             if ($o | has($f) | not) then error("identity has no \($f)")
             elif ($o[$f] | type) != $t

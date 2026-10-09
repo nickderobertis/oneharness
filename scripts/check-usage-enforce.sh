@@ -124,7 +124,8 @@ esac
 #     identity lacks them, or whose summary did not parse, fails: absent is a
 #     report this phase cannot trust, and `unreadable` is the summary drifting.
 headroom='{"state":"available","windows":[{"id":"codex","usage":{"used_percent":31}}]}'
-drive "$(identity "$headroom" '{"state":"reported","available_count":3,"credits":[{"id":"a"}]}')" 0
+row='{"id":"a","status":"available","reset_type":"codexRateLimits","granted_at":"2026-09-01T00:00:00Z"}'
+drive "$(identity "$headroom" "{\"state\":\"reported\",\"available_count\":3,\"credits\":[$row]}")" 0
 [ "$rc" -eq 0 ] || fail "reported credits must pass, got exit $rc: $out"
 case "$out" in
   *"PASS:"*"reset credits reported 3 (1 listed)"*) ;;
@@ -163,7 +164,13 @@ for malformed in \
   '{"state":"unknown","reason":{"kind":"zero"}}|kind "zero" is not one' \
   '{"state":"unknown","reason":{"kind":"unreadable","message":7}}|message is number' \
   '{"state":"spent"}|state "spent" is not one' \
-  '[]|reset_credits is array'; do
+  '[]|reset_credits is array' \
+  '{"state":"reported","available_count":18446744073709551616}|not a u64' \
+  '{"state":"reported","available_count":1,"credits":[7]}|credits[0] is number' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a"}]}|credits[0] has no status' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":1}]}|credits[0].granted_at is number' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"t","title":2}]}|credits[0].title is number' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"t","owner":"b"}]}|credits[0] carries unknown field(s): owner'; do
   drive "$(identity "$headroom" "${malformed%%|*}")" 0
   [ "$rc" -eq 1 ] || fail "${malformed%%|*} must fail, got exit $rc: $out"
   case "$out" in
@@ -427,29 +434,64 @@ declared="$(bash -c "source '$root/scripts/e2e-lib.sh'
     printf '%s\n' \"\$OH_USAGE_ANSWERED_STATES \$OH_USAGE_SILENT_STATES\"
     printf '%s\n' \"\${OH_USAGE_IDENTITY_FIELDS[*]}\"
     printf '%s\n' \"\$OH_USAGE_CREDITS_UNKNOWN_KINDS\"
-    printf '%s\n' \"\$OH_USAGE_CREDITS_JQ\"")"
-declared_states="$(printf '%s' "$declared" | sed -n 1p | tr ' ' '\n' | sort | tr '\n' ' ')"
-declared_fields="$(printf '%s' "$declared" | sed -n 2p | tr ' ' '\n' | sort | tr '\n' ' ')"
+    printf '%s\n' \"\$OH_USAGE_CREDIT_REQUIRED_FIELDS\"
+    printf '%s\n' \"\$OH_USAGE_CREDIT_REQUIRED_FIELDS \$OH_USAGE_CREDIT_OPTIONAL_FIELDS\"
+    printf '%s\n' \"\$OH_USAGE_CREDITS_JQ\"")" ||
+  fail "scripts/e2e-lib.sh did not source cleanly, so its usage lists could not be read"
+# Line $1 of the helper's declarations, as a sorted space-joined set.
+declared_set() { printf '%s' "$declared" | sed -n "$1p" | tr ' ' '\n' | sort | tr '\n' ' '; }
 
-schema_states="$(jq -r '[.usage_report."$defs".UsageAvailability.oneOf[].properties.state.const]
-                        | sort | join(" ") + " "' "$schema")"
-[ "$declared_states" = "$schema_states" ] || fail "oh_usage_cwd_enforce classifies the availability states [$declared_states] but UsageAvailability declares [$schema_states] — put each new state in OH_USAGE_ANSWERED_STATES or OH_USAGE_SILENT_STATES (scripts/e2e-lib.sh)"
+# Every jq read of the generated schema below is guarded, so a read that fails
+# names the file rather than letting a comparison pass on an empty answer.
+unreadable_schema() { fail "could not read $1 from $schema — regenerate it with 'just sdk-generate'"; }
 
-schema_fields="$(jq -r '[.usage_report."$defs".UsageIdentity.properties | keys[]]
-                        | sort | join(" ") + " "' "$schema")"
-[ "$declared_fields" = "$schema_fields" ] || fail "the identity equivalence key covers [$declared_fields] but UsageIdentity declares [$schema_fields] — a property outside the key is a difference the phase would call 'the same attribution' (scripts/e2e-lib.sh)"
+schema_states="$(jq -er '[.usage_report."$defs".UsageAvailability.oneOf[].properties.state.const]
+                              | sort | join(" ") + " "' "$schema")" ||
+  unreadable_schema schema_states
+[ "$(declared_set 1)" = "$schema_states" ] || fail "oh_usage_cwd_enforce classifies the availability states [$(declared_set 1)] but UsageAvailability declares [$schema_states] — put each new state in OH_USAGE_ANSWERED_STATES or OH_USAGE_SILENT_STATES (scripts/e2e-lib.sh)"
 
-declared_kinds="$(printf '%s' "$declared" | sed -n 3p | tr ' ' '\n' | sort | tr '\n' ' ')"
-schema_kinds="$(jq -r '[.usage_report."$defs".ResetCreditsUnknown.oneOf[].properties.kind.const]
-                       | sort | join(" ") + " "' "$schema")"
-[ "$declared_kinds" = "$schema_kinds" ] || fail "oh_usage_enforce recognizes the reset-credit unknown kinds [$declared_kinds] but ResetCreditsUnknown declares [$schema_kinds] — update OH_USAGE_CREDITS_UNKNOWN_KINDS (scripts/e2e-lib.sh)"
+schema_fields="$(jq -er '[.usage_report."$defs".UsageIdentity.properties | keys[]]
+                              | sort | join(" ") + " "' "$schema")" ||
+  unreadable_schema schema_fields
+[ "$(declared_set 2)" = "$schema_fields" ] || fail "the identity equivalence key covers [$(declared_set 2)] but UsageIdentity declares [$schema_fields] — a property outside the key is a difference the phase would call 'the same attribution' (scripts/e2e-lib.sh)"
 
-# The two states credits_line branches on are spelled in its jq source.
-for state in $(jq -r '.usage_report."$defs".ResetCredits.oneOf[].properties.state.const' "$schema"); do
+schema_kinds="$(jq -er '[.usage_report."$defs".ResetCreditsUnknown.oneOf[].properties.kind.const]
+                             | sort | join(" ") + " "' "$schema")" ||
+  unreadable_schema schema_kinds
+[ "$(declared_set 3)" = "$schema_kinds" ] || fail "oh_usage_enforce recognizes the reset-credit unknown kinds [$(declared_set 3)] but ResetCreditsUnknown declares [$schema_kinds] — update OH_USAGE_CREDITS_UNKNOWN_KINDS (scripts/e2e-lib.sh)"
+
+schema_required="$(jq -er '.usage_report."$defs".ResetCredit.required | sort | join(" ") + " "' "$schema")" ||
+  unreadable_schema schema_required
+[ "$(declared_set 4)" = "$schema_required" ] || fail "oh_usage_enforce requires the credit fields [$(declared_set 4)] but ResetCredit requires [$schema_required] — update OH_USAGE_CREDIT_REQUIRED_FIELDS (scripts/e2e-lib.sh)"
+
+schema_row="$(jq -er '.usage_report."$defs".ResetCredit.properties | keys | join(" ") + " "' "$schema")" ||
+  unreadable_schema schema_row
+[ "$(declared_set 5)" = "$schema_row" ] || fail "oh_usage_enforce knows the credit fields [$(declared_set 5)] but ResetCredit declares [$schema_row] — update OH_USAGE_CREDIT_OPTIONAL_FIELDS (scripts/e2e-lib.sh)"
+
+# credits_line holds every row field to a string, and the count to a u64.
+not_strings="$(jq -er '.usage_report."$defs" as $d
+    | [$d.ResetCredit.properties | to_entries[]
+       | select([.value | .. | objects | select(has("type") or has("$ref"))
+                 | if has("$ref") then $d[.["$ref"] | ltrimstr("#/$defs/")].type else .type end
+                 | if type == "array" then .[] else . end
+                 | select(. != "string" and . != "null")] | length > 0)
+       | .key] | join(" ") + " "' "$schema")" ||
+  unreadable_schema not_strings
+[ "$not_strings" = " " ] || fail "ResetCredit declares non-string field(s) [$not_strings] but credits_line holds every row field to a string (scripts/e2e-lib.sh)"
+count="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[]
+    | select(.properties.state.const == "reported") | .properties.available_count
+    | "\(.type) \(.format) \(.minimum)"' "$schema")" ||
+  unreadable_schema count
+[ "$count" = "integer uint64 0" ] || fail "ResetCredits.available_count is now [$count], not the u64 credits_line validates (scripts/e2e-lib.sh)"
+
+# The states credits_line branches on are spelled in its jq source.
+credit_states="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[].properties.state.const' "$schema")" ||
+  unreadable_schema credit_states
+while IFS= read -r state; do
   case "$declared" in
     *"\$c.state == \"$state\""*) ;;
     *) fail "ResetCredits declares the state '$state' but credits_line in OH_USAGE_CREDITS_JQ has no branch for it (scripts/e2e-lib.sh)" ;;
   esac
-done
+done <<<"$credit_states"
 
 echo "check-usage-enforce: ok"

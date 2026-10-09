@@ -709,12 +709,10 @@ pub enum ResetCredits {
     Unknown { reason: ResetCreditsUnknown },
 }
 
-/// No credits reader exists for the harness.
 const NO_READER: ResetCredits = ResetCredits::Unknown {
     reason: ResetCreditsUnknown::NoReader,
 };
 
-/// The probe produced no answer to read credits from.
 const NO_ANSWER: ResetCredits = ResetCredits::Unknown {
     reason: ResetCreditsUnknown::NoAnswer,
 };

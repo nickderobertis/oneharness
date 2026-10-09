@@ -2371,14 +2371,23 @@ claude-code [CLAUDE_CONFIG_DIR=/home/u/.claude] · plan max · auth subscription
   five_hour: 42% used · resets 2026-07-29T18:30:00Z
   seven_day: 61% used · resets 2026-08-02T13:00:00Z ← binding
   weekly_scoped/Opus 5: 17% used · resets 2026-08-02T13:00:00Z
+  reset credits: unknown — not read for this harness
 
 copilot [GH_TOKEN=<secret>] · plan individual · auth subscription
   chat: unlimited · resets 2026-08-01T00:00:00Z
   premium_interactions: 100% used (13518 of 1500 AI credits used, -12019 left · exhausted and blocked) · resets 2026-08-01T00:00:00Z
+  reset credits: unknown — not read for this harness
 
 goose [ambient] · auth unknown
   no headroom to report: no first-party plan quota exists to report
+  reset credits: unknown — not read for this harness
 ```
+
+Every identity also carries its banked **reset credits** — capacity a window at
+100% used does not show. Codex reports them (`reset credits: 3 available ·
+soonest expires …`); every other harness says it was not read, which is never
+“none”. The JSON field, its states, and the expiry rule are in
+[`docs/harness-usage.md`](docs/harness-usage.md#reset-credits).
 
 `--format json` on stdout is the contract (the view above is the default); it
 carries its own `schema_version`, independent of the run report's.

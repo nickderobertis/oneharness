@@ -239,12 +239,36 @@ The gate is **auth mode**, not billing state or key validity: a valid, stored,
 metered API key still gets the first error. Any *other* error message is a probe
 failure (`unknown`), never an assumed absence of headroom.
 
+**Banked reset credits ride the same answer.** The read's result carries a
+top-level `rateLimitResetCredits` sibling of `rateLimits` — optional and
+nullable in the generated schema (`RateLimitResetCreditsSummary`) — so reading
+it costs no extra request and nothing spends a credit; oneharness never calls
+`account/rateLimitResetCredit/consume`.
+
+```console
+← {"id":2,"result":{"rateLimits":{…},"rateLimitsByLimitId":{…},
+     "rateLimitResetCredits":{"availableCount":<COUNT:int>,
+       "credits":[{"id":"RateLimitResetCredit_<ID>","resetType":"codexRateLimits",
+                   "status":"available","grantedAt":<EPOCH_SECONDS>,
+                   "expiresAt":<EPOCH_SECONDS>|null,"title":"<TEXT>"|null,
+                   "description":"<TEXT>"|null}, …]}}}
+```
+
+`availableCount` is required and is the total; `credits: null` means only the
+count is known, `[]` means details were fetched and none returned, and the list
+may be capped below the count. `expiresAt: null` is a credit that does not
+expire. `resetType` (`codexRateLimits`, `unknown`) and `status` (`available`,
+`redeeming`, `redeemed`, `unknown`) are kept verbatim, so a value a later codex
+adds is reported as itself rather than failing the probe. How the summary maps
+onto the report is [Reset credits](#reset-credits) below.
+
 **Contract status: experimental transport, but drift is detectable and exact.**
 `codex app-server generate-json-schema` emits the contract from the installed
 binary. `tests/fixtures/codex-rate-limits.schema.json` is that snapshot, diffed
 by `scripts/check-codex-usage-schema.sh` inside `just check` (skipping cleanly
 where codex is not installed), and asserted field-by-field against what the
-parser reads by the hermetic Rust suite.
+parser reads — the reset-credits summary and each credit row included — by the
+hermetic Rust suite.
 
 ### `copilot` — `GET /copilot_internal/user`, out of band
 
@@ -442,6 +466,43 @@ The reset field cannot be a boolean or a fixed period. Across the fleet:
 | `qwen` | **Weekly** | No — size and anchor unpublished | Not reported |
 | `crush` | Monthly refresh; purchased bundles **never expire** | No | Not reported |
 | `opencode` | **None** — pure pay-as-you-go balance | No | Not reported |
+
+## Reset credits
+
+Every identity in the report carries `reset_credits`, always serialized as a
+sibling of `availability` — so an identity whose credits were never read says
+so, rather than going silent. The field is harness-neutral: codex fills it from
+the summary above, and a harness with no credits reader reports that.
+
+- **`{"state": "reported", "available_count": N, "credits"?: […]}`** — the
+  harness answered with a summary. `available_count` is the harness's own total,
+  never the list's length. `credits` is omitted when only the count was reported
+  and present — possibly empty, possibly shorter than the count — when the
+  harness listed them. Each credit is `{id, status, reset_type, granted_at,
+  expires_at?, title?, description?}`: `status` and `reset_type` verbatim,
+  instants converted from epoch seconds to RFC 3339 UTC like `resets_at`,
+  `expires_at` omitted for a credit that does not expire, and `title` /
+  `description` omitted when `null`.
+- **`{"state": "unknown", "reason": {"kind": …}}`** — nothing was learned:
+  `no_reader` (this oneharness reads no credits for the harness — every harness
+  but codex today, and what a report written before the field existed reads as),
+  `no_answer` (the probe got no rate-limit answer: not installed, unprobed,
+  failed, timed out, or an auth error — `availability` says which),
+  `not_reported` (the harness answered without a summary, as a codex predating
+  it does), or `unreadable` with a `message` (a summary was present but
+  malformed; the identity's windows and `availability` are reported unchanged).
+
+**`unknown` is never zero.** “No credits” is exactly `reported` with an
+`available_count` of 0; every `unknown` means the count is not known.
+
+The text view prints a `reset credits:` line under every identity. It names the
+soonest expiry, or says none expire, only when the listed credits that are
+`available` and of a reset type this release recognizes (codex:
+`codexRateLimits`) account for the whole count. Otherwise it gives the earliest
+expiry among those rows as the earliest *known* one, or says expiry is unknown,
+with how many of the count were listed — a capped list's soonest is not the
+account's — and counts any listed row left out for an unrecognized status or
+type.
 
 ## Per-identity attribution
 

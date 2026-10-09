@@ -626,8 +626,10 @@ OH_USAGE_CREDITS_UNKNOWN_KINDS="no_reader no_answer not_reported unreadable"
 OH_USAGE_CREDIT_REQUIRED_FIELDS="id status reset_type granted_at"
 OH_USAGE_CREDIT_OPTIONAL_FIELDS="expires_at title description"
 # The row fields that are `UtcInstant`s, held to its canonical RFC 3339 spelling
-# by a round trip, so an impossible date jq would normalize (February 30) is
-# refused. tests/fixtures/utc-instant-matrix.json holds this to the Rust parser.
+# by `is_utc_instant`: the shape by regex and every field's range, February 30
+# included, by jq arithmetic. Not `fromdateiso8601`, which goes through the
+# platform's C time functions and refuses `9999-12-31T23:59:59Z` on Windows.
+# tests/fixtures/utc-instant-matrix.json holds this to the Rust parser.
 OH_USAGE_CREDIT_INSTANT_FIELDS="granted_at expires_at"
 # `available_count` is a u64. jq holds numbers as doubles but (from 1.7) keeps
 # a literal's spelling, so the count is validated as decimal text, not by value.
@@ -643,6 +645,13 @@ OH_USAGE_CREDITS_JQ="
     def credit_optional: \"$OH_USAGE_CREDIT_OPTIONAL_FIELDS\" | split(\" \");
     def credit_instants: \"$OH_USAGE_CREDIT_INSTANT_FIELDS\" | split(\" \");
     def credit_count_max: \"$OH_USAGE_CREDITS_COUNT_MAX\";"'
+    def is_utc_instant:
+        (capture("^(?<y>[0-9]{4})-(?<mo>[0-9]{2})-(?<d>[0-9]{2})T(?<h>[0-9]{2}):(?<mi>[0-9]{2}):(?<s>[0-9]{2})Z$")
+         | map_values(tonumber)) as $n
+        | ($n.y % 4 == 0 and ($n.y % 100 != 0 or $n.y % 400 == 0)) as $leap
+        | [31, (if $leap then 29 else 28 end), 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as $days
+        | $n.mo >= 1 and $n.mo <= 12 and $n.d >= 1 and $n.d <= $days[$n.mo - 1]
+          and $n.h <= 23 and $n.mi <= 59 and $n.s <= 59;
     def credit_row($at):
         if type != "object" then error("reset_credits.credits[\($at)] is \(type), not object")
         else . as $row
@@ -662,9 +671,7 @@ OH_USAGE_CREDITS_JQ="
              else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string") end),
           (credit_instants[] as $f
            | if ($row[$f] | type) != "string" then empty
-             elif ($row[$f] | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-                  and ($row[$f] | try (fromdateiso8601 | todateiso8601) catch "") == $row[$f]
-             then empty
+             elif [$row[$f] | is_utc_instant] == [true] then empty
              else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | tojson), not a UTC instant") end),
           $row
         end;

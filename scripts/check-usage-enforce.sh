@@ -182,7 +182,8 @@ for malformed in \
   '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","title":2}]}|credits[0].title is number' \
   '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","owner":"b"}]}|credits[0] carries unknown field(s): owner' \
   '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"garbage"}]}|credits[0].granted_at is "garbage", not a UTC instant' \
-  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","expires_at":"2026-13-01T00:00:00Z"}]}|credits[0].expires_at is "2026-13-01T00:00:00Z", not a UTC instant'; do
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","expires_at":"2026-13-01T00:00:00Z"}]}|credits[0].expires_at is "2026-13-01T00:00:00Z", not a UTC instant' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00+00:00"}]}|credits[0].granted_at is "2026-09-01T00:00:00+00:00", not a UTC instant'; do
   drive "$(identity "$headroom" "${malformed%%|*}")" 0
   [ "$rc" -eq 1 ] || fail "${malformed%%|*} must fail, got exit $rc: $out"
   case "$out" in

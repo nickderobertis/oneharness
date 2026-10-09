@@ -13,9 +13,9 @@ use oneharness_core::domain::config::VariantName;
 use oneharness_core::domain::usage::{
     claude_control_response, normalize_timestamp, parse_claude_get_usage, parse_codex_rate_limits,
     parse_copilot_user, parse_cursor_about, AuthMode, IdentitySelector, ParsedUsage, QuotaAmount,
-    QuotaCounters, QuotaUnit, ResetCredit, ResetCreditStatus, ResetCreditType, ResetCredits,
-    ResetCreditsUnknown, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
-    UsageReport, UsageWindow, UsedPercent, UtcInstant, WindowDuration, WindowUsage, SCHEMA_VERSION,
+    QuotaCounters, QuotaUnit, ResetCredit, ResetCreditStatus, ResetCredits, ResetCreditsUnknown,
+    UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity, UsageReport, UsageWindow,
+    UsedPercent, UtcInstant, WindowDuration, WindowUsage, SCHEMA_VERSION,
 };
 use serde_json::Value;
 
@@ -1543,7 +1543,7 @@ fn a_payload_shaped_like_the_snapshot_parses_into_reported_credits() {
         ResetCredit {
             id: "RateLimitResetCredit_…a".to_string(),
             status: ResetCreditStatus::Available,
-            reset_type: ResetCreditType::CodexRateLimits,
+            reset_type: "codexRateLimits".to_string().into(),
             granted_at: UtcInstant::from_epoch(1_790_200_000),
             expires_at: Some(UtcInstant::from_epoch(1_792_800_000)),
             title: Some("Full reset".to_string()),
@@ -1648,10 +1648,7 @@ fn an_unseen_status_or_reset_type_is_reported_verbatim_and_the_probe_succeeds() 
     assert_eq!(rows[0].status.as_str(), "frozen");
     assert_eq!(rows[1].reset_type.as_str(), "claudeWeekly");
     assert!(matches!(rows[0].status, ResetCreditStatus::Unrecognized(_)));
-    assert!(matches!(
-        rows[1].reset_type,
-        ResetCreditType::Unrecognized(_)
-    ));
+
     assert!(!rows[0].is_recognized_available("codex"));
     assert!(!rows[1].is_recognized_available("codex"));
     assert!(rows[2].is_recognized_available("codex"));

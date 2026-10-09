@@ -763,41 +763,31 @@ pub struct ResetCredit {
 }
 
 impl ResetCredit {
-    /// Whether this row is an available credit of a reset type this release
-    /// recognizes for `harness` — the only rows a renderer may count as
-    /// evidence about when the identity's credits expire. Any other row is
-    /// still reported, but says nothing a reader can rely on about the
-    /// identity's spendable credits.
+    /// Whether this row is an available credit of a reset type `harness`'s
+    /// probe recognizes ([`UsageProbe::recognized_reset_types`]) — the only
+    /// rows a renderer may count as evidence about when the identity's credits
+    /// expire. Any other row is still reported, but says nothing a reader can
+    /// rely on about the identity's spendable credits.
     #[must_use]
     pub fn is_recognized_available(&self, harness: &str) -> bool {
         self.status == ResetCreditStatus::Available
-            && matches!(
-                (harness, &self.reset_type),
-                ("codex", ResetCreditType::CodexRateLimits)
-            )
+            && harness::by_id(harness)
+                .and_then(|spec| spec.usage.probe())
+                .is_some_and(|probe| {
+                    probe
+                        .recognized_reset_types()
+                        .contains(&self.reset_type.as_str())
+                })
     }
 }
 
 /// A status word this release does not recognize, kept verbatim with its
 /// control characters flattened. Built only by classifying a status, so it
-/// never holds a word a [`ResetCreditStatus`] variant spells.
+/// never holds `available`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnrecognizedStatus(String);
 
 impl UnrecognizedStatus {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// A reset-type word this release does not recognize, kept verbatim with its
-/// control characters flattened. Built only by classifying a reset type, so it
-/// never holds a word a [`ResetCreditType`] variant spells.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnrecognizedResetType(String);
-
-impl UnrecognizedResetType {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -810,20 +800,16 @@ fn verbatim_word_schema() -> schemars::Schema {
     schemars::json_schema!({ "type": "string" })
 }
 
-/// A credit's status: the words this release recognizes as variants, any other
-/// word kept as itself in [`ResetCreditStatus::Unrecognized`]. Serialized as
-/// the harness's verbatim word.
+/// A credit's status. This release recognizes one word, `available` — the only
+/// status the expiry rule reads; any other word (codex's `redeeming`,
+/// `redeemed` and `unknown` among them) is kept as itself in
+/// [`ResetCreditStatus::Unrecognized`]. Serialized as the harness's verbatim
+/// word.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
 pub enum ResetCreditStatus {
     /// `available`: the credit can be spent.
     Available,
-    /// `redeeming`: a spend is in flight.
-    Redeeming,
-    /// `redeemed`: the credit was spent.
-    Redeemed,
-    /// `unknown`: the harness's own word for a status it cannot name.
-    Unknown,
     Unrecognized(UnrecognizedStatus),
 }
 
@@ -832,9 +818,6 @@ impl ResetCreditStatus {
     pub fn as_str(&self) -> &str {
         match self {
             Self::Available => "available",
-            Self::Redeeming => "redeeming",
-            Self::Redeemed => "redeemed",
-            Self::Unknown => "unknown",
             Self::Unrecognized(word) => word.as_str(),
         }
     }
@@ -846,9 +829,6 @@ impl From<String> for ResetCreditStatus {
         let word = without_control_chars(&word);
         match word.as_str() {
             "available" => Self::Available,
-            "redeeming" => Self::Redeeming,
-            "redeemed" => Self::Redeemed,
-            "unknown" => Self::Unknown,
             _ => Self::Unrecognized(UnrecognizedStatus(word)),
         }
     }
@@ -857,8 +837,8 @@ impl From<String> for ResetCreditStatus {
 impl From<ResetCreditStatus> for String {
     fn from(status: ResetCreditStatus) -> Self {
         match status {
+            ResetCreditStatus::Available => "available".to_string(),
             ResetCreditStatus::Unrecognized(word) => word.0,
-            known => known.as_str().to_string(),
         }
     }
 }
@@ -877,48 +857,31 @@ impl schemars::JsonSchema for ResetCreditStatus {
     }
 }
 
-/// What a credit resets: the words this release recognizes as variants, any
-/// other word kept as itself in [`ResetCreditType::Unrecognized`]. Serialized
-/// as the harness's verbatim word.
+/// What a credit resets: the harness's own word, kept verbatim with its
+/// control characters flattened. Which words a reader may rely on is the
+/// harness's to say, so recognition lives on its probe
+/// ([`UsageProbe::recognized_reset_types`]) rather than in this shared type.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "String", into = "String")]
-pub enum ResetCreditType {
-    /// codex's `codexRateLimits`: resets the identity's Codex rate limits.
-    CodexRateLimits,
-    /// `unknown`: the harness's own word for a reset type it cannot name.
-    Unknown,
-    Unrecognized(UnrecognizedResetType),
-}
+pub struct ResetCreditType(String);
 
 impl ResetCreditType {
     #[must_use]
     pub fn as_str(&self) -> &str {
-        match self {
-            Self::CodexRateLimits => "codexRateLimits",
-            Self::Unknown => "unknown",
-            Self::Unrecognized(word) => word.as_str(),
-        }
+        &self.0
     }
 }
 
 impl From<String> for ResetCreditType {
-    /// Flattens control characters, then classifies the word.
+    /// Flattens control characters.
     fn from(word: String) -> Self {
-        let word = without_control_chars(&word);
-        match word.as_str() {
-            "codexRateLimits" => Self::CodexRateLimits,
-            "unknown" => Self::Unknown,
-            _ => Self::Unrecognized(UnrecognizedResetType(word)),
-        }
+        Self(without_control_chars(&word))
     }
 }
 
 impl From<ResetCreditType> for String {
     fn from(reset_type: ResetCreditType) -> Self {
-        match reset_type {
-            ResetCreditType::Unrecognized(word) => word.0,
-            known => known.as_str().to_string(),
-        }
+        reset_type.0
     }
 }
 
@@ -1334,6 +1297,17 @@ impl UsageProbe {
     #[must_use]
     pub fn reads_reset_credits(&self) -> bool {
         matches!(self, Self::CodexAppServer)
+    }
+
+    /// The reset types this probe's harness names that this release
+    /// recognizes — the only credits a renderer may count as evidence about
+    /// when the identity's credits expire.
+    #[must_use]
+    pub fn recognized_reset_types(&self) -> &'static [&'static str] {
+        match self {
+            Self::CodexAppServer => &["codexRateLimits"],
+            Self::ClaudeGetUsage | Self::CopilotUserEndpoint | Self::CursorAbout => &[],
+        }
     }
 
     /// How much this probe can report. Cursor's is the lone

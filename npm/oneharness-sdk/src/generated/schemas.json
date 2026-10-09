@@ -17603,6 +17603,169 @@
           }
         ]
       },
+      "ResetCredit": {
+        "description": "One listed reset credit. `status` and `reset_type` are the harness's own\nwords, **verbatim** like [`UsageIdentity::plan`], so a value this release\nhas never seen is reported as itself rather than refused.",
+        "type": "object",
+        "properties": {
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "expires_at": {
+            "description": "When the credit expires. Absent when the harness said it does not.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UtcInstant"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "granted_at": {
+            "$ref": "#/$defs/UtcInstant"
+          },
+          "id": {
+            "description": "The harness's opaque identifier for this credit.",
+            "type": "string"
+          },
+          "reset_type": {
+            "description": "What the credit resets, as the harness spells it (codex:\n`codexRateLimits`).",
+            "type": "string"
+          },
+          "status": {
+            "description": "The credit's status as the harness spells it (codex: `available`,\n`redeeming`, `redeemed`, `unknown`).",
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "reset_type",
+          "granted_at"
+        ]
+      },
+      "ResetCredits": {
+        "description": "The banked rate-limit **reset credits** an identity holds — capacity a window\nat 100% used does not show. Harness-neutral: codex fills it from its\n`rateLimitResetCredits` summary, and a harness with no reader says so.\n\nLike [`UsageAvailability`], `unknown` means only that nothing was learned and\nis never zero: \"no credits\" is exactly `reported` with an `available_count`\nof 0.",
+        "oneOf": [
+          {
+            "description": "The harness answered with a credits summary.",
+            "type": "object",
+            "properties": {
+              "available_count": {
+                "description": "The harness's own count, and the authoritative total — never derived\nfrom `credits`, which the harness may cap below it.",
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "credits": {
+                "description": "The credits the harness listed. Absent when it reported only the\ncount; present — possibly empty, possibly shorter than\n`available_count` — when it listed them.",
+                "type": [
+                  "array",
+                  "null"
+                ],
+                "items": {
+                  "$ref": "#/$defs/ResetCredit"
+                }
+              },
+              "state": {
+                "type": "string",
+                "const": "reported"
+              }
+            },
+            "required": [
+              "state",
+              "available_count"
+            ]
+          },
+          {
+            "description": "Nothing was learned about this identity's credits.",
+            "type": "object",
+            "properties": {
+              "reason": {
+                "$ref": "#/$defs/ResetCreditsUnknown"
+              },
+              "state": {
+                "type": "string",
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "state",
+              "reason"
+            ]
+          }
+        ]
+      },
+      "ResetCreditsUnknown": {
+        "description": "Why an identity's reset credits are unknown.",
+        "oneOf": [
+          {
+            "description": "This oneharness reads no reset credits for this harness.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "no_reader"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "description": "The probe produced no rate-limit answer to read credits from — the\nidentity's `availability` says why.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "no_answer"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "description": "The harness answered, but its answer carried no credits summary.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "not_reported"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          {
+            "description": "A summary was present but structurally malformed.",
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "unreadable"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "message"
+            ]
+          }
+        ]
+      },
       "UnavailableReason": {
         "description": "Why an identity affirmatively has no plan headroom. Distinct from\n[`UnknownReason`]: these are answers, not absences of one.",
         "oneOf": [
@@ -17762,6 +17925,10 @@
               "null"
             ]
           },
+          "reset_credits": {
+            "description": "The banked reset credits this identity holds, always serialized so its\nabsence is never read as \"none\". A report written before the field\nexisted reads it as `unknown` / `no_reader`.",
+            "$ref": "#/$defs/ResetCredits"
+          },
           "selector": {
             "description": "How this identity was selected — never the credential itself.",
             "$ref": "#/$defs/IdentitySelector"
@@ -17778,7 +17945,8 @@
           "harness",
           "selector",
           "auth_mode",
-          "availability"
+          "availability",
+          "reset_credits"
         ]
       },
       "UsageWindow": {

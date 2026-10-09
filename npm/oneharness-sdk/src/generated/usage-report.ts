@@ -153,6 +153,27 @@ export type UnknownReason =
       kind: "binary_missing";
       [k: string]: unknown;
     };
+/**
+ * Why an identity's reset credits are unknown.
+ */
+export type ResetCreditsUnknown =
+  | {
+      kind: "no_reader";
+      [k: string]: unknown;
+    }
+  | {
+      kind: "no_answer";
+      [k: string]: unknown;
+    }
+  | {
+      kind: "not_reported";
+      [k: string]: unknown;
+    }
+  | {
+      kind: "unreadable";
+      message: string;
+      [k: string]: unknown;
+    };
 
 /**
  * One usage report: every probed identity, stamped with a single observation
@@ -194,6 +215,32 @@ export interface UsageIdentity {
    * enum. Absent when the harness reports no plan (an API-key session).
    */
   plan?: string | null | undefined;
+  /**
+   * The banked reset credits this identity holds, always serialized so its
+   * absence is never read as "none". A report written before the field
+   * existed reads it as `unknown` / `no_reader`.
+   */
+  reset_credits:
+    | {
+        /**
+         * The harness's own count, and the authoritative total — never derived
+         * from `credits`, which the harness may cap below it.
+         */
+        available_count: number;
+        /**
+         * The credits the harness listed. Absent when it reported only the
+         * count; present — possibly empty, possibly shorter than
+         * `available_count` — when it listed them.
+         */
+        credits?: ResetCredit[] | null | undefined;
+        state: "reported";
+        [k: string]: unknown;
+      }
+    | {
+        reason: ResetCreditsUnknown;
+        state: "unknown";
+        [k: string]: unknown;
+      };
   /**
    * How this identity was selected — never the credential itself.
    */
@@ -255,5 +302,34 @@ export interface QuotaCounters {
   remaining: number;
   unit: QuotaUnit;
   used: QuotaAmount;
+  [k: string]: unknown;
+}
+/**
+ * One listed reset credit. `status` and `reset_type` are the harness's own
+ * words, **verbatim** like [`UsageIdentity::plan`], so a value this release
+ * has never seen is reported as itself rather than refused.
+ */
+export interface ResetCredit {
+  description?: string | null | undefined;
+  /**
+   * When the credit expires. Absent when the harness said it does not.
+   */
+  expires_at?: UtcInstant | null | undefined;
+  granted_at: UtcInstant;
+  /**
+   * The harness's opaque identifier for this credit.
+   */
+  id: string;
+  /**
+   * What the credit resets, as the harness spells it (codex:
+   * `codexRateLimits`).
+   */
+  reset_type: string;
+  /**
+   * The credit's status as the harness spells it (codex: `available`,
+   * `redeeming`, `redeemed`, `unknown`).
+   */
+  status: string;
+  title?: string | null | undefined;
   [k: string]: unknown;
 }

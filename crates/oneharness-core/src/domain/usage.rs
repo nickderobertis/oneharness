@@ -778,13 +778,26 @@ impl ResetCredit {
     }
 }
 
-/// A harness's word this release does not recognize, kept verbatim with its
-/// control characters flattened. Built only by classifying a word, so it never
-/// holds one a recognized variant spells.
+/// A status word this release does not recognize, kept verbatim with its
+/// control characters flattened. Built only by classifying a status, so it
+/// never holds a word a [`ResetCreditStatus`] variant spells.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UnrecognizedWord(String);
+pub struct UnrecognizedStatus(String);
 
-impl UnrecognizedWord {
+impl UnrecognizedStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// A reset-type word this release does not recognize, kept verbatim with its
+/// control characters flattened. Built only by classifying a reset type, so it
+/// never holds a word a [`ResetCreditType`] variant spells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognizedResetType(String);
+
+impl UnrecognizedResetType {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -811,7 +824,7 @@ pub enum ResetCreditStatus {
     Redeemed,
     /// `unknown`: the harness's own word for a status it cannot name.
     Unknown,
-    Unrecognized(UnrecognizedWord),
+    Unrecognized(UnrecognizedStatus),
 }
 
 impl ResetCreditStatus {
@@ -836,7 +849,7 @@ impl From<String> for ResetCreditStatus {
             "redeeming" => Self::Redeeming,
             "redeemed" => Self::Redeemed,
             "unknown" => Self::Unknown,
-            _ => Self::Unrecognized(UnrecognizedWord(word)),
+            _ => Self::Unrecognized(UnrecognizedStatus(word)),
         }
     }
 }
@@ -874,7 +887,7 @@ pub enum ResetCreditType {
     CodexRateLimits,
     /// `unknown`: the harness's own word for a reset type it cannot name.
     Unknown,
-    Unrecognized(UnrecognizedWord),
+    Unrecognized(UnrecognizedResetType),
 }
 
 impl ResetCreditType {
@@ -895,7 +908,7 @@ impl From<String> for ResetCreditType {
         match word.as_str() {
             "codexRateLimits" => Self::CodexRateLimits,
             "unknown" => Self::Unknown,
-            _ => Self::Unrecognized(UnrecognizedWord(word)),
+            _ => Self::Unrecognized(UnrecognizedResetType(word)),
         }
     }
 }

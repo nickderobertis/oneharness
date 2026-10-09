@@ -221,14 +221,13 @@ done
 #     `<absent>` into a different word and land inside the logged line. This
 #     stand-in jq ends every line CRLF, so the helper is held to dropping it on
 #     every platform rather than only on the Windows runner.
-mkdir "$tmp/crlf"
 real_jq="$(command -v jq)"
-cat >"$tmp/crlf/jq" <<SHIM
+{ mkdir "$tmp/crlf" && cat >"$tmp/crlf/jq" <<SHIM && chmod +x "$tmp/crlf/jq"; } ||
 #!/usr/bin/env bash
-set -o pipefail
+set -euo pipefail
 "$real_jq" "\$@" | awk '{ printf "%s\\r\\n", \$0 }'
 SHIM
-chmod +x "$tmp/crlf/jq"
+  fail "could not write the CRLF jq stand-in under $tmp/crlf — check that the host temp dir is writable (df -h \"$tmp\")"
 PATH="$tmp/crlf:$PATH" drive "$(identity "$headroom" "{\"state\":\"reported\",\"available_count\":3,\"credits\":[$row]}")" 0
 [ "$rc" -eq 0 ] || fail "reported credits under a CRLF jq must pass, got exit $rc: $out"
 case "$out" in

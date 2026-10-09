@@ -24505,6 +24505,183 @@ fn the_codex_usage_probe_sends_exactly_the_zero_turn_handshake_in_order() {
     );
 }
 
+/// codex's `account/rateLimits/read` reply carrying a three-credit
+/// `rateLimitResetCredits` summary, shaped from a real answer with its ids
+/// elided.
+fn codex_usage_response_with_credits() -> String {
+    let mut response: Value =
+        serde_json::from_str(&codex_usage_response()).expect("the reply is JSON");
+    response["result"]["rateLimitResetCredits"] = serde_json::json!({
+        "availableCount": 3,
+        "credits": [
+            {
+                "id": "RateLimitResetCredit_…a",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_109_315,
+                "expiresAt": 1_792_701_315,
+                "title": "Full reset",
+                "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+            },
+            {
+                "id": "RateLimitResetCredit_…b",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_109_315,
+                "expiresAt": null,
+                "title": null,
+                "description": null
+            },
+            {
+                "id": "RateLimitResetCredit_…c",
+                "resetType": "codexRateLimits",
+                "status": "available",
+                "grantedAt": 1_790_000_000,
+                "expiresAt": 1_791_000_000,
+                "title": "Full reset",
+                "description": null
+            }
+        ]
+    });
+    response.to_string()
+}
+
+#[test]
+fn usage_reports_a_codex_identitys_reset_credits_in_json_and_text() {
+    let stdin = ProbeStdin::new("codex-credits");
+    let probe = |format: &str| {
+        run(
+            &[
+                "usage",
+                "--harness",
+                "codex,claude-code",
+                "--bin",
+                &bin_override("codex"),
+                "--bin",
+                &missing_bin("claude-code"),
+                "--format",
+                format,
+            ],
+            &[
+                ("MOCK_REPLY_AFTER_LINES", "3"),
+                ("MOCK_STDOUT", &codex_usage_response_with_credits()),
+                ("MOCK_REQUEST_FILE", &stdin.env()),
+            ],
+        )
+    };
+
+    let output = probe("json");
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let report = json_stdout(&output);
+    assert_eq!(report["schema_version"], "0.1");
+    let codex = usage_identity(&report, "codex");
+    assert_eq!(codex["availability"]["state"], "available");
+    assert_eq!(
+        codex["reset_credits"],
+        serde_json::json!({
+            "state": "reported",
+            "available_count": 3,
+            "credits": [
+                {
+                    "id": "RateLimitResetCredit_…a",
+                    "status": "available",
+                    "reset_type": "codexRateLimits",
+                    "granted_at": "2026-09-22T20:35:15Z",
+                    "expires_at": "2026-10-22T20:35:15Z",
+                    "title": "Full reset",
+                    "description": "Thanks for using Codex! You've been granted one free rate limit reset."
+                },
+                {
+                    "id": "RateLimitResetCredit_…b",
+                    "status": "available",
+                    "reset_type": "codexRateLimits",
+                    "granted_at": "2026-09-22T20:35:15Z"
+                },
+                {
+                    "id": "RateLimitResetCredit_…c",
+                    "status": "available",
+                    "reset_type": "codexRateLimits",
+                    "granted_at": "2026-09-21T14:13:20Z",
+                    "expires_at": "2026-10-03T04:00:00Z",
+                    "title": "Full reset"
+                }
+            ]
+        })
+    );
+    assert_eq!(
+        usage_identity(&report, "claude-code")["reset_credits"],
+        serde_json::json!({"state": "unknown", "reason": {"kind": "no_reader"}}),
+        "a harness with no credits reader says so, never zero"
+    );
+    // Reading the credits changed nothing the probe sends: the same three
+    // requests, the last of them the read-only rate-limit read.
+    let methods: Vec<Value> = stdin
+        .requests()
+        .iter()
+        .map(|request| request["method"].clone())
+        .collect();
+    assert_eq!(
+        methods,
+        ["initialize", "initialized", "account/rateLimits/read"],
+        "{}",
+        stdin.text()
+    );
+
+    let output = probe("text");
+    assert!(output.status.success(), "exit {:?}", output.status.code());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("  reset credits: 3 available · soonest expires 2026-10-03T04:00:00Z\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("  reset credits: unknown — not read for this harness\n"),
+        "{text}"
+    );
+}
+
+#[test]
+fn usage_reports_no_answer_for_the_credits_of_a_codex_identity_without_a_rate_limit_answer() {
+    let no_answer = serde_json::json!({"state": "unknown", "reason": {"kind": "no_answer"}});
+    let api_key = r#"{"id":2,"error":{"code":-32600,"message":"chatgpt authentication required to read rate limits"}}"#;
+    let logged_out = r#"{"id":2,"error":{"code":-32600,"message":"codex account authentication required to read rate limits"}}"#;
+    for (case, bin, stdout, availability) in [
+        ("api key", bin_override("codex"), api_key, "unavailable"),
+        (
+            "not logged in",
+            bin_override("codex"),
+            logged_out,
+            "unavailable",
+        ),
+        ("failed", bin_override("codex"), "not json-rpc", "unknown"),
+        ("missing binary", missing_bin("codex"), "", "unknown"),
+    ] {
+        let output = run(
+            &[
+                "usage",
+                "--harness",
+                "codex",
+                "--bin",
+                &bin,
+                "--timeout",
+                "10",
+            ],
+            &[("MOCK_REPLY_AFTER_LINES", "3"), ("MOCK_STDOUT", stdout)],
+        );
+        assert!(
+            output.status.success(),
+            "{case}: exit {:?}",
+            output.status.code()
+        );
+        let codex = usage_identity(&json_stdout(&output), "codex");
+        assert_eq!(
+            codex["availability"]["state"], availability,
+            "{case}: {codex}"
+        );
+        assert_eq!(codex["reset_credits"], no_answer, "{case}: {codex}");
+    }
+}
+
 /// The `probe_failed` message a caller reads for the one probed identity in a
 /// report, which is the whole of what a probe that learned nothing hands over.
 fn probe_failure_message(report: &Value) -> String {

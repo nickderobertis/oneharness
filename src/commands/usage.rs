@@ -29,8 +29,8 @@ use std::time::Duration;
 use crate::cli::UsageArgs;
 use crate::commands::print_report;
 use oneharness_core::domain::usage::{
-    AuthMode, QuotaCounters, UnavailableReason, UnknownReason, UsageAvailability, UsageIdentity,
-    UsageReport, UsageWindow, WindowUsage,
+    AuthMode, QuotaCounters, ResetCredit, ResetCredits, ResetCreditsUnknown, UnavailableReason,
+    UnknownReason, UsageAvailability, UsageIdentity, UsageReport, UsageWindow, WindowUsage,
 };
 use oneharness_core::errors::OneharnessError;
 use oneharness_core::io::usage::{self as usage_io, UsageRequest};
@@ -95,7 +95,66 @@ fn render_identity(identity: &UsageIdentity) -> String {
             out.push_str(&format!("  unknown: {}\n", unknown_label(reason)));
         }
     }
+    // Printed for every identity, so a missing line never reads as "none".
+    out.push_str(&format!(
+        "  reset credits: {}\n",
+        reset_credits_label(&identity.harness, &identity.reset_credits)
+    ));
     out
+}
+
+/// The `reset credits:` line. It names a soonest expiry, or says none expire,
+/// only when the listed credits account for the whole count: a capped list's
+/// earliest expiry is not the account's, and an unlisted credit may expire
+/// sooner than any listed one.
+fn reset_credits_label(harness: &str, credits: &ResetCredits) -> String {
+    let (count, listed) = match credits {
+        ResetCredits::Unknown { reason } => {
+            return format!("unknown — {}", reset_credits_unknown_label(reason))
+        }
+        ResetCredits::Reported {
+            available_count,
+            credits,
+        } => (*available_count, credits.as_deref()),
+    };
+    if count == 0 {
+        return "none available".to_string();
+    }
+    let (recognized, unrecognized): (Vec<&ResetCredit>, Vec<&ResetCredit>) = listed
+        .unwrap_or_default()
+        .iter()
+        .partition(|credit| credit.is_recognized_available(harness));
+    let soonest = recognized
+        .iter()
+        .filter_map(|credit| credit.expires_at.as_ref())
+        .min();
+    let listed_count = recognized.len() as u64;
+    let complete = listed.is_some() && listed_count == count;
+    let expiry = match (complete, soonest) {
+        (true, Some(at)) => format!("soonest expires {at}"),
+        (true, None) => "none expire".to_string(),
+        (false, Some(at)) => format!(
+            "earliest known expiry {at} ({listed_count} of {count} listed; \
+             account-wide soonest unknown)"
+        ),
+        (false, None) => format!("expiry unknown ({listed_count} of {count} listed)"),
+    };
+    let unrecognized = match unrecognized.len() {
+        0 => String::new(),
+        left_out => format!(" · {left_out} listed with unrecognized status or type"),
+    };
+    format!("{count} available · {expiry}{unrecognized}")
+}
+
+fn reset_credits_unknown_label(reason: &ResetCreditsUnknown) -> String {
+    match reason {
+        ResetCreditsUnknown::NoReader => "not read for this harness".to_string(),
+        ResetCreditsUnknown::NoAnswer => {
+            "the probe got no rate-limit answer to read them from".to_string()
+        }
+        ResetCreditsUnknown::NotReported => "the harness's answer carried no summary".to_string(),
+        ResetCreditsUnknown::Unreadable { message } => format!("unreadable: {message}"),
+    }
 }
 
 fn render_window(window: &UsageWindow) -> String {
@@ -203,6 +262,9 @@ mod tests {
             auth_mode: AuthMode::Unknown,
             plan: None,
             availability,
+            reset_credits: ResetCredits::Unknown {
+                reason: ResetCreditsUnknown::NoReader,
+            },
         }
     }
 
@@ -429,5 +491,177 @@ mod tests {
                 "`{readable}` must survive sanitization:\n{text}"
             );
         }
+    }
+
+    fn credit(status: &str, reset_type: &str, expires_at: Option<&str>) -> ResetCredit {
+        ResetCredit {
+            id: "RateLimitResetCredit_…".to_string(),
+            status: status.to_string(),
+            reset_type: reset_type.to_string(),
+            granted_at: "2026-09-22T20:35:15Z".parse().expect("UTC"),
+            expires_at: expires_at.map(|at| at.parse().expect("UTC")),
+            title: None,
+            description: None,
+        }
+    }
+
+    fn available(expires_at: Option<&str>) -> ResetCredit {
+        credit("available", "codexRateLimits", expires_at)
+    }
+
+    fn line(count: u64, credits: Option<Vec<ResetCredit>>) -> String {
+        reset_credits_label(
+            "codex",
+            &ResetCredits::Reported {
+                available_count: count,
+                credits,
+            },
+        )
+    }
+
+    /// The two claims only complete evidence may make.
+    fn assert_claims_nothing_account_wide(text: &str) {
+        assert!(!text.contains("none expire"), "{text}");
+        assert!(!text.contains("soonest expires"), "{text}");
+    }
+
+    #[test]
+    fn complete_evidence_names_the_soonest_expiry_or_says_none_expire() {
+        assert_eq!(line(0, Some(vec![])), "none available");
+        assert_eq!(line(0, None), "none available");
+        assert_eq!(
+            line(
+                3,
+                Some(vec![
+                    available(Some("2026-10-22T20:35:15Z")),
+                    available(None),
+                    available(Some("2026-10-03T04:00:00Z")),
+                ])
+            ),
+            "3 available · soonest expires 2026-10-03T04:00:00Z"
+        );
+        assert_eq!(
+            line(2, Some(vec![available(None), available(None)])),
+            "2 available · none expire"
+        );
+    }
+
+    #[test]
+    fn incomplete_evidence_never_claims_an_account_wide_expiry() {
+        let empty = line(2, Some(vec![]));
+        assert_eq!(empty, "2 available · expiry unknown (0 of 2 listed)");
+        let count_only = line(2, None);
+        assert_eq!(count_only, "2 available · expiry unknown (0 of 2 listed)");
+        let capped = line(
+            3,
+            Some(vec![
+                available(Some("2026-10-22T20:35:15Z")),
+                available(None),
+            ]),
+        );
+        assert_eq!(
+            capped,
+            "3 available · earliest known expiry 2026-10-22T20:35:15Z \
+             (2 of 3 listed; account-wide soonest unknown)"
+        );
+        let non_expiring_rest_missing = line(3, Some(vec![available(None)]));
+        assert_eq!(
+            non_expiring_rest_missing,
+            "3 available · expiry unknown (1 of 3 listed)"
+        );
+        for text in [empty, count_only, capped, non_expiring_rest_missing] {
+            assert_claims_nothing_account_wide(&text);
+        }
+    }
+
+    #[test]
+    fn unrecognized_rows_are_not_expiry_evidence_and_are_counted() {
+        let redeeming = line(
+            2,
+            Some(vec![
+                available(None),
+                credit("redeeming", "codexRateLimits", Some("2026-10-01T00:00:00Z")),
+            ]),
+        );
+        assert_eq!(
+            redeeming,
+            "2 available · expiry unknown (1 of 2 listed) · 1 listed with unrecognized status or type"
+        );
+        let other_type = line(
+            2,
+            Some(vec![
+                available(Some("2026-10-22T20:35:15Z")),
+                credit("available", "unknown", Some("2026-10-01T00:00:00Z")),
+            ]),
+        );
+        assert_eq!(
+            other_type,
+            "2 available · earliest known expiry 2026-10-22T20:35:15Z \
+             (1 of 2 listed; account-wide soonest unknown) \
+             · 1 listed with unrecognized status or type"
+        );
+        for text in [redeeming, other_type] {
+            assert_claims_nothing_account_wide(&text);
+            assert!(
+                !text.contains("2026-10-01"),
+                "an unrecognized row's expiry is not evidence: {text}"
+            );
+        }
+        // The reset type is recognized per harness: codex's word on another
+        // harness's identity is not evidence there.
+        let elsewhere = reset_credits_label(
+            "claude-code",
+            &ResetCredits::Reported {
+                available_count: 1,
+                credits: Some(vec![available(None)]),
+            },
+        );
+        assert_claims_nothing_account_wide(&elsewhere);
+    }
+
+    #[test]
+    fn every_identity_prints_a_reset_credits_line_with_a_plain_reason_when_unknown() {
+        let mut codex = identity(
+            "codex",
+            UsageAvailability::Unknown {
+                reason: UnknownReason::Unprobed,
+            },
+        );
+        let mut identities = vec![identity(
+            "goose",
+            UsageAvailability::Unavailable {
+                reason: UnavailableReason::NoPlanQuota,
+            },
+        )];
+        for reason in [
+            ResetCreditsUnknown::NoAnswer,
+            ResetCreditsUnknown::NotReported,
+            ResetCreditsUnknown::Unreadable {
+                message: "`availableCount` is missing".to_string(),
+            },
+        ] {
+            codex.reset_credits = ResetCredits::Unknown { reason };
+            identities.push(codex.clone());
+        }
+        let text = render_text(&UsageReport::new(observed_at(), identities));
+
+        let lines: Vec<&str> = text
+            .lines()
+            .filter(|line| line.starts_with("  reset credits: "))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "  reset credits: unknown — not read for this harness",
+                "  reset credits: unknown — the probe got no rate-limit answer to read them from",
+                "  reset credits: unknown — the harness's answer carried no summary",
+                "  reset credits: unknown — unreadable: `availableCount` is missing",
+            ],
+            "{text}"
+        );
+        assert!(
+            !text.contains("none available"),
+            "unknown is never zero: {text}"
+        );
     }
 }

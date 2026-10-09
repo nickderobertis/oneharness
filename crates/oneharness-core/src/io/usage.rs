@@ -28,8 +28,9 @@ use crate::domain::config::VariantName;
 use crate::domain::usage::{
     claude_control_response, claude_usage_snapshot_missing, parse_claude_get_usage,
     parse_codex_rate_limits, parse_copilot_http, parse_cursor_about, without_control_chars,
-    AuthMode, IdentitySelector, ParsedUsage, UnavailableReason, UnknownReason, UsageAvailability,
-    UsageIdentity, UsageProbe, UsageReport, UsageSupport, UtcInstant,
+    AuthMode, IdentitySelector, ParsedUsage, ResetCredits, ResetCreditsUnknown, UnavailableReason,
+    UnknownReason, UsageAvailability, UsageIdentity, UsageProbe, UsageReport, UsageSupport,
+    UtcInstant,
 };
 use crate::errors::OneharnessError;
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
@@ -1082,6 +1083,9 @@ fn unavailable(reason: UnavailableReason) -> ParsedUsage {
         auth_mode: AuthMode::Unknown,
         plan: None,
         availability: UsageAvailability::Unavailable { reason },
+        reset_credits: ResetCredits::Unknown {
+            reason: ResetCreditsUnknown::NoReader,
+        },
     }
 }
 

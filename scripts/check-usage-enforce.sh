@@ -178,8 +178,10 @@ for malformed in \
   '{"state":"reported","available_count":1,"credits":[7]}|credits[0] is number' \
   '{"state":"reported","available_count":1,"credits":[{"id":"a"}]}|credits[0] has no status' \
   '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":1}]}|credits[0].granted_at is number' \
-  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"t","title":2}]}|credits[0].title is number' \
-  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"t","owner":"b"}]}|credits[0] carries unknown field(s): owner'; do
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","title":2}]}|credits[0].title is number' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","owner":"b"}]}|credits[0] carries unknown field(s): owner' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"garbage"}]}|credits[0].granted_at is "garbage", not a UTC instant' \
+  '{"state":"reported","available_count":1,"credits":[{"id":"a","status":"available","reset_type":"x","granted_at":"2026-09-01T00:00:00Z","expires_at":"2026-13-01T00:00:00Z"}]}|credits[0].expires_at is "2026-13-01T00:00:00Z", not a UTC instant'; do
   drive "$(identity "$headroom" "${malformed%%|*}")" 0
   [ "$rc" -eq 1 ] || fail "${malformed%%|*} must fail, got exit $rc: $out"
   case "$out" in
@@ -459,6 +461,7 @@ declared="$(bash -c "source '$root/scripts/e2e-lib.sh'
     printf '%s\n' \"\$OH_USAGE_CREDITS_UNKNOWN_KINDS\"
     printf '%s\n' \"\$OH_USAGE_CREDIT_REQUIRED_FIELDS\"
     printf '%s\n' \"\$OH_USAGE_CREDIT_REQUIRED_FIELDS \$OH_USAGE_CREDIT_OPTIONAL_FIELDS\"
+    printf '%s\n' \"\$OH_USAGE_CREDIT_INSTANT_FIELDS\"
     printf '%s\n' \"\$OH_USAGE_CREDITS_JQ\"")" ||
   fail "scripts/e2e-lib.sh did not source cleanly, so its usage lists could not be read"
 # Line $1 of the helper's declarations, as a sorted space-joined set.
@@ -501,6 +504,11 @@ not_strings="$(jq -er '.usage_report."$defs" as $d
        | .key] | join(" ") + " "' "$schema")" ||
   unreadable_schema not_strings
 [ "$not_strings" = " " ] || fail "ResetCredit declares non-string field(s) [$not_strings] but credits_line holds every row field to a string (scripts/e2e-lib.sh)"
+schema_instants="$(jq -er '.usage_report."$defs".ResetCredit.properties | to_entries
+    | map(select([.value | .. | objects | .["$ref"]? | select(. == "#/$defs/UtcInstant")] | length > 0)
+          | .key) | sort | join(" ") + " "' "$schema")" ||
+  unreadable_schema schema_instants
+[ "$(declared_set 6)" = "$schema_instants" ] || fail "oh_usage_enforce holds [$(declared_set 6)] to UTC instants but ResetCredit's UtcInstant fields are [$schema_instants] — update OH_USAGE_CREDIT_INSTANT_FIELDS (scripts/e2e-lib.sh)"
 count="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[]
     | select(.properties.state.const == "reported") | .properties.available_count
     | "\(.type) \(.format) \(.minimum)"' "$schema")" ||

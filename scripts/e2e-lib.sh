@@ -617,6 +617,8 @@ OH_USAGE_SILENT_STATES="unknown"
 OH_USAGE_CREDITS_UNKNOWN_KINDS="no_reader no_answer not_reported unreadable"
 OH_USAGE_CREDIT_REQUIRED_FIELDS="id status reset_type granted_at"
 OH_USAGE_CREDIT_OPTIONAL_FIELDS="expires_at title description"
+# The row fields that are `UtcInstant`s, held to its canonical RFC 3339 spelling.
+OH_USAGE_CREDIT_INSTANT_FIELDS="granted_at expires_at"
 # `available_count` is a u64. jq holds numbers as doubles but (from 1.7) keeps
 # a literal's spelling, so the count is validated as decimal text, not by value.
 OH_USAGE_CREDITS_COUNT_MAX=18446744073709551615
@@ -629,6 +631,7 @@ OH_USAGE_CREDITS_JQ="
     def credit_kinds: \"$OH_USAGE_CREDITS_UNKNOWN_KINDS\" | split(\" \");
     def credit_required: \"$OH_USAGE_CREDIT_REQUIRED_FIELDS\" | split(\" \");
     def credit_optional: \"$OH_USAGE_CREDIT_OPTIONAL_FIELDS\" | split(\" \");
+    def credit_instants: \"$OH_USAGE_CREDIT_INSTANT_FIELDS\" | split(\" \");
     def credit_count_max: \"$OH_USAGE_CREDITS_COUNT_MAX\";"'
     def credit_row($at):
         if type != "object" then error("reset_credits.credits[\($at)] is \(type), not object")
@@ -647,6 +650,12 @@ OH_USAGE_CREDITS_JQ="
            | if ($row | has($f) | not) or ($row[$f] | type) == "string" or $row[$f] == null
              then empty
              else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | type), not string") end),
+          (credit_instants[] as $f
+           | if ($row[$f] | type) != "string" then empty
+             elif ($row[$f] | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                  and ($row[$f] | try (fromdateiso8601 | true) catch false)
+             then empty
+             else error("reset_credits.credits[\($at)].\($f) is \($row[$f] | tojson), not a UTC instant") end),
           $row
         end;
     def is_u64:

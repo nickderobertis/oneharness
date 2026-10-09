@@ -200,10 +200,12 @@ esac
 
 # 5c. A credit's timestamps are held to what the Rust parser accepts, through
 #     the matrix its own test reads: every canonical instant passes and every
-#     invalid one — an impossible date included — is refused.
+#     invalid one — an impossible date included — is refused. jq on Windows
+#     ends each raw line with CRLF, so the `\r` is dropped before an instant is
+#     spliced into JSON, where it would be an unescaped control character.
 matrix="$root/tests/fixtures/utc-instant-matrix.json"
 for kind in canonical invalid; do
-  instants="$(jq -er --arg kind "$kind" '.[$kind][]' "$matrix")" || fail "could not read .$kind from $matrix"
+  instants="$(jq -er --arg kind "$kind" '.[$kind][]' "$matrix" | tr -d '\r')" || fail "could not read .$kind from $matrix"
   while IFS= read -r instant; do
     drive "$(identity "$headroom" "{\"state\":\"reported\",\"available_count\":1,\"credits\":[{\"id\":\"a\",\"status\":\"available\",\"reset_type\":\"x\",\"granted_at\":\"2026-09-01T00:00:00Z\",\"expires_at\":\"$instant\"}]}")" 0
     case "$kind:$rc" in

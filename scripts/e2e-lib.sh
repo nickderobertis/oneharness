@@ -535,11 +535,16 @@ oh_usage_enforce() {
   reason="$(printf '%s' "$report" | jq -r '
         .identities[0].availability.reason as $r
         | if ($r | type) == "object" then ($r.kind // "") else ($r // "") end')"
+  # A Windows jq ends its lines CRLF and command substitution removes only the
+  # trailing newline, so the carriage returns are dropped before matching.
+  state="${state//$'\r'/}"
+  reason="${reason//$'\r'/}"
   case "$state:$reason" in
     available:*)
       detail="headroom $(printf '%s' "$report" |
         jq -r '[.identities[0].availability.windows[]
                     | "\(.id) \(.usage.used_percent // .usage.kind)"] | join(", ")')"
+      detail="${detail//$'\r'/}"
       ;;
     unavailable:*) detail="unavailable ($reason)" ;;
     unknown:binary_missing)
@@ -566,10 +571,13 @@ oh_usage_enforce() {
   # Every identity carries its reset credits, always serialized, so an absent
   # field is a report this phase cannot trust and `unreadable` is the harness's
   # credits summary drifting out from under the parser. A summary this phase
-  # cannot validate is reported as `<malformed>` with jq's reason.
+  # cannot validate is reported as `<malformed>` with jq's reason. A Windows jq
+  # ends its lines CRLF and command substitution removes only the trailing
+  # newline, so every carriage return is dropped before the line is matched.
   credits="$(printf '%s' "$report" |
     jq -r "$OH_USAGE_CREDITS_JQ"' .identities[0] | credits_line' 2>&1)" ||
     credits="<malformed> ${credits#jq: error (at <stdin>:0): }"
+  credits="${credits//$'\r'/}"
   case "$credits" in
     "<absent>" | "unknown unreadable"* | "<malformed>"*)
       note "  report: $report"
@@ -813,6 +821,9 @@ oh_usage_cwd_enforce() {
     rm -rf "$root"
     fail "$id: the usage report at $hooked or $plain is not one this phase can compare"
   fi
+  # A Windows jq ends the key CRLF; drop the carriage return before comparing.
+  key_hooked="${key_hooked//$'\r'/}"
+  key_plain="${key_plain//$'\r'/}"
   if [ "$key_hooked" != "$key_plain" ]; then
     note "  hooked: $key_hooked"
     note "  plain:  $key_plain"

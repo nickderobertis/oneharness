@@ -216,6 +216,33 @@ for kind in canonical invalid; do
   done <<<"$instants"
 done
 
+# 5d. A Windows jq ends its lines CRLF, and command substitution removes only
+#     trailing newlines, so a carriage return kept from jq's output would turn
+#     `<absent>` into a different word and land inside the logged line. This
+#     stand-in jq ends every line CRLF, so the helper is held to dropping it on
+#     every platform rather than only on the Windows runner.
+mkdir "$tmp/crlf"
+real_jq="$(command -v jq)"
+cat >"$tmp/crlf/jq" <<SHIM
+#!/usr/bin/env bash
+set -o pipefail
+"$real_jq" "\$@" | awk '{ printf "%s\\r\\n", \$0 }'
+SHIM
+chmod +x "$tmp/crlf/jq"
+PATH="$tmp/crlf:$PATH" drive "$(identity "$headroom" "{\"state\":\"reported\",\"available_count\":3,\"credits\":[$row]}")" 0
+[ "$rc" -eq 0 ] || fail "reported credits under a CRLF jq must pass, got exit $rc: $out"
+case "$out" in
+  *$'\r'*) fail "a carriage return from a CRLF jq reached the log (shown as \\r): ${out//$'\r'/\\r}" ;;
+  *"PASS: codex answered its usage probe — headroom codex 31; reset credits reported 3 (1 listed)") ;;
+  *) fail "reported credits under a CRLF jq must be logged whole, got: $out" ;;
+esac
+PATH="$tmp/crlf:$PATH" drive "$(printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s}]}' "$headroom")" 0
+[ "$rc" -eq 1 ] || fail "an identity without reset_credits under a CRLF jq must fail, got exit $rc: $out"
+case "$out" in
+  *"Next, in order:"*"FAIL:"*"reset_credits=<absent>)"*) ;;
+  *) fail "an identity without reset_credits under a CRLF jq must be named <absent>, got: $out" ;;
+esac
+
 # The sibling phase holds a different distinction: whether the probe's ANSWER
 # still depends on the directory it was pointed at (#1279). Only a real Claude
 # Code can exercise that live, so its branches are pinned here against a stubbed
@@ -483,65 +510,83 @@ declared="$(bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh' || exi
     printf '%s\n' \"\$OH_USAGE_CREDIT_INSTANT_FIELDS\"
     printf '%s\n' \"\$OH_USAGE_CREDITS_JQ\"")" ||
   fail "scripts/e2e-lib.sh did not source cleanly, so its usage lists could not be read"
-# Line $1 of the helper's declarations, as a sorted space-joined set.
-declared_set() { printf '%s' "$declared" | sed -n "$1p" | tr ' ' '\n' | sort | tr '\n' ' '; }
+# Line $1 of the helper's declarations, as a sorted space-joined set. The
+# Windows runner's `sort` ends its lines CRLF, so the `\r` is dropped before
+# the join.
+declared_set() { printf '%s' "$declared" | sed -n "$1p" | tr ' ' '\n' | sort | tr -d '\r' | tr '\n' ' '; }
 
 # Every jq read of the generated schema below is guarded, so a read that fails
 # names the file rather than letting a comparison pass on an empty answer.
 unreadable_schema() { fail "could not read $1 from $schema — regenerate it with 'just sdk-generate'"; }
+# One read of the generated schema, its carriage returns dropped: a Windows jq
+# ends each line CRLF and command substitution removes only trailing newlines,
+# so every line, the last included, would keep its `\r` into the comparison.
+schema_read() {
+  local out
+  out="$(jq -er "$1" "$schema")" || return 1
+  printf '%s' "${out//$'\r'/}"
+}
 
-schema_states="$(jq -er '[.usage_report."$defs".UsageAvailability.oneOf[].properties.state.const]
-                              | sort | join(" ") + " "' "$schema")" ||
-  unreadable_schema schema_states
-[ "$(declared_set 1)" = "$schema_states" ] || fail "oh_usage_cwd_enforce classifies the availability states [$(declared_set 1)] but UsageAvailability declares [$schema_states] — put each new state in OH_USAGE_ANSWERED_STATES or OH_USAGE_SILENT_STATES (scripts/e2e-lib.sh)"
+# The drift comparisons, run once with the host's jq and once with one whose
+# lines end CRLF as a Windows jq's do, so a schema read that kept its `\r`
+# would fail here on every platform rather than only on the Windows runner.
+# shellcheck disable=SC2016 # Every schema_read argument is a jq program, whose `$defs` and `$d` are jq names that must reach jq unexpanded; shellcheck exempts them only when the command is named jq.
+schema_drift() {
+  schema_states="$(schema_read '[.usage_report."$defs".UsageAvailability.oneOf[].properties.state.const]
+                                | sort | join(" ") + " "')" ||
+    unreadable_schema schema_states
+  [ "$(declared_set 1)" = "$schema_states" ] || fail "oh_usage_cwd_enforce classifies the availability states [$(declared_set 1)] but UsageAvailability declares [$schema_states] — put each new state in OH_USAGE_ANSWERED_STATES or OH_USAGE_SILENT_STATES (scripts/e2e-lib.sh)"
 
-schema_fields="$(jq -er '[.usage_report."$defs".UsageIdentity.properties | keys[]]
-                              | sort | join(" ") + " "' "$schema")" ||
-  unreadable_schema schema_fields
-[ "$(declared_set 2)" = "$schema_fields" ] || fail "the identity equivalence key covers [$(declared_set 2)] but UsageIdentity declares [$schema_fields] — a property outside the key is a difference the phase would call 'the same attribution' (scripts/e2e-lib.sh)"
+  schema_fields="$(schema_read '[.usage_report."$defs".UsageIdentity.properties | keys[]]
+                                | sort | join(" ") + " "')" ||
+    unreadable_schema schema_fields
+  [ "$(declared_set 2)" = "$schema_fields" ] || fail "the identity equivalence key covers [$(declared_set 2)] but UsageIdentity declares [$schema_fields] — a property outside the key is a difference the phase would call 'the same attribution' (scripts/e2e-lib.sh)"
 
-schema_kinds="$(jq -er '[.usage_report."$defs".ResetCreditsUnknown.oneOf[].properties.kind.const]
-                             | sort | join(" ") + " "' "$schema")" ||
-  unreadable_schema schema_kinds
-[ "$(declared_set 3)" = "$schema_kinds" ] || fail "oh_usage_enforce recognizes the reset-credit unknown kinds [$(declared_set 3)] but ResetCreditsUnknown declares [$schema_kinds] — update OH_USAGE_CREDITS_UNKNOWN_KINDS (scripts/e2e-lib.sh)"
+  schema_kinds="$(schema_read '[.usage_report."$defs".ResetCreditsUnknown.oneOf[].properties.kind.const]
+                               | sort | join(" ") + " "')" ||
+    unreadable_schema schema_kinds
+  [ "$(declared_set 3)" = "$schema_kinds" ] || fail "oh_usage_enforce recognizes the reset-credit unknown kinds [$(declared_set 3)] but ResetCreditsUnknown declares [$schema_kinds] — update OH_USAGE_CREDITS_UNKNOWN_KINDS (scripts/e2e-lib.sh)"
 
-schema_required="$(jq -er '.usage_report."$defs".ResetCredit.required | sort | join(" ") + " "' "$schema")" ||
-  unreadable_schema schema_required
-[ "$(declared_set 4)" = "$schema_required" ] || fail "oh_usage_enforce requires the credit fields [$(declared_set 4)] but ResetCredit requires [$schema_required] — update OH_USAGE_CREDIT_REQUIRED_FIELDS (scripts/e2e-lib.sh)"
+  schema_required="$(schema_read '.usage_report."$defs".ResetCredit.required | sort | join(" ") + " "')" ||
+    unreadable_schema schema_required
+  [ "$(declared_set 4)" = "$schema_required" ] || fail "oh_usage_enforce requires the credit fields [$(declared_set 4)] but ResetCredit requires [$schema_required] — update OH_USAGE_CREDIT_REQUIRED_FIELDS (scripts/e2e-lib.sh)"
 
-schema_row="$(jq -er '.usage_report."$defs".ResetCredit.properties | keys | join(" ") + " "' "$schema")" ||
-  unreadable_schema schema_row
-[ "$(declared_set 5)" = "$schema_row" ] || fail "oh_usage_enforce knows the credit fields [$(declared_set 5)] but ResetCredit declares [$schema_row] — update OH_USAGE_CREDIT_OPTIONAL_FIELDS (scripts/e2e-lib.sh)"
+  schema_row="$(schema_read '.usage_report."$defs".ResetCredit.properties | keys | join(" ") + " "')" ||
+    unreadable_schema schema_row
+  [ "$(declared_set 5)" = "$schema_row" ] || fail "oh_usage_enforce knows the credit fields [$(declared_set 5)] but ResetCredit declares [$schema_row] — update OH_USAGE_CREDIT_OPTIONAL_FIELDS (scripts/e2e-lib.sh)"
 
-# credits_line holds every row field to a string, and the count to a u64.
-not_strings="$(jq -er '.usage_report."$defs" as $d
-    | [$d.ResetCredit.properties | to_entries[]
-       | select([.value | .. | objects | select(has("type") or has("$ref"))
-                 | if has("$ref") then $d[.["$ref"] | ltrimstr("#/$defs/")].type else .type end
-                 | if type == "array" then .[] else . end
-                 | select(. != "string" and . != "null")] | length > 0)
-       | .key] | join(" ") + " "' "$schema")" ||
-  unreadable_schema not_strings
-[ "$not_strings" = " " ] || fail "ResetCredit declares non-string field(s) [$not_strings] but credits_line holds every row field to a string (scripts/e2e-lib.sh)"
-schema_instants="$(jq -er '.usage_report."$defs".ResetCredit.properties | to_entries
-    | map(select([.value | .. | objects | .["$ref"]? | select(. == "#/$defs/UtcInstant")] | length > 0)
-          | .key) | sort | join(" ") + " "' "$schema")" ||
-  unreadable_schema schema_instants
-[ "$(declared_set 6)" = "$schema_instants" ] || fail "oh_usage_enforce holds [$(declared_set 6)] to UTC instants but ResetCredit's UtcInstant fields are [$schema_instants] — update OH_USAGE_CREDIT_INSTANT_FIELDS (scripts/e2e-lib.sh)"
-count="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[]
-    | select(.properties.state.const == "reported") | .properties.available_count
-    | "\(.type) \(.format) \(.minimum)"' "$schema")" ||
-  unreadable_schema count
-[ "$count" = "integer uint64 0" ] || fail "ResetCredits.available_count is now [$count], not the u64 is_u64 validates (scripts/e2e-lib.sh)"
+  # credits_line holds every row field to a string, and the count to a u64.
+  not_strings="$(schema_read '.usage_report."$defs" as $d
+      | [$d.ResetCredit.properties | to_entries[]
+         | select([.value | .. | objects | select(has("type") or has("$ref"))
+                   | if has("$ref") then $d[.["$ref"] | ltrimstr("#/$defs/")].type else .type end
+                   | if type == "array" then .[] else . end
+                   | select(. != "string" and . != "null")] | length > 0)
+         | .key] | join(" ") + " "')" ||
+    unreadable_schema not_strings
+  [ "$not_strings" = " " ] || fail "ResetCredit declares non-string field(s) [$not_strings] but credits_line holds every row field to a string (scripts/e2e-lib.sh)"
+  schema_instants="$(schema_read '.usage_report."$defs".ResetCredit.properties | to_entries
+      | map(select([.value | .. | objects | .["$ref"]? | select(. == "#/$defs/UtcInstant")] | length > 0)
+            | .key) | sort | join(" ") + " "')" ||
+    unreadable_schema schema_instants
+  [ "$(declared_set 6)" = "$schema_instants" ] || fail "oh_usage_enforce holds [$(declared_set 6)] to UTC instants but ResetCredit's UtcInstant fields are [$schema_instants] — update OH_USAGE_CREDIT_INSTANT_FIELDS (scripts/e2e-lib.sh)"
+  count="$(schema_read '.usage_report."$defs".ResetCredits.oneOf[]
+      | select(.properties.state.const == "reported") | .properties.available_count
+      | "\(.type) \(.format) \(.minimum)"')" ||
+    unreadable_schema count
+  [ "$count" = "integer uint64 0" ] || fail "ResetCredits.available_count is now [$count], not the u64 is_u64 validates (scripts/e2e-lib.sh)"
 
-# The states credits_line branches on are spelled in its jq source.
-credit_states="$(jq -er '.usage_report."$defs".ResetCredits.oneOf[].properties.state.const' "$schema")" ||
-  unreadable_schema credit_states
-while IFS= read -r state; do
-  case "$declared" in
-    *"\$c.state == \"$state\""*) ;;
-    *) fail "ResetCredits declares the state '$state' but credits_line in OH_USAGE_CREDITS_JQ has no branch for it (scripts/e2e-lib.sh)" ;;
-  esac
-done <<<"$credit_states"
+  # The states credits_line branches on are spelled in its jq source.
+  credit_states="$(schema_read '.usage_report."$defs".ResetCredits.oneOf[].properties.state.const')" ||
+    unreadable_schema credit_states
+  while IFS= read -r state; do
+    case "$declared" in
+      *"\$c.state == \"$state\""*) ;;
+      *) fail "ResetCredits declares the state '$state' but credits_line in OH_USAGE_CREDITS_JQ has no branch for it (scripts/e2e-lib.sh)" ;;
+    esac
+  done <<<"$credit_states"
+}
+schema_drift
+PATH="$tmp/crlf:$PATH" schema_drift
 
 echo "check-usage-enforce: ok"

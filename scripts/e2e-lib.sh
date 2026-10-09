@@ -628,7 +628,7 @@ OH_USAGE_CREDITS_COUNT_MAX=18446744073709551615
 # jq definitions validating one identity's `reset_credits` and rendering it as
 # the line this phase logs; anything off-contract is a jq error naming the
 # field. The lists above are spliced in, so callers pass no arguments.
-# shellcheck disable=SC2016 # jq source: the `$` names are jq variables.
+# shellcheck disable=SC2016 # The double-quoted head expands $OH_USAGE_* in the shell on purpose; the single-quoted jq body's `$` names are jq variables that must reach jq unexpanded.
 OH_USAGE_CREDITS_JQ="
     def credit_kinds: \"$OH_USAGE_CREDITS_UNKNOWN_KINDS\" | split(\" \");
     def credit_required: \"$OH_USAGE_CREDIT_REQUIRED_FIELDS\" | split(\" \");

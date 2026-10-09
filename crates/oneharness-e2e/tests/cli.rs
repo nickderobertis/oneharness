@@ -24518,8 +24518,8 @@ fn codex_usage_response_with_credits() -> String {
                 "id": "RateLimitResetCredit_…a",
                 "resetType": "codexRateLimits",
                 "status": "available",
-                "grantedAt": 1_790_109_315,
-                "expiresAt": 1_792_701_315,
+                "grantedAt": 1_790_200_000,
+                "expiresAt": 1_792_800_000,
                 "title": "Full reset",
                 "description": "Thanks for using Codex! You've been granted one free rate limit reset."
             },
@@ -24527,7 +24527,7 @@ fn codex_usage_response_with_credits() -> String {
                 "id": "RateLimitResetCredit_…b",
                 "resetType": "codexRateLimits",
                 "status": "available",
-                "grantedAt": 1_790_109_315,
+                "grantedAt": 1_790_200_000,
                 "expiresAt": null,
                 "title": null,
                 "description": null
@@ -24586,8 +24586,8 @@ fn usage_reports_a_codex_identitys_reset_credits_in_json_and_text() {
                     "id": "RateLimitResetCredit_…a",
                     "status": "available",
                     "reset_type": "codexRateLimits",
-                    "granted_at": "2026-09-22T20:35:15Z",
-                    "expires_at": "2026-10-22T20:35:15Z",
+                    "granted_at": "2026-09-23T21:46:40Z",
+                    "expires_at": "2026-10-24T00:00:00Z",
                     "title": "Full reset",
                     "description": "Thanks for using Codex! You've been granted one free rate limit reset."
                 },
@@ -24595,7 +24595,7 @@ fn usage_reports_a_codex_identitys_reset_credits_in_json_and_text() {
                     "id": "RateLimitResetCredit_…b",
                     "status": "available",
                     "reset_type": "codexRateLimits",
-                    "granted_at": "2026-09-22T20:35:15Z"
+                    "granted_at": "2026-09-23T21:46:40Z"
                 },
                 {
                     "id": "RateLimitResetCredit_…c",

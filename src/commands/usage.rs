@@ -498,7 +498,7 @@ mod tests {
             id: "RateLimitResetCredit_…".to_string(),
             status: status.to_string(),
             reset_type: reset_type.to_string(),
-            granted_at: "2026-09-22T20:35:15Z".parse().expect("UTC"),
+            granted_at: "2026-09-23T21:46:40Z".parse().expect("UTC"),
             expires_at: expires_at.map(|at| at.parse().expect("UTC")),
             title: None,
             description: None,
@@ -533,7 +533,7 @@ mod tests {
             line(
                 3,
                 Some(vec![
-                    available(Some("2026-10-22T20:35:15Z")),
+                    available(Some("2026-10-24T00:00:00Z")),
                     available(None),
                     available(Some("2026-10-03T04:00:00Z")),
                 ])
@@ -555,13 +555,13 @@ mod tests {
         let capped = line(
             3,
             Some(vec![
-                available(Some("2026-10-22T20:35:15Z")),
+                available(Some("2026-10-24T00:00:00Z")),
                 available(None),
             ]),
         );
         assert_eq!(
             capped,
-            "3 available · earliest known expiry 2026-10-22T20:35:15Z \
+            "3 available · earliest known expiry 2026-10-24T00:00:00Z \
              (2 of 3 listed; account-wide soonest unknown)"
         );
         let non_expiring_rest_missing = line(3, Some(vec![available(None)]));
@@ -590,13 +590,13 @@ mod tests {
         let other_type = line(
             2,
             Some(vec![
-                available(Some("2026-10-22T20:35:15Z")),
+                available(Some("2026-10-24T00:00:00Z")),
                 credit("available", "unknown", Some("2026-10-01T00:00:00Z")),
             ]),
         );
         assert_eq!(
             other_type,
-            "2 available · earliest known expiry 2026-10-22T20:35:15Z \
+            "2 available · earliest known expiry 2026-10-24T00:00:00Z \
              (1 of 2 listed; account-wide soonest unknown) \
              · 1 listed with unrecognized status or type"
         );

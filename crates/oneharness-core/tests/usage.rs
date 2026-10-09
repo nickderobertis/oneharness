@@ -41,8 +41,8 @@ fn three_credit_summary() -> Value {
                 "id": "RateLimitResetCredit_…a",
                 "resetType": "codexRateLimits",
                 "status": "available",
-                "grantedAt": 1_790_109_315,
-                "expiresAt": 1_792_701_315,
+                "grantedAt": 1_790_200_000,
+                "expiresAt": 1_792_800_000,
                 "title": "Full reset",
                 "description": "Thanks for using Codex! You've been granted one free rate limit reset."
             },
@@ -50,7 +50,7 @@ fn three_credit_summary() -> Value {
                 "id": "RateLimitResetCredit_…b",
                 "resetType": "codexRateLimits",
                 "status": "available",
-                "grantedAt": 1_790_109_315,
+                "grantedAt": 1_790_200_000,
                 "expiresAt": null,
                 "title": null,
                 "description": null
@@ -1545,8 +1545,8 @@ fn a_payload_shaped_like_the_snapshot_parses_into_reported_credits() {
             id: "RateLimitResetCredit_…a".to_string(),
             status: "available".to_string(),
             reset_type: "codexRateLimits".to_string(),
-            granted_at: UtcInstant::from_epoch(1_790_109_315),
-            expires_at: Some(UtcInstant::from_epoch(1_792_701_315)),
+            granted_at: UtcInstant::from_epoch(1_790_200_000),
+            expires_at: Some(UtcInstant::from_epoch(1_792_800_000)),
             title: Some("Full reset".to_string()),
             description: Some(
                 "Thanks for using Codex! You've been granted one free rate limit reset."
@@ -1567,8 +1567,8 @@ fn a_payload_shaped_like_the_snapshot_parses_into_reported_credits() {
     let json = serde_json::to_value(&credits).expect("serializes");
     assert_eq!(json["state"], "reported");
     assert_eq!(json["available_count"], 3);
-    assert_eq!(json["credits"][0]["granted_at"], "2026-09-22T20:35:15Z");
-    assert_eq!(json["credits"][0]["expires_at"], "2026-10-22T20:35:15Z");
+    assert_eq!(json["credits"][0]["granted_at"], "2026-09-23T21:46:40Z");
+    assert_eq!(json["credits"][0]["expires_at"], "2026-10-24T00:00:00Z");
     for omitted in ["expires_at", "title", "description"] {
         assert_eq!(json["credits"][1].get(omitted), None, "{omitted}: {json}");
     }

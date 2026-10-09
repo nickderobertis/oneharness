@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/nickderobertis/oneharness/compare/v0.21.3...v0.22.0) - 2026-10-09
+
+### Added
+
+- *(usage)* [**breaking**] report each Codex identity's banked rate-limit reset credits ([#1437](https://github.com/nickderobertis/oneharness/pull/1437))
+
 ## [0.21.3](https://github.com/nickderobertis/oneharness/compare/v0.21.2...v0.21.3) - 2026-10-06
 
 ### Fixed

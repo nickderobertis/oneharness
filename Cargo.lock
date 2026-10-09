@@ -626,11 +626,11 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
 name = "oneharness"
-version = "0.21.3"
+version = "0.22.0"
 dependencies = [
  "clap",
  "libc",
- "oneharness-core 0.24.2",
+ "oneharness-core 0.25.0",
  "serde",
  "serde_json",
  "windows-sys",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "oneharness-core"
-version = "0.24.2"
+version = "0.25.0"
 dependencies = [
  "fs2",
  "jsonschema",
@@ -682,7 +682,7 @@ version = "0.0.0"
 dependencies = [
  "clap",
  "oneharness",
- "oneharness-core 0.24.2",
+ "oneharness-core 0.25.0",
  "serde_json",
 ]
 
@@ -691,7 +691,7 @@ name = "oneharness-history-compat"
 version = "0.0.0"
 dependencies = [
  "oneharness-core 0.19.0",
- "oneharness-core 0.24.2",
+ "oneharness-core 0.25.0",
 ]
 
 [[package]]
@@ -705,14 +705,14 @@ dependencies = [
 name = "oneharness-sdk-conformance"
 version = "0.0.0"
 dependencies = [
- "oneharness-core 0.24.2",
+ "oneharness-core 0.25.0",
 ]
 
 [[package]]
 name = "oneharness-sdk-contract"
 version = "0.0.0"
 dependencies = [
- "oneharness-core 0.24.2",
+ "oneharness-core 0.25.0",
  "serde",
  "serde_json",
 ]

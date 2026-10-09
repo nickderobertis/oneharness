@@ -30,7 +30,7 @@ windows-sys = "0.61"
 
 [package]
 name = "oneharness"
-version = "0.21.3"
+version = "0.22.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."
@@ -59,7 +59,7 @@ sdk-schema = ["oneharness-core/sdk-schema"]
 # crate is publishable: `cargo publish` rewrites the path dep to this registry
 # version, which release-plz keeps in step with `oneharness-core`'s own version.
 [dependencies]
-oneharness-core = { path = "crates/oneharness-core", version = "0.24.2" }
+oneharness-core = { path = "crates/oneharness-core", version = "0.25.0" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -514,7 +514,8 @@ fn flatten_credit(credit: &mut ResetCredit) {
     flatten_optional(&mut credit.description);
 }
 
-/// Whether the registry's probe for `harness` reads reset credits.
+/// Decided from the registry rather than the payload, so an unknown or
+/// non-probing harness id falls to `no_reader` instead of `no_answer`.
 fn reads_reset_credits(harness: &str) -> bool {
     harness::by_id(harness)
         .and_then(|spec| spec.usage.probe())
@@ -1758,7 +1759,8 @@ fn codex_reset_credit_summary(summary: &Value) -> Result<ResetCredits, String> {
     })
 }
 
-/// One `RateLimitResetCredit` row, or why it is not one.
+/// The error is a fragment the caller prefixes with the row's index, so a
+/// malformed row is named in the `unreadable` message.
 fn codex_reset_credit(row: &Value) -> Result<ResetCredit, String> {
     if !row.is_object() {
         return Err(format!("is {} rather than an object", json_type_name(row)));

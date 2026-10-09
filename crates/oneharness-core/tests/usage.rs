@@ -1517,7 +1517,6 @@ fn a_payload_shaped_like_the_snapshot_parses_into_headroom() {
     assert_eq!(used_percent(&parsed.availability, "codex/primary"), 31.0);
 }
 
-/// The reset credits a codex response parses into.
 fn codex_credits(response: &Value) -> ResetCredits {
     parse_codex_rate_limits(response).reset_credits
 }

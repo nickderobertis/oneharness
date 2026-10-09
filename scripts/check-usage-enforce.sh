@@ -145,6 +145,33 @@ case "$out" in
   *) fail "an unreadable credits summary must fail with its message, got: $out" ;;
 esac
 
+drive "$(identity "$headroom" '{"state":"reported","available_count":2}')" 0
+[ "$rc" -eq 0 ] || fail "a count-only summary must pass, got exit $rc: $out"
+case "$out" in
+  *"PASS:"*"reset credits reported 2 (count only)"*) ;;
+  *) fail "a count-only summary must be logged as one, got: $out" ;;
+esac
+
+# The report is external input: a summary off the contract is refused with the
+# field jq found wrong, never logged as a reading.
+for malformed in \
+  '{"state":"reported"}|available_count is null' \
+  '{"state":"reported","available_count":-1}|available_count is -1' \
+  '{"state":"reported","available_count":1.5}|available_count is 1.5' \
+  '{"state":"reported","available_count":1,"credits":{}}|credits is object' \
+  '{"state":"unknown"}|reason is null' \
+  '{"state":"unknown","reason":{"kind":"zero"}}|kind "zero" is not one' \
+  '{"state":"unknown","reason":{"kind":"unreadable","message":7}}|message is number' \
+  '{"state":"spent"}|state "spent" is not one' \
+  '[]|reset_credits is array'; do
+  drive "$(identity "$headroom" "${malformed%%|*}")" 0
+  [ "$rc" -eq 1 ] || fail "${malformed%%|*} must fail, got exit $rc: $out"
+  case "$out" in
+    *"FAIL:"*"reset_credits=<malformed> "*"${malformed#*|}"*) ;;
+    *) fail "${malformed%%|*} must fail naming '${malformed#*|}', got: $out" ;;
+  esac
+done
+
 drive "$(printf '{"schema_version":"0.1","identities":[{"harness":"codex","availability":%s}]}' "$headroom")" 0
 [ "$rc" -eq 1 ] || fail "an identity without reset_credits must fail, got exit $rc: $out"
 case "$out" in
@@ -362,6 +389,17 @@ case "$out" in
   *) fail "a window without an id must say so, got: $out" ;;
 esac
 
+# 16b. The reset credits join the key validated, so two equally malformed
+#      summaries cannot compare equal.
+drive_cwd "$tmp/claude" 4 "" \
+  '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","availability":{"state":"available","windows":[]},"reset_credits":{"state":"reported"}}]}' \
+  '{"identities":[{"harness":"claude-code","selector":{},"auth_mode":"subscription","availability":{"state":"available","windows":[]},"reset_credits":{"state":"reported"}}]}'
+[ "$rc" -eq 1 ] || fail "malformed reset credits must fail the key, got exit $rc: $out"
+case "$out" in
+  *"available_count is null"*"FAIL:"*"not one this phase can compare"*) ;;
+  *) fail "malformed reset credits must be named, got: $out" ;;
+esac
+
 # 17. The phase's fixture and its control are the harness's OWN mechanisms, so a
 #     harness it has no arms for is a loud usage error — never a run that reports
 #     a probe independent of a cost nothing registered. It refuses before any
@@ -387,7 +425,9 @@ esac
 schema="$root/npm/oneharness-sdk/src/generated/schemas.json"
 declared="$(bash -c "source '$root/scripts/e2e-lib.sh'
     printf '%s\n' \"\$OH_USAGE_ANSWERED_STATES \$OH_USAGE_SILENT_STATES\"
-    printf '%s\n' \"\${OH_USAGE_IDENTITY_FIELDS[*]}\"")"
+    printf '%s\n' \"\${OH_USAGE_IDENTITY_FIELDS[*]}\"
+    printf '%s\n' \"\$OH_USAGE_CREDITS_UNKNOWN_KINDS\"
+    printf '%s\n' \"\$OH_USAGE_CREDITS_JQ\"")"
 declared_states="$(printf '%s' "$declared" | sed -n 1p | tr ' ' '\n' | sort | tr '\n' ' ')"
 declared_fields="$(printf '%s' "$declared" | sed -n 2p | tr ' ' '\n' | sort | tr '\n' ' ')"
 
@@ -398,5 +438,18 @@ schema_states="$(jq -r '[.usage_report."$defs".UsageAvailability.oneOf[].propert
 schema_fields="$(jq -r '[.usage_report."$defs".UsageIdentity.properties | keys[]]
                         | sort | join(" ") + " "' "$schema")"
 [ "$declared_fields" = "$schema_fields" ] || fail "the identity equivalence key covers [$declared_fields] but UsageIdentity declares [$schema_fields] — a property outside the key is a difference the phase would call 'the same attribution' (scripts/e2e-lib.sh)"
+
+declared_kinds="$(printf '%s' "$declared" | sed -n 3p | tr ' ' '\n' | sort | tr '\n' ' ')"
+schema_kinds="$(jq -r '[.usage_report."$defs".ResetCreditsUnknown.oneOf[].properties.kind.const]
+                       | sort | join(" ") + " "' "$schema")"
+[ "$declared_kinds" = "$schema_kinds" ] || fail "oh_usage_enforce recognizes the reset-credit unknown kinds [$declared_kinds] but ResetCreditsUnknown declares [$schema_kinds] — update OH_USAGE_CREDITS_UNKNOWN_KINDS (scripts/e2e-lib.sh)"
+
+# The two states credits_line branches on are spelled in its jq source.
+for state in $(jq -r '.usage_report."$defs".ResetCredits.oneOf[].properties.state.const' "$schema"); do
+  case "$declared" in
+    *"\$c.state == \"$state\""*) ;;
+    *) fail "ResetCredits declares the state '$state' but credits_line in OH_USAGE_CREDITS_JQ has no branch for it (scripts/e2e-lib.sh)" ;;
+  esac
+done
 
 echo "check-usage-enforce: ok"

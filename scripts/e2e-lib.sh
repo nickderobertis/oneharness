@@ -565,21 +565,19 @@ oh_usage_enforce() {
   esac
   # Every identity carries its reset credits, always serialized, so an absent
   # field is a report this phase cannot trust and `unreadable` is the harness's
-  # credits summary drifting out from under the parser.
-  credits="$(printf '%s' "$report" | jq -r '
-        .identities[0].reset_credits as $c
-        | if ($c | type) != "object" then "<absent>"
-          elif $c.state == "reported"
-          then "reported \($c.available_count) (\($c.credits | if . == null then "count only" else "\(length) listed" end))"
-          elif $c.state == "unknown" and ($c.reason | type) == "object"
-          then "unknown \($c.reason.kind)\(if $c.reason.message then ": \($c.reason.message)" else "" end)"
-          else "<unrecognized> \($c | tostring)" end')"
+  # credits summary drifting out from under the parser. A summary this phase
+  # cannot validate is reported as `<malformed>` with jq's reason.
+  credits="$(printf '%s' "$report" |
+    jq -r --arg kinds "$OH_USAGE_CREDITS_UNKNOWN_KINDS" \
+      "$OH_USAGE_CREDITS_JQ"' .identities[0] | credits_line' 2>&1)" ||
+    credits="<malformed> ${credits#jq: error (at <stdin>:0): }"
   case "$credits" in
-    "<absent>" | "unknown unreadable"* | "<unrecognized>"*)
+    "<absent>" | "unknown unreadable"* | "<malformed>"*)
       note "  report: $report"
       note "  Next, in order:"
-      note "    1. <absent> means the report lost its reset_credits field: every identity"
-      note "       must carry it (UsageIdentity in crates/oneharness-core/src/domain/usage.rs)."
+      note "    1. <absent> or <malformed> means the report's reset_credits field is"
+      note "       missing or off-contract: every identity must carry a valid one"
+      note "       (ResetCredits in crates/oneharness-core/src/domain/usage.rs)."
       note "    2. unreadable means $id's credits summary no longer parses. Regenerate the"
       note "       schema snapshot (scripts/check-codex-usage-schema.sh), update the parser"
       note "       (codex_reset_credits in crates/oneharness-core/src/domain/usage.rs), and"
@@ -612,6 +610,40 @@ OH_USAGE_HOOK_MARGIN=10
 # learned — which has no duration worth comparing.
 OH_USAGE_ANSWERED_STATES="available unavailable"
 OH_USAGE_SILENT_STATES="unknown"
+
+# The `ResetCredits` unknown reasons this phase recognizes, held against the
+# generated `usage_report` schema by scripts/check-usage-enforce.sh like the
+# lists above. Its two states, `reported` and `unknown`, are held there too.
+OH_USAGE_CREDITS_UNKNOWN_KINDS="no_reader no_answer not_reported unreadable"
+
+# jq definitions validating one identity's `reset_credits` and rendering it as
+# the line this phase logs; anything off-contract is a jq error naming the
+# field. Callers pass `--arg kinds "$OH_USAGE_CREDITS_UNKNOWN_KINDS"`.
+# shellcheck disable=SC2016 # jq source: the `$` names are jq variables.
+OH_USAGE_CREDITS_JQ='
+    def credits_line:
+        if has("reset_credits") | not then "<absent>"
+        else .reset_credits as $c
+        | if ($c | type) != "object" then error("reset_credits is \($c | type), not object")
+          elif $c.state == "reported" then
+              ($c.available_count) as $n
+              | if ($n | type) != "number" or $n < 0 or ($n | floor) != $n
+                then error("reset_credits.available_count is \($n | tojson), not a non-negative integer")
+                elif ($c.credits | type) == "null" then "reported \($n) (count only)"
+                elif ($c.credits | type) == "array"
+                then "reported \($n) (\($c.credits | length) listed)"
+                else error("reset_credits.credits is \($c.credits | type), not array") end
+          elif $c.state == "unknown" then
+              if ($c.reason | type) != "object"
+              then error("reset_credits.reason is \($c.reason | type), not object")
+              elif ($kinds | split(" ") | index([$c.reason.kind]) | not)
+              then error("reset_credits.reason.kind \($c.reason.kind | tojson) is not one this phase knows")
+              elif $c.reason.kind != "unreadable" then "unknown \($c.reason.kind)"
+              elif ($c.reason.message | type) != "string"
+              then error("reset_credits.reason.message is \($c.reason.message | type), not string")
+              else "unknown unreadable: \($c.reason.message)" end
+          else error("reset_credits.state \($c.state | tojson) is not one this phase knows") end
+        end;'
 
 # Every property `UsageIdentity` declares. The equivalence key covers all of
 # them, and refuses a report carrying one it does not know, so a field added to
@@ -841,8 +873,9 @@ _oh_usage_cwd_control() {
 # from the same run: two EQUALLY malformed reports produce two equal keys, and
 # the phase would read that as proof that nothing changed. `plan` and `variant`
 # are optional in the contract (an API-key session reports no plan), so they
-# render as `<absent>` rather than failing. `reset_credits` joins the key whole,
-# and as `<absent>` from a report written before it existed — both probes of one
+# render as `<absent>` rather than failing. `reset_credits` is validated like
+# the live phase's (credits_line) and joins the key whole, or as `<absent>` from
+# a report written before it existed — both probes of one
 # run come from the same binary, so they carry it or lack it together. A
 # property outside
 # $OH_USAGE_IDENTITY_FIELDS is refused, so a field added to the identity cannot
@@ -852,7 +885,8 @@ _oh_usage_cwd_control() {
 # it.
 #   $1 a usage report
 _oh_usage_identity_key() {
-  printf '%s' "$1" | jq -er --args '
+  printf '%s' "$1" | jq -er --arg kinds "$OH_USAGE_CREDITS_UNKNOWN_KINDS" --args \
+    "$OH_USAGE_CREDITS_JQ"'
         def need($o; $f; $t):
             if ($o | has($f) | not) then error("identity has no \($f)")
             elif ($o[$f] | type) != $t
@@ -887,8 +921,9 @@ _oh_usage_identity_key() {
             opt($i; "plan"),
             need($a; "state"; "string"),
             ($window_ids | tostring),
-            (if ($i | has("reset_credits") | not) then "<absent>"
-             else need($i; "reset_credits"; "object") | tostring end) ]
+            (($i | credits_line) as $validated
+             | if ($i | has("reset_credits")) then ($i.reset_credits | tostring)
+               else $validated end) ]
         | join(" | ")' "${OH_USAGE_IDENTITY_FIELDS[@]}"
 }
 

@@ -162,6 +162,7 @@ export const SDK_SCHEMA_ALIASES = Object.freeze({
 	IdentitySelector: 'UsageIdentity["selector"]',
 	IncompleteRunType: 'IncompleteHistoryRun["type"]',
 	ModeHeadless: 'ModeInfo["headless"]',
+	ResetCredits: 'UsageIdentity["reset_credits"]',
 	SessionPhase: 'SessionReport["phase"]',
 	UsedPercent: "number",
 });

@@ -84,7 +84,6 @@ import type {
   QuotaCounters,
   QuotaUnit,
   ResetCredit,
-  ResetCredits,
   ResetCreditsUnknown,
   UnavailableReason,
   UnknownReason,
@@ -102,6 +101,7 @@ export type ControlShape = ControlReport["mechanism"];
 export type IdentitySelector = UsageIdentity["selector"];
 export type IncompleteRunType = IncompleteHistoryRun["type"];
 export type ModeHeadless = ModeInfo["headless"];
+export type ResetCredits = UsageIdentity["reset_credits"];
 export type SessionPhase = SessionReport["phase"];
 export type UsedPercent = number;
 

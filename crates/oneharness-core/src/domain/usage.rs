@@ -507,9 +507,9 @@ fn flatten_identity(identity: &mut UsageIdentity) {
 
 /// Flatten one credit's strings; its instants cannot hold a control character.
 fn flatten_credit(credit: &mut ResetCredit) {
+    // `status` and `reset_type` need no flattening: classifying a word
+    // flattens it, so neither can hold a control character.
     flatten(&mut credit.id);
-    flatten(&mut credit.status);
-    flatten(&mut credit.reset_type);
     flatten_optional(&mut credit.title);
     flatten_optional(&mut credit.description);
 }
@@ -748,10 +748,10 @@ pub struct ResetCredit {
     pub id: String,
     /// The credit's status as the harness spells it (codex: `available`,
     /// `redeeming`, `redeemed`, `unknown`).
-    pub status: String,
+    pub status: ResetCreditStatus,
     /// What the credit resets, as the harness spells it (codex:
     /// `codexRateLimits`).
-    pub reset_type: String,
+    pub reset_type: ResetCreditType,
     pub granted_at: UtcInstant,
     /// When the credit expires. Absent when the harness said it does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -762,20 +762,164 @@ pub struct ResetCredit {
     pub description: Option<String>,
 }
 
-/// The reset types this release recognizes per harness — the only rows a
-/// renderer may count as evidence about when the identity's credits expire.
-const RECOGNIZED_RESET_TYPES: &[(&str, &str)] = &[("codex", "codexRateLimits")];
-
 impl ResetCredit {
     /// Whether this row is an available credit of a reset type this release
-    /// recognizes for `harness`. Any other row is still reported, but says
-    /// nothing a reader can rely on about the identity's spendable credits.
+    /// recognizes for `harness` — the only rows a renderer may count as
+    /// evidence about when the identity's credits expire. Any other row is
+    /// still reported, but says nothing a reader can rely on about the
+    /// identity's spendable credits.
     #[must_use]
     pub fn is_recognized_available(&self, harness: &str) -> bool {
-        self.status == "available"
-            && RECOGNIZED_RESET_TYPES
-                .iter()
-                .any(|(id, reset_type)| *id == harness && *reset_type == self.reset_type)
+        self.status == ResetCreditStatus::Available
+            && matches!(
+                (harness, &self.reset_type),
+                ("codex", ResetCreditType::CodexRateLimits)
+            )
+    }
+}
+
+/// A harness's word this release does not recognize, kept verbatim with its
+/// control characters flattened. Built only by classifying a word, so it never
+/// holds one a recognized variant spells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognizedWord(String);
+
+impl UnrecognizedWord {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// The schema of a verbatim harness word: a plain string, inlined so the wire
+/// shape stays exactly the one the field always had.
+fn verbatim_word_schema() -> schemars::Schema {
+    schemars::json_schema!({ "type": "string" })
+}
+
+/// A credit's status: the words this release recognizes as variants, any other
+/// word kept as itself in [`ResetCreditStatus::Unrecognized`]. Serialized as
+/// the harness's verbatim word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ResetCreditStatus {
+    /// `available`: the credit can be spent.
+    Available,
+    /// `redeeming`: a spend is in flight.
+    Redeeming,
+    /// `redeemed`: the credit was spent.
+    Redeemed,
+    /// `unknown`: the harness's own word for a status it cannot name.
+    Unknown,
+    Unrecognized(UnrecognizedWord),
+}
+
+impl ResetCreditStatus {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Available => "available",
+            Self::Redeeming => "redeeming",
+            Self::Redeemed => "redeemed",
+            Self::Unknown => "unknown",
+            Self::Unrecognized(word) => word.as_str(),
+        }
+    }
+}
+
+impl From<String> for ResetCreditStatus {
+    /// Flattens control characters, then classifies the word.
+    fn from(word: String) -> Self {
+        let word = without_control_chars(&word);
+        match word.as_str() {
+            "available" => Self::Available,
+            "redeeming" => Self::Redeeming,
+            "redeemed" => Self::Redeemed,
+            "unknown" => Self::Unknown,
+            _ => Self::Unrecognized(UnrecognizedWord(word)),
+        }
+    }
+}
+
+impl From<ResetCreditStatus> for String {
+    fn from(status: ResetCreditStatus) -> Self {
+        match status {
+            ResetCreditStatus::Unrecognized(word) => word.0,
+            known => known.as_str().to_string(),
+        }
+    }
+}
+
+impl schemars::JsonSchema for ResetCreditStatus {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ResetCreditStatus".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        verbatim_word_schema()
+    }
+}
+
+/// What a credit resets: the words this release recognizes as variants, any
+/// other word kept as itself in [`ResetCreditType::Unrecognized`]. Serialized
+/// as the harness's verbatim word.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
+pub enum ResetCreditType {
+    /// codex's `codexRateLimits`: resets the identity's Codex rate limits.
+    CodexRateLimits,
+    /// `unknown`: the harness's own word for a reset type it cannot name.
+    Unknown,
+    Unrecognized(UnrecognizedWord),
+}
+
+impl ResetCreditType {
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::CodexRateLimits => "codexRateLimits",
+            Self::Unknown => "unknown",
+            Self::Unrecognized(word) => word.as_str(),
+        }
+    }
+}
+
+impl From<String> for ResetCreditType {
+    /// Flattens control characters, then classifies the word.
+    fn from(word: String) -> Self {
+        let word = without_control_chars(&word);
+        match word.as_str() {
+            "codexRateLimits" => Self::CodexRateLimits,
+            "unknown" => Self::Unknown,
+            _ => Self::Unrecognized(UnrecognizedWord(word)),
+        }
+    }
+}
+
+impl From<ResetCreditType> for String {
+    fn from(reset_type: ResetCreditType) -> Self {
+        match reset_type {
+            ResetCreditType::Unrecognized(word) => word.0,
+            known => known.as_str().to_string(),
+        }
+    }
+}
+
+impl schemars::JsonSchema for ResetCreditType {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ResetCreditType".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        verbatim_word_schema()
     }
 }
 
@@ -1806,8 +1950,8 @@ fn codex_reset_credit(row: &Value) -> Result<ResetCredit, String> {
     };
     Ok(ResetCredit {
         id: required_text("id")?,
-        status: required_text("status")?,
-        reset_type: required_text("resetType")?,
+        status: required_text("status")?.into(),
+        reset_type: required_text("resetType")?.into(),
         granted_at,
         expires_at,
         title: optional_text("title")?,

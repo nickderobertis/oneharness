@@ -496,8 +496,8 @@ mod tests {
     fn credit(status: &str, reset_type: &str, expires_at: Option<&str>) -> ResetCredit {
         ResetCredit {
             id: "RateLimitResetCredit_…".to_string(),
-            status: status.to_string(),
-            reset_type: reset_type.to_string(),
+            status: status.to_string().into(),
+            reset_type: reset_type.to_string().into(),
             granted_at: "2026-09-23T21:46:40Z".parse().expect("UTC"),
             expires_at: expires_at.map(|at| at.parse().expect("UTC")),
             title: None,

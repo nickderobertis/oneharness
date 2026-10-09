@@ -316,6 +316,20 @@ case "$out" in
   *) fail "a changed reading must say what differed, got: $out" ;;
 esac
 
+# 10b. The reset credits are part of the attribution too: two readings that
+#      differ only in a valid summary are not the same identity.
+credited() {
+  printf '{"identities":[{"harness":"claude-code","plan":"max","auth_mode":"subscription","selector":{"kind":"env_path","env":"CLAUDE_CONFIG_DIR","path":"/h/.claude"},"availability":{"state":"available","windows":[{"id":"five_hour"}]},"reset_credits":%s}]}' "$1"
+}
+drive_cwd "$tmp/claude" 4 "" \
+  "$(credited '{"state":"reported","available_count":1}')" \
+  "$(credited '{"state":"unknown","reason":{"kind":"no_reader"}}')"
+[ "$rc" -eq 1 ] || fail "readings differing only in reset credits must fail, got exit $rc: $out"
+case "$out" in
+  *"FAIL:"*"different identity from the hooked directory"*) ;;
+  *) fail "readings differing only in reset credits must say what differed, got: $out" ;;
+esac
+
 # 11. A probe that learned nothing has no duration to compare, so `unknown` is a
 #     failure rather than a fast pass — the phase would otherwise read a probe
 #     that asked and got no reply as one that answered without waiting.

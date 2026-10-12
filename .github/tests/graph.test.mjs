@@ -336,6 +336,12 @@ test("real budget commands report existing graph telemetry and reject stale or m
     for (const changed of [
       { sourceDigest: "0".repeat(64) },
       { jobsPerRun: -1 },
+      { jobsPerRun: actual.jobsPerRun + 1 },
+      { runsPerChange: actual.runsPerChange + 1 },
+      { scenarios: actual.scenarios.map((s,i)=>i===0?{...s,runs:s.runs.map((r,j)=>j===0?{...r,jobs:[null]}:r)}:s) },
+      { scenarios: actual.scenarios.map((s,i)=>i===0?{...s,runs:s.runs.map((r,j)=>j===0?{...r,jobs:r.jobs.map((job,k)=>k===0?{...job,macos:!job.macos}:job)}:r)}:s) },
+      { scenarios: actual.scenarios.map((s,i)=>i===0?{...s,runs:s.runs.map((r,j)=>j===0?{...r,jobs:r.jobs.map((job,k)=>k===0?{...job,architectures:42}:job)}:r)}:s) },
+
       { lifecycle: actual.lifecycle.map((l,i) => i === 0 ? {...l,runs:[null]} : l) },
       { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,action:42} : s) },
       { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,fork:"wrong"} : s) },

@@ -55,6 +55,30 @@ test("engine manifests, local lock references and parsed changelogs are classifi
     writeFileSync(join(fixture.cwd, "CHANGELOG.md"), "not a parsed changelog");
     commit();
     assert.equal(fixture.classify("HEAD").macosRequired, true);
+    for (const version of ["1.2.3-alpha.1", "1.2.3+build.01", "1.2.3-alpha+build"]) {
+      fixture.git("checkout", "-q", "base");
+      writeFileSync(join(fixture.cwd, "Cargo.toml"), root(version));
+      commit();
+      assert.equal(fixture.classify("HEAD").isReleaseOnly, true, version);
+    }
+    for (const invalidVersion of ["01.2.3", "1.2.3-..", "1.2.3-01", "1.2.3+.."]) {
+      fixture.git("checkout", "-q", "base");
+      writeFileSync(join(fixture.cwd, "Cargo.toml"), root(invalidVersion));
+      commit();
+      const invalid = fixture.classify("HEAD");
+      assert.equal(invalid.isReleaseOnly, false, invalidVersion);
+      assert.equal(invalid.macosRequired, true, invalidVersion);
+    }
+    for (const [file, content, reason] of [
+      ["Cargo.toml",root("1.0.0").replace('version="1.0.0"','version="not-a-version"'),/Invalid package version/],
+      ["Cargo.toml",root("not-a-version"),/Invalid engine version/],
+      ["Cargo.lock",lock("not-a-version"),/Invalid lockfile version/],
+    ]) {
+      fixture.git("checkout","-q","base");
+      writeFileSync(join(fixture.cwd,file),content);commit();
+      const invalid=fixture.classify("HEAD");
+      assert.equal(invalid.isReleaseOnly,false);assert.equal(invalid.macosRequired,true);assert.match(invalid.reason,reason);
+    }
   } finally {
     fixture.dispose();
   }

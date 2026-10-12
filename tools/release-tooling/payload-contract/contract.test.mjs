@@ -13,6 +13,7 @@ test("release payload v1 golden round-trips through the producer and consumer AP
     { schema_version: 2 },
     { target: "unknown" },
     { version: [] },
+    ...["01.2.3", "1.2.3-..", "1.2.3-01", "1.2.3+.."].map(version => ({ version, tag: `v${version}` })),
     { tag: "v2.0.0" },
     { binarySha256: "not-a-hash" },
     { wheel: "../outside.whl" },
@@ -21,6 +22,10 @@ test("release payload v1 golden round-trips through the producer and consumer AP
       () => assertPayload({ ...golden, ...changed }),
       /Invalid release payload/,
     );
+  for (const version of ["0.0.0", "1.2.3-alpha.1", "1.2.3+build.01", "1.2.3-alpha+build"]) {
+    const payload = makePayload({ ...fields, version, tag: `v${version}` });
+    assert.deepEqual(assertPayload(JSON.parse(JSON.stringify(payload))), payload);
+  }
   assert.equal(
     assertPackResponse([{ filename: "launcher.tgz" }], "/staging"),
     "launcher.tgz",

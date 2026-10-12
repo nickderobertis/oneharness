@@ -4,7 +4,7 @@ export const SUPPORTED_TARGETS = Object.freeze(["x86_64", "aarch64"].flatMap(cpu
 export const validTarget = value => typeof value === "string" && SUPPORTED_TARGETS.includes(value);
 export const validVersion = (value) =>
   typeof value === "string" &&
-  /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value);
+  /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(value);
 export function assertPayload(value) {
   if (
     !value ||

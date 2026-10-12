@@ -63,6 +63,7 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   r.binarySha256=createHash('sha256').update(bytes).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Missing planned command contract/);
+ // llmlint: ignore-block[e2e_not_mocked] This staged executable is a deliberately defective product input; the installer under test runs for real, while the happy path uses the real compiled CLI.
  reject('null CLI report',(dir,r)=>{
   const binary=join(dir,'archive','oneharness'), source=join(work,'null-report.rs');
   writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("null");}else{std::process::exit(2);} }`);
@@ -70,6 +71,8 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   r.binarySha256=createHash('sha256').update(readFileSync(binary)).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Missing planned command contract/);
+ // llmlint: ignore-end[e2e_not_mocked]
+ // llmlint: ignore-block[e2e_not_mocked] This staged executable is a deliberately defective product input; the installer under test runs for real, while the happy path uses the real compiled CLI.
  reject('usage executable disappears',(dir,r)=>{
   const binary=join(dir,'archive','oneharness'), source=join(work,'disappearing.rs');
   writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("{}",r#"{"results":[{"status":"planned","command":["hello"]}]}"#);std::fs::remove_file(std::env::current_exe().unwrap()).unwrap();}else{std::process::exit(2);} }`);
@@ -77,6 +80,8 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   r.binarySha256=createHash('sha256').update(readFileSync(binary)).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Cannot start usage proof: .*ENOENT/);
+ // llmlint: ignore-end[e2e_not_mocked]
+ // llmlint: ignore-block[e2e_not_mocked] This staged executable is a deliberately defective product input; the installer under test runs for real, while the happy path uses the real compiled CLI.
  reject('usage exit',(dir,r)=>{
   const binary=join(dir,'archive','oneharness'), source=join(work,'defective.rs');
   writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("{{\\\"results\\\":[{{\\\"status\\\":\\\"planned\\\",\\\"command\\\":[\\\"hello\\\"]}}]}}");} }`);
@@ -84,6 +89,7 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   r.binarySha256=createHash('sha256').update(readFileSync(binary)).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Invalid harness exited 0/);
+ // llmlint: ignore-end[e2e_not_mocked]
  reject('wheel payload',(dir,r)=>{
   execFileSync('python3',['-c',`import zipfile,sys,os
 path=sys.argv[1]

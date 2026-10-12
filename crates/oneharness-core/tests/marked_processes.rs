@@ -690,3 +690,47 @@ fn an_unrepresentable_deadline_waits_for_the_match_to_go() {
     );
     assert_stopped(target.pid, &target.ticks);
 }
+
+/// Windows only: a 32-bit process runs under WOW64 there, with its
+/// environment behind a 32-bit PEB the native layout does not describe. Both
+/// Windows CI legs (x64 and ARM64) carry 32-bit x86 binaries in `SysWOW64`.
+#[cfg(windows)]
+#[test]
+fn a_marked_32_bit_process_is_found_and_stopped() {
+    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+    let cmd32 = Path::new(&root).join("SysWOW64").join("cmd.exe");
+    assert!(cmd32.is_file(), "no 32-bit cmd.exe at {}", cmd32.display());
+    let value = unique_value("wow64");
+    // `/k` with a piped stdin waits on commands that never come, so it stays
+    // alive, starts nothing, and exits only when stopped.
+    let mut child = Command::new(&cmd32)
+        .args(["/d", "/q", "/k"])
+        .env(MARKER_NAME, &value)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let guard = Instant::now() + PATIENCE;
+    while !find_marked(&marker(&value)).unwrap().contains(&pid) {
+        if Instant::now() >= guard {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the 32-bit process carrying the marker was never found");
+        }
+        std::thread::sleep(BEAT);
+    }
+
+    let report = stop_marked(&marker(&value), Duration::from_secs(5)).unwrap();
+    assert!(report.survivors.is_empty(), "{report:?}");
+    assert!(report.signalled.contains(&pid), "{report:?}");
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= guard {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the 32-bit process survived its stop");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}

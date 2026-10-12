@@ -497,7 +497,9 @@ mod platform {
     use std::mem::size_of;
     use std::ptr;
 
-    use windows_sys::Wdk::System::Threading::{NtQueryInformationProcess, ProcessBasicInformation};
+    use windows_sys::Wdk::System::Threading::{
+        NtQueryInformationProcess, ProcessBasicInformation, ProcessWow64Information,
+    };
     use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Security::{
         EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
@@ -514,14 +516,40 @@ mod platform {
 
     use super::Needle;
 
-    /// Where the PEB keeps its `ProcessParameters` pointer, and where those
-    /// `RTL_USER_PROCESS_PARAMETERS` keep `Environment` and `EnvironmentSize`.
-    /// These are the documented-by-debugger layouts every Windows since Vista
-    /// shares; `windows-sys` exposes only the reserved-field view of both.
-    #[cfg(target_pointer_width = "64")]
-    const LAYOUT: (usize, usize, usize) = (0x20, 0x80, 0x3F0);
-    #[cfg(target_pointer_width = "32")]
-    const LAYOUT: (usize, usize, usize) = (0x10, 0x48, 0x290);
+    /// Where one architecture's PEB keeps its `ProcessParameters` pointer, and
+    /// where those `RTL_USER_PROCESS_PARAMETERS` keep `Environment` and
+    /// `EnvironmentSize`, with the width of every pointer and size in them.
+    ///
+    /// `windows-sys` exposes only the reserved-field view of both structures,
+    /// so the offsets are the ones the full definitions (`ntpebteb.h` and
+    /// `ntrtl.h` in the Process Hacker / System Informer headers) give, which
+    /// every Windows since Vista shares. They are what the tests read real
+    /// processes through: every Windows stop test goes through [`PEB64`], and
+    /// `a_marked_32_bit_process_is_found_and_stopped` through [`PEB32`].
+    struct Layout {
+        word: usize,
+        parameters: usize,
+        environment: usize,
+        size: usize,
+    }
+
+    /// A 64-bit process: native x64 or ARM64, or x64 emulated on ARM64.
+    const PEB64: Layout = Layout {
+        word: 8,
+        parameters: 0x20,
+        environment: 0x80,
+        size: 0x3F0,
+    };
+
+    /// A 32-bit x86 process under WOW64, read through its 32-bit PEB: the
+    /// 64-bit one WOW64 also keeps is not where its 32-bit code maintains the
+    /// environment.
+    const PEB32: Layout = Layout {
+        word: 4,
+        parameters: 0x10,
+        environment: 0x48,
+        size: 0x290,
+    };
 
     /// Upper bound on an environment block this reads, so a corrupt size in
     /// another process's memory cannot make it allocate without limit.
@@ -538,7 +566,17 @@ mod platform {
     }
 
     /// Every process in a Toolhelp snapshot whose token user is the caller's.
+    ///
+    /// Refused on a 32-bit build: oneharness ships 64-bit Windows binaries only,
+    /// and a 32-bit reader cannot address a 64-bit process's memory, so it
+    /// would miss every native process while appearing to work.
     pub(super) fn user_pids() -> io::Result<Vec<u32>> {
+        if cfg!(target_pointer_width = "32") {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "reading other processes' environments needs a 64-bit build on Windows",
+            ));
+        }
         // SAFETY: a process snapshot takes no pointer arguments.
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
@@ -601,9 +639,53 @@ mod platform {
         })
     }
 
-    /// The process's environment block, as UTF-16 units.
+    /// The process's environment block, as UTF-16 units, read through the
+    /// PEB of the process's own architecture.
     fn environment(process: HANDLE) -> Option<Vec<u16>> {
-        let (parameters_at, environment_at, size_at) = LAYOUT;
+        let (peb, layout) = match wow64_peb(process)? {
+            Some(peb32) => (peb32, &PEB32),
+            None => (native_peb(process)?, &PEB64),
+        };
+        // llmlint: ignore-block[changed_behavior_has_e2e] A corrupt pointer or size and a short read all come from another process's memory, and none can be staged by an unprivileged test on a live process; each ends in `None`, which skips the process, as the integration tests' decoys and protected cases show for the paths that can be staged.
+        // Every address below is read out of another process, so none is
+        // trusted: an overflow or an odd size is a block this cannot read.
+        let parameters = read_word(process, peb.checked_add(layout.parameters)?, layout)?;
+        let block = read_word(process, parameters.checked_add(layout.environment)?, layout)?;
+        let size = read_word(process, parameters.checked_add(layout.size)?, layout)?;
+        if block == 0 || size == 0 || size % 2 != 0 || size > MAX_ENVIRONMENT {
+            return None;
+        }
+        let mut units = vec![0u16; size / 2];
+        read(process, block, units.as_mut_ptr().cast(), units.len() * 2)?;
+        Some(units)
+        // llmlint: ignore-end[changed_behavior_has_e2e]
+    }
+
+    /// The 32-bit PEB of a WOW64 process; `Some(None)` for a 64-bit one, and
+    /// `None` when the query itself is refused.
+    fn wow64_peb(process: HANDLE) -> Option<Option<usize>> {
+        let mut peb32 = 0usize;
+        let mut written = 0u32;
+        // SAFETY: this information class fills one pointer-sized value, which
+        // `peb32` is.
+        let status = unsafe {
+            NtQueryInformationProcess(
+                process,
+                ProcessWow64Information,
+                (&raw mut peb32).cast(),
+                size_of::<usize>() as u32,
+                &mut written,
+            )
+        };
+        // llmlint: ignore[changed_behavior_has_e2e] The kernel refuses this query only for a handle without query rights, which `open` never returns; the process is then skipped.
+        if status < 0 {
+            return None;
+        }
+        Some((peb32 != 0).then_some(peb32))
+    }
+
+    /// The native PEB's address.
+    fn native_peb(process: HANDLE) -> Option<usize> {
         let mut info = PROCESS_BASIC_INFORMATION::default();
         let mut written = 0u32;
         // SAFETY: `info` is writable for the size passed, which is the size of
@@ -617,29 +699,19 @@ mod platform {
                 &mut written,
             )
         };
-        // llmlint: ignore-block[changed_behavior_has_e2e] A failed query, a corrupt pointer or size, and a short read all come from another process's memory or the kernel, and none can be staged by an unprivileged test on a live process; each ends in `None`, which skips the process, as the integration tests' decoys and protected cases show for the paths that can be staged.
+        // llmlint: ignore[changed_behavior_has_e2e] The kernel refuses this query only for a handle without query rights, which `open` never returns; the process is then skipped.
         if status < 0 || info.PebBaseAddress.is_null() {
             return None;
         }
-        // Every address below is read out of another process, so none is
-        // trusted: an overflow or an odd size is a block this cannot read.
-        let peb = info.PebBaseAddress as usize;
-        let parameters = read_word(process, peb.checked_add(parameters_at)?)?;
-        let block = read_word(process, parameters.checked_add(environment_at)?)?;
-        let size = read_word(process, parameters.checked_add(size_at)?)?;
-        if block == 0 || size == 0 || size % 2 != 0 || size > MAX_ENVIRONMENT {
-            return None;
-        }
-        let mut units = vec![0u16; size / 2];
-        read(process, block, units.as_mut_ptr().cast(), units.len() * 2)?;
-        Some(units)
-        // llmlint: ignore-end[changed_behavior_has_e2e]
+        Some(info.PebBaseAddress as usize)
     }
 
-    fn read_word(process: HANDLE, address: usize) -> Option<usize> {
-        let mut word = 0usize;
-        read(process, address, (&raw mut word).cast(), size_of::<usize>())?;
-        Some(word)
+    /// One pointer or size of `layout`'s width, read little-endian, as every
+    /// Windows architecture stores it.
+    fn read_word(process: HANDLE, address: usize, layout: &Layout) -> Option<usize> {
+        let mut bytes = [0u8; 8];
+        read(process, address, bytes.as_mut_ptr().cast(), layout.word)?;
+        usize::try_from(u64::from_le_bytes(bytes)).ok()
     }
 
     // llmlint: ignore[changed_behavior_has_e2e] A failed or short `ReadProcessMemory` needs a process whose memory changes under the read, which no test can stage on demand; the result is `None`, and the process is skipped.

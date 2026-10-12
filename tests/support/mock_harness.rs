@@ -264,6 +264,7 @@ fn scripted_attempt() -> Option<u32> {
     })
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex's precedence can only be read from an installed Codex, which the deterministic gate does not have; this task places that reconciliation in the live codex suite (`oh_codex_plugins_flag_order` in scripts/e2e-lib.sh asks real codex every row of tests/fixtures/codex-plugins-flag-order.json), and in the gate this model is held to that same one-source matrix by its unit test below.
 /// Codex's `plugins` feature as an argv resolves it, by the precedence real
 /// codex applies: on when nothing names it; every `-c features.plugins=<bool>`
 /// in argv order, the last one winning; then any `--enable plugins`; then any
@@ -286,6 +287,7 @@ fn codex_plugins_enabled(argv: &[String]) -> bool {
     }
     (enabled || enable) && !disable
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `catalog_fetched` follows the feature because spike-network-accounting measured exactly that on every launch path (6.9–32.2 MB a turn with plugins on, 0.74–1.33 MB with `--disable plugins`), and the live tier's `codex-launch-network-bytes` budget, which the `oneharness-live-network-budget` plan node registers, is the drift gate against real Codex; this double is not a second source of that fact. Codex's own plugin storage is not modelled.
 /// `MOCK_CODEX_PLUGINS_LOG`: what a Codex process started with `argv` did about

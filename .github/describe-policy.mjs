@@ -2,7 +2,7 @@ import { assertRevision } from "./git-input.mjs";
 // Derive the scheduling inventory from actual workflow declarations.
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
-import { readPlatforms } from "../scripts/release-payload.mjs";
+import { readPlatforms } from "../tools/release-tooling/payload-contract/io.mjs";
 import { workflows, resolveJobs, validateWorkflow } from "./workflow-graph.mjs";
 const base = assertRevision(process.argv[2] ?? "origin/main", "baseline");
 const final = workflows();

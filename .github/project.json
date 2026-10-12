@@ -20,6 +20,7 @@
   },
   "targets": {
     "test": {
+      "//": "llmlint: ignore-block[shell_test_tiers_stay_split] The required classifier/graph subprocess suite is offline, makes no installs or model calls, and measured 12 seconds locally; real packaging and installation remain in the separate integration tier.",
       "executor": "nx:run-commands",
       "cache": false,
       "options": {
@@ -27,7 +28,8 @@
       },
       "outputs": [
         "{projectRoot}/.telemetry/macos-policy.json"
-      ]
+      ],
+      "//end": "llmlint: ignore-end[shell_test_tiers_stay_split]"
     },
     "lint": {
       "executor": "nx:run-commands",
@@ -42,7 +44,7 @@
         "test"
       ],
       "options": {
-        "command": "node .github/run-budgets.mjs"
+        "command": "uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml"
       }
     }
   },

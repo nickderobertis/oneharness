@@ -163,7 +163,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          bun install --cwd .github --frozen-lockfile
+          just github-install
           node .github/live-paths.mjs
       - name: Verify the auth token is present
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'

@@ -10,13 +10,22 @@ export function validateWorkflow(value, file) {
   for (const [id, job] of Object.entries(value.jobs))
     if (!object(job) || (!job.uses && !job["runs-on"]) || (job.uses !== undefined && typeof job.uses !== "string") || (job["runs-on"] !== undefined && typeof job["runs-on"] !== "string") || (job.if !== undefined && typeof job.if !== "string") || (job.strategy !== undefined && (!object(job.strategy) || (job.strategy.matrix !== undefined && !object(job.strategy.matrix)))) || (job.outputs !== undefined && (!object(job.outputs) || Object.values(job.outputs).some((v) => typeof v !== "string"))) || (job.steps && (!Array.isArray(job.steps) || job.steps.some((step) => !object(step)))) || (job.outputs && !object(job.outputs)))
       throw Error(`Invalid workflow job ${file}/${id}. Next: restore its runner/call, steps and outputs.`);
+  for (const [id, job] of Object.entries(value.jobs)) {
+    if (job.steps?.some((step) => ["run", "uses", "if", "name", "id", "shell"].some((key) => step[key] !== undefined && typeof step[key] !== "string")))
+      throw Error(`Invalid workflow step ${file}/${id}. Next: use string command/expression fields.`);
+    for (const key of ["include", "exclude"]) {
+      const entries = job.strategy?.matrix?.[key];
+      if (entries !== undefined && !(typeof entries === "string" && /^\$\{\{/.test(entries)) && (!Array.isArray(entries) || entries.some((entry) => !object(entry))))
+        throw Error(`Invalid matrix ${file}/${id}/${key}. Next: supply a collection of row mappings.`);
+    }
+  }
   const triggers = value.on;
   if (!(typeof triggers === "string" || (Array.isArray(triggers) && triggers.every((v) => typeof v === "string")) || object(triggers)))
     throw Error(`Invalid workflow triggers ${file}. Next: restore the event declarations.`);
   if (object(triggers)) for (const [event, config] of Object.entries(triggers)) {
     if (event === "schedule" && Array.isArray(config) && config.every((v) => object(v) && typeof v.cron === "string")) continue;
     if (config !== null && !object(config)) throw Error(`Invalid event ${file}/${event}`);
-    for (const key of ["paths", "paths-ignore", "branches", "branches-ignore", "types", "workflows"])
+    for (const key of ["paths", "paths-ignore", "branches", "branches-ignore", "tags", "tags-ignore", "types", "workflows"])
       if (config?.[key] !== undefined && (!Array.isArray(config[key]) || config[key].some((v) => typeof v !== "string")))
         throw Error(`Invalid ${file}/${event}/${key}. Next: supply an array of string patterns.`);
   }
@@ -134,12 +143,13 @@ export function expand(matrix, context) {
       ),
   );
   if (!keys.length) rows = [];
+  const originals = [...rows];
   for (const inc of matrix.include ?? []) {
     if (!keys.length) {
       rows.push(inc);
       continue;
     }
-    const matched = rows.filter((row) =>
+    const matched = originals.filter((row) =>
       keys.every((k) => !(k in inc) || row[k] === inc[k]),
     );
     if (matched.length) for (const row of matched) Object.assign(row, inc);
@@ -180,15 +190,15 @@ export function triggered(workflow, scenario) {
   if (!events || !(scenario.event in events)) return false;
   const config = events[scenario.event];
   if (config?.types && !config.types.includes(scenario.action)) return false;
-  if (config?.branches && !matches(scenario.branch, config.branches))
-    return false;
-  if (config?.paths && !scenario.paths.some((p) => matches(p, config.paths)))
-    return false;
-  if (
-    config?.["paths-ignore"] &&
-    scenario.paths.every((p) => matches(p, config["paths-ignore"]))
-  )
-    return false;
+  const tag = scenario.event === "push" && (scenario.action === "tag" || scenario.refType === "tag");
+  if (scenario.event === "push" || scenario.event === "pull_request" || scenario.event === "workflow_run") {
+    const key = tag ? "tags" : "branches", opposite = tag ? "branches" : "tags";
+    if (scenario.event === "push" && !config?.[key] && !config?.[`${key}-ignore`] && (config?.[opposite] || config?.[`${opposite}-ignore`])) return false;
+    if (config?.[key] && !matches(scenario.branch, config[key])) return false;
+    if (config?.[`${key}-ignore`] && matches(scenario.branch, config[`${key}-ignore`])) return false;
+  }
+  if (!tag && config?.paths && !scenario.paths.some((p) => matches(p, config.paths))) return false;
+  if (!tag && config?.["paths-ignore"] && scenario.paths.every((p) => matches(p, config["paths-ignore"]))) return false;
   if (
     scenario.event === "workflow_run" &&
     config?.workflows &&
@@ -249,7 +259,7 @@ export function resolveJobs(
       event_name: scenario.event,
       event,
       repository: "nickderobertis/oneharness",
-      ref: `refs/heads/${scenario.branch}`,
+      ref: `refs/${scenario.action === "tag" ? "tags" : "heads"}/${scenario.branch}`,
       head_ref: event.pull_request?.head.ref ?? "",
     },
     inputs: {
@@ -274,8 +284,23 @@ export function resolveJobs(
     runner: { os: "Linux" },
   };
   const rows = [];
+  const scheduled = new Map();
+  function active(id, visiting = []) {
+    if (scheduled.has(id)) return scheduled.get(id);
+    if (visiting.includes(id)) throw Error(`Cyclic job dependencies: ${[...visiting, id]}`);
+    const job = workflow.jobs[id];
+    if (!job) throw Error(`Unresolved required job ${file}/${id}`);
+    const dependencies = typeof job.needs === "string" ? [job.needs] : job.needs ?? [];
+    for (const dependency of dependencies) if (!active(dependency, [...visiting, id])) needs[dependency] = {result:"skipped",outputs:{}};
+    const local = {...context, needs:Object.fromEntries(dependencies.map(d=>[d,needs[d]]))};
+    const explicitStatus = /\b(always|success|failure|cancelled)\s*\(/.test(job.if ?? "");
+    const success = dependencies.every(d=>needs[d].result === "success");
+    const enabled = (explicitStatus || success) && (!job.if || evaluate(job.if, local));
+    scheduled.set(id,enabled);
+    return enabled;
+  }
   for (const [id, job] of Object.entries(workflow.jobs)) {
-    if (job.if && !evaluate(job.if, context)) continue;
+    if (!active(id)) continue;
     if (job.uses) {
       if (!job.uses.startsWith("./.github/workflows/"))
         throw Error(`Unresolved reusable workflow: ${job.uses}`);

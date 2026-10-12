@@ -36,11 +36,12 @@ export function assertTelemetry(value) {
   )
     bad();
   for (const s of value.scenarios) {
-    if (!object(s) || !string(s.event) || !Array.isArray(s.runs)) bad();
+    if (!object(s) || !["event","action","diff","publish","branch"].every(k=>string(s[k])) || !["source","version-only","dependency-content"].includes(s.diff) || !["off","npm","pypi","both"].includes(s.publish) || !["fork","manual","releaseOnly","macosRequired"].every(k=>typeof s[k]==="boolean") || !Array.isArray(s.runs)) bad();
     s.runs.forEach(run);
   }
   for (const l of value.lifecycle) {
-    if (!object(l) || !Array.isArray(l.runs)) bad();
+    if (!object(l) || !["source","version-only","dependency-content"].includes(l.diff) || !["off","npm","pypi","both"].includes(l.publish) || typeof l.fork !== "boolean" || !Array.isArray(l.runs)) bad();
+    for (const r of l.runs) if (!string(r.event) || !string(r.action)) bad();
     l.runs.forEach(run);
   }
   if (

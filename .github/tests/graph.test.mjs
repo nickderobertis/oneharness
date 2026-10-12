@@ -335,6 +335,9 @@ test("real budget commands report existing graph telemetry and reject stale or m
     for (const changed of [
       { sourceDigest: "0".repeat(64) },
       { jobsPerRun: -1 },
+      { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,action:42} : s) },
+      { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,fork:"wrong"} : s) },
+      { lifecycle: actual.lifecycle.map((l,i) => i === 0 ? {...l,publish:42} : l) },
       {
         scenarios: [{ event: "push", runs: [{ workflow: "bad", jobs: null }] }],
       },
@@ -366,7 +369,7 @@ test("real budget commands report existing graph telemetry and reject stale or m
 
 
 test("workflow boundaries and producer outcomes refuse unproven outputs", () => {
-  for (const bad of [null, [], {}, {on: {pull_request: {paths: [3]}}, jobs: {job: {"runs-on": "ubuntu-latest"}}}])
+  for (const bad of [null, [], {}, {on: "push", jobs: {job: {"runs-on": "ubuntu-latest", steps: [{run:42}]}}}, {on: "push", jobs: {job: {"runs-on":"ubuntu-latest",strategy:{matrix:{include:[42]}}}}}, {on: {pull_request: {paths: [3]}}, jobs: {job: {"runs-on": "ubuntu-latest"}}}])
     assert.throws(() => validateWorkflow(bad, "bad.yml"), /Invalid/);
   const scenario = {event: "pull_request", branch: "main", macosRequired: true};
   for (const result of ["failure", "cancelled", "skipped"])
@@ -374,4 +377,20 @@ test("workflow boundaries and producer outcomes refuse unproven outputs", () => 
   const forged = structuredClone(all);
   forged["ci.yml"].jobs["macos-policy"].outputs.unproven = "${{ steps.any.outputs.unproven }}";
   assert.throws(() => resolveJobs("ci.yml", scenario, forged), /Unresolved producer output/);
+});
+
+// Conformance example published by GitHub: https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations#expanding-or-adding-matrix-configurations
+// Original combinations receive augmentation; appended combinations never do.
+test('GitHub documented include combinations and trigger/dependency status semantics',()=>{
+ assert.deepEqual(expand({fruit:['apple','pear'],animal:['cat','dog'],include:[{color:'green'},{color:'pink',animal:'cat'},{fruit:'apple',shape:'circle'},{fruit:'banana'},{fruit:'banana',animal:'cat'}]},{}),[
+ {fruit:'apple',animal:'cat',color:'pink',shape:'circle'}, {fruit:'apple',animal:'dog',color:'green',shape:'circle'}, {fruit:'pear',animal:'cat',color:'pink'}, {fruit:'pear',animal:'dog',color:'green'}, {fruit:'banana'},{fruit:'banana',animal:'cat'}]);
+ assert.deepEqual(expand({fruit:['apple'],animal:['dog'],include:[{fruit:'banana',animal:'cat'},{fruit:'banana'}]},{}),[{fruit:'apple',animal:'dog'},{fruit:'banana',animal:'cat'},{fruit:'banana'}]);
+ const branch={event:'push',branch:'main',paths:['src/main.rs']};
+ assert.equal(triggered({on:{push:{'branches-ignore':['main']}}},branch),false);
+ assert.equal(triggered({on:{push:{branches:['main']}}},{...branch,action:'tag',branch:'v1.0.0'}),false);
+ assert.equal(triggered({on:{push:{tags:['v*'],paths:['unrelated/**']}}},{...branch,action:'tag',branch:'v1.0.0'}),true);
+ assert.equal(triggered({on:{push:{'tags-ignore':['v*']}}},{...branch,action:'tag',branch:'v1.0.0'}),false);
+ const jobs={parent:{if:'false', 'runs-on':'ubuntu-latest'},child:{needs:'parent','runs-on':'macos-latest'},carrier:{needs:'parent',if:'always()','runs-on':'ubuntu-latest'}};
+ assert.deepEqual(resolveJobs('dependencies.yml',branch,{'dependencies.yml':{jobs}}).map(j=>j.job),['carrier']);
+ for(const result of ['failure','cancelled']) assert.deepEqual(resolveJobs('dependencies.yml',{...branch,outcomes:{parent:{result}}},{'dependencies.yml':{jobs:{...jobs,parent:{'runs-on':'ubuntu-latest'}}}}).map(j=>j.job),['parent','carrier']);
 });

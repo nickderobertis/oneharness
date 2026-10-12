@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parse } from "yaml";
-import { readPlatforms } from "../../scripts/release-payload.mjs";
+import { readPlatforms } from "../../tools/release-tooling/payload-contract/io.mjs";
 import { expand, workflows, resolveJobs } from "../workflow-graph.mjs";
 // Non-native products require their declared release runners. The native
 // builder/install/transport journey runs at the separate integration edge; this contract

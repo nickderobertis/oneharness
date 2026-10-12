@@ -542,7 +542,9 @@ mod platform {
     use windows_sys::Wdk::System::Threading::{
         NtQueryInformationProcess, ProcessBasicInformation, ProcessWow64Information,
     };
-    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, ERROR_NO_MORE_FILES, HANDLE, INVALID_HANDLE_VALUE,
+    };
     use windows_sys::Win32::Security::{
         EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER,
     };
@@ -633,21 +635,27 @@ mod platform {
         };
         let mut pids = Vec::new();
         // SAFETY: `entry` is initialized with its required `dwSize`.
-        let mut present = unsafe { Process32FirstW(snapshot.0, &mut entry) } != 0;
-        if !present {
+        if unsafe { Process32FirstW(snapshot.0, &mut entry) } == 0 {
             return Err(io::Error::last_os_error());
         }
         // llmlint: ignore-end[changed_behavior_has_e2e]
         let own = token_user(current_process_token()?.0)?;
-        while present {
+        loop {
             let pid = entry.th32ProcessID;
             if pid != 0 && same_user(pid, &own) {
                 pids.push(pid);
             }
             // SAFETY: as for `Process32FirstW`.
-            present = unsafe { Process32NextW(snapshot.0, &mut entry) } != 0;
+            if unsafe { Process32NextW(snapshot.0, &mut entry) } == 0 {
+                // Read at once, before any other call can overwrite it.
+                let error = io::Error::last_os_error();
+                // llmlint: ignore[changed_behavior_has_e2e] `Process32NextW` fails with anything but `ERROR_NO_MORE_FILES` only on a corrupt or exhausted snapshot, which an unprivileged test cannot provoke without mocking the platform layer under test; the error is propagated as the scan's, so a partial table is never reported as complete. Every Windows test drives the exhaustion path, which ends each successful listing.
+                if error.raw_os_error() != Some(ERROR_NO_MORE_FILES as i32) {
+                    return Err(error);
+                }
+                return Ok(pids);
+            }
         }
-        Ok(pids)
     }
 
     /// Whether `pid`'s environment block holds the entry.

@@ -94,6 +94,10 @@ case "$out" in
   *"$named"*) ;;
   *) fail "the failure must name the row and both values, got: $out" ;;
 esac
+home="$(head -n 1 "$tmp/calls")" || fail "could not read the first call from $tmp/calls"
+home="${home%%|*}"
+[ -n "$home" ] || fail "the failing phase must still ask under a scratch CODEX_HOME, got none"
+[ ! -e "$home" ] || fail "a failing phase must remove its scratch CODEX_HOME $home too"
 
 # 3. A codex that reports no plugins row is unreadable, never a pass.
 write_fake_codex silent
@@ -112,3 +116,27 @@ case "$out" in
   *"left plugins=<unreadable>"*"codex exited 3: fake codex: crashed"*) ;;
   *) fail "a failed codex must be reported with its exit status and stderr, got: $out" ;;
 esac
+
+# 5. A helper's own fail() — here the stderr scratch file it cannot create —
+#    still removes the scratch CODEX_HOME. The fake `mktemp` makes directories
+#    (logging each) and refuses files.
+write_fake_codex measured
+real_mktemp="$(command -v mktemp)" || fail "no mktemp on PATH to wrap"
+cat >"$tmp/bin/mktemp" <<FAKE || fail "could not write the fake mktemp to $tmp/bin/mktemp"
+#!/usr/bin/env bash
+set -euo pipefail
+[ "\${1:-}" = -d ] || { echo "fake mktemp: refusing a file" >&2; exit 1; }
+dir="\$("$real_mktemp" -d)"
+printf '%s\n' "\$dir" >>"$tmp/made"
+printf '%s\n' "\$dir"
+FAKE
+chmod +x "$tmp/bin/mktemp" || fail "could not make $tmp/bin/mktemp executable"
+run_phase
+[ "$status" -ne 0 ] || fail "a helper that cannot create its scratch file must fail the phase, got: $out"
+case "$out" in
+  *"could not create a scratch file for codex's stderr"*) ;;
+  *) fail "the helper's failure must reach the output, got: $out" ;;
+esac
+home="$(head -n 1 "$tmp/made")" || fail "the fake mktemp made no scratch CODEX_HOME"
+[ -n "$home" ] || fail "the fake mktemp logged an empty directory"
+[ ! -e "$home" ] || fail "a helper's fail() must still remove the scratch CODEX_HOME $home"

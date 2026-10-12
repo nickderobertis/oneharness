@@ -15,7 +15,8 @@ launch's whole process tree, detached children included), `method`
 Boundary: pasta terminates TCP, so these are namespace-side TAP bytes (payload +
 54 B per GSO-sized frame), not host-wire bytes. `boundary.py` measures the gap
 against pasta's host socket and the host NIC (`evidence/README.md`): payload is
-exact, host wire is ~3.5 % above TAP received at MSS 1388, and host-side
+exact; in its one clean run (MSS 1388, no retransmissions) host wire was ~3.5 %
+above TAP received, which is not a conversion factor for other launches; host-side
 retransmissions are not observable per launch without root. `--report FILE` turns it
 into a transparent wrapper (stdin/stdout/exit pass through, report appended to
 FILE), which is how `codex-shim.sh` measures every Codex launch of a live suite.

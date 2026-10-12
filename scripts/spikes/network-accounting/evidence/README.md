@@ -15,7 +15,9 @@ per GSO-sized TAP frame), not host-wire bytes. What boundary.py verified:
   124 B received / 168 B sent in a 20 MB / 5 MB transfer;
 - host wire ≈ payload + 54 B per real segment (MSS 1388, no TCP timestamps):
   20,804,034 B estimated vs 20,806,466 B on the host NIC (whole-host counter, quiet
-  window), so TAP received = 0.965 of host wire;
+  window), so TAP received = 0.965 of host wire in this one clean transfer. That
+  is not a conversion factor for the launch records: host segment sizes and
+  retransmissions vary and were not observed for those launches;
 - namespace-side loss inflates TAP sent (5 % netem: 11.13–11.50 MB for a 10 MB
   body) without touching the host wire; newer reports carry
   `namespace_tcp_retrans_segs` so that is visible. Host-side retransmissions

@@ -1,6 +1,6 @@
 # live-codex pass: every Codex launch, in order (historical TAP measurements)
 
-Taken 2026-10-12 with netmeasure.py before its boundary correction: received/sent are namespace-side TAP bytes (payload + 54 B per GSO-sized TAP frame), NOT host-wire bytes. Host wire for the same payload is ~3.5% higher (boundary-*.json: TAP received = 0.965 of host wire at MSS 1388). Namespace-side retransmissions were not recorded then; clean-link runs record 0. Payload columns = TAP − 54 B × frames, which boundary.py verified equals pasta's host-socket byte stream to within 124 B in 20 MB.
+Taken 2026-10-12 with netmeasure.py before its boundary correction: received/sent are namespace-side TAP bytes (payload + 54 B per GSO-sized TAP frame), NOT host-wire bytes, and host-wire bytes were not observed for these launches. (In one clean boundary experiment, boundary-*.json, TAP received was 0.965 of host wire at MSS 1388; that ratio is not validated for these launches.) Namespace-side retransmissions were not recorded then; clean-link runs record 0. Payload columns = TAP − 54 B × frames, which boundary.py verified equals pasta's host-socket byte stream to within 124 B in 20 MB.
 
 | # | received (TAP) | sent (TAP) | payload received | payload sent | seconds | exit | launch |
 |---|---|---|---|---|---|---|---|

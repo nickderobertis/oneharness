@@ -1895,17 +1895,18 @@ oh_codex_config_override_order() {
 oh_codex_plugins_flag_order() {
   command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
   command -v jq >/dev/null 2>&1 || skip "jq is not installed; cannot read the plugins flag matrix"
-  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-plugins-flag-order.json" rows home want line
+  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-plugins-flag-order.json" rows home native_home want line
   local -a args
   # Tab-joined so an argument is one field; jq on Windows ends lines CRLF.
   rows="$(jq -er '.rows[] | [(.plugins | tostring)] + .args | join("\t")' "$matrix" | tr -d '\r')" ||
     fail "could not read the rows of $matrix — restore it from git"
   home="$(mktemp -d)" || fail "could not create a scratch CODEX_HOME — check that the host temp dir is writable"
+  native_home="$(oh_native_path "$home")" || fail "could not convert the scratch CODEX_HOME $home to a native path — check that cygpath works on this host"
   while IFS= read -r line; do
     IFS=$'\t' read -r -a args <<<"$line"
     want="${args[0]}"
     args=("${args[@]:1}")
-    CODEX_HOME="$(oh_native_path "$home")" _oh_codex_feature_value plugins ${args[@]+"${args[@]}"}
+    CODEX_HOME="$native_home" _oh_codex_feature_value plugins ${args[@]+"${args[@]}"}
     if [ "$_OH_FEATURE_VAL" != "$want" ]; then
       rm -rf "$home" || note "could not remove the scratch CODEX_HOME $home; delete it by hand (rm -rf '$home')"
       fail "codex: \`codex features list ${args[*]-}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
@@ -1941,7 +1942,8 @@ _oh_codex_feature_value() {
   shift
   err="$(mktemp)" || fail "could not create a scratch file for codex's stderr — check that the host temp dir is writable (df -h \"\${TMPDIR:-/tmp}\")"
   listed="$(codex features list "$@" </dev/null 2>"$err")" || status=$?
-  _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
+  _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)" ||
+    _OH_FEATURE_ERR="<could not read codex's stderr from $err — rerun the phase; if it recurs, check the host temp dir (df -h)>"
   rm -f "$err" || note "could not remove the scratch file $err; delete it by hand"
   _OH_FEATURE_VAL=""
   if [ "$status" -ne 0 ]; then

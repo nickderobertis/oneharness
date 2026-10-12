@@ -568,6 +568,7 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `--disable plugins` is Codex's documented feature toggle; whether real Codex honours it is read only from an installed Codex, which the deterministic gate does not have, so its drift gate is the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh), which asks real codex every row of tests/fixtures/codex-plugins-flag-order.json, `--disable plugins` among them.
 /// `codex app-server --disable plugins --stdio`. Plugins are off whatever the
 /// config's `plugins` says: a rate-limits read loads no plugin, and the catalog
 /// Codex would otherwise download on start (~29 MB) is most of what a probe
@@ -581,6 +582,7 @@ fn codex_argv(bin: &str) -> Vec<String> {
         "--stdio".to_string(),
     ]
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// `initialize`, the `initialized` notification, then the rate-limits read. All
 /// three are written before reading, matching the driver this was sourced from;

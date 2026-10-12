@@ -1901,6 +1901,7 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     a
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's flag precedence can only be read from an installed Codex, which the deterministic gate does not have; its one source is the measured matrix tests/fixtures/codex-plugins-flag-order.json, and the drift gate against real Codex is the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh), placed in the live codex suite as this task specified — it asks real codex every row, this spelling's `-c features.plugins=false` among them.
 /// `-c features.plugins=false` unless the run opted into plugins. Codex
 /// otherwise downloads its whole remote plugin catalog (~29 MB) on every
 /// process start, uncached.
@@ -1920,6 +1921,7 @@ fn codex_plugins_off(plugins: bool) -> Vec<String> {
         vec!["-c".into(), "features.plugins=false".into()]
     }
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The sandbox a codex `exec` turn asks for under `mode`, in codex's own
 /// `SandboxMode` spelling; `None` where the mode names no sandbox (`default`

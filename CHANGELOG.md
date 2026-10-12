@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.22.1](https://github.com/nickderobertis/oneharness/compare/v0.22.0...v0.22.1) - 2026-10-12
+
+### Performance
+
+- *(build)* build dev and test profiles without debuginfo ([#1444](https://github.com/nickderobertis/oneharness/pull/1444))
+
 ## [0.22.0](https://github.com/nickderobertis/oneharness/compare/v0.21.3...v0.22.0) - 2026-10-09
 
 ### Added

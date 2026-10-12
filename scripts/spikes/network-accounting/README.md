@@ -1,6 +1,6 @@
 # spike-network-accounting harness (throwaway, never landed)
 
-Counts one launch's real network bytes, received and sent, without root, on Linux.
+Counts one launch's network bytes, received and sent, at its namespace boundary (bytes between the launch and pasta, not host-NIC wire bytes), without root, on Linux.
 
     scripts/spikes/network-accounting/netmeasure.py [--label L] [--env K=V]... [--timeout S] -- ARGV...
 

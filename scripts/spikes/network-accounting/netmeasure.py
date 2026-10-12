@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure one launch's real network bytes, rootless, on Linux.
+"""Measure one launch's network bytes at its namespace boundary, rootless, on Linux.
 
     netmeasure.py [--label L] [--env K=V]... [--timeout S] [--launch-stdout PATH] -- ARGV...
     netmeasure.py --report FILE [--label L] ... -- ARGV...   (transparent wrapper)

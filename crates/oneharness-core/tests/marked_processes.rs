@@ -28,8 +28,10 @@ const ROLE_VAR: &str = "ONEHARNESS_MARKED_TEST_ROLE";
 const TICKS_VAR: &str = "ONEHARNESS_MARKED_TEST_TICKS";
 /// `NAME=VALUE` a `spawn` sets on the grandchild it starts; unset for none.
 const MARK_VAR: &str = "ONEHARNESS_MARKED_TEST_MARK";
-/// How a `beat` meets a stop request: `plain`, `ignore-stop`, `fork-on-stop`;
-/// or `protected`, hiding its environment from other processes (Linux).
+/// How a `beat` meets a stop request: `plain`; `ignore-stop` (Unix);
+/// `fork-while-stopping`, starting further marked children while it is being
+/// stopped; or `protected`, hiding its environment from other processes
+/// (Linux).
 const BEHAVIOUR_VAR: &str = "ONEHARNESS_MARKED_TEST_BEHAVIOUR";
 /// The variable every marker in this suite uses.
 const MARKER_NAME: &str = "ONEHARNESS_MARKED_TEST_ID";
@@ -104,8 +106,9 @@ fn beat_role() {
     let ticks = PathBuf::from(std::env::var(TICKS_VAR).unwrap());
     let behaviour = std::env::var(BEHAVIOUR_VAR).unwrap_or_default();
     match behaviour.as_str() {
+        #[cfg(unix)]
         "ignore-stop" => ignore_stop_requests(),
-        "fork-on-stop" => fork_on_stop::install(),
+        "fork-while-stopping" => fork_while_stopping::install(&ticks),
         #[cfg(target_os = "linux")]
         "protected" => {
             // SAFETY: PR_SET_DUMPABLE takes an integer and touches only this
@@ -117,8 +120,8 @@ fn beat_role() {
     let started = Instant::now();
     let mut beat = 0u64;
     while started.elapsed() < LIFETIME {
-        if behaviour == "fork-on-stop" && fork_on_stop::requested() {
-            fork_on_stop::start_child_and_exit(&ticks);
+        if behaviour == "fork-while-stopping" {
+            fork_while_stopping::poll(&ticks);
         }
         let appended = std::fs::OpenOptions::new()
             .append(true)
@@ -157,19 +160,55 @@ fn ignore_stop_requests() {
     unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
 }
 
-#[cfg(windows)]
-fn ignore_stop_requests() {
-    // Windows' nearest thing to SIGTERM is a console control event.
-    // SAFETY: a null handler with TRUE makes the process ignore Ctrl+C.
-    unsafe { windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 1) };
+/// Start a further marked `beat` — it inherits the marker — sharing one
+/// heartbeat file with its siblings, and append its pid to their pid file.
+fn start_marked_child(ticks: &Path) {
+    let child_ticks = child_ticks(ticks);
+    // Never waited on by design: the child must outlive its parent, which on
+    // Unix exits straight after this and leaves it to be reparented and reaped;
+    // Windows has no zombies.
+    #[allow(clippy::zombie_processes)]
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args(["role", "--exact", "--nocapture", "--test-threads=1"])
+        .env(ROLE_VAR, "beat")
+        .env(TICKS_VAR, &child_ticks)
+        .env(BEHAVIOUR_VAR, "plain")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // One write per line, so a parent stopped mid-way leaves no torn pid.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(child_ticks.with_extension("pids"))
+        .and_then(|mut file| file.write_all(format!("{}\n", child.id()).as_bytes()))
+        .unwrap();
 }
 
-/// On `SIGTERM`, start a further marked `beat` (it inherits the marker) and
-/// exit — a process that forks while being stopped.
+/// The heartbeat file every child of the `fork-while-stopping` beat at `ticks`
+/// shares.
+fn child_ticks(ticks: &Path) -> PathBuf {
+    ticks.with_extension("child.ticks")
+}
+
+/// The pids of the children the `fork-while-stopping` beat at `ticks` started,
+/// counting only complete lines.
+fn child_pids(ticks: &Path) -> Vec<u32> {
+    let text =
+        std::fs::read_to_string(child_ticks(ticks).with_extension("pids")).unwrap_or_default();
+    text.split_inclusive('\n')
+        .filter_map(|line| line.strip_suffix('\n'))
+        .map(|pid| pid.parse().unwrap())
+        .collect()
+}
+
+/// On Unix: on `SIGTERM`, start one further marked child and exit — a
+/// process that forks in answer to being stopped.
 #[cfg(unix)]
-mod fork_on_stop {
+mod fork_while_stopping {
     use std::path::Path;
-    use std::process::{Command, Stdio};
     use std::sync::atomic::{AtomicBool, Ordering};
 
     static REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -178,49 +217,58 @@ mod fork_on_stop {
         REQUESTED.store(true, Ordering::SeqCst);
     }
 
-    pub(super) fn install() {
+    pub(super) fn install(_ticks: &Path) {
         let handler: extern "C" fn(libc::c_int) = on_term;
         // SAFETY: the handler only stores to an atomic, which is
         // async-signal-safe.
         unsafe { libc::signal(libc::SIGTERM, handler as libc::sighandler_t) };
     }
 
-    pub(super) fn requested() -> bool {
-        REQUESTED.load(Ordering::SeqCst)
+    /// Once stopping is requested, start the child and exit, leaving it to be
+    /// reparented and reaped.
+    pub(super) fn poll(ticks: &Path) {
+        if REQUESTED.load(Ordering::SeqCst) {
+            super::start_marked_child(ticks);
+            std::process::exit(0);
+        }
     }
 
-    /// Start the child and exit, leaving it to be reparented and reaped.
-    pub(super) fn start_child_and_exit(ticks: &Path) -> ! {
-        let child_ticks = super::child_ticks(ticks);
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args(["role", "--exact", "--nocapture", "--test-threads=1"])
-            .env(super::ROLE_VAR, "beat")
-            .env(super::TICKS_VAR, &child_ticks)
-            .env(super::BEHAVIOUR_VAR, "plain")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        std::fs::write(child_ticks.with_extension("pid"), child.id().to_string()).unwrap();
-        std::process::exit(0);
-    }
+    /// Nothing is started before the stop asks for it.
+    pub(super) fn await_ready(_ticks: &Path) {}
 }
 
+/// On Windows, where stopping is immediate termination a process never
+/// observes: start marked children continuously, from before the stop until
+/// the stop terminates this process, so children keep appearing while its
+/// scans run.
 #[cfg(windows)]
-mod fork_on_stop {
-    pub(super) fn install() {}
-    pub(super) fn requested() -> bool {
-        false
-    }
-    pub(super) fn start_child_and_exit(_ticks: &std::path::Path) -> ! {
-        unreachable!("a stop request on Windows is termination, never observed")
-    }
-}
+mod fork_while_stopping {
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
 
-#[cfg(unix)]
-fn child_ticks(ticks: &Path) -> PathBuf {
-    ticks.with_extension("child.ticks")
+    /// A bound on the children one run starts if nothing ever stops it.
+    const MOST: usize = 200;
+
+    pub(super) fn install(ticks: &Path) {
+        let ticks: PathBuf = ticks.to_path_buf();
+        std::thread::spawn(move || {
+            for _ in 0..MOST {
+                super::start_marked_child(&ticks);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+    }
+
+    pub(super) fn poll(_ticks: &Path) {}
+
+    /// Wait (bounded) for the first child, so the stop begins mid-stream.
+    pub(super) fn await_ready(ticks: &Path) {
+        let guard = std::time::Instant::now() + super::PATIENCE;
+        while super::child_pids(ticks).is_empty() {
+            assert!(std::time::Instant::now() < guard, "no child was started");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 /// A marker value no other test or run can share.
@@ -324,11 +372,7 @@ fn assert_stopped(pid: u32, ticks: &Path) {
 /// [`assert_stopped`] without requiring a heartbeat first, for a process that
 /// can be stopped before its first one.
 fn assert_gone(pid: u32, ticks: &Path) {
-    let guard = Instant::now() + PATIENCE;
-    while running(pid) {
-        assert!(Instant::now() < guard, "pid {pid} still exists");
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    await_exit(pid);
     let before = count_beats(ticks);
     std::thread::sleep(Duration::from_millis(1200));
     assert_eq!(
@@ -337,6 +381,15 @@ fn assert_gone(pid: u32, ticks: &Path) {
         "{} kept heartbeating after the stop",
         ticks.display()
     );
+}
+
+/// Wait (bounded) for `pid` to be reaped.
+fn await_exit(pid: u32) {
+    let guard = Instant::now() + PATIENCE;
+    while running(pid) {
+        assert!(Instant::now() < guard, "pid {pid} still exists");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[cfg(unix)]
@@ -456,6 +509,8 @@ fn every_simultaneous_match_is_found_stopped_and_reported() {
     }
 }
 
+/// Unix only: Windows has no stop request to ignore — its stop is termination.
+#[cfg(unix)]
 #[test]
 fn a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline() {
     let dir = ScratchDir::new("marked-stubborn").unwrap();
@@ -474,24 +529,21 @@ fn a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline() {
 
     assert!(report.survivors.is_empty(), "{report:?}");
     assert_eq!(report.signalled, [stubborn.pid], "{report:?}");
-    if cfg!(unix) {
-        // SIGTERM is ignored, so only the deadline's SIGKILL ends it.
-        assert_eq!(report.killed, [stubborn.pid], "{report:?}");
-        assert!(
-            elapsed >= deadline && elapsed < deadline + Duration::from_secs(3),
-            "stopped after {elapsed:?}, configured deadline {deadline:?}"
-        );
-    } else {
-        // Windows has no stop request to ignore: it is terminated at once.
-        assert!(report.killed.is_empty(), "{report:?}");
-        assert!(elapsed < deadline, "stopped after {elapsed:?}");
-    }
+    // SIGTERM is ignored, so only the deadline's SIGKILL ends it.
+    assert_eq!(report.killed, [stubborn.pid], "{report:?}");
+    assert!(
+        elapsed >= deadline && elapsed < deadline + Duration::from_secs(3),
+        "stopped after {elapsed:?}, configured deadline {deadline:?}"
+    );
     assert_stopped(stubborn.pid, &stubborn.ticks);
 }
 
-/// Unix only, by construction: on Windows the stop request *is* termination,
-/// which a process cannot answer by starting anything.
-#[cfg(unix)]
+/// A marked process that starts a further marked child while it is being
+/// stopped. On Unix the child is started from the `SIGTERM` handler, so it is
+/// always one the stop's first scan could not have seen. On Windows the stop
+/// terminates at once, so the parent starts children continuously instead and
+/// any child created after the first scan listed the process table — up to
+/// the moment the parent is terminated — is one only a re-scan finds.
 #[test]
 fn a_marked_child_started_while_stopping_is_stopped_too() {
     let dir = ScratchDir::new("marked-forking").unwrap();
@@ -500,30 +552,47 @@ fn a_marked_child_started_while_stopping_is_stopped_too() {
         dir.path(),
         "parent",
         Some((MARKER_NAME, &value)),
-        "fork-on-stop",
+        "fork-while-stopping",
     );
+    fork_while_stopping::await_ready(&parent.ticks);
 
     let report = stop_marked(&marker(&value), Duration::from_secs(5)).unwrap();
     assert!(report.survivors.is_empty(), "{report:?}");
 
-    let child_ticks = child_ticks(&parent.ticks);
-    let child_pid: u32 = std::fs::read_to_string(child_ticks.with_extension("pid"))
-        .expect("the parent never started its child")
-        .trim()
-        .parse()
-        .unwrap();
-    let _child = Beater {
-        pid: child_pid,
-        ticks: child_ticks.clone(),
-    };
+    // The parent records each child before it can exit, so once it is gone
+    // its pid file lists every child it started.
+    await_exit(parent.pid);
+    let children = child_pids(&parent.ticks);
+    let _children: Vec<Beater> = children
+        .iter()
+        .map(|&pid| Beater {
+            pid,
+            ticks: child_ticks(&parent.ticks),
+        })
+        .collect();
+    assert!(!children.is_empty(), "the parent never started a child");
     assert!(
-        report.signalled.contains(&parent.pid) && report.signalled.contains(&child_pid),
-        "both the parent and the child it started must have been stopped: {report:?}"
+        report.signalled.contains(&parent.pid),
+        "the parent was never stopped: {report:?}"
+    );
+    for pid in &children {
+        assert!(
+            report.signalled.contains(pid) || report.killed.contains(pid),
+            "child {pid} was never stopped: {report:?}"
+        );
+    }
+    assert!(
+        find_marked(&marker(&value)).unwrap().is_empty(),
+        "a marked process outlived the stop"
     );
     assert_stopped(parent.pid, &parent.ticks);
-    // The child can be stopped before its first heartbeat; its pid file is
-    // what proves it was started.
-    assert_gone(child_pid, &child_ticks);
+    // A child can be stopped before its first heartbeat; its pid line is what
+    // proves it was started. The children share one heartbeat file, so it is
+    // observed once, after every one of them is gone.
+    for &pid in &children {
+        await_exit(pid);
+    }
+    assert_gone(children[0], &child_ticks(&parent.ticks));
 }
 
 #[test]

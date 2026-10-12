@@ -1,0 +1,225 @@
+{
+  "scenario": "savings",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:15:05",
+  "elapsed_s": 27.801,
+  "paid_turns": 2,
+  "observed": {
+    "method": "ss -tinp sampling of the server pid every 100 ms (lower bound; no spike-network-accounting branch)",
+    "unpaid_fresh": [
+      {
+        "connect_init_s": 0.361,
+        "thread_ready_s": 0.661,
+        "network": {
+          "rx_bytes": 634776,
+          "tx_bytes": 49494,
+          "new_connections": 5,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        },
+        "server_lifetime_network": {
+          "rx_bytes": 1261583,
+          "tx_bytes": 91870,
+          "new_connections": 8,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        }
+      },
+      {
+        "connect_init_s": 0.468,
+        "thread_ready_s": 0.736,
+        "network": {
+          "rx_bytes": 62321,
+          "tx_bytes": 48300,
+          "new_connections": 5,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        },
+        "server_lifetime_network": {
+          "rx_bytes": 688884,
+          "tx_bytes": 90670,
+          "new_connections": 8,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        }
+      },
+      {
+        "connect_init_s": 0.454,
+        "thread_ready_s": 0.688,
+        "network": {
+          "rx_bytes": 634510,
+          "tx_bytes": 49490,
+          "new_connections": 5,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        },
+        "server_lifetime_network": {
+          "rx_bytes": 1261061,
+          "tx_bytes": 91861,
+          "new_connections": 8,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        }
+      }
+    ],
+    "unpaid_warm": [
+      {
+        "connect_init_s": 0.003,
+        "thread_ready_s": 0.222,
+        "network": {
+          "rx_bytes": 626807,
+          "tx_bytes": 42376,
+          "new_connections": 3,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        }
+      },
+      {
+        "connect_init_s": 0.001,
+        "thread_ready_s": 0.212,
+        "network": {
+          "rx_bytes": 626563,
+          "tx_bytes": 42370,
+          "new_connections": 3,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        }
+      },
+      {
+        "connect_init_s": 0.001,
+        "thread_ready_s": 0.241,
+        "network": {
+          "rx_bytes": 626551,
+          "tx_bytes": 42371,
+          "new_connections": 3,
+          "new_peers": [
+            "104.18.32.47"
+          ]
+        }
+      }
+    ],
+    "paid_fresh": {
+      "connect_init_s": 0.419,
+      "thread_ready_s": 0.657,
+      "turn_started_s": 0.709,
+      "first_token_s": 4.236,
+      "turn_completed_s": 4.287,
+      "text": "OK",
+      "network": {
+        "rx_bytes": 785907,
+        "tx_bytes": 79269,
+        "new_connections": 8,
+        "new_peers": [
+          "104.18.32.47"
+        ]
+      }
+    },
+    "paid_warm": {
+      "connect_init_s": 0.002,
+      "thread_ready_s": 0.287,
+      "turn_started_s": 0.356,
+      "first_token_s": 4.262,
+      "turn_completed_s": 4.389,
+      "text": "OK",
+      "network": {
+        "rx_bytes": 669279,
+        "tx_bytes": 63774,
+        "new_connections": 4,
+        "new_peers": [
+          "104.18.32.47"
+        ]
+      }
+    },
+    "paid_server_lifetime_network": {
+      "rx_bytes": 1455186,
+      "tx_bytes": 143043,
+      "new_connections": 12,
+      "new_peers": [
+        "104.18.32.47"
+      ]
+    },
+    "paid_connections": {
+      "10.20.0.60:54962->104.18.32.47:443": {
+        "first_seen": 13.947,
+        "rx": 3909,
+        "tx": 3704,
+        "last_seen": 14.098
+      },
+      "10.20.0.60:54976->104.18.32.47:443": {
+        "first_seen": 14.098,
+        "rx": 3910,
+        "tx": 3660,
+        "last_seen": 14.251
+      },
+      "10.20.0.60:54992->104.18.32.47:443": {
+        "first_seen": 14.251,
+        "rx": 580324,
+        "tx": 9845,
+        "last_seen": 27.048
+      },
+      "10.20.0.60:54996->104.18.32.47:443": {
+        "first_seen": 14.251,
+        "rx": 3909,
+        "tx": 4412,
+        "last_seen": 14.251
+      },
+      "10.20.0.60:55002->104.18.32.47:443": {
+        "first_seen": 14.395,
+        "rx": 81288,
+        "tx": 42315,
+        "last_seen": 27.048
+      },
+      "10.20.0.60:55004->104.18.32.47:443": {
+        "first_seen": 14.977,
+        "rx": 3908,
+        "tx": 4414,
+        "last_seen": 14.977
+      },
+      "10.20.0.60:55006->104.18.32.47:443": {
+        "first_seen": 15.427,
+        "rx": 104750,
+        "tx": 4439,
+        "last_seen": 15.728
+      },
+      "10.20.0.60:55016->104.18.32.47:443": {
+        "first_seen": 17.9,
+        "rx": 3909,
+        "tx": 6480,
+        "last_seen": 17.9
+      },
+      "10.20.0.60:48268->104.18.32.47:443": {
+        "first_seen": 21.609,
+        "rx": 579645,
+        "tx": 10565,
+        "last_seen": 27.048
+      },
+      "10.20.0.60:48276->104.18.32.47:443": {
+        "first_seen": 21.907,
+        "rx": 81815,
+        "tx": 42319,
+        "last_seen": 27.048
+      },
+      "10.20.0.60:48280->104.18.32.47:443": {
+        "first_seen": 22.651,
+        "rx": 3909,
+        "tx": 4412,
+        "last_seen": 22.651
+      },
+      "10.20.0.60:48452->104.18.32.47:443": {
+        "first_seen": 25.765,
+        "rx": 3910,
+        "tx": 6478,
+        "last_seen": 26.199
+      }
+    }
+  },
+  "error": null
+}

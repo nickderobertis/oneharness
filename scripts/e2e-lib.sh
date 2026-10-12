@@ -1888,37 +1888,30 @@ oh_codex_config_override_order() {
 # (`-c features.plugins=false`, `codex_plugins_off` in domain/harness.rs), which
 # a caller's own `-c features.plugins=true` or `--enable plugins` must still
 # override, and the mock codex's model of it (`codex_plugins_enabled` in
-# tests/support/mock_harness.rs, whose unit test holds these same rows). `-c` is
-# last-wins among itself, then `--enable plugins`, then `--disable plugins`,
-# both toggles applied after every `-c`. Asked under an empty CODEX_HOME, so a
-# config.toml of the host's cannot decide the unnamed default.
+# tests/support/mock_harness.rs). Both are held to one matrix of measured rows,
+# tests/fixtures/codex-plugins-flag-order.json, and this asks real codex every
+# row. Asked under an empty CODEX_HOME, so a config.toml of the host's cannot
+# decide the unnamed default.
 oh_codex_plugins_flag_order() {
   command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
-  local home want args
-  home="$(mktemp -d)"
-  while IFS='|' read -r want args; do
-    # Each row's args are plain words, split on purpose.
-    # shellcheck disable=SC2086
-    CODEX_HOME="$(oh_native_path "$home")" _oh_codex_feature_value plugins $args
+  command -v jq >/dev/null 2>&1 || skip "jq is not installed; cannot read the plugins flag matrix"
+  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-plugins-flag-order.json" rows home want line
+  local -a args
+  # Tab-joined so an argument is one field; jq on Windows ends lines CRLF.
+  rows="$(jq -er '.rows[] | [(.plugins | tostring)] + .args | join("\t")' "$matrix" | tr -d '\r')" ||
+    fail "could not read the rows of $matrix — restore it from git"
+  home="$(mktemp -d)" || fail "could not create a scratch CODEX_HOME — check that the host temp dir is writable"
+  while IFS= read -r line; do
+    IFS=$'\t' read -r -a args <<<"$line"
+    want="${args[0]}"
+    args=("${args[@]:1}")
+    CODEX_HOME="$(oh_native_path "$home")" _oh_codex_feature_value plugins ${args[@]+"${args[@]}"}
     if [ "$_OH_FEATURE_VAL" != "$want" ]; then
-      rm -rf "$home"
-      fail "codex: \`codex features list ${args}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
+      rm -rf "$home" || note "could not remove the scratch CODEX_HOME $home"
+      fail "codex: \`codex features list ${args[*]-}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
     fi
-  done <<'ROWS'
-true|
-false|--disable plugins
-true|--enable plugins
-false|-c features.plugins=false
-true|-c features.plugins=false -c features.plugins=true
-false|-c features.plugins=true -c features.plugins=false
-false|--disable plugins --enable plugins
-false|--enable plugins --disable plugins
-false|--disable plugins -c features.plugins=true
-false|-c features.plugins=true --disable plugins
-true|-c features.plugins=false --enable plugins
-true|--enable plugins -c features.plugins=false
-ROWS
-  rm -rf "$home"
+  done <<<"$rows"
+  rm -rf "$home" || fail "could not remove the scratch CODEX_HOME $home"
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: codex resolves plugins as -c last-wins, then --enable, then --disable, so a caller can re-enable plugins over oneharness's -c features.plugins=false"
 }

@@ -21,6 +21,7 @@
       "{workspaceRoot}/scripts/check-copilot-login-probe.sh",
       "{workspaceRoot}/scripts/check-codex-usage-schema.sh",
       "{workspaceRoot}/scripts/check-codex-usage-schema-test.sh",
+      "{workspaceRoot}/scripts/check-codex-plugins-flag-order.sh",
       "{workspaceRoot}/scripts/check-control-probes.sh",
       "{workspaceRoot}/scripts/check-control-probe-http.sh",
       "{workspaceRoot}/scripts/e2e-variants-test.sh",
@@ -53,6 +54,7 @@
         "commands": [
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-codex-usage-schema.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-codex-usage-schema-test.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-codex-plugins-flag-order.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-usage-enforce.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probes.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probe-http.sh",

@@ -266,8 +266,9 @@ fn scripted_attempt() -> Option<u32> {
 /// in argv order, the last one winning; then any `--enable plugins`; then any
 /// `--disable plugins` — both toggles land after every `-c`, wherever they sit,
 /// and `--disable` beats `--enable`. Only those three spellings are modelled;
-/// `oh_codex_plugins_flag_order` (`scripts/e2e-lib.sh`) pins the same rows
-/// against real codex.
+/// `tests/fixtures/codex-plugins-flag-order.json` holds the measured rows this
+/// is tested against and `oh_codex_plugins_flag_order` (`scripts/e2e-lib.sh`)
+/// asks real codex.
 fn codex_plugins_enabled(argv: &[String]) -> bool {
     let mut enabled = true;
     let (mut enable, mut disable) = (false, false);
@@ -1878,96 +1879,37 @@ mod tests {
 
     #[test]
     fn codex_plugins_resolve_by_codexs_measured_precedence() {
-        // The rows `oh_codex_plugins_flag_order` pins against real codex.
-        let cases: &[(&[&str], bool)] = &[
-            (&["exec", "hi"], true),
-            (&["exec", "--disable", "plugins", "hi"], false),
-            (&["app-server", "--enable", "plugins"], true),
-            (&["exec", "-c", "features.plugins=false", "hi"], false),
-            (&["exec", "-c", "features.plugins=true", "hi"], true),
-            // `-c` is last-wins among itself.
+        // The rows `oh_codex_plugins_flag_order` asks real codex, from the one
+        // matrix both read.
+        let matrix: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/codex-plugins-flag-order.json"))
+                .expect("the codex plugins matrix is JSON");
+        let rows = matrix["rows"].as_array().expect("rows");
+        assert!(rows.len() >= 12, "{rows:?}");
+        for row in rows {
+            let mut args = argv(&["exec"]);
+            args.extend(
+                row["args"]
+                    .as_array()
+                    .expect("args")
+                    .iter()
+                    .map(|arg| arg.as_str().expect("an arg is text").to_string()),
+            );
+            let want = row["plugins"].as_bool().expect("plugins is a bool");
+            assert_eq!(codex_plugins_enabled(&args), want, "{args:?}");
+        }
+        // Other features, and other spellings, leave it alone.
+        for (args, want) in [
             (
-                &[
-                    "exec",
-                    "-c",
-                    "features.plugins=false",
-                    "-c",
-                    "features.plugins=true",
-                ],
-                true,
-            ),
-            (
-                &[
-                    "exec",
-                    "-c",
-                    "features.plugins=true",
-                    "-c",
-                    "features.plugins=false",
-                ],
-                false,
-            ),
-            // `--disable` beats `--enable` in either order.
-            (
-                &["exec", "--disable", "plugins", "--enable", "plugins"],
-                false,
-            ),
-            (
-                &["exec", "--enable", "plugins", "--disable", "plugins"],
-                false,
-            ),
-            // Both toggles apply after every `-c`, wherever they sit.
-            (
-                &[
-                    "exec",
-                    "--disable",
-                    "plugins",
-                    "-c",
-                    "features.plugins=true",
-                ],
-                false,
-            ),
-            (
-                &[
-                    "exec",
-                    "-c",
-                    "features.plugins=true",
-                    "--disable",
-                    "plugins",
-                ],
-                false,
-            ),
-            (
-                &[
-                    "app-server",
-                    "-c",
-                    "features.plugins=false",
-                    "--enable",
-                    "plugins",
-                ],
-                true,
-            ),
-            (
-                &[
-                    "exec",
-                    "--enable",
-                    "plugins",
-                    "-c",
-                    "features.plugins=false",
-                ],
-                true,
-            ),
-            // Other features, and other spellings, leave it alone.
-            (
-                &["exec", "--disable", "apps", "-c", "features.hooks=false"],
+                &["exec", "--disable", "apps", "-c", "features.hooks=false"][..],
                 true,
             ),
             (
                 &["exec", "--disable", "plugins", "--enable", "hooks"],
                 false,
             ),
-        ];
-        for (args, want) in cases {
-            assert_eq!(codex_plugins_enabled(&argv(args)), *want, "{args:?}");
+        ] {
+            assert_eq!(codex_plugins_enabled(&argv(args)), want, "{args:?}");
         }
     }
 }

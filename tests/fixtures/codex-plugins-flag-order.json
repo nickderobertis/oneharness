@@ -1,0 +1,102 @@
+{
+  "//": "Codex's effective `plugins` feature under each argv, measured on codex-cli 0.159.2 with `codex features list <args>` under an empty CODEX_HOME: `-c features.plugins=` last-wins among itself, then any `--enable plugins`, then any `--disable plugins`, both toggles applied after every `-c`. One source for two readers: the mock codex's model (`codex_plugins_enabled`, tests/support/mock_harness.rs, held to it by its unit test) and the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh), which asks real codex every row. oneharness's plugins-off default `-c features.plugins=false` rests on it: a caller's later `-c features.plugins=true` or any `--enable plugins` must still win.",
+  "rows": [
+    {
+      "args": [],
+      "plugins": true
+    },
+    {
+      "args": [
+        "--disable",
+        "plugins"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "--enable",
+        "plugins"
+      ],
+      "plugins": true
+    },
+    {
+      "args": [
+        "-c",
+        "features.plugins=false"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "-c",
+        "features.plugins=false",
+        "-c",
+        "features.plugins=true"
+      ],
+      "plugins": true
+    },
+    {
+      "args": [
+        "-c",
+        "features.plugins=true",
+        "-c",
+        "features.plugins=false"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "--disable",
+        "plugins",
+        "--enable",
+        "plugins"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "--enable",
+        "plugins",
+        "--disable",
+        "plugins"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "--disable",
+        "plugins",
+        "-c",
+        "features.plugins=true"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "-c",
+        "features.plugins=true",
+        "--disable",
+        "plugins"
+      ],
+      "plugins": false
+    },
+    {
+      "args": [
+        "-c",
+        "features.plugins=false",
+        "--enable",
+        "plugins"
+      ],
+      "plugins": true
+    },
+    {
+      "args": [
+        "--enable",
+        "plugins",
+        "-c",
+        "features.plugins=false"
+      ],
+      "plugins": true
+    }
+  ]
+}

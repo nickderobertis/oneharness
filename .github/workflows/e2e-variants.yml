@@ -33,9 +33,6 @@ jobs:
           - os: ubuntu-latest
             run_opencode: "1"
             run_qwen: "1"
-          - os: macos-latest
-            run_opencode: "1"
-            run_qwen: "0"
           - os: windows-latest
             run_opencode: "0"
             run_qwen: "1"

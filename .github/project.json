@@ -1,0 +1,52 @@
+{
+  "name": "github-workflows",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:javascript"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/.telemetry/**/*",
+      "!{projectRoot}/node_modules/**/*",
+      "{workspaceRoot}/release-platforms.toml",
+      "{workspaceRoot}/scripts/release-bundle.mjs",
+      "{workspaceRoot}/scripts/release-install.mjs",
+      "{workspaceRoot}/scripts/ci-verdict.sh",
+      "{workspaceRoot}/scripts/release-payload.mjs",
+      "{workspaceRoot}/tools/release-tooling/payload-contract/**/*"
+    ]
+  },
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --test .github/tests/*.test.mjs"
+      },
+      "outputs": [
+        "{projectRoot}/.telemetry/macos-policy.json"
+      ]
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node .github/check-syntax.mjs"
+      }
+    },
+    "budgets": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": [
+        "test"
+      ],
+      "options": {
+        "command": "node .github/run-budgets.mjs"
+      }
+    }
+  },
+  "implicitDependencies": [
+    "release-payload-contract"
+  ]
+}

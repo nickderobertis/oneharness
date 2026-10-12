@@ -11,11 +11,11 @@
 #      the default GITHUB_TOKEN) triggers `release.yml`, which builds, archives,
 #      checksums, and attaches the cross-platform binaries. It reads the
 #      verdict of the full sweep CI ran over the tagged tree on the release PR
-#      (every other PR and push to main runs only the affected tier): a failed
-#      check job refuses release; only a complete check matrix whose every job
-#      ran the full sweep successfully skips the release gate; once CI ends, a
-#      non-Ubuntu check job without a successful sweep refuses release, and an
-#      Ubuntu one alone runs the sweep on the Ubuntu release runner.
+#      (every other PR and push to main runs only the affected tier): a failed check job refuses release; only a complete check matrix whose
+# jobs successfully swept or whose Mac carrier authorized omission skips the
+# release gate; once CI ends, a non-Ubuntu check job without either verdict
+# refuses release, and an Ubuntu one alone runs the sweep on the Ubuntu
+# release runner.
 
 [workspace]
 # Both crates are published to crates.io on release. release-plz runs

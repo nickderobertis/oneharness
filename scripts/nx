@@ -40,6 +40,12 @@ if [ ! -f node_modules/nx/package.json ] || [ ! -f "$stamp" ] || [ bun.lock -nt 
   touch "$stamp"
 fi
 
+workflow_stamp=.github/node_modules/.bun-install-stamp
+if [ -f .github/bun.lock ] && { [ ! -f "$workflow_stamp" ] || [ .github/bun.lock -nt "$workflow_stamp" ] || [ .github/package.json -nt "$workflow_stamp" ]; }; then
+  just --justfile "$root/justfile" --working-directory "$root" github-install || exit 1
+  touch "$workflow_stamp"
+fi
+
 # The entry point is whatever the installed package's own `bin` field names.
 nx_bin="$(node -e 'const p = require.resolve("nx/package.json"); process.stdout.write(require("path").join(p, "..", require(p).bin.nx))')"
 

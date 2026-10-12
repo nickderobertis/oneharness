@@ -13,11 +13,11 @@ name: Release
 # merged release pull request's run when its head carried exactly the tagged
 # tree — or, for a Release created by hand in the GitHub UI (the supported
 # manual fallback) or one main moved under, a `workflow_dispatch` of ci.yml with
-# tier=all on the release tag. From that run's check jobs: a failed check job
-# refuses release; only a complete check matrix whose every job ran the full
-# sweep successfully skips the release gate; once CI ends, a non-Ubuntu check
-# job without a successful sweep refuses release, and an Ubuntu one alone runs
-# the sweep on the Ubuntu release runner — so a tree no sweep covered is
+# tier=all on the release tag. From that run's check jobs: a failed check job refuses release; only a complete check matrix whose
+# jobs successfully swept or whose Mac carrier authorized omission skips the
+# release gate; once CI ends, a non-Ubuntu check job without either verdict
+# refuses release, and an Ubuntu one alone runs the sweep on the Ubuntu
+# release runner — so a tree no sweep covered is
 # refused.
 #
 #   * gate               — consume CI's full-sweep verdict for the tagged tree
@@ -138,9 +138,47 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: scripts/publish-crates.sh
 
+  build-darwin:
+    needs: gate
+    runs-on: macos-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: x86_64-apple-darwin,aarch64-apple-darwin
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@v6
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Enable x86_64 execution
+        run: sudo softwareupdate --install-rosetta --agree-to-license
+      - name: Compile each Darwin target once and package its bytes
+        run: |
+          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+            just release-bundle "$target" dist/release "$GITHUB_REF_NAME"
+          done
+      - name: Install and run native staged products
+        run: node scripts/release-install.mjs --root dist/release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          architecture: x64
+      - name: Install and run x86_64 staged products through Rosetta
+        run: arch -x86_64 node scripts/release-install.mjs --root dist/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: darwin-release
+          path: dist/release
+
   upload:
     name: upload (${{ matrix.target }})
-    needs: gate
+    needs: [gate, build-darwin]
     permissions:
       contents: write      # attach the archive + checksum to the Release
       id-token: write      # mint the keyless OIDC token for Sigstore (no secret)
@@ -161,10 +199,10 @@ jobs:
             os: ubuntu-24.04-arm
             ext: tar.gz
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: ubuntu-latest
             ext: tar.gz
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: ubuntu-latest
             ext: tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
@@ -177,7 +215,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        if: contains(matrix.target, 'apple-darwin')
+        with:
+          name: darwin-release
+          path: darwin-release
+      - name: Stage and publish the Mac archive
+        if: contains(matrix.target, 'apple-darwin')
+        shell: bash
+        run: |
+          cp darwin-release/${{ matrix.target }}/oneharness-* .
+          gh release upload "$GITHUB_REF_NAME" oneharness-*-${{ matrix.target }}.tar.gz oneharness-*-${{ matrix.target }}.sha256 --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Build, archive, checksum, and upload
+        if: ${{ !contains(matrix.target, 'apple-darwin') }}
         uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: oneharness
@@ -290,10 +342,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
           # llmlint: ignore-block[diagnostics_error_or_absent] This row joins the existing wheel build, whose warnings the gate's `just check` already denied.
@@ -324,7 +372,7 @@ jobs:
   # match. Trusted Publishing (OIDC, `id-token: write`) also auto-generates PEP
   # 740 attestations, so pip consumers get build provenance too.
   publish-pypi:
-    needs: build-wheels
+    needs: [build-wheels, build-darwin]
     if: ${{ vars.PYPI_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     permissions:
@@ -335,6 +383,13 @@ jobs:
           pattern: wheels-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin-release
+          path: darwin-release
+      - name: Stage Darwin packages
+        shell: bash
+        run: cp darwin-release/*/wheels/*.whl dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist
@@ -466,10 +521,6 @@ jobs:
             os: ubuntu-latest
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-          - target: x86_64-apple-darwin
-            os: macos-latest
-          - target: aarch64-apple-darwin
-            os: macos-latest
           - target: x86_64-pc-windows-msvc
             os: windows-latest
           # llmlint: ignore-block[diagnostics_error_or_absent, work_goes_through_command_surface] This row joins the existing npm build steps, run per target as every other row's are, after the gate's `just check` denied warnings.
@@ -533,7 +584,7 @@ jobs:
   # the per-platform packages first, then the launcher that depends on them.
   # Until both are set, publishing stays dormant while the packages still build.
   publish-npm:
-    needs: [build-npm, build-node-sdk]
+    needs: [build-npm, build-darwin, build-node-sdk]
     if: ${{ vars.NPM_PUBLISH == 'true' }}
     runs-on: ubuntu-latest
     defaults:
@@ -552,6 +603,13 @@ jobs:
           pattern: npm-*
           path: npm-artifacts
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: darwin-release
+          path: darwin-release
+      - name: Stage Darwin packages
+        shell: bash
+        run: cp darwin-release/*/npm/*.tgz npm-artifacts/
       - uses: actions/download-artifact@v4
         with:
           name: node-sdk

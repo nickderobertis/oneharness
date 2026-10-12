@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Decide whether the full sweep CI ran over the tagged tree permits release publication.
-# CONTRACT: a failed check job refuses release; only a complete check matrix whose every job ran the full sweep successfully skips the release gate; once CI ends, a non-Ubuntu check job without a successful sweep refuses release, and an Ubuntu one alone runs the sweep on the Ubuntu release runner
+# CONTRACT: a failed check job refuses release; only a complete check matrix whose jobs successfully swept or whose Mac carrier authorized omission skips the release gate; once CI ends, a non-Ubuntu check job without either verdict refuses release, and an Ubuntu one alone runs the sweep on the Ubuntu release runner
 #
 # The sweep is not the tagged commit's own push run: release-plz batches merges
 # behind its release pull request, so CI sweeps the release there (ci.yml's
@@ -57,6 +57,7 @@ trap 'rm -rf "$work"' EXIT
 # The step of ci.yml's check job that runs the full sweep. Its success in all
 # three check jobs is the verdict; the affected tier's step does not count.
 readonly SWEEP_STEP="Full sweep (just check all)"
+readonly MACOS_OMISSION_STEP="Authorized Mac omission"
 # Every release pull request release-plz opens is on a branch with this prefix;
 # check-ci-gate-tier.sh holds it to ci-gate-tier.sh's and release-plz.yml's.
 readonly RELEASE_BRANCH_PREFIX="release-plz-"
@@ -193,7 +194,7 @@ read_jobs() {
     sed 's/^/    gh: /' "$work/gh-error" >&2
     refuse "ci-verdict: could not read check jobs in CI run $run_id" "it was reading $jobs_endpoint" "restore the GitHub API read, then re-run this release"
   fi
-  if ! summary="$(printf '%s' "$jobs" | jq -rs --arg sha "$run_sha" --arg run_status "$run_status" --arg sweep "$SWEEP_STEP" '
+  if ! summary="$(printf '%s' "$jobs" | jq -rs --arg sha "$run_sha" --arg run_status "$run_status" --arg sweep "$SWEEP_STEP" --arg omission "$MACOS_OMISSION_STEP" '
     def valid_id: type == "number" and . > 0 and floor == .;
     def valid_status: . as $s | ["completed", "queued", "in_progress", "waiting", "requested", "pending"] | index($s) != null;
     def known_conclusion: . == null or (. as $c | ["success", "failure", "timed_out", "startup_failure", "cancelled", "skipped", "stale"] | index($c) != null);
@@ -205,11 +206,11 @@ read_jobs() {
     | ["check (macos-latest)", "check (ubuntu-latest)", "check (windows-latest)"] as $declared
     | [ $all[] | select((.name | type) == "string" and (.name | test("^check \\("))) ] as $checks
     | ([$checks[] | select(.status == "completed" and (.conclusion as $c | ["failure", "timed_out", "startup_failure"] | index($c)))] | first) as $failed
-    # A job is a sweep verdict only when it concluded success AND its sweep step
-    # did: a green job whose sweep step was skipped ran the affected tier, which
-    # answers for a diff, not for the tree.
-    | def swept: .status == "completed" and .conclusion == "success"
-                 and any(.steps[]; .name == $sweep and .conclusion == "success");
+    # Success alone does not cover the tree: require a sweep or an explicit
+    # Mac carrier semantic omission. Affected-tier success is insufficient.
+    | def accepted: .status == "completed" and .conclusion == "success"
+                 and (any(.steps[]; .name == $sweep and .conclusion == "success")
+                      or (.name == "check (macos-latest)" and any(.steps[]; .name == $omission and .conclusion == "success")));
     if any($all[]; (.name | type) != "string")
          or any($checks[]; (.name | test("[^ -~]")) or (.id | valid_id | not) or .head_sha != $sha
                        or (.status | valid_status | not)
@@ -223,13 +224,13 @@ read_jobs() {
         "unreadable\t0\t\t"
       elif $failed != null then
         "failure\t\($failed.id)\t\($failed.name)\t\($failed.conclusion)"
-      elif all($declared[]; . as $n | any($checks[]; .name == $n and swept)) then
+      elif all($declared[]; . as $n | any($checks[]; .name == $n and accepted)) then
         "success\t0\t\t"
       elif $run_status != "completed" then
         "pending\t0\t\t"
       else
         [ $declared[] | . as $n | ([$checks[] | select(.name == $n)] | first) as $job
-          | select($job == null or ($job | swept | not))
+          | select($job == null or ($job | accepted | not))
           | {name: $n, id: ($job.id // 0),
              why: (if $job == null then "absent" elif $job.status != "completed" then "never finished"
                    elif $job.conclusion != "success" then ($job.conclusion // "no conclusion")
@@ -271,7 +272,7 @@ for poll in $(seq 1 "$wait_attempts"); do
       refuse "CI run $run_id check job $job_name has no success verdict for $sha ($job_why)" "the run is ${run_url:-<no URL>}; the release runs on Ubuntu, so the sweep it could run here cannot verify that platform" "re-run $job_name in CI run $run_id until it sweeps successfully, or dispatch $workflow with tier=all on the release tag, then re-run this release"
       ;;
     here)
-      decide true "CI run $run_id check job $job_name has no success verdict for $sha ($job_why) and every other check job swept it; running the gate here on Ubuntu (the full sweep, just check all)."
+      decide true "CI run $run_id check job $job_name has no success verdict for $sha ($job_why) and every other check job has a successful sweep or authorized omission; running the gate here on Ubuntu (the full sweep, just check all)."
       ;;
   esac
   if [ "$poll" -lt "$wait_attempts" ]; then sleep "$wait_delay"; fi

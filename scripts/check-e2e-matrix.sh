@@ -16,11 +16,11 @@
 #     harness/platform runs.
 #   - Every pull_request path filter contains the shared build/e2e inputs plus
 #     exactly that workflow's script and workflow file.
-#   - claude-code and codex run the full cross-platform PR matrix; every other
+#   - claude-code and codex run Linux/Windows in their PR workflows; every other
 #     harness — and the schema feature — runs Linux-only on PRs.
 #   - schema never offers/uses windows (its quote-heavy --json-schema argv is
 #     mangled by the Windows .cmd shim).
-#   - The turn-control suite runs on a SCHEDULE across ubuntu and macos, and a
+#   - The turn-control schedule runs on Linux; CI retains the Mac proof, and a
 #     scheduled failure opens an issue (see check_control below for why).
 #   - No job of ANY workflow runs one of this repository's own scripts without
 #     checking the repository out (see check_checkout below for why that one is
@@ -29,7 +29,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-FULL='["ubuntu-latest","macos-latest","windows-latest"]'
+AUTOMATIC_PR='["ubuntu-latest","windows-latest"]'
+DIAGNOSTIC_FULL='["ubuntu-latest","macos-latest","windows-latest"]'
 LINUX='["ubuntu-latest"]'
 # The unix platforms. Two features share it for the same reason and not by
 # coincidence: control sockets have no Windows equivalent, and schema's
@@ -109,7 +110,7 @@ for id in $CROSS_PLATFORM; do
   f=".github/workflows/e2e-${id}.yml"
   check_common "$f"
   check_paths "$f" "$id"
-  check_matrix "$f" "$FULL" "$FULL"
+  check_matrix "$f" "$AUTOMATIC_PR" "$DIAGNOSTIC_FULL"
   # A cross-platform harness must offer windows on demand.
   grep -qE '^\s+- windows-latest$' "$f" || fail "$f missing windows-latest dispatch option"
 done
@@ -118,7 +119,7 @@ for id in $LINUX_ONLY; do
   f=".github/workflows/e2e-${id}.yml"
   check_common "$f"
   check_paths "$f" "$id"
-  check_matrix "$f" "$LINUX" "$FULL"
+  check_matrix "$f" "$LINUX" "$DIAGNOSTIC_FULL"
 done
 
 # schema is Linux-only on PR and never windows (not even on demand).
@@ -149,13 +150,8 @@ fi
 #     from its own step's `env:` block. `*_E2E_AUTH` entries are developer-host
 #     sentinels rather than credentials (see e2e-control.sh), so they cannot
 #     satisfy it.
-#   - It runs on a SCHEDULE, and that schedule covers macos as well as ubuntu.
-#     macOS is where this feature has broken three times (`/tmp` canonicalizing
-#     to `/private/tmp`, the shorter `sun_path` budget, a refusal-reason
-#     mismatch) and none of those show on Linux, so a platform that never runs
-#     the suite is where the next one hides. It is on the schedule rather than
-#     the pull request because a second 26-minute leg per control PR is not what
-#     that is worth.
+#   - The Linux schedule remains; ci.yml's Mac check owns the same control
+#     command sequentially with the harness assertions on trusted PRs.
 #   - A scheduled failure opens an issue. A schedule has no pull request to turn
 #     red and nobody waiting on it, so a nightly failure nothing announces is one
 #     nobody reads — which is the same as not running it.
@@ -194,17 +190,16 @@ check_control() {
   local p line accepted v satisfied detail preflight live
   check_common "$f"
 
-  # The schedule, and what it covers. Read as one expression: the matrix must
-  # name BOTH platforms for `schedule`, or the daily run would be another Linux
-  # leg and macOS would still never run the suite.
   awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE '^\s*schedule:' ||
-    fail "$f has no schedule trigger, so macOS — where this feature has broken three times — never runs this suite at all; add a daily \`schedule: - cron:\` (macOS belongs there rather than on the pull request, which a second 26-minute leg is not worth)"
+    fail "$f has no schedule trigger; retain daily Linux drift coverage beside the consolidated Mac CI proof"
   awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE "^\s*- cron:" ||
     fail "$f declares a schedule with no cron entry, so it never actually fires; add one under \`schedule:\` (\`- cron: \"11 7 * * *\"\`, off the top of the hour where GitHub's shared cron queue backs up)"
   # shellcheck disable=SC2016  # a GitHub expression to match, not a shell one
   line="$(grep -F 'os: ${{ fromJSON(' "$f" || true)"
-  printf '%s' "$line" | grep -qF "github.event_name == 'schedule' && '$UNIX_ONLY'" ||
-    fail "$f does not run its schedule across $UNIX_ONLY, so the daily run would repeat the pull request's Linux leg and prove nothing new; add \`github.event_name == 'schedule' && '$UNIX_ONLY'\` to the job's \`os:\` fromJSON expression, before its pull-request default"
+  printf '%s' "$line" | grep -qF "|| '$LINUX'" ||
+    fail "$f automatic schedule must use Linux; Mac turn-control proof is consolidated in ci.yml"
+  grep -q 'run: just live-control' .github/workflows/ci.yml ||
+    fail "ci.yml must retain the consolidated Mac turn-control proof"
 
   # And that a scheduled failure is announced. A schedule has no pull request
   # to turn red and nobody waiting on it.

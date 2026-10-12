@@ -66,7 +66,7 @@ follow-ups (see "After the main task").
   `oneharness-integration`, `oneharness-mock-harness`, `oneharness-e2e`,
   `history-compat`, `mock-responder`, `harness-captures`, `sdk-contract`,
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
-  `install-surface`, `release-tooling`, `ci-contracts`, `e2e-support`,
+  `install-surface`, `release-tooling`, `ci-contracts`, `github-workflows`, `github-workflows-integration`, `release-payload-contract`, `e2e-support`,
   `workspace`, `workspace-integration`, `rust-coverage`, `shell-coverage`,
   `shell-toolchain`, `scripts`, `githooks`, the paid `live-*` suites (claude,
   codex, opencode, goose, qwen, crush, copilot, cursor, schema, control,
@@ -98,8 +98,9 @@ follow-ups (see "After the main task").
 <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 
 Nx runs every target; each ecosystem resolves through its own one workspace and
-lockfile — Cargo (`Cargo.lock`), one Bun workspace (root `package.json` +
-`bun.lock`: the Node SDK, the npm launcher and Nx itself), and one uv workspace
+lockfile — Cargo (`Cargo.lock`), the Bun product workspace (root `package.json` +
+`bun.lock`: the Node SDK, npm launcher and Nx), plus a private locked
+`.github/` tooling package for workflow parsing, expressions and budget reporting, and one uv workspace
 rooted at `python/` (`python/uv.lock`, resolving for Python 3.9; rooted there
 because the root `pyproject.toml` is maturin's `oneharness-cli` wrapper, which a
 uv workspace at the root would build). Every project declares the targets that
@@ -312,10 +313,11 @@ Use the `just` recipes; do not hand-roll equivalents.
   (`scripts/ci-verdict.sh`) rather than sweeping the same tree again — the
   merged release PR's run when its head carried exactly the tagged tree, else a
   `workflow_dispatch` of `ci.yml` with `tier=all` on the release tag (the
-  manual fallback): a failed check job refuses release; only a complete check
-  matrix whose every job ran the full sweep successfully skips the release
-  gate; once CI ends, a non-Ubuntu check job without a successful sweep refuses
-  release, and an Ubuntu one alone runs the sweep on the Ubuntu release runner.
+  manual fallback): a failed check job refuses release; only a complete check matrix whose
+  jobs successfully swept or whose Mac carrier authorized omission skips the
+  release gate; once CI ends, a non-Ubuntu check job without either verdict
+  refuses release, and an Ubuntu one alone runs the sweep on the Ubuntu
+  release runner.
   An in-flight matrix is awaited to a bound.
   The release publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform

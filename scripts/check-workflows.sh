@@ -67,12 +67,12 @@ require_guarded() {
 
 require_gate_dependency() {
   local job
-  for job in publish-crates upload build-wheels build-python-sdk build-npm build-node-sdk; do
+  for job in publish-crates upload build-darwin build-wheels build-python-sdk build-npm build-node-sdk; do
     awk -v job="$job" '
       { sub(/\r$/, "") }
       $0 == "  " job ":" { inside=1; found=1; next }
       inside && /^  [a-z][a-z-]*:/ { exit }
-      inside && /^    needs: gate$/ { gated=1 }
+      inside && (/^    needs: gate$/ || /^    needs: \[gate, build-darwin\]$/) { gated=1 }
       END { if (!found || !gated) exit 1 }
     ' .github/workflows/release.yml ||
       fail "release.yml job $job must depend on gate before constructing or publishing an artifact"

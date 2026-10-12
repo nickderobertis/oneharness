@@ -128,36 +128,37 @@ g checkout -q main
 ci=".github/workflows/ci.yml"
 job="$(awk '/^  check:$/ { on = 1; print; next } on && /^  [A-Za-z]/ { exit } on' "$ci")"
 [ -n "$job" ] || fail "$ci has no top-level 'check' job"
-printf '%s\n' "$job" | grep -qx '        os: \[ubuntu-latest, macos-latest, windows-latest\]' ||
+printf '%s\n' "$job" | grep -x '        os: \[ubuntu-latest, macos-latest, windows-latest\]' >/dev/null ||
   fail "$ci check matrix is not exactly ubuntu/macos/windows; the required contexts are 'check (<os>)' for those three"
-if printf '%s\n' "$job" | grep -qE '^    if:'; then
-  fail "$ci check job has a job-level 'if:'; a required context must report on every pull request"
-fi
-printf '%s\n' "$job" | grep -qx '          fetch-depth: 0' ||
+printf '%s\n' "$job" | grep -x '    if: always()' >/dev/null ||
+  fail "$ci check carrier must use always() so routing failures still report"
+printf '%s\n' "$job" | grep -x '    needs: macos-policy' >/dev/null ||
+  fail "$ci check carrier must consume the authoritative classifier"
+printf '%s\n' "$job" | grep -x '          fetch-depth: 0' >/dev/null ||
   fail "$ci check job's checkout is shallow; the affected tier needs the merge base's history"
-printf '%s\n' "$job" | grep -qx '        run: bash scripts/ci-gate-tier.sh' ||
+printf '%s\n' "$job" | grep -x '        run: bash scripts/ci-gate-tier.sh' >/dev/null ||
   fail "$ci check job does not select its tier with scripts/ci-gate-tier.sh"
 # shellcheck disable=SC2016 # GitHub expressions, matched as literal workflow text and never expanded.
 for var in 'EVENT_NAME: ${{ github.event_name }}' 'HEAD_REF: ${{ github.head_ref }}' \
   'BASE_SHA: ${{ github.event.pull_request.base.sha }}' 'BEFORE: ${{ github.event.before }}' \
   'DISPATCH_TIER: ${{ inputs.tier }}'; do
-  printf '%s\n' "$job" | grep -qxF "          $var" ||
+  printf '%s\n' "$job" | grep -xF "          $var" >/dev/null ||
     fail "$ci tier step lacks '$var', so the script cannot see what this run is for"
 done
 affected="$(printf '%s\n' "$job" | awk '/- name: Affected tier \(just check\)$/ { on = 1; next } on && /- (name|uses):/ { exit } on')"
 sweep="$(printf '%s\n' "$job" | awk '/- name: Full sweep \(just check all\)$/ { on = 1; next } on && /- (name|uses):/ { exit } on')"
 [ -n "$affected" ] || fail "$ci check job has no step named 'Affected tier (just check)'"
 [ -n "$sweep" ] || fail "$ci check job has no step named 'Full sweep (just check all)'; scripts/ci-verdict.sh reads that name"
-printf '%s\n' "$affected" | grep -qxF "        if: steps.tier.outputs.tier == 'affected'" ||
+printf '%s\n' "$affected" | grep -F "steps.tier.outputs.tier == 'affected'" >/dev/null ||
   fail "$ci affected step does not run exactly when the tier is 'affected'"
 # shellcheck disable=SC2016 # A GitHub expression, matched as literal workflow text.
 printf '%s\n' "$affected" | grep -qxF '          NX_BASE: ${{ steps.tier.outputs.base }}' ||
   fail "$ci affected step does not hand the derived base to the recipe as NX_BASE"
-printf '%s\n' "$affected" | grep -qx '        run: just check' ||
+printf '%s\n' "$affected" | grep -x '        run: just check' >/dev/null ||
   fail "$ci affected step does not run 'just check'"
-printf '%s\n' "$sweep" | grep -qxF "        if: steps.tier.outputs.tier == 'all'" ||
+printf '%s\n' "$sweep" | grep -F "steps.tier.outputs.tier == 'all'" >/dev/null ||
   fail "$ci sweep step does not run exactly when the tier is 'all'"
-printf '%s\n' "$sweep" | grep -qx '        run: just check all' ||
+printf '%s\n' "$sweep" | grep -x '        run: just check all' >/dev/null ||
   fail "$ci sweep step does not run 'just check all'"
 grep -qF '"Full sweep (just check all)"' scripts/ci-verdict.sh ||
   fail "scripts/ci-verdict.sh no longer reads the step 'Full sweep (just check all)'; the release would trust a run it cannot tell was a sweep"
@@ -175,12 +176,17 @@ plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' .github/workflows/rele
 [ "$plz_prefix" = "$tier_prefix" ] ||
   fail ".github/workflows/release-plz.yml finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
 
+omission="$(sed -n 's/^readonly MACOS_OMISSION_STEP="\([^"]*\)"$/\1/p' scripts/ci-verdict.sh)"
+[ -n "$omission" ] || fail "ci-verdict.sh must name the authorized Mac omission step"
+printf '%s\n' "$job" | grep -xF "      - name: $omission" >/dev/null ||
+  fail "$ci must produce the omission step name ci-verdict.sh consumes"
+
+classifier_prefix="$(sed -n 's/^const RELEASE_BRANCH_PREFIX = "\([^"]*\)";$/\1/p' .github/macos-policy.mjs)"
+[ "$classifier_prefix" = "$tier_prefix" ] || fail "the semantic classifier must recognize the release-plz branch prefix the workflow actually uses"
+
 # The other required contexts keep their names and never wait on `check`.
 for name in pr-title deny llmlint; do
   grep -qx "  $name:" "$ci" || fail "$ci lost its '$name' job, a required context"
 done
-if grep -qE '^    needs:' "$ci"; then
-  fail "$ci gained a 'needs:' edge; a required context behind a failed or skipped job would go unreported"
-fi
 
 echo "check-ci-gate-tier: ok"

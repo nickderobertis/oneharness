@@ -1,0 +1,27 @@
+schema_version: 1
+budgets:
+  # One workflow can occupy several shared Mac slots independently of how many lifecycle runs spend Mac.
+  - id: oneharness-macos-jobs-per-run
+    description: >-
+      Maximum Mac runner job instances per resolved workflow run, including
+      matrices and reusable calls. inner_measure_reason: one run can occupy
+      several shared Mac slots even when the lifecycle run count stays within
+      its bound. Telemetry covers 12 event classes, three diff classes, both PR
+      ownership classes, release architectures and optional-publish combinations.
+    measure: reported
+    direction: max
+    threshold: 1
+    unit: jobs
+    command: [node, macos-budget.mjs, --metric, jobs-per-run, --telemetry, .telemetry/macos-policy.json]
+  # The automatic change lifecycle spends Mac only for ordinary PR assertions and pre-publication builds.
+  - id: oneharness-macos-runs-per-change
+    description: >-
+      Maximum Mac-spending workflow runs across one PR push, base merge,
+      version-only release PR and merge, tag, release and downstream smoke.
+      Explicitly opted-in manual diagnostics are excluded. Recorded telemetry
+      identifies event/workflow/target jobs and the measured source digest.
+    measure: reported
+    direction: max
+    threshold: 2
+    unit: runs
+    command: [node, macos-budget.mjs, --metric, runs-per-change, --telemetry, .telemetry/macos-policy.json]

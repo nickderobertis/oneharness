@@ -803,15 +803,19 @@ hold_to_platforms() {
 }
 
 if [ -n "$platform_records" ]; then
+  darwin_entries="$(tr -d '\r' <"$release_workflow" | awk '/^  build-darwin:/ { inside=1; next } inside && /^  [a-z][a-z-]*:/ { exit } inside && /^    runs-on: / { runner=$2 } inside && /for target in .*apple-darwin/ { sub(/^.*for target in /, ""); sub(/; do.*$/, ""); n=split($0, targets, " "); for (i=1;i<=n;i++) print targets[i] " " runner }')"
   matrix_fix="make its matrix include exactly one entry per [[platform]] in $platforms, with that platform's runner as os"
   hold_to_platforms "$release_workflow's upload matrix" \
-    "$(declared_platforms 1 2 3)" \
+    "$(declared_platforms 1 2 3 | sed '/apple-darwin/s/macos-latest/ubuntu-latest/')" \
     "$(matrix_entries "$release_workflow" upload "target os ext")" \
-    "$matrix_fix and its archive as ext"
+    "keep Darwin publication rows on ubuntu-latest, the other rows on their declared native runners, and each archive as ext"
   for job in build-wheels build-npm; do
     hold_to_platforms "$release_workflow's $job matrix" \
       "$(declared_platforms 1 2)" \
-      "$(matrix_entries "$release_workflow" "$job" "target os")" \
+      "$({
+        matrix_entries "$release_workflow" "$job" "target os"
+        printf '%s\n' "$darwin_entries"
+      })" \
       "$matrix_fix"
   done
   if [ -f "$pr_lane" ]; then

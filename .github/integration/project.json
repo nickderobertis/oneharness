@@ -1,0 +1,55 @@
+{
+  "name": "github-workflows-integration",
+  "projectType": "library",
+  "tags": [
+    "type:test",
+    "lang:javascript"
+  ],
+  "implicitDependencies": [
+    "release-payload-contract"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/.github/workflows/release.yml",
+      "{workspaceRoot}/.github/package.json",
+      "{workspaceRoot}/.github/bun.lock",
+      "{workspaceRoot}/scripts/release-*.mjs",
+      "{workspaceRoot}/scripts/npm-build.mjs",
+      "{workspaceRoot}/release-platforms.toml",
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/crates/oneharness-core/src/**/*",
+      "{workspaceRoot}/crates/oneharness-core/Cargo.toml",
+      "{workspaceRoot}/src/**/*",
+      "{workspaceRoot}/npm/oneharness/**/*",
+      "{workspaceRoot}/pyproject.toml",
+      "{workspaceRoot}/README.md",
+      "{workspaceRoot}/LICENSE",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/CHANGELOG.md",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/.cargo/config.toml",
+      "{workspaceRoot}/scripts/nx"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --check .github/integration/transfer-journey.mjs && node --check .github/integration/rejection-journey.mjs && node --check .github/integration/journey.mjs && node --check .github/integration/setup-journey.mjs"
+      }
+    },
+    "e2e": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "commands": [
+          "node .github/integration/setup-journey.mjs",
+          "node .github/integration/journey.mjs"
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

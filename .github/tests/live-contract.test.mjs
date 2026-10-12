@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, cpSync, writeFileSync } from "node:fs";
+import { readFileSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
@@ -8,6 +8,7 @@ import { history } from "./history.mjs";
 import { evaluate } from "../workflow-graph.mjs";
 // Paid Mac CLI execution requires hosted credentials and a Mac runner.
 // Structural command/credential checks do not claim native execution.
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test("consolidated Mac job retains real live commands and credential bindings from every workflow", () => {
   const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs.check;
   const names = [
@@ -104,7 +105,26 @@ test("real path-routing subprocess reads workflow filters and keeps former contr
     assert.equal(flags.codex, "true");
     assert.equal(flags.variants, "false");
     assert.equal(flags.control, "true");
+    const routed = (head) => {
+      writeFileSync(output, "");
+      execFileSync(process.execPath,[resolve(".github/live-paths.mjs")],{cwd:fixture.cwd,env:{...process.env,BASE_SHA:"base",HEAD_SHA:head,GITHUB_OUTPUT:output}});
+      return Object.fromEntries(readFileSync(output,"utf8").trim().split("\n").map(s=>s.split("=")));
+    };
+    fixture.git("checkout","-q","base");
+    mkdirSync(join(fixture.cwd,"src/commands"),{recursive:true});
+    writeFileSync(join(fixture.cwd,"src/commands/interrupt.rs"),"fn changed() {}\n");
+    fixture.git("add","src/commands/interrupt.rs");fixture.git("commit","-qm","source path");fixture.git("tag","path-source");
+    const source=routed("path-source");
+    assert.equal(source.claude,"true");assert.equal(source.codex,"true");assert.equal(source.variants,"true");assert.equal(source.control,"true");
+    fixture.git("checkout","-q","base");
+    mkdirSync(join(fixture.cwd,"crates/sdk-contract"),{recursive:true});
+    writeFileSync(join(fixture.cwd,"crates/sdk-contract/excluded.md"),"excluded path\n");
+    fixture.git("add","crates/sdk-contract/excluded.md");fixture.git("commit","-qm","excluded path");fixture.git("tag","path-excluded");
+    const excluded=routed("path-excluded");
+    assert.equal(excluded.claude,"false");assert.equal(excluded.codex,"false");assert.equal(excluded.variants,"false");assert.equal(excluded.control,"true");
+
   } finally {
     fixture.dispose();
   }
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

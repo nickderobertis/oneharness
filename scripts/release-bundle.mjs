@@ -17,13 +17,15 @@ import {
   makePayload,
   assertPackageDirectory,
 } from "./release-payload.mjs";
-const { values } = parseArgs({
+let values = {};
+try { ({ values } = parseArgs({
   options: {
     target: { type: "string" },
     out: { type: "string" },
     tag: { type: "string" },
   },
-});
+}));
+ } catch (error) { throw Error(`${error.message}. Next: node scripts/release-bundle.mjs --target <target> --out <directory>.`, {cause:error}); }
 function main() {
 const target = values.target;
 const platforms = readPlatforms();

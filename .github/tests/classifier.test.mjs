@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const cli = resolve(".github/macos-policy.mjs");
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test("real git histories classify automation versions and fail closed on forged/mixed/unreadable PRs", () => {
   const cwd = mkdtempSync(
     join(
@@ -138,6 +139,7 @@ test("real git histories classify automation versions and fail closed on forged/
     assert.equal(run(event, "missing-ref").macosRequired, true);
     assert.equal(run("{").macosRequired, true);
     assert.equal(run({ event_name: "push" }).macosRequired, false);
+    for (const event_name of ["pull_requset","not-an-event",""]) assert.equal(run({...event,event_name}).macosRequired,true);
     writeFileSync(
       join(cwd, "Cargo.lock"),
       'version=4\n[[package]]\nname="oneharness"\nversion="1.0.1"\n[[package]]\nname="serde"\nversion="2.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n',
@@ -162,3 +164,4 @@ test("real git histories classify automation versions and fail closed on forged/
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

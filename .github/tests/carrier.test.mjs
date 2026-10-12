@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
 import { evaluate } from "../workflow-graph.mjs";
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Bash carrier suite runs in github-workflows:test, measured with the workflow tests at about 10 seconds, with no installs or model calls.
 test("real required-result guard permits only completed authorized routing", () => {
   const job = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs
     .check;
@@ -45,3 +46,4 @@ test("real required-result guard permits only completed authorized routing", () 
     );
   assert.ok(omission.run.includes("omitted"));
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

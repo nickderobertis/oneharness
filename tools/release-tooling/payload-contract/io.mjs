@@ -1,3 +1,4 @@
+import {validTarget} from "./contract.mjs";
 // Private release-edge metadata: producer and installers share one versioned shape.
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve, relative, isAbsolute, basename } from "node:path";
@@ -20,10 +21,7 @@ export function readPlatforms() {
     value.some(
       (p) =>
         p === null || typeof p !== "object" || Array.isArray(p) ||
-        typeof p.target !== "string" ||
-        !/^(x86_64|aarch64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)$/.test(
-          p.target,
-        ) ||
+        !validTarget(p.target) ||
         typeof p.npm !== "string" ||
         !/^(linux|darwin|win32)-(x64|arm64)$/.test(p.npm) ||
         !["tar.gz", "zip"].includes(p.archive),
@@ -56,6 +54,8 @@ export function assertPackageDirectory(returned, expected, name, version) {
   const manifest = JSON.parse(
     readFileSync(resolve(candidate, "package.json"), "utf8"),
   );
+  if (manifest === null || typeof manifest !== "object" || Array.isArray(manifest))
+    throw Error(`Invalid package manifest in ${candidate}. Next: rebuild its staging directory.`);
   if (manifest.name !== name || manifest.version !== version)
     throw Error(
       `Package ${candidate} identifies ${manifest.name}@${manifest.version}, expected ${name}@${version}. Next: rebuild its release staging directory.`,

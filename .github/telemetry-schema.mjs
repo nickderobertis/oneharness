@@ -41,7 +41,7 @@ export function assertTelemetry(value) {
   }
   for (const l of value.lifecycle) {
     if (!object(l) || !["source","version-only","dependency-content"].includes(l.diff) || !["off","npm","pypi","both"].includes(l.publish) || typeof l.fork !== "boolean" || !Array.isArray(l.runs)) bad();
-    for (const r of l.runs) if (!string(r.event) || !string(r.action)) bad();
+    for (const r of l.runs) if (!object(r) || !string(r.event) || !string(r.action)) bad();
     l.runs.forEach(run);
   }
   if (

@@ -1,6 +1,5 @@
 schema_version: 1
 budgets:
-  # One workflow can occupy several shared Mac slots independently of how many lifecycle runs spend Mac.
   - id: oneharness-macos-jobs-per-run
     description: >-
       Maximum Mac runner job instances per resolved workflow run, including
@@ -13,7 +12,6 @@ budgets:
     threshold: 1
     unit: jobs
     command: [node, macos-budget.mjs, --metric, jobs-per-run, --telemetry, .telemetry/macos-policy.json]
-  # The automatic change lifecycle spends Mac only for ordinary PR assertions and pre-publication builds.
   - id: oneharness-macos-runs-per-change
     description: >-
       Maximum Mac-spending workflow runs across one PR push, base merge,

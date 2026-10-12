@@ -18,7 +18,9 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
-const { values } = parseArgs({ options: { root: { type: "string" } } });
+let values = {};
+try { ({ values } = parseArgs({ options: { root: { type: "string" } } }));
+ } catch (error) { throw Error(`${error.message}. Next: node scripts/release-install.mjs --root <directory>.`, {cause:error}); }
 function main() {
 if (!values.root) throw Error("Missing --root. Next: pass the staged release bundle directory.");
 const target = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu"}`;
@@ -73,6 +75,7 @@ const prove = (bin) => {
     ),
   );
   if (
+    command === null || typeof command !== "object" || Array.isArray(command) ||
     !Array.isArray(command.results) ||
     command.results.length !== 1 ||
     command.results[0]?.status !== "planned" ||
@@ -87,6 +90,7 @@ const prove = (bin) => {
     ["run", "--harness", "missing-harness", "--prompt", "hello"],
     { env, encoding: "utf8" },
   );
+  if (invalid.error) throw Error(`Cannot start usage proof: ${invalid.error.message}. Next: rebuild the staged executable and inspect its permissions.`,{cause:invalid.error});
   if (invalid.status !== 2)
     throw Error(
       `Invalid harness exited ${invalid.status}, expected 2; stderr: ${invalid.stderr}. Next: inspect this staged CLI usage error.`,
@@ -121,6 +125,9 @@ with tarfile.open(sys.argv[1]) as archive:
     encoding: "utf8",
     stdio: ["ignore", "pipe", "inherit"],
   });
+  const cpu = process.platform === "darwin"
+    ? description.match(/^Mach-O (?:64-bit )?(?:executable )?(x86_64|arm64)\b/)?.[1]
+    : description.match(/^ELF \d+-bit [^,]+,\s*([^,]+)/)?.[1];
   const architecturePattern =
     process.arch === "arm64" ? /arm64|aarch64/ : /x86[_-]64/;
   const wheelArchitecture =
@@ -130,7 +137,7 @@ with tarfile.open(sys.argv[1]) as archive:
         : "aarch64"
       : "x86_64";
   if (
-    !architecturePattern.test(description) ||
+    !cpu || !architecturePattern.test(cpu) ||
     !record.wheel.endsWith(`_${wheelArchitecture}.whl`)
   )
     throw Error(

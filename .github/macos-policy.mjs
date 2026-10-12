@@ -1,3 +1,4 @@
+import { validVersion } from "../tools/release-tooling/payload-contract/contract.mjs";
 import { assertRevision } from "./git-input.mjs";
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -6,9 +7,6 @@ import { pathToFileURL } from "node:url";
 
 const RELEASE_BRANCH_PREFIX = "release-plz-";
 const repository = "nickderobertis/oneharness";
-const version = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
-const validVersion = (value) =>
-  typeof value === "string" && version.test(value);
 const manifests = new Set(["Cargo.toml", "crates/oneharness-core/Cargo.toml"]);
 function git(args, cwd) {
   return execFileSync("git", args, {
@@ -79,6 +77,7 @@ export function classify(event, base, head, cwd = process.cwd()) {
   });
   if (event?.event_name !== undefined && typeof event.event_name !== "string")
     return ordinary("invalid event type");
+  if (event?.event_name !== undefined && event.event_name !== "pull_request" && !["push","release","workflow_run","repository_dispatch","schedule","workflow_dispatch"].includes(event.event_name)) return ordinary("unknown event identity");
   if (event?.event_name && event.event_name !== "pull_request")
     return {
       isReleaseOnly: false,

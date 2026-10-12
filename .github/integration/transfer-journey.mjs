@@ -1,3 +1,4 @@
+import { readPlatforms } from "../../tools/release-tooling/payload-contract/io.mjs";
 import { assertPayload } from "../../tools/release-tooling/payload-contract/contract.mjs";
 // Slow release-edge proof: consume a real native bundle, double only Actions
 // artifact transport and the forge CLI, and execute the workflow's copy/upload
@@ -28,18 +29,20 @@ function render(value, context) {
 }
 const { values } = parseArgs({ options: { root: { type: "string" } } });
 const root = resolve(values.root);
-const target = readdirSync(root).find((t) =>
-  t.includes(
-    process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu",
-  ),
-);
-if (!target)
-  throw Error("Build a native release bundle before the transfer journey");
+const target = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu"}`;
+if (!readPlatforms().some((p) => p.target === target) || !readdirSync(root).includes(target))
+  throw Error(`Missing supported native target ${target}. Next: build it with just release-bundle before the transfer journey.`);
 const source = join(root, target);
 const record = assertPayload(
   JSON.parse(readFileSync(join(source, "payload.json"), "utf8")),
 );
+if (record.target !== target) throw Error(`Transfer target ${target} differs from metadata ${record.target}. Next: rebuild a matching target bundle.`);
 const workflow = parse(readFileSync(".github/workflows/release.yml", "utf8"));
+const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+if (!object(workflow) || !object(workflow.jobs)) throw Error("Invalid release workflow jobs. Next: repair release.yml before staging artifacts.");
+for (const job of ["upload", "publish-pypi", "publish-npm"])
+ if (!object(workflow.jobs[job]) || !Array.isArray(workflow.jobs[job].steps) || workflow.jobs[job].steps.some(step => !object(step)))
+  throw Error(`Invalid release workflow steps ${job}. Next: repair its staging commands.`);
 const work = mkdtempSync(
   join(
     process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(),
@@ -76,7 +79,7 @@ try {
     ["publish-npm", "Stage Darwin packages"],
   ]) {
     const step = workflow.jobs[job].steps.find((s) => s.name === name);
-    if (!step?.run) throw Error(`Missing real transfer step ${job}/${name}`);
+    if (typeof step?.run !== "string" || !step.run.trim()) throw Error(`Missing real transfer step ${job}/${name}`);
     // llmlint: ignore[tests_mirror_real_usage] Execute the actual workflow command after substituting only known expressions; hosted Actions/forge transport is doubled because this proof may not publish a release.
     execFileSync("bash", ["-e", "-c", render(step.run, context)], {
       cwd: work,
@@ -86,6 +89,9 @@ try {
   }
   const archive = `oneharness-${record.tag}-${target}.tar.gz`,
     checksum = `oneharness-${record.tag}-${target}.sha256`;
+  const checksumText=readFileSync(join(source,checksum),'utf8').trim();
+  if (checksumText !== `${hash(join(source,archive))}  ${archive}`)
+    throw Error(`Incorrect archive checksum ${checksumText}. Next: rebuild the release bundle and its sha256 file.`);
   for (const file of [archive, checksum])
     if (hash(join(source, file)) !== hash(join(work, file)))
       throw Error("Archive transfer changed bytes");

@@ -78,5 +78,5 @@ console.log(
 );
 
 console.log(
-  "Budget-site ignore directives were omitted per the planner's final ruling because this repository does not configure budgets_track_product_owner_outcomes. Plain comments retain the approved reasons; llmlint.yml and the two budget bounds remain unchanged.",
+  "Budget-site ignore directives were omitted per the planner's final ruling because this repository does not configure budgets_track_product_owner_outcomes. The registration descriptions retain the approved reasons; llmlint.yml and the two budget bounds remain unchanged.",
 );

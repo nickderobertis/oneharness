@@ -26,6 +26,7 @@ const classes = [
   ["workflow_dispatch", "diagnostic"],
 ];
 const all = workflows();
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test("resolve actual workflow graph for every event/diff/ownership/publish route and record telemetry", () => {
   const scenarios = [];
   const fixture = history();
@@ -335,6 +336,7 @@ test("real budget commands report existing graph telemetry and reject stale or m
     for (const changed of [
       { sourceDigest: "0".repeat(64) },
       { jobsPerRun: -1 },
+      { lifecycle: actual.lifecycle.map((l,i) => i === 0 ? {...l,runs:[null]} : l) },
       { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,action:42} : s) },
       { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,fork:"wrong"} : s) },
       { lifecycle: actual.lifecycle.map((l,i) => i === 0 ? {...l,publish:42} : l) },
@@ -394,3 +396,4 @@ test('GitHub documented include combinations and trigger/dependency status seman
  assert.deepEqual(resolveJobs('dependencies.yml',branch,{'dependencies.yml':{jobs}}).map(j=>j.job),['carrier']);
  for(const result of ['failure','cancelled']) assert.deepEqual(resolveJobs('dependencies.yml',{...branch,outcomes:{parent:{result}}},{'dependencies.yml':{jobs:{...jobs,parent:{'runs-on':'ubuntu-latest'}}}}).map(j=>j.job),['parent','carrier']);
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

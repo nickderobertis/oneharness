@@ -3,11 +3,13 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parse } from "yaml";
+import { SUPPORTED_TARGETS } from "../../tools/release-tooling/payload-contract/contract.mjs";
 import { readPlatforms } from "../../tools/release-tooling/payload-contract/io.mjs";
 import { expand, workflows, resolveJobs } from "../workflow-graph.mjs";
 // Non-native products require their declared release runners. The native
 // builder/install/transport journey runs at the separate integration edge; this contract
 // proves non-native platform declarations and the Mac commands before publishing.
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test("production release graph retains every declared architecture/artifact and Darwin install proofs before uploads", () => {
   const platforms = JSON.parse(
     execFileSync(
@@ -19,6 +21,7 @@ test("production release graph retains every declared architecture/artifact and 
       { encoding: "utf8" },
     ),
   );
+  assert.deepEqual([...SUPPORTED_TARGETS].sort(),platforms.map(p=>p.target).sort());
   const release = parse(readFileSync(".github/workflows/release.yml", "utf8"));
   const darwin = release.jobs["build-darwin"];
   assert.match(darwin["runs-on"], /^macos-/);
@@ -81,6 +84,10 @@ test("production release graph retains every declared architecture/artifact and 
     assert.equal(release.jobs[name]["runs-on"], "windows-11-arm");
 });
 test("real release builder rejects target/tag mismatch before compiling or publishing", () => {
+  for (const script of ["scripts/release-bundle.mjs", "scripts/release-install.mjs"]) {
+    const invalid = spawnSync(process.execPath,[script,"--unexpected"],{encoding:"utf8"});
+    assert.notEqual(invalid.status,0);assert.match(invalid.stderr,/Next: node scripts\/release-/);
+  }
   for (const args of [
     ["--target", "unknown"],
     ["--target", "x86_64-apple-darwin", "--tag", "v0.0.0"],
@@ -109,3 +116,4 @@ test('inventory command derives baseline/final Mac counts and all artifact decla
  for(const p of readPlatforms()) assert.ok(report.includes(`| ${p.target} | ${p.archive} + sha256 + Sigstore bundle | platform wheel | @oneharness/cli-${p.npm} |`));
  assert.match(report,/modeled, not published/);
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

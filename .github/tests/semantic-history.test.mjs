@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { history } from "./history.mjs";
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test("engine manifests, local lock references and parsed changelogs are classified through real git histories", () => {
   const fixture = history();
   const commit = () => {
@@ -71,3 +72,4 @@ test('empty and added/deleted release metadata require Mac via real classifier s
   assert.equal(fixture.classify('deleted').macosRequired,true);
  }finally{fixture.dispose();}
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

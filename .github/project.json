@@ -20,7 +20,6 @@
   },
   "targets": {
     "test": {
-      "//": "llmlint: ignore-block[shell_test_tiers_stay_split] The required classifier/graph subprocess suite is offline, makes no installs or model calls, and measured 12 seconds locally; real packaging and installation remain in the separate integration tier.",
       "executor": "nx:run-commands",
       "cache": false,
       "options": {
@@ -28,8 +27,7 @@
       },
       "outputs": [
         "{projectRoot}/.telemetry/macos-policy.json"
-      ],
-      "//end": "llmlint: ignore-end[shell_test_tiers_stay_split]"
+      ]
     },
     "lint": {
       "executor": "nx:run-commands",

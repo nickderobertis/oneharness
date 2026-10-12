@@ -30,20 +30,53 @@ with tarfile.open(archive,'w:gz') as tar:
 `,archive,content==='unsafe'?'unsafe':'regular',content]);
 }
 try{
- reject('target metadata',(dir,r)=>{r.target=target==='aarch64-apple-darwin'?'x86_64-apple-darwin':'aarch64-apple-darwin';writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Staged target/);
+ reject('malformed metadata',(dir)=>writeFileSync(join(dir,'payload.json'),'{'),/Release installation proof failed/);
+ reject('invalid metadata schema',(dir,r)=>{r.schema_version=999;writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Invalid release payload metadata/);
+ reject('archive link',(dir,r)=>{
+  const archive=join(dir,`oneharness-${r.tag}-${target}.tar.gz`);
+  execFileSync('python3',['-c',`import tarfile,io,sys
+with tarfile.open(sys.argv[1],'w:gz') as t:
+ for name in ['oneharness','README.md','LICENSE','CHANGELOG.md']:
+  item=tarfile.TarInfo(name)
+  if name=='oneharness': item.type=tarfile.SYMTYPE;item.linkname='README.md';t.addfile(item)
+  else: item.size=1;t.addfile(item,io.BytesIO(b'x'))
+`,archive]);
+ },/Unsafe archive members/);
+ reject('wrong executable CPU',(dir,r)=>{
+  const binary=join(dir,'archive','oneharness'), bytes=readFileSync(binary);
+  if(process.platform==='linux') bytes.writeUInt16LE(process.arch==='arm64'?62:183,18);
+  else bytes.writeUInt32LE(process.arch==='arm64'?0x01000007:0x0100000c,4);
+  writeFileSync(binary,bytes);
+  execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
+ },/Artifact architecture mismatch/);
+ reject('target metadata' ,(dir,r)=>{r.target=target==='aarch64-apple-darwin'?'x86_64-apple-darwin':'aarch64-apple-darwin';writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Staged target/);
  for(const mode of ['missing','duplicate','renamed']) reject(`archive ${mode}`,(dir)=>{const a=readdirSync(dir).find(f=>f.endsWith('.tar.gz'));if(mode==='missing')rmSync(join(dir,a));else if(mode==='duplicate')cpSync(join(dir,a),join(dir,'duplicate.tar.gz'));else renameSync(join(dir,a),join(dir,'renamed.tar.gz'));},/Expected .*tar.gz/);
  reject('unsafe archive',(dir,r)=>rewriteArchive(dir,r,'unsafe'),/Unsafe archive members/);
  reject('architecture metadata',(dir,r)=>{r.wheel=r.wheel.replace(/_(?:x86_64|arm64|aarch64)\.whl$/,process.arch==='arm64'?'_x86_64.whl':'_arm64.whl');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Artifact architecture mismatch/);
  reject('corrupt bytes',(dir,r)=>{r.binarySha256='0'.repeat(64);writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Payload reuse failed/);
  reject('CLI version',(dir,r)=>{r.version='99.99.99';r.tag='v99.99.99';const old=readdirSync(dir).find(f=>f.endsWith('.tar.gz'));renameSync(join(dir,old),join(dir,`oneharness-${r.tag}-${target}.tar.gz`));writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Unexpected CLI version/);
  // A staged executable may be wrong despite matching its declared hash and CPU.
- // Patch the real executable's embedded prompt argument to prove planned-report rejection.
+ // Patch the serialized status string to prove planned-report rejection.
  reject('planned report',(dir,r)=>{
   const binary=join(dir,'archive','oneharness');let bytes=readFileSync(binary);
   const original=Buffer.from('planned'), replacement=Buffer.from('broken!');let at=bytes.indexOf(original);assert.ok(at>=0);while(at>=0){replacement.copy(bytes,at);at=bytes.indexOf(original,at+7);}writeFileSync(binary,bytes);
   r.binarySha256=createHash('sha256').update(bytes).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Missing planned command contract/);
+ reject('null CLI report',(dir,r)=>{
+  const binary=join(dir,'archive','oneharness'), source=join(work,'null-report.rs');
+  writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("null");}else{std::process::exit(2);} }`);
+  execFileSync('rustc',[source,'-o',binary]);
+  r.binarySha256=createHash('sha256').update(readFileSync(binary)).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
+  execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
+ },/Missing planned command contract/);
+ reject('usage executable disappears',(dir,r)=>{
+  const binary=join(dir,'archive','oneharness'), source=join(work,'disappearing.rs');
+  writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("{}",r#"{"results":[{"status":"planned","command":["hello"]}]}"#);std::fs::remove_file(std::env::current_exe().unwrap()).unwrap();}else{std::process::exit(2);} }`);
+  execFileSync('rustc',[source,'-o',binary]);
+  r.binarySha256=createHash('sha256').update(readFileSync(binary)).digest('hex');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));
+  execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
+ },/Cannot start usage proof: .*ENOENT/);
  reject('usage exit',(dir,r)=>{
   const binary=join(dir,'archive','oneharness'), source=join(work,'defective.rs');
   writeFileSync(source,`fn main(){ let a:Vec<String>=std::env::args().collect(); if a.contains(&"--version".into()){println!("oneharness ${r.version}");}else if a.contains(&"--print-command".into()){println!("{{\\\"results\\\":[{{\\\"status\\\":\\\"planned\\\",\\\"command\\\":[\\\"hello\\\"]}}]}}");} }`);
@@ -78,5 +111,18 @@ os.replace(path+'.new',path)
  assert.match(proof.binaryDescription,process.arch==='arm64'?/arm64|aarch64/:/x86[_-]64/);
  assert.deepEqual(proof.payloads,{archive:payload.binarySha256,wheel:payload.binarySha256,npm:payload.binarySha256});
  for(const mode of ['missing','duplicate','renamed']) reject(`npm ${mode}`,(dir)=>{const npm=join(dir,'npm'),a=readdirSync(npm).find(f=>f.endsWith('.tgz'));if(mode==='missing')rmSync(join(npm,a));else if(mode==='duplicate')cpSync(join(npm,a),join(npm,'duplicate.tgz'));else renameSync(join(npm,a),join(npm,'renamed.tgz'));},/Expected .*tgz/);
+ const mismatchedTransfer=join(work,'mismatched-transfer');cpSync(join(root,target),join(mismatchedTransfer,target),{recursive:true});
+ const mismatchPath=join(mismatchedTransfer,target,'payload.json'), mismatch=JSON.parse(readFileSync(mismatchPath,'utf8'));
+ mismatch.target=target==='aarch64-apple-darwin'?'x86_64-apple-darwin':'aarch64-apple-darwin';writeFileSync(mismatchPath,JSON.stringify(mismatch));
+ const mismatchRun=spawnSync(process.execPath,['.github/integration/transfer-journey.mjs','--root',mismatchedTransfer],{encoding:'utf8'});
+ assert.notEqual(mismatchRun.status,0);assert.match(mismatchRun.stderr,/Transfer target .* differs from metadata/);
+ const invalidDirectory=join(work,'invalid-directory');cpSync(join(root,target),join(invalidDirectory,target+';true'),{recursive:true});
+ const invalidDirectoryRun=spawnSync(process.execPath,['.github/integration/transfer-journey.mjs','--root',invalidDirectory],{encoding:'utf8'});
+ assert.notEqual(invalidDirectoryRun.status,0);assert.match(invalidDirectoryRun.stderr,/Missing supported native target/);
+ const invalidChecksum=join(work,'invalid-checksum');cpSync(join(root,target),join(invalidChecksum,target),{recursive:true});
+ const checksum=readdirSync(join(invalidChecksum,target)).find(f=>f.endsWith('.sha256'));
+ writeFileSync(join(invalidChecksum,target,checksum),'0'.repeat(64)+'  wrong-archive.tar.gz\n');
+ const transfer=spawnSync(process.execPath,['.github/integration/transfer-journey.mjs','--root',invalidChecksum],{encoding:'utf8'});
+ assert.notEqual(transfer.status,0);assert.match(transfer.stderr,/Incorrect archive checksum/);
  console.log(`release-rejections: ${count} defective staged products rejected by the real installer`);
 }finally{rmSync(work,{recursive:true,force:true});}

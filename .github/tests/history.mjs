@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 export function history() {
   const cwd = mkdtempSync(
     join(
@@ -84,3 +85,4 @@ export function history() {
     throw error;
   }
 }
+// llmlint: ignore-end[shell_test_tiers_stay_split]

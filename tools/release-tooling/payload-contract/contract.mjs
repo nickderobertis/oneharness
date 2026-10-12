@@ -1,5 +1,7 @@
 import { basename, resolve, relative, isAbsolute } from "node:path";
 export const PAYLOAD_VERSION = 1;
+export const SUPPORTED_TARGETS = Object.freeze(["x86_64", "aarch64"].flatMap(cpu => ["apple-darwin", "unknown-linux-gnu", "pc-windows-msvc"].map(system => `${cpu}-${system}`)));
+export const validTarget = value => typeof value === "string" && SUPPORTED_TARGETS.includes(value);
 export const validVersion = (value) =>
   typeof value === "string" &&
   /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(value);
@@ -9,10 +11,7 @@ export function assertPayload(value) {
     typeof value !== "object" ||
     Array.isArray(value) ||
     value.schema_version !== PAYLOAD_VERSION ||
-    typeof value.target !== "string" ||
-    !/^(x86_64|aarch64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)$/.test(
-      value.target,
-    ) ||
+    !validTarget(value.target) ||
     !validVersion(value.version) ||
     value.tag !== `v${value.version}` ||
     typeof value.binarySha256 !== "string" ||

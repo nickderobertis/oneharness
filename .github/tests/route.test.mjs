@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { history } from "./history.mjs";
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test("real routing adapter overrides event identity and writes workflow-consumed output keys", () => {
   const fixture = history();
   try {
@@ -51,6 +52,7 @@ test("real routing adapter overrides event identity and writes workflow-consumed
         macos_required: "true",
         is_release_only: "false",
       });
+    assert.equal(run(payload, "pull_requset").macos_required,"true");
     assert.deepEqual(run(payload, "schedule"), {
       macos_required: "false",
       is_release_only: "false",
@@ -80,3 +82,4 @@ test('real automation guard produces its declared enabled output for secret boun
   }
  }finally{fixture.dispose();}
 });
+// llmlint: ignore-end[shell_test_tiers_stay_split]

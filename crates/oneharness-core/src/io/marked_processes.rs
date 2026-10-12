@@ -342,11 +342,8 @@ mod platform {
 
         use super::super::Needle;
 
-        /// `PROC_UID_ONLY` from `<sys/proc_info.h>`: the pids whose effective
-        /// uid is the one given. `libc` does not export it.
-        const PROC_UID_ONLY: u32 = 4;
-
-        /// Every pid `proc_listpids` reports for the current effective user.
+        /// Every pid `proc_listallpids` reports whose effective uid
+        /// (`proc_pidinfo`'s `pbi_uid`) is the caller's.
         pub(in super::super) fn user_pids() -> io::Result<Vec<u32>> {
             // SAFETY: `geteuid` only reads the caller's credentials.
             let euid = unsafe { libc::geteuid() };
@@ -358,26 +355,47 @@ mod platform {
                 let bytes = libc::c_int::try_from(pids.len() * size_of::<libc::pid_t>())
                     .map_err(|_| io::Error::other("process table too large to list"))?;
                 // SAFETY: `pids` is writable for exactly `bytes` bytes.
-                // llmlint: ignore[changed_behavior_has_e2e] The kernel applies the user filter inside `proc_listpids`, and a second user's process needs root to start, which a test on a CI runner does not have; every macOS test drives this call end to end for the caller's own user.
-                let filled = unsafe {
-                    libc::proc_listpids(PROC_UID_ONLY, euid, pids.as_mut_ptr().cast(), bytes)
-                };
-                if filled < 0 {
+                let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+                if listed < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                let count = usize::try_from(filled).unwrap_or(0) / size_of::<libc::pid_t>();
+                let count = usize::try_from(listed).unwrap_or(0);
                 if count < capacity {
                     pids.truncate(count);
                     return Ok(pids
                         .into_iter()
+                        .filter(|&pid| pid > 0 && owner(pid) == Some(euid))
                         .filter_map(|pid| u32::try_from(pid).ok())
-                        .filter(|&pid| pid != 0)
                         .collect());
                 }
-                // llmlint: ignore[changed_behavior_has_e2e] The retry runs only when the current user has at least as many processes as the buffer holds at the moment of the call, which a test cannot arrange on a shared runner without starting over a thousand processes; every macOS scan runs the ordinary pass above end to end.
+                // llmlint: ignore[changed_behavior_has_e2e] The retry runs only when the table holds at least as many processes as the buffer at the moment of the call, which a test cannot arrange on a shared runner without starting over a thousand processes; every macOS scan runs the ordinary pass above end to end.
                 capacity *= 2;
             }
         }
+
+        // llmlint: ignore-block[changed_behavior_has_e2e] Another user's process needs root to start, which a test on a CI runner does not have, and a query refusal comes only from a process that exited mid-scan; both end in a pid that is not listed. Every macOS test drives the matching side end to end for the caller's own processes.
+        /// The effective uid of `pid`, or `None` when it cannot be read.
+        fn owner(pid: libc::pid_t) -> Option<libc::uid_t> {
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+            let size = libc::c_int::try_from(size_of::<libc::proc_bsdinfo>()).ok()?;
+            // SAFETY: `info` is writable for `size` bytes, the size of the
+            // structure PROC_PIDTBSDINFO fills.
+            let filled = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    info.as_mut_ptr().cast(),
+                    size,
+                )
+            };
+            if filled != size {
+                return None;
+            }
+            // SAFETY: the kernel filled all `size` bytes of the structure.
+            Some(unsafe { info.assume_init() }.pbi_uid)
+        }
+        // llmlint: ignore-end[changed_behavior_has_e2e]
 
         /// Whether the environment `KERN_PROCARGS2` reports for `pid` holds the
         /// entry. The sysctl refuses another user's or a protected process,
@@ -387,6 +405,7 @@ mod platform {
                 .is_some_and(|args| environment(&args).is_some_and(|env| needle.among(env)))
         }
 
+        // llmlint: ignore-block[changed_behavior_has_e2e] Both sysctls refuse only a process the caller may not inspect (another user's, a protected one) or one that exited mid-scan, none of which a test on a CI runner can start on demand; a refusal ends in `None`, which skips the process. Every macOS test drives both calls end to end.
         fn procargs(pid: u32) -> Option<Vec<u8>> {
             let pid = libc::c_int::try_from(pid).ok()?;
             let mut argmax: libc::c_int = 0;
@@ -426,6 +445,7 @@ mod platform {
             buffer.truncate(size);
             Some(buffer)
         }
+        // llmlint: ignore-end[changed_behavior_has_e2e]
 
         /// The environment entries of a `KERN_PROCARGS2` buffer: a native
         /// `int` argc, the executable path, NUL padding, `argc` NUL-terminated
@@ -623,16 +643,17 @@ mod platform {
         kill(pid, needle)
     }
 
+    // llmlint: ignore-block[changed_behavior_has_e2e] Opening with PROCESS_TERMINATE, or terminating, fails for a same-user process only when it is already exiting or has rewritten its DACL against its owner, neither of which a test can stage reliably; the pid is then not recorded, and a process still matching is reported in `survivors` by the final scan.
     /// `TerminateProcess` on `pid`, through the same handle that re-checked it
     /// against the marker, so a reused pid is never the one terminated.
     pub(super) fn kill(pid: u32, needle: &Needle) -> bool {
         let Some(process) = open(pid, PROCESS_TERMINATE) else {
             return false;
         };
-        // llmlint: ignore[changed_behavior_has_e2e] Opening with PROCESS_TERMINATE, or terminating, fails for a same-user process only when it is already exiting or has rewritten its DACL against its owner, neither of which a test can stage reliably; the pid is then not recorded, and a process still matching is reported in `survivors` by the final scan.
         // SAFETY: `process` is a live handle opened with PROCESS_TERMINATE.
         holds(&process, needle) && unsafe { TerminateProcess(process.0, 1) } != 0
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 
     fn open(pid: u32, extra: u32) -> Option<Handle> {
         // SAFETY: OpenProcess takes no pointers; a null result is a refusal.
@@ -773,6 +794,7 @@ mod platform {
         unsafe { (*user.as_ptr().cast::<TOKEN_USER>()).User.Sid }
     }
 
+    // llmlint: ignore-block[changed_behavior_has_e2e] A process under another account needs that account's credentials or an administrator to start, which a CI runner's test does not have, and the query and token refusals come only from such a process or one that exited mid-scan; every outcome other than a match is `false`, which leaves the pid unlisted. Every Windows test drives the matching path end to end.
     fn same_user(pid: u32, own: &[u64]) -> bool {
         // SAFETY: OpenProcess takes no pointers; a null result is a refusal.
         let process = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, pid) };
@@ -789,10 +811,10 @@ mod platform {
         let Ok(theirs) = token_user(token.0) else {
             return false;
         };
-        // llmlint: ignore[changed_behavior_has_e2e] A process under another account needs that account's credentials or an administrator to start, which a CI runner's test does not have; every Windows test drives this comparison's matching side, and its mismatching side differs only in the boolean it returns.
         // SAFETY: both SIDs point into live TOKEN_USER buffers.
         unsafe { EqualSid(sid_of(own), sid_of(&theirs)) != 0 }
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 // llmlint: ignore[changed_behavior_has_e2e] No CI leg runs a platform that is neither Unix nor Windows, so this refusal has nowhere to be tested; it keeps the crate building there, as `io::process` does, and refuses loudly instead of reporting an empty table.

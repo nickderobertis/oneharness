@@ -287,6 +287,7 @@ fn codex_plugins_enabled(argv: &[String]) -> bool {
     (enabled || enable) && !disable
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `catalog_fetched` follows the feature because spike-network-accounting measured exactly that on every launch path (6.9–32.2 MB a turn with plugins on, 0.74–1.33 MB with `--disable plugins`), and the live tier's `codex-launch-network-bytes` budget, which the `oneharness-live-network-budget` plan node registers, is the drift gate against real Codex; this double is not a second source of that fact. Codex's own plugin storage is not modelled.
 /// `MOCK_CODEX_PLUGINS_LOG`: what a Codex process started with `argv` did about
 /// plugins — whether it fetched the remote catalog, and which plugins installed
 /// under its `CODEX_HOME` it loaded — appended as one JSON line. Only a launch
@@ -317,7 +318,9 @@ fn record_codex_plugins(path: &str, argv: &[String]) {
         .expect("MOCK_CODEX_PLUGINS_LOG could not be opened");
     writeln!(log, "{line}").expect("MOCK_CODEX_PLUGINS_LOG could not be written");
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This layout is not a claim about where real Codex keeps plugins: it is this double's own fixture convention, and its one other reader is the e2e helper that installs a plugin under it (`launch_codex` in `crates/oneharness-e2e/tests/cli.rs`), whose journeys fail if the two disagree.
 /// The plugins installed under `$CODEX_HOME/plugins/`, one directory each and
 /// sorted; any other file there is not a plugin. No `plugins/` directory is no
 /// plugins installed. A launch that loads plugins with no `CODEX_HOME` would
@@ -339,6 +342,7 @@ fn installed_codex_plugins() -> Vec<String> {
     loaded.sort();
     loaded
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The stdout scripted for this invocation: MOCK_STDOUT_<attempt> when the
 /// attempt is counted and that knob is set, else MOCK_STDOUT, else `default`.

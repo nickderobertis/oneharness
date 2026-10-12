@@ -37687,12 +37687,14 @@ fn launch_codex_in(
 fn assert_codex_plugin_discovery_fails(
     fx: &ConfigFixture,
     codex_home: Option<&Path>,
+    extra_envs: &[(&str, &str)],
     diagnostic: &str,
 ) {
     let plugins_log = fx.dir.join("codex-plugins.jsonl");
     let log_arg = plugins_log.display().to_string();
     let home_arg = codex_home.map(|home| home.display().to_string());
     let mut envs = vec![("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str())];
+    envs.extend_from_slice(extra_envs);
     let mut removed = Vec::new();
     match &home_arg {
         Some(home) => envs.push(("CODEX_HOME", home.as_str())),
@@ -37743,7 +37745,7 @@ fn an_opted_in_codex_without_a_codex_home_fails_rather_than_loading_nothing() {
         "[harness.codex]\nplugins = true\n",
         "",
     );
-    assert_codex_plugin_discovery_fails(&fx, None, "CODEX_HOME, which is unset");
+    assert_codex_plugin_discovery_fails(&fx, None, &[], "CODEX_HOME, which is unset");
 }
 
 #[test]
@@ -37758,7 +37760,31 @@ fn an_opted_in_codex_whose_plugins_path_is_a_file_fails_rather_than_loading_noth
     let home = fx.dir.join("codex-home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join("plugins"), "not a directory").unwrap();
-    assert_codex_plugin_discovery_fails(&fx, Some(&home), "$CODEX_HOME/plugins could not be read");
+    assert_codex_plugin_discovery_fails(
+        &fx,
+        Some(&home),
+        &[],
+        "$CODEX_HOME/plugins could not be read",
+    );
+}
+
+#[test]
+fn an_opted_in_codex_whose_plugins_listing_fails_part_way_fails_rather_than_loading_some() {
+    // The directory opens and holds a real plugin, then an entry fails to
+    // read: the mock must refuse rather than record the plugins it did list.
+    let fx = ConfigFixture::new(
+        "codex-plugins-list-fault",
+        "[harness.codex]\nplugins = true\n",
+        "",
+    );
+    let home = fx.dir.join("codex-home");
+    std::fs::create_dir_all(home.join("plugins").join("fixture-plugin")).unwrap();
+    assert_codex_plugin_discovery_fails(
+        &fx,
+        Some(&home),
+        &[("MOCK_CODEX_PLUGINS_LIST_FAULT", "1")],
+        "$CODEX_HOME/plugins could not be read: injected listing fault",
+    );
 }
 
 #[test]

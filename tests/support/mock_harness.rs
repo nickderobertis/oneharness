@@ -134,6 +134,10 @@
 //!                              other launch, `--version` among them, is not
 //!                              recorded.
 //!                              It then carries on as it otherwise would.
+//!   MOCK_CODEX_PLUGINS_LIST_FAULT  with MOCK_CODEX_PLUGINS_LOG, if set, an
+//!                              entry of `$CODEX_HOME/plugins/` fails to read
+//!                              after the directory opened, so that refusal
+//!                              can be driven end to end.
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
@@ -333,8 +337,14 @@ fn installed_codex_plugins() -> Vec<String> {
         .expect("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
     // Listing and reading the entries is one fallible step, so a failure part
     // way through the listing takes the same refusal as one opening it.
-    let listed = std::fs::read_dir(std::path::Path::new(&home).join("plugins"))
-        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>());
+    let listed =
+        std::fs::read_dir(std::path::Path::new(&home).join("plugins")).and_then(|entries| {
+            // MOCK_CODEX_PLUGINS_LIST_FAULT: one entry after the real ones fails to
+            // read, the fault no real directory can be made to raise on demand.
+            let fault = std::env::var_os("MOCK_CODEX_PLUGINS_LIST_FAULT")
+                .map(|_| Err(std::io::Error::other("injected listing fault")));
+            entries.chain(fault).collect::<std::io::Result<Vec<_>>>()
+        });
     let entries = match listed {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),

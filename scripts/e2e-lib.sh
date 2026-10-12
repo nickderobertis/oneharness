@@ -1907,11 +1907,11 @@ oh_codex_plugins_flag_order() {
     args=("${args[@]:1}")
     CODEX_HOME="$(oh_native_path "$home")" _oh_codex_feature_value plugins ${args[@]+"${args[@]}"}
     if [ "$_OH_FEATURE_VAL" != "$want" ]; then
-      rm -rf "$home" || note "could not remove the scratch CODEX_HOME $home"
+      rm -rf "$home" || note "could not remove the scratch CODEX_HOME $home; delete it by hand (rm -rf '$home')"
       fail "codex: \`codex features list ${args[*]-}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
     fi
   done <<<"$rows"
-  rm -rf "$home" || fail "could not remove the scratch CODEX_HOME $home"
+  rm -rf "$home" || fail "could not remove the scratch CODEX_HOME $home — check its permissions (ls -la '$home'), then delete it by hand"
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: codex resolves plugins as -c last-wins, then --enable, then --disable, so a caller can re-enable plugins over oneharness's -c features.plugins=false"
 }
@@ -1929,17 +1929,26 @@ _oh_codex_spell() {
 
 # The effective value of one codex feature under the given args, in
 # $_OH_FEATURE_VAL, with codex's own stderr in $_OH_FEATURE_ERR for a failure
-# to quote. Globals rather than stdout, so a caller keeps both.
+# to quote. Globals rather than stdout, so a caller keeps both. A codex that
+# exits non-zero answers nothing, whatever it printed: the value is left empty
+# (which every caller reports as unreadable) and the exit status leads the
+# stderr it quotes.
 #   $1 feature name, then the args to ask under
 _OH_FEATURE_VAL=""
 _OH_FEATURE_ERR=""
 _oh_codex_feature_value() {
-  local feature="$1" err
+  local feature="$1" err listed status=0
   shift
-  err="$(mktemp)"
-  _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk -v feature="$feature" '$1 == feature { print $NF }' | tr -d '\r')" || true
+  err="$(mktemp)" || fail "could not create a scratch file for codex's stderr — check that the host temp dir is writable (df -h \"\${TMPDIR:-/tmp}\")"
+  listed="$(codex features list "$@" </dev/null 2>"$err")" || status=$?
   _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
-  rm -f "$err"
+  rm -f "$err" || note "could not remove the scratch file $err; delete it by hand"
+  _OH_FEATURE_VAL=""
+  if [ "$status" -ne 0 ]; then
+    _OH_FEATURE_ERR="codex exited $status: $_OH_FEATURE_ERR"
+    return 0
+  fi
+  _OH_FEATURE_VAL="$(printf '%s\n' "$listed" | awk -v feature="$feature" '$1 == feature { print $NF }' | tr -d '\r')"
 }
 
 # Whether the harness's own OS sandbox for `mode` can START on this host,

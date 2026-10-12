@@ -7,35 +7,36 @@
 # are held in the gate rather than first exercised on a paid live runner.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-matrix="$root/tests/fixtures/codex-plugins-flag-order.json"
-
-tmp="$(mktemp -d)"
-trap 'rm -rf "$tmp"' EXIT
-
 fail() {
   echo "check-codex-plugins-flag-order: $1" >&2
   echo "  rerun with 'bash -x scripts/check-codex-plugins-flag-order.sh' to inspect the failing case" >&2
   exit 1
 }
 
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || fail "could not resolve the repository root from ${BASH_SOURCE[0]}"
+matrix="$root/tests/fixtures/codex-plugins-flag-order.json"
+
+tmp="$(mktemp -d)" || fail "could not create a scratch dir — check that the host temp dir is writable (df -h \"${TMPDIR:-/tmp}\")"
+trap 'rm -rf "$tmp" || echo "check-codex-plugins-flag-order: could not remove $tmp; delete it by hand" >&2' EXIT
+
 # A `codex` whose `features list` reports `plugins` as `$model` resolves it
 # from its args, appending each call's CODEX_HOME and args to $tmp/calls:
 #   measured  `-c` last-wins, then `--enable`, then `--disable` (real codex)
 #   argv      every spelling applied in argv order, the last winning
 #   silent    prints no `plugins` row at all
+#   crashed   prints the measured row, then exits non-zero
 write_fake_codex() {
   local model="$1" bin="$tmp/bin"
-  rm -rf "$bin" "$tmp/calls"
-  mkdir -p "$bin"
-  cat >"$bin/codex" <<FAKE
+  rm -rf "$bin" "$tmp/calls" || fail "could not clear the previous case's fake codex under $tmp"
+  mkdir -p "$bin" || fail "could not create $bin for the fake codex"
+  cat >"$bin/codex" <<FAKE || fail "could not write the fake codex to $bin/codex"
 #!/usr/bin/env bash
 set -euo pipefail
 [ "\$1 \$2" = "features list" ] || { echo "unexpected codex call: \$*" >&2; exit 2; }
 shift 2
-printf '%s|%s\n' "\${CODEX_HOME:-}" "\$*" >>"$tmp/calls"
+printf '%s|%s\n' "\${CODEX_HOME:-}" "\$*" >>"$tmp/calls" || { echo "fake codex: could not log to $tmp/calls" >&2; exit 2; }
 value=true enable=false disable=false
-while [ \$# -gt 1 ]; do
+while [ "\$#" -gt 1 ]; do
   case "\$1 \$2" in
     "-c features.plugins=true") value=true ;;
     "-c features.plugins=false") value=false ;;
@@ -44,14 +45,15 @@ while [ \$# -gt 1 ]; do
   esac
   shift
 done
-if [ "$model" = measured ]; then
+if [ "$model" != argv ]; then
   [ "\$enable" = true ] && value=true
   [ "\$disable" = true ] && value=false
 fi
 [ "$model" = silent ] || printf 'plugins                                  stable             %s\n' "\$value"
 printf 'shell_tool                               stable             true\n'
+[ "$model" != crashed ] || { echo "fake codex: crashed" >&2; exit 3; }
 FAKE
-  chmod +x "$bin/codex"
+  chmod +x "$bin/codex" || fail "could not make $bin/codex executable"
 }
 
 # The phase's combined output in $out and its exit status in $status, run in a
@@ -63,7 +65,7 @@ run_phase() {
   set -e
 }
 
-rows="$(jq -e '.rows | length' "$matrix")" || fail "could not count the rows of $matrix"
+rows="$(jq -e '.rows | length' "$matrix")" || fail "could not count the rows of $matrix — restore it from git"
 
 # 1. Real codex's precedence passes, asking every row under an empty CODEX_HOME.
 write_fake_codex measured
@@ -73,11 +75,13 @@ case "$out" in
   *"PASS: codex resolves plugins as -c last-wins"*) ;;
   *) fail "a pass must say so, got: $out" ;;
 esac
-calls="$(wc -l <"$tmp/calls" | tr -d ' ')"
+calls="$(wc -l <"$tmp/calls")" || fail "the fake codex left no call log at $tmp/calls"
+calls="${calls//[[:space:]]/}"
 [ "$calls" -eq "$rows" ] || fail "the phase must ask codex all $rows rows, asked $calls: $(cat "$tmp/calls")"
 grep -qx '[^|]*|-c features.plugins=false --enable plugins' "$tmp/calls" ||
   fail "a row's args must reach codex as separate words, got: $(cat "$tmp/calls")"
-home="$(head -n 1 "$tmp/calls" | cut -d'|' -f1)"
+home="$(head -n 1 "$tmp/calls")" || fail "could not read the first call from $tmp/calls"
+home="${home%%|*}"
 case "$home" in
   "" | "${CODEX_HOME:-<unset>}") fail "the phase must ask under its own scratch CODEX_HOME, got '$home'" ;;
 esac
@@ -101,4 +105,13 @@ run_phase
 case "$out" in
   *"left plugins=<unreadable>"*) ;;
   *) fail "an unreadable feature must say so, got: $out" ;;
+esac
+
+# 4. A codex that printed the right row and then failed answered nothing.
+write_fake_codex crashed
+run_phase
+[ "$status" -ne 0 ] || fail "a codex exiting non-zero must fail the phase, got: $out"
+case "$out" in
+  *"left plugins=<unreadable>"*"codex exited 3: fake codex: crashed"*) ;;
+  *) fail "a failed codex must be reported with its exit status and stderr, got: $out" ;;
 esac

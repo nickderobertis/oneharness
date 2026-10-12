@@ -670,7 +670,7 @@ mod platform {
         kill(pid, needle)
     }
 
-    // llmlint: ignore-block[changed_behavior_has_e2e] Opening with PROCESS_TERMINATE, or terminating, fails for a same-user process only when it is already exiting or has rewritten its DACL against its owner, neither of which a test can stage reliably; the pid is then not recorded, and a process still matching is reported in `survivors` by the final scan.
+    // llmlint: ignore-block[changed_behavior_has_e2e] A refused open is driven end to end on Windows by `a_marked_child_started_while_stopping_is_stopped_too`, whose parent denies PROCESS_TERMINATE on itself until its late child is stopped: the pid is then not recorded and is retried on the next scan. `TerminateProcess` failing on a handle that holds PROCESS_TERMINATE needs a process already exiting at that instant, which no test can time; the pid is then not recorded, and a process still matching is reported in `survivors` by the final scan.
     /// `TerminateProcess` on `pid`, through the same handle that re-checked it
     /// against the marker, so a reused pid is never the one terminated.
     pub(super) fn kill(pid: u32, needle: &Needle) -> bool {

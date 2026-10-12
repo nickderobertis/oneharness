@@ -292,12 +292,24 @@ fn run_with_config_in(
     envs: &[(&str, &str)],
     user_config: &std::path::Path,
 ) -> Output {
+    run_with_config_removing(process_cwd, args, envs, &[], user_config)
+}
+
+/// [`run_with_config_in`] with `removed` also cleared from the binary's
+/// environment, for a test of a child that must start without one of them.
+fn run_with_config_removing(
+    process_cwd: Option<&std::path::Path>,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    removed: &[&str],
+    user_config: &std::path::Path,
+) -> Output {
     let mut cmd = Command::new(oneharness_bin());
     if let Some(dir) = process_cwd {
         cmd.current_dir(dir);
     }
     cmd.env("ONEHARNESS_CONFIG", user_config);
-    for var in ENV_OVERRIDE_VARS {
+    for var in ENV_OVERRIDE_VARS.iter().chain(removed) {
         cmd.env_remove(var);
     }
     let redirect = mock_profile_redirect();
@@ -37666,6 +37678,87 @@ fn launch_codex_in(
         argv: received_argv(&argv_file),
         plugins: records.into_iter().next().unwrap(),
     }
+}
+
+/// An opted-in `codex exec` the mock cannot load plugins for: the real
+/// `oneharness` run must fail with the mock's own words, and the mock must
+/// have recorded no launch. `codex_home` is the launch's `CODEX_HOME`, or
+/// `None` to start it with that variable removed.
+fn assert_codex_plugin_discovery_fails(
+    fx: &ConfigFixture,
+    codex_home: Option<&Path>,
+    diagnostic: &str,
+) {
+    let plugins_log = fx.dir.join("codex-plugins.jsonl");
+    let log_arg = plugins_log.display().to_string();
+    let home_arg = codex_home.map(|home| home.display().to_string());
+    let mut envs = vec![("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str())];
+    let mut removed = Vec::new();
+    match &home_arg {
+        Some(home) => envs.push(("CODEX_HOME", home.as_str())),
+        None => removed.push("CODEX_HOME"),
+    }
+    let cwd = fx.cwd();
+    let bin = bin_override("codex");
+    let output = run_with_config_removing(
+        None,
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "go",
+            "--cwd",
+            &cwd,
+            "--bin",
+            &bin,
+            "--compact",
+        ],
+        &envs,
+        &removed,
+        &fx.user_config(),
+    );
+    assert!(!output.status.success(), "{diagnostic}: {output:?}");
+    let result = &json_stdout(&output)["results"][0];
+    assert_eq!(result["status"], "nonzero", "{result}");
+    assert_eq!(result["exit_code"], 101, "{result}");
+    let harness_stderr = result["stderr"].as_str().unwrap();
+    assert!(harness_stderr.contains(diagnostic), "{harness_stderr}");
+    // oneharness quotes the harness's failure on its own stderr too.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(diagnostic), "{stderr}");
+    assert!(
+        !plugins_log.exists(),
+        "a failed discovery recorded a launch: {:?}",
+        std::fs::read_to_string(&plugins_log)
+    );
+}
+
+#[test]
+fn an_opted_in_codex_without_a_codex_home_fails_rather_than_loading_nothing() {
+    // With no CODEX_HOME, real codex would read the developer's `~/.codex`;
+    // the mock refuses instead of reporting an empty, plausible launch.
+    let fx = ConfigFixture::new(
+        "codex-plugins-no-home",
+        "[harness.codex]\nplugins = true\n",
+        "",
+    );
+    assert_codex_plugin_discovery_fails(&fx, None, "CODEX_HOME, which is unset");
+}
+
+#[test]
+fn an_opted_in_codex_whose_plugins_path_is_a_file_fails_rather_than_loading_nothing() {
+    // A `plugins` that is a regular file cannot be listed on any platform; the
+    // mock says so instead of reading it as no plugins installed.
+    let fx = ConfigFixture::new(
+        "codex-plugins-file",
+        "[harness.codex]\nplugins = true\n",
+        "",
+    );
+    let home = fx.dir.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("plugins"), "not a directory").unwrap();
+    assert_codex_plugin_discovery_fails(&fx, Some(&home), "$CODEX_HOME/plugins could not be read");
 }
 
 #[test]

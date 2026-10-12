@@ -69,3 +69,7 @@ windows-sys = { workspace = true, features = [
     "Win32_System_Kernel",
     "Win32_System_Threading",
 ] }
+
+# The marked-process tests' Windows fixture rewrites its own process DACL.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { workspace = true, features = ["Win32_Security_Authorization"] }

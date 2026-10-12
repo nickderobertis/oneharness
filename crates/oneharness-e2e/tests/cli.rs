@@ -37704,7 +37704,7 @@ fn an_opted_in_codex_loads_only_the_plugin_directories_its_codex_home_holds() {
 }
 
 #[test]
-fn a_codex_version_probe_starts_no_codex_and_records_no_plugins() {
+fn a_codex_version_probe_opens_no_session_and_records_no_plugins() {
     // `detect` asks codex its `--version`, which starts no Codex session: the
     // mock records plugins only for `exec` and `app-server`, so a probe leaves
     // no record behind — had it written one, every launch journey's

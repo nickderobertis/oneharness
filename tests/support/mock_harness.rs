@@ -329,13 +329,17 @@ fn record_codex_plugins(path: &str, argv: &[String]) {
 fn installed_codex_plugins() -> Vec<String> {
     let home = std::env::var_os("CODEX_HOME")
         .expect("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
-    let entries = match std::fs::read_dir(std::path::Path::new(&home).join("plugins")) {
+    // Listing and reading the entries is one fallible step, so a failure part
+    // way through the listing takes the same refusal as one opening it.
+    let listed = std::fs::read_dir(std::path::Path::new(&home).join("plugins"))
+        .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>());
+    let entries = match listed {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(err) => panic!("$CODEX_HOME/plugins could not be read: {err}"),
     };
     let mut loaded: Vec<String> = entries
-        .map(|entry| entry.expect("$CODEX_HOME/plugins could not be listed"))
+        .into_iter()
         .filter(|entry| entry.path().is_dir())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();

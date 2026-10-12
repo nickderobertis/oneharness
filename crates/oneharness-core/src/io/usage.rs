@@ -568,10 +568,16 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
+/// `codex app-server --disable plugins --stdio`. Plugins are off whatever the
+/// config's `plugins` says: a rate-limits read loads no plugin, and the catalog
+/// Codex would otherwise download on start (~29 MB) is most of what a probe
+/// costs.
 fn codex_argv(bin: &str) -> Vec<String> {
     vec![
         bin.to_string(),
         "app-server".to_string(),
+        "--disable".to_string(),
+        "plugins".to_string(),
         "--stdio".to_string(),
     ]
 }

@@ -1067,6 +1067,7 @@ pub fn run_supervised(
             } else {
                 PromptDelivery::Argv
             },
+            plugins: cfg.plugins_for(selected_id),
         };
 
         if args.print_command {
@@ -4497,6 +4498,9 @@ struct HarnessPlan {
     /// frame the control channel writes. [`PromptDelivery::Argv`] keeps the argv
     /// byte-identical to an ordinary run.
     delivery: PromptDelivery,
+    /// The identity's resolved `plugins` opt-in ([`FileConfig::plugins_for`]),
+    /// carried apart from `extra` so a variant's own `args` cannot drop it.
+    plugins: bool,
 }
 
 /// The result of building one attempt: the argv to spawn and, when the prompt is
@@ -4580,6 +4584,7 @@ impl HarnessPlan {
             },
             system_file: self.system_file.as_deref(),
             delivery: self.delivery,
+            plugins: self.plugins,
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
         let prompt =
@@ -5253,6 +5258,7 @@ mod tests {
             extra: Vec::new(),
             system_file: None,
             delivery: PromptDelivery::Argv,
+            plugins: false,
         }
     }
 

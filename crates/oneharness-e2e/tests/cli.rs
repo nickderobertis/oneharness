@@ -579,6 +579,8 @@ fn print_command_pins_argv_for_every_harness() {
             "codex",
             &[
                 "exec",
+                "--disable",
+                "plugins",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--json",
                 "hi",
@@ -33485,7 +33487,11 @@ fn control_accepts_a_fallback_chain_whose_candidates_control_differently() {
     assert!(!claude.contains(&"hi".to_string()), "{claude:?}");
     let codex = command(1);
     assert_eq!(results[1]["harness_id"], "codex");
-    assert!(codex.contains(&"app-server".to_string()), "{codex:?}");
+    assert_eq!(
+        codex[1..4],
+        ["app-server", "--disable", "plugins"],
+        "{codex:?}"
+    );
     assert!(!codex.contains(&"hi".to_string()), "{codex:?}");
 
     // The narrower rule that remains: a candidate with NO mechanism is still
@@ -35357,7 +35363,7 @@ fn run_text_view_shows_each_command_under_print_command() {
     );
     assert!(
         text.contains(
-            "codex: planned · exit null · not run\n  command: codex exec --json 'say hi there'\n"
+            "codex: planned · exit null · not run\n  command: codex exec --disable plugins --json 'say hi there'\n"
         ),
         "{text}"
     );

@@ -37491,3 +37491,462 @@ fn unmigrated_history_elsewhere_is_never_warned_about_and_in_scope_once() {
         "{stderr}"
     );
 }
+
+/// The plugin the codex plugin journeys install under their launch's
+/// `CODEX_HOME`, so a launch that loads plugins has one to load.
+const FIXTURE_CODEX_PLUGIN: &str = "oh-fixture-plugin";
+
+/// How a codex plugin journey starts Codex: a plain `run` (`codex exec`), a
+/// `--control` run (`codex app-server`), or the `usage` probe.
+#[derive(Debug, Clone, Copy)]
+enum CodexLaunchPath {
+    Exec,
+    #[cfg(unix)]
+    Control,
+    Usage,
+}
+
+/// What the mock codex was started with, and what it did about plugins.
+struct CodexLaunch {
+    argv: Vec<String>,
+    /// The one `MOCK_CODEX_PLUGINS_LOG` record this launch wrote.
+    plugins: Value,
+}
+
+impl CodexLaunch {
+    fn assert_plugins_off(&self, context: &str) {
+        assert_eq!(
+            self.plugins,
+            serde_json::json!({
+                "subcommand": self.argv[0],
+                "plugins": false,
+                "catalog_fetched": false,
+                "loaded": [],
+            }),
+            "{context}: {:?}",
+            self.argv
+        );
+    }
+
+    fn assert_plugins_loaded(&self, context: &str) {
+        assert_eq!(
+            self.plugins,
+            serde_json::json!({
+                "subcommand": self.argv[0],
+                "plugins": true,
+                "catalog_fetched": true,
+                "loaded": [FIXTURE_CODEX_PLUGIN],
+            }),
+            "{context}: {:?}",
+            self.argv
+        );
+    }
+
+    /// Where `window` first appears in the argv.
+    fn position(&self, window: &[&str]) -> usize {
+        self.argv
+            .windows(window.len())
+            .position(|w| w == window)
+            .unwrap_or_else(|| panic!("{window:?} not in {:?}", self.argv))
+    }
+
+    fn names_plugins(&self) -> bool {
+        self.argv.iter().any(|arg| arg.contains("plugins"))
+    }
+}
+
+/// Start Codex the way a worker would — the real `oneharness` binary over the
+/// project config in `fx`, selecting `harness` (`codex` or `codex:<variant>`),
+/// `passthrough` after `--` — against the mock codex, with
+/// [`FIXTURE_CODEX_PLUGIN`] installed under its `CODEX_HOME`.
+fn launch_codex(
+    fx: &ConfigFixture,
+    path: CodexLaunchPath,
+    harness: &str,
+    passthrough: &[&str],
+) -> CodexLaunch {
+    let home = fx.dir.join("codex-home");
+    std::fs::create_dir_all(home.join("plugins").join(FIXTURE_CODEX_PLUGIN)).unwrap();
+    let argv_file = fx.dir.join("codex.argv");
+    let plugins_log = fx.dir.join("codex-plugins.jsonl");
+    for file in [&argv_file, &plugins_log] {
+        let _ = std::fs::remove_file(file);
+    }
+    let cwd = fx.cwd();
+    let bin = bin_override("codex");
+    let home = home.display().to_string();
+    let argv_arg = argv_file.display().to_string();
+    let log_arg = plugins_log.display().to_string();
+    let mut envs = vec![
+        ("CODEX_HOME", home.as_str()),
+        ("MOCK_ARGV_FILE", argv_arg.as_str()),
+        ("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str()),
+    ];
+    let usage_response = codex_usage_response();
+    #[cfg(unix)]
+    let session_dir = control_store_dir("plugins");
+    #[cfg(unix)]
+    let session_arg = session_dir.display().to_string();
+    #[cfg(unix)]
+    let app_server_log = session_dir.join("app-server.log").display().to_string();
+    let mut args: Vec<&str> = match path {
+        CodexLaunchPath::Exec => vec!["run", "--harness", harness, "--prompt", "go"],
+        #[cfg(unix)]
+        CodexLaunchPath::Control => {
+            envs.push(("MOCK_CODEX_APP_SERVER_LOG", app_server_log.as_str()));
+            envs.push(("MOCK_CODEX_COMPLETE_TURN", "1"));
+            vec![
+                "run",
+                "--harness",
+                harness,
+                "--prompt",
+                "go",
+                "--control",
+                "--session",
+                "plugins",
+                "--session-dir",
+                &session_arg,
+            ]
+        }
+        CodexLaunchPath::Usage => {
+            envs.push(("MOCK_REPLY_AFTER_LINES", "3"));
+            envs.push(("MOCK_STDOUT", usage_response.as_str()));
+            vec!["usage", "--harness", harness]
+        }
+    };
+    args.extend(["--cwd", &cwd, "--bin", &bin, "--compact"]);
+    if !passthrough.is_empty() {
+        args.push("--");
+        args.extend_from_slice(passthrough);
+    }
+    let output = run_with_config(&args, &envs, &fx.user_config());
+    assert!(output.status.success(), "{path:?} {harness}: {output:?}");
+    let records: Vec<Value> = std::fs::read_to_string(&plugins_log)
+        .unwrap_or_else(|err| panic!("codex never started ({path:?} {harness}): {err}"))
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(records.len(), 1, "one launch, one record: {records:?}");
+    CodexLaunch {
+        argv: received_argv(&argv_file),
+        plugins: records.into_iter().next().unwrap(),
+    }
+}
+
+#[test]
+fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passthrough() {
+    // No `plugins` key anywhere: Codex's ~29 MB plugin catalog must not be
+    // fetched on any launch path. The flag sits right after the subcommand, so
+    // the config `args` and the `--` passthrough both follow it.
+    let fx = ConfigFixture::new(
+        "codex-plugins-default",
+        "[harness.codex]\nargs = [\"--config-arg\"]\n",
+        "",
+    );
+    let exec = launch_codex(&fx, CodexLaunchPath::Exec, "codex", &["--passthrough-arg"]);
+    assert_eq!(exec.argv[..3], ["exec", "--disable", "plugins"]);
+    assert!(exec.position(&["--disable"]) < exec.position(&["--config-arg"]));
+    assert!(exec.position(&["--config-arg"]) < exec.position(&["--passthrough-arg"]));
+    exec.assert_plugins_off("exec");
+
+    #[cfg(unix)]
+    {
+        let control = launch_codex(
+            &fx,
+            CodexLaunchPath::Control,
+            "codex",
+            &["--passthrough-arg"],
+        );
+        assert_eq!(
+            control.argv,
+            [
+                "app-server",
+                "--disable",
+                "plugins",
+                "--config-arg",
+                "--passthrough-arg"
+            ]
+        );
+        control.assert_plugins_off("control");
+    }
+
+    let usage = launch_codex(&fx, CodexLaunchPath::Usage, "codex", &[]);
+    assert_eq!(
+        usage.argv,
+        ["app-server", "--disable", "plugins", "--stdio"]
+    );
+    usage.assert_plugins_off("usage");
+}
+
+#[test]
+fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
+    // Codex applies the last of `--disable`/`--enable`/`-c features.plugins=`,
+    // so a caller who asks for plugins — in config `args` or after `--` — must
+    // come after oneharness's default `--disable plugins`, and gets them.
+    let spellings: [&[&str]; 2] = [&["--enable", "plugins"], &["-c", "features.plugins=true"]];
+    for spelling in spellings {
+        let config_args = format!(
+            "[harness.codex]\nargs = [{}]\n",
+            spelling
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        let from_config = ConfigFixture::new("codex-plugins-caller-cfg", &config_args, "");
+        let from_passthrough = ConfigFixture::new("codex-plugins-caller-pt", "", "");
+        for (source, launch) in [
+            (
+                "config args",
+                launch_codex(&from_config, CodexLaunchPath::Exec, "codex", &[]),
+            ),
+            (
+                "passthrough",
+                launch_codex(&from_passthrough, CodexLaunchPath::Exec, "codex", spelling),
+            ),
+        ] {
+            let context = format!("{spelling:?} via {source}");
+            assert_eq!(
+                launch.argv[..3],
+                ["exec", "--disable", "plugins"],
+                "{context}"
+            );
+            assert!(
+                launch.position(&["--disable", "plugins"]) < launch.position(spelling),
+                "{context}: {:?}",
+                launch.argv
+            );
+            launch.assert_plugins_loaded(&context);
+        }
+    }
+}
+
+#[test]
+fn plugins_layer_across_config_files_extends_parents_and_variants() {
+    // A later layer's `Some` overrides an earlier one and its `None` keeps
+    // it, at harness level and inside merged variant maps alike. The user
+    // config is the earlier layer, the project config the later one.
+    let cases: &[(&str, &str, &str, bool)] = &[
+        (
+            "[harness.codex]\nplugins = true\n",
+            "[harness.codex]\nplugins = false\n",
+            "codex",
+            false,
+        ),
+        (
+            "[harness.codex]\nplugins = false\n",
+            "[harness.codex]\nplugins = true\n",
+            "codex",
+            true,
+        ),
+        (
+            "[harness.codex]\nplugins = true\n",
+            "[harness.codex]\nargs = [\"--later\"]\n",
+            "codex",
+            true,
+        ),
+        (
+            "[harness.codex.variant.work]\nplugins = true\n",
+            "[harness.codex.variant.work]\nplugins = false\n",
+            "codex:work",
+            false,
+        ),
+        (
+            "[harness.codex.variant.work]\nplugins = false\n",
+            "[harness.codex.variant.work]\nplugins = true\n",
+            "codex:work",
+            true,
+        ),
+        (
+            "[harness.codex.variant.work]\nplugins = true\n",
+            "[harness.codex.variant.work]\nargs = [\"--later\"]\n",
+            "codex:work",
+            true,
+        ),
+    ];
+    for (user, project, harness, want) in cases {
+        let fx = ConfigFixture::new("codex-plugins-layers", project, user);
+        let launch = launch_codex(&fx, CodexLaunchPath::Exec, harness, &[]);
+        let context = format!("user {user:?} under project {project:?}");
+        if *want {
+            assert!(!launch.names_plugins(), "{context}: {:?}", launch.argv);
+            launch.assert_plugins_loaded(&context);
+        } else {
+            assert_eq!(
+                launch.argv[..3],
+                ["exec", "--disable", "plugins"],
+                "{context}"
+            );
+            launch.assert_plugins_off(&context);
+        }
+    }
+
+    // An `extends` parent sits under the file declaring it the same way.
+    for (child, want) in [
+        ("[harness.codex]\nargs = [\"--child\"]\n", true),
+        ("[harness.codex]\nplugins = false\n", false),
+    ] {
+        let fx = ConfigFixture::new(
+            "codex-plugins-extends",
+            &format!("extends = \"parent.toml\"\n{child}"),
+            "",
+        );
+        std::fs::write(
+            fx.dir.join("parent.toml"),
+            "[harness.codex]\nplugins = true\n",
+        )
+        .unwrap();
+        let launch = launch_codex(&fx, CodexLaunchPath::Exec, "codex", &[]);
+        assert_eq!(!launch.names_plugins(), want, "{child}: {:?}", launch.argv);
+        if want {
+            launch.assert_plugins_loaded(child);
+        } else {
+            launch.assert_plugins_off(child);
+        }
+    }
+}
+
+#[test]
+fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set() {
+    // `plugins = true` is resolved apart from `args`, so neither a variant's
+    // own `args` nor a worker's `--` passthrough can drop it; it reaches
+    // `exec` and `app-server` alike with no plugins flag at all.
+    let fx = ConfigFixture::new(
+        "codex-plugins-optin",
+        "[harness.codex]\nplugins = true\nargs = [\"--harness-arg\"]\n\
+         [harness.codex.variant.own-args]\nargs = [\"--variant-arg\"]\n\
+         [harness.codex.variant.lean]\nplugins = false\n",
+        "",
+    );
+    let mut launches = vec![
+        (
+            "harness level",
+            launch_codex(&fx, CodexLaunchPath::Exec, "codex", &[]),
+        ),
+        (
+            "a variant with its own args",
+            launch_codex(&fx, CodexLaunchPath::Exec, "codex:own-args", &[]),
+        ),
+        (
+            "a worker's passthrough",
+            launch_codex(&fx, CodexLaunchPath::Exec, "codex", &["--worker-arg"]),
+        ),
+    ];
+    #[cfg(unix)]
+    launches.push((
+        "a controlled turn",
+        launch_codex(
+            &fx,
+            CodexLaunchPath::Control,
+            "codex:own-args",
+            &["--worker-arg"],
+        ),
+    ));
+    for (context, launch) in &launches {
+        assert!(!launch.names_plugins(), "{context}: {:?}", launch.argv);
+        launch.assert_plugins_loaded(context);
+    }
+    assert!(launches[1].1.argv.contains(&"--variant-arg".to_string()));
+
+    // A variant's `false` beats the harness's `true`.
+    let lean = launch_codex(&fx, CodexLaunchPath::Exec, "codex:lean", &[]);
+    assert_eq!(lean.argv[..3], ["exec", "--disable", "plugins"]);
+    lean.assert_plugins_off("a variant opting out");
+
+    // The usage probe never loads plugins, whatever the config says.
+    let usage = launch_codex(&fx, CodexLaunchPath::Usage, "codex", &[]);
+    assert_eq!(
+        usage.argv,
+        ["app-server", "--disable", "plugins", "--stdio"]
+    );
+    usage.assert_plugins_off("usage under plugins = true");
+
+    // One variant's opt-in is that variant's alone.
+    let one = ConfigFixture::new(
+        "codex-plugins-one-variant",
+        "[harness.codex.variant.with-plugins]\nplugins = true\n\
+         [harness.codex.variant.plain]\nmodel = \"m\"\n",
+        "",
+    );
+    launch_codex(&one, CodexLaunchPath::Exec, "codex:with-plugins", &[])
+        .assert_plugins_loaded("the opted-in variant");
+    for harness in ["codex", "codex:plain"] {
+        launch_codex(&one, CodexLaunchPath::Exec, harness, &[]).assert_plugins_off(harness);
+    }
+
+    // An `extends` parent's opt-in survives a child that sets `args`, on the
+    // app-server too.
+    let child = ConfigFixture::new(
+        "codex-plugins-extends-optin",
+        "extends = \"parent.toml\"\n[harness.codex]\nargs = [\"--child-arg\"]\n",
+        "",
+    );
+    std::fs::write(
+        child.dir.join("parent.toml"),
+        "[harness.codex]\nplugins = true\n",
+    )
+    .unwrap();
+    let mut paths = vec![CodexLaunchPath::Exec];
+    #[cfg(unix)]
+    paths.push(CodexLaunchPath::Control);
+    for path in paths {
+        let launch = launch_codex(&child, path, "codex", &[]);
+        assert!(!launch.names_plugins(), "{path:?}: {:?}", launch.argv);
+        assert!(launch.argv.contains(&"--child-arg".to_string()));
+        launch.assert_plugins_loaded(&format!("{path:?} under an extends parent"));
+    }
+}
+
+#[test]
+fn plugins_under_a_harness_without_a_plugins_feature_is_refused_at_config_load() {
+    for (project, table) in [
+        (
+            "[harness.claude-code]\nplugins = true\n",
+            "[harness.claude-code]",
+        ),
+        (
+            "[harness.opencode.variant.work]\nplugins = false\n",
+            "[harness.opencode.variant.work]",
+        ),
+    ] {
+        let fx = ConfigFixture::new("plugins-refused", project, "");
+        let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("`plugins`"), "{stderr}");
+        assert!(stderr.contains(table), "{stderr}");
+    }
+}
+
+#[test]
+fn config_reports_the_resolved_plugins_for_each_codex_harness_and_variant() {
+    let fx = ConfigFixture::new(
+        "plugins-report",
+        "[harness.codex.variant.lean]\nplugins = false\n\
+         [harness.codex.variant.inherit]\nargs = [\"--x\"]\n\
+         [harness.claude-code]\nmodel = \"m\"\n",
+        "[harness.codex]\nplugins = true\n",
+    );
+    let output = run_with_config(&["config", "--cwd", &fx.cwd()], &[], &fx.user_config());
+    assert!(output.status.success(), "{output:?}");
+    let report = json_stdout(&output);
+    let user = fx.user_config().display().to_string();
+    let project = fx.dir.join("oneharness.toml").display().to_string();
+    let codex = &report["harness"]["codex"];
+    assert_eq!(
+        codex["plugins"],
+        serde_json::json!({"value": true, "source": user})
+    );
+    assert_eq!(
+        codex["variant"]["lean"]["plugins"],
+        serde_json::json!({"value": false, "source": project})
+    );
+    assert_eq!(
+        codex["variant"]["inherit"]["plugins"],
+        serde_json::json!({"value": true, "source": user})
+    );
+    assert!(
+        report["harness"]["claude-code"].get("plugins").is_none(),
+        "{report}"
+    );
+}

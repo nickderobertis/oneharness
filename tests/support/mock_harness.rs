@@ -120,6 +120,17 @@
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   MOCK_CODEX_PLUGINS_LOG     if set to a path, a launch as `exec` or
+//!                              `app-server` resolves Codex's `plugins` feature
+//!                              from its argv the way Codex does (on unless
+//!                              named; `--disable plugins`, `--enable plugins`
+//!                              and `-c features.plugins=<bool>` applied in argv
+//!                              order, the last winning) and appends one JSON
+//!                              line: `subcommand`, `plugins`, `catalog_fetched`
+//!                              and `loaded` — the plugins installed under
+//!                              `$CODEX_HOME/plugins/` (one directory each)
+//!                              that it loaded, none when the feature is off.
+//!                              It then carries on as it otherwise would.
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
@@ -248,6 +259,65 @@ fn scripted_attempt() -> Option<u32> {
         let _ = std::fs::write(path, attempt.to_string());
         attempt
     })
+}
+
+/// Codex's `plugins` feature as an argv resolves it: on when nothing names it,
+/// then each `--disable plugins`, `--enable plugins` and
+/// `-c features.plugins=<bool>` applied in argv order, the last one winning —
+/// Codex documents both flags as `-c features.<name>=<bool>`, and its `-c`
+/// overrides apply in order. Only those three spellings are modelled; the live
+/// variants phase is what checks the model against real Codex.
+fn codex_plugins_enabled(argv: &[String]) -> bool {
+    let mut enabled = true;
+    for pair in argv.windows(2) {
+        match (pair[0].as_str(), pair[1].as_str()) {
+            ("--disable", "plugins") => enabled = false,
+            ("--enable", "plugins") => enabled = true,
+            ("-c", "features.plugins=true") => enabled = true,
+            ("-c", "features.plugins=false") => enabled = false,
+            _ => {}
+        }
+    }
+    enabled
+}
+
+/// `MOCK_CODEX_PLUGINS_LOG`: what a Codex process started with `argv` did about
+/// plugins — whether it fetched the remote catalog, and which plugins installed
+/// under its `CODEX_HOME` it loaded — appended as one JSON line. Only a launch
+/// of a subcommand that starts Codex (`exec`, `app-server`) is recorded.
+fn record_codex_plugins(path: &str, argv: &[String]) {
+    let Some(subcommand) = argv
+        .first()
+        .filter(|first| matches!(first.as_str(), "exec" | "app-server"))
+    else {
+        return;
+    };
+    let enabled = codex_plugins_enabled(argv);
+    let mut loaded: Vec<String> = Vec::new();
+    if enabled {
+        if let Some(home) = std::env::var_os("CODEX_HOME") {
+            if let Ok(entries) = std::fs::read_dir(std::path::Path::new(&home).join("plugins")) {
+                loaded = entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.path().is_dir())
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .collect();
+                loaded.sort();
+            }
+        }
+    }
+    let line = serde_json::json!({
+        "subcommand": subcommand,
+        "plugins": enabled,
+        "catalog_fetched": enabled,
+        "loaded": loaded,
+    });
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("MOCK_CODEX_PLUGINS_LOG could not be opened");
+    writeln!(log, "{line}").expect("MOCK_CODEX_PLUGINS_LOG could not be written");
 }
 
 /// The stdout scripted for this invocation: MOCK_STDOUT_<attempt> when the
@@ -1514,6 +1584,10 @@ pub fn run() -> ! {
         let _ = std::fs::write(path, argv.join("\n"));
     }
 
+    if let Ok(path) = std::env::var("MOCK_CODEX_PLUGINS_LOG") {
+        record_codex_plugins(&path, &argv);
+    }
+
     // Append one line to the run log (when configured), opening fresh each time so
     // concurrent invocations share the file via the OS's append semantics.
     let log_line = |line: &str| {
@@ -1790,4 +1864,74 @@ pub fn run() -> ! {
         })
         .unwrap_or(0);
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_plugins_enabled;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn codex_plugins_resolve_each_spelling_in_argv_order_last_winning() {
+        let cases: &[(&[&str], bool)] = &[
+            (&["exec", "hi"], true),
+            (&["exec", "--disable", "plugins", "hi"], false),
+            (&["app-server", "--enable", "plugins"], true),
+            (&["exec", "-c", "features.plugins=false", "hi"], false),
+            (&["exec", "-c", "features.plugins=true", "hi"], true),
+            (
+                &["exec", "--disable", "plugins", "--enable", "plugins"],
+                true,
+            ),
+            (
+                &["exec", "--enable", "plugins", "--disable", "plugins"],
+                false,
+            ),
+            (
+                &[
+                    "exec",
+                    "--disable",
+                    "plugins",
+                    "-c",
+                    "features.plugins=true",
+                ],
+                true,
+            ),
+            (
+                &[
+                    "exec",
+                    "-c",
+                    "features.plugins=true",
+                    "--disable",
+                    "plugins",
+                ],
+                false,
+            ),
+            (
+                &[
+                    "app-server",
+                    "-c",
+                    "features.plugins=false",
+                    "--enable",
+                    "plugins",
+                ],
+                true,
+            ),
+            // Other features, and other spellings, leave it alone.
+            (
+                &["exec", "--disable", "apps", "-c", "features.hooks=false"],
+                true,
+            ),
+            (
+                &["exec", "--disable", "plugins", "--enable", "hooks"],
+                false,
+            ),
+        ];
+        for (args, want) in cases {
+            assert_eq!(codex_plugins_enabled(&argv(args)), *want, "{args:?}");
+        }
+    }
 }

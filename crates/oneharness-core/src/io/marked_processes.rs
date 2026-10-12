@@ -336,6 +336,11 @@ mod platform {
 
         /// Whether `/proc/<pid>/environ` holds the entry. A zombie's reads
         /// empty, so a process that has exited never matches.
+        ///
+        /// A failed read is no match. Every stop test drives that branch: once
+        /// the processes a stop ended are reaped, the re-check `Scans::next`
+        /// makes of them fails with `ENOENT`, and a same-user process whose
+        /// environment the kernel withholds fails with `EACCES` on any scan.
         pub(in super::super) fn carries(pid: u32, needle: &Needle) -> bool {
             std::fs::read(format!("/proc/{pid}/environ"))
                 .is_ok_and(|block| needle.among(super::super::terminated_entries(&block)))

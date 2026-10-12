@@ -57,7 +57,7 @@ const report = await new OneHarness().runMock(
 | `MOCK_LOG_FILE` | Append `S`/`E` scheduling lines and `COMPLETE` after a completed stream. |
 | `MOCK_NATIVE_GRANDCHILD_MS` | Launch a native descendant for this many milliseconds. |
 | `MOCK_TICK_FILE` | In native-descendant mode, append one byte per tick. |
-| `MOCK_CODEX_PLUGINS_LOG` | On an `exec`/`app-server` launch, resolve Codex's `plugins` feature from argv (on unless named; `--disable plugins`, `--enable plugins`, `-c features.plugins=<bool>`, last wins) and append a JSON line: `subcommand`, `plugins`, `catalog_fetched`, and the `$CODEX_HOME/plugins/` directories `loaded`. |
+| `MOCK_CODEX_PLUGINS_LOG` | On an `exec`/`app-server` launch, resolve Codex's `plugins` feature from argv by Codex's precedence (on unless named; `-c features.plugins=<bool>` last-wins, then any `--enable plugins`, then any `--disable plugins`) and append a JSON line: `subcommand`, `plugins`, `catalog_fetched`, and the `$CODEX_HOME/plugins/` directories `loaded`. |
 
 The SDK helpers cover stdout, stderr, exit, and latency. Put advanced variables
 in the run options' `env` map; explicit helper script values take precedence.

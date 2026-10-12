@@ -186,7 +186,7 @@ pub struct HarnessConfig {
     pub args: Option<Vec<String>>,
     /// Opt this harness into its plugins feature (`codex` only; refused under
     /// any other harness). Unset means off: oneharness then starts Codex with
-    /// `--disable plugins`, since Codex otherwise downloads its whole remote
+    /// `-c features.plugins=false`, since Codex otherwise downloads its whole remote
     /// plugin catalog on every process start. Resolved apart from `args`, so a
     /// variant or worker that supplies its own `args` keeps the opt-in. See
     /// [`FileConfig::plugins_for`].

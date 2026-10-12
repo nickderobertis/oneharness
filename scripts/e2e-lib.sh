@@ -1869,18 +1869,58 @@ oh_codex_config_override_order() {
       last="$([ "$first" = true ] && printf false || printf true)"
       # The spelling under test comes last: its value must win.
       _oh_codex_spell "$spelling" "features.hooks=$last"
-      _oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}"
+      _oh_codex_feature_value hooks -c "features.hooks=$first" "${_OH_SPELLED[@]}"
       [ "$_OH_FEATURE_VAL" = "$last" ] ||
         fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — that spelling is not a config override codex applies last-wins; drop it from \`sets_codex_sandbox_mode\` (domain/harness.rs) or restate the mode after every caller arg"
       # And first: the plain `-c` after it must win.
       _oh_codex_spell "$spelling" "features.hooks=$first"
-      _oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last"
+      _oh_codex_feature_value hooks "${_OH_SPELLED[@]}" -c "features.hooks=$last"
       [ "$_OH_FEATURE_VAL" = "$last" ] ||
         fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
     done
   done
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
+}
+
+# Model-free: real codex's precedence among the spellings of its `plugins`
+# feature, which two things here rest on — oneharness's plugins-off default
+# (`-c features.plugins=false`, `codex_plugins_off` in domain/harness.rs), which
+# a caller's own `-c features.plugins=true` or `--enable plugins` must still
+# override, and the mock codex's model of it (`codex_plugins_enabled` in
+# tests/support/mock_harness.rs, whose unit test holds these same rows). `-c` is
+# last-wins among itself, then `--enable plugins`, then `--disable plugins`,
+# both toggles applied after every `-c`. Asked under an empty CODEX_HOME, so a
+# config.toml of the host's cannot decide the unnamed default.
+oh_codex_plugins_flag_order() {
+  command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
+  local home want args
+  home="$(mktemp -d)"
+  while IFS='|' read -r want args; do
+    # Each row's args are plain words, split on purpose.
+    # shellcheck disable=SC2086
+    CODEX_HOME="$(oh_native_path "$home")" _oh_codex_feature_value plugins $args
+    if [ "$_OH_FEATURE_VAL" != "$want" ]; then
+      rm -rf "$home"
+      fail "codex: \`codex features list ${args}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
+    fi
+  done <<'ROWS'
+true|
+false|--disable plugins
+true|--enable plugins
+false|-c features.plugins=false
+true|-c features.plugins=false -c features.plugins=true
+false|-c features.plugins=true -c features.plugins=false
+false|--disable plugins --enable plugins
+false|--enable plugins --disable plugins
+false|--disable plugins -c features.plugins=true
+false|-c features.plugins=true --disable plugins
+true|-c features.plugins=false --enable plugins
+true|--enable plugins -c features.plugins=false
+ROWS
+  rm -rf "$home"
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+  note "PASS: codex resolves plugins as -c last-wins, then --enable, then --disable, so a caller can re-enable plugins over oneharness's -c features.plugins=false"
 }
 
 # One spelling of a config override, as argv words in $_OH_SPELLED.
@@ -1894,15 +1934,17 @@ _oh_codex_spell() {
   esac
 }
 
-# The effective value of codex's `hooks` feature under the given args, in
+# The effective value of one codex feature under the given args, in
 # $_OH_FEATURE_VAL, with codex's own stderr in $_OH_FEATURE_ERR for a failure
 # to quote. Globals rather than stdout, so a caller keeps both.
+#   $1 feature name, then the args to ask under
 _OH_FEATURE_VAL=""
 _OH_FEATURE_ERR=""
 _oh_codex_feature_value() {
-  local err
+  local feature="$1" err
+  shift
   err="$(mktemp)"
-  _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk '$1 == "hooks" { print $NF }' | tr -d '\r')" || true
+  _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk -v feature="$feature" '$1 == feature { print $NF }' | tr -d '\r')" || true
   _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
   rm -f "$err"
 }

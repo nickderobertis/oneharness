@@ -579,8 +579,8 @@ fn print_command_pins_argv_for_every_harness() {
             "codex",
             &[
                 "exec",
-                "--disable",
-                "plugins",
+                "-c",
+                "features.plugins=false",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--json",
                 "hi",
@@ -33492,7 +33492,7 @@ fn control_accepts_a_fallback_chain_whose_candidates_control_differently() {
     assert_eq!(results[1]["harness_id"], "codex");
     assert_eq!(
         codex[1..4],
-        ["app-server", "--disable", "plugins"],
+        ["app-server", "-c", "features.plugins=false"],
         "{codex:?}"
     );
     assert!(!codex.contains(&"hi".to_string()), "{codex:?}");
@@ -35366,7 +35366,7 @@ fn run_text_view_shows_each_command_under_print_command() {
     );
     assert!(
         text.contains(
-            "codex: planned · exit null · not run\n  command: codex exec --disable plugins --json 'say hi there'\n"
+            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false --json 'say hi there'\n"
         ),
         "{text}"
     );
@@ -37651,16 +37651,17 @@ fn launch_codex(
 #[test]
 fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passthrough() {
     // No `plugins` key anywhere: Codex's ~29 MB plugin catalog must not be
-    // fetched on any launch path. The flag sits right after the subcommand, so
-    // the config `args` and the `--` passthrough both follow it.
+    // fetched on any launch path. The setting sits right after the subcommand,
+    // so the config `args` and the `--` passthrough both follow it; the usage
+    // probe, which takes no caller args, says `--disable plugins`.
     let fx = ConfigFixture::new(
         "codex-plugins-default",
         "[harness.codex]\nargs = [\"--config-arg\"]\n",
         "",
     );
     let exec = launch_codex(&fx, CodexLaunchPath::Exec, "codex", &["--passthrough-arg"]);
-    assert_eq!(exec.argv[..3], ["exec", "--disable", "plugins"]);
-    assert!(exec.position(&["--disable"]) < exec.position(&["--config-arg"]));
+    assert_eq!(exec.argv[..3], ["exec", "-c", "features.plugins=false"]);
+    assert!(exec.position(&["features.plugins=false"]) < exec.position(&["--config-arg"]));
     assert!(exec.position(&["--config-arg"]) < exec.position(&["--passthrough-arg"]));
     exec.assert_plugins_off("exec");
 
@@ -37672,7 +37673,7 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
     );
     assert_eq!(
         resumed.argv[..4],
-        ["exec", "resume", "--disable", "plugins"]
+        ["exec", "resume", "-c", "features.plugins=false"]
     );
     assert!(resumed.position(&["--config-arg"]) < resumed.position(&["--passthrough-arg"]));
     resumed.assert_plugins_off("exec resume");
@@ -37689,8 +37690,8 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
             control.argv,
             [
                 "app-server",
-                "--disable",
-                "plugins",
+                "-c",
+                "features.plugins=false",
                 "--config-arg",
                 "--passthrough-arg"
             ]
@@ -37708,9 +37709,10 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
 
 #[test]
 fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
-    // Codex applies the last of `--disable`/`--enable`/`-c features.plugins=`,
-    // so a caller who asks for plugins — in config `args` or after `--` — must
-    // come after oneharness's default `--disable plugins`, and gets them.
+    // Codex applies `-c features.plugins=` last-wins and `--enable plugins`
+    // after every `-c`, so a caller who asks for plugins — in config `args` or
+    // after `--` — comes after oneharness's default `-c features.plugins=false`
+    // and gets them, under the mock's model of that precedence.
     let spellings: [&[&str]; 2] = [&["--enable", "plugins"], &["-c", "features.plugins=true"]];
     for spelling in spellings {
         let config_args = format!(
@@ -37734,17 +37736,19 @@ fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
             ),
         ] {
             let context = format!("{spelling:?} via {source}");
+            // What Codex would do with this argv comes first: the caller's
+            // opt-in must actually win, not merely sit later in the argv.
+            launch.assert_plugins_loaded(&context);
             assert_eq!(
                 launch.argv[..3],
-                ["exec", "--disable", "plugins"],
+                ["exec", "-c", "features.plugins=false"],
                 "{context}"
             );
             assert!(
-                launch.position(&["--disable", "plugins"]) < launch.position(spelling),
+                launch.position(&["-c", "features.plugins=false"]) < launch.position(spelling),
                 "{context}: {:?}",
                 launch.argv
             );
-            launch.assert_plugins_loaded(&context);
         }
     }
 }
@@ -37802,7 +37806,7 @@ fn plugins_layer_across_config_files_extends_parents_and_variants() {
         } else {
             assert_eq!(
                 launch.argv[..3],
-                ["exec", "--disable", "plugins"],
+                ["exec", "-c", "features.plugins=false"],
                 "{context}"
             );
             launch.assert_plugins_off(&context);
@@ -37882,7 +37886,7 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
 
     // A variant's `false` beats the harness's `true`.
     let lean = launch_codex(&fx, CodexLaunchPath::Exec, "codex:lean", &[]);
-    assert_eq!(lean.argv[..3], ["exec", "--disable", "plugins"]);
+    assert_eq!(lean.argv[..3], ["exec", "-c", "features.plugins=false"]);
     lean.assert_plugins_off("a variant opting out");
 
     // The usage probe never loads plugins, whatever the config says.
@@ -38026,7 +38030,7 @@ fn list_shows_the_codex_example_command_under_the_resolved_plugins() {
     let default = example("");
     assert_eq!(
         default[1..4],
-        ["exec", "--disable", "plugins"],
+        ["exec", "-c", "features.plugins=false"],
         "{default:?}"
     );
     let opted_in = example("[harness.codex]\nplugins = true\n");

@@ -943,12 +943,17 @@ workspaces for suites.
 **Codex plugins are off by default.** Codex downloads its whole remote plugin
 catalog (about 29 MB from chatgpt.com) on every process start, uncached between
 processes, so a host launching Codex hundreds of times a day spends gigabytes
-on it — and no oneharness run or probe needs a plugin. So every Codex launch
-oneharness makes passes `--disable plugins` right after its subcommand (`codex
-exec --disable plugins …`, `codex app-server --disable plugins`), ahead of the
-config `args` and the `--` passthrough. Codex applies the last of
-`--disable plugins`, `--enable plugins` and `-c features.plugins=<bool>`, so a
-caller's own `--enable plugins` still wins. To turn plugins back on, set
+on it — and no oneharness run or probe needs a plugin. So every Codex turn
+oneharness starts passes `-c features.plugins=false` right after its subcommand
+(`codex exec -c features.plugins=false …`, `codex app-server -c
+features.plugins=false`), ahead of the config `args` and the `--` passthrough.
+That spelling, not `--disable plugins`, is deliberate: Codex applies
+`-c features.plugins=` last-wins, then any `--enable plugins`, then any
+`--disable plugins` (both toggles after every `-c`, wherever they sit), so a
+caller's own later `-c features.plugins=true` or an `--enable plugins` still
+turns plugins on, where nothing could override a `--disable plugins`. The live
+codex suite pins that precedence model-free (`oh_codex_plugins_flag_order`).
+To turn plugins back on from config, set
 `plugins = true` under `[harness.codex]` or one `[harness.codex.variant.<name>]`
 (the variant's value beats the harness's; a later config layer or `extends`
 child beats an earlier one, and one that leaves `plugins` unset keeps it).
@@ -956,7 +961,8 @@ oneharness then adds no plugins flag at all, leaving Codex's own configuration
 in charge. The opt-in is a typed key resolved apart from `args`, so it survives
 a variant or worker that supplies its own `args`. `plugins` under any other
 harness is refused at load. The [`oneharness usage`](#subscription-headroom-oneharness-usage)
-probe never loads plugins, whatever the config says, and `oneharness config`
+probe never loads plugins, whatever the config says (it starts `codex app-server
+--disable plugins --stdio`), and `oneharness config`
 shows the resolved `plugins` for each codex harness and variant.
 
 **The standing-policy path** — a `[[hooks]]` entry synced into the harness's

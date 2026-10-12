@@ -123,9 +123,9 @@
 //!   MOCK_CODEX_PLUGINS_LOG     if set to a path, a launch as `exec` or
 //!                              `app-server` resolves Codex's `plugins` feature
 //!                              from its argv the way Codex does (on unless
-//!                              named; `--disable plugins`, `--enable plugins`
-//!                              and `-c features.plugins=<bool>` applied in argv
-//!                              order, the last winning) and appends one JSON
+//!                              named; `-c features.plugins=<bool>` last-wins,
+//!                              then any `--enable plugins`, then any
+//!                              `--disable plugins`) and appends one JSON
 //!                              line: `subcommand`, `plugins`, `catalog_fetched`
 //!                              and `loaded` — the plugins installed under
 //!                              `$CODEX_HOME/plugins/` (one directory each)
@@ -261,25 +261,26 @@ fn scripted_attempt() -> Option<u32> {
     })
 }
 
-/// Codex's `plugins` feature as an argv resolves it: on when nothing names it,
-/// then each `--disable plugins`, `--enable plugins` and
-/// `-c features.plugins=<bool>` applied in argv order, the last one winning —
-/// `codex exec --help` and `codex app-server --help` (codex-cli 0.159.2)
-/// document both flags as `-c features.<name>=<bool>`, and its `-c` overrides
-/// apply in order. Only those three spellings are modelled.
-// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is a deliberate model of Codex's documented flag semantics, kept to the three spellings by the task that introduced it; nothing hermetic can observe real Codex's feature resolution, and the check against real Codex is the opted-in Codex phase the `oneharness-live-network-budget` plan node adds to `scripts/e2e-variants.sh` (not yet in this tree).
+/// Codex's `plugins` feature as an argv resolves it, by the precedence real
+/// codex applies: on when nothing names it; every `-c features.plugins=<bool>`
+/// in argv order, the last one winning; then any `--enable plugins`; then any
+/// `--disable plugins` — both toggles land after every `-c`, wherever they sit,
+/// and `--disable` beats `--enable`. Only those three spellings are modelled;
+/// `oh_codex_plugins_flag_order` (`scripts/e2e-lib.sh`) pins the same rows
+/// against real codex.
 fn codex_plugins_enabled(argv: &[String]) -> bool {
     let mut enabled = true;
+    let (mut enable, mut disable) = (false, false);
     for pair in argv.windows(2) {
         match (pair[0].as_str(), pair[1].as_str()) {
-            ("--disable", "plugins") => enabled = false,
-            ("--enable", "plugins") => enabled = true,
             ("-c", "features.plugins=true") => enabled = true,
             ("-c", "features.plugins=false") => enabled = false,
+            ("--enable", "plugins") => enable = true,
+            ("--disable", "plugins") => disable = true,
             _ => {}
         }
     }
-    enabled
+    (enabled || enable) && !disable
 }
 
 /// `MOCK_CODEX_PLUGINS_LOG`: what a Codex process started with `argv` did about
@@ -1876,21 +1877,45 @@ mod tests {
     }
 
     #[test]
-    fn codex_plugins_resolve_each_spelling_in_argv_order_last_winning() {
+    fn codex_plugins_resolve_by_codexs_measured_precedence() {
+        // The rows `oh_codex_plugins_flag_order` pins against real codex.
         let cases: &[(&[&str], bool)] = &[
             (&["exec", "hi"], true),
             (&["exec", "--disable", "plugins", "hi"], false),
             (&["app-server", "--enable", "plugins"], true),
             (&["exec", "-c", "features.plugins=false", "hi"], false),
             (&["exec", "-c", "features.plugins=true", "hi"], true),
+            // `-c` is last-wins among itself.
+            (
+                &[
+                    "exec",
+                    "-c",
+                    "features.plugins=false",
+                    "-c",
+                    "features.plugins=true",
+                ],
+                true,
+            ),
+            (
+                &[
+                    "exec",
+                    "-c",
+                    "features.plugins=true",
+                    "-c",
+                    "features.plugins=false",
+                ],
+                false,
+            ),
+            // `--disable` beats `--enable` in either order.
             (
                 &["exec", "--disable", "plugins", "--enable", "plugins"],
-                true,
+                false,
             ),
             (
                 &["exec", "--enable", "plugins", "--disable", "plugins"],
                 false,
             ),
+            // Both toggles apply after every `-c`, wherever they sit.
             (
                 &[
                     "exec",
@@ -1899,7 +1924,7 @@ mod tests {
                     "-c",
                     "features.plugins=true",
                 ],
-                true,
+                false,
             ),
             (
                 &[
@@ -1918,6 +1943,16 @@ mod tests {
                     "features.plugins=false",
                     "--enable",
                     "plugins",
+                ],
+                true,
+            ),
+            (
+                &[
+                    "exec",
+                    "--enable",
+                    "plugins",
+                    "-c",
+                    "features.plugins=false",
                 ],
                 true,
             ),

@@ -939,8 +939,8 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
             [
                 "codex",
                 "exec",
-                "--disable",
-                "plugins",
+                "-c",
+                "features.plugins=false",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--json",
                 prompt,

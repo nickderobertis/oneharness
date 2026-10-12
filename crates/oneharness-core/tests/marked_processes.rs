@@ -617,3 +617,76 @@ fn a_marker_that_cannot_name_a_variable_is_refused() {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
     }
 }
+
+#[test]
+fn only_the_exact_name_and_value_match_never_a_case_or_prefix_variant() {
+    let dir = ScratchDir::new("marked-variants").unwrap();
+    let value = unique_value("exact");
+    let target = Beater::start(dir.path(), "target", Some((MARKER_NAME, &value)), "plain");
+    let lower_name = MARKER_NAME.to_lowercase();
+    let longer_name = format!("{MARKER_NAME}_X");
+    let longer_value = format!("{value}x");
+    let shorter_value = &value[..value.len() - 1];
+    let decoys: Vec<Beater> = [
+        ("lower-name", lower_name.as_str(), value.as_str()),
+        ("longer-name", longer_name.as_str(), value.as_str()),
+        ("longer-value", MARKER_NAME, longer_value.as_str()),
+        ("shorter-value", MARKER_NAME, shorter_value),
+    ]
+    .into_iter()
+    .map(|(label, name, value)| Beater::start(dir.path(), label, Some((name, value)), "plain"))
+    .collect();
+
+    assert_eq!(find_marked(&marker(&value)).unwrap(), [target.pid]);
+    let report = stop_marked(&marker(&value), Duration::from_secs(5)).unwrap();
+    assert_eq!(report.signalled, [target.pid], "{report:?}");
+    assert_stopped(target.pid, &target.ticks);
+    for decoy in &decoys {
+        decoy.assert_alive();
+    }
+}
+
+#[test]
+fn a_zero_deadline_escalates_at_once() {
+    let dir = ScratchDir::new("marked-zero").unwrap();
+    let value = unique_value("zero");
+    let stubborn = Beater::start(
+        dir.path(),
+        "stubborn",
+        Some((MARKER_NAME, &value)),
+        "ignore-stop",
+    );
+
+    let started = Instant::now();
+    let report = stop_marked(&marker(&value), Duration::ZERO).unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(3),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(report.survivors.is_empty(), "{report:?}");
+    assert_eq!(report.signalled, [stubborn.pid], "{report:?}");
+    if cfg!(unix) {
+        // SIGTERM is ignored; with no time to wait, SIGKILL follows at once.
+        assert_eq!(report.killed, [stubborn.pid], "{report:?}");
+    }
+    assert_stopped(stubborn.pid, &stubborn.ticks);
+}
+
+#[test]
+fn an_unrepresentable_deadline_waits_for_the_match_to_go() {
+    let dir = ScratchDir::new("marked-unbounded").unwrap();
+    let value = unique_value("unbounded");
+    let target = Beater::start(dir.path(), "target", Some((MARKER_NAME, &value)), "plain");
+
+    let report = stop_marked(&marker(&value), Duration::MAX).unwrap();
+    assert_eq!(
+        report,
+        StopReport {
+            signalled: vec![target.pid],
+            killed: Vec::new(),
+            survivors: Vec::new(),
+        }
+    );
+    assert_stopped(target.pid, &target.ticks);
+}

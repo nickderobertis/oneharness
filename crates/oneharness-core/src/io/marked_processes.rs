@@ -778,18 +778,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unrepresentable_deadline_waits_until_nothing_matches() {
-        let unused = marker(
-            "ONEHARNESS_MARKED_UNIT",
-            &format!("forever-{}", std::process::id()),
-        );
-        assert_eq!(
-            stop_marked(&unused, Duration::MAX).unwrap(),
-            StopReport::default()
-        );
-    }
-
-    #[test]
     fn nothing_matching_stops_nothing() {
         let unused = marker(
             "ONEHARNESS_MARKED_UNIT",

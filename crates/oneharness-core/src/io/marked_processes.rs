@@ -208,10 +208,10 @@ fn scan(needle: &Needle) -> io::Result<Vec<u32>> {
 /// A validated marker, as the one environment entry it matches.
 struct Needle {
     /// `name=value`, as the bytes a Unix environment holds.
-    #[cfg_attr(windows, allow(dead_code))]
+    #[cfg(unix)]
     bytes: Vec<u8>,
     /// The same entry as the UTF-16 units a Windows environment block holds.
-    #[cfg_attr(not(windows), allow(dead_code))]
+    #[cfg(windows)]
     wide: Vec<u16>,
 }
 
@@ -232,10 +232,13 @@ impl Needle {
         if marker.name.contains('\0') || marker.value.contains('\0') {
             return Err(invalid("an environment entry cannot contain NUL"));
         }
+        #[cfg(any(unix, windows))]
         let entry = format!("{}={}", marker.name, marker.value);
         Ok(Self {
-            wide: entry.encode_utf16().collect(),
+            #[cfg(unix)]
             bytes: entry.into_bytes(),
+            #[cfg(windows)]
+            wide: entry.encode_utf16().collect(),
         })
     }
 
@@ -365,6 +368,7 @@ mod platform {
                         .filter(|&pid| pid != 0)
                         .collect());
                 }
+                // llmlint: ignore[changed_behavior_has_e2e] The retry runs only when the current user has at least as many processes as the buffer holds at the moment of the call, which a test cannot arrange on a shared runner without starting over a thousand processes; every macOS scan runs the ordinary pass above end to end.
                 capacity *= 2;
             }
         }

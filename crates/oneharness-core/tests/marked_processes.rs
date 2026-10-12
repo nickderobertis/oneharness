@@ -430,6 +430,33 @@ fn stopping_a_marked_grandchild_leaves_the_decoys_running() {
 }
 
 #[test]
+fn every_simultaneous_match_is_found_stopped_and_reported() {
+    let dir = ScratchDir::new("marked-several").unwrap();
+    let value = unique_value("several");
+    let marked: Vec<Beater> = ["first", "second", "third"]
+        .into_iter()
+        .map(|label| Beater::start(dir.path(), label, Some((MARKER_NAME, &value)), "plain"))
+        .collect();
+    let mut pids: Vec<u32> = marked.iter().map(|beater| beater.pid).collect();
+    pids.sort_unstable();
+
+    assert_eq!(find_marked(&marker(&value)).unwrap(), pids);
+    let mut report = stop_marked(&marker(&value), Duration::from_secs(5)).unwrap();
+    report.signalled.sort_unstable();
+    assert_eq!(
+        report,
+        StopReport {
+            signalled: pids,
+            killed: Vec::new(),
+            survivors: Vec::new(),
+        }
+    );
+    for beater in &marked {
+        assert_stopped(beater.pid, &beater.ticks);
+    }
+}
+
+#[test]
 fn a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline() {
     let dir = ScratchDir::new("marked-stubborn").unwrap();
     let value = unique_value("stubborn");

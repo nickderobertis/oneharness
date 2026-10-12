@@ -539,7 +539,7 @@ fn a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline() {
 }
 
 /// A marked process that starts a further marked child while it is being
-/// stopped. On Unix the child is started from the `SIGTERM` handler, so it is
+/// stopped. On Unix the child is started once `SIGTERM` has arrived, so it is
 /// always one the stop's first scan could not have seen. On Windows the stop
 /// terminates at once, so the parent starts children continuously instead and
 /// any child created after the first scan listed the process table — up to
@@ -559,8 +559,10 @@ fn a_marked_child_started_while_stopping_is_stopped_too() {
     let report = stop_marked(&marker(&value), Duration::from_secs(5)).unwrap();
     assert!(report.survivors.is_empty(), "{report:?}");
 
-    // The parent records each child before it can exit, so once it is gone
-    // its pid file lists every child it started.
+    // Once the parent is gone its pid file is final. On Unix it records its
+    // one child before exiting; on Windows termination can land between a
+    // spawn and its record, which is why `find_marked` below must also come
+    // back empty.
     await_exit(parent.pid);
     let children = child_pids(&parent.ticks);
     let _children: Vec<Beater> = children

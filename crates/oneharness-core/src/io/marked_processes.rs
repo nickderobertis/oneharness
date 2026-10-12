@@ -603,6 +603,7 @@ mod platform {
     /// and a 32-bit reader cannot address a 64-bit process's memory, so it
     /// would miss every native process while appearing to work.
     pub(super) fn user_pids() -> io::Result<Vec<u32>> {
+        // llmlint: ignore[changed_behavior_has_e2e] Only a 32-bit Windows build takes this branch, and neither Windows leg of the CI gate matrix (x64, ARM64) builds one, so no test there can reach it; the refusal is what keeps such a build from silently reporting an empty table. The WOW64 test covers the reachable half of the 32/64-bit split: a 32-bit target read by the shipped 64-bit reader.
         if cfg!(target_pointer_width = "32") {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,
@@ -759,6 +760,7 @@ mod platform {
         (ok != 0 && done == len).then_some(())
     }
 
+    // llmlint: ignore-block[changed_behavior_has_e2e] These refusals are of the calling process's own token, opened with `TOKEN_QUERY` through the current-process pseudo-handle — a right every process holds over itself, so a test could only stage the failure by stripping its own token's privileges or exhausting the handle table, neither of which an unprivileged CI runner can do and recover from. Each failure is propagated as the scan's `io::Error` rather than swallowed, which is the "the listing itself failed" half of the documented contract; every Windows test drives the success path end to end.
     fn current_process_token() -> io::Result<Handle> {
         let mut token: HANDLE = ptr::null_mut();
         // SAFETY: the pseudo-handle is always valid; `token` is writable.
@@ -793,6 +795,7 @@ mod platform {
         }
         Ok(buffer)
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 
     fn sid_of(user: &[u64]) -> *mut c_void {
         // SAFETY: `user` was filled by GetTokenInformation(TokenUser), so it

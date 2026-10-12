@@ -37573,6 +37573,18 @@ fn launch_codex(
 ) -> CodexLaunch {
     let home = fx.dir.join("codex-home");
     std::fs::create_dir_all(home.join("plugins").join(FIXTURE_CODEX_PLUGIN)).unwrap();
+    launch_codex_in(fx, path, harness, passthrough)
+}
+
+/// [`launch_codex`] over whatever `fx`'s `codex-home` already holds.
+fn launch_codex_in(
+    fx: &ConfigFixture,
+    path: CodexLaunchPath,
+    harness: &str,
+    passthrough: &[&str],
+) -> CodexLaunch {
+    let home = fx.dir.join("codex-home");
+    std::fs::create_dir_all(&home).unwrap();
     let argv_file = fx.dir.join("codex.argv");
     let plugins_log = fx.dir.join("codex-plugins.jsonl");
     for file in [&argv_file, &plugins_log] {
@@ -37589,8 +37601,16 @@ fn launch_codex(
         ("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str()),
     ];
     let usage_response = codex_usage_response();
+    // A control store is named by its tag and this process, so the journeys
+    // running in parallel each take their own tag or share — and tear down —
+    // one directory.
     #[cfg(unix)]
-    let session_dir = control_store_dir("plugins");
+    static CONTROL_STORES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    #[cfg(unix)]
+    let session_dir = control_store_dir(&format!(
+        "plugins{}",
+        CONTROL_STORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     #[cfg(unix)]
     let session_arg = session_dir.display().to_string();
     #[cfg(unix)]
@@ -37646,6 +37666,81 @@ fn launch_codex(
         argv: received_argv(&argv_file),
         plugins: records.into_iter().next().unwrap(),
     }
+}
+
+#[test]
+fn an_opted_in_codex_loads_only_the_plugin_directories_its_codex_home_holds() {
+    // Codex loads a plugin per directory under `$CODEX_HOME/plugins/`: a stray
+    // file there is no plugin, and a home with no `plugins/` at all has none
+    // installed — the catalog is still fetched, since the feature is on.
+    let fx = ConfigFixture::new(
+        "codex-plugins-installed",
+        "[harness.codex]\nplugins = true\n",
+        "",
+    );
+    let plugins = fx.dir.join("codex-home").join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(plugins.join("README.md"), "not a plugin").unwrap();
+    launch_codex(&fx, CodexLaunchPath::Exec, "codex", &[])
+        .assert_plugins_loaded("a stray file beside the plugin");
+
+    let bare = ConfigFixture::new(
+        "codex-plugins-none-installed",
+        "[harness.codex]\nplugins = true\n",
+        "",
+    );
+    let launch = launch_codex_in(&bare, CodexLaunchPath::Exec, "codex", &[]);
+    assert_eq!(
+        launch.plugins,
+        serde_json::json!({
+            "subcommand": "exec",
+            "plugins": true,
+            "catalog_fetched": true,
+            "loaded": [],
+        }),
+        "{:?}",
+        launch.argv
+    );
+}
+
+#[test]
+fn a_codex_version_probe_starts_no_codex_and_records_no_plugins() {
+    // `detect` asks codex its `--version`, which starts no Codex session: the
+    // mock records plugins only for `exec` and `app-server`, so a probe leaves
+    // no record behind — had it written one, every launch journey's
+    // one-record count would be counting probes too.
+    let fx = ConfigFixture::new("codex-plugins-version", "", "");
+    // A home with a plugin to load, so a probe the mock did record would
+    // record cleanly rather than stop on a missing `CODEX_HOME`.
+    let home = fx.dir.join("codex-home");
+    std::fs::create_dir_all(home.join("plugins").join(FIXTURE_CODEX_PLUGIN)).unwrap();
+    let home = home.display().to_string();
+    let argv_file = fx.dir.join("codex.argv");
+    let plugins_log = fx.dir.join("codex-plugins.jsonl");
+    let argv_arg = argv_file.display().to_string();
+    let log_arg = plugins_log.display().to_string();
+    let bin = bin_override("codex");
+    let output = run_with_config(
+        &["detect", "--harness", "codex", "--bin", &bin, "--compact"],
+        &[
+            ("CODEX_HOME", home.as_str()),
+            ("MOCK_ARGV_FILE", argv_arg.as_str()),
+            ("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str()),
+        ],
+        &fx.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    // The version is the mock's ordinary answer, not a panic it printed.
+    assert_eq!(
+        json_stdout(&output)["detected"][0]["version"],
+        "{\"result\":\"mock ok\"}"
+    );
+    let argv = received_argv(&argv_file);
+    assert!(
+        !matches!(argv[0].as_str(), "exec" | "app-server"),
+        "{argv:?}"
+    );
+    assert!(!plugins_log.exists(), "{argv:?} wrote a plugins record");
 }
 
 #[test]

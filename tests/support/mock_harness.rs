@@ -129,7 +129,10 @@
 //!                              line: `subcommand`, `plugins`, `catalog_fetched`
 //!                              and `loaded` — the plugins installed under
 //!                              `$CODEX_HOME/plugins/` (one directory each)
-//!                              that it loaded, none when the feature is off.
+//!                              that it loaded, none when the feature is off
+//!                              (loading them needs `CODEX_HOME` set). Any
+//!                              other launch, `--version` among them, is not
+//!                              recorded.
 //!                              It then carries on as it otherwise would.
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
@@ -296,19 +299,11 @@ fn record_codex_plugins(path: &str, argv: &[String]) {
         return;
     };
     let enabled = codex_plugins_enabled(argv);
-    let mut loaded: Vec<String> = Vec::new();
-    if enabled {
-        if let Some(home) = std::env::var_os("CODEX_HOME") {
-            if let Ok(entries) = std::fs::read_dir(std::path::Path::new(&home).join("plugins")) {
-                loaded = entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.path().is_dir())
-                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
-                    .collect();
-                loaded.sort();
-            }
-        }
-    }
+    let loaded = if enabled {
+        installed_codex_plugins()
+    } else {
+        Vec::new()
+    };
     let line = serde_json::json!({
         "subcommand": subcommand,
         "plugins": enabled,
@@ -321,6 +316,28 @@ fn record_codex_plugins(path: &str, argv: &[String]) {
         .open(path)
         .expect("MOCK_CODEX_PLUGINS_LOG could not be opened");
     writeln!(log, "{line}").expect("MOCK_CODEX_PLUGINS_LOG could not be written");
+}
+
+/// The plugins installed under `$CODEX_HOME/plugins/`, one directory each and
+/// sorted; any other file there is not a plugin. No `plugins/` directory is no
+/// plugins installed. A launch that loads plugins with no `CODEX_HOME` would
+/// read the real `~/.codex`, and an unreadable directory would read as none
+/// installed, so both stop the mock rather than record a launch nobody set up.
+fn installed_codex_plugins() -> Vec<String> {
+    let home = std::env::var_os("CODEX_HOME")
+        .expect("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
+    let entries = match std::fs::read_dir(std::path::Path::new(&home).join("plugins")) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => panic!("$CODEX_HOME/plugins could not be read: {err}"),
+    };
+    let mut loaded: Vec<String> = entries
+        .map(|entry| entry.expect("$CODEX_HOME/plugins could not be listed"))
+        .filter(|entry| entry.path().is_dir())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    loaded.sort();
+    loaded
 }
 
 /// The stdout scripted for this invocation: MOCK_STDOUT_<attempt> when the

@@ -42,6 +42,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 const LIFETIME: Duration = Duration::from_secs(90);
 
 /// The helper entry point. A no-op when this binary runs as a test suite.
+// llmlint: ignore[tests_assert_real_behavior] This is not a test but the fixture entry point the other tests re-execute this binary into: an integration test can only spawn its own binary, and libtest only runs code reached from a test. What each role does is asserted by the tests that spawn it.
 #[test]
 fn role() {
     match std::env::var(ROLE_VAR).as_deref() {
@@ -569,4 +570,23 @@ fn a_marked_process_whose_environment_is_unreadable_is_skipped() {
     let report = stop_marked(&marker(&value), Duration::from_secs(1)).unwrap();
     assert_eq!(report, StopReport::default());
     hidden.assert_alive();
+}
+
+#[test]
+fn a_marker_that_cannot_name_a_variable_is_refused() {
+    let named = |name: &str, value: &str| ProcessMarker {
+        name: name.to_string(),
+        value: value.to_string(),
+    };
+    for bad in [
+        named("", "v"),
+        named("A=B", "v"),
+        named("A\0", "v"),
+        named("A", "v\0"),
+    ] {
+        let error = find_marked(&bad).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
+        let error = stop_marked(&bad, Duration::ZERO).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{bad:?}");
+    }
 }

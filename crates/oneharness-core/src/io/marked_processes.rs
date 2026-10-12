@@ -41,12 +41,13 @@ const KILL_SETTLE: Duration = Duration::from_secs(1);
 /// A process matches when its environment holds `name` with exactly `value`:
 /// the comparison is byte-for-byte (UTF-16 on Windows), with no case folding of
 /// the name, so a marker spelled one way only matches that spelling.
-// llmlint: ignore[invalid_states_unrepresentable] These two public `String` fields are the agreed interface the shared app-server pool builds on, stated field for field in this module's task, so a validating constructor or newtypes would be a contract change made unilaterally. An invalid marker cannot reach a scan: `Needle::new` validates it at both entry points and returns `InvalidInput`, which `a_marker_that_cannot_name_a_variable_is_refused` proves.
+// llmlint: ignore-block[invalid_states_unrepresentable] The two public `String` fields are this module's published interface, which the shared app-server pool is built against; a validating constructor or newtypes would break that interface. An invalid marker never reaches a scan: `Needle::new` validates it at both entry points and returns `InvalidInput`, as the integration test `a_marker_that_cannot_name_a_variable_is_refused` shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessMarker {
     pub name: String,
     pub value: String,
 }
+// llmlint: ignore-end[invalid_states_unrepresentable]
 
 /// What [`stop_marked`] did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -135,6 +136,7 @@ pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<Sto
         if found.is_empty() && scans.conclusive {
             return Ok(report);
         }
+        // llmlint: ignore[changed_behavior_has_e2e] A process first matching during the settle window can only be started from outside the marked set, since every marked process was already killed and a killed process starts nothing; staging that needs an unmarked spawner timed against this loop's scans, which no test can do deterministically. The kill path itself is proven end to end by `a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline`.
         for pid in &found {
             if !report.killed.contains(pid) && platform::kill(*pid, &needle) {
                 report.killed.push(*pid);
@@ -178,7 +180,7 @@ impl<'a> Scans<'a> {
     }
 
     fn next(&mut self) -> io::Result<Vec<u32>> {
-        // llmlint: ignore[changed_behavior_has_e2e] The race this guards is real and proven: `a_marked_child_started_while_stopping_is_stopped_too` drives it end to end, and with this check removed it failed 6 of 30 runs on Linux (0 of 30 with it) when this module was written. It cannot be made deterministic without a seam inside the platform's process listing, which this module deliberately does not expose.
+        // llmlint: ignore[changed_behavior_has_e2e] `a_marked_child_started_while_stopping_is_stopped_too` drives this race end to end, but only probabilistically: the kernel decides where a fork lands relative to a scan's listing and environment reads. Making it deterministic would need a seam inside the platform's process listing, which this module does not expose.
         self.conclusive = self
             .previous
             .iter()
@@ -248,6 +250,7 @@ impl Needle {
 /// Unix, UTF-16 units on Windows. A trailing fragment with no terminator is a
 /// block cut short, and is not an entry: matching it could take a prefix of a
 /// longer value for the marker's.
+// llmlint: ignore[changed_behavior_has_e2e] Every block this reads is produced by the kernel (`/proc`, `KERN_PROCARGS2`) or the target's PEB, so a truncated one cannot be staged by a test through the real interface; the rejection is pinned by the unit test `only_terminated_entries_are_entries`, which runs on every platform.
 fn terminated_entries<T: Copy + Default + PartialEq>(block: &[T]) -> impl Iterator<Item = &[T]> {
     let nul = T::default();
     block
@@ -419,6 +422,7 @@ mod platform {
         /// arguments, then the NUL-terminated environment up to an empty entry.
         /// `None` for a buffer that does not have that shape — a negative argc,
         /// or fewer arguments than it claims.
+        // llmlint: ignore[changed_behavior_has_e2e] The buffer is written by the kernel's `KERN_PROCARGS2` handler, so a malformed one cannot be staged through the real sysctl; the parser's refusals are pinned by `a_malformed_procargs_buffer_has_no_environment`, and its happy path runs end to end in every macOS stop test.
         fn environment(args: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
             let (head, rest) = args.split_at_checked(size_of::<libc::c_int>())?;
             let argc = libc::c_int::from_ne_bytes(head.try_into().ok()?);
@@ -462,6 +466,7 @@ mod platform {
         }
     }
 
+    // llmlint: ignore[changed_behavior_has_e2e] No CI leg runs a Unix other than Linux or macOS, so this refusal has no platform to run a test on; it exists so the crate still builds there and says loudly that the scan is unsupported instead of reporting an empty table.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     mod os {
         use std::io;
@@ -608,6 +613,7 @@ mod platform {
                 &mut written,
             )
         };
+        // llmlint: ignore-block[changed_behavior_has_e2e] A failed query, a corrupt pointer or size, and a short read all come from another process's memory or the kernel, and none can be staged by an unprivileged test on a live process; each ends in `None`, which skips the process, as the integration tests' decoys and protected cases show for the paths that can be staged.
         if status < 0 || info.PebBaseAddress.is_null() {
             return None;
         }
@@ -623,6 +629,7 @@ mod platform {
         let mut units = vec![0u16; size / 2];
         read(process, block, units.as_mut_ptr().cast(), units.len() * 2)?;
         Some(units)
+        // llmlint: ignore-end[changed_behavior_has_e2e]
     }
 
     fn read_word(process: HANDLE, address: usize) -> Option<usize> {
@@ -631,6 +638,7 @@ mod platform {
         Some(word)
     }
 
+    // llmlint: ignore[changed_behavior_has_e2e] A failed or short `ReadProcessMemory` needs a process whose memory changes under the read, which no test can stage on demand; the result is `None`, and the process is skipped.
     fn read(process: HANDLE, address: usize, into: *mut c_void, len: usize) -> Option<()> {
         let mut done = 0usize;
         // SAFETY: `into` is writable for `len` bytes; a failed or short read of
@@ -702,6 +710,7 @@ mod platform {
     }
 }
 
+// llmlint: ignore[changed_behavior_has_e2e] No CI leg runs a platform that is neither Unix nor Windows, so this refusal has nowhere to be tested; it keeps the crate building there, as `io::process` does, and refuses loudly instead of reporting an empty table.
 #[cfg(not(any(unix, windows)))]
 mod platform {
     use std::io;
@@ -736,21 +745,6 @@ mod tests {
         ProcessMarker {
             name: name.to_string(),
             value: value.to_string(),
-        }
-    }
-
-    #[test]
-    fn a_marker_that_cannot_name_a_variable_is_refused() {
-        for bad in [
-            marker("", "v"),
-            marker("A=B", "v"),
-            marker("A\0", "v"),
-            marker("A", "v\0"),
-        ] {
-            let error = find_marked(&bad).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
-            let error = stop_marked(&bad, Duration::ZERO).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{bad:?}");
         }
     }
 

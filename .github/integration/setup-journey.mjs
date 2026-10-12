@@ -1,7 +1,7 @@
 // Drive the real Nx/just/Bun setup boundary in an owned checkout; installed Nx
 // is a linked third-party dependency, while the private install starts absent.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, copyFileSync, rmSync, symlinkSync, statSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync, symlinkSync, statSync, writeFileSync, utimesSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
@@ -17,5 +17,13 @@ try{
  const stamp=statSync(join(work,'.github/node_modules/.bun-install-stamp')).mtimeMs;
  assert.ok(run().includes('github-workflows-integration'));
  assert.equal(statSync(join(work,'.github/node_modules/.bun-install-stamp')).mtimeMs,stamp);
+ let previous=stamp;
+ for(const file of ['.github/bun.lock','.github/package.json']){
+  const next=(previous+5)/1000;utimesSync(join(work,file),next,next);
+  assert.ok(run().includes('github-workflows'));
+  const refreshed=statSync(join(work,'.github/node_modules/.bun-install-stamp')).mtimeMs;
+  assert.ok(refreshed>previous,`${file} freshness must reinstall the private package`);
+  previous=refreshed;
+ }
  console.log('workflow-setup: real Nx entry installs missing locked private tooling once in its own checkout');
 }finally{rmSync(work,{recursive:true,force:true});}

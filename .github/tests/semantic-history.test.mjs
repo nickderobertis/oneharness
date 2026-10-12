@@ -58,3 +58,16 @@ test("engine manifests, local lock references and parsed changelogs are classifi
     fixture.dispose();
   }
 });
+
+test('empty and added/deleted release metadata require Mac via real classifier subprocess',()=>{
+ const fixture=history();
+ try{
+  assert.equal(fixture.classify('base').macosRequired,true);
+  fixture.git('checkout','-q','base');
+  writeFileSync(join(fixture.cwd,'CHANGELOG.md'),'## 1.0.1\n');
+  fixture.git('add','CHANGELOG.md');fixture.git('commit','-qm','added metadata');fixture.git('tag','added');
+  assert.equal(fixture.classify('added').macosRequired,true);
+  fixture.git('checkout','-q','base');fixture.git('rm','Cargo.toml');fixture.git('commit','-qm','deleted metadata');fixture.git('tag','deleted');
+  assert.equal(fixture.classify('deleted').macosRequired,true);
+ }finally{fixture.dispose();}
+});

@@ -43,7 +43,11 @@ fi
 workflow_stamp=.github/node_modules/.bun-install-stamp
 if [ -f .github/bun.lock ] && { [ ! -f "$workflow_stamp" ] || [ .github/bun.lock -nt "$workflow_stamp" ] || [ .github/package.json -nt "$workflow_stamp" ]; }; then
   just --justfile "$root/justfile" --working-directory "$root" github-install || exit 1
-  touch "$workflow_stamp"
+  touch "$workflow_stamp" || {
+    echo "nx: could not write $workflow_stamp." >&2
+    echo "Next: repair permissions in .github/node_modules and rerun just github-install." >&2
+    exit 1
+  }
 fi
 
 # The entry point is whatever the installed package's own `bin` field names.

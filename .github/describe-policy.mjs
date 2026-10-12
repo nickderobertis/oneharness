@@ -1,5 +1,4 @@
 import { assertRevision } from "./git-input.mjs";
-// Derive the scheduling inventory from actual workflow declarations.
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { readPlatforms } from "../tools/release-tooling/payload-contract/io.mjs";

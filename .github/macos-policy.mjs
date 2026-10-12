@@ -99,7 +99,6 @@ export function classify(event, base, head, cwd = process.cwd()) {
   )
     return ordinary("not repository release automation");
   try {
-    // Arguments are git revisions, never shell text or git options.
     assertRevision(base, "base");
     assertRevision(head, "head");
     const paths = git(

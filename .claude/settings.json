@@ -3,7 +3,7 @@
     "allow": [
       "Bash(just bootstrap)",
       "Bash(just github-install)",
-      "Bash(just release-bundle:*)",
+      "Bash(just release-bundle x86_64-unknown-linux-gnu)",
       "Bash(just check)",
       "Bash(just check all)",
       "Bash(just gate)",

@@ -38,6 +38,7 @@
       }
     },
     "budgets": {
+      "//": "llmlint: ignore-block[new_projects_keep_the_graph_uniform] The scheduling contract requires a separate budgets target depending on telemetry-producing test; only the pinned budget CLI compares the two limits.",
       "executor": "nx:run-commands",
       "cache": false,
       "dependsOn": [
@@ -45,7 +46,8 @@
       ],
       "options": {
         "command": "uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml"
-      }
+      },
+      "//end": "llmlint: ignore-end[new_projects_keep_the_graph_uniform]"
     }
   },
   "implicitDependencies": [

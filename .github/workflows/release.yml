@@ -163,12 +163,14 @@ jobs:
           for target in x86_64-apple-darwin aarch64-apple-darwin; do
             just release-bundle "$target" dist/release "$GITHUB_REF_NAME"
           done
+      # llmlint: ignore[release_does_not_regate_an_already_swept_commit] These artifact-specific install/run proofs verify the freshly built archive/wheel/npm bytes before publication; they do not rerun the accepted source-tree gate.
       - name: Install and run native staged products
         run: node scripts/release-install.mjs --root dist/release
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           architecture: x64
+      # llmlint: ignore[release_does_not_regate_an_already_swept_commit] Rosetta verifies the freshly built x86_64 artifact bytes before publication, rather than rerunning the accepted source-tree gate.
       - name: Install and run x86_64 staged products through Rosetta
         run: arch -x86_64 node scripts/release-install.mjs --root dist/release
       - uses: actions/upload-artifact@v4

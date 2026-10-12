@@ -30,10 +30,10 @@ with tarfile.open(archive,'w:gz') as tar:
 `,archive,content==='unsafe'?'unsafe':'regular',content]);
 }
 try{
- reject('target metadata',(dir,r)=>{r.target='aarch64-apple-darwin';writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Staged target/);
+ reject('target metadata',(dir,r)=>{r.target=target==='aarch64-apple-darwin'?'x86_64-apple-darwin':'aarch64-apple-darwin';writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Staged target/);
  for(const mode of ['missing','duplicate','renamed']) reject(`archive ${mode}`,(dir)=>{const a=readdirSync(dir).find(f=>f.endsWith('.tar.gz'));if(mode==='missing')rmSync(join(dir,a));else if(mode==='duplicate')cpSync(join(dir,a),join(dir,'duplicate.tar.gz'));else renameSync(join(dir,a),join(dir,'renamed.tar.gz'));},/Expected .*tar.gz/);
  reject('unsafe archive',(dir,r)=>rewriteArchive(dir,r,'unsafe'),/Unsafe archive members/);
- reject('architecture metadata',(dir,r)=>{r.wheel=r.wheel.replace(/_x86_64\.whl$/,'_arm64.whl').replace(/_aarch64\.whl$/,'_x86_64.whl');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Artifact architecture mismatch/);
+ reject('architecture metadata',(dir,r)=>{r.wheel=r.wheel.replace(/_(?:x86_64|arm64|aarch64)\.whl$/,process.arch==='arm64'?'_x86_64.whl':'_arm64.whl');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Artifact architecture mismatch/);
  reject('corrupt bytes',(dir,r)=>{r.binarySha256='0'.repeat(64);writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Payload reuse failed/);
  reject('CLI version',(dir,r)=>{r.version='99.99.99';r.tag='v99.99.99';const old=readdirSync(dir).find(f=>f.endsWith('.tar.gz'));renameSync(join(dir,old),join(dir,`oneharness-${r.tag}-${target}.tar.gz`));writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Unexpected CLI version/);
  // A staged executable may be wrong despite matching its declared hash and CPU.

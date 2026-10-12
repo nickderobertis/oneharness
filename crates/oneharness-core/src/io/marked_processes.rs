@@ -71,9 +71,11 @@ pub struct StopReport {
 ///
 /// # Errors
 ///
-/// The platform's process listing itself failed, or `marker` cannot name an
-/// environment variable at all ([`io::ErrorKind::InvalidInput`]: an empty name,
-/// a name holding `=`, or a NUL in either half).
+/// - The platform's process listing itself failed.
+/// - [`io::ErrorKind::InvalidInput`], before any scan: `marker` cannot name an
+///   environment variable at all — an empty name, a name holding `=`, or a NUL
+///   in the name or the value. Such a marker could never match, so it is a
+///   caller's bug rather than "nothing to find".
 pub fn find_marked(marker: &ProcessMarker) -> io::Result<Vec<u32>> {
     scan(&Needle::new(marker)?)
 }
@@ -101,9 +103,13 @@ pub fn find_marked(marker: &ProcessMarker) -> io::Result<Vec<u32>> {
 ///
 /// # Errors
 ///
-/// As [`find_marked`]: only a failure of the platform's process listing, or a
-/// marker that cannot name a variable. A process that cannot be signalled is
-/// not an error; it is reported in [`StopReport::survivors`].
+/// - The platform's process listing itself failed.
+/// - [`io::ErrorKind::InvalidInput`], before any scan or signal: `marker`
+///   cannot name an environment variable at all — an empty name, a name
+///   holding `=`, or a NUL in the name or the value.
+///
+/// A process that cannot be signalled is not an error; it is reported in
+/// [`StopReport::survivors`].
 pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<StopReport> {
     let needle = Needle::new(marker)?;
     let give_up = Instant::now().checked_add(deadline);

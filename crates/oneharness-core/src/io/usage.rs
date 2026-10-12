@@ -1207,10 +1207,8 @@ mod tests {
         );
     }
 
-    /// The retry policy is spelled out in prose, which is the only place a
-    /// reader learns how many times the probe asks and how far apart. Changing
-    /// either constant would leave that prose confidently wrong, so the
-    /// sentence is generated from the constants and searched for.
+    /// The codex probe's argv is stated in docs/harness-usage.md, where a
+    /// reader learns what the probe starts; it is generated from `codex_argv`.
     #[test]
     fn documented_codex_probe_argv_tracks_codex_argv() {
         let reference = include_str!("../../../../docs/harness-usage.md")
@@ -1224,6 +1222,10 @@ mod tests {
         );
     }
 
+    /// The retry policy is spelled out in prose, which is the only place a
+    /// reader learns how many times the probe asks and how far apart. Changing
+    /// either constant would leave that prose confidently wrong, so the
+    /// sentence is generated from the constants and searched for.
     #[test]
     fn documented_claude_snapshot_retry_tracks_the_constants() {
         fn collapsed(text: &str) -> String {

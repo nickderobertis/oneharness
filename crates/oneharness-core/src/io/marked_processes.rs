@@ -287,6 +287,7 @@ mod platform {
         }
         // SAFETY: a positive pid addresses exactly that one process, which
         // was re-checked against the marker immediately above.
+        // llmlint: ignore[changed_behavior_has_e2e] `kill` fails for a same-user pid only when the process is already gone (ESRCH), and staging EPERM needs a second user, which only root can create; either way the pid is not recorded, and a process still matching is reported in `survivors` by the final scan.
         unsafe { libc::kill(target, signal) == 0 }
     }
 
@@ -314,6 +315,10 @@ mod platform {
                     continue;
                 };
                 // A process that exited since `read_dir` listed it is skipped.
+                // `a_marked_process_whose_environment_is_unreadable_is_skipped`
+                // runs this branch: a non-dumpable process's `/proc` entry is
+                // owned by root, so it fails this comparison exactly as another
+                // user's process does.
                 if entry.metadata().is_ok_and(|meta| meta.uid() == euid) {
                     pids.push(pid);
                 }
@@ -353,6 +358,7 @@ mod platform {
                 let bytes = libc::c_int::try_from(pids.len() * size_of::<libc::pid_t>())
                     .map_err(|_| io::Error::other("process table too large to list"))?;
                 // SAFETY: `pids` is writable for exactly `bytes` bytes.
+                // llmlint: ignore[changed_behavior_has_e2e] The kernel applies the user filter inside `proc_listpids`, and a second user's process needs root to start, which a test on a CI runner does not have; every macOS test drives this call end to end for the caller's own user.
                 let filled = unsafe {
                     libc::proc_listpids(PROC_UID_ONLY, euid, pids.as_mut_ptr().cast(), bytes)
                 };
@@ -607,6 +613,7 @@ mod platform {
 
     /// Whether `pid`'s environment block holds the entry.
     pub(super) fn carries(pid: u32, needle: &Needle) -> bool {
+        // llmlint: ignore[changed_behavior_has_e2e] A same-user process refuses query and read rights only when it has rewritten its own DACL against its owner, a protection no test fixture should model; the outcome is `false`, which skips the process. Another user's process is excluded earlier, by `same_user`.
         open(pid, 0).is_some_and(|process| holds(&process, needle))
     }
 
@@ -622,6 +629,7 @@ mod platform {
         let Some(process) = open(pid, PROCESS_TERMINATE) else {
             return false;
         };
+        // llmlint: ignore[changed_behavior_has_e2e] Opening with PROCESS_TERMINATE, or terminating, fails for a same-user process only when it is already exiting or has rewritten its DACL against its owner, neither of which a test can stage reliably; the pid is then not recorded, and a process still matching is reported in `survivors` by the final scan.
         // SAFETY: `process` is a live handle opened with PROCESS_TERMINATE.
         holds(&process, needle) && unsafe { TerminateProcess(process.0, 1) } != 0
     }
@@ -781,6 +789,7 @@ mod platform {
         let Ok(theirs) = token_user(token.0) else {
             return false;
         };
+        // llmlint: ignore[changed_behavior_has_e2e] A process under another account needs that account's credentials or an administrator to start, which a CI runner's test does not have; every Windows test drives this comparison's matching side, and its mismatching side differs only in the boolean it returns.
         // SAFETY: both SIDs point into live TOKEN_USER buffers.
         unsafe { EqualSid(sid_of(own), sid_of(&theirs)) != 0 }
     }

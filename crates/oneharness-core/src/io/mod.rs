@@ -24,6 +24,10 @@ pub(crate) mod http;
 // so the binary — a separate crate — drives it here exactly as it drives the
 // other two through `runner` and `server_pool`.
 pub mod http_turn;
+// Finding and stopping the processes whose environment carries a marker
+// variable: the one handle on a command a shared server started, which no
+// process tree this crate owns can reach.
+pub mod marked_processes;
 mod process;
 // The registry description `oneharness list` prints, as a call that returns it.
 pub mod registry;

@@ -1,0 +1,422 @@
+{
+  "scenario": "pool-key",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:15:55",
+  "elapsed_s": 19.828,
+  "paid_turns": 0,
+  "observed": {
+    "process_config_read": {
+      "features.plugins": false,
+      "shell_environment_policy": {
+        "inherit": null,
+        "ignore_default_excludes": null,
+        "exclude": null,
+        "set": {
+          "SPIKE_POLICY_VAR": "from-process-c"
+        },
+        "include_only": null,
+        "filters": null,
+        "experimental_use_profile": null
+      }
+    },
+    "process_c_reaches_shell": {
+      "rpc": {
+        "result": {},
+        "latency_s": 0.001
+      },
+      "exitCode": 0,
+      "output": "TAG=procC\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key\nRUN=codex-network-usage-plan-spikes\nSRV=from-server-env\nPOL=from-process-c\nPPID=514625\n",
+      "parsed": {
+        "TAG": "procC",
+        "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key",
+        "RUN": "codex-network-usage-plan-spikes",
+        "SRV": "from-server-env",
+        "POL": "from-process-c",
+        "PPID": "514625"
+      }
+    },
+    "thread_config_vs_process_c": {
+      "rpc": {
+        "result": {},
+        "latency_s": 0.0
+      },
+      "exitCode": 0,
+      "output": "TAG=threadC\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key\nRUN=codex-network-usage-plan-spikes\nSRV=from-server-env\nPOL=from-thread-config\nPPID=514625\n",
+      "parsed": {
+        "TAG": "threadC",
+        "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key",
+        "RUN": "codex-network-usage-plan-spikes",
+        "SRV": "from-server-env",
+        "POL": "from-thread-config",
+        "PPID": "514625"
+      }
+    },
+    "thread_plugins_true_thread_start": {
+      "result": {
+        "model": "gpt-6.1-sol",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key"
+        ],
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      },
+      "latency_s": 0.388
+    },
+    "plugin_list_after_thread_plugins_true": {
+      "ok": true,
+      "keys": [
+        "marketplaces",
+        "marketplaceLoadErrors",
+        "featuredPluginIds"
+      ]
+    },
+    "thread_plugins_true_network": {
+      "rx_bytes": 1870677,
+      "tx_bytes": 114327,
+      "new_connections": 7,
+      "new_peers": [
+        "104.18.32.47"
+      ]
+    },
+    "experimental_features": [
+      [
+        "analytics_plan_history",
+        false,
+        "beta"
+      ],
+      [
+        "daemon_auto_start",
+        true,
+        "stable"
+      ],
+      [
+        "transcript_v2",
+        false,
+        "deprecated"
+      ],
+      [
+        "undo",
+        false,
+        "removed"
+      ],
+      [
+        "shell_tool",
+        true,
+        "stable"
+      ],
+      [
+        "view_image",
+        true,
+        "stable"
+      ],
+      [
+        "sleep_tool",
+        true,
+        "stable"
+      ],
+      [
+        "secret_auth_storage",
+        false,
+        "stable"
+      ],
+      [
+        "unified_exec",
+        true,
+        "stable"
+      ],
+      [
+        "unified_exec_tty",
+        true,
+        "stable"
+      ],
+      [
+        "shell_zsh_fork",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "unified_exec_zsh_fork",
+        true,
+        "removed"
+      ],
+      [
+        "shell_snapshot",
+        true,
+        "stable"
+      ],
+      [
+        "powershell_shell_version",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "shell_snapshot_v2",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "deferred_executor",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "cwd_relative_turn_diffs",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "js_repl",
+        false,
+        "removed"
+      ],
+      [
+        "content_item_kinds",
+        true,
+        "stable"
+      ],
+      [
+        "executed_tool_call_metadata",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "code_mode",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "code_mode_buffered_exec",
+        false,
+        "removed"
+      ],
+      [
+        "code_mode_host",
+        true,
+        "stable"
+      ],
+      [
+        "code_mode_prewarm",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "code_mode_interrupt",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "instant_interrupt",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "code_mode_only",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "js_repl_tools_only",
+        false,
+        "removed"
+      ],
+      [
+        "terminal_resize_reflow",
+        true,
+        "removed"
+      ],
+      [
+        "web_search_request",
+        false,
+        "deprecated"
+      ],
+      [
+        "web_search_cached",
+        false,
+        "deprecated"
+      ],
+      [
+        "standalone_web_search",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "search_tool",
+        false,
+        "removed"
+      ],
+      [
+        "codex_git_commit",
+        false,
+        "removed"
+      ],
+      [
+        "runtime_metrics",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "sqlite",
+        true,
+        "removed"
+      ],
+      [
+        "memories",
+        false,
+        "stable"
+      ],
+      [
+        "external_agent_memory_import",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "local_thread_store_compression",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "local_thread_store_shared_compression",
+        false,
+        "removed"
+      ],
+      [
+        "background_paginated_rollout_migration",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "chronicle",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "apply_patch_freeform",
+        false,
+        "removed"
+      ],
+      [
+        "apply_patch_streaming_events",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "apply_patch_preserve_line_endings",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "exec_permission_approvals",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "write_stdin_approval",
+        true,
+        "stable"
+      ],
+      [
+        "hooks",
+        true,
+        "stable"
+      ],
+      [
+        "request_permissions_tool",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "use_linux_sandbox_bwrap",
+        false,
+        "removed"
+      ],
+      [
+        "use_legacy_landlock",
+        false,
+        "deprecated"
+      ],
+      [
+        "request_rule",
+        false,
+        "removed"
+      ],
+      [
+        "experimental_windows_sandbox",
+        false,
+        "removed"
+      ],
+      [
+        "elevated_windows_sandbox",
+        false,
+        "removed"
+      ],
+      [
+        "windows_sandbox_service",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "prefer_mxc",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "remote_models",
+        false,
+        "removed"
+      ],
+      [
+        "api_key_model_discovery",
+        false,
+        "underDevelopment"
+      ],
+      [
+        "enable_request_compression",
+        true,
+        "stable"
+      ],
+      [
+        "unbounded_connection_retries",
+        true,
+        "stable"
+      ]
+    ],
+    "account_read_keys": [
+      "account",
+      "requiresOpenaiAuth",
+      "workspaceRouting"
+    ],
+    "thread_config_process_scoped_keys": {
+      "result": {
+        "model": "gpt-6.1-sol",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-key"
+        ],
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      },
+      "latency_s": 0.37
+    },
+    "version": "codex-cli 0.159.2"
+  },
+  "error": null
+}

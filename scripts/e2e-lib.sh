@@ -1950,7 +1950,8 @@ _oh_codex_feature_value() {
     _OH_FEATURE_ERR="codex exited $status: $_OH_FEATURE_ERR"
     return 0
   fi
-  _OH_FEATURE_VAL="$(printf '%s\n' "$listed" | awk -v feature="$feature" '$1 == feature { print $NF }' | tr -d '\r')"
+  _OH_FEATURE_VAL="$(printf '%s\n' "$listed" | awk -v feature="$feature" '$1 == feature { print $NF }' | tr -d '\r')" ||
+    fail "could not read feature \`$feature\` from \`codex features list $*\` (awk or tr failed) — rerun the phase; if it recurs, check that awk and tr are on PATH"
 }
 
 # Whether the harness's own OS sandbox for `mode` can START on this host,

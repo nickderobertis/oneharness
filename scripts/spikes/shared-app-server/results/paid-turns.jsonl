@@ -9,3 +9,5 @@
 {"scenario": "blast", "label": "B", "prompt": "Run `sleep 30; echo B` in the foreground once and reply with only its output.", "outcome": {"server_killed": "SIGKILL"}, "at": "2026-10-12T07:14:57"}
 {"scenario": "savings", "label": "fresh", "prompt": "Reply with the single word OK.", "outcome": {"status": "completed"}, "at": "2026-10-12T07:15:23"}
 {"scenario": "savings", "label": "warm", "prompt": "Reply with the single word OK.", "outcome": {"status": "completed"}, "at": "2026-10-12T07:15:31"}
+{"scenario": "overrides", "label": "override", "prompt": "Run `pwd; touch probe-file` once, then reply with the command's output.", "outcome": {"status": "completed"}, "at": "2026-10-12T07:29:51"}
+{"scenario": "overrides", "label": "control", "prompt": "Run `pwd; touch probe-file` once, then reply with the command's output.", "outcome": {"status": "completed"}, "at": "2026-10-12T07:29:57"}

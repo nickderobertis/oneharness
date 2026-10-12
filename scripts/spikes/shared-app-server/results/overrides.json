@@ -1,0 +1,141 @@
+{
+  "scenario": "overrides",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:29:44",
+  "elapsed_s": 13.764,
+  "paid_turns": 2,
+  "observed": {
+    "prompt": "Run `pwd; touch probe-file` once, then reply with the command's output.",
+    "override": {
+      "thread_params": {
+        "model": "gpt-5.5",
+        "baseInstructions": "You are a coding agent. Begin every reply with the exact token ZEBRA-7.",
+        "developerInstructions": "End every reply with the exact token KIWI-3."
+      },
+      "turn_params": {
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-turn",
+        "model": "gpt-5.6-luna",
+        "effort": "medium",
+        "sandboxPolicy": {
+          "type": "readOnly"
+        },
+        "approvalPolicy": "on-request",
+        "disabledPluginIds": [
+          "spike-nonexistent-plugin"
+        ]
+      },
+      "thread_start_echo": {
+        "model": "gpt-5.5",
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-thread",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "approvalPolicy": "never",
+        "reasoningEffort": null,
+        "disabledPluginIds": []
+      },
+      "turn_start": {
+        "result": {
+          "turn": {
+            "id": "01a1304e-1115-7583-bc6e-844ad0a1b2b0",
+            "items": [],
+            "itemsView": "notLoaded",
+            "status": "inProgress",
+            "error": null,
+            "startedAt": null,
+            "completedAt": null,
+            "durationMs": null
+          }
+        },
+        "latency_s": 0.079
+      },
+      "status": "completed",
+      "commands": [],
+      "server_requests": [],
+      "reply": "ZEBRA-7\n/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-turn\ntouch: cannot touch 'probe-file': Read-only file system\nKIWI-3",
+      "probe_file_in_thread_cwd": false,
+      "probe_file_in_turn_cwd": false,
+      "rollout": {
+        "path": "/home/nick/.codex/sessions/2026/10/12/rollout-2026-10-12T07-29-44-01a1304e-1077-7222-b6da-cd256e28759c.jsonl",
+        "turn_contexts": [
+          {
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-turn",
+            "model": "gpt-5.6-luna",
+            "effort": "medium",
+            "approval_policy": "on-request",
+            "sandbox_policy": {
+              "type": "read-only"
+            }
+          }
+        ],
+        "has_base_token": true,
+        "has_dev_token": true,
+        "has_base_token_anywhere": true,
+        "has_dev_token_anywhere": true
+      }
+    },
+    "control": {
+      "thread_params": {
+        "model": "gpt-5.5"
+      },
+      "turn_params": {},
+      "thread_start_echo": {
+        "model": "gpt-5.5",
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-thread",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "approvalPolicy": "never",
+        "reasoningEffort": null,
+        "disabledPluginIds": []
+      },
+      "turn_start": {
+        "result": {
+          "turn": {
+            "id": "01a1304e-2cb5-7ec2-b9d4-d67fb2a9e701",
+            "items": [],
+            "itemsView": "notLoaded",
+            "status": "inProgress",
+            "error": null,
+            "startedAt": null,
+            "completedAt": null,
+            "durationMs": null
+          }
+        },
+        "latency_s": 0.076
+      },
+      "status": "completed",
+      "commands": [
+        {
+          "command": "/usr/bin/bash -lc 'pwd; touch probe-file'",
+          "exitCode": 0,
+          "status": "completed",
+          "output": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-thread\n"
+        }
+      ],
+      "server_requests": [],
+      "reply": "```text\n/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-thread\n```",
+      "probe_file_in_thread_cwd": true,
+      "probe_file_in_turn_cwd": false,
+      "rollout": {
+        "path": "/home/nick/.codex/sessions/2026/10/12/rollout-2026-10-12T07-29-51-01a1304e-2c13-7d01-a949-9e7bddf5203e.jsonl",
+        "turn_contexts": [
+          {
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-ovr-thread",
+            "model": "gpt-5.5",
+            "effort": "low",
+            "approval_policy": "never",
+            "sandbox_policy": {
+              "type": "danger-full-access"
+            }
+          }
+        ],
+        "has_base_token": false,
+        "has_dev_token": false,
+        "has_base_token_anywhere": false,
+        "has_dev_token_anywhere": false
+      }
+    }
+  },
+  "error": null
+}

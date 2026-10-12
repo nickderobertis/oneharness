@@ -1,0 +1,71 @@
+{
+  "scenario": "blast",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:27:07",
+  "elapsed_s": 121.857,
+  "paid_turns": 0,
+  "observed": {
+    "signal": "SIGTERM",
+    "via": "shell",
+    "A": {
+      "ended": {
+        "how": "eof",
+        "at": 121.231
+      },
+      "s_after_kill": 119.036,
+      "frames_after_kill": [
+        {
+          "method": "item/completed",
+          "emittedAtMs": 1791811748085,
+          "params_keys": [
+            "item",
+            "threadId",
+            "turnId",
+            "completedAtMs"
+          ]
+        },
+        {
+          "method": "thread/status/changed",
+          "emittedAtMs": 1791811748085,
+          "params_keys": [
+            "threadId",
+            "status"
+          ]
+        },
+        {
+          "method": "turn/completed",
+          "emittedAtMs": 1791811748085,
+          "params_keys": [
+            "threadId",
+            "turn"
+          ]
+        }
+      ],
+      "turn_completed_seen": true,
+      "send_after": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 121.232
+      }
+    },
+    "B": {
+      "ended": {
+        "how": "eof",
+        "at": 121.232
+      },
+      "s_after_kill": 119.037,
+      "frames_after_kill": [],
+      "turn_completed_seen": false,
+      "send_after": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 121.232
+      }
+    },
+    "server_returncode": 0,
+    "command_pids_alive_after_server_death": {
+      "A": false,
+      "B": false
+    },
+    "reconnect": "FileNotFoundError: [Errno 2] No such file or directory"
+  },
+  "error": null
+}

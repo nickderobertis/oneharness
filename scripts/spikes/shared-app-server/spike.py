@@ -16,6 +16,7 @@ Scenarios (question in brackets):
     blast          [6] kill the server under two live turns                    (2 paid)
     savings        [7] time to first turn + bytes, warm shared vs fresh spawn  (2 paid)
     pool-key       [8] which settings a thread can override vs process-fixed   (free)
+    overrides      [2] per-thread/per-turn fields judged by effect, + control  (2 paid)
 
 Prints one JSON object of what it observed on stdout; diagnostics on stderr.
 Every paid turn is appended to <work>/paid-turns.jsonl.
@@ -658,6 +659,7 @@ def sc_transport(work: Path, a) -> dict:
         os.killpg(p.pid, signal.SIGKILL)  # the proxy's own process group, started above
         p.wait()
         res["proxy"]["stderr"] = (work / "proxy.err").read_text()[-300:]
+    d["running_work"] = _daemon_running_work(work, homes[0], daemon, a)
     d["stop_h1"] = daemon(homes[0], "stop")
     d["stop_h2"] = daemon(homes[1], "stop")
     time.sleep(1)
@@ -665,6 +667,103 @@ def sc_transport(work: Path, a) -> dict:
     for h in homes:
         shutil.rmtree(h, ignore_errors=True)
     return res
+
+
+def _daemon_running_work(work: Path, home: Path, daemon, a) -> dict:
+    """`daemon restart` and `daemon update` while a turn runs on the daemon.
+
+    The running work is a `thread/shellCommand` heartbeat turn: the scratch
+    CODEX_HOME holds no credentials (copying this host's auth would fork its
+    rotating refresh token), so no model turn can run on this daemon. A shell
+    command is a real turn of the thread (turn/started, turn/completed)."""
+    out: dict = {}
+    wd = work / "wd-daemon"
+
+    def sock_path():
+        v = daemon(home, "version")
+        return (v["out"] or {}).get("socketPath") if isinstance(v["out"], dict) else None, v
+
+    def daemon_pid():
+        try:
+            return json.loads((home / "app-server-daemon" / "daemon.pid").read_text()).get("pid")
+        except (OSError, ValueError):
+            return None
+
+    def start_work(tag: str):
+        shutil.rmtree(wd, ignore_errors=True)
+        wd.mkdir()
+        hb_script(wd, a.daemon_hb)
+        sp, _ = sock_path()
+        c = Client(sp, f"daemon-{tag}")
+        init = c.initialize()
+        t = thread_start(c, str(wd), ephemeral=False)
+        info = {"initialize_ok": "result" in init, "thread_start": summarize(t) if "error" in t else "ok"}
+        th = tid(t)
+        if not th:
+            return c, None, None, info
+        since = len(c.events)
+        c.request("thread/shellCommand", {"threadId": th, "command": f"bash {wd}/hb.sh"})
+        st = c.wait_for(is_note("turn/started", th), 15, since)
+        deadline = time.monotonic() + 20
+        while hb_lines(wd)[0] < 10 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        info["turn_id"] = st[1]["params"]["turn"]["id"] if st else None
+        info["heartbeat_running"] = hb_lines(wd)[0] >= 10
+        info["daemon_pid"] = daemon_pid()
+        try:
+            info["heartbeat_pid"] = int((wd / "hb.pid").read_text())
+            info["heartbeat_parent"] = proc_parent(info["heartbeat_pid"])
+        except (OSError, ValueError):
+            info["heartbeat_pid"] = None
+        return c, th, info["turn_id"], info
+
+    def act(tag: str, *args, timeout=600):
+        c, th, turn, info = start_work(tag)
+        r: dict = {"before": info}
+        if not th:
+            r["skipped"] = "no thread on the scratch daemon"
+            c.close()
+            return r
+        since = len(c.events)
+        n0, _ = hb_lines(wd)
+        t0, w0 = now(), time.time()
+        res = daemon(home, *args, timeout=timeout)
+        r["command"] = {"argv": list(args), **res, "took_s": round(now() - t0, 3)}
+        time.sleep(2)
+        frames = [(round(t - t0, 3), m) for t, m in c.events[since:]]
+        tc = [(dt, m["params"]["turn"].get("status")) for dt, m in frames if m.get("method") == "turn/completed" and m["params"].get("threadId") == th]
+        n1, last = hb_lines(wd)
+        r["connection"] = {"ended": ({**c.ended, "s_after_command_start": round(c.ended["at"] - t0, 3)} if c.ended else None),
+                           "frames_after_command": sorted({m.get("method", "response") for _, m in frames}),
+                           "turn_completed": tc}
+        hp = info.get("heartbeat_pid")
+        r["work"] = {"heartbeat_lines_during_command": n1 - n0,
+                     "heartbeat_last_line_s_after_command_start": round(last - w0, 3) if last else None,
+                     "heartbeat_finished_normally": "finished" in (wd / "hb.log").read_text(),
+                     "heartbeat_pid_alive_2s_after_command": pid_alive(hp) if hp else None}
+        r["daemon_pid_after"] = daemon_pid()
+        r["daemon_pid_changed"] = r["daemon_pid_after"] != info.get("daemon_pid")
+        sp, ver = sock_path()
+        r["version_after"] = ver["out"]
+        try:
+            c2 = Client(sp, f"daemon-{tag}-after")
+            c2.initialize()
+            r["new_connection_thread_read"] = summarize(c2.request("thread/read", {"threadId": th, "includeTurns": True}))
+            r["new_connection_interrupt"] = summarize(c2.request("turn/interrupt", {"threadId": th, "turnId": turn}, timeout=10))
+            c2.close()
+        except Exception as e:  # noqa: BLE001
+            r["new_connection_error"] = f"{type(e).__name__}: {e}"
+        if hp and pid_alive(hp):
+            os.kill(hp, signal.SIGKILL)  # this spike's own heartbeat, pid from its pidfile
+        c.close()
+        return r
+
+    out["restart"] = act("restart", "restart")
+    out["update_from_cli"] = act("update-from-cli", "update", "--from-cli", "-y")
+    if not a.skip_network_update:
+        out["update_latest"] = act("update-latest", "update", "-y")
+    out["processes_after"] = subprocess.run(["ps", "-eo", "pid,ppid,args"], capture_output=True, text=True).stdout.count(str(home))
+    return out
 
 
 def _isolation_threads(c1: Client, c2: Client, work: Path):
@@ -1049,7 +1148,7 @@ def sc_blast(work: Path, a) -> dict:
         if a.via == "turn":
             turn_start(c, th, str(wd), prompt)
         else:
-            c.request("thread/shellCommand", {"threadId": th, "command": "echo $$ > cmd.pid; sleep 30"})
+            c.request("thread/shellCommand", {"threadId": th, "command": f"echo $$ > cmd.pid; sleep {a.cmd_seconds}"})
         clients.append((n, c, th, wd, prompt))
     for n, c, th, wd, _ in clients:
         c.wait_for(lambda m: m.get("method") == "item/started" and m["params"].get("item", {}).get("type") == "commandExecution", 90)
@@ -1064,7 +1163,7 @@ def sc_blast(work: Path, a) -> dict:
     os.kill(s.real_pid, sig)
     for n, c, th, wd, prompt in clients:
         before = len(c.events)
-        got = c.wait_for(lambda m: "_ended" in m, 20)
+        got = c.wait_for(lambda m: "_ended" in m, max(20, a.cmd_seconds + 15))
         frames = [m for _, m in c.events[before:]]
         res[n] = {"ended": c.ended, "s_after_kill": round(got[0] - k, 3) if got else None,
                   "frames_after_kill": [{k2: v for k2, v in f.items() if k2 != "params"} | {"params_keys": list((f.get("params") or {}).keys())} for f in frames][-5:],
@@ -1072,7 +1171,7 @@ def sc_blast(work: Path, a) -> dict:
                   "send_after": summarize(c.request("thread/read", {"threadId": th}, timeout=5))}
         if a.via == "turn":
             record_paid(work, "blast", n, prompt, {"server_killed": sig.name})
-    s.proc.wait(15)
+    s.proc.wait(max(15, a.cmd_seconds + 15))
     res["server_returncode"] = s.proc.returncode
     time.sleep(0.5)
     res["command_pids_alive_after_server_death"] = {n: pid_alive(p) for n, p in cmd_pids.items()}
@@ -1143,6 +1242,86 @@ def sc_savings(work: Path, a) -> dict:
     return res
 
 
+def _rollout(path: str | None) -> dict:
+    """What the server itself recorded for a thread: each turn_context, and
+    whether the instruction tokens reached the model's context."""
+    out: dict = {"path": path, "turn_contexts": [], "has_base_token": False, "has_dev_token": False}
+    if not path or not os.path.exists(path):
+        return out
+    text = Path(path).read_text()
+    out["has_base_token_anywhere"] = "ZEBRA-7" in text
+    out["has_dev_token_anywhere"] = "KIWI-3" in text
+    for line in text.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        pl = rec.get("payload") or {}
+        if rec.get("type") == "turn_context":
+            out["turn_contexts"].append({k: pl.get(k) for k in ("cwd", "model", "effort", "approval_policy", "sandbox_policy")})
+        if rec.get("type") == "session_meta":
+            bi = json.dumps(pl.get("base_instructions") or pl.get("instructions") or "")
+            out["has_base_token"] = "ZEBRA-7" in bi
+        if rec.get("type") == "response_item" and pl.get("role") == "developer":
+            out["has_dev_token"] = out["has_dev_token"] or "KIWI-3" in json.dumps(pl)
+    return out
+
+
+def sc_overrides(work: Path, a) -> dict:
+    """Q2: per-thread and per-turn overrides, each judged by its effect.
+
+    One override turn and one control turn, same prompt. Effects are read from
+    behaviour (where the command ran, whether its write landed, whether the
+    reply carries the instruction tokens, approval requests the server sent)
+    and from the rollout the server wrote (turn_context), not from echoes."""
+    wt, wturn = work / "wd-ovr-thread", work / "wd-ovr-turn"
+    for w in (wt, wturn):
+        shutil.rmtree(w, ignore_errors=True)
+        w.mkdir()
+    s = Server(work, "ovr", ["--disable", "plugins"])
+    c = Client(s.sock, "ovr")
+    c.initialize()
+    prompt = "Run `pwd; touch probe-file` once, then reply with the command's output."
+    res: dict = {"prompt": prompt}
+    runs = {
+        "override": dict(
+            thread=dict(model="gpt-5.5", baseInstructions="You are a coding agent. Begin every reply with the exact token ZEBRA-7.",
+                        developerInstructions="End every reply with the exact token KIWI-3."),
+            turn=dict(cwd=str(wturn), model="gpt-5.6-luna", effort="medium", sandboxPolicy={"type": "readOnly"},
+                      approvalPolicy="on-request", disabledPluginIds=["spike-nonexistent-plugin"])),
+        "control": dict(thread=dict(model="gpt-5.5"), turn=dict()),
+    }
+    for name, spec in runs.items():
+        t = thread_start(c, str(wt), ephemeral=False, **spec["thread"])
+        th = tid(t)
+        path = ((t.get("result") or {}).get("thread") or {}).get("path")
+        since = len(c.events)
+        params = {"threadId": th, "input": [{"type": "text", "text": prompt}], "cwd": str(wt), "approvalPolicy": "never",
+                  "sandboxPolicy": {"type": "dangerFullAccess"}, "effort": "low"}
+        params.update(spec["turn"])
+        r = c.request("turn/start", params)
+        d = c.wait_for(turn_completed(th), 240, since)
+        frames = c.events[since:]
+        res[name] = {
+            "thread_params": spec["thread"], "turn_params": spec["turn"],
+            "thread_start_echo": {k: (t.get("result") or {}).get(k) for k in ("model", "cwd", "sandbox", "approvalPolicy", "reasoningEffort", "disabledPluginIds")},
+            "turn_start": summarize(r),
+            "status": d[1]["params"]["turn"]["status"] if d and "params" in d[1] else d,
+            "commands": [{k: x[k] for k in ("command", "exitCode", "status", "output")} for x in command_outputs(c, th)],
+            "server_requests": [{"method": m["method"], "keys": list((m.get("params") or {}).keys())} for _, m in frames if "id" in m and "method" in m],
+            "reply": agent_text(c, th)[-600:],
+            "probe_file_in_thread_cwd": (wt / "probe-file").exists(),
+            "probe_file_in_turn_cwd": (wturn / "probe-file").exists(),
+            "rollout": _rollout(path),
+        }
+        for f in (wt / "probe-file", wturn / "probe-file"):
+            f.unlink(missing_ok=True)
+        record_paid(work, "overrides", name, prompt, {"status": res[name]["status"]})
+    c.close()
+    s.stop()
+    return res
+
+
 def sc_pool_key(work: Path, a) -> dict:
     """Q8: which settings a thread can override and which only the process sets."""
     res: dict = {}
@@ -1198,6 +1377,7 @@ SCENARIOS = {
     "blast": sc_blast,
     "savings": sc_savings,
     "pool-key": sc_pool_key,
+    "overrides": sc_overrides,
 }
 
 
@@ -1208,6 +1388,9 @@ def main():
     ap.add_argument("--observe-dead", type=float, default=15.0, help="killed-*: seconds watched after SIGKILL before interrupting")
     ap.add_argument("--signal", choices=["KILL", "TERM"], default="KILL", help="blast: signal sent to the server")
     ap.add_argument("--via", choices=["turn", "shell"], default="turn", help="blast: live work is a model turn or a shellCommand")
+    ap.add_argument("--cmd-seconds", type=int, default=30, help="blast --via shell: how long each live command sleeps")
+    ap.add_argument("--daemon-hb", type=int, default=45, help="transport: seconds the heartbeat turn runs during daemon restart/update")
+    ap.add_argument("--skip-network-update", action="store_true", help="transport: skip `daemon update -y` (fetches the latest release into the scratch home)")
     ap.add_argument("--no-other", action="store_true", help="killed-client: skip the second client's paid turn")
     ap.add_argument("--reap", action="store_true", help="killed-*: after the interrupt, try thread/unsubscribe then a marker-env reap")
     ap.add_argument("--marker", default="")

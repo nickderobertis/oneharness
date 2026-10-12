@@ -1,0 +1,18 @@
+{
+  "heartbeat_pid": 176694,
+  "anchor_precision_s": 0.1,
+  "interrupt_crosscheck_s": 0.016,
+  "death_to_interrupt_s": 5.096,
+  "death_to_turn_end_s": 5.115,
+  "interrupt_to_turn_end_s": 0.019,
+  "turn_completed_status": "interrupted",
+  "interrupt_to_unsubscribe_and_reap": "harness waits: 30 s observation, 5 s, thread/unsubscribe, 5 s, then marker SIGTERM",
+  "death_to_last_heartbeat_s": 45.42,
+  "interrupt_to_last_heartbeat_s": 40.32,
+  "reap_to_last_heartbeat_s": -0.044,
+  "heartbeat_lines_after_death": 428,
+  "heartbeat_lines_after_interrupt": 379,
+  "process_alive_after_interrupt": true,
+  "process_alive_5s_after_unsubscribe": true,
+  "marker_pids_left_after_reap": []
+}

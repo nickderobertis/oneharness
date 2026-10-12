@@ -1,14 +1,14 @@
 {
   "scenario": "transport",
   "codex": "codex-cli 0.159.2",
-  "started": "2026-10-12T07:03:55",
-  "elapsed_s": 38.699,
+  "started": "2026-10-12T07:21:48",
+  "elapsed_s": 133.681,
   "paid_turns": 0,
   "observed": {
     "listen": {
       "socket_is_symlink": true,
       "socket_target": "/tmp/codex-daemon-522201107/2d8f82107bfac3ab79399828c4c6e425d68f7d77267b56e77aaed475950d30fe",
-      "ready_s": 0.518,
+      "ready_s": 0.454,
       "alive_after_last_client_disconnects_2s": true,
       "second_server_same_path": {
         "launched": true,
@@ -21,7 +21,7 @@
       "launcher_is_node_shim": true,
       "stop_sigterm": {
         "signal": "SIGTERM",
-        "exited_after_s": 0.067,
+        "exited_after_s": 0.031,
         "returncode": 0,
         "real_server_outlived_launcher": false
       },
@@ -29,7 +29,7 @@
       "socket_target_left_after_sigterm": false,
       "stop_sigkill": {
         "signal": "SIGKILL",
-        "exited_after_s": 0.031,
+        "exited_after_s": 0.004,
         "returncode": -9,
         "real_server_outlived_launcher": true
       },
@@ -38,7 +38,7 @@
       "connect_to_stale_socket": "ConnectionResetError: [Errno 104] Connection reset by peer",
       "restart_on_stale_path": {
         "started": true,
-        "ready_s": 2.268
+        "ready_s": 0.456
       }
     },
     "daemon": {
@@ -47,7 +47,7 @@
         "out": {
           "status": "started",
           "backend": "pid",
-          "pid": 4098247,
+          "pid": 1119358,
           "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
           "managedCodexVersion": "0.159.2",
           "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
@@ -56,13 +56,13 @@
         },
         "err": "Installing daemon from CLI version 0.159.2 into /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon..."
       },
-      "start_h1_s": 7.42,
+      "start_h1_s": 4.41,
       "start_h2": {
         "rc": 0,
         "out": {
           "status": "started",
           "backend": "pid",
-          "pid": 4101975,
+          "pid": 1122948,
           "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon/current/bin/codex",
           "managedCodexVersion": "0.159.2",
           "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/app-server-control/app-server-control.sock",
@@ -85,15 +85,218 @@
         "err": ""
       },
       "processes": [
-        "4098247       1 4098247 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server --listen unix:// --managed-daemon",
-        "4101975       1 4101975 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server --listen unix:// --managed-daemon",
-        "4103371       1 4103371 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server daemon pid-update-loop"
+        "1119358       1 1119358 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server --listen unix:// --managed-daemon",
+        "1122948       1 1122948 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server --listen unix:// --managed-daemon",
+        "1123643       1 1123643 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server daemon pid-update-loop"
       ],
       "package_copy_bytes": 731088134,
       "updater_log": "",
       "auto_update_version_file": "0.159.2-x86_64-unknown-linux-musl",
       "h1_effective_model": null,
       "h1_effective_features_plugins": false,
+      "running_work": {
+        "restart": {
+          "before": {
+            "initialize_ok": true,
+            "thread_start": "ok",
+            "turn_id": "01a13047-47a9-74e1-a1b2-e418ab78e6a6",
+            "heartbeat_running": true,
+            "daemon_pid": 1119358,
+            "heartbeat_pid": 1139550,
+            "heartbeat_parent": 1119358
+          },
+          "command": {
+            "argv": [
+              "restart"
+            ],
+            "rc": 0,
+            "out": {
+              "status": "restarted",
+              "backend": "pid",
+              "pid": 1182843,
+              "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+              "managedCodexVersion": "0.159.2",
+              "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+              "cliVersion": "0.159.2",
+              "appServerVersion": "0.159.2"
+            },
+            "err": "",
+            "took_s": 45.549
+          },
+          "connection": {
+            "ended": {
+              "how": "eof",
+              "at": 77.578,
+              "s_after_command_start": 45.125
+            },
+            "frames_after_command": [
+              "item/completed",
+              "thread/status/changed",
+              "turn/completed"
+            ],
+            "turn_completed": [
+              [
+                45.125,
+                "completed"
+              ]
+            ]
+          },
+          "work": {
+            "heartbeat_lines_during_command": 441,
+            "heartbeat_last_line_s_after_command_start": 45.013,
+            "heartbeat_finished_normally": true,
+            "heartbeat_pid_alive_2s_after_command": false
+          },
+          "daemon_pid_after": 1182843,
+          "daemon_pid_changed": true,
+          "version_after": {
+            "status": "running",
+            "backend": "pid",
+            "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+            "managedCodexVersion": "0.159.2",
+            "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+            "cliVersion": "0.159.2",
+            "appServerVersion": "0.159.2"
+          },
+          "new_connection_thread_read": {
+            "result": {},
+            "latency_s": 0.004
+          },
+          "new_connection_interrupt": {
+            "error": {
+              "code": -32600,
+              "message": "no active turn to interrupt"
+            },
+            "latency_s": 0.0
+          }
+        },
+        "update_from_cli": {
+          "before": {
+            "initialize_ok": true,
+            "thread_start": "ok",
+            "turn_id": "01a13048-064c-7fd3-b4a2-48af96f535e0",
+            "heartbeat_running": true,
+            "daemon_pid": 1182843,
+            "heartbeat_pid": 1185144,
+            "heartbeat_parent": 1182843
+          },
+          "command": {
+            "argv": [
+              "update",
+              "--from-cli",
+              "-y"
+            ],
+            "rc": 0,
+            "out": {
+              "status": "updated",
+              "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+              "installedVersion": "0.159.2",
+              "runningVersion": "0.159.2",
+              "message": "The CLI package is selected and pinned. Run `codex app-server daemon update` to return to production updates."
+            },
+            "err": "linux-x64/vendor/x86_64-unknown-linux-musl.\nThe daemon package will be installed in /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon.\nThe selected package will be pinned. Run `codex app-server daemon update` to return to production updates.\nThe running daemon will restart; active or queued work may be interrupted.",
+            "took_s": 45.623
+          },
+          "connection": {
+            "ended": {
+              "how": "eof",
+              "at": 126.437,
+              "s_after_command_start": 45.225
+            },
+            "frames_after_command": [
+              "item/completed",
+              "thread/status/changed",
+              "turn/completed"
+            ],
+            "turn_completed": [
+              [
+                45.225,
+                "completed"
+              ]
+            ]
+          },
+          "work": {
+            "heartbeat_lines_during_command": 441,
+            "heartbeat_last_line_s_after_command_start": 45.109,
+            "heartbeat_finished_normally": true,
+            "heartbeat_pid_alive_2s_after_command": false
+          },
+          "daemon_pid_after": 1238816,
+          "daemon_pid_changed": true,
+          "version_after": {
+            "status": "running",
+            "backend": "pid",
+            "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+            "managedCodexVersion": "0.159.2",
+            "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+            "cliVersion": "0.159.2",
+            "appServerVersion": "0.159.2"
+          },
+          "new_connection_thread_read": {
+            "result": {},
+            "latency_s": 0.004
+          },
+          "new_connection_interrupt": {
+            "error": {
+              "code": -32600,
+              "message": "no active turn to interrupt"
+            },
+            "latency_s": 0.001
+          }
+        },
+        "update_latest": {
+          "before": {
+            "initialize_ok": true,
+            "thread_start": "ok",
+            "turn_id": "01a13048-c4fd-7bd2-8f9a-1bf267cf5324",
+            "heartbeat_running": true,
+            "daemon_pid": 1238816,
+            "heartbeat_pid": 1243364,
+            "heartbeat_parent": 1238816
+          },
+          "command": {
+            "argv": [
+              "update",
+              "-y"
+            ],
+            "rc": 2,
+            "out": "",
+            "err": "error: the following required arguments were not provided:\n  --from-cli\n\nUsage: codex app-server daemon update --from-cli --yes\n\nFor more information, try '--help'.",
+            "took_s": 0.056
+          },
+          "connection": {
+            "ended": null,
+            "frames_after_command": [],
+            "turn_completed": []
+          },
+          "work": {
+            "heartbeat_lines_during_command": 20,
+            "heartbeat_last_line_s_after_command_start": 1.988,
+            "heartbeat_finished_normally": false,
+            "heartbeat_pid_alive_2s_after_command": true
+          },
+          "daemon_pid_after": 1238816,
+          "daemon_pid_changed": false,
+          "version_after": {
+            "status": "running",
+            "backend": "pid",
+            "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+            "managedCodexVersion": "0.159.2",
+            "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+            "cliVersion": "0.159.2",
+            "appServerVersion": "0.159.2"
+          },
+          "new_connection_thread_read": {
+            "result": {},
+            "latency_s": 0.006
+          },
+          "new_connection_interrupt": {
+            "result": {},
+            "latency_s": 0.025
+          }
+        },
+        "processes_after": 1
+      },
       "stop_h1": {
         "rc": 0,
         "out": {

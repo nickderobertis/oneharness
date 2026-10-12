@@ -820,15 +820,8 @@ fn a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline() {
 }
 
 /// A marked process that starts a further marked child while it is being
-/// stopped. On Unix the child is started once `SIGTERM` has arrived, so it is
-/// always one the stop's first scan could not have seen. On Windows the stop
-/// terminates at once, so the parent keeps starting children, each as soon as
-/// the stop has ended the one before, while refusing termination itself until
-/// its second child is ended (see `fork_while_stopping`); the first child's
-/// termination by the stop proves the first scan is over, so the second is
-/// one only a re-scan can find. Neither platform depends on how fast a
-/// process starts: the parent still matches until its late child has been
-/// found and stopped.
+/// stopped — one the stop's first scan could not have seen, so only a re-scan
+/// finds it. How each platform triggers that child is `fork_while_stopping`'s.
 #[test]
 fn a_marked_child_started_while_stopping_is_stopped_too() {
     let dir = ScratchDir::new("marked-forking").unwrap();

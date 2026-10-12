@@ -698,6 +698,11 @@ def sc_isolation_free(work: Path, a) -> dict:
         if tid(t):
             v["shell"] = shell(c1, tid(t), env_probe_cmd(name))
         res["variants"][name] = v
+    time.sleep(1)
+    for tag, c, own in (("A", c1, {tid(ta)} | {tid(t) for t in []}), ("B", c2, {tid(tb)})):
+        res[f"connection_{tag}_frames_for_threads_it_did_not_start"] = sorted(
+            {f"{m.get('method')}:{'A-thread' if (m.get('params') or {}).get('threadId') == tid(ta) else 'B-thread' if (m.get('params') or {}).get('threadId') == tid(tb) else 'variant-thread'}"
+             for _, m in c.events if (m.get("params") or {}).get("threadId") not in (None, *own)})
     res["server_alive"] = s.alive()
     c1.close(), c2.close()
     s.stop()
@@ -731,6 +736,8 @@ def sc_isolation(work: Path, a) -> dict:
             "agent": agent_text(c, t)[-800:],
             "model_rerouted": [m["params"] for _, m in c.notes("model/rerouted", t)],
             "foreign_thread_frames": sum(1 for _, m in c.events if (m.get("params") or {}).get("threadId") not in (None, t)),
+            "foreign_thread_frame_methods": sorted({m.get("method") for _, m in c.events if (m.get("params") or {}).get("threadId") not in (None, t)}),
+            "frames_without_thread": sorted({m.get("method") for _, m in c.events if "method" in m and "threadId" not in (m.get("params") or {})}),
         }
         res[f"turn_{tag}"] = out
         record_paid(work, "isolation", tag, p, {"status": out["completed"]})

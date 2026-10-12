@@ -1,0 +1,142 @@
+{
+  "scenario": "isolation",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:05:13",
+  "elapsed_s": 9.612,
+  "paid_turns": 2,
+  "observed": {
+    "server_env": {
+      "SPIKE_SERVER_ONLY": "from-server-env",
+      "ONEPIPELINE_RUN_ID": "run-SERVER"
+    },
+    "thread_start_A": {
+      "result": {
+        "model": "gpt-5.5",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+        ],
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      },
+      "latency_s": 0.605
+    },
+    "thread_start_B": {
+      "result": {
+        "model": "gpt-5.6-luna",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b"
+        ],
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": [],
+          "networkAccess": false,
+          "excludeTmpdirEnvVar": false,
+          "excludeSlashTmp": false
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      },
+      "latency_s": 0.567
+    },
+    "turn_start_A": {
+      "result": {
+        "turn": {
+          "id": "01a13037-a55c-79b3-8b3a-ad349b69ab09",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "inProgress",
+          "error": null,
+          "startedAt": null,
+          "completedAt": null,
+          "durationMs": null
+        }
+      },
+      "latency_s": 0.13
+    },
+    "turn_start_B": {
+      "result": {
+        "turn": {
+          "id": "01a13037-a5d8-74d3-ae99-eba5458fe069",
+          "items": [],
+          "itemsView": "notLoaded",
+          "status": "inProgress",
+          "error": null,
+          "startedAt": null,
+          "completedAt": null,
+          "durationMs": null
+        }
+      },
+      "latency_s": 0.09
+    },
+    "turn_A": {
+      "completed": "completed",
+      "commands": [
+        {
+          "at": 6.35,
+          "command": "/usr/bin/bash -lc 'echo TAG=A; echo PWD=$(pwd); echo RUN=${ONEPIPELINE_RUN_ID-<unset>}; echo SRV=${SPIKE_SERVER_ONLY-<unset>}; echo POL=${SPIKE_POLICY_VAR-<unset>}; echo PPID=$PPID'",
+          "exitCode": 0,
+          "status": "completed",
+          "source": "unifiedExecStartup",
+          "output": "TAG=A\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-A\nSRV=from-server-env\nPOL=<unset>\nPPID=4155470\n"
+        }
+      ],
+      "parsed": [
+        {
+          "TAG": "A",
+          "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+          "RUN": "run-A",
+          "SRV": "from-server-env",
+          "POL": "<unset>",
+          "PPID": "4155470"
+        }
+      ],
+      "agent": "TAG=A\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-A\nSRV=from-server-env\nPOL=<unset>\nPPID=4155470",
+      "model_rerouted": [],
+      "foreign_thread_frames": 2
+    },
+    "turn_B": {
+      "completed": "completed",
+      "commands": [
+        {
+          "at": 5.118,
+          "command": "/usr/bin/bash -lc 'echo TAG=B; echo PWD=$(pwd); echo RUN=${ONEPIPELINE_RUN_ID-<unset>}; echo SRV=${SPIKE_SERVER_ONLY-<unset>}; echo POL=${SPIKE_POLICY_VAR-<unset>}; echo PPID=$PPID'",
+          "exitCode": 0,
+          "status": "completed",
+          "source": "unifiedExecStartup",
+          "output": "TAG=B\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b\nRUN=run-B\nSRV=from-server-env\nPOL=<unset>\nPPID=4155470\n"
+        }
+      ],
+      "parsed": [
+        {
+          "TAG": "B",
+          "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b",
+          "RUN": "run-B",
+          "SRV": "from-server-env",
+          "POL": "<unset>",
+          "PPID": "4155470"
+        }
+      ],
+      "agent": "TAG=B\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b\nRUN=run-B\nSRV=from-server-env\nPOL=<unset>\nPPID=4155470",
+      "model_rerouted": [],
+      "foreign_thread_frames": 1
+    }
+  },
+  "error": null
+}

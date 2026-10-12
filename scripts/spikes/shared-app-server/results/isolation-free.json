@@ -1,0 +1,360 @@
+{
+  "scenario": "isolation-free",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:05:37",
+  "elapsed_s": 17.961,
+  "paid_turns": 0,
+  "observed": {
+    "server_env": {
+      "SPIKE_SERVER_ONLY": "from-server-env",
+      "ONEPIPELINE_RUN_ID": "run-SERVER"
+    },
+    "thread_start_A": {
+      "result": {
+        "model": "gpt-5.5",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+        ],
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      },
+      "latency_s": 0.607
+    },
+    "thread_start_B": {
+      "result": {
+        "model": "gpt-5.6-luna",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b"
+        ],
+        "approvalPolicy": "on-request",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "workspaceWrite",
+          "writableRoots": [],
+          "networkAccess": false,
+          "excludeTmpdirEnvVar": false,
+          "excludeSlashTmp": false
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "multiAgentMode": "explicitRequestOnly"
+      },
+      "latency_s": 0.573
+    },
+    "shell_A": {
+      "rpc": {
+        "result": {},
+        "latency_s": 0.003
+      },
+      "exitCode": 0,
+      "output": "TAG=A\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-A\nSRV=from-server-env\nPOL=<unset>\nPPID=4178553\n",
+      "parsed": {
+        "TAG": "A",
+        "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+        "RUN": "run-A",
+        "SRV": "from-server-env",
+        "POL": "<unset>",
+        "PPID": "4178553"
+      }
+    },
+    "shell_B": {
+      "rpc": {
+        "result": {},
+        "latency_s": 0.003
+      },
+      "exitCode": 0,
+      "output": "TAG=B\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b\nRUN=run-B\nSRV=from-server-env\nPOL=<unset>\nPPID=4178553\n",
+      "parsed": {
+        "TAG": "B",
+        "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-b",
+        "RUN": "run-B",
+        "SRV": "from-server-env",
+        "POL": "<unset>",
+        "PPID": "4178553"
+      }
+    },
+    "shell_on_other_connections_thread": {
+      "rpc": {
+        "result": {},
+        "latency_s": 0.004
+      },
+      "item": null
+    },
+    "variants": {
+      "nested_set": {
+        "thread_start": {
+          "result": {
+            "model": "gpt-6.1-sol",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "runtimeWorkspaceRoots": [
+              "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+            ],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {
+              "type": "dangerFullAccess"
+            },
+            "activePermissionProfile": null,
+            "reasoningEffort": null,
+            "multiAgentMode": "explicitRequestOnly"
+          },
+          "latency_s": 0.347
+        },
+        "shell": {
+          "rpc": {
+            "result": {},
+            "latency_s": 0.001
+          },
+          "exitCode": 0,
+          "output": "TAG=nested_set\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-SERVER\nSRV=from-server-env\nPOL=v-nested\nPPID=4178553\n",
+          "parsed": {
+            "TAG": "nested_set",
+            "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "RUN": "run-SERVER",
+            "SRV": "from-server-env",
+            "POL": "v-nested",
+            "PPID": "4178553"
+          }
+        }
+      },
+      "dotted_set_key": {
+        "thread_start": {
+          "result": {
+            "model": "gpt-6.1-sol",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "runtimeWorkspaceRoots": [
+              "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+            ],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {
+              "type": "dangerFullAccess"
+            },
+            "activePermissionProfile": null,
+            "reasoningEffort": null,
+            "multiAgentMode": "explicitRequestOnly"
+          },
+          "latency_s": 0.371
+        },
+        "shell": {
+          "rpc": {
+            "result": {},
+            "latency_s": 0.005
+          },
+          "exitCode": 0,
+          "output": "TAG=dotted_set_key\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-SERVER\nSRV=from-server-env\nPOL=v-dotted\nPPID=4178553\n",
+          "parsed": {
+            "TAG": "dotted_set_key",
+            "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "RUN": "run-SERVER",
+            "SRV": "from-server-env",
+            "POL": "v-dotted",
+            "PPID": "4178553"
+          }
+        }
+      },
+      "inherit_none": {
+        "thread_start": {
+          "result": {
+            "model": "gpt-6.1-sol",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "runtimeWorkspaceRoots": [
+              "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+            ],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {
+              "type": "dangerFullAccess"
+            },
+            "activePermissionProfile": null,
+            "reasoningEffort": null,
+            "multiAgentMode": "explicitRequestOnly"
+          },
+          "latency_s": 0.315
+        },
+        "shell": {
+          "rpc": {
+            "result": {},
+            "latency_s": 0.003
+          },
+          "exitCode": 0,
+          "output": "TAG=inherit_none\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=<unset>\nSRV=<unset>\nPOL=v-none\nPPID=4178553\n",
+          "parsed": {
+            "TAG": "inherit_none",
+            "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "RUN": "<unset>",
+            "SRV": "<unset>",
+            "POL": "v-none",
+            "PPID": "4178553"
+          }
+        }
+      },
+      "exclude_server_var": {
+        "thread_start": {
+          "result": {
+            "model": "gpt-6.1-sol",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "runtimeWorkspaceRoots": [
+              "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+            ],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {
+              "type": "dangerFullAccess"
+            },
+            "activePermissionProfile": null,
+            "reasoningEffort": null,
+            "multiAgentMode": "explicitRequestOnly"
+          },
+          "latency_s": 0.375
+        },
+        "shell": {
+          "rpc": {
+            "result": {},
+            "latency_s": 0.001
+          },
+          "exitCode": 0,
+          "output": "TAG=exclude_server_var\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-SERVER\nSRV=<unset>\nPOL=v-excl\nPPID=4178553\n",
+          "parsed": {
+            "TAG": "exclude_server_var",
+            "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "RUN": "run-SERVER",
+            "SRV": "<unset>",
+            "POL": "v-excl",
+            "PPID": "4178553"
+          }
+        }
+      },
+      "unknown_key": {
+        "thread_start": {
+          "result": {
+            "model": "gpt-6.1-sol",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "runtimeWorkspaceRoots": [
+              "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+            ],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {
+              "type": "dangerFullAccess"
+            },
+            "activePermissionProfile": null,
+            "reasoningEffort": null,
+            "multiAgentMode": "explicitRequestOnly"
+          },
+          "latency_s": 0.799
+        },
+        "shell": {
+          "rpc": {
+            "result": {},
+            "latency_s": 0.003
+          },
+          "exitCode": 0,
+          "output": "TAG=unknown_key\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-SERVER\nSRV=from-server-env\nPOL=<unset>\nPPID=4178553\n",
+          "parsed": {
+            "TAG": "unknown_key",
+            "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "RUN": "run-SERVER",
+            "SRV": "from-server-env",
+            "POL": "<unset>",
+            "PPID": "4178553"
+          }
+        }
+      },
+      "bad_type": {
+        "thread_start": {
+          "error": {
+            "code": -32600,
+            "message": "failed to load configuration: invalid type: string \"not-a-table\", expected a map\nin `shell_environment_policy.set`\n"
+          },
+          "latency_s": 0.364
+        }
+      },
+      "feature_key": {
+        "thread_start": {
+          "result": {
+            "model": "gpt-6.1-sol",
+            "modelProvider": "openai",
+            "serviceTier": null,
+            "disabledPluginIds": [],
+            "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "runtimeWorkspaceRoots": [
+              "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a"
+            ],
+            "approvalPolicy": "never",
+            "approvalsReviewer": "user",
+            "sandbox": {
+              "type": "dangerFullAccess"
+            },
+            "activePermissionProfile": null,
+            "reasoningEffort": null,
+            "multiAgentMode": "explicitRequestOnly"
+          },
+          "latency_s": 0.68
+        },
+        "shell": {
+          "rpc": {
+            "result": {},
+            "latency_s": 0.005
+          },
+          "exitCode": 0,
+          "output": "TAG=feature_key\nPWD=/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a\nRUN=run-SERVER\nSRV=from-server-env\nPOL=<unset>\nPPID=4178553\n",
+          "parsed": {
+            "TAG": "feature_key",
+            "PWD": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-a",
+            "RUN": "run-SERVER",
+            "SRV": "from-server-env",
+            "POL": "<unset>",
+            "PPID": "4178553"
+          }
+        }
+      }
+    },
+    "connection_A_frames_for_threads_it_did_not_start": [
+      "item/commandExecution/outputDelta:variant-thread",
+      "item/completed:variant-thread",
+      "item/started:variant-thread",
+      "mcpServer/startupStatus/updated:variant-thread",
+      "thread/status/changed:B-thread",
+      "thread/status/changed:variant-thread",
+      "turn/completed:variant-thread",
+      "turn/started:variant-thread",
+      "warning:variant-thread"
+    ],
+    "connection_B_frames_for_threads_it_did_not_start": [
+      "thread/status/changed:A-thread",
+      "thread/status/changed:variant-thread"
+    ],
+    "server_alive": true
+  },
+  "error": null
+}

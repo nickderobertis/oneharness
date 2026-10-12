@@ -940,6 +940,7 @@ one. One caveat: the restore runs on the normal exit path, so a hard kill
 mock/sync in that workspace, or `git checkout`, puts it back; prefer throwaway
 workspaces for suites.
 
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The user-facing statement of the precedence the task requires here; its source is tests/fixtures/codex-plugins-flag-order.json, and the live phase `oh_codex_plugins_flag_order` checks it against real Codex. -->
 **Codex plugins are off by default.** Codex downloads its whole remote plugin
 catalog (about 29 MB from chatgpt.com) on every process start, uncached between
 processes, so a host launching Codex hundreds of times a day spends gigabytes
@@ -964,6 +965,7 @@ harness is refused at load. The [`oneharness usage`](#subscription-headroom-oneh
 probe never loads plugins, whatever the config says (it starts `codex app-server
 --disable plugins --stdio`), and `oneharness config`
 shows the resolved `plugins` for each codex harness and variant.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 **The standing-policy path** — a `[[hooks]]` entry synced into the harness's
 own config — remains available for policies that should persist (and is how

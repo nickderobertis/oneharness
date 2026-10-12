@@ -568,7 +568,7 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `--disable plugins` is Codex's documented feature toggle; whether real Codex honours it is read only from an installed Codex, which the deterministic gate does not have, so its drift gate is the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh), which asks real codex every row of tests/fixtures/codex-plugins-flag-order.json, `--disable plugins` among them.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
 /// `codex app-server --disable plugins --stdio`. Plugins are off whatever the
 /// config's `plugins` says: a rate-limits read loads no plugin, and the catalog
 /// Codex would otherwise download on start (~29 MB) is most of what a probe
@@ -1211,6 +1211,19 @@ mod tests {
     /// reader learns how many times the probe asks and how far apart. Changing
     /// either constant would leave that prose confidently wrong, so the
     /// sentence is generated from the constants and searched for.
+    #[test]
+    fn documented_codex_probe_argv_tracks_codex_argv() {
+        let reference = include_str!("../../../../docs/harness-usage.md")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let spawned = format!("Spawn `{}`", codex_argv("codex").join(" "));
+        assert!(
+            reference.contains(&spawned),
+            "docs/harness-usage.md must state the probe as {spawned}"
+        );
+    }
+
     #[test]
     fn documented_claude_snapshot_retry_tracks_the_constants() {
         fn collapsed(text: &str) -> String {

@@ -1883,7 +1883,7 @@ oh_codex_config_override_order() {
   note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
 }
 
-# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase IS the drift gate between the measured matrix and real Codex, placed in the live codex suite as the task that added it specified: the deterministic gate has no codex installed, and the matrix's other reader (the mock's unit test) can only be held to the matrix, never to Codex itself. Moving it into the gate would need a codex install there, which is outside this change.
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase is the drift gate between the measured matrix and real Codex, which the deterministic gate cannot run; it belongs in the live codex suite.
 # Model-free: real codex's precedence among the spellings of its `plugins`
 # feature, which two things here rest on — oneharness's plugins-off default
 # (`-c features.plugins=false`, `codex_plugins_off` in domain/harness.rs), which

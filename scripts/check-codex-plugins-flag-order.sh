@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# llmlint: ignore-file[e2e_not_mocked] This is the hermetic half of a live phase: the real phase from scripts/e2e-lib.sh runs end to end, and only `codex` is a scripted stand-in, because a gate run cannot rely on codex being installed and because what is tested here is the phase's own reading of the matrix and its verdicts, including a codex that answers wrongly or crashes, which real codex cannot be made to do. Real codex is asked every row by the phase itself in the live codex suite (scripts/e2e-codex.sh).
+# llmlint: ignore-file[e2e_not_mocked] Only `codex` is a scripted double, because the gate has no codex and these cases need one that answers wrongly or crashes on demand; real codex runs the phase in scripts/e2e-codex.sh.
 # Hermetic coverage for oh_codex_plugins_flag_order against the rows of
 # tests/fixtures/codex-plugins-flag-order.json.
 set -euo pipefail

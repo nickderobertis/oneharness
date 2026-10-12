@@ -1,0 +1,1151 @@
+{
+  "scenario": "killed-client",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:07:39",
+  "elapsed_s": 65.25,
+  "paid_turns": 2,
+  "observed": {
+    "via": "turn",
+    "server_pid": 77732,
+    "victim": {
+      "threadId": "01a13039-da40-7aa1-ba86-b93002beff6e",
+      "pid": 78019,
+      "prompt": "Run `bash /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-kill/hb.sh` in the foreground and wait until it finishes, then reply DONE.",
+      "turnId": "01a13039-daea-71c3-9b9d-f153f8a1ce65"
+    },
+    "heartbeat_pid": 82233,
+    "heartbeat_parent_chain": [
+      {
+        "pid": 77754,
+        "cmd": "/home/nick/.asdf/installs/nodejs/26.5.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_6"
+      },
+      {
+        "pid": 77732,
+        "cmd": "node /home/nick/.local/bin/codex app-server --listen unix:///home/nick/projects/ai-orchestrator/runs/codex-network-usage"
+      }
+    ],
+    "killed_at_s": 8.22,
+    "after_kill_samples": [
+      {
+        "t": 0.0,
+        "hb_lines": 18,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 1.01,
+        "hb_lines": 28,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 2.01,
+        "hb_lines": 38,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 3.02,
+        "hb_lines": 48,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 4.03,
+        "hb_lines": 57,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 5.06,
+        "hb_lines": 67,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 6.06,
+        "hb_lines": 77,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 7.07,
+        "hb_lines": 87,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 8.08,
+        "hb_lines": 97,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 9.08,
+        "hb_lines": 107,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 10.09,
+        "hb_lines": 116,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 11.09,
+        "hb_lines": 126,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 12.1,
+        "hb_lines": 136,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 13.11,
+        "hb_lines": 146,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 14.12,
+        "hb_lines": 156,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 15.12,
+        "hb_lines": 165,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 16.13,
+        "hb_lines": 175,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 17.14,
+        "hb_lines": 184,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 18.14,
+        "hb_lines": 194,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 19.15,
+        "hb_lines": 204,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "inProgress"
+        },
+        "error": null
+      }
+    ],
+    "heartbeat_kept_growing_after_kill": true,
+    "heartbeat_lines_gained_in_observation": 186,
+    "observer_thread_resume": {
+      "result": {
+        "model": "gpt-6.1-sol",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-kill",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-kill"
+        ],
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": "low",
+        "collaborationMode": {
+          "mode": "default",
+          "settings": {
+            "model": "gpt-6.1-sol",
+            "reasoning_effort": "low",
+            "developer_instructions": null
+          }
+        },
+        "multiAgentMode": "explicitRequestOnly",
+        "initialTurnsPage": null,
+        "turnsBackwardsCursor": "{\"requestedThreadId\":\"01a13039-da40-7aa1-ba86-b93002beff6e\",\"rolloutOrdinal\":1,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}",
+        "itemsBackwardsCursor": "{\"requestedThreadId\":\"01a13039-da40-7aa1-ba86-b93002beff6e\",\"rolloutOrdinal\":10,\"includeAnchor\":true,\"scope\":{\"kind\":\"itemsByCreatedAtOrdinal\"}}"
+      },
+      "latency_s": 0.026
+    },
+    "observer_turn_completed_before_interrupt": false,
+    "interrupt_response": {
+      "result": {},
+      "latency_s": 0.01
+    },
+    "interrupt_sent_s_after_kill": 20.179,
+    "after_interrupt_samples": [
+      {
+        "t": 0.01,
+        "hb_lines": 214,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 0.52,
+        "hb_lines": 219,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 1.04,
+        "hb_lines": 224,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 1.55,
+        "hb_lines": 229,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 2.06,
+        "hb_lines": 234,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 2.57,
+        "hb_lines": 239,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 3.08,
+        "hb_lines": 244,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 3.59,
+        "hb_lines": 249,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 4.1,
+        "hb_lines": 254,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 4.61,
+        "hb_lines": 259,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 5.12,
+        "hb_lines": 264,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 5.63,
+        "hb_lines": 269,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 6.15,
+        "hb_lines": 274,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 6.66,
+        "hb_lines": 279,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 7.17,
+        "hb_lines": 284,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 7.67,
+        "hb_lines": 289,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 8.19,
+        "hb_lines": 294,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 8.71,
+        "hb_lines": 299,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 9.22,
+        "hb_lines": 304,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 9.73,
+        "hb_lines": 309,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 10.24,
+        "hb_lines": 314,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 10.75,
+        "hb_lines": 319,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 11.26,
+        "hb_lines": 324,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 11.77,
+        "hb_lines": 329,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 12.28,
+        "hb_lines": 334,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 12.79,
+        "hb_lines": 339,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 13.3,
+        "hb_lines": 344,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 13.81,
+        "hb_lines": 349,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 14.32,
+        "hb_lines": 354,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 14.83,
+        "hb_lines": 359,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 15.34,
+        "hb_lines": 364,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 15.85,
+        "hb_lines": 369,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 16.37,
+        "hb_lines": 374,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 16.88,
+        "hb_lines": 379,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 17.39,
+        "hb_lines": 384,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 17.9,
+        "hb_lines": 389,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 18.41,
+        "hb_lines": 394,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 18.92,
+        "hb_lines": 399,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 19.43,
+        "hb_lines": 404,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 19.94,
+        "hb_lines": 409,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 20.45,
+        "hb_lines": 414,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 20.96,
+        "hb_lines": 419,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 21.47,
+        "hb_lines": 424,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 21.98,
+        "hb_lines": 429,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 22.49,
+        "hb_lines": 434,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 23.01,
+        "hb_lines": 439,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 23.54,
+        "hb_lines": 444,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 24.06,
+        "hb_lines": 449,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 24.57,
+        "hb_lines": 454,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 25.09,
+        "hb_lines": 459,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 25.6,
+        "hb_lines": 464,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 26.13,
+        "hb_lines": 469,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 26.64,
+        "hb_lines": 474,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 27.15,
+        "hb_lines": 479,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 27.66,
+        "hb_lines": 484,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 28.17,
+        "hb_lines": 489,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 28.68,
+        "hb_lines": 494,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 29.19,
+        "hb_lines": 499,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 29.72,
+        "hb_lines": 504,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-daea-71c3-9b9d-f153f8a1ce65",
+          "status": "interrupted"
+        },
+        "error": null
+      }
+    ],
+    "turn_completed_notification_s_after_interrupt": 0.012,
+    "turn_completed_notification_status": "interrupted",
+    "turn_end_s_after_interrupt": 0.014,
+    "turn_end_s_after_kill": 20.193,
+    "heartbeat_last_line_s_after_interrupt": 30.203,
+    "heartbeat_last_line_s_after_kill": 50.382,
+    "heartbeat_pid_alive_after_interrupt": true,
+    "heartbeat_pid_alive_5s_later": true,
+    "heartbeat_lines_still_growing": true,
+    "other_turn": {
+      "status": "completed",
+      "commands": [
+        {
+          "at": 23.667,
+          "command": "/usr/bin/bash -lc 'sleep 8; echo OTHER-OK'",
+          "exitCode": 0,
+          "status": "completed",
+          "source": "unifiedExecStartup",
+          "output": "OTHER-OK\n"
+        }
+      ],
+      "agent": "OTHER-OK"
+    },
+    "server_stop": {
+      "signal": "SIGTERM",
+      "exited_after_s": 0.066,
+      "returncode": 0,
+      "real_server_outlived_launcher": false
+    },
+    "heartbeat_pid_alive_after_server_stop": false
+  },
+  "error": null
+}

@@ -488,6 +488,20 @@ def proc_parent(pid: int):
         return None
 
 
+def marker_pids(marker: str) -> list[int]:
+    """Processes whose environment carries `SPIKE_LEASE_MARKER=<marker>`."""
+    out = []
+    needle = f"SPIKE_LEASE_MARKER={marker}".encode()
+    for d in Path("/proc").iterdir():
+        if d.name.isdigit():
+            try:
+                if needle in (d / "environ").read_bytes().split(b"\0"):
+                    out.append(int(d.name))
+            except OSError:
+                pass
+    return sorted(out)
+
+
 def real_server_pid(pid: int) -> int:
     """`codex` on PATH may be the npm Node shim, which spawns the native binary
     as a child; the app-server is that child."""
@@ -756,7 +770,9 @@ def _killed(work: Path, a, via: str) -> dict:
     res: dict = {"via": via, "server_pid": s.pid}
     info = work / "victim.json"
     info.unlink(missing_ok=True)
-    victim = subprocess.Popen([sys.executable, __file__, "_victim", "--work", str(work), "--sock", s.sock, "--via", via, "--wd", str(wk)],
+    marker = str(uuid.uuid4())
+    res["lease_marker"] = marker
+    victim = subprocess.Popen([sys.executable, __file__, "_victim", "--work", str(work), "--sock", s.sock, "--via", via, "--wd", str(wk), "--marker", marker],
                               stderr=open(work / "victim.err", "w"))
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline and hb_lines(wk)[0] < 10:
@@ -786,12 +802,17 @@ def _killed(work: Path, a, via: str) -> dict:
         res["heartbeat_parent_chain"].append({"pid": p, "cmd": cmd})
         if p == s.pid:
             break
+    res["heartbeat_pgid_sid"] = {"pgid": os.getpgid(hb_pid), "sid": os.getsid(hb_pid),
+                                 "server_pgid": os.getpgid(s.real_pid), "own_group": os.getpgid(hb_pid) != os.getpgid(s.real_pid)}
+    res["marker_pids_while_running"] = marker_pids(marker)
     # the other dispatch: its own connection and live turn
     other = Client(s.sock, "other")
     other.initialize()
     to = thread_start(other, str(wb))
     other_prompt = "Run `sleep 8; echo OTHER-OK` once and reply with only its output."
-    if via == "turn":
+    if via == "turn" and a.no_other:
+        pass
+    elif via == "turn":
         turn_start(other, tid(to), str(wb), other_prompt)
     else:
         other.request("thread/shellCommand", {"threadId": tid(to), "command": "sleep 8; echo OTHER-OK"})
@@ -867,8 +888,29 @@ def _killed(work: Path, a, via: str) -> dict:
         time.sleep(5)
         res["heartbeat_pid_alive_5s_later"] = pid_alive(hb_pid)
         res["heartbeat_lines_still_growing"] = hb_lines(wk)[0] > n
+    if pid_alive(hb_pid) and a.reap:
+        # does Codex reap the thread's processes when the thread is unloaded?
+        res["unsubscribe"] = summarize(observer.request("thread/unsubscribe", {"threadId": vi["threadId"]}))
+        time.sleep(5)
+        res["heartbeat_pid_alive_5s_after_unsubscribe"] = pid_alive(hb_pid)
+        res["thread_closed_seen"] = bool(observer.notes("thread/closed", vi["threadId"]))
+        if pid_alive(hb_pid):
+            pids = marker_pids(marker)
+            res["marker_pids_after_interrupt"] = pids
+            t_r = time.time()
+            for p in pids:  # processes carrying this spike's own per-thread marker
+                try:
+                    os.kill(p, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            time.sleep(2)
+            n2, last2 = hb_lines(wk)
+            res["marker_reap"] = {"heartbeat_alive": pid_alive(hb_pid), "last_line_s_after_reap": round(last2 - t_r, 3) if last2 else None,
+                                  "marker_pids_left": marker_pids(marker)}
     # the other client's turn
-    if via == "turn":
+    if via == "turn" and a.no_other:
+        record_paid(work, f"killed-{via}", "victim", vi.get("prompt"), {"interrupted": res["interrupt_response"]})
+    elif via == "turn":
         d = other.wait_for(turn_completed(tid(to)), 120)
         res["other_turn"] = {"status": d[1]["params"]["turn"]["status"] if d and "params" in d[1] else d,
                              "commands": command_outputs(other, tid(to)), "agent": agent_text(other, tid(to))[-300:]}
@@ -902,7 +944,8 @@ def victim_main(a):
     work, wd = Path(a.work), Path(a.wd)
     c = Client(a.sock, "victim")
     c.initialize()
-    t = thread_start(c, str(wd), ephemeral=False)  # so an observer can thread/read its turns
+    t = thread_start(c, str(wd), ephemeral=False,  # so an observer can thread/read its turns
+                     config={"shell_environment_policy": {"set": {"SPIKE_LEASE_MARKER": a.marker}}})
     th = tid(t)
     info = {"threadId": th, "pid": os.getpid()}
     if a.via == "turn":
@@ -1158,6 +1201,9 @@ def main():
     ap.add_argument("--observe-dead", type=float, default=15.0, help="killed-*: seconds watched after SIGKILL before interrupting")
     ap.add_argument("--signal", choices=["KILL", "TERM"], default="KILL", help="blast: signal sent to the server")
     ap.add_argument("--via", choices=["turn", "shell"], default="turn", help="blast: live work is a model turn or a shellCommand")
+    ap.add_argument("--no-other", action="store_true", help="killed-client: skip the second client's paid turn")
+    ap.add_argument("--reap", action="store_true", help="killed-*: after the interrupt, try thread/unsubscribe then a marker-env reap")
+    ap.add_argument("--marker", default="")
     ap.add_argument("--sock")
     ap.add_argument("--wd")
     a = ap.parse_args()

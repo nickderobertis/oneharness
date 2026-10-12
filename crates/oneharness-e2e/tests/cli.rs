@@ -37495,6 +37495,7 @@ fn unmigrated_history_elsewhere_is_never_warned_about_and_in_scope_once() {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] These drive the real built `oneharness` binary end to end over every Codex launch path; only the codex process is replaced, by the repository's own subprocess double (oneharness-mock-harness), because what is under test is the argv oneharness starts Codex with, and a real Codex launch needs an authenticated account and downloads the very ~29 MB catalog this change exists to avoid. The real catalog download per launch is measured by the live tier's `codex-launch-network-bytes` budget, which the `oneharness-live-network-budget` plan node registers.
 /// The plugin the codex plugin journeys install under their launch's
 /// `CODEX_HOME`, so a launch that loads plugins has one to load.
 const FIXTURE_CODEX_PLUGIN: &str = "oh-fixture-plugin";
@@ -37504,6 +37505,8 @@ const FIXTURE_CODEX_PLUGIN: &str = "oh-fixture-plugin";
 #[derive(Debug, Clone, Copy)]
 enum CodexLaunchPath {
     Exec,
+    /// `run --resume`, so `codex exec resume`.
+    Resume,
     #[cfg(unix)]
     Control,
     Usage,
@@ -37594,6 +37597,15 @@ fn launch_codex(
     let app_server_log = session_dir.join("app-server.log").display().to_string();
     let mut args: Vec<&str> = match path {
         CodexLaunchPath::Exec => vec!["run", "--harness", harness, "--prompt", "go"],
+        CodexLaunchPath::Resume => vec![
+            "run",
+            "--harness",
+            harness,
+            "--prompt",
+            "go",
+            "--resume",
+            "th-1",
+        ],
         #[cfg(unix)]
         CodexLaunchPath::Control => {
             envs.push(("MOCK_CODEX_APP_SERVER_LOG", app_server_log.as_str()));
@@ -37651,6 +37663,19 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
     assert!(exec.position(&["--disable"]) < exec.position(&["--config-arg"]));
     assert!(exec.position(&["--config-arg"]) < exec.position(&["--passthrough-arg"]));
     exec.assert_plugins_off("exec");
+
+    let resumed = launch_codex(
+        &fx,
+        CodexLaunchPath::Resume,
+        "codex",
+        &["--passthrough-arg"],
+    );
+    assert_eq!(
+        resumed.argv[..4],
+        ["exec", "resume", "--disable", "plugins"]
+    );
+    assert!(resumed.position(&["--config-arg"]) < resumed.position(&["--passthrough-arg"]));
+    resumed.assert_plugins_off("exec resume");
 
     #[cfg(unix)]
     {
@@ -37834,6 +37859,10 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
             "a worker's passthrough",
             launch_codex(&fx, CodexLaunchPath::Exec, "codex", &["--worker-arg"]),
         ),
+        (
+            "a resumed turn",
+            launch_codex(&fx, CodexLaunchPath::Resume, "codex:own-args", &[]),
+        ),
     ];
     #[cfg(unix)]
     launches.push((
@@ -37952,4 +37981,59 @@ fn config_reports_the_resolved_plugins_for_each_codex_harness_and_variant() {
         report["harness"]["claude-code"].get("plugins").is_none(),
         "{report}"
     );
+
+    // Set nowhere, both resolve to the built-in `false`, attributed as such.
+    let unset = ConfigFixture::new(
+        "plugins-report-unset",
+        "[harness.codex.variant.v]\nargs = [\"--x\"]\n",
+        "",
+    );
+    let output = run_with_config(
+        &["config", "--cwd", &unset.cwd()],
+        &[],
+        &unset.user_config(),
+    );
+    assert!(output.status.success(), "{output:?}");
+    let codex = &json_stdout(&output)["harness"]["codex"];
+    let default = serde_json::json!({"value": false, "source": "default"});
+    assert_eq!(codex["plugins"], default);
+    assert_eq!(codex["variant"]["v"]["plugins"], default);
 }
+
+#[test]
+fn list_shows_the_codex_example_command_under_the_resolved_plugins() {
+    // `oneharness list` prints the command each harness would run, so codex's
+    // example follows the config's `plugins` like a real launch does.
+    let example = |project: &str| -> Vec<String> {
+        let fx = ConfigFixture::new("plugins-list", project, "");
+        let output = run_with_config_in(Some(&fx.dir), &["list"], &[], &fx.user_config());
+        assert!(output.status.success(), "{output:?}");
+        let listed = json_stdout(&output);
+        let codex = listed["harnesses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|harness| harness["id"] == "codex")
+            .unwrap()
+            .clone();
+        codex["example_command"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap().to_string())
+            .collect()
+    };
+    let default = example("");
+    assert_eq!(
+        default[1..4],
+        ["exec", "--disable", "plugins"],
+        "{default:?}"
+    );
+    let opted_in = example("[harness.codex]\nplugins = true\n");
+    assert!(
+        !opted_in.iter().any(|arg| arg.contains("plugins")),
+        "{opted_in:?}"
+    );
+    assert_eq!(opted_in[1], "exec", "{opted_in:?}");
+}
+// llmlint: ignore-end[e2e_not_mocked]

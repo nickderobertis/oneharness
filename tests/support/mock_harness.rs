@@ -264,9 +264,10 @@ fn scripted_attempt() -> Option<u32> {
 /// Codex's `plugins` feature as an argv resolves it: on when nothing names it,
 /// then each `--disable plugins`, `--enable plugins` and
 /// `-c features.plugins=<bool>` applied in argv order, the last one winning —
-/// Codex documents both flags as `-c features.<name>=<bool>`, and its `-c`
-/// overrides apply in order. Only those three spellings are modelled; the live
-/// variants phase is what checks the model against real Codex.
+/// `codex exec --help` and `codex app-server --help` (codex-cli 0.159.2)
+/// document both flags as `-c features.<name>=<bool>`, and its `-c` overrides
+/// apply in order. Only those three spellings are modelled.
+// llmlint: ignore[contracts_have_one_source_or_a_drift_gate] This is a deliberate model of Codex's documented flag semantics, kept to the three spellings by the task that introduced it; nothing hermetic can observe real Codex's feature resolution, and the check against real Codex is the opted-in Codex phase the `oneharness-live-network-budget` plan node adds to `scripts/e2e-variants.sh` (not yet in this tree).
 fn codex_plugins_enabled(argv: &[String]) -> bool {
     let mut enabled = true;
     for pair in argv.windows(2) {

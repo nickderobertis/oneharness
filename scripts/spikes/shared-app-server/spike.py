@@ -824,8 +824,12 @@ def _killed(work: Path, a, via: str) -> dict:
     n_after = samples[-1]["hb_lines"]
     res["heartbeat_kept_growing_after_kill"] = n_after > n_before + 5
     res["heartbeat_lines_gained_in_observation"] = n_after - n_before
-    # interrupt from a new connection
+    # attach the observer to the orphaned thread, as a reaper would, then interrupt
+    rs = observer.request("thread/resume", {"threadId": vi["threadId"], "excludeTurns": True})
+    res["observer_thread_resume"] = summarize(rs)
+    res["observer_turn_completed_before_interrupt"] = bool(observer.notes("turn/completed", vi["threadId"]))
     turn_id = vi.get("turnId")
+    since_int = len(observer.events)
     t_int = now()
     int_wall = time.time()
     ir = observer.request("turn/interrupt", {"threadId": vi["threadId"], "turnId": turn_id or "none"})
@@ -850,6 +854,9 @@ def _killed(work: Path, a, via: str) -> dict:
             break
         time.sleep(0.25)
     res["after_interrupt_samples"] = samples2[::2]
+    tc = observer.wait_for(is_note("turn/completed", vi["threadId"]), 1, since_int)
+    res["turn_completed_notification_s_after_interrupt"] = round(tc[0] - t_int, 3) if tc else None
+    res["turn_completed_notification_status"] = tc[1]["params"]["turn"].get("status") if tc else None
     n, last = hb_lines(wk)
     res["turn_end_s_after_interrupt"] = turn_end
     res["turn_end_s_after_kill"] = round(turn_end + (t_int - killed_at), 3) if turn_end is not None else None
@@ -895,7 +902,7 @@ def victim_main(a):
     work, wd = Path(a.work), Path(a.wd)
     c = Client(a.sock, "victim")
     c.initialize()
-    t = thread_start(c, str(wd))
+    t = thread_start(c, str(wd), ephemeral=False)  # so an observer can thread/read its turns
     th = tid(t)
     info = {"threadId": th, "pid": os.getpid()}
     if a.via == "turn":

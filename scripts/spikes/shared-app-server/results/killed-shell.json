@@ -1,0 +1,331 @@
+{
+  "scenario": "killed-shell",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:07:13",
+  "elapsed_s": 20.243,
+  "paid_turns": 0,
+  "observed": {
+    "via": "shell",
+    "server_pid": 57445,
+    "victim": {
+      "threadId": "01a13039-7309-7550-91e9-1888d6602bc3",
+      "pid": 57798,
+      "shell_rpc": {
+        "result": {},
+        "latency_s": 0.001
+      },
+      "turnId": "01a13039-7387-7020-bbfb-7bfefcd2b20a"
+    },
+    "heartbeat_pid": 58123,
+    "heartbeat_parent_chain": [
+      {
+        "pid": 57483,
+        "cmd": "/home/nick/.asdf/installs/nodejs/26.5.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_6"
+      },
+      {
+        "pid": 57445,
+        "cmd": "node /home/nick/.local/bin/codex app-server --listen unix:///home/nick/projects/ai-orchestrator/runs/codex-network-usage"
+      }
+    ],
+    "killed_at_s": 2.58,
+    "after_kill_samples": [
+      {
+        "t": 0.0,
+        "hb_lines": 17,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 1.01,
+        "hb_lines": 27,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 2.02,
+        "hb_lines": 37,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 3.03,
+        "hb_lines": 47,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 4.04,
+        "hb_lines": 57,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 5.04,
+        "hb_lines": 66,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 6.05,
+        "hb_lines": 76,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 7.05,
+        "hb_lines": 86,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 8.06,
+        "hb_lines": 96,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 9.06,
+        "hb_lines": 106,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 10.07,
+        "hb_lines": 116,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 11.07,
+        "hb_lines": 125,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 12.08,
+        "hb_lines": 135,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 13.08,
+        "hb_lines": 145,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      },
+      {
+        "t": 14.09,
+        "hb_lines": 155,
+        "hb_pid_alive": true,
+        "thread_status": {
+          "type": "active",
+          "activeFlags": []
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "inProgress"
+        },
+        "error": null
+      }
+    ],
+    "heartbeat_kept_growing_after_kill": true,
+    "heartbeat_lines_gained_in_observation": 138,
+    "observer_thread_resume": {
+      "result": {
+        "model": "gpt-6.1-sol",
+        "modelProvider": "openai",
+        "serviceTier": null,
+        "disabledPluginIds": [],
+        "cwd": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-kill",
+        "runtimeWorkspaceRoots": [
+          "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/wd-kill"
+        ],
+        "approvalPolicy": "never",
+        "approvalsReviewer": "user",
+        "sandbox": {
+          "type": "dangerFullAccess"
+        },
+        "activePermissionProfile": null,
+        "reasoningEffort": null,
+        "collaborationMode": {
+          "mode": "default",
+          "settings": {
+            "model": "gpt-6.1-sol",
+            "reasoning_effort": null,
+            "developer_instructions": null
+          }
+        },
+        "multiAgentMode": "explicitRequestOnly",
+        "initialTurnsPage": null,
+        "turnsBackwardsCursor": "{\"requestedThreadId\":\"01a13039-7309-7550-91e9-1888d6602bc3\",\"rolloutOrdinal\":1,\"includeAnchor\":true,\"scope\":{\"kind\":\"turns\"}}",
+        "itemsBackwardsCursor": null
+      },
+      "latency_s": 0.038
+    },
+    "observer_turn_completed_before_interrupt": false,
+    "interrupt_response": {
+      "result": {},
+      "latency_s": 0.027
+    },
+    "interrupt_sent_s_after_kill": 15.13,
+    "after_interrupt_samples": [
+      {
+        "t": 0.04,
+        "hb_lines": 165,
+        "hb_pid_alive": false,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "interrupted"
+        },
+        "error": null
+      },
+      {
+        "t": 0.55,
+        "hb_lines": 165,
+        "hb_pid_alive": false,
+        "thread_status": {
+          "type": "idle"
+        },
+        "last_turn": {
+          "id": "01a13039-7387-7020-bbfb-7bfefcd2b20a",
+          "status": "interrupted"
+        },
+        "error": null
+      }
+    ],
+    "turn_completed_notification_s_after_interrupt": 0.028,
+    "turn_completed_notification_status": "interrupted",
+    "turn_end_s_after_interrupt": 0.035,
+    "turn_end_s_after_kill": 15.165,
+    "heartbeat_last_line_s_after_interrupt": -0.044,
+    "heartbeat_last_line_s_after_kill": 15.086,
+    "heartbeat_pid_alive_after_interrupt": false,
+    "other_shell": {
+      "output": "OTHER-OK\n",
+      "exitCode": 0
+    },
+    "server_stop": {
+      "signal": "SIGTERM",
+      "exited_after_s": 0.143,
+      "returncode": 0,
+      "real_server_outlived_launcher": false
+    },
+    "heartbeat_pid_alive_after_server_stop": "already-gone"
+  },
+  "error": null
+}

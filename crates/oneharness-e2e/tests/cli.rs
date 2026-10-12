@@ -37712,9 +37712,16 @@ fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
     // Codex applies `-c features.plugins=` last-wins and `--enable plugins`
     // after every `-c`, so a caller who asks for plugins — in config `args` or
     // after `--` — comes after oneharness's default `-c features.plugins=false`
-    // and gets them, under the mock's model of that precedence.
+    // and gets them, under the mock's model of that precedence: on `exec` and
+    // on the `--control` app-server alike.
     let spellings: [&[&str]; 2] = [&["--enable", "plugins"], &["-c", "features.plugins=true"]];
-    for spelling in spellings {
+    let mut paths = vec![CodexLaunchPath::Exec];
+    #[cfg(unix)]
+    paths.push(CodexLaunchPath::Control);
+    for (path, spelling) in paths
+        .iter()
+        .flat_map(|path| spellings.iter().map(move |spelling| (*path, *spelling)))
+    {
         let config_args = format!(
             "[harness.codex]\nargs = [{}]\n",
             spelling
@@ -37728,20 +37735,24 @@ fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
         for (source, launch) in [
             (
                 "config args",
-                launch_codex(&from_config, CodexLaunchPath::Exec, "codex", &[]),
+                launch_codex(&from_config, path, "codex", &[]),
             ),
             (
                 "passthrough",
-                launch_codex(&from_passthrough, CodexLaunchPath::Exec, "codex", spelling),
+                launch_codex(&from_passthrough, path, "codex", spelling),
             ),
         ] {
-            let context = format!("{spelling:?} via {source}");
+            let context = format!("{path:?}: {spelling:?} via {source}");
             // What Codex would do with this argv comes first: the caller's
             // opt-in must actually win, not merely sit later in the argv.
             launch.assert_plugins_loaded(&context);
+            let subcommand = match path {
+                CodexLaunchPath::Exec => "exec",
+                _ => "app-server",
+            };
             assert_eq!(
                 launch.argv[..3],
-                ["exec", "-c", "features.plugins=false"],
+                [subcommand, "-c", "features.plugins=false"],
                 "{context}"
             );
             assert!(
@@ -37754,7 +37765,7 @@ fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
 }
 
 #[test]
-fn plugins_layer_across_config_files_extends_parents_and_variants() {
+fn plugins_layer_across_config_files_and_variants() {
     // A later layer's `Some` overrides an earlier one and its `None` keeps
     // it, at harness level and inside merged variant maps alike. The user
     // config is the earlier layer, the project config the later one.
@@ -37812,28 +37823,103 @@ fn plugins_layer_across_config_files_extends_parents_and_variants() {
             launch.assert_plugins_off(&context);
         }
     }
+}
 
-    // An `extends` parent sits under the file declaring it the same way.
-    for (child, want) in [
-        ("[harness.codex]\nargs = [\"--child\"]\n", true),
-        ("[harness.codex]\nplugins = false\n", false),
-    ] {
+#[test]
+fn plugins_layer_across_extends_parents_at_harness_and_variant_level() {
+    // An `extends` parent sits under the file declaring it the same way: the
+    // child's `Some` overrides the parent's in either direction, and a child
+    // that leaves `plugins` unset (setting only `args`) keeps the parent's —
+    // at harness level and inside a variant alike.
+    // Inside a variant a retained `false` is told apart from a dropped one by
+    // the harness-level `true` it would otherwise fall back to. At harness
+    // level the two resolve alike (to the built-in `false`), so that row puts
+    // a user-level `true` beneath the parent instead: the parent's `false`
+    // must outrank it through a child that leaves `plugins` unset.
+    let extends: &[(&str, &str, &str, &str, bool)] = &[
+        (
+            "",
+            "[harness.codex]\nplugins = true\n",
+            "[harness.codex]\nplugins = false\n",
+            "codex",
+            false,
+        ),
+        (
+            "",
+            "[harness.codex]\nplugins = false\n",
+            "[harness.codex]\nplugins = true\n",
+            "codex",
+            true,
+        ),
+        (
+            "",
+            "[harness.codex]\nplugins = true\n",
+            "[harness.codex]\nargs = [\"--child\"]\n",
+            "codex",
+            true,
+        ),
+        (
+            "[harness.codex]\nplugins = true\n",
+            "[harness.codex]\nplugins = false\n",
+            "[harness.codex]\nargs = [\"--child\"]\n",
+            "codex",
+            false,
+        ),
+        (
+            "",
+            "[harness.codex.variant.work]\nplugins = true\n",
+            "[harness.codex.variant.work]\nplugins = false\n",
+            "codex:work",
+            false,
+        ),
+        (
+            "",
+            "[harness.codex.variant.work]\nplugins = false\n",
+            "[harness.codex.variant.work]\nplugins = true\n",
+            "codex:work",
+            true,
+        ),
+        (
+            "",
+            "[harness.codex.variant.work]\nplugins = true\n",
+            "[harness.codex.variant.work]\nargs = [\"--child\"]\n",
+            "codex:work",
+            true,
+        ),
+        (
+            "",
+            "[harness.codex]\nplugins = true\n[harness.codex.variant.work]\nplugins = false\n",
+            "[harness.codex.variant.work]\nargs = [\"--child\"]\n",
+            "codex:work",
+            false,
+        ),
+    ];
+    for (user, parent, child, harness, want) in extends {
         let fx = ConfigFixture::new(
             "codex-plugins-extends",
             &format!("extends = \"parent.toml\"\n{child}"),
-            "",
+            user,
         );
-        std::fs::write(
-            fx.dir.join("parent.toml"),
-            "[harness.codex]\nplugins = true\n",
-        )
-        .unwrap();
-        let launch = launch_codex(&fx, CodexLaunchPath::Exec, "codex", &[]);
-        assert_eq!(!launch.names_plugins(), want, "{child}: {:?}", launch.argv);
-        if want {
-            launch.assert_plugins_loaded(child);
+        std::fs::write(fx.dir.join("parent.toml"), parent).unwrap();
+        let launch = launch_codex(&fx, CodexLaunchPath::Exec, harness, &[]);
+        let context = format!("child {child:?} extending parent {parent:?} over user {user:?}");
+        if child.contains("--child") {
+            assert!(
+                launch.argv.contains(&"--child".to_string()),
+                "{context}: {:?}",
+                launch.argv
+            );
+        }
+        if *want {
+            assert!(!launch.names_plugins(), "{context}: {:?}", launch.argv);
+            launch.assert_plugins_loaded(&context);
         } else {
-            launch.assert_plugins_off(child);
+            assert_eq!(
+                launch.argv[..3],
+                ["exec", "-c", "features.plugins=false"],
+                "{context}"
+            );
+            launch.assert_plugins_off(&context);
         }
     }
 }
@@ -37896,6 +37982,31 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
         ["app-server", "--disable", "plugins", "--stdio"]
     );
     usage.assert_plugins_off("usage under plugins = true");
+
+    // A variant that opts in on its own, under a harness that does not, keeps
+    // its own `args` and gets plugins on `exec` and the app-server alike.
+    let own = ConfigFixture::new(
+        "codex-plugins-own-variant",
+        "[harness.codex]\nargs = [\"--harness-arg\"]\n\
+         [harness.codex.variant.own]\nplugins = true\nargs = [\"--own-arg\"]\n",
+        "",
+    );
+    let exec = launch_codex(&own, CodexLaunchPath::Exec, "codex:own", &[]);
+    assert_eq!(exec.argv[..2], ["exec", "--json"], "{:?}", exec.argv);
+    assert_eq!(exec.argv.last().map(String::as_str), Some("--own-arg"));
+    assert!(!exec.names_plugins(), "{:?}", exec.argv);
+    exec.assert_plugins_loaded("exec of a variant opting in with its own args");
+    #[cfg(unix)]
+    {
+        let control = launch_codex(
+            &own,
+            CodexLaunchPath::Control,
+            "codex:own",
+            &["--worker-arg"],
+        );
+        assert_eq!(control.argv, ["app-server", "--own-arg", "--worker-arg"]);
+        control.assert_plugins_loaded("app-server of a variant opting in with its own args");
+    }
 
     // One variant's opt-in is that variant's alone.
     let one = ConfigFixture::new(

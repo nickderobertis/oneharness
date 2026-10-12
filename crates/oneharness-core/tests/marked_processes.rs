@@ -20,8 +20,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use oneharness_core::io::marked_processes::{find_marked, stop_marked, ProcessMarker, StopReport};
 use oneharness_core::io::scratch::ScratchDir;
 
-/// Which role a re-executed copy of this binary plays: `spawn`, `beat` or
-/// `stop-own-marker`.
+/// Which role a re-executed copy of this binary plays: `spawn`, `beat`,
+/// `stop-own-marker`, or (Windows) `watch`.
 const ROLE_VAR: &str = "ONEHARNESS_MARKED_TEST_ROLE";
 /// The heartbeat file a `beat` appends to, or where `stop-own-marker` writes
 /// what it found.
@@ -51,6 +51,8 @@ fn role() {
         Ok("spawn") => spawn_role(),
         Ok("beat") => beat_role(),
         Ok("stop-own-marker") => stop_own_marker_role(),
+        #[cfg(windows)]
+        Ok("watch") => fork_while_stopping::watch(),
         _ => {}
     }
 }
@@ -235,21 +237,56 @@ mod fork_while_stopping {
 
     /// Nothing is started before the stop asks for it.
     pub(super) fn await_ready(_ticks: &Path) {}
+
+    /// The child started after the stop's first scan: the parent's only one,
+    /// which it starts only once `SIGTERM` has arrived — and `stop_marked`
+    /// sends that only to a pid one of its scans matched.
+    pub(super) fn late_child(ticks: &Path) -> u32 {
+        let pids = super::child_pids(ticks);
+        assert_eq!(
+            pids.len(),
+            1,
+            "the parent must start exactly one child: {pids:?}"
+        );
+        pids[0]
+    }
 }
 
 /// On Windows, where stopping is immediate termination a process never
 /// observes: start marked children continuously, from before the stop until
 /// the stop terminates this process, so children keep appearing while its
 /// scans run.
+///
+/// Continuous spawning alone cannot show that any child postdates the first
+/// scan, since every one may already have existed when it listed the table.
+/// So the parent also starts an unmarked `watch` — no scan ever matches it —
+/// holding a handle to the parent. The stop terminates the parent only after a
+/// scan matched it; the watcher waits for that termination, then starts one
+/// more marked child, and records the kernel's evidence of the order: the
+/// parent's exit code and exit time, and that child's creation time.
 #[cfg(windows)]
 mod fork_while_stopping {
+    use std::os::windows::io::AsRawHandle;
     use std::path::{Path, PathBuf};
-    use std::time::Duration;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, GetProcessTimes, OpenProcess, WaitForSingleObject, INFINITE,
+        PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
+    };
 
     /// A bound on the children one run starts if nothing ever stops it.
     const MOST: usize = 200;
+    /// The pid of the parent a `watch` waits on.
+    const WATCH_VAR: &str = "ONEHARNESS_MARKED_TEST_WATCH";
+    /// The exit code `stop_marked` passes to `TerminateProcess`; the parent
+    /// exiting on its own would leave 0, a panic 101.
+    const STOP_EXIT_CODE: u32 = 1;
 
     pub(super) fn install(ticks: &Path) {
+        start_watcher(ticks);
         let ticks: PathBuf = ticks.to_path_buf();
         std::thread::spawn(move || {
             for _ in 0..MOST {
@@ -261,13 +298,149 @@ mod fork_while_stopping {
 
     pub(super) fn poll(_ticks: &Path) {}
 
-    /// Wait (bounded) for the first child, so the stop begins mid-stream.
+    /// Wait (bounded) for the watcher to hold its handle and for the first
+    /// child, so the stop begins mid-stream.
     pub(super) fn await_ready(ticks: &Path) {
-        let guard = std::time::Instant::now() + super::PATIENCE;
-        while super::child_pids(ticks).is_empty() {
-            assert!(std::time::Instant::now() < guard, "no child was started");
+        let guard = Instant::now() + super::PATIENCE;
+        while !ready(ticks).exists() || super::child_pids(ticks).is_empty() {
+            assert!(
+                Instant::now() < guard,
+                "the watcher or the first child never started"
+            );
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    /// The watcher's late child, after asserting the kernel's evidence that it
+    /// was created no earlier than the stop terminated the parent — which the
+    /// stop does only after a scan matched the parent, so the child cannot have
+    /// been in the first scan's listing.
+    pub(super) fn late_child(ticks: &Path) -> u32 {
+        let guard = Instant::now() + super::PATIENCE;
+        let record = loop {
+            if let Ok(record) = std::fs::read_to_string(record(ticks)) {
+                break record;
+            }
+            assert!(
+                Instant::now() < guard,
+                "the watcher never started its late child"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let fields: Vec<u64> = record
+            .split_whitespace()
+            .map(|field| field.parse().unwrap())
+            .collect();
+        let [pid, parent_code, parent_exited, created] = fields[..] else {
+            panic!("malformed watcher record: {record:?}");
+        };
+        assert_eq!(
+            parent_code,
+            u64::from(STOP_EXIT_CODE),
+            "the parent was not ended by the stop's TerminateProcess"
+        );
+        assert!(
+            created >= parent_exited,
+            "late child {pid} was created at {created}, before the stop terminated the parent at {parent_exited}"
+        );
+        u32::try_from(pid).unwrap()
+    }
+
+    fn ready(ticks: &Path) -> PathBuf {
+        ticks.with_extension("watch.ready")
+    }
+
+    fn record(ticks: &Path) -> PathBuf {
+        ticks.with_extension("watch.record")
+    }
+
+    /// Start the watcher with the marker stripped from its environment, so no
+    /// scan matches it; it learns the marker from `MARK_VAR`.
+    fn start_watcher(ticks: &Path) {
+        let mark = std::env::var(super::MARK_VAR).unwrap();
+        let (name, _) = mark.split_once('=').unwrap();
+        // Never waited on: the watcher must outlive the parent, and Windows
+        // has no zombies.
+        #[allow(clippy::zombie_processes)]
+        let _watcher = Command::new(std::env::current_exe().unwrap())
+            .args(["role", "--exact", "--nocapture", "--test-threads=1"])
+            .env(super::ROLE_VAR, "watch")
+            .env(super::TICKS_VAR, ticks)
+            .env(WATCH_VAR, std::process::id().to_string())
+            .env_remove(name)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+    }
+
+    /// The `watch` role: wait for the parent to be terminated, then start one
+    /// marked child and record the order the kernel saw.
+    pub(super) fn watch() {
+        let ticks = PathBuf::from(std::env::var(super::TICKS_VAR).unwrap());
+        let parent: u32 = std::env::var(WATCH_VAR).unwrap().parse().unwrap();
+        let mark = std::env::var(super::MARK_VAR).unwrap();
+        let (name, value) = mark.split_once('=').unwrap();
+        // SAFETY: OpenProcess takes no pointers; null is checked below.
+        let process = unsafe {
+            OpenProcess(
+                PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                0,
+                parent,
+            )
+        };
+        assert!(!process.is_null(), "cannot open the parent {parent}");
+        std::fs::write(ready(&ticks), "").unwrap();
+        // SAFETY: `process` is a live handle opened with SYNCHRONIZE.
+        assert_eq!(
+            unsafe { WaitForSingleObject(process, INFINITE) },
+            WAIT_OBJECT_0
+        );
+        let mut parent_code = 0u32;
+        // SAFETY: `process` is live and `parent_code` writable.
+        assert_ne!(unsafe { GetExitCodeProcess(process, &mut parent_code) }, 0);
+        let (_, parent_exited) = times(process);
+        // SAFETY: the handle is owned here and not used again.
+        unsafe { CloseHandle(process) };
+
+        // Never waited on: the late child is the stop's to end.
+        #[allow(clippy::zombie_processes)]
+        let late = Command::new(std::env::current_exe().unwrap())
+            .args(["role", "--exact", "--nocapture", "--test-threads=1"])
+            .env(super::ROLE_VAR, "beat")
+            .env(super::TICKS_VAR, super::child_ticks(&ticks))
+            .env(super::BEHAVIOUR_VAR, "plain")
+            .env(name, value)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let (created, _) = times(late.as_raw_handle() as HANDLE);
+        // Written whole, then renamed, so the test never reads half a record.
+        let partial = record(&ticks).with_extension("partial");
+        std::fs::write(
+            &partial,
+            format!("{} {parent_code} {parent_exited} {created}\n", late.id()),
+        )
+        .unwrap();
+        std::fs::rename(partial, record(&ticks)).unwrap();
+    }
+
+    /// A process's creation and exit times, in the kernel's 100 ns units.
+    fn times(process: HANDLE) -> (u64, u64) {
+        let mut stamps = [FILETIME::default(); 4];
+        let [created, exited, kernel, user] = &mut stamps;
+        // SAFETY: `process` is live with query rights; all four are writable.
+        assert_ne!(
+            unsafe { GetProcessTimes(process, created, exited, kernel, user) },
+            0
+        );
+        let wide = |time: &FILETIME| {
+            (u64::from(time.dwHighDateTime) << 32) | u64::from(time.dwLowDateTime)
+        };
+        (wide(&stamps[0]), wide(&stamps[1]))
     }
 }
 
@@ -541,9 +714,11 @@ fn a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline() {
 /// A marked process that starts a further marked child while it is being
 /// stopped. On Unix the child is started once `SIGTERM` has arrived, so it is
 /// always one the stop's first scan could not have seen. On Windows the stop
-/// terminates at once, so the parent starts children continuously instead and
-/// any child created after the first scan listed the process table — up to
-/// the moment the parent is terminated — is one only a re-scan finds.
+/// terminates at once, so the parent starts children continuously, and its
+/// watcher starts one more once the stop has terminated the parent; the kernel's
+/// timestamps then show that child postdates the first scan. Only a re-scan can
+/// find it — which it does provided it is created within the stop's poll
+/// interval of the parent's termination, the one timing this test relies on.
 #[test]
 fn a_marked_child_started_while_stopping_is_stopped_too() {
     let dir = ScratchDir::new("marked-forking").unwrap();
@@ -564,7 +739,11 @@ fn a_marked_child_started_while_stopping_is_stopped_too() {
     // spawn and its record, which is why `find_marked` below must also come
     // back empty.
     await_exit(parent.pid);
-    let children = child_pids(&parent.ticks);
+    let late = fork_while_stopping::late_child(&parent.ticks);
+    let mut children = child_pids(&parent.ticks);
+    if !children.contains(&late) {
+        children.push(late);
+    }
     let _children: Vec<Beater> = children
         .iter()
         .map(|&pid| Beater {
@@ -572,10 +751,13 @@ fn a_marked_child_started_while_stopping_is_stopped_too() {
             ticks: child_ticks(&parent.ticks),
         })
         .collect();
-    assert!(!children.is_empty(), "the parent never started a child");
     assert!(
         report.signalled.contains(&parent.pid),
         "the parent was never stopped: {report:?}"
+    );
+    assert!(
+        report.signalled.contains(&late) || report.killed.contains(&late),
+        "child {late}, started after the stop's first scan, was never stopped: {report:?}"
     );
     for pid in &children {
         assert!(

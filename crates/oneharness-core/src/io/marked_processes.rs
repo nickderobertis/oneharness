@@ -311,6 +311,7 @@ mod platform {
             // SAFETY: `geteuid` only reads the caller's credentials.
             let euid = unsafe { libc::geteuid() };
             let mut pids = Vec::new();
+            // llmlint: ignore-block[changed_behavior_has_e2e] `/proc` failing to list, an entry failing mid-listing, and an entry's metadata failing all need either a broken procfs mount, which an unprivileged test cannot stage, or a process exiting between the listing and the read, a race no test can time; the first is propagated unchanged as the scan's error, the other two skip the entry. Every Linux test drives the listing's success path end to end, and the protected-process test drives the ownership exclusion.
             for entry in std::fs::read_dir("/proc")? {
                 let Ok(entry) = entry else { continue };
                 let Some(pid) = entry
@@ -329,6 +330,7 @@ mod platform {
                     pids.push(pid);
                 }
             }
+            // llmlint: ignore-end[changed_behavior_has_e2e]
             Ok(pids)
         }
 
@@ -358,6 +360,7 @@ mod platform {
             let mut capacity = 1024usize;
             loop {
                 let mut pids = vec![0 as libc::pid_t; capacity];
+                // llmlint: ignore-block[changed_behavior_has_e2e] A table whose byte size overflows a C int needs hundreds of millions of processes, and `proc_listallpids` fails only on a kernel refusal no unprivileged test can provoke; both are propagated unchanged as the scan's error. Every macOS test drives the listing's success path end to end.
                 let bytes = libc::c_int::try_from(pids.len() * size_of::<libc::pid_t>())
                     .map_err(|_| io::Error::other("process table too large to list"))?;
                 // SAFETY: `pids` is writable for exactly `bytes` bytes.
@@ -365,6 +368,7 @@ mod platform {
                 if listed < 0 {
                     return Err(io::Error::last_os_error());
                 }
+                // llmlint: ignore-end[changed_behavior_has_e2e]
                 let count = usize::try_from(listed).unwrap_or(0);
                 if count < capacity {
                     pids.truncate(count);
@@ -502,7 +506,7 @@ mod platform {
         }
     }
 
-    // llmlint: ignore[changed_behavior_has_e2e] No CI leg runs a Unix other than Linux or macOS, so this refusal has no platform to run a test on; it exists so the crate still builds there and says loudly that the scan is unsupported instead of reporting an empty table.
+    // llmlint: ignore-block[changed_behavior_has_e2e] No CI leg runs a Unix other than Linux or macOS, so this refusal has no platform to run a test on; it exists so the crate still builds there and says loudly that the scan is unsupported instead of reporting an empty table.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     mod os {
         use std::io;
@@ -520,6 +524,7 @@ mod platform {
             false
         }
     }
+    // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
 #[cfg(windows)]
@@ -610,6 +615,7 @@ mod platform {
                 "reading other processes' environments needs a 64-bit build on Windows",
             ));
         }
+        // llmlint: ignore-block[changed_behavior_has_e2e] `CreateToolhelp32Snapshot` and `Process32FirstW` fail only on resource exhaustion or a kernel refusal that an unprivileged test cannot provoke without mocking the platform layer under test; both are propagated unchanged as the scan's error. Every Windows test drives the snapshot's success path end to end.
         // SAFETY: a process snapshot takes no pointer arguments.
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
         if snapshot == INVALID_HANDLE_VALUE {
@@ -626,6 +632,7 @@ mod platform {
         if !present {
             return Err(io::Error::last_os_error());
         }
+        // llmlint: ignore-end[changed_behavior_has_e2e]
         let own = token_user(current_process_token()?.0)?;
         while present {
             let pid = entry.th32ProcessID;
@@ -826,7 +833,7 @@ mod platform {
     // llmlint: ignore-end[changed_behavior_has_e2e]
 }
 
-// llmlint: ignore[changed_behavior_has_e2e] No CI leg runs a platform that is neither Unix nor Windows, so this refusal has nowhere to be tested; it keeps the crate building there, as `io::process` does, and refuses loudly instead of reporting an empty table.
+// llmlint: ignore-block[changed_behavior_has_e2e] No CI leg runs a platform that is neither Unix nor Windows, so this refusal has nowhere to be tested; it keeps the crate building there, as `io::process` does, and refuses loudly instead of reporting an empty table.
 #[cfg(not(any(unix, windows)))]
 mod platform {
     use std::io;
@@ -852,6 +859,7 @@ mod platform {
         false
     }
 }
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 #[cfg(test)]
 mod tests {

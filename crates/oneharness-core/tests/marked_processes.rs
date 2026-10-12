@@ -53,7 +53,8 @@ fn role() {
         Ok("stop-own-marker") => stop_own_marker_role(),
         #[cfg(windows)]
         Ok("watch") => fork_while_stopping::watch(),
-        _ => {}
+        Ok(other) => panic!("unknown {ROLE_VAR} {other:?}"),
+        Err(_) => {}
     }
 }
 
@@ -106,7 +107,7 @@ fn detach(command: &mut Command) {
 /// directory going away.
 fn beat_role() {
     let ticks = PathBuf::from(std::env::var(TICKS_VAR).unwrap());
-    let behaviour = std::env::var(BEHAVIOUR_VAR).unwrap_or_default();
+    let behaviour = std::env::var(BEHAVIOUR_VAR).expect("a beat needs a behaviour");
     match behaviour.as_str() {
         #[cfg(unix)]
         "ignore-stop" => ignore_stop_requests(),
@@ -117,7 +118,11 @@ fn beat_role() {
             // process's credentials.
             assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
         }
-        _ => {}
+        // Windows' stop is termination, which leaves nothing to ignore.
+        #[cfg(windows)]
+        "ignore-stop" => {}
+        "plain" => {}
+        other => panic!("unknown {BEHAVIOUR_VAR} {other:?}"),
     }
     let started = Instant::now();
     let mut beat = 0u64;

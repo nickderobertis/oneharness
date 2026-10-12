@@ -123,6 +123,11 @@ export interface HarnessReport {
     [k: string]: unknown;
   };
   model: Field3;
+  /**
+   * The resolved plugins opt-in (`false` by default), present only for a
+   * harness with a plugins feature (`codex`).
+   */
+  plugins?: Field | null | undefined;
   reasoning: Field3;
   settings: {
     [k: string]: unknown;
@@ -148,6 +153,12 @@ export interface VariantReport {
     [k: string]: unknown;
   };
   model: Field3;
+  /**
+   * The plugins opt-in a launch of this variant resolves to: the variant's
+   * own, else its harness's, else `false`. Present only for a harness with
+   * a plugins feature (`codex`).
+   */
+  plugins?: Field | null | undefined;
   reasoning: Field3;
   settings: {
     [k: string]: unknown;

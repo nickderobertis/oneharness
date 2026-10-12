@@ -462,6 +462,7 @@ export const HarnessReportSchema: z.ZodType<HarnessReport> = z.looseObject({
     .refine((value) => value !== undefined, { message: "Required" }),
   hooks: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   model: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
+  plugins: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   settings: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   variant: z
@@ -3314,6 +3315,7 @@ export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
     .refine((value) => value !== undefined, { message: "Required" }),
   hooks: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   model: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
+  plugins: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   reasoning: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   settings: z.looseObject({}).refine((value) => value !== undefined, { message: "Required" }),
   unset_env: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),

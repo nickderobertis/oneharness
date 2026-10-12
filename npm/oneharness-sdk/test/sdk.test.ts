@@ -1576,6 +1576,8 @@ describe("OneHarness", () => {
 		expect(emptySystem.results[0]?.command).toEqual([
 			"codex",
 			"exec",
+			"--disable",
+			"plugins",
 			"--dangerously-bypass-approvals-and-sandbox",
 			"--json",
 			"empty system still suppresses --system-file",

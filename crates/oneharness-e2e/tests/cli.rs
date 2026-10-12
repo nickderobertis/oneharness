@@ -10866,7 +10866,9 @@ fn with_placeholder_dir(value: &mut Value, dir: &str) {
 fn a_single_config_file_explains_exactly_as_before_repeatable_config() {
     // The golden is the output of the binary before `--config` was repeatable
     // (oneharness 0.17.0) for this same fixture, so the single-file shape — a flat
-    // `config_files` array and one path string per `source` — is pinned.
+    // `config_files` array and one path string per `source` — is pinned. The
+    // `[harness.codex]` table joined later, pinning the codex-only `plugins`
+    // field beside the claude-code entry that omits it.
     let fx = ConfigFixture::new("single-golden", "model = \"project\"\n", "");
     std::fs::write(
         fx.dir.join("base.toml"),
@@ -10878,7 +10880,8 @@ fn a_single_config_file_explains_exactly_as_before_repeatable_config() {
         &single,
         "extends = \"base.toml\"\nmode = \"read-only\"\nmodel = \"m\"\n\
          harnesses = [\"claude-code\"]\n[env]\nOWN = \"single\"\n\
-         [harness.claude-code]\nmodel = \"hm\"\n",
+         [harness.claude-code]\nmodel = \"hm\"\n\
+         [harness.codex]\nplugins = true\n[harness.codex.variant.lean]\nplugins = false\n",
     )
     .unwrap();
     let output = run_with_config(

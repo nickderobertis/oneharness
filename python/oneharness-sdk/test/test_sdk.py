@@ -936,7 +936,15 @@ class OneHarnessTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             empty_system["results"][0]["command"],
-            ["codex", "exec", "--dangerously-bypass-approvals-and-sandbox", "--json", prompt],
+            [
+                "codex",
+                "exec",
+                "--disable",
+                "plugins",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--json",
+                prompt,
+            ],
         )
 
     def test_a_preferred_pair_still_resolves_instead_of_refusing(self) -> None:

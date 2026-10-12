@@ -175,8 +175,11 @@ to them.
 
 ### `codex` — the app-server `account/rateLimits/read`
 
-**Observed.** Spawn `codex app-server --stdio`; send `initialize`, the
-`initialized` notification, then the read; match the reply by JSON-RPC id.
+**Observed.** Spawn `codex app-server --disable plugins --stdio`; send
+`initialize`, the `initialized` notification, then the read; match the reply by
+JSON-RPC id. Plugins stay off whatever the config's `plugins` says: the read
+needs none, and a plugin-enabled start downloads Codex's ~29 MB remote plugin
+catalog first.
 
 ```console
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"oneharness", ...}}}

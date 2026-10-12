@@ -150,6 +150,95 @@
       },
       "env": {},
       "variant": {}
+    },
+    "codex": {
+      "model": {
+        "value": null,
+        "source": null
+      },
+      "reasoning": {
+        "value": null,
+        "source": null
+      },
+      "bin": {
+        "value": null,
+        "source": null
+      },
+      "args": {
+        "value": null,
+        "source": null
+      },
+      "plugins": {
+        "value": true,
+        "source": "<dir>/single.toml"
+      },
+      "allowed_tools": {
+        "value": null,
+        "source": null
+      },
+      "denied_tools": {
+        "value": null,
+        "source": null
+      },
+      "hooks": {
+        "value": null,
+        "source": null
+      },
+      "settings": {
+        "value": null,
+        "source": null
+      },
+      "env": {},
+      "variant": {
+        "lean": {
+          "model": {
+            "value": null,
+            "source": null
+          },
+          "reasoning": {
+            "value": null,
+            "source": null
+          },
+          "bin": {
+            "value": null,
+            "source": null
+          },
+          "args": {
+            "value": null,
+            "source": null
+          },
+          "plugins": {
+            "value": false,
+            "source": "<dir>/single.toml"
+          },
+          "allowed_tools": {
+            "value": null,
+            "source": null
+          },
+          "denied_tools": {
+            "value": null,
+            "source": null
+          },
+          "hooks": {
+            "value": null,
+            "source": null
+          },
+          "settings": {
+            "value": null,
+            "source": null
+          },
+          "env_file": {
+            "value": null,
+            "source": null
+          },
+          "env_from": {},
+          "unset_env": {
+            "value": [],
+            "source": "<dir>/single.toml"
+          },
+          "env": {}
+        }
+      }
     }
   }
 }

@@ -17,16 +17,19 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use oneharness_core::io::marked_processes::{find_marked, stop_marked, ProcessMarker};
+use oneharness_core::io::marked_processes::{find_marked, stop_marked, ProcessMarker, StopReport};
 use oneharness_core::io::scratch::ScratchDir;
 
-/// Which role a re-executed copy of this binary plays: `spawn` or `beat`.
+/// Which role a re-executed copy of this binary plays: `spawn`, `beat` or
+/// `stop-own-marker`.
 const ROLE_VAR: &str = "ONEHARNESS_MARKED_TEST_ROLE";
-/// The heartbeat file a `beat` appends to.
+/// The heartbeat file a `beat` appends to, or where `stop-own-marker` writes
+/// what it found.
 const TICKS_VAR: &str = "ONEHARNESS_MARKED_TEST_TICKS";
 /// `NAME=VALUE` a `spawn` sets on the grandchild it starts; unset for none.
 const MARK_VAR: &str = "ONEHARNESS_MARKED_TEST_MARK";
-/// How a `beat` meets a stop request: `plain`, `ignore-stop`, `fork-on-stop`.
+/// How a `beat` meets a stop request: `plain`, `ignore-stop`, `fork-on-stop`;
+/// or `protected`, hiding its environment from other processes (Linux).
 const BEHAVIOUR_VAR: &str = "ONEHARNESS_MARKED_TEST_BEHAVIOUR";
 /// The variable every marker in this suite uses.
 const MARKER_NAME: &str = "ONEHARNESS_MARKED_TEST_ID";
@@ -44,6 +47,7 @@ fn role() {
     match std::env::var(ROLE_VAR).as_deref() {
         Ok("spawn") => spawn_role(),
         Ok("beat") => beat_role(),
+        Ok("stop-own-marker") => stop_own_marker_role(),
         _ => {}
     }
 }
@@ -101,6 +105,12 @@ fn beat_role() {
     match behaviour.as_str() {
         "ignore-stop" => ignore_stop_requests(),
         "fork-on-stop" => fork_on_stop::install(),
+        #[cfg(target_os = "linux")]
+        "protected" => {
+            // SAFETY: PR_SET_DUMPABLE takes an integer and touches only this
+            // process's credentials.
+            assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+        }
         _ => {}
     }
     let started = Instant::now();
@@ -120,6 +130,24 @@ fn beat_role() {
         beat += 1;
         std::thread::sleep(BEAT);
     }
+}
+
+/// Carrying the marker it is given, find and stop it, and write what that did
+/// beside this process's own pid. Exiting normally is the proof it was never
+/// its own target.
+fn stop_own_marker_role() {
+    let results = PathBuf::from(std::env::var(TICKS_VAR).unwrap());
+    let mark = std::env::var(MARK_VAR).unwrap();
+    let (name, value) = mark.split_once('=').unwrap();
+    let marker = ProcessMarker {
+        name: name.to_string(),
+        value: value.to_string(),
+    };
+    let found = find_marked(&marker).unwrap();
+    let report = stop_marked(&marker, Duration::from_secs(5)).unwrap();
+    let own = std::process::id();
+    std::fs::write(results, format!("{own}\n{found:?}\n{report:?}\n")).unwrap();
+    std::process::exit(0);
 }
 
 #[cfg(unix)]
@@ -468,4 +496,77 @@ fn a_marked_child_started_while_stopping_is_stopped_too() {
     // The child can be stopped before its first heartbeat; its pid file is
     // what proves it was started.
     assert_gone(child_pid, &child_ticks);
+}
+
+#[test]
+fn a_marked_caller_stops_the_others_but_never_itself() {
+    let dir = ScratchDir::new("marked-caller").unwrap();
+    let value = unique_value("caller");
+    let target = Beater::start(dir.path(), "target", Some((MARKER_NAME, &value)), "plain");
+
+    let results = dir.path().join("caller.results");
+    let mut caller = Command::new(std::env::current_exe().unwrap())
+        .args(["role", "--exact", "--nocapture", "--test-threads=1"])
+        .env(ROLE_VAR, "stop-own-marker")
+        .env(TICKS_VAR, &results)
+        .env(MARK_VAR, format!("{MARKER_NAME}={value}"))
+        .env(MARKER_NAME, &value)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let guard = Instant::now() + PATIENCE;
+    let status = loop {
+        if let Some(status) = caller.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() >= guard {
+            let _ = caller.kill();
+            let _ = caller.wait();
+            panic!("the marked caller never finished stopping its marker");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+
+    assert!(
+        status.success(),
+        "the marked caller was stopped by its own call: {status}"
+    );
+    let expected = StopReport {
+        signalled: vec![target.pid],
+        killed: Vec::new(),
+        survivors: Vec::new(),
+    };
+    assert_eq!(
+        std::fs::read_to_string(&results).unwrap(),
+        format!("{}\n[{}]\n{expected:?}\n", caller.id(), target.pid),
+        "the caller must find and stop the target, and only the target"
+    );
+    assert_stopped(target.pid, &target.ticks);
+}
+
+/// Linux only: `PR_SET_DUMPABLE` is how a same-user process there hides its
+/// environment, and the other two platforms have no unprivileged equivalent to
+/// set from a test.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_marked_process_whose_environment_is_unreadable_is_skipped() {
+    let dir = ScratchDir::new("marked-protected").unwrap();
+    let value = unique_value("protected");
+    let hidden = Beater::start(
+        dir.path(),
+        "hidden",
+        Some((MARKER_NAME, &value)),
+        "protected",
+    );
+
+    assert!(
+        std::fs::read(format!("/proc/{}/environ", hidden.pid)).is_err(),
+        "the fixture's environment is readable, so this test proves nothing"
+    );
+    assert_eq!(find_marked(&marker(&value)).unwrap(), Vec::<u32>::new());
+    let report = stop_marked(&marker(&value), Duration::from_secs(1)).unwrap();
+    assert_eq!(report, StopReport::default());
+    hidden.assert_alive();
 }

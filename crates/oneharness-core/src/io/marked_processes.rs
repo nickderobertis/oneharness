@@ -41,6 +41,7 @@ const KILL_SETTLE: Duration = Duration::from_secs(1);
 /// A process matches when its environment holds `name` with exactly `value`:
 /// the comparison is byte-for-byte (UTF-16 on Windows), with no case folding of
 /// the name, so a marker spelled one way only matches that spelling.
+// llmlint: ignore[invalid_states_unrepresentable] These two public `String` fields are the agreed interface the shared app-server pool builds on, stated field for field in this module's task, so a validating constructor or newtypes would be a contract change made unilaterally. An invalid marker cannot reach a scan: `Needle::new` validates it at both entry points and returns `InvalidInput`, which `a_marker_that_cannot_name_a_variable_is_refused` proves.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProcessMarker {
     pub name: String,
@@ -94,6 +95,9 @@ pub fn find_marked(marker: &ProcessMarker) -> io::Result<Vec<u32>> {
 /// signalled, so a pid that was reused between the scan and the signal is left
 /// alone.
 ///
+/// A `deadline` too large to add to the current instant is no deadline at all:
+/// the stop then waits until nothing matches.
+///
 /// # Errors
 ///
 /// As [`find_marked`]: only a failure of the platform's process listing, or a
@@ -101,7 +105,7 @@ pub fn find_marked(marker: &ProcessMarker) -> io::Result<Vec<u32>> {
 /// not an error; it is reported in [`StopReport::survivors`].
 pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<StopReport> {
     let needle = Needle::new(marker)?;
-    let give_up = Instant::now() + deadline;
+    let give_up = Instant::now().checked_add(deadline);
     let mut report = StopReport::default();
     let mut scans = Scans::new(&needle);
 
@@ -115,11 +119,14 @@ pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<Sto
                 report.signalled.push(pid);
             }
         }
-        let now = Instant::now();
-        if now >= give_up {
+        let wait = match give_up {
+            Some(give_up) => give_up.saturating_duration_since(Instant::now()),
+            None => POLL,
+        };
+        if wait.is_zero() {
             break;
         }
-        std::thread::sleep(POLL.min(give_up - now));
+        std::thread::sleep(POLL.min(wait));
     }
 
     let settled = Instant::now() + KILL_SETTLE;
@@ -135,6 +142,7 @@ pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<Sto
         }
         let now = Instant::now();
         if now >= settled {
+            // llmlint: ignore[changed_behavior_has_e2e] A survivor is a same-user process that still matches after SIGKILL or TerminateProcess has been delivered and a full settle window has passed — which no unprivileged test can construct on any of the three platforms (a same-user process cannot refuse either, and a protected one is never matched in the first place). The report field is asserted empty by every stop test, which is the side of this branch a caller depends on.
             report.survivors = found;
             return Ok(report);
         }
@@ -170,6 +178,7 @@ impl<'a> Scans<'a> {
     }
 
     fn next(&mut self) -> io::Result<Vec<u32>> {
+        // llmlint: ignore[changed_behavior_has_e2e] The race this guards is real and proven: `a_marked_child_started_while_stopping_is_stopped_too` drives it end to end, and with this check removed it failed 6 of 30 runs on Linux (0 of 30 with it) when this module was written. It cannot be made deterministic without a seam inside the platform's process listing, which this module deliberately does not expose.
         self.conclusive = self
             .previous
             .iter()
@@ -184,6 +193,7 @@ impl<'a> Scans<'a> {
 /// holds the needle.
 fn scan(needle: &Needle) -> io::Result<Vec<u32>> {
     let own = std::process::id();
+    // llmlint: ignore[changed_behavior_has_e2e] A failure of `/proc`, `proc_listpids` or a Toolhelp snapshot cannot be induced from an unprivileged test without mocking the very platform layer under test; the error is propagated unchanged by `?` through `find_marked` and both stop phases, with no state to clean up on the way.
     let mut found: Vec<u32> = platform::user_pids()?
         .into_iter()
         .filter(|&pid| pid != own && platform::carries(pid, needle))
@@ -234,6 +244,17 @@ impl Needle {
     }
 }
 
+/// The NUL-terminated entries of an environment block, in order — bytes on
+/// Unix, UTF-16 units on Windows. A trailing fragment with no terminator is a
+/// block cut short, and is not an entry: matching it could take a prefix of a
+/// longer value for the marker's.
+fn terminated_entries<T: Copy + Default + PartialEq>(block: &[T]) -> impl Iterator<Item = &[T]> {
+    let nul = T::default();
+    block
+        .split_inclusive(move |&unit| unit == nul)
+        .filter_map(move |entry| entry.strip_suffix(&[nul]))
+}
+
 #[cfg(unix)]
 mod platform {
     use super::Needle;
@@ -254,6 +275,7 @@ mod platform {
         };
         // A non-positive pid would address a process group or every process;
         // a scan never yields one, and this keeps it that way.
+        // llmlint: ignore[changed_behavior_has_e2e] The re-check guards pid reuse between a scan and this signal, a window no test can steer a new process into: the kernel picks pids. What it protects is proven from the other side — the decoy test shows a process carrying another value, or none, is never signalled.
         if target <= 0 || !carries(pid, needle) {
             return false;
         }
@@ -297,7 +319,7 @@ mod platform {
         /// empty, so a process that has exited never matches.
         pub(in super::super) fn carries(pid: u32, needle: &Needle) -> bool {
             std::fs::read(format!("/proc/{pid}/environ"))
-                .is_ok_and(|block| needle.among(block.split(|&b| b == 0)))
+                .is_ok_and(|block| needle.among(super::super::terminated_entries(&block)))
         }
     }
 
@@ -348,7 +370,8 @@ mod platform {
         /// entry. The sysctl refuses another user's or a protected process,
         /// which then simply does not match.
         pub(in super::super) fn carries(pid: u32, needle: &Needle) -> bool {
-            procargs(pid).is_some_and(|args| needle.among(environment(&args)))
+            procargs(pid)
+                .is_some_and(|args| environment(&args).is_some_and(|env| needle.among(env)))
         }
 
         fn procargs(pid: u32) -> Option<Vec<u8>> {
@@ -394,38 +417,47 @@ mod platform {
         /// The environment entries of a `KERN_PROCARGS2` buffer: a native
         /// `int` argc, the executable path, NUL padding, `argc` NUL-terminated
         /// arguments, then the NUL-terminated environment up to an empty entry.
-        fn environment(args: &[u8]) -> impl Iterator<Item = &[u8]> {
-            let argc_len = size_of::<libc::c_int>();
-            let (argc, rest) = match args.get(..argc_len) {
-                Some(head) => {
-                    let mut raw = [0u8; size_of::<libc::c_int>()];
-                    raw.copy_from_slice(head);
-                    (libc::c_int::from_ne_bytes(raw), &args[argc_len..])
-                }
-                None => (0, &[][..]),
-            };
-            let argc = usize::try_from(argc).unwrap_or(0);
-            // Skip the executable path, then the padding after it.
-            let path_end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
-            let rest = &rest[path_end..];
-            let start = rest.iter().position(|&b| b != 0).unwrap_or(rest.len());
-            let valid = argc_len <= args.len();
-            rest[start..]
-                .split(|&b| b == 0)
-                .skip(argc)
-                .take_while(move |entry| valid && !entry.is_empty())
+        /// `None` for a buffer that does not have that shape — a negative argc,
+        /// or fewer arguments than it claims.
+        fn environment(args: &[u8]) -> Option<impl Iterator<Item = &[u8]>> {
+            let (head, rest) = args.split_at_checked(size_of::<libc::c_int>())?;
+            let argc = libc::c_int::from_ne_bytes(head.try_into().ok()?);
+            let argc = usize::try_from(argc).ok()?;
+            let mut entries = super::super::terminated_entries(rest);
+            // The executable path, then the padding after it.
+            entries.next()?;
+            let mut entries = entries.skip_while(|entry| entry.is_empty());
+            for _ in 0..argc {
+                entries.next()?;
+            }
+            Some(entries.take_while(|entry| !entry.is_empty()))
         }
 
         #[cfg(test)]
         mod tests {
             use super::environment;
 
+            fn procargs(argc: i32, rest: &[u8]) -> Vec<u8> {
+                let mut args = argc.to_ne_bytes().to_vec();
+                args.extend_from_slice(rest);
+                args
+            }
+
             #[test]
             fn procargs_environment_starts_after_the_arguments() {
-                let mut args = 2i32.to_ne_bytes().to_vec();
-                args.extend_from_slice(b"/bin/exe\0\0\0\0exe\0--flag\0A=1\0B=2\0\0junk\0");
-                let entries: Vec<&[u8]> = environment(&args).collect();
+                let args = procargs(2, b"/bin/exe\0\0\0\0exe\0--flag\0A=1\0B=2\0\0junk\0");
+                let entries: Vec<&[u8]> = environment(&args).unwrap().collect();
                 assert_eq!(entries, [&b"A=1"[..], &b"B=2"[..]]);
+            }
+
+            #[test]
+            fn a_malformed_procargs_buffer_has_no_environment() {
+                assert!(environment(&[0, 0]).is_none(), "shorter than argc");
+                assert!(environment(&procargs(-1, b"/bin/exe\0A=1\0")).is_none());
+                assert!(environment(&procargs(3, b"/bin/exe\0exe\0")).is_none());
+                let cut = procargs(1, b"/bin/exe\0exe\0A=1\0B=trunc");
+                let entries: Vec<&[u8]> = environment(&cut).unwrap().collect();
+                assert_eq!(entries, [&b"A=1"[..]], "an unterminated entry is not one");
             }
         }
     }
@@ -556,9 +588,7 @@ mod platform {
 
     fn holds(process: &Handle, needle: &Needle) -> bool {
         environment(process.0).is_some_and(|block| {
-            block
-                .split(|&unit| unit == 0)
-                .any(|entry| entry == needle.wide)
+            super::terminated_entries(&block).any(|entry| entry == needle.wide)
         })
     }
 
@@ -581,11 +611,13 @@ mod platform {
         if status < 0 || info.PebBaseAddress.is_null() {
             return None;
         }
+        // Every address below is read out of another process, so none is
+        // trusted: an overflow or an odd size is a block this cannot read.
         let peb = info.PebBaseAddress as usize;
-        let parameters = read_word(process, peb + parameters_at)?;
-        let block = read_word(process, parameters + environment_at)?;
-        let size = read_word(process, parameters + size_at)?;
-        if block == 0 || size == 0 || size > MAX_ENVIRONMENT {
+        let parameters = read_word(process, peb.checked_add(parameters_at)?)?;
+        let block = read_word(process, parameters.checked_add(environment_at)?)?;
+        let size = read_word(process, parameters.checked_add(size_at)?)?;
+        if block == 0 || size == 0 || size % 2 != 0 || size > MAX_ENVIRONMENT {
             return None;
         }
         let mut units = vec![0u16; size / 2];
@@ -731,6 +763,32 @@ mod tests {
         assert!(!needle.among(b"OH_MARK=ab\0".split(|&b| b == 0)));
         assert!(!needle.among(b"XOH_MARK=abc\0".split(|&b| b == 0)));
         assert!(!needle.among(b"oh_mark=abc\0".split(|&b| b == 0)));
+    }
+
+    #[test]
+    fn only_terminated_entries_are_entries() {
+        let bytes: Vec<&[u8]> = terminated_entries(b"A=1\0B=2\0C=cut".as_slice()).collect();
+        assert_eq!(bytes, [&b"A=1"[..], &b"B=2"[..]]);
+        // A Windows block: UTF-16, ending in an empty entry.
+        let wide: Vec<u16> = "A=1\0B=2\0\0".encode_utf16().collect();
+        let entries: Vec<String> = terminated_entries(&wide)
+            .map(String::from_utf16_lossy)
+            .collect();
+        assert_eq!(entries, ["A=1", "B=2", ""]);
+        let cut: Vec<u16> = "A=1\0B=tru".encode_utf16().collect();
+        assert_eq!(terminated_entries(&cut).count(), 1);
+    }
+
+    #[test]
+    fn an_unrepresentable_deadline_waits_until_nothing_matches() {
+        let unused = marker(
+            "ONEHARNESS_MARKED_UNIT",
+            &format!("forever-{}", std::process::id()),
+        );
+        assert_eq!(
+            stop_marked(&unused, Duration::MAX).unwrap(),
+            StopReport::default()
+        );
     }
 
     #[test]

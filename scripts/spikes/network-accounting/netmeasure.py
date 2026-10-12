@@ -2,6 +2,7 @@
 """Measure one launch's real network bytes, rootless, on Linux.
 
     netmeasure.py [--label L] [--env K=V]... [--timeout S] [--launch-stdout PATH] -- ARGV...
+    netmeasure.py --report FILE [--label L] ... -- ARGV...   (transparent wrapper)
 
 Runs ARGV with the given environment inside a fresh unprivileged user, network,
 mount and PID namespace whose only route out is a `pasta` tap interface, and
@@ -22,7 +23,9 @@ Ethernet headers, handshakes, ACKs and DNS — bytes on the wire, never a log.
 
 The launch's stdout goes to stderr (or --launch-stdout) so stdout carries only
 the report. Exit status: 0 measured (whatever the launch's own exit), 3 when no
-measurement could be taken.
+measurement could be taken. With --report the command is a transparent wrapper
+(as a PATH shim uses it): the launch keeps stdin/stdout, the report line is
+appended to FILE, and the exit status is the launch's own.
 """
 
 import argparse
@@ -101,7 +104,10 @@ def init(args: argparse.Namespace) -> int:
     resolver = private_resolver()
     proc_mounted = subprocess.run(["mount", "-t", "proc", "proc", "/proc"]).returncode == 0
     signal.signal(signal.SIGTERM, lambda *_: os.kill(-1, signal.SIGKILL))
-    stdout = open(args.launch_stdout, "wb") if args.launch_stdout else sys.stderr.buffer
+    if args.launch_stdout == "-":
+        stdout = None  # --report: the launch keeps the caller's stdout
+    else:
+        stdout = open(args.launch_stdout, "wb") if args.launch_stdout else sys.stderr.buffer
     start = read_counters()
     t0 = time.monotonic()
     launch = subprocess.Popen(args.argv, stdout=stdout, start_new_session=False)
@@ -166,6 +172,7 @@ def main(argv: list) -> int:
     parser.add_argument("--timeout", type=float, default=0,
                         help="after S seconds SIGTERM every process left, SIGKILL 5 s later")
     parser.add_argument("--launch-stdout")
+    parser.add_argument("--report", help="append the report to FILE; pass stdout and exit through")
     parser.add_argument("--_init", dest="result", help=argparse.SUPPRESS)
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -190,11 +197,20 @@ def main(argv: list) -> int:
                  "--timeout", str(args.timeout)]
         if args.launch_stdout:
             inner += ["--launch-stdout", os.path.abspath(args.launch_stdout)]
+        elif args.report:
+            inner += ["--launch-stdout", "-"]
         command = [pasta, "--config-net", "--quiet", "-4",
                    "-t", "none", "-u", "none", "-T", "none", "-U", "none",
                    "--", *inner, "--", *args.argv]
         t0 = time.time()
-        pasta_run = subprocess.run(command, env=env, stdout=sys.stderr)
+        # pasta gets its own session so a signal meant for the launch (a caller
+        # killing its child's process group on timeout) is forwarded as one
+        # SIGTERM, which the namespace init turns into a kill of the whole tree.
+        pasta_run = subprocess.Popen(command, env=env, start_new_session=True,
+                                     stdout=None if args.report else sys.stderr)
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(signum, lambda n, _f: os.killpg(pasta_run.pid, signal.SIGTERM))
+        pasta_run.wait()
         if not os.path.exists(result_path):
             print(json.dumps({"label": args.label, "method": METHOD, "error":
                               f"no measurement (pasta exit {pasta_run.returncode})"}))
@@ -205,6 +221,12 @@ def main(argv: list) -> int:
     report = {"label": args.label, "method": METHOD, "started": round(t0, 3),
               "received_bytes": result["rx_bytes"], "sent_bytes": result["tx_bytes"],
               **result, "argv": args.argv}
+    if args.report:
+        report["argv"] = [a if len(a) <= 200 else a[:200] + "…" for a in args.argv]
+        with open(args.report, "a") as out:
+            out.write(json.dumps(report) + "\n")
+        code = result["launch_exit"]
+        return 128 - code if code is not None and code < 0 else (code or 0)
     print(json.dumps(report), flush=True)
     return 0
 

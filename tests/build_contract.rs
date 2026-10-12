@@ -2,7 +2,7 @@
 //! itself rather than by a parser of the file.
 //!
 //! The file is this repository's copy of a shared build contract — `[build]
-//! target-dir = "target"` and `[profile.dev] debug = 1` — and each key's effect
+//! target-dir = "target"` and `[profile.dev] debug = 0` — and each key's effect
 //! is only observable through a build: which directory an artifact lands in,
 //! and which `-C debuginfo` level `rustc` is handed. Both are proven here by
 //! copying the file beside a trivial crate under a scratch directory (the crate
@@ -79,21 +79,23 @@ fn probe_rustc_line(build: &Output) -> String {
 }
 
 #[test]
-fn the_contract_builds_into_the_directory_holding_dot_cargo_with_line_tables_only() {
+fn the_contract_builds_into_the_directory_holding_dot_cargo_without_debuginfo() {
     let scratch = ScratchDir::new("build-contract").expect("scratch dir");
     let nested = probe_crate(scratch.path());
 
     let dev = cargo(&nested, &["build", "-v", "--offline"]);
     let dev_rustc = probe_rustc_line(&dev);
+    // Cargo's own dev default is `debug = 2`, handed to rustc as `-C debuginfo=2`;
+    // at `debug = 0` it names no level and strips instead.
     assert!(
-        dev_rustc.contains("-C debuginfo=1"),
-        "a dev build must carry line tables only (`-C debuginfo=1`), got:\n{dev_rustc}"
+        !dev_rustc.contains("-C debuginfo=") && dev_rustc.contains("-C strip=debuginfo"),
+        "a dev build must carry no debuginfo, got:\n{dev_rustc}"
     );
 
     let release = cargo(&nested, &["build", "-v", "--offline", "--release"]);
     let release_rustc = probe_rustc_line(&release);
     assert!(
-        !release_rustc.contains("debuginfo=1"),
+        !release_rustc.contains("-C debuginfo="),
         "`release` is untouched by the dev profile, got:\n{release_rustc}"
     );
 

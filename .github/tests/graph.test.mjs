@@ -32,28 +32,28 @@ test("resolve actual workflow graph for every event/diff/ownership/publish route
   const fixture = history();
   const classifications = new Map();
   try {
-    for (const diff of ["source", "version-only", "dependency-content"])
-      for (const fork of [false, true])
-        classifications.set(`${diff}/${fork}`, fixture.classify(diff, fork));
-
     for (const [event, action] of classes)
       for (const diff of ["source", "version-only", "dependency-content"])
         for (const fork of [false, true])
+          for (const automation of event === "pull_request" ? [false, true] : [false])
           for (const publish of ["off", "npm", "pypi", "both"]) {
-            const classification = classifications.get(`${diff}/${fork}`);
-            const releaseOnly =
-              event === "pull_request" && classification.isReleaseOnly;
+            const key = `${event}/${action}/${diff}/${fork}/${automation}`;
+            if (!classifications.has(key))
+              classifications.set(key, fixture.classify(diff, fork, event, automation, action));
+            const classification = classifications.get(key);
+            const releaseOnly = classification.isReleaseOnly;
             const scenario = {
               event,
               action,
               diff,
               fork,
               publish,
+              automation,
+              headRef: automation ? "release-plz-2026-10-12T13-43-26Z" : "feature",
               branch: action === "tag" ? "v0.22.1" : "main",
               manual: action === "diagnostic",
               releaseOnly,
-              macosRequired:
-                event === "pull_request" && classification.macosRequired,
+              macosRequired: classification.macosRequired,
               paths:
                 diff === "source"
                   ? ["src/commands/interrupt.rs"]
@@ -61,6 +61,10 @@ test("resolve actual workflow graph for every event/diff/ownership/publish route
                     ? ["Cargo.toml", "CHANGELOG.md"]
                     : ["Cargo.lock"],
             };
+            if (event === "pull_request" && !automation) {
+              assert.equal(releaseOnly, false);
+              assert.equal(classification.macosRequired, true);
+            }
             const runs = Object.entries(all)
               .filter(([, w]) => triggered(w, scenario))
               .map(([file]) => ({
@@ -82,6 +86,8 @@ test("resolve actual workflow graph for every event/diff/ownership/publish route
                   assert.fail(`Mac requested by ${event}`);
               }
             if (event === "pull_request") {
+              const macContext = runs.find(r => r.workflow === "ci.yml").jobs.find(j => j.name === "check (macos-latest)");
+              assert.equal(macContext.macos, classification.macosRequired, `classifier routing ${key}`);
               const names = runs.flatMap((r) => r.jobs.map((j) => j.name));
               for (const name of [
                 "check (macos-latest)",
@@ -104,16 +110,16 @@ test("resolve actual workflow graph for every event/diff/ownership/publish route
       for (const fork of [false, true])
         for (const publish of ["off", "npm", "pypi", "both"]) {
           const keys = [
-            ["pull_request", "synchronize", diff, fork],
+            ["pull_request", "synchronize", diff, fork, false],
             ["push", "base", diff, false],
-            ["pull_request", "synchronize", "version-only", false],
+            ["pull_request", "synchronize", "version-only", false, true],
             ["push", "release-merge", "version-only", false],
             ["push", "tag", "version-only", false],
             ["release", "published", "version-only", false],
             ["workflow_run", "completed", "version-only", false],
             ["schedule", "cron", diff, false],
           ];
-          const runs = keys.flatMap(([event, action, d, f]) =>
+          const runs = keys.flatMap(([event, action, d, f, automation = false]) =>
             scenarios
               .find(
                 (s) =>
@@ -121,6 +127,7 @@ test("resolve actual workflow graph for every event/diff/ownership/publish route
                   s.action === action &&
                   s.diff === d &&
                   s.fork === f &&
+                  s.automation === automation &&
                   s.publish === publish,
               )
               .runs.filter((r) => r.jobs.some((j) => j.macos))
@@ -344,6 +351,7 @@ test("real budget commands report existing graph telemetry and reject stale or m
 
       { lifecycle: actual.lifecycle.map((l,i) => i === 0 ? {...l,runs:[null]} : l) },
       { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,action:42} : s) },
+      { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,automation:42} : s) },
       { scenarios: actual.scenarios.map((s,i) => i === 0 ? {...s,fork:"wrong"} : s) },
       { lifecycle: actual.lifecycle.map((l,i) => i === 0 ? {...l,publish:42} : l) },
       {
@@ -398,6 +406,10 @@ test('GitHub documented include combinations and trigger/dependency status seman
  assert.equal(triggered({on:{push:{branches:['main']}}},{...branch,action:'tag',branch:'v1.0.0'}),false);
  assert.equal(triggered({on:{push:{tags:['v*'],paths:['unrelated/**']}}},{...branch,action:'tag',branch:'v1.0.0'}),true);
  assert.equal(triggered({on:{push:{'tags-ignore':['v*']}}},{...branch,action:'tag',branch:'v1.0.0'}),false);
+ assert.equal(triggered({on:{push:{'tags-ignore':['v*']}}},{...branch,refType:'tag',branch:'v1.0.0'}),false);
+ assert.equal(triggered({on:{push:{tags:['v*']}}},{...branch,refType:'tag',branch:'v1.0.0'}),true);
+ const tagOnly={'tags.yml':{jobs:{proof:{'runs-on':'macos-latest',if:"github.ref == 'refs/tags/v1.0.0'"}}}};
+ assert.equal(resolveJobs('tags.yml',{...branch,refType:'tag',branch:'v1.0.0'},tagOnly).length,1);
  const jobs={parent:{if:'false', 'runs-on':'ubuntu-latest'},child:{needs:'parent','runs-on':'macos-latest'},carrier:{needs:'parent',if:'always()','runs-on':'ubuntu-latest'}};
  assert.deepEqual(resolveJobs('dependencies.yml',branch,{'dependencies.yml':{jobs}}).map(j=>j.job),['carrier']);
  for(const result of ['failure','cancelled']) assert.deepEqual(resolveJobs('dependencies.yml',{...branch,outcomes:{parent:{result}}},{'dependencies.yml':{jobs:{...jobs,parent:{'runs-on':'ubuntu-latest'}}}}).map(j=>j.job),['parent','carrier']);

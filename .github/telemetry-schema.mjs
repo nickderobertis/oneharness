@@ -36,7 +36,7 @@ export function assertTelemetry(value) {
   )
     bad();
   for (const s of value.scenarios) {
-    if (!object(s) || !["event","action","diff","publish","branch"].every(k=>string(s[k])) || !["source","version-only","dependency-content"].includes(s.diff) || !["off","npm","pypi","both"].includes(s.publish) || !["fork","manual","releaseOnly","macosRequired"].every(k=>typeof s[k]==="boolean") || !Array.isArray(s.runs)) bad();
+    if (!object(s) || !["event","action","diff","publish","branch"].every(k=>string(s[k])) || !["source","version-only","dependency-content"].includes(s.diff) || !["off","npm","pypi","both"].includes(s.publish) || !["fork","manual","releaseOnly","macosRequired"].every(k=>typeof s[k]==="boolean") || !Array.isArray(s.runs) || (s.automation !== undefined && typeof s.automation !== "boolean")) bad();
     s.runs.forEach(run);
   }
   for (const l of value.lifecycle) {

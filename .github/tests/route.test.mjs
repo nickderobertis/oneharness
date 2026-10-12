@@ -52,7 +52,8 @@ test("real routing adapter overrides event identity and writes workflow-consumed
         macos_required: "true",
         is_release_only: "false",
       });
-    assert.equal(run(payload, "pull_requset").macos_required,"true");
+    for (const name of [undefined, "", " ", "pull_requset"])
+      assert.deepEqual(run(payload, name), {macos_required: "true", is_release_only: "false"});
     assert.deepEqual(run(payload, "schedule"), {
       macos_required: "false",
       is_release_only: "false",

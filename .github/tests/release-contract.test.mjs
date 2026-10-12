@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parse } from "yaml";
-import { SUPPORTED_TARGETS } from "../../tools/release-tooling/payload-contract/contract.mjs";
+import { SUPPORTED_TARGETS, archiveMembers } from "../../tools/release-tooling/payload-contract/contract.mjs";
 import { readPlatforms } from "../../tools/release-tooling/payload-contract/io.mjs";
 import { expand, workflows, resolveJobs } from "../workflow-graph.mjs";
 // Non-native products require their declared release runners. The native
@@ -23,6 +23,8 @@ test("production release graph retains every declared architecture/artifact and 
   );
   assert.deepEqual([...SUPPORTED_TARGETS].sort(),platforms.map(p=>p.target).sort());
   const release = parse(readFileSync(".github/workflows/release.yml", "utf8"));
+  const archive = release.jobs.upload.steps.find(s => s.uses === "taiki-e/upload-rust-binary-action@v1").with;
+  assert.deepEqual([archive.bin, ...archive.include.split(",")], [...archiveMembers]);
   const darwin = release.jobs["build-darwin"];
   assert.match(darwin["runs-on"], /^macos-/);
   const build = darwin.steps.find(

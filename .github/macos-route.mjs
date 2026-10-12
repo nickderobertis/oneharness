@@ -7,7 +7,7 @@ try {
   event = {};
 }
 if (!event || typeof event !== "object" || Array.isArray(event)) event = {};
-event.event_name = process.env.EVENT_NAME;
+event.event_name = process.env.EVENT_NAME ?? "";
 const result = classify(event, process.env.BASE_SHA, process.env.HEAD_SHA);
 appendFileSync(
   process.env.GITHUB_OUTPUT,

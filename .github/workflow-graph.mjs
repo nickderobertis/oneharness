@@ -232,9 +232,9 @@ export function resolveJobs(
                   ? "fork/repo"
                   : "nickderobertis/oneharness",
               },
-              ref: scenario.releaseOnly
+              ref: scenario.headRef ?? (scenario.releaseOnly
                 ? "release-plz-2026-10-12T13-43-26Z"
-                : "feature",
+                : "feature"),
             },
             base: { ref: "main" },
           }
@@ -261,7 +261,7 @@ export function resolveJobs(
       event_name: scenario.event,
       event,
       repository: "nickderobertis/oneharness",
-      ref: `refs/${scenario.action === "tag" ? "tags" : "heads"}/${scenario.branch}`,
+      ref: `refs/${scenario.action === "tag" || scenario.refType === "tag" ? "tags" : "heads"}/${scenario.branch}`,
       head_ref: event.pull_request?.head.ref ?? "",
     },
     inputs: {

@@ -46,14 +46,15 @@ export function history() {
       cwd,
       git,
       dispose: () => rmSync(cwd, { recursive: true, force: true }),
-      classify(diff, fork = false, eventName = "pull_request") {
+      classify(diff, fork = false, eventName = "pull_request", automation = true, action = "synchronize") {
         const event = {
           event_name: eventName,
+          action,
           repository: { full_name: "nickderobertis/oneharness" },
           pull_request: {
-            user: { login: "nickderobertis" },
+            user: { login: automation ? "nickderobertis" : "ordinary-contributor" },
             head: {
-              ref: "release-plz-2026-10-12T13-43-26Z",
+              ref: automation ? "release-plz-2026-10-12T13-43-26Z" : "feature",
               repo: {
                 full_name: fork ? "fork/repo" : "nickderobertis/oneharness",
               },

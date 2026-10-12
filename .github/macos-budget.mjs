@@ -29,6 +29,7 @@ const detail = JSON.stringify({
     fork: s.fork,
     publish: s.publish,
     manual: s.manual,
+    ...(s.automation === undefined ? {} : { automation: s.automation }),
     runs: s.runs
       .filter((r) => r.jobs.some((j) => j.macos))
       .map((r) => ({

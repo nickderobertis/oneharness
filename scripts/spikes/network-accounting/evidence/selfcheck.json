@@ -1,0 +1,23 @@
+{
+  "method": "netns-pasta-ifcounters",
+  "boundary": "namespace-side TAP frames (pasta-terminated TCP): payload + namespace framing, not host wire",
+  "received_bytes": 5006279,
+  "download_payload": 5000000,
+  "received_over_payload": 6279,
+  "rx_packets": 116,
+  "rx_header_bytes_accounted": 6264,
+  "rx_app_protocol_bytes": 11,
+  "rx_unexplained": 4,
+  "sent_bytes": 3006276,
+  "upload_payload": 3000000,
+  "sent_over_payload": 6276,
+  "tx_packets": 114,
+  "tx_header_bytes_accounted": 6156,
+  "tx_app_protocol_bytes": 24,
+  "tx_unexplained": 96,
+  "unrelated_payload": 7777777,
+  "unrelated_received": 7777777,
+  "unrelated_overlapped_launch": true,
+  "unrelated_absent": true,
+  "pass": true
+}

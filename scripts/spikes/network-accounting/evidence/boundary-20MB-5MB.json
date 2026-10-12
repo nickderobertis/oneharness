@@ -1,0 +1,72 @@
+{
+ "loss_pct_namespace_side": 0.0,
+ "body_down": 20000000,
+ "body_up": 5000000,
+ "body_received": 20000000,
+ "body_sent": 5000000,
+ "tap_received": 20074888,
+ "tap_sent": 5031954,
+ "tap_rx_frames": 702,
+ "tap_tx_frames": 430,
+ "tap_avg_rx_frame": 28597,
+ "host_sockets_seen": 1,
+ "host_payload_received": 20036856,
+ "host_payload_sent": 5008566,
+ "host_segs_in": 14207,
+ "host_segs_out": 4318,
+ "host_bytes_retrans": 0,
+ "host_retrans_total": 0,
+ "host_mss": [
+  1388
+ ],
+ "host_timestamps": [
+  false
+ ],
+ "host_wire_estimate_received": 20804034,
+ "host_wire_estimate_sent": 5241738,
+ "tap_minus_host_payload_received": 38032,
+ "tap_minus_host_payload_sent": 23388,
+ "tap_over_host_wire_estimate_received": 0.965,
+ "tap_over_host_wire_estimate_sent": 0.96,
+ "host_nic_whole_host_delta": {
+  "iface": "eth1",
+  "rx_bytes": 20806466,
+  "tx_bytes": 5397176
+ }
+}
+{
+ "loss_pct_namespace_side": 3.0,
+ "body_down": 20000000,
+ "body_up": 5000000,
+ "body_received": 20000000,
+ "body_sent": 5000000,
+ "tap_received": 20073262,
+ "tap_sent": 5652806,
+ "tap_rx_frames": 679,
+ "tap_tx_frames": 398,
+ "tap_avg_rx_frame": 29563,
+ "host_sockets_seen": 1,
+ "host_payload_received": 20036472,
+ "host_payload_sent": 5008566,
+ "host_segs_in": 14280,
+ "host_segs_out": 4275,
+ "host_bytes_retrans": 0,
+ "host_retrans_total": 0,
+ "host_mss": [
+  1388
+ ],
+ "host_timestamps": [
+  false
+ ],
+ "host_wire_estimate_received": 20807592,
+ "host_wire_estimate_sent": 5239416,
+ "tap_minus_host_payload_received": 36790,
+ "tap_minus_host_payload_sent": 644240,
+ "tap_over_host_wire_estimate_received": 0.9647,
+ "tap_over_host_wire_estimate_sent": 1.0789,
+ "host_nic_whole_host_delta": {
+  "iface": "eth1",
+  "rx_bytes": 21616269,
+  "tx_bytes": 6164625
+ }
+}

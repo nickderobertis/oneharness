@@ -9,8 +9,14 @@ its CHILD process downloads --down bytes and uploads --up bytes, reaching the
 host loopback through pasta's gateway mapping. Meanwhile an unrelated host
 process, outside the launch's namespace, downloads --unrelated bytes from the
 same server across the whole launch. The report sets the recorded figures
-beside both payload sizes, accounts the difference to per-packet header bytes,
+beside both payload sizes, accounts the difference to per-frame header bytes,
 and shows the unrelated transfer is absent.
+
+What this validates and what it does not: attribution (only the launch's tree,
+never the unrelated transfer) and payload exactness of the TAP counters. The
+frames are pasta's TAP frames — GSO-sized up to the TAP's 65520 MTU (5 MB in
+~104 frames), not physical packets — and the server leg is host loopback, so
+this says nothing about host-wire bytes; boundary.py compares against those.
 """
 
 import argparse
@@ -25,7 +31,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 CHUNK = 64 * 1024
-# Per-frame header bytes on the tap device: Ethernet 14 + IPv4 20 + TCP 20.
+# Per-frame header bytes on the TAP device (namespace-side framing, not the
+# host wire): Ethernet 14 + IPv4 20 + TCP 20.
 # pasta terminates TCP itself and negotiates no timestamp option, so established
 # segments carry no options; what is left over is the SYNs' option bytes.
 FRAME_HEADERS = 14 + 20 + 20
@@ -144,7 +151,7 @@ def main() -> int:
     command_bytes_tx = len(f"GET {args.down}\n") + len(f"PUT {args.up}\n")
     reply_bytes_rx = len(f"OK {args.up}\n")
     verdict = {
-        "method": report["method"],
+        "method": report["method"], "boundary": report["boundary"],
         "received_bytes": rx, "download_payload": args.down,
         "received_over_payload": rx - args.down,
         "rx_packets": report["rx_packets"],

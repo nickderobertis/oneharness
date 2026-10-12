@@ -11,15 +11,20 @@ turn/completed, then close stdin. `exec`: one `codex exec --json` turn.
 For `turn` and `exec` the summary says whether the launch's process logged
 `fetching remote plugin catalog` to ~/.codex/logs_2.sqlite. CODEX_FLAGS (e.g. `--disable plugins`,
 `-c features.apps=false`) go before the subcommand. With --sock the client
-speaks through `codex app-server proxy --sock PATH` to an already running
-server instead of spawning `codex app-server --stdio`.
+connects to an already running `codex app-server --listen unix://PATH`
+instead of spawning `codex app-server --stdio`; that socket speaks JSON-RPC
+inside WebSocket text frames (it answers an HTTP Upgrade with 101), so the
+client below frames it itself — `codex app-server proxy` only pipes raw bytes.
 Prints one JSON summary line on stderr (thread id, whether each step succeeded).
 """
 
 import argparse
+import base64
 import json
 import os
+import socket
 import sqlite3
+import struct
 import subprocess
 import sys
 import tempfile
@@ -136,6 +141,95 @@ class Rpc:
             return self.proc.wait()
 
 
+class WsRpc(Rpc):
+    """The same JSON-RPC client over a WebSocket on a unix socket."""
+
+    def __init__(self, path):
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.connect(path)
+        key = base64.b64encode(os.urandom(16)).decode()
+        self.sock.sendall((f"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
+                           f"Connection: Upgrade\r\nSec-WebSocket-Key: {key}\r\n"
+                           f"Sec-WebSocket-Version: 13\r\n\r\n").encode())
+        head = b""
+        while b"\r\n\r\n" not in head:
+            head += self.sock.recv(1)
+        if b" 101 " not in head.split(b"\r\n", 1)[0]:
+            raise RuntimeError(f"websocket upgrade refused: {head!r}")
+        self.wlock = threading.Lock()
+        self.proc = None
+        self.next_id = 0
+        self.messages = []
+        self.cond = threading.Condition()
+        self.eof = False
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _exact(self, n):
+        data = b""
+        while len(data) < n:
+            chunk = self.sock.recv(n - len(data))
+            if not chunk:
+                raise EOFError
+            data += chunk
+        return data
+
+    def _frame(self, opcode, payload):
+        mask = os.urandom(4)
+        n = len(payload)
+        if n < 126:
+            header = struct.pack("!BB", 0x80 | opcode, 0x80 | n)
+        elif n < 65536:
+            header = struct.pack("!BBH", 0x80 | opcode, 0x80 | 126, n)
+        else:
+            header = struct.pack("!BBQ", 0x80 | opcode, 0x80 | 127, n)
+        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+        with self.wlock:
+            self.sock.sendall(header + mask + masked)
+
+    def _send(self, message):
+        self._frame(0x1, json.dumps(message).encode())
+
+    def _read(self):
+        buffer = b""
+        try:
+            while True:
+                b0, b1 = self._exact(2)
+                n = b1 & 0x7F
+                if n == 126:
+                    n = struct.unpack("!H", self._exact(2))[0]
+                elif n == 127:
+                    n = struct.unpack("!Q", self._exact(8))[0]
+                payload = self._exact(n)
+                opcode = b0 & 0x0F
+                if opcode == 0x8:
+                    break
+                if opcode == 0x9:
+                    self._frame(0xA, payload)
+                    continue
+                buffer += payload
+                if not b0 & 0x80:
+                    continue
+                message, buffer = json.loads(buffer), b""
+                if "method" in message and "id" in message:
+                    self._send({"id": message["id"], "result": {"decision": "denied"}})
+                with self.cond:
+                    self.messages.append(message)
+                    self.cond.notify_all()
+        except (EOFError, OSError):
+            pass
+        with self.cond:
+            self.eof = True
+            self.cond.notify_all()
+
+    def close(self, timeout=60):
+        try:
+            self._frame(0x8, b"")
+        except OSError:
+            pass
+        self.sock.close()
+        return 0
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=["usage", "turn", "exec"])
@@ -152,12 +246,13 @@ def main():
     if args.mode == "exec":
         print(json.dumps(run_exec(codex, flags, args.prompt)), file=sys.stderr)
         return 0
+    t0 = time.time()
     if args.sock:
-        argv = [codex, *flags, "app-server", "proxy", "--sock", args.sock]
+        argv = ["unix", args.sock]
+        rpc = WsRpc(args.sock)
     else:
         argv = [codex, *flags, "app-server", "--stdio"]
-    t0 = time.time()
-    rpc = Rpc(argv)
+        rpc = Rpc(argv)
     summary = {"mode": args.mode, "argv": argv}
     init = rpc.request("initialize", {"clientInfo": {"name": "netmeasure", "title": "netmeasure",
                                                      "version": "0"}})

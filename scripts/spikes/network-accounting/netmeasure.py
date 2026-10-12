@@ -119,9 +119,15 @@ def init(args: argparse.Namespace) -> int:
             launch_seconds = time.monotonic() - t0
             launch.returncode = launch_exit
         if pid == 0:
-            if deadline and time.monotonic() > deadline and not timed_out:
+            now = time.monotonic()
+            if deadline and now > deadline and not timed_out:
+                # Graceful end of life first, as a server's owner would stop it.
                 timed_out = True
+                os.kill(-1, signal.SIGTERM)
+                deadline = now + 5
+            elif timed_out and now > deadline:
                 os.kill(-1, signal.SIGKILL)
+                deadline = now + 3600
             time.sleep(0.02)
     tree_seconds = time.monotonic() - t0
     end = read_counters()
@@ -157,7 +163,8 @@ def main(argv: list) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--label", default="")
     parser.add_argument("--env", action="append", default=[], metavar="K=V")
-    parser.add_argument("--timeout", type=float, default=0, help="kill the tree after S seconds")
+    parser.add_argument("--timeout", type=float, default=0,
+                        help="after S seconds SIGTERM every process left, SIGKILL 5 s later")
     parser.add_argument("--launch-stdout")
     parser.add_argument("--_init", dest="result", help=argparse.SUPPRESS)
     parser.add_argument("argv", nargs=argparse.REMAINDER)

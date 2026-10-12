@@ -1,0 +1,129 @@
+{
+  "scenario": "transport",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:03:55",
+  "elapsed_s": 38.699,
+  "paid_turns": 0,
+  "observed": {
+    "listen": {
+      "socket_is_symlink": true,
+      "socket_target": "/tmp/codex-daemon-522201107/2d8f82107bfac3ab79399828c4c6e425d68f7d77267b56e77aaed475950d30fe",
+      "ready_s": 0.518,
+      "alive_after_last_client_disconnects_2s": true,
+      "second_server_same_path": {
+        "launched": true,
+        "second_alive_after_3s": false,
+        "second_returncode": 1,
+        "first_alive": true,
+        "second_log": "Error: app-server control socket is already in use at /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/own.sock\n"
+      },
+      "first_alive_after_dup_attempt": true,
+      "launcher_is_node_shim": true,
+      "stop_sigterm": {
+        "signal": "SIGTERM",
+        "exited_after_s": 0.067,
+        "returncode": 0,
+        "real_server_outlived_launcher": false
+      },
+      "socket_path_left_after_sigterm": false,
+      "socket_target_left_after_sigterm": false,
+      "stop_sigkill": {
+        "signal": "SIGKILL",
+        "exited_after_s": 0.031,
+        "returncode": -9,
+        "real_server_outlived_launcher": true
+      },
+      "socket_path_left_after_sigkill": true,
+      "socket_target_left_after_sigkill": true,
+      "connect_to_stale_socket": "ConnectionResetError: [Errno 104] Connection reset by peer",
+      "restart_on_stale_path": {
+        "started": true,
+        "ready_s": 2.268
+      }
+    },
+    "daemon": {
+      "start_h1": {
+        "rc": 0,
+        "out": {
+          "status": "started",
+          "backend": "pid",
+          "pid": 4098247,
+          "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+          "managedCodexVersion": "0.159.2",
+          "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+          "cliVersion": "0.159.2",
+          "appServerVersion": "0.159.2"
+        },
+        "err": "Installing daemon from CLI version 0.159.2 into /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon..."
+      },
+      "start_h1_s": 7.42,
+      "start_h2": {
+        "rc": 0,
+        "out": {
+          "status": "started",
+          "backend": "pid",
+          "pid": 4101975,
+          "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon/current/bin/codex",
+          "managedCodexVersion": "0.159.2",
+          "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/app-server-control/app-server-control.sock",
+          "cliVersion": "0.159.2",
+          "appServerVersion": "0.159.2"
+        },
+        "err": "Installing daemon from CLI version 0.159.2 into /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon..."
+      },
+      "restart_h1_with_other_args": {
+        "rc": 0,
+        "out": {
+          "status": "alreadyRunning",
+          "backend": "pid",
+          "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+          "managedCodexVersion": "0.159.2",
+          "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+          "cliVersion": "0.159.2",
+          "appServerVersion": "0.159.2"
+        },
+        "err": ""
+      },
+      "processes": [
+        "4098247       1 4098247 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server --listen unix:// --managed-daemon",
+        "4101975       1 4101975 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server --listen unix:// --managed-daemon",
+        "4103371       1 4103371 /home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/releases/0.159.2-x86_64-unknown-linux-musl/bin/codex app-server daemon pid-update-loop"
+      ],
+      "package_copy_bytes": 731088134,
+      "updater_log": "",
+      "auto_update_version_file": "0.159.2-x86_64-unknown-linux-musl",
+      "h1_effective_model": null,
+      "h1_effective_features_plugins": false,
+      "stop_h1": {
+        "rc": 0,
+        "out": {
+          "status": "stopped",
+          "backend": "pid",
+          "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/packages/app-server-daemon/current/bin/codex",
+          "managedCodexVersion": "0.159.2",
+          "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h1/app-server-control/app-server-control.sock",
+          "cliVersion": "0.159.2"
+        },
+        "err": ""
+      },
+      "stop_h2": {
+        "rc": 0,
+        "out": {
+          "status": "stopped",
+          "backend": "pid",
+          "managedCodexPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/packages/app-server-daemon/current/bin/codex",
+          "managedCodexVersion": "0.159.2",
+          "socketPath": "/home/nick/projects/ai-orchestrator/runs/codex-network-usage-plan-spikes/scratch/2993410-0/spike/daemon-h2/app-server-control/app-server-control.sock",
+          "cliVersion": "0.159.2"
+        },
+        "err": ""
+      },
+      "processes_after_stop": []
+    },
+    "proxy": {
+      "first_line": "",
+      "stderr": ""
+    }
+  },
+  "error": null
+}

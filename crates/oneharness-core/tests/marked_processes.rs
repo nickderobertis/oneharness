@@ -29,6 +29,7 @@ const TICKS_VAR: &str = "ONEHARNESS_MARKED_TEST_TICKS";
 /// `NAME=VALUE` a `spawn` sets on the grandchild it starts; unset for none.
 const MARK_VAR: &str = "ONEHARNESS_MARKED_TEST_MARK";
 /// How a `beat` meets a stop request: `plain`; `ignore-stop` (Unix);
+/// `refuse-termination` (Windows), until a release file appears;
 /// `fork-while-stopping`, starting further marked children while it is being
 /// stopped; or `protected`, hiding its environment from other processes
 /// (Linux).
@@ -110,6 +111,8 @@ fn beat_role() {
         #[cfg(unix)]
         "ignore-stop" => ignore_stop_requests(),
         "fork-while-stopping" => fork_while_stopping::install(&ticks),
+        #[cfg(windows)]
+        "refuse-termination" => dacl::refuse_until_released(&ticks),
         #[cfg(target_os = "linux")]
         "protected" => {
             // SAFETY: PR_SET_DUMPABLE takes an integer and touches only this
@@ -206,6 +209,163 @@ fn child_pids(ticks: &Path) -> Vec<u32> {
         .collect()
 }
 
+/// A Windows process's power to refuse termination: it denies
+/// `PROCESS_TERMINATE` on its own process object, which binds every other
+/// same-user caller without `SeDebugPrivilege` enabled, while keeping the
+/// query and read rights a scan uses.
+#[cfg(windows)]
+mod dacl {
+    use std::path::{Path, PathBuf};
+    use std::ptr;
+    use std::time::Duration;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Security::Authorization::{
+        GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, DENY_ACCESS, EXPLICIT_ACCESS_W,
+        NO_MULTIPLE_TRUSTEE, SE_KERNEL_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
+        TRUSTEE_W,
+    };
+    use windows_sys::Win32::Security::{
+        CreateWellKnownSid, WinWorldSid, ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
+        PSECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
+    };
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_TERMINATE,
+    };
+
+    /// The file whose appearance tells a `refuse-termination` beat at
+    /// `ticks` to give its refusal up.
+    pub(super) fn release(ticks: &Path) -> PathBuf {
+        ticks.with_extension("release")
+    }
+
+    /// The `refuse-termination` behaviour: refuse until released, or until
+    /// the heartbeat file's directory goes away.
+    pub(super) fn refuse_until_released(ticks: &Path) {
+        let ticks = ticks.to_path_buf();
+        std::thread::spawn(move || {
+            let original = refuse_termination();
+            let release = release(&ticks);
+            while !release.exists() && ticks.parent().is_some_and(Path::exists) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            original.restore();
+        });
+    }
+
+    /// Whether `pid` refuses to be opened for termination.
+    pub(super) fn refuses_termination(pid: u32) -> bool {
+        // SAFETY: OpenProcess takes no pointers; null is a refusal.
+        let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+        if process.is_null() {
+            return true;
+        }
+        // SAFETY: the handle was just opened and is not used again.
+        unsafe { CloseHandle(process) };
+        false
+    }
+
+    /// This process's DACL as it was before [`refuse_termination`].
+    pub(super) struct OriginalDacl {
+        dacl: *mut ACL,
+        descriptor: PSECURITY_DESCRIPTOR,
+    }
+
+    impl OriginalDacl {
+        pub(super) fn restore(self) {
+            // SAFETY: `dacl` points into `descriptor`, still allocated; the
+            // pseudo-handle carries WRITE_DAC over this process.
+            let status = unsafe {
+                SetSecurityInfo(
+                    GetCurrentProcess(),
+                    SE_KERNEL_OBJECT,
+                    DACL_SECURITY_INFORMATION,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    self.dacl,
+                    ptr::null(),
+                )
+            };
+            assert_eq!(status, ERROR_SUCCESS);
+            // SAFETY: `descriptor` came from GetSecurityInfo and is freed once.
+            unsafe { LocalFree(self.descriptor) };
+        }
+    }
+
+    /// Prepend a deny-`PROCESS_TERMINATE`-to-Everyone entry to this process's
+    /// DACL, leaving every other right — the query and read rights a scan
+    /// uses among them — as it was.
+    pub(super) fn refuse_termination() -> OriginalDacl {
+        let mut dacl: *mut ACL = ptr::null_mut();
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: the pseudo-handle carries READ_CONTROL; both outputs are
+        // writable, and the descriptor is freed by `restore`.
+        let status = unsafe {
+            GetSecurityInfo(
+                GetCurrentProcess(),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                &mut dacl,
+                ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(status, ERROR_SUCCESS);
+        // A null DACL grants everything; a deny entry added to none would
+        // grant nothing, hiding this process from the scan too.
+        assert!(!dacl.is_null(), "this process has a null DACL");
+        let mut everyone = [0u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut size = SECURITY_MAX_SID_SIZE;
+        // SAFETY: `everyone` is writable for `size` bytes.
+        let created = unsafe {
+            CreateWellKnownSid(
+                WinWorldSid,
+                ptr::null_mut(),
+                everyone.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        assert_ne!(created, 0);
+        let deny = EXPLICIT_ACCESS_W {
+            grfAccessPermissions: PROCESS_TERMINATE,
+            grfAccessMode: DENY_ACCESS,
+            grfInheritance: NO_INHERITANCE,
+            Trustee: TRUSTEE_W {
+                pMultipleTrustee: ptr::null_mut(),
+                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                TrusteeForm: TRUSTEE_IS_SID,
+                TrusteeType: TRUSTEE_IS_WELL_KNOWN_GROUP,
+                ptstrName: everyone.as_mut_ptr().cast(),
+            },
+        };
+        let mut refusing: *mut ACL = ptr::null_mut();
+        // SAFETY: `deny` and `dacl` are valid; the new ACL is freed below.
+        assert_eq!(
+            unsafe { SetEntriesInAclW(1, &deny, dacl, &mut refusing) },
+            ERROR_SUCCESS
+        );
+        // SAFETY: `refusing` is a valid ACL; the pseudo-handle carries
+        // WRITE_DAC over this process.
+        let status = unsafe {
+            SetSecurityInfo(
+                GetCurrentProcess(),
+                SE_KERNEL_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                refusing,
+                ptr::null(),
+            )
+        };
+        assert_eq!(status, ERROR_SUCCESS);
+        // SAFETY: allocated by SetEntriesInAclW; SetSecurityInfo copied it.
+        unsafe { LocalFree(refusing.cast()) };
+        OriginalDacl { dacl, descriptor }
+    }
+}
+
 /// On Unix: on `SIGTERM`, start one further marked child and exit — a
 /// process that forks in answer to being stopped.
 #[cfg(unix)]
@@ -271,22 +431,12 @@ mod fork_while_stopping {
     use std::os::windows::io::AsRawHandle;
     use std::path::{Path, PathBuf};
     use std::process::Child;
-    use std::ptr;
     use std::time::{Duration, Instant};
 
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, FILETIME, HANDLE};
-    use windows_sys::Win32::Security::Authorization::{
-        GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, DENY_ACCESS, EXPLICIT_ACCESS_W,
-        NO_MULTIPLE_TRUSTEE, SE_KERNEL_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
-        TRUSTEE_W,
-    };
-    use windows_sys::Win32::Security::{
-        CreateWellKnownSid, WinWorldSid, ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
-        PSECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
-    };
-    use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetProcessTimes, OpenProcess, PROCESS_TERMINATE,
-    };
+    use windows_sys::Win32::Foundation::{FILETIME, HANDLE};
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+
+    use super::dacl::{refuse_termination, refuses_termination};
 
     /// The exit code `stop_marked` passes to `TerminateProcess`; a child that
     /// ran out its `LIFETIME` leaves 0.
@@ -377,117 +527,6 @@ mod fork_while_stopping {
 
     fn record(ticks: &Path) -> PathBuf {
         ticks.with_extension("late.record")
-    }
-
-    fn refuses_termination(pid: u32) -> bool {
-        // SAFETY: OpenProcess takes no pointers; null is a refusal.
-        let process = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
-        if process.is_null() {
-            return true;
-        }
-        // SAFETY: the handle was just opened and is not used again.
-        unsafe { CloseHandle(process) };
-        false
-    }
-
-    /// This process's DACL as it was before [`refuse_termination`].
-    struct OriginalDacl {
-        dacl: *mut ACL,
-        descriptor: PSECURITY_DESCRIPTOR,
-    }
-
-    impl OriginalDacl {
-        fn restore(self) {
-            // SAFETY: `dacl` points into `descriptor`, still allocated; the
-            // pseudo-handle carries WRITE_DAC over this process.
-            let status = unsafe {
-                SetSecurityInfo(
-                    GetCurrentProcess(),
-                    SE_KERNEL_OBJECT,
-                    DACL_SECURITY_INFORMATION,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    self.dacl,
-                    ptr::null(),
-                )
-            };
-            assert_eq!(status, ERROR_SUCCESS);
-            // SAFETY: `descriptor` came from GetSecurityInfo and is freed once.
-            unsafe { LocalFree(self.descriptor) };
-        }
-    }
-
-    /// Prepend a deny-`PROCESS_TERMINATE`-to-Everyone entry to this process's
-    /// DACL, leaving every other right — the query and read rights a scan
-    /// uses among them — as it was.
-    fn refuse_termination() -> OriginalDacl {
-        let mut dacl: *mut ACL = ptr::null_mut();
-        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
-        // SAFETY: the pseudo-handle carries READ_CONTROL; both outputs are
-        // writable, and the descriptor is freed by `restore`.
-        let status = unsafe {
-            GetSecurityInfo(
-                GetCurrentProcess(),
-                SE_KERNEL_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                &mut dacl,
-                ptr::null_mut(),
-                &mut descriptor,
-            )
-        };
-        assert_eq!(status, ERROR_SUCCESS);
-        // A null DACL grants everything; a deny entry added to none would
-        // grant nothing, hiding this process from the scan too.
-        assert!(!dacl.is_null(), "this process has a null DACL");
-        let mut everyone = [0u8; SECURITY_MAX_SID_SIZE as usize];
-        let mut size = SECURITY_MAX_SID_SIZE;
-        // SAFETY: `everyone` is writable for `size` bytes.
-        let created = unsafe {
-            CreateWellKnownSid(
-                WinWorldSid,
-                ptr::null_mut(),
-                everyone.as_mut_ptr().cast(),
-                &mut size,
-            )
-        };
-        assert_ne!(created, 0);
-        let deny = EXPLICIT_ACCESS_W {
-            grfAccessPermissions: PROCESS_TERMINATE,
-            grfAccessMode: DENY_ACCESS,
-            grfInheritance: NO_INHERITANCE,
-            Trustee: TRUSTEE_W {
-                pMultipleTrustee: ptr::null_mut(),
-                MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
-                TrusteeForm: TRUSTEE_IS_SID,
-                TrusteeType: TRUSTEE_IS_WELL_KNOWN_GROUP,
-                ptstrName: everyone.as_mut_ptr().cast(),
-            },
-        };
-        let mut refusing: *mut ACL = ptr::null_mut();
-        // SAFETY: `deny` and `dacl` are valid; the new ACL is freed below.
-        assert_eq!(
-            unsafe { SetEntriesInAclW(1, &deny, dacl, &mut refusing) },
-            ERROR_SUCCESS
-        );
-        // SAFETY: `refusing` is a valid ACL; the pseudo-handle carries
-        // WRITE_DAC over this process.
-        let status = unsafe {
-            SetSecurityInfo(
-                GetCurrentProcess(),
-                SE_KERNEL_OBJECT,
-                DACL_SECURITY_INFORMATION,
-                ptr::null_mut(),
-                ptr::null_mut(),
-                refusing,
-                ptr::null(),
-            )
-        };
-        assert_eq!(status, ERROR_SUCCESS);
-        // SAFETY: allocated by SetEntriesInAclW; SetSecurityInfo copied it.
-        unsafe { LocalFree(refusing.cast()) };
-        OriginalDacl { dacl, descriptor }
     }
 
     /// A process's creation and exit times, in the kernel's 100 ns units.
@@ -848,6 +887,52 @@ fn a_marked_child_started_while_stopping_is_stopped_too() {
         await_exit(pid);
     }
     assert_gone(children[0], &child_ticks(&parent.ticks));
+}
+
+/// Windows only: a same-user Windows process can refuse termination by
+/// denying `PROCESS_TERMINATE` on itself, while no Unix process can refuse
+/// `SIGKILL` — so only here can a stop be left with a survivor.
+#[cfg(windows)]
+#[test]
+fn a_marked_process_that_refuses_termination_is_reported_as_a_survivor() {
+    let dir = ScratchDir::new("marked-refusing").unwrap();
+    let value = unique_value("refusing");
+    let refusing = Beater::start(
+        dir.path(),
+        "refusing",
+        Some((MARKER_NAME, &value)),
+        "refuse-termination",
+    );
+    let guard = Instant::now() + PATIENCE;
+    while !dacl::refuses_termination(refusing.pid) {
+        assert!(
+            Instant::now() < guard,
+            "the process never refused termination \
+             (a caller holding an enabled SeDebugPrivilege bypasses the refusal)"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+
+    let report = stop_marked(&marker(&value), Duration::from_millis(500)).unwrap();
+    assert_eq!(
+        report,
+        StopReport {
+            signalled: Vec::new(),
+            killed: Vec::new(),
+            survivors: vec![refusing.pid],
+        }
+    );
+    refusing.assert_alive();
+
+    // Give the refusal up so the drop's termination can end it.
+    std::fs::write(dacl::release(&refusing.ticks), "").unwrap();
+    while dacl::refuses_termination(refusing.pid) {
+        assert!(
+            Instant::now() < guard,
+            "the process never gave its refusal up"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]

@@ -142,7 +142,7 @@ pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<Sto
         if found.is_empty() && scans.conclusive {
             return Ok(report);
         }
-        // llmlint: ignore[changed_behavior_has_e2e] A process first matching during the settle window can only be started from outside the marked set, since every marked process was already killed and a killed process starts nothing; staging that needs an unmarked spawner timed against this loop's scans, which no test can do deterministically. The kill path itself is proven end to end by `a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline`.
+        // llmlint: ignore[changed_behavior_has_e2e] A process first matching during the settle window must be started after the deadline's first kill scan by a process that outlived every kill — on Windows one refusing PROCESS_TERMINATE, as `a_marked_process_that_refuses_termination_is_reported_as_a_survivor` stages — and nothing a fixture can observe marks the moment the deadline passes, so no test can place that start inside the window. The kill path itself is proven end to end by `a_grandchild_that_ignores_the_stop_request_is_killed_by_the_deadline`, and the survivor path by the refusing test.
         for pid in &found {
             if !report.killed.contains(pid) && platform::kill(*pid, &needle) {
                 report.killed.push(*pid);
@@ -150,7 +150,6 @@ pub fn stop_marked(marker: &ProcessMarker, deadline: Duration) -> io::Result<Sto
         }
         let now = Instant::now();
         if now >= settled {
-            // llmlint: ignore[changed_behavior_has_e2e] A survivor is a same-user process that still matches after SIGKILL or TerminateProcess has been delivered and a full settle window has passed — which no unprivileged test can construct on any of the three platforms (a same-user process cannot refuse either, and a protected one is never matched in the first place). The report field is asserted empty by every stop test, which is the side of this branch a caller depends on.
             report.survivors = found;
             return Ok(report);
         }

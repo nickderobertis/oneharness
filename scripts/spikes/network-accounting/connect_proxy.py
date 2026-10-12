@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Byte-counting HTTP CONNECT proxy — the rejected candidate, kept as evidence.
 
-    connect_proxy.py --port-file PATH --tally PATH [--bind ADDR]
+    connect_proxy.py --port-file PATH --tally PATH [--bind ADDR] [--deny]
 
 Tunnels CONNECT host:port (and plain-HTTP absolute-URI requests) and, on
 SIGTERM, writes the tunnelled byte totals per destination to --tally as JSON.
@@ -18,6 +18,7 @@ import sys
 import threading
 from collections import defaultdict
 
+DENY = False
 tally = defaultdict(lambda: {"connections": 0, "to_client": 0, "from_client": 0})
 lock = threading.Lock()
 
@@ -59,6 +60,12 @@ def handle(client):
         host, _, port = hostport.partition(":")
         port = port or "80"
         key = "http://" + hostport
+    if DENY:  # record the destination, tunnel nothing: no request can complete
+        with lock:
+            tally[key]["connections"] += 1
+        client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
+        client.close()
+        return
     try:
         upstream = socket.create_connection((host, int(port)), timeout=30)
         upstream.settimeout(None)
@@ -83,7 +90,11 @@ def main():
     parser.add_argument("--bind", default="127.0.0.1")
     parser.add_argument("--port-file", required=True)
     parser.add_argument("--tally", required=True)
+    parser.add_argument("--deny", action="store_true",
+                        help="answer every request 502 (routing evidence without a billed call)")
     args = parser.parse_args()
+    global DENY
+    DENY = args.deny
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind((args.bind, 0))

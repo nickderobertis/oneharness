@@ -73,13 +73,16 @@ def delta(start: dict, end: dict) -> dict:
     return total
 
 
-def private_resolver() -> str:
+def private_resolver(no_dns: bool) -> str:
     """Point the mount namespace's resolv.conf at a resolver reachable off-host.
 
     The host resolves through systemd-resolved on 127.0.0.53, which inside the
     namespace is its own empty loopback; the upstream list is the same resolver
     configuration minus the stub."""
     subprocess.run(["mount", "--make-rprivate", "/"], check=True)
+    if no_dns:  # no nameserver: only a proxy-routed request can reach a host by name
+        subprocess.run(["mount", "--bind", "/dev/null", "/etc/resolv.conf"], check=True)
+        return "none"
     current = Path("/etc/resolv.conf").read_text()
     servers = [l.split()[1] for l in current.splitlines() if l.startswith("nameserver")]
     if servers and all(s.startswith("127.") for s in servers):
@@ -101,7 +104,7 @@ def init(args: argparse.Namespace) -> int:
         return os.waitstatus_to_exitcode(status)
 
     # PID 1 of the launch's PID namespace from here on.
-    resolver = private_resolver()
+    resolver = private_resolver(args.no_dns)
     proc_mounted = subprocess.run(["mount", "-t", "proc", "proc", "/proc"]).returncode == 0
     signal.signal(signal.SIGTERM, lambda *_: os.kill(-1, signal.SIGKILL))
     if args.launch_stdout == "-":
@@ -172,6 +175,7 @@ def main(argv: list) -> int:
     parser.add_argument("--timeout", type=float, default=0,
                         help="after S seconds SIGTERM every process left, SIGKILL 5 s later")
     parser.add_argument("--launch-stdout")
+    parser.add_argument("--no-dns", action="store_true", help="give the namespace no resolver")
     parser.add_argument("--report", help="append the report to FILE; pass stdout and exit through")
     parser.add_argument("--_init", dest="result", help=argparse.SUPPRESS)
     parser.add_argument("argv", nargs=argparse.REMAINDER)
@@ -194,7 +198,7 @@ def main(argv: list) -> int:
     try:
         result_path = os.path.join(scratch, "result.json")
         inner = [sys.executable, str(Path(__file__).resolve()), "--_init", result_path,
-                 "--timeout", str(args.timeout)]
+                 "--timeout", str(args.timeout)] + (["--no-dns"] if args.no_dns else [])
         if args.launch_stdout:
             inner += ["--launch-stdout", os.path.abspath(args.launch_stdout)]
         elif args.report:

@@ -6,5 +6,10 @@
 # `[harness.codex] args` config entry would never reach its launches.
 set -euo pipefail
 here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+real="${NETMEASURE_REAL_CODEX:?set NETMEASURE_REAL_CODEX to the real codex}"
+if [ "$(readlink -f "$real")" = "$(readlink -f "${BASH_SOURCE[0]}")" ]; then
+  echo "codex-shim: NETMEASURE_REAL_CODEX resolves to this shim; resolve it before prepending the shim to PATH" >&2
+  exit 2
+fi
 exec "$here/netmeasure.py" --label "codex $*" --report "$NETMEASURE_REPORT" \
-  -- "$NETMEASURE_REAL_CODEX" --disable plugins "$@"
+  -- "$real" --disable plugins "$@"

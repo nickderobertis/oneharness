@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[e2e_not_mocked] This is the hermetic half of a live phase: the real phase from scripts/e2e-lib.sh runs end to end, and only `codex` is a scripted stand-in, because a gate run cannot rely on codex being installed and because what is tested here is the phase's own reading of the matrix and its verdicts, including a codex that answers wrongly or crashes, which real codex cannot be made to do. Real codex is asked every row by the phase itself in the live codex suite (scripts/e2e-codex.sh).
-# Hermetic coverage for oh_codex_plugins_flag_order (scripts/e2e-lib.sh), the
-# live phase that asks real codex every row of
-# tests/fixtures/codex-plugins-flag-order.json. No real codex runs: each case
-# puts a scripted `codex` on PATH and drives the real phase end to end, so the
-# matrix it reads, the argv it builds from each row and the verdict it reaches
-# are held in the gate rather than first exercised on a paid live runner.
+# Hermetic coverage for oh_codex_plugins_flag_order against the rows of
+# tests/fixtures/codex-plugins-flag-order.json.
 set -euo pipefail
 
 fail() {
@@ -88,8 +84,8 @@ case "$home" in
 esac
 [ ! -e "$home" ] || fail "the scratch CODEX_HOME $home must be removed after the phase"
 
-# 2. A codex applying plain argv order — the precedence oneharness first
-#    assumed — fails on the first row it decides differently, naming it.
+# 2. A codex applying plain argv order fails on the first row it decides
+#    differently, naming it.
 write_fake_codex argv
 run_phase
 [ "$status" -ne 0 ] || fail "an argv-order codex must fail the phase, got: $out"

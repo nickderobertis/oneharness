@@ -126,8 +126,8 @@ cat >"$tmp/bin/mktemp" <<FAKE || fail "could not write the fake mktemp to $tmp/b
 #!/usr/bin/env bash
 set -euo pipefail
 [ "\${1:-}" = -d ] || { echo "fake mktemp: refusing a file" >&2; exit 1; }
-dir="\$("$real_mktemp" -d)"
-printf '%s\n' "\$dir" >>"$tmp/made"
+dir="\$("$real_mktemp" -d)" || { echo "fake mktemp: the real mktemp could not make a directory" >&2; exit 1; }
+printf '%s\n' "\$dir" >>"$tmp/made" || { echo "fake mktemp: could not log \$dir to $tmp/made" >&2; exit 1; }
 printf '%s\n' "\$dir"
 FAKE
 chmod +x "$tmp/bin/mktemp" || fail "could not make $tmp/bin/mktemp executable"

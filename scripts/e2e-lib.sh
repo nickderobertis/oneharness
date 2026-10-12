@@ -1883,6 +1883,7 @@ oh_codex_config_override_order() {
   note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
 }
 
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase IS the drift gate between the measured matrix and real Codex, placed in the live codex suite as the task that added it specified: the deterministic gate has no codex installed, and the matrix's other reader (the mock's unit test) can only be held to the matrix, never to Codex itself. Moving it into the gate would need a codex install there, which is outside this change.
 # Model-free: real codex's precedence among the spellings of its `plugins`
 # feature, which two things here rest on — oneharness's plugins-off default
 # (`-c features.plugins=false`, `codex_plugins_off` in domain/harness.rs), which
@@ -1921,6 +1922,7 @@ oh_codex_plugins_flag_order() {
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: codex resolves plugins as -c last-wins, then --enable, then --disable, so a caller can re-enable plugins over oneharness's -c features.plugins=false"
 }
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 # One spelling of a config override, as argv words in $_OH_SPELLED.
 #   $1 spelling (-c | --config | --config= | -c<kv>), $2 key=value

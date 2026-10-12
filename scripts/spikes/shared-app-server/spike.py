@@ -963,64 +963,71 @@ def victim_main(a):
 
 
 def sc_interrupt(work: Path, a) -> dict:
-    """Q5: what turn/interrupt answers in each situation."""
+    """Q5: what turn/interrupt answers in each situation, one thread per case."""
     wd = work / "wd-int"
     wd.mkdir(exist_ok=True)
     sock = str(work / "int.sock")
     s = Server(work, "int", ["--disable", "plugins"], sock=sock)
     c = Client(s.sock, "D")
     c.initialize()
+    o = Client(s.sock, "O")
+    o.initialize()
     res: dict = {}
-    t = thread_start(c, str(wd))
-    th = tid(t)
-    res["no_turn_ever_bogus_turnId"] = summarize(c.request("turn/interrupt", {"threadId": th, "turnId": "bogus"}))
+    # T1: a thread that never had a turn
+    t1 = tid(thread_start(c, str(wd)))
+    res["idle_thread_bogus_turnId"] = summarize(c.request("turn/interrupt", {"threadId": t1, "turnId": "bogus"}))
     res["unknown_thread"] = summarize(c.request("turn/interrupt", {"threadId": str(uuid.uuid4()), "turnId": "bogus"}))
     res["malformed_thread_id"] = summarize(c.request("turn/interrupt", {"threadId": "not-a-uuid", "turnId": "x"}))
-    # a shellCommand: is it a turn, and does interrupt stop it?
-    sr = c.request("thread/shellCommand", {"threadId": th, "command": "sleep 30"})
-    st = c.wait_for(is_note("turn/started", th), 10)
+    res["idle_thread_from_other_connection"] = summarize(o.request("turn/interrupt", {"threadId": t1, "turnId": "bogus"}, timeout=15))
+    # T2: a thread/shellCommand turn, interrupted, then the thread's state afterwards
+    t2 = tid(thread_start(c, str(wd)))
+    since = len(c.events)
+    c.request("thread/shellCommand", {"threadId": t2, "command": "sleep 30"})
+    st = c.wait_for(is_note("turn/started", t2), 10, since)
     sh_turn = st[1]["params"]["turn"]["id"] if st else None
     res["shell_command_is_a_turn"] = sh_turn is not None
     time.sleep(1)
-    if sh_turn:
-        ti = now()
-        res["shell_turn_interrupt"] = summarize(c.request("turn/interrupt", {"threadId": th, "turnId": sh_turn}))
-        d = c.wait_for(lambda m: m.get("method") == "turn/completed" and m["params"]["turn"]["id"] == sh_turn, 20)
-        res["shell_turn_completed"] = {"status": d[1]["params"]["turn"]["status"], "s_after_interrupt": round(d[0] - ti, 3)} if d else None
-    # active model turn on our own connection
-    prompt = "Run `sleep 30` and then reply with the word done."
-    r = turn_start(c, th, str(wd), prompt)
-    turn_id = ((r.get("result") or {}).get("turn") or {}).get("id")
-    c.wait_for(lambda m: m.get("method") == "item/started" and m["params"].get("item", {}).get("type") == "commandExecution", 60)
     ti = now()
-    res["active_turn_interrupt"] = summarize(c.request("turn/interrupt", {"threadId": th, "turnId": turn_id}))
-    d = c.wait_for(lambda m: m.get("method") == "turn/completed" and m["params"]["turn"]["id"] == turn_id, 30)
+    res["shell_turn_interrupt"] = summarize(c.request("turn/interrupt", {"threadId": t2, "turnId": sh_turn}))
+    d = c.wait_for(lambda m: m.get("method") == "turn/completed" and m["params"]["turn"]["id"] == sh_turn, 20)
+    res["shell_turn_completed"] = {"status": d[1]["params"]["turn"]["status"], "s_after_interrupt": round(d[0] - ti, 3)} if d else None
+    time.sleep(1)
+    res["shell_turn_after_end_same_turnId"] = summarize(c.request("turn/interrupt", {"threadId": t2, "turnId": sh_turn}, timeout=15))
+    res["shell_turn_after_end_bogus_turnId"] = summarize(c.request("turn/interrupt", {"threadId": t2, "turnId": "bogus"}, timeout=15))
+    # T3: a model turn on our own connection
+    t3 = tid(thread_start(c, str(wd)))
+    prompt = "Run `sleep 30` and then reply with the word done."
+    r = turn_start(c, t3, str(wd), prompt)
+    turn_id = ((r.get("result") or {}).get("turn") or {}).get("id")
+    c.wait_for(lambda m: m.get("method") == "item/started" and m["params"].get("threadId") == t3
+               and m["params"].get("item", {}).get("type") == "commandExecution", 60)
+    res["active_turn_mismatched_turnId"] = summarize(c.request("turn/interrupt", {"threadId": t3, "turnId": "bogus"}, timeout=15))
+    ti = now()
+    res["active_turn_interrupt"] = summarize(c.request("turn/interrupt", {"threadId": t3, "turnId": turn_id}, timeout=15))
+    d = c.wait_for(lambda m: m.get("method") == "turn/completed" and m["params"]["turn"]["id"] == turn_id, 40)
     res["active_turn_completed"] = {"status": d[1]["params"]["turn"]["status"], "s_after_interrupt": round(d[0] - ti, 3)} if d else None
     record_paid(work, "interrupt", "active", prompt, res["active_turn_completed"])
-    res["active_turn_interrupt_mismatched_turnId"] = None
-    res["after_turn_ended_same_turnId"] = summarize(c.request("turn/interrupt", {"threadId": th, "turnId": turn_id}))
-    res["no_active_turn_bogus_turnId"] = summarize(c.request("turn/interrupt", {"threadId": th, "turnId": "bogus"}))
-    res["other_connection_interrupt_idle_thread"] = None
-    o = Client(s.sock, "O")
-    o.initialize()
-    res["other_connection_interrupt_idle_thread"] = summarize(o.request("turn/interrupt", {"threadId": th, "turnId": turn_id}))
+    time.sleep(1)
+    res["after_turn_ended_same_turnId"] = summarize(c.request("turn/interrupt", {"threadId": t3, "turnId": turn_id}, timeout=15))
+    res["after_turn_ended_bogus_turnId"] = summarize(c.request("turn/interrupt", {"threadId": t3, "turnId": "bogus"}, timeout=15))
+    res["after_turn_ended_other_connection"] = summarize(o.request("turn/interrupt", {"threadId": t3, "turnId": turn_id}, timeout=15))
     o.close()
-    # restart: kill and relaunch on the same path
+    # restart: stop and relaunch on the same path
     res["server_stop"] = s.stop()
     res["old_connection_after_server_exit"] = {"ended": c.ended,
-                                               "request": summarize(c.request("turn/interrupt", {"threadId": th, "turnId": turn_id}, timeout=5))}
-    s2 = Server(work, "int2", ["--disable", "plugins"], sock=sock)
-    c2 = Client(s2.sock, "D2")
-    c2.initialize()
-    res["after_restart_new_connection"] = summarize(c2.request("turn/interrupt", {"threadId": th, "turnId": turn_id}))
-    res["after_restart_thread_read"] = summarize(c2.request("thread/read", {"threadId": th}))
-    c2.close()
-    s2.stop()
+                                               "request": summarize(c.request("turn/interrupt", {"threadId": t3, "turnId": turn_id}, timeout=5))}
     try:
         WS(sock, timeout=2)
         res["no_server_connect"] = "connected?!"
     except OSError as e:
         res["no_server_connect"] = f"{type(e).__name__}: {e}"
+    s2 = Server(work, "int2", ["--disable", "plugins"], sock=sock)
+    c2 = Client(s2.sock, "D2")
+    c2.initialize()
+    res["after_restart_new_connection"] = summarize(c2.request("turn/interrupt", {"threadId": t3, "turnId": turn_id}))
+    res["after_restart_thread_read"] = summarize(c2.request("thread/read", {"threadId": t3}))
+    c2.close()
+    s2.stop()
     return res
 
 

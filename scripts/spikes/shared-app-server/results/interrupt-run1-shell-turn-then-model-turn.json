@@ -1,0 +1,95 @@
+{
+  "scenario": "interrupt",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:10:48",
+  "elapsed_s": 94.385,
+  "paid_turns": 1,
+  "observed": {
+    "no_turn_ever_bogus_turnId": {
+      "error": {
+        "code": -32600,
+        "message": "no active turn to interrupt"
+      },
+      "latency_s": 0.001
+    },
+    "unknown_thread": {
+      "error": {
+        "code": -32600,
+        "message": "thread not found: ff7d8750-8d79-4439-ad10-547fd9887b3a"
+      },
+      "latency_s": 0.0
+    },
+    "malformed_thread_id": {
+      "error": {
+        "code": -32600,
+        "message": "invalid thread id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1"
+      },
+      "latency_s": 0.001
+    },
+    "shell_command_is_a_turn": true,
+    "shell_turn_interrupt": {
+      "result": {},
+      "latency_s": 0.001
+    },
+    "shell_turn_completed": {
+      "status": "interrupted",
+      "s_after_interrupt": 0.001
+    },
+    "active_turn_interrupt": {
+      "error": {
+        "code": -32600,
+        "message": "expected active turn id 01a1303c-bff0-7632-a919-fe7e98de88a7 but found 01a1303c-bba5-71a0-a0b5-a8f10db11688"
+      },
+      "latency_s": 0.001
+    },
+    "active_turn_completed": null,
+    "active_turn_interrupt_mismatched_turnId": null,
+    "after_turn_ended_same_turnId": {
+      "result": {},
+      "latency_s": 0.001
+    },
+    "no_active_turn_bogus_turnId": {
+      "error": {
+        "code": -32600,
+        "message": "expected active turn id bogus but found 01a1303c-bff0-7632-a919-fe7e98de88a7"
+      },
+      "latency_s": 0.001
+    },
+    "other_connection_interrupt_idle_thread": {
+      "_timeout": 60,
+      "sent_at": 32.005
+    },
+    "server_stop": {
+      "signal": "SIGTERM",
+      "exited_after_s": 0.117,
+      "returncode": 0,
+      "real_server_outlived_launcher": false
+    },
+    "old_connection_after_server_exit": {
+      "ended": {
+        "how": "eof",
+        "at": 92.008
+      },
+      "request": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 92.624
+      }
+    },
+    "after_restart_new_connection": {
+      "error": {
+        "code": -32600,
+        "message": "thread not found: 01a1303c-ba7a-7b23-af58-8c6faaa12a77"
+      },
+      "latency_s": 0.003
+    },
+    "after_restart_thread_read": {
+      "error": {
+        "code": -32600,
+        "message": "thread not loaded: 01a1303c-ba7a-7b23-af58-8c6faaa12a77"
+      },
+      "latency_s": 0.141
+    },
+    "no_server_connect": "FileNotFoundError: [Errno 2] No such file or directory"
+  },
+  "error": null
+}

@@ -1,0 +1,119 @@
+{
+  "scenario": "interrupt",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:12:50",
+  "elapsed_s": 59.615,
+  "paid_turns": 1,
+  "observed": {
+    "idle_thread_bogus_turnId": {
+      "error": {
+        "code": -32600,
+        "message": "no active turn to interrupt"
+      },
+      "latency_s": 0.003
+    },
+    "unknown_thread": {
+      "error": {
+        "code": -32600,
+        "message": "thread not found: 0acf1d4f-f52c-42d6-9960-653417b22a51"
+      },
+      "latency_s": 0.0
+    },
+    "malformed_thread_id": {
+      "error": {
+        "code": -32600,
+        "message": "invalid thread id: invalid character: expected an optional prefix of `urn:uuid:` followed by [0-9a-fA-F-], found `n` at 1"
+      },
+      "latency_s": 0.001
+    },
+    "idle_thread_from_other_connection": {
+      "error": {
+        "code": -32600,
+        "message": "no active turn to interrupt"
+      },
+      "latency_s": 0.002
+    },
+    "shell_command_is_a_turn": true,
+    "shell_turn_interrupt": {
+      "result": {},
+      "latency_s": 0.002
+    },
+    "shell_turn_completed": {
+      "status": "interrupted",
+      "s_after_interrupt": 0.003
+    },
+    "shell_turn_after_end_same_turnId": {
+      "_timeout": 15,
+      "sent_at": 3.746
+    },
+    "shell_turn_after_end_bogus_turnId": {
+      "error": {
+        "code": -32600,
+        "message": "expected active turn id bogus but found 01a1303e-9b41-72a1-afdc-e1e60a4f6b5d"
+      },
+      "latency_s": 0.002
+    },
+    "active_turn_mismatched_turnId": {
+      "error": {
+        "code": -32600,
+        "message": "expected active turn id bogus but found 01a1303e-e256-78c0-a234-eccff3a49c74"
+      },
+      "latency_s": 0.003
+    },
+    "active_turn_interrupt": {
+      "result": {},
+      "latency_s": 0.003
+    },
+    "active_turn_completed": {
+      "status": "interrupted",
+      "s_after_interrupt": 0.003
+    },
+    "after_turn_ended_same_turnId": {
+      "_timeout": 15,
+      "sent_at": 26.873
+    },
+    "after_turn_ended_bogus_turnId": {
+      "error": {
+        "code": -32600,
+        "message": "expected active turn id bogus but found 01a1303e-e256-78c0-a234-eccff3a49c74"
+      },
+      "latency_s": 0.001
+    },
+    "after_turn_ended_other_connection": {
+      "_timeout": 15,
+      "sent_at": 41.874
+    },
+    "server_stop": {
+      "signal": "SIGTERM",
+      "exited_after_s": 0.166,
+      "returncode": 0,
+      "real_server_outlived_launcher": false
+    },
+    "old_connection_after_server_exit": {
+      "ended": {
+        "how": "eof",
+        "at": 56.878
+      },
+      "request": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 57.541
+      }
+    },
+    "no_server_connect": "FileNotFoundError: [Errno 2] No such file or directory",
+    "after_restart_new_connection": {
+      "error": {
+        "code": -32600,
+        "message": "thread not found: 01a1303e-e05e-7a43-81a0-3c9f3302afd0"
+      },
+      "latency_s": 0.0
+    },
+    "after_restart_thread_read": {
+      "error": {
+        "code": -32600,
+        "message": "thread not loaded: 01a1303e-e05e-7a43-81a0-3c9f3302afd0"
+      },
+      "latency_s": 0.059
+    }
+  },
+  "error": null
+}

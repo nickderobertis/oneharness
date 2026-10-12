@@ -1,0 +1,60 @@
+{
+  "scenario": "blast",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:14:05",
+  "elapsed_s": 34.303,
+  "paid_turns": 0,
+  "observed": {
+    "signal": "SIGTERM",
+    "via": "shell",
+    "A": {
+      "ended": null,
+      "s_after_kill": null,
+      "frames_after_kill": [],
+      "turn_completed_seen": false,
+      "send_after": {
+        "result": {},
+        "latency_s": 0.062
+      }
+    },
+    "B": {
+      "ended": {
+        "how": "eof",
+        "at": 33.691
+      },
+      "s_after_kill": 29.012,
+      "frames_after_kill": [
+        {
+          "method": "thread/status/changed",
+          "emittedAtMs": 1791810877687,
+          "params_keys": [
+            "threadId",
+            "status"
+          ]
+        },
+        {
+          "method": "item/completed",
+          "emittedAtMs": 1791810878801,
+          "params_keys": [
+            "item",
+            "threadId",
+            "turnId",
+            "completedAtMs"
+          ]
+        }
+      ],
+      "turn_completed_seen": false,
+      "send_after": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 33.691
+      }
+    },
+    "server_returncode": 0,
+    "command_pids_alive_after_server_death": {
+      "A": false,
+      "B": false
+    },
+    "reconnect": "FileNotFoundError: [Errno 2] No such file or directory"
+  },
+  "error": null
+}

@@ -1,0 +1,44 @@
+{
+  "scenario": "blast",
+  "codex": "codex-cli 0.159.2",
+  "started": "2026-10-12T07:13:59",
+  "elapsed_s": 5.117,
+  "paid_turns": 0,
+  "observed": {
+    "signal": "SIGKILL",
+    "via": "shell",
+    "A": {
+      "ended": {
+        "how": "eof",
+        "at": 4.483
+      },
+      "s_after_kill": 0.069,
+      "frames_after_kill": [],
+      "turn_completed_seen": false,
+      "send_after": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 4.483
+      }
+    },
+    "B": {
+      "ended": {
+        "how": "eof",
+        "at": 4.483
+      },
+      "s_after_kill": 0.069,
+      "frames_after_kill": [],
+      "turn_completed_seen": false,
+      "send_after": {
+        "_send_failed": "BrokenPipeError: [Errno 32] Broken pipe",
+        "sent_at": 4.483
+      }
+    },
+    "server_returncode": -9,
+    "command_pids_alive_after_server_death": {
+      "A": false,
+      "B": false
+    },
+    "reconnect": "ConnectionRefusedError: [Errno 111] Connection refused"
+  },
+  "error": null
+}

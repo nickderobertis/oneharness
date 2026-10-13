@@ -1,0 +1,37 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "network-breakdown",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:python"
+  ],
+  "//": "scripts/codex-network-breakdown.py and its hermetic test, apart from every other project because the test's measuring half needs host tools no other suite needs (pasta and unprivileged user namespaces, Linux only): it skips, saying why, where they are absent, and never fetches pasta itself. Its reporting half reads fixtures recorded from real codex and needs neither. Nothing depends on it, and only an edit to the script or this directory selects it.",
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/codex-network-breakdown.py",
+      "{workspaceRoot}/scripts/check-temp-leaks.sh",
+      "{workspaceRoot}/python/pyproject.toml",
+      "{workspaceRoot}/python/uv.lock"
+    ]
+  },
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "bash scripts/check-temp-leaks.sh uv run --project python --frozen --no-sync python -I tools/network-breakdown/test_codex_network_breakdown.py"
+        ],
+        "parallel": false,
+        "env": {
+          "CODEX_NETWORK_BREAKDOWN_NO_FETCH": "1"
+        }
+      },
+      "inputs": [
+        "default"
+      ]
+    }
+  }
+}

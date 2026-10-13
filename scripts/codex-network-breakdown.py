@@ -2,7 +2,8 @@
 """Break one launch's network bytes down by destination, rootless, on Linux.
 
     codex-network-breakdown.py [--label L] [--env K=V]... [--timeout S]
-                               [--trace] [--trace-out PATH] [--launch-stdout PATH]
+                               [--trace] [--rust-log FILTER] [--trace-out PATH]
+                               [--launch-stdout PATH] [--measurement-out PATH]
                                -- ARGV...
     codex-network-breakdown.py report MEASUREMENT.json [--trace TRACE.log]
 
@@ -10,7 +11,7 @@ Measure mode runs ARGV (a `codex` launch, or a `oneharness` invocation that
 starts one) inside a fresh unprivileged user, network, mount and PID namespace
 whose only route out is a `pasta` tap interface, with `HTTPS_PROXY` and
 `HTTP_PROXY` pointed at a byte-counting CONNECT proxy that runs inside that
-same namespace. It prints one JSON document on stdout:
+same namespace. It prints one JSON document, on one line, on stdout:
 
   * `received_bytes` / `sent_bytes`: the namespace's TAP interface counters
     over the launch's whole process tree (detached children included) — every
@@ -20,12 +21,15 @@ same namespace. It prints one JSON document on stdout:
   * `tunnels`: one entry per proxied connection, in the order they opened —
     its `destination` (`host:port`), `host`, `port`, `received_bytes` (from
     the destination to the launch) and `sent_bytes` (the other way) as relayed
-    payload, `opened_at` / `closed_at` (UNIX seconds), and `paths`: the request
-    paths Codex's own trace names for that host while the tunnel was open
-    (empty when the trace names none, or no trace was taken);
+    payload, `opened_at` / `closed_at` (UNIX seconds), `error` (why the relay
+    ended abnormally, else null), and `paths`: the request path Codex's own
+    trace names for the connection it opened that tunnel for (empty when the
+    trace names none, or no trace was taken);
+  * `refused`: each connection the proxy could not open, with the error;
   * `tunnel_received_bytes` / `tunnel_sent_bytes` and `unaccounted_*`: the
     tunnels' totals, and what the namespace counted beyond them (framing, DNS,
-    and anything that went around the proxy).
+    and anything that went around the proxy); `timed_out`, when `--timeout`
+    ended the launch.
 
 `--trace` sets `RUST_LOG` (`--rust-log` to change it) for the launch and reads
 its stderr as Codex's trace — plus, when the launch is `oneharness run` and its
@@ -35,19 +39,24 @@ launch's stderr passes through. The launch's stdout goes to this script's
 stderr, or to `--launch-stdout`. `--measurement-out` keeps the raw record
 (counters and tunnels) that report mode reads.
 
-Report mode assembles the same document from a recorded measurement (the
-namespace counters and tunnel records measure mode collects) and a trace, so
-the attribution can be checked against committed fixtures with no launch.
+Report mode assembles the same document from a recorded measurement and a
+trace, so the attribution can be checked against committed fixtures with no
+launch.
 
-pasta comes from `CODEX_NETWORK_BREAKDOWN_PASTA`, else PATH, else is fetched
-without root (`apt-get download passt` + `dpkg -x`) into
-`$XDG_CACHE_HOME/oneharness-network-breakdown`. Exit status: 0 measured
-(whatever the launch's own exit), 3 when no measurement could be taken.
+pasta comes from `CODEX_NETWORK_BREAKDOWN_PASTA`, else PATH, else a copy this
+script fetched before into `$XDG_CACHE_HOME/oneharness-network-breakdown`,
+else is fetched there without root (`apt-get download passt` + `dpkg -x`) —
+unless `CODEX_NETWORK_BREAKDOWN_NO_FETCH=1`. Exit status: 0 measured (whatever
+the launch's own exit), 2 a usage error, 3 when no measurement could be taken;
+every failure is reported on stderr with what to do next.
 """
+
+from __future__ import annotations
 
 import argparse
 import ctypes
 import json
+import math
 import os
 import re
 import shutil
@@ -58,6 +67,7 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -83,26 +93,142 @@ CONNECT = re.compile(
 COMPLETED_URL = re.compile(r"\burl=((?:https?|wss?)://[^\s,]+)")
 SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
 URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d+))?(/[^\s\"'?#]*)?")
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-# --- the report: pure, shared by both modes --------------------------------
+class Unusable(Exception):
+    """An input or host this script cannot use, said with what to do about it."""
 
 
-def parse_url(url: str):
-    """`(host, port, path)` of an http(s)/ws(s) URL; the port defaults by
-    scheme (443 for https/wss, else 80) and the path to `/`."""
+@dataclass(frozen=True)
+class Url:
+    host: str
+    port: int
+    path: str
+
+
+@dataclass(frozen=True)
+class TraceLine:
+    """One tracing line: UTC UNIX seconds, the span chain before the target
+    (`name{fields}:` repeated, "" when none), and the rest."""
+
+    seconds: float
+    spans: str
+    message: str
+
+
+@dataclass(frozen=True)
+class Connection:
+    """A connection Codex's trace says it starts, and the request path the
+    trace names for it, if any."""
+
+    seconds: float
+    host: str
+    port: int
+    path: str | None
+
+
+@dataclass
+class Tunnel:
+    host: str
+    port: int
+    opened_at: float
+    received_bytes: int = 0
+    sent_bytes: int = 0
+    closed_at: float | None = None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class Refusal:
+    destination: str
+    at: float
+    error: str
+
+
+def field_of(record: object, key: str, kinds: tuple, where: str) -> object:
+    """`record[key]`, refused unless `record` is an object carrying it as one
+    of `kinds` (a bool is never taken for a number)."""
+    if not isinstance(record, dict) or key not in record:
+        raise Unusable(f"{where} has no `{key}`")
+    value = record[key]
+    if (isinstance(value, bool) and bool not in kinds) or not isinstance(value, kinds):
+        raise Unusable(f"{where}'s `{key}` is {value!r}, not {kinds[0].__name__}")
+    return value
+
+
+@dataclass
+class Measurement:
+    """The raw record measure mode collects and report mode reads."""
+
+    label: str
+    argv: list[str]
+    launch_exit: int | None
+    launch_seconds: float | None
+    timed_out: bool
+    received_bytes: int
+    sent_bytes: int
+    tunnels: list[Tunnel]
+    refused: list[Refusal] = field(default_factory=list)
+
+    @staticmethod
+    def from_json(data: object, source: str) -> Measurement:
+        """A recorded measurement, refused at the first field that is wrong."""
+        number = (int, float)
+        tunnels = []
+        for index, raw in enumerate(field_of(data, "tunnels", (list,), source)):
+            where = f"{source}: tunnel {index}"
+            tunnel = Tunnel(
+                host=field_of(raw, "host", (str,), where),
+                port=field_of(raw, "port", (int,), where),
+                opened_at=field_of(raw, "opened_at", number, where),
+                received_bytes=field_of(raw, "received_bytes", (int,), where),
+                sent_bytes=field_of(raw, "sent_bytes", (int,), where),
+                closed_at=field_of(raw, "closed_at", number, where),
+                error=raw.get("error") if isinstance(raw.get("error"), str) else None,
+            )
+            if not 0 < tunnel.port < 65536 or min(tunnel.received_bytes, tunnel.sent_bytes) < 0:
+                raise Unusable(f"{where} has an impossible port or byte count")
+            tunnels.append(tunnel)
+        refused = []
+        for index, raw in enumerate(data.get("refused", [])):
+            where = f"{source}: refusal {index}"
+            refused.append(
+                Refusal(
+                    destination=field_of(raw, "destination", (str,), where),
+                    at=field_of(raw, "at", number, where),
+                    error=field_of(raw, "error", (str,), where),
+                )
+            )
+        exit_code = data.get("launch_exit")
+        seconds = data.get("launch_seconds")
+        return Measurement(
+            label=str(data.get("label", "")),
+            argv=[str(arg) for arg in data.get("argv", [])],
+            launch_exit=exit_code if isinstance(exit_code, int) else None,
+            launch_seconds=seconds if isinstance(seconds, number) else None,
+            timed_out=data.get("timed_out") is True,
+            received_bytes=field_of(data, "received_bytes", (int,), source),
+            sent_bytes=field_of(data, "sent_bytes", (int,), source),
+            tunnels=tunnels,
+            refused=refused,
+        )
+
+
+def parse_url(url: str) -> Url | None:
+    """An http(s)/ws(s) URL's host, port (443 for https/wss, else 80 when
+    unstated) and path (`/` when unstated)."""
     match = URL.match(url)
     if not match:
         return None
     default = 443 if match.group(1) in ("https", "wss") else 80
     port = int(match.group(3)) if match.group(3) else default
-    return match.group(2), port, match.group(4) or "/"
+    return Url(match.group(2), port, match.group(4) or "/")
 
 
-def trace_lines(trace_text: str) -> list:
-    """Each tracing line as `(seconds, spans, message)`: the UTC timestamp in
-    UNIX seconds, the span chain before the target (`name{fields}:` repeated,
-    "" when none), and the rest. Colour codes are ignored; other lines drop."""
+def trace_lines(trace_text: str) -> list[TraceLine]:
+    """Each tracing line of `trace_text`; colour codes are ignored and lines
+    that do not start with tracing's RFC 3339 timestamp are dropped."""
     lines = []
     for raw in trace_text.splitlines():
         line = ANSI.sub("", raw)
@@ -116,75 +242,74 @@ def trace_lines(trace_text: str) -> list:
             seconds += float("0" + stamp.group(2))
         rest = line[stamp.end():]
         spans = SPANS.match(rest)
-        spans = spans.group(0) if spans else ""
-        lines.append((seconds, spans, rest[len(spans):]))
+        spans_text = spans.group(0) if spans else ""
+        lines.append(TraceLine(seconds, spans_text, rest[len(spans_text):]))
     return lines
 
 
-def trace_connections(trace_text: str) -> list:
-    """Every connection Codex's trace says it starts: `(seconds, host, port,
-    path)`, where `path` is the request the trace names for it, or None.
+def trace_connections(trace_text: str) -> list[Connection]:
+    """Every connection Codex's trace says it starts.
 
-    The path is, in order of preference: the URL a later line in the same
-    span chain reports completing (`url=…`, e.g. `Request completed`) — for a
+    Its path is, in order of preference: the URL a later line in the same span
+    chain reports completing (`url=…`, e.g. `Request completed`) — for a
     connection started outside any span, the next such line outside any span,
     unless another span-less connection to that host starts first; the URL
     being connected to, when it has a path beyond `/` (a websocket's
     endpoint); the span's own `api.path`."""
     lines = trace_lines(trace_text)
     connections = []
-    for index, (seconds, spans, message) in enumerate(lines):
-        connect = CONNECT.search(message)
+    for index, line in enumerate(lines):
+        connect = CONNECT.search(line.message)
         target = parse_url(connect.group(1)) if connect else None
-        if not target:
+        if target is None:
             continue
-        host, port, url_path = target
         path = None
-        for _, later_spans, later in lines[index + 1:]:
-            if later_spans != spans:
+        for later in lines[index + 1:]:
+            if later.spans != line.spans:
                 continue
-            again = CONNECT.search(later)
-            if not spans and again and (parse_url(again.group(1)) or ("",))[0] == host:
+            again = CONNECT.search(later.message)
+            again_url = parse_url(again.group(1)) if again else None
+            if not line.spans and again_url is not None and again_url.host == target.host:
                 break
-            completed = COMPLETED_URL.search(later)
-            parsed = parse_url(completed.group(1)) if completed else None
-            if parsed and parsed[0] == host:
-                path = parsed[2]
+            completed = COMPLETED_URL.search(later.message)
+            completed_url = parse_url(completed.group(1)) if completed else None
+            if completed_url is not None and completed_url.host == target.host:
+                path = completed_url.path
                 break
-        if path is None and url_path != "/":
-            path = url_path
-        named = SPAN_PATH.search(spans)
+        if path is None and target.path != "/":
+            path = target.path
+        named = SPAN_PATH.search(line.spans)
         if path is None and named:
             path = "/" + named.group(1).lstrip("/")
-        connections.append((seconds, host, port, path))
+        connections.append(Connection(line.seconds, target.host, target.port, path))
     return connections
 
 
-def attribute(tunnels: list, connections: list) -> None:
-    """Give each tunnel the path of the connection Codex started it for.
+def attribute(tunnels: list[Tunnel], connections: list[Connection]) -> list[list[str]]:
+    """Each tunnel's paths: those of the connections Codex started it for.
 
-    Connections are matched, in the order the trace starts them, to the
-    first not-yet-matched tunnel to the same host and port that opened from
+    Connections are matched, in the order the trace starts them, to the first
+    not-yet-matched tunnel to the same host and port that opened from
     CONNECT_BEFORE_SECONDS before to CONNECT_AFTER_SECONDS after. A tunnel
     whose connection the trace names no path for, or that no connection line
-    matches, gets `paths: []`."""
-    for tunnel in tunnels:
-        tunnel["paths"] = []
-    matched = set()
-    for seconds, host, port, path in sorted(connections, key=lambda c: c[0]):
+    matches, gets no paths."""
+    paths: list[list[str]] = [[] for _ in tunnels]
+    matched: set[int] = set()
+    for connection in sorted(connections, key=lambda c: c.seconds):
         for index, tunnel in enumerate(tunnels):
             if (
                 index not in matched
-                and tunnel["host"] == host
-                and tunnel["port"] == port
-                and seconds - CONNECT_BEFORE_SECONDS
-                <= tunnel["opened_at"]
-                <= seconds + CONNECT_AFTER_SECONDS
+                and tunnel.host == connection.host
+                and tunnel.port == connection.port
+                and connection.seconds - CONNECT_BEFORE_SECONDS
+                <= tunnel.opened_at
+                <= connection.seconds + CONNECT_AFTER_SECONDS
             ):
                 matched.add(index)
-                if path is not None:
-                    tunnel["paths"].append(path)
+                if connection.path is not None:
+                    paths[index].append(connection.path)
                 break
+    return paths
 
 
 def oneharness_stderr(stdout_text: str) -> str:
@@ -195,59 +320,65 @@ def oneharness_stderr(stdout_text: str) -> str:
     except ValueError:
         return ""
     results = document.get("results") if isinstance(document, dict) else None
+    if not isinstance(results, list):
+        return ""
     return "\n".join(
         result["stderr"]
-        for result in results or []
+        for result in results
         if isinstance(result, dict) and isinstance(result.get("stderr"), str)
     )
 
 
-def report(measurement: dict, trace_text) -> dict:
+def report(measurement: Measurement, trace_text: str | None) -> dict:
     """The printed document for one recorded measurement and optional trace."""
-    tunnels = [
-        {
-            "destination": f"{tunnel['host']}:{tunnel['port']}",
-            "host": tunnel["host"],
-            "port": tunnel["port"],
-            "received_bytes": tunnel["received_bytes"],
-            "sent_bytes": tunnel["sent_bytes"],
-            "opened_at": tunnel["opened_at"],
-            "closed_at": tunnel["closed_at"],
-        }
-        for tunnel in sorted(measurement["tunnels"], key=lambda tunnel: tunnel["opened_at"])
-    ]
-    attribute(tunnels, trace_connections(trace_text) if trace_text is not None else [])
-    received = sum(tunnel["received_bytes"] for tunnel in tunnels)
-    sent = sum(tunnel["sent_bytes"] for tunnel in tunnels)
+    tunnels = sorted(measurement.tunnels, key=lambda tunnel: tunnel.opened_at)
+    paths = attribute(tunnels, trace_connections(trace_text) if trace_text is not None else [])
+    received = sum(tunnel.received_bytes for tunnel in tunnels)
+    sent = sum(tunnel.sent_bytes for tunnel in tunnels)
     return {
-        "label": measurement.get("label", ""),
+        "label": measurement.label,
         "method": METHOD,
         "boundary": BOUNDARY,
-        "argv": measurement.get("argv", []),
-        "launch_exit": measurement.get("launch_exit"),
-        "launch_seconds": measurement.get("launch_seconds"),
+        "argv": measurement.argv,
+        "launch_exit": measurement.launch_exit,
+        "launch_seconds": measurement.launch_seconds,
+        "timed_out": measurement.timed_out,
         "traced": trace_text is not None,
-        "received_bytes": measurement["received_bytes"],
-        "sent_bytes": measurement["sent_bytes"],
+        "received_bytes": measurement.received_bytes,
+        "sent_bytes": measurement.sent_bytes,
         "tunnel_received_bytes": received,
         "tunnel_sent_bytes": sent,
-        "unaccounted_received_bytes": measurement["received_bytes"] - received,
-        "unaccounted_sent_bytes": measurement["sent_bytes"] - sent,
-        "tunnels": tunnels,
+        "unaccounted_received_bytes": measurement.received_bytes - received,
+        "unaccounted_sent_bytes": measurement.sent_bytes - sent,
+        "tunnels": [
+            {
+                "destination": f"{tunnel.host}:{tunnel.port}",
+                "host": tunnel.host,
+                "port": tunnel.port,
+                "received_bytes": tunnel.received_bytes,
+                "sent_bytes": tunnel.sent_bytes,
+                "opened_at": tunnel.opened_at,
+                "closed_at": tunnel.closed_at,
+                "error": tunnel.error,
+                "paths": tunnel_paths,
+            }
+            for tunnel, tunnel_paths in zip(tunnels, paths)
+        ],
+        "refused": [asdict(refusal) for refusal in measurement.refused],
     }
 
 
-# --- the counting proxy, run inside the namespace ---------------------------
-
-
+# llmlint: ignore-block[async_typed_clients_at_boundaries] This is a measuring relay, not a client of any service's API: it copies opaque TLS bytes between the launch and whatever it asked for and counts them, so there is no request or response shape for a typed client to model, and one OS thread per direction of a handful of tunnels is the simplest relay that cannot reorder or buffer what it counts.
 class CountingProxy:
     """An HTTP CONNECT (and absolute-URI plain HTTP) proxy that records, per
-    connection, the destination, the payload relayed each way, and when it
-    opened and closed."""
+    connection, the destination, the payload relayed each way, when it opened
+    and closed, and why it ended if not cleanly; and every connection it could
+    not open, with the error."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
-        self.tunnels = []
+        self.tunnels: list[Tunnel] = []
+        self.refused: list[Refusal] = []
         self.listener = socket.socket()
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(("127.0.0.1", 0))
@@ -263,47 +394,61 @@ class CountingProxy:
                 return
             threading.Thread(target=self._handle, args=(client,), daemon=True).start()
 
+    def _refuse(self, client: socket.socket, status: str, destination: str, error: str) -> None:
+        with self.lock:
+            self.refused.append(Refusal(destination, time.time(), error))
+        try:
+            client.sendall(f"HTTP/1.1 {status}\r\n\r\n{error}\n".encode())
+        except OSError:
+            pass
+        client.close()
+
     def _handle(self, client: socket.socket) -> None:
         head = b""
         while b"\r\n\r\n" not in head:
             data = client.recv(4096)
-            if not data:
+            if not data or len(head) > 65536:
                 client.close()
                 return
             head += data
-        method, target, _ = head.split(b"\r\n", 1)[0].decode("latin-1").split(" ", 2)
-        rest = head.split(b"\r\n\r\n", 1)[1]
+        request = head.split(b"\r\n", 1)[0].decode("latin-1")
+        parts = request.split(" ")
+        if len(parts) != 3:
+            self._refuse(client, "400 Bad Request", "?", f"malformed request line {request!r}")
+            return
+        method, target, _ = parts
         if method == "CONNECT":
-            host, port = target.rsplit(":", 1)
-        else:
-            hostport = target.split("/", 3)[2]
+            host, _, port = target.rpartition(":")
+        elif target.startswith("http://"):
+            hostport = target[len("http://"):].split("/", 1)[0]
             host, _, port = hostport.partition(":")
             port = port or "80"
-        tunnel = {
-            "host": host.strip("[]"),
-            "port": int(port),
-            "received_bytes": 0,
-            "sent_bytes": 0,
-            "opened_at": time.time(),
-            "closed_at": None,
-        }
-        try:
-            upstream = socket.create_connection((tunnel["host"], tunnel["port"]), timeout=30)
-            upstream.settimeout(None)
-        except OSError:
-            client.sendall(b"HTTP/1.1 502 Bad Gateway\r\n\r\n")
-            client.close()
+        else:
+            self._refuse(client, "400 Bad Request", target, f"not a proxy request: {request!r}")
             return
+        host = host.strip("[]")
+        if not host or not port.isdigit() or not 0 < int(port) < 65536:
+            self._refuse(client, "400 Bad Request", target, f"no host and port in {target!r}")
+            return
+        destination = f"{host}:{port}"
+        try:
+            upstream = socket.create_connection((host, int(port)), timeout=30)
+            upstream.settimeout(None)
+        except OSError as error:
+            self._refuse(client, "502 Bad Gateway", destination, f"{type(error).__name__}: {error}")
+            return
+        tunnel = Tunnel(host=host, port=int(port), opened_at=time.time())
         with self.lock:
             self.tunnels.append(tunnel)
+        rest = head.split(b"\r\n\r\n", 1)[1]
         if method == "CONNECT":
             client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
-            if rest:
-                upstream.sendall(rest)
-                self._count(tunnel, "sent_bytes", len(rest))
+            forwarded = rest
         else:
-            upstream.sendall(head)
-            self._count(tunnel, "sent_bytes", len(head))
+            forwarded = head
+        if forwarded:
+            upstream.sendall(forwarded)
+            self._count(tunnel, "sent_bytes", len(forwarded))
         down = threading.Thread(
             target=self._pump, args=(upstream, client, tunnel, "received_bytes"), daemon=True
         )
@@ -311,43 +456,53 @@ class CountingProxy:
         self._pump(client, upstream, tunnel, "sent_bytes")
         down.join()
         with self.lock:
-            tunnel["closed_at"] = time.time()
+            tunnel.closed_at = time.time()
         client.close()
         upstream.close()
 
-    def _count(self, tunnel: dict, field: str, n: int) -> None:
+    def _count(self, tunnel: Tunnel, direction: str, n: int) -> None:
         with self.lock:
-            tunnel[field] += n
+            setattr(tunnel, direction, getattr(tunnel, direction) + n)
 
-    def _pump(self, src: socket.socket, dst: socket.socket, tunnel: dict, field: str) -> None:
+    def _pump(self, src: socket.socket, dst: socket.socket, tunnel: Tunnel, direction: str) -> None:
         try:
             while True:
                 data = src.recv(65536)
                 if not data:
                     break
                 dst.sendall(data)
-                self._count(tunnel, field, len(data))
-        except OSError:
-            pass
+                self._count(tunnel, direction, len(data))
+        except OSError as error:
+            # A reset is how many TLS peers end a connection; it is recorded
+            # rather than swallowed, so a relay that broke is visible.
+            with self.lock:
+                tunnel.error = tunnel.error or f"{direction}: {type(error).__name__}: {error}"
         finally:
             try:
                 dst.shutdown(socket.SHUT_WR)
             except OSError:
                 pass
 
-    def snapshot(self) -> list:
-        """Every tunnel so far; one still open is closed at this moment."""
+    def snapshot(self) -> tuple[list[Tunnel], list[Refusal]]:
+        """Every tunnel and refusal so far; a tunnel still open is closed at
+        this moment."""
         now = time.time()
         with self.lock:
-            return [
-                dict(tunnel, closed_at=tunnel["closed_at"] or now) for tunnel in self.tunnels
+            tunnels = [
+                Tunnel(**{**asdict(tunnel), "closed_at": tunnel.closed_at or now})
+                for tunnel in self.tunnels
             ]
+            return tunnels, list(self.refused)
+# llmlint: ignore-end[async_typed_clients_at_boundaries]
 
 
-# --- measure mode -----------------------------------------------------------
+@dataclass(frozen=True)
+class Counters:
+    received: int
+    sent: int
 
 
-def read_counters() -> dict:
+def read_counters() -> dict[str, Counters]:
     """Every non-loopback interface's byte counters in this namespace."""
     counters = {}
     for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
@@ -355,14 +510,31 @@ def read_counters() -> dict:
         if name.strip() == "lo":
             continue
         fields = [int(x) for x in rest.split()]
-        counters[name.strip()] = (fields[0], fields[8])
+        counters[name.strip()] = Counters(received=fields[0], sent=fields[8])
     return counters
 
 
-def counter_delta(start: dict, end: dict) -> tuple:
-    received = sum(rx - start.get(name, (0, 0))[0] for name, (rx, _) in end.items())
-    sent = sum(tx - start.get(name, (0, 0))[1] for name, (_, tx) in end.items())
-    return received, sent
+def counter_delta(start: dict[str, Counters], end: dict[str, Counters]) -> Counters:
+    zero = Counters(0, 0)
+    return Counters(
+        received=sum(after.received - start.get(name, zero).received for name, after in end.items()),
+        sent=sum(after.sent - start.get(name, zero).sent for name, after in end.items()),
+    )
+
+
+def run_or_explain(argv: list[str], what: str) -> None:
+    """Run a namespace setup step; a failure stops the measurement with the
+    step's own error, since a half-built namespace would measure something
+    else."""
+    try:
+        done = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as error:
+        raise Unusable(f"{what} failed: `{argv[0]}` could not run ({error})") from None
+    if done.returncode != 0:
+        raise Unusable(
+            f"{what} failed (`{' '.join(argv)}` exited {done.returncode}: "
+            f"{done.stderr.strip() or 'no output'}); the namespace cannot be set up on this host"
+        )
 
 
 def private_resolver() -> None:
@@ -371,12 +543,23 @@ def private_resolver() -> None:
     A host resolving through systemd-resolved's 127.0.0.53 stub has, inside the
     namespace, only an empty loopback there; the upstream list is the same
     configuration minus the stub."""
-    subprocess.run(["mount", "--make-rprivate", "/"], check=True)
+    run_or_explain(["mount", "--make-rprivate", "/"], "making the mount namespace private")
     current = Path("/etc/resolv.conf").read_text()
     servers = [line.split()[1] for line in current.splitlines() if line.startswith("nameserver")]
     upstream = Path("/run/systemd/resolve/resolv.conf")
     if servers and all(server.startswith("127.") for server in servers) and upstream.exists():
-        subprocess.run(["mount", "--bind", str(upstream), "/etc/resolv.conf"], check=True)
+        run_or_explain(
+            ["mount", "--bind", str(upstream), "/etc/resolv.conf"],
+            "pointing the namespace at a resolver",
+        )
+
+
+def loopback_up() -> None:
+    """The proxy listens on the namespace's loopback, so it must be up."""
+    flags = Path("/sys/class/net/lo/flags")
+    if flags.exists() and int(flags.read_text(), 16) & 0x1:
+        return
+    run_or_explain(["ip", "link", "set", "lo", "up"], "bringing the namespace's loopback up")
 
 
 def init(args: argparse.Namespace) -> int:
@@ -384,15 +567,26 @@ def init(args: argparse.Namespace) -> int:
     namespace, run the proxy and the launch, and record the measurement."""
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
-        raise OSError(ctypes.get_errno(), "unshare(CLONE_NEWNS|CLONE_NEWPID)")
+        raise Unusable(
+            f"unshare(CLONE_NEWNS|CLONE_NEWPID) failed: {os.strerror(ctypes.get_errno())}; this "
+            "host does not allow the mount and PID namespaces the measurement needs"
+        )
     child = os.fork()
     if child:
         _, status = os.waitpid(child, 0)
         return os.waitstatus_to_exitcode(status)
 
     private_resolver()
-    subprocess.run(["mount", "-t", "proc", "proc", "/proc"], check=False)
-    subprocess.run(["ip", "link", "set", "lo", "up"], check=False, capture_output=True)
+    loopback_up()
+    proc = subprocess.run(["mount", "-t", "proc", "proc", "/proc"], capture_output=True, text=True)
+    if proc.returncode != 0:
+        # Only process listings are affected: the counters are read per network
+        # namespace, so the measurement stands, and the reader is told.
+        print(
+            f"codex-network-breakdown: warning: /proc was not remounted ({proc.stderr.strip()}); "
+            "the launch sees the host's process list",
+            file=sys.stderr,
+        )
     signal.signal(signal.SIGTERM, lambda *_: os.kill(-1, signal.SIGKILL))
     proxy = CountingProxy()
     address = f"http://127.0.0.1:{proxy.port}"
@@ -427,28 +621,46 @@ def init(args: argparse.Namespace) -> int:
                 timed_out = True
                 os.kill(-1, signal.SIGTERM)
                 deadline = now + 5
-            elif timed_out and now > deadline:
+            elif timed_out and deadline and now > deadline:
                 os.kill(-1, signal.SIGKILL)
                 deadline = now + 3600
             time.sleep(0.02)
     # Let the proxy see the last FINs before the counters are read.
     time.sleep(0.2)
-    received, sent = counter_delta(start, read_counters())
-    measurement = {
-        "label": args.label,
-        "argv": args.argv,
-        "launch_exit": launch_exit,
-        "launch_seconds": round(launch_seconds or time.monotonic() - t0, 3),
-        "timed_out": timed_out,
-        "received_bytes": received,
-        "sent_bytes": sent,
-        "tunnels": proxy.snapshot(),
-    }
-    Path(args.result).write_text(json.dumps(measurement))
+    delta = counter_delta(start, read_counters())
+    tunnels, refused = proxy.snapshot()
+    measurement = Measurement(
+        label=args.label,
+        argv=args.argv,
+        launch_exit=launch_exit,
+        launch_seconds=round(launch_seconds or time.monotonic() - t0, 3),
+        timed_out=timed_out,
+        received_bytes=delta.received,
+        sent_bytes=delta.sent,
+        tunnels=tunnels,
+        refused=refused,
+    )
+    Path(args.result).write_text(json.dumps(asdict(measurement)))
     return 0
 
 
+def fetch_step(argv: list[str], cwd: Path | None, what: str) -> None:
+    """One step of fetching pasta; a failure names the step's own error."""
+    advice = "install passt (`apt install passt`) or set CODEX_NETWORK_BREAKDOWN_PASTA to a pasta binary"
+    try:
+        done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
+    except OSError as error:
+        raise Unusable(f"cannot {what}: `{argv[0]}` could not run ({error}); {advice}") from None
+    if done.returncode != 0:
+        raise Unusable(
+            f"cannot {what}: `{' '.join(argv)}` exited {done.returncode}: "
+            f"{done.stderr.strip() or 'no output'}; {advice}"
+        )
+
+
 def find_pasta() -> str:
+    """The pasta to build the namespace with, fetching it without root only
+    when nothing else provides it and fetching is allowed."""
     explicit = os.environ.get("CODEX_NETWORK_BREAKDOWN_PASTA")
     if explicit:
         return explicit
@@ -458,56 +670,76 @@ def find_pasta() -> str:
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     tools = cache / "oneharness-network-breakdown"
     pasta = tools / "root" / "usr" / "bin" / "pasta"
+    if pasta.exists():
+        return str(pasta)
+    if os.environ.get("CODEX_NETWORK_BREAKDOWN_NO_FETCH") == "1":
+        raise Unusable(
+            f"no pasta on PATH or in {tools}, and CODEX_NETWORK_BREAKDOWN_NO_FETCH=1 forbids "
+            "fetching it; install passt (`apt install passt`), set CODEX_NETWORK_BREAKDOWN_PASTA, "
+            "or run once without CODEX_NETWORK_BREAKDOWN_NO_FETCH to fetch it"
+        )
+    debs = tools / "debs"
+    debs.mkdir(parents=True, exist_ok=True)
+    fetch_step(["apt-get", "download", "passt"], debs, "fetch pasta")
+    for deb in debs.glob("*.deb"):
+        fetch_step(["dpkg", "-x", str(deb), str(tools / "root")], None, f"unpack {deb}")
     if not pasta.exists():
-        debs = tools / "debs"
-        debs.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["apt-get", "download", "passt"], cwd=debs, check=True, capture_output=True)
-        for deb in debs.glob("*.deb"):
-            subprocess.run(["dpkg", "-x", str(deb), str(tools / "root")], check=True)
+        raise Unusable(f"the fetched passt package has no {pasta}; delete {tools} and rerun")
     return str(pasta)
+
+
+def env_pair(text: str) -> tuple[str, str]:
+    """One `--env NAME=VALUE`, with NAME a variable name and no NUL in VALUE."""
+    key, sep, value = text.partition("=")
+    if not sep or not ENV_NAME.match(key) or "\0" in value:
+        raise argparse.ArgumentTypeError(
+            f"wants NAME=VALUE with NAME a variable name and no NUL in VALUE, got {text!r}"
+        )
+    return key, value
 
 
 def measure(args: argparse.Namespace) -> int:
     env = dict(os.environ)
-    for pair in args.env:
-        key, sep, value = pair.partition("=")
-        if not sep:
-            sys.exit(f"codex-network-breakdown: --env wants K=V, got {pair!r}")
-        env[key] = value
-    try:
-        pasta = find_pasta()
-    except (OSError, subprocess.CalledProcessError) as error:
-        print(json.dumps({"label": args.label, "method": METHOD,
-                          "error": f"no pasta to build the namespace with: {error}"}))
-        return 3
+    env.update(args.env)
+    pasta = find_pasta()
     scratch = tempfile.mkdtemp(prefix="codex-network-breakdown-")
     try:
         result = os.path.join(scratch, "measurement.json")
         trace_file = args.trace_out or os.path.join(scratch, "trace.log")
+        launch_stdout = args.launch_stdout or (
+            os.path.join(scratch, "launch.stdout") if args.trace else None
+        )
         inner = [sys.executable, "-I", str(Path(__file__).resolve()), "--_init", result,
                  "--label", args.label, "--timeout", str(args.timeout)]
         if args.trace:
             inner += ["--trace", "--rust-log", args.rust_log, "--_trace-file",
                       os.path.abspath(trace_file)]
-        launch_stdout = args.launch_stdout or (
-            os.path.join(scratch, "launch.stdout") if args.trace else None
-        )
         if launch_stdout:
             inner += ["--launch-stdout", os.path.abspath(launch_stdout)]
         command = [pasta, "--config-net", "--quiet", "-4",
                    "-t", "none", "-u", "none", "-T", "none", "-U", "none",
                    "--", *inner, "--", *args.argv]
-        run = subprocess.Popen(command, env=env, start_new_session=True, stdout=sys.stderr)
+        try:
+            run = subprocess.Popen(command, env=env, start_new_session=True, stdout=sys.stderr)
+        except OSError as error:
+            raise Unusable(
+                f"cannot start pasta ({pasta}): {error}; install passt (`apt install passt`) or "
+                "point CODEX_NETWORK_BREAKDOWN_PASTA at a pasta binary"
+            ) from None
         for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(signum, lambda *_: os.killpg(run.pid, signal.SIGTERM))
         run.wait()
         if not os.path.exists(result):
-            print(json.dumps({"label": args.label, "method": METHOD,
-                              "error": f"no measurement (pasta exited {run.returncode})"}))
-            return 3
-        measurement = json.loads(Path(result).read_text())
+            raise Unusable(
+                f"no measurement: pasta exited {run.returncode} before the namespace recorded "
+                "one (its own error, if any, is above). Rerun it by hand to see why: "
+                f"{pasta} --config-net --quiet -4 -- true. On a host that restricts unprivileged "
+                "user namespaces (Ubuntu 24.04's AppArmor), allow them: "
+                "`sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`"
+            )
+        measurement = Measurement.from_json(json.loads(Path(result).read_text()), result)
         if args.measurement_out:
-            Path(args.measurement_out).write_text(json.dumps(measurement, indent=2) + "\n")
+            Path(args.measurement_out).write_text(json.dumps(asdict(measurement), indent=2) + "\n")
         trace_text = None
         if args.trace:
             stdout_text = Path(launch_stdout).read_text(errors="replace")
@@ -520,24 +752,42 @@ def measure(args: argparse.Namespace) -> int:
                 Path(trace_file).write_text(trace_text)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    print(json.dumps(report(measurement, trace_text), indent=2))
+    print(json.dumps(report(measurement, trace_text)))
     return 0
 
 
-def main(argv: list) -> int:
-    if argv[:1] == ["report"]:
-        parser = argparse.ArgumentParser(prog="codex-network-breakdown.py report")
-        parser.add_argument("measurement")
-        parser.add_argument("--trace")
-        args = parser.parse_args(argv[1:])
-        measurement = json.loads(Path(args.measurement).read_text())
+def report_mode(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(prog="codex-network-breakdown.py report")
+    parser.add_argument("measurement")
+    parser.add_argument("--trace")
+    args = parser.parse_args(argv)
+    try:
+        data = json.loads(Path(args.measurement).read_text())
+    except (OSError, ValueError) as error:
+        raise Unusable(f"cannot read the measurement {args.measurement}: {error}") from None
+    measurement = Measurement.from_json(data, args.measurement)
+    try:
         trace_text = Path(args.trace).read_text(errors="replace") if args.trace else None
-        print(json.dumps(report(measurement, trace_text), indent=2))
-        return 0
+    except OSError as error:
+        raise Unusable(f"cannot read the trace {args.trace}: {error}") from None
+    print(json.dumps(report(measurement, trace_text)))
+    return 0
+
+
+def timeout_seconds(text: str) -> float:
+    seconds = float(text)
+    if not math.isfinite(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError(f"wants a finite number of seconds >= 0, got {text}")
+    return seconds
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["report"]:
+        return report_mode(argv[1:])
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--label", default="")
-    parser.add_argument("--env", action="append", default=[], metavar="K=V")
-    parser.add_argument("--timeout", type=float, default=0,
+    parser.add_argument("--env", action="append", default=[], metavar="K=V", type=env_pair)
+    parser.add_argument("--timeout", type=timeout_seconds, default=0.0,
                         help="after S seconds SIGTERM every process left, SIGKILL 5 s later")
     parser.add_argument("--trace", action="store_true",
                         help="set RUST_LOG for the launch and attribute request paths from it")
@@ -559,4 +809,8 @@ def main(argv: list) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Unusable as problem:
+        print(f"codex-network-breakdown: {problem}", file=sys.stderr)
+        sys.exit(3)

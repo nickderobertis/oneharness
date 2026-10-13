@@ -39982,6 +39982,7 @@ fn a_lock_that_cannot_be_opened_falls_back_with_one_warning() {
     assert_eq!(world.launches().pop().unwrap()["fetch"], "ok");
 }
 
+// llmlint: ignore-block[tests_mirror_real_usage] A damaged catalog file or failure record is what a filesystem fault or another tool leaves in oneharness's state directory, and no oneharness command writes one (both are written whole and renamed into place); damaging the file is the only way to reach that recovery path, and every launch around it goes through the real CLI.
 #[test]
 fn a_damaged_catalog_is_refreshed_rather_than_handed_to_codex() {
     // Damaged inside its interval, the file is no fresh catalog: the next
@@ -40007,6 +40008,7 @@ fn a_malformed_failure_record_holds_nothing_off() {
     assert_every_launch_read(&world, &world.launches());
     assert!(!failure.exists(), "a successful refresh clears the record");
 }
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 #[test]
 fn every_spelling_of_one_codex_home_shares_one_catalog() {

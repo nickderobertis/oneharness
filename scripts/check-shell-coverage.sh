@@ -218,7 +218,7 @@ done <<'REPORTS'
 {"files": [{"file": "ROOT/scripts/h.sh", "covered_lines": null, "total_lines": "9"}]}|unreadable line counts for: scripts/h.sh
 {"files": [{"file": "ROOT/scripts/i.sh", "covered_lines": "", "total_lines": "9"}]}|unreadable line counts for: scripts/i.sh
 {"files": [{"file": "ROOT/scripts/j.sh", "covered_lines": 1.5, "total_lines": "9"}]}|unreadable line counts for: scripts/j.sh
-{"files": [{"file": "/elsewhere/c.sh", "covered_lines": "1", "total_lines": "2"}]}|counts files outside scripts/ and .githooks/: /elsewhere/c.sh
+{"files": [{"file": "/elsewhere/c.sh", "covered_lines": "1", "total_lines": "2"}]}|counts files outside scripts/: /elsewhere/c.sh
 REPORTS
 # Each count as kcov writes it, a string of digits, or as a plain integer, is read.
 status=0

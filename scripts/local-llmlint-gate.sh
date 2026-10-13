@@ -3,7 +3,7 @@
 #
 # The judge is non-deterministic, so this REPLAYS a green it already reached
 # instead of rolling again: one workspace content plus one resolved base commit
-# plus one judge configuration is judged exactly once, and the pre-push hook
+# plus one judge configuration is judged exactly once, and the manual gate
 # replays what the working tree's own gate already cleared. Any of those three
 # moving invalidates. Only a green is recorded — a finding or a toolchain error
 # judges again next run. Set ONEHARNESS_LLMLINT_REJUDGE=1 to force a fresh roll

@@ -7,7 +7,8 @@ Subtree rules for the shell line-coverage floor.
   `scripts/shell-coverage.sh`), below the 95% default as the create-repo bash
   reference allows with a recorded reason, and still enforced: `coverage` fails
   below it. Its basis: a merged kcov 43 measurement of 56.19% over every shell
-  script under `scripts/` and `.githooks/` (9662 lines, 48 test steps, Linux).
+  script then under `scripts/` and `.githooks/` (9662 lines, 48 test steps, Linux).
+  The removed Git hook is no longer part of the denominator.
   Raise floor and basis together, from a fresh `just coverage` run, as tests
   land; never lower it.
 <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->

@@ -14,8 +14,8 @@
 # a missing one is a run that never happened, and leaving it out could only
 # move the number.
 #
-# The denominator is every shell script under scripts/ and .githooks/, not only
-# the ones a step ran: a kcov pass over a no-op, parsing both directories from
+# The denominator is every shell script under scripts/, not only
+# the ones a step ran: a kcov pass over a no-op, parsing the directory from
 # this tree, joins the merge with each script at zero, so an untested script
 # lowers the rate rather than vanishing from it.
 #
@@ -124,9 +124,9 @@ done <<<"$steps"
 
 printf '#!/usr/bin/env bash\ntrue\n' >"$work/noop.sh" ||
   fail "could not write the baseline's no-op script in $work (above)" "fix: check that ${TMPDIR:-/tmp} is writable and has room, then re-run"
-include="$root/scripts,$root/.githooks"
+include="$root/scripts"
 "$kcov" "--bash-parse-files-in-dir=$include" "--include-path=$include" "$work/baseline" "$work/noop.sh" >/dev/null ||
-  fail "kcov could not parse the scripts under scripts/ and .githooks/ for the baseline (above)" \
+  fail "kcov could not parse the scripts under scripts/ for the baseline (above)" \
     "fix: run 'bash -n' on the script kcov names to find its syntax error; if none, reinstall kcov with 'just bootstrap'"
 merged="target/coverage/shell/merged"
 rm -rf "$merged" || fail "could not clear the previous merged report $merged (above)" "fix: check that target/coverage is writable, then re-run"
@@ -145,9 +145,9 @@ read -r rate covered total < <(node -e '
     console.error("the merged report has no list of scripts, each with a file name");
     process.exit(1);
   }
-  const outside = merged.files.filter((f) => !f.file.startsWith(`${root}/scripts/`) && !f.file.startsWith(`${root}/.githooks/`));
+  const outside = merged.files.filter((f) => !f.file.startsWith(`${root}/scripts/`));
   if (outside.length > 0) {
-    console.error(`the merged report counts files outside scripts/ and .githooks/: ${outside.map((f) => f.file).join(", ")}`);
+    console.error(`the merged report counts files outside scripts/: ${outside.map((f) => f.file).join(", ")}`);
     process.exit(1);
   }
   // kcov writes each count as a string of digits; a number is read as one too,

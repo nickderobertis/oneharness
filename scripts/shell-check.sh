@@ -9,8 +9,8 @@
 #
 # A project's shell scripts are every file under its directories that git
 # tracks or would track (new, not ignored) and is shell: a `.sh` name, or a
-# first line that is a sh/bash shebang — which is how `scripts/nx` and
-# `.githooks/pre-push` are found without a list to keep.
+# first line that is a sh/bash shebang — which is how `scripts/nx` is
+# found without a list to keep.
 #
 # The shell style is recorded here, once, as shfmt's printer flags: 2-space
 # indents and indented case arms. Flags rather than an .editorconfig, whose
@@ -41,7 +41,7 @@ case "$mode" in format | format-write | lint) ;; *) usage ;; esac
 for dir in "$@"; do
   [ -d "$dir" ] || {
     echo "shell-check: '$dir' is not a directory under the repository root" >&2
-    echo "  fix: pass the owning project's directory relative to the checkout (e.g. 'scripts' or '.githooks'), as its project.json format and lint targets do" >&2
+    echo "  fix: pass the owning project's directory relative to the checkout (e.g. 'scripts'), as its project.json format and lint targets do" >&2
     exit 2
   }
 done

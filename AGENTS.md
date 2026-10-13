@@ -68,7 +68,7 @@ follow-ups (see "After the main task").
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
   `install-surface`, `release-tooling`, `ci-contracts`, `e2e-support`,
   `workspace`, `workspace-integration`, `rust-coverage`, `shell-coverage`,
-  `shell-toolchain`, `scripts`, `githooks`, the paid `live-*` suites (claude,
+  `shell-toolchain`, `scripts`, the paid `live-*` suites (claude,
   codex, opencode, goose, qwen, crush, copilot, cursor, schema, control,
   variants) and the dispatch-only `explore-*` probes (control, cursor-stdin,
   events, hooks).
@@ -78,8 +78,7 @@ follow-ups (see "After the main task").
   **No `cargo-dist`** — `release.yml`'s native build matrix already ships
   checksummed cross-platform binaries; cargo-dist's generated pipeline isn't
   worth replacing it. **No pre-commit/lefthook or direnv** — template baggage;
-  the gate is `just check` plus CI, and the committed `pre-push` hook runs
-  `just gate`. **No shared remote Nx cache**: the computation cache is local to
+  CI verifies the checks; `just check` and `just gate` remain available manually. **No shared remote Nx cache**: the computation cache is local to
   each clone (`.nx/cache`, gitignored) and CI starts cold.
 - **Recorded decisions:** both crates publish to crates.io, in dependency order,
   with `oneharness-core` tagged in its own `oneharness-core-v{{ version }}`
@@ -147,10 +146,10 @@ repo-level `coverage` — and each target calls its own language's tool.
 Use the `just` recipes; do not hand-roll equivalents.
 
 - `just bootstrap` — set up from a clean clone (toolchain, the pinned shell
-  tools, llmlint, dependencies, and the committed pre-push hook).
+  tools, llmlint, and dependencies).
 - `just check` — the gate's affected tier; `just check all` — the full sweep
   (*Project graph*). Must pass before any commit or PR.
-- `just gate` — pre-push superset: `check`, dependency/license audit, crate
+- `just gate` — manual superset: `check`, dependency/license audit, crate
   packaging, published-API compatibility, llmlint validation, and its merge-base
   diff judge (skipped locally without Codex/key).
 - `just test` / `just lint` / `just fmt-check` / `just coverage` — one slice of

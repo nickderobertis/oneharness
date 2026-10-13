@@ -12,7 +12,6 @@
       "{projectRoot}/**/*",
       "{workspaceRoot}/scripts/**/*.sh",
       "{workspaceRoot}/scripts/nx",
-      "{workspaceRoot}/.githooks/**/*",
       "{workspaceRoot}/.shell-tool-versions"
     ]
   },

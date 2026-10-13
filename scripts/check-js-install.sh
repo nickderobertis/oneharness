@@ -6,10 +6,9 @@
 # dependencies AND Nx itself — is the one per-checkout artifact `bootstrap`
 # creates that every gate recipe needs: every other step writes machine-global
 # state a new checkout inherits for free (rustup components, the cargo registry
-# cache, the uv-installed llmlint, and `core.hooksPath` in the shared common git
-# dir). It is also gitignored, so a fresh clone or `git worktree add` starts
+# cache and the uv-installed llmlint). It is also gitignored, so a fresh clone or `git worktree add` starts
 # without it. When the SDK gate merely *used* those dependencies, `just gate`
-# from the pre-push hook — which runs the gate directly, never `bootstrap` —
+# without first running `bootstrap`
 # died in every fresh worktree with ERR_MODULE_NOT_FOUND. CI never caught it
 # because CI runs `just bootstrap` first.
 #

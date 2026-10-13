@@ -485,7 +485,10 @@ cat >"$bootstrap_repo/scripts/shell-tools.sh" <<'STUB'
 printf 'shell-tools %s\n' "$*" >> "$CALL_LOG"
 STUB
 git -C "$bootstrap_repo" init -q
-git -C "$bootstrap_repo" config core.hooksPath retained-hooks
+git -C "$bootstrap_repo" config core.hooksPath retained-hooks || {
+  echo "check-local-gate: could not configure the bootstrap fixture's hooksPath; check that $bootstrap_repo/.git/config is writable, then re-run" >&2
+  exit 1
+}
 for tool in rustup cargo bun uv; do
   cat >"$bootstrap_bin/$tool" <<'STUB'
 #!/usr/bin/env bash
@@ -503,6 +506,7 @@ assert_file_contains 'shell-tools install' "$log" \
 hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath)
 [[ $hooks_path == retained-hooks ]] || {
   echo "check-local-gate: bootstrap changed hooksPath '$hooks_path', expected 'retained-hooks'" >&2
+  echo "  fix: remove hooksPath writes from the bootstrap recipe in justfile so existing unrelated hooks remain enabled" >&2
   exit 1
 }
 

@@ -11,7 +11,7 @@
 # `test` output, which scripts/shell-coverage.sh merges with every other
 # project's. kcov traces every bash process the step starts, so the scripts a
 # test drives count, not only the test itself; it records only files under
-# scripts/ and .githooks/. The run id is the last `.sh` argument's name plus
+# scripts/. The run id is the last `.sh` argument's name plus
 # the arguments after it (`with-portable-sed.sh scripts/check-x.sh` is
 # `check-x`, `smoke.sh --install` is `smoke-install`), so one target's steps
 # never share a directory and shell-coverage.sh can name a step that left none.
@@ -116,5 +116,5 @@ kcov="$(bash scripts/shell-tools.sh path kcov)"
 # scripts/shell-trace-env.sh rather than kcov's helper (that file says why).
 exec "$kcov" --bash-dont-parse-binary-dir \
   "--bash-parser=$(command -v bash)" \
-  "--include-path=$root/scripts,$root/.githooks" \
+  "--include-path=$root/scripts" \
   "$out" "$root/scripts/shell-test.sh" --traced "$@"

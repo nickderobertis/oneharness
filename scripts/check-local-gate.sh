@@ -380,7 +380,7 @@ grep -q 'could not record the verdict' "$tmp/verdict-out" || {
 # green to the one that pushes it. A lifecycle publication dispatches llmlint
 # through its own sandbox wrapper via LLMLINT_ONEHARNESS_BIN, which llmlint
 # renders into the effective config this fingerprint reads — so reading the
-# caller's value gave that environment a key of its own, and its pre-push gate
+# caller's value gave that environment a key of its own, and its manual gate
 # re-rolled the very green the working tree's gate had just recorded. That is the
 # defect the replay exists to prevent, so it is asserted from both directions.
 rm -rf "$tmp/verdicts"
@@ -471,20 +471,9 @@ resolved_base=$(cd "$tmp/repo" && "$root/scripts/comparison-base.sh" origin)
   exit 1
 }
 
-cat >"$tmp/bin/just" <<'STUB'
-#!/usr/bin/env bash
-[[ -z ${GIT_DIR:-} ]]
-printf 'just %s\n' "$*" >> "$CALL_LOG"
-STUB
-chmod +x "$tmp/bin/just"
-CALL_LOG="$log" PATH="$tmp/bin:$PATH" GIT_DIR=.git \
-  ONEHARNESS_COMPARISON_BASE=main "$root/.githooks/pre-push" upstream
-assert_file_contains 'just gate upstream main' "$log" \
-  "pre-push did not forward the remote and configured comparison base"
-
 # Exercise the real bootstrap recipe from an isolated checkout. Only external
-# package/tool commands are stubbed; setup-llmlint.sh and Git's hooksPath write
-# cross their real process and repository boundaries.
+# package/tool commands are stubbed; setup-llmlint.sh crosses its real process
+# boundary. Existing hooksPath settings must survive setup unchanged.
 bootstrap_repo="$tmp/bootstrap-repo"
 bootstrap_bin="$tmp/bootstrap-bin"
 mkdir -p "$bootstrap_repo/scripts" "$bootstrap_repo/npm/oneharness-sdk" "$bootstrap_bin"
@@ -496,6 +485,7 @@ cat >"$bootstrap_repo/scripts/shell-tools.sh" <<'STUB'
 printf 'shell-tools %s\n' "$*" >> "$CALL_LOG"
 STUB
 git -C "$bootstrap_repo" init -q
+git -C "$bootstrap_repo" config core.hooksPath retained-hooks
 for tool in rustup cargo bun uv; do
   cat >"$bootstrap_bin/$tool" <<'STUB'
 #!/usr/bin/env bash
@@ -511,8 +501,8 @@ assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.23' "$log" \
 assert_file_contains 'shell-tools install' "$log" \
   "bootstrap did not install the pinned shell toolchain"
 hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath)
-[[ $hooks_path == .githooks ]] || {
-  echo "check-local-gate: bootstrap installed hooksPath '$hooks_path', expected '.githooks'" >&2
+[[ $hooks_path == retained-hooks ]] || {
+  echo "check-local-gate: bootstrap changed hooksPath '$hooks_path', expected 'retained-hooks'" >&2
   exit 1
 }
 

@@ -4,7 +4,6 @@
 # Extensionless shell scripts carry no `.sh` for the rule above to match, so
 # each is pinned by path; `check-lf-contracts.sh --shell` finds any unpinned one.
 /scripts/nx text eol=lf
-/.githooks/pre-push text eol=lf
 # The shell toolchain's pins, read by scripts/shell-tools.sh on every platform.
 /.shell-tool-versions text eol=lf
 

@@ -25,7 +25,7 @@ cd "$(dirname "$0")/.."
 toolchain="${SEMVER_TOOLCHAIN:-stable}"
 
 # An absent tool is a skip locally and a failure in CI, the same split the live
-# e2e suites use: a developer can run the pre-push gate on a clean box, while the
+# e2e suites use: a developer can run the manual gate on a clean box, while the
 # tier that is supposed to enforce this cannot quietly prove nothing.
 unavailable() {
   if [ "${OH_SEMVER_NO_SKIP:-}" = "1" ]; then

@@ -74,7 +74,7 @@ for (const p of platforms)
     `| ${p.target} | ${p.archive} + sha256 + Sigstore bundle | platform wheel | @oneharness/cli-${p.npm} |`,
   );
 console.log(
-  "\nBoth Darwin targets build in one Apple Silicon job. Each target is compiled once through maturin; the stripped wheel payload supplies its archive and npm package. Native and Rosetta install/run proofs precede Linux publication. Existing Windows ARM build/install lanes and SDK publishing remain.\n",
+  "\nThe one Mac release job builds Apple Silicon (aarch64-apple-darwin) only; Intel macOS artifacts are discontinued from the next release, and the npm launcher and install.sh refuse an Intel Mac by name. The target is compiled once through maturin; the stripped wheel payload supplies its archive and npm package. Native install/run proofs precede Linux publication. Existing Windows ARM build/install lanes and SDK publishing remain.\n",
 );
 
 console.log(

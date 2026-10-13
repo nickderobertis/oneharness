@@ -13,8 +13,9 @@ oneharness run --all --prompt "reply with pong"
 This package ships the **prebuilt** `oneharness` binary — no Rust toolchain and
 no compile step. The platform-specific binary is delivered through a
 per-platform optional dependency (`@oneharness/cli-<platform>-<arch>`); npm
-installs only the one matching your OS and CPU. Supported platforms: Linux and
-macOS (x64, arm64) and Windows (x64).
+installs only the one matching your OS and CPU. Supported platforms: Linux
+(x64, arm64), Apple Silicon macOS (arm64) and Windows (x64, arm64). Intel macOS
+is no longer supported; build it there with `cargo install oneharness --locked`.
 
 Other install paths — PyPI (`pip install oneharness-cli`), the install script,
 crates.io, and building from source — plus full docs are in the

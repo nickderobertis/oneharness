@@ -50,7 +50,7 @@ with tarfile.open(sys.argv[1],'w:gz') as t:
   writeFileSync(binary,bytes);
   execFileSync('tar',['-czf',join(dir,`oneharness-${r.tag}-${target}.tar.gz`),'-C',join(dir,'archive'),'oneharness','README.md','LICENSE','CHANGELOG.md']);
  },/Artifact architecture mismatch/);
- reject('target metadata' ,(dir,r)=>{r.target=target==='aarch64-apple-darwin'?'x86_64-apple-darwin':'aarch64-apple-darwin';writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Staged target/);
+ reject('target metadata' ,(dir,r)=>{r.target=target==='aarch64-apple-darwin'?'aarch64-unknown-linux-gnu':'aarch64-apple-darwin';writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Staged target/);
  for(const mode of ['missing','duplicate','renamed']) reject(`archive ${mode}`,(dir)=>{const a=readdirSync(dir).find(f=>f.endsWith('.tar.gz'));if(mode==='missing')rmSync(join(dir,a));else if(mode==='duplicate')cpSync(join(dir,a),join(dir,'duplicate.tar.gz'));else renameSync(join(dir,a),join(dir,'renamed.tar.gz'));},/Expected .*tar.gz/);
  reject('unsafe archive',(dir,r)=>rewriteArchive(dir,r,'unsafe'),/Unsafe archive members/);
  reject('architecture metadata',(dir,r)=>{r.wheel=r.wheel.replace(/_(?:x86_64|arm64|aarch64)\.whl$/,process.arch==='arm64'?'_x86_64.whl':'_arm64.whl');writeFileSync(join(dir,'payload.json'),JSON.stringify(r));},/Artifact architecture mismatch/);
@@ -120,7 +120,7 @@ os.replace(path+'.new',path)
  for(const mode of ['missing','duplicate','renamed']) reject(`npm ${mode}`,(dir)=>{const npm=join(dir,'npm'),a=readdirSync(npm).find(f=>f.endsWith('.tgz'));if(mode==='missing')rmSync(join(npm,a));else if(mode==='duplicate')cpSync(join(npm,a),join(npm,'duplicate.tgz'));else renameSync(join(npm,a),join(npm,'renamed.tgz'));},/Expected .*tgz/);
  const mismatchedTransfer=join(work,'mismatched-transfer');cpSync(join(root,target),join(mismatchedTransfer,target),{recursive:true});
  const mismatchPath=join(mismatchedTransfer,target,'payload.json'), mismatch=JSON.parse(readFileSync(mismatchPath,'utf8'));
- mismatch.target=target==='aarch64-apple-darwin'?'x86_64-apple-darwin':'aarch64-apple-darwin';writeFileSync(mismatchPath,JSON.stringify(mismatch));
+ mismatch.target=target==='aarch64-apple-darwin'?'aarch64-unknown-linux-gnu':'aarch64-apple-darwin';writeFileSync(mismatchPath,JSON.stringify(mismatch));
  const mismatchRun=spawnSync(process.execPath,['.github/integration/transfer-journey.mjs','--root',mismatchedTransfer],{encoding:'utf8'});
  assert.notEqual(mismatchRun.status,0);assert.match(mismatchRun.stderr,/Transfer target .* differs from metadata/);
  const invalidDirectory=join(work,'invalid-directory');cpSync(join(root,target),join(invalidDirectory,target+';true'),{recursive:true});

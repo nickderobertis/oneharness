@@ -20,7 +20,6 @@ const install = scratchSync("package");
 const executableSuffix = process.platform === "win32" ? ".exe" : "";
 const target = {
 	"darwin-arm64": "aarch64-apple-darwin",
-	"darwin-x64": "x86_64-apple-darwin",
 	"linux-arm64": "aarch64-unknown-linux-gnu",
 	"linux-x64": "x86_64-unknown-linux-gnu",
 	"win32-arm64": "aarch64-pc-windows-msvc",

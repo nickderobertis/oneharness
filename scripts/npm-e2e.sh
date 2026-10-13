@@ -47,7 +47,7 @@ detect_target() {
   case "$1" in
     linux-x64) TARGET="x86_64-unknown-linux-gnu" ;;
     linux-arm64) TARGET="aarch64-unknown-linux-gnu" ;;
-    darwin-x64) TARGET="x86_64-apple-darwin" ;;
+    darwin-x64) fail "Intel macOS (darwin-x64) is no longer released; run this on an Apple Silicon Mac or another platform release-platforms.toml declares" ;;
     darwin-arm64) TARGET="aarch64-apple-darwin" ;;
     win32-x64) TARGET="x86_64-pc-windows-msvc" ;;
     win32-arm64) TARGET="aarch64-pc-windows-msvc" ;;
@@ -112,5 +112,23 @@ bin_ver="$(node "$launcher_dir/bin/oneharness.js" --version 2>/dev/null | grep -
 if [ -n "$crate_ver" ] && [ -n "$bin_ver" ] && [ "$crate_ver" != "$bin_ver" ]; then
   fail "launcher ran v$bin_ver but Cargo.toml is v$crate_ver (stale binary)"
 fi
+
+# On an Intel Mac the launcher refuses by name instead of hunting for the
+# discontinued @oneharness/cli-darwin-x64 package. process.platform/arch are the
+# only host facts it reads, so a preload presents an Intel Mac to the real shim.
+cat >"$tmp/intel-mac.cjs" <<'PRELOAD'
+Object.defineProperty(process, "platform", { value: "darwin" });
+Object.defineProperty(process, "arch", { value: "x64" });
+PRELOAD
+set +e
+intel_err="$(node --require "$tmp/intel-mac.cjs" "$launcher_dir/bin/oneharness.js" --version 2>&1 >/dev/null)"
+intel_rc=$?
+set -e
+[ "$intel_rc" -eq 1 ] ||
+  fail "launcher on Intel macOS must exit 1, got $intel_rc: $intel_err"
+case "$intel_err" in
+  *"Intel macOS (darwin-x64) is no longer supported"*) ;;
+  *) fail "launcher on Intel macOS must say Intel macOS is no longer supported, got: $intel_err" ;;
+esac
 
 say "npm-e2e: ok (launcher resolved @oneharness/cli-$key and ran oneharness $bin_ver)"

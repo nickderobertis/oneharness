@@ -36,12 +36,9 @@ runner = "ubuntu-24.04-arm"
 archive = "tar.gz"
 npm = "linux-arm64"
 
-[[platform]]
-target = "x86_64-apple-darwin"
-runner = "macos-latest"
-archive = "tar.gz"
-npm = "darwin-x64"
-
+# Apple Silicon is the only macOS platform: Intel macOS artifacts are
+# discontinued, and the npm launcher and scripts/install.sh refuse an Intel Mac
+# by name.
 [[platform]]
 target = "aarch64-apple-darwin"
 runner = "macos-latest"

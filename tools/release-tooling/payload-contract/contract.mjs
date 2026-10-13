@@ -1,6 +1,10 @@
 import { basename, resolve, relative, isAbsolute } from "node:path";
 export const PAYLOAD_VERSION = 1;
-export const SUPPORTED_TARGETS = Object.freeze(["x86_64", "aarch64"].flatMap(cpu => ["apple-darwin", "unknown-linux-gnu", "pc-windows-msvc"].map(system => `${cpu}-${system}`)));
+// Apple Silicon is the only macOS target: Intel macOS artifacts are discontinued.
+export const SUPPORTED_TARGETS = Object.freeze([
+  "aarch64-apple-darwin",
+  ...["x86_64", "aarch64"].flatMap(cpu => ["unknown-linux-gnu", "pc-windows-msvc"].map(system => `${cpu}-${system}`)),
+]);
 export const validTarget = value => typeof value === "string" && SUPPORTED_TARGETS.includes(value);
 export const validVersion = (value) =>
   typeof value === "string" &&

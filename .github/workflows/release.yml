@@ -148,7 +148,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          target: x86_64-apple-darwin,aarch64-apple-darwin
+          target: aarch64-apple-darwin
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -156,23 +156,16 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: just
-      - name: Enable x86_64 execution
-        run: sudo softwareupdate --install-rosetta --agree-to-license
+      # Apple Silicon only: Intel macOS artifacts are discontinued, so the one
+      # Mac job builds, packs and proves the arm64 bytes natively.
       - name: Compile each Darwin target once and package its bytes
         run: |
-          for target in x86_64-apple-darwin aarch64-apple-darwin; do
+          for target in aarch64-apple-darwin; do
             just release-bundle "$target" dist/release "$GITHUB_REF_NAME"
           done
       # llmlint: ignore[release_does_not_regate_an_already_swept_commit] These artifact-specific install/run proofs verify the freshly built archive/wheel/npm bytes before publication; they do not rerun the accepted source-tree gate.
       - name: Install and run native staged products
         run: node scripts/release-install.mjs --root dist/release
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          architecture: x64
-      # llmlint: ignore[release_does_not_regate_an_already_swept_commit] Rosetta verifies the freshly built x86_64 artifact bytes before publication, rather than rerunning the accepted source-tree gate.
-      - name: Install and run x86_64 staged products through Rosetta
-        run: arch -x86_64 node scripts/release-install.mjs --root dist/release
       - uses: actions/upload-artifact@v4
         with:
           name: darwin-release
@@ -190,18 +183,15 @@ jobs:
       matrix:
         include:
           # Native runners per target so nothing needs cross-compilation:
-          # arm64 Linux and arm64 Windows build on hosted arm64 runners; macOS
-          # cross-builds x86_64<->arm64 within the Apple toolchain (no
-          # emulation/Docker). The set is release-platforms.toml's, which
+          # arm64 Linux and arm64 Windows build on hosted arm64 runners; the
+          # Apple Silicon archive comes from build-darwin's native arm64 build
+          # (Intel macOS is discontinued). The set is release-platforms.toml's, which
           # scripts/check-release-targets.sh holds all three matrices to.
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             ext: tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
-            ext: tar.gz
-          - target: x86_64-apple-darwin
-            os: ubuntu-latest
             ext: tar.gz
           - target: aarch64-apple-darwin
             os: ubuntu-latest

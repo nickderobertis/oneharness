@@ -42,9 +42,10 @@ test("production release graph retains every declared architecture/artifact and 
   const installers = darwin.steps.filter((s) =>
     s.run?.includes("scripts/release-install.mjs"),
   );
+  assert.deepEqual(targets, ["aarch64-apple-darwin"], "Apple Silicon is the only macOS target");
   assert.ok(installers.some((s) => s.run.startsWith("node ")));
-  assert.ok(installers.some((s) => s.run.startsWith("arch -x86_64 node ")));
-  assert.ok(darwin.steps.some((s) => s.run?.includes("--install-rosetta")));
+  // Intel macOS is discontinued: no Rosetta, x86_64 toolchain or emulated proof.
+  assert.ok(!JSON.stringify(darwin).match(/rosetta|arch -x86_64|x86_64-apple-darwin|architecture":"x64/i));
   for (const job of ["upload", "build-wheels", "build-npm"]) {
     const rows = expand(release.jobs[job].strategy.matrix, {});
     const shipped = rows.map((r) => r.target);
@@ -92,7 +93,8 @@ test("real release builder rejects target/tag mismatch before compiling or publi
   }
   for (const args of [
     ["--target", "unknown"],
-    ["--target", "x86_64-apple-darwin", "--tag", "v0.0.0"],
+    ["--target", "x86_64-apple-darwin"],
+    ["--target", "aarch64-apple-darwin", "--tag", "v0.0.0"],
   ]) {
     const result = spawnSync(
       process.execPath,

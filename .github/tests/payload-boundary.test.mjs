@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
 test('real release builder rejects malformed platform declarations and package-directory boundary rejects defective staging',()=>{
  const cwd=mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR??tmpdir(),'payload-boundary-'));
  try{
-  for(const document of ['broken [', '[[platform]]\ntarget="invalid"\nnpm="darwin-x64"\narchive="tar.gz"', '[[platform]]\ntarget="x86_64-apple-darwin"\nnpm="darwin-arm64"\narchive="tar.gz"', '[[platform]]\ntarget="x86_64-apple-darwin"\nnpm="darwin-x64"\narchive="zip"', ('[[platform]]\ntarget="x86_64-apple-darwin"\nnpm="darwin-x64"\narchive="tar.gz"\n').repeat(2)]){
+  for(const document of ['broken [', '[[platform]]\ntarget="invalid"\nnpm="darwin-arm64"\narchive="tar.gz"', '[[platform]]\ntarget="x86_64-apple-darwin"\nnpm="darwin-x64"\narchive="tar.gz"', '[[platform]]\ntarget="aarch64-apple-darwin"\nnpm="darwin-x64"\narchive="tar.gz"', '[[platform]]\ntarget="aarch64-apple-darwin"\nnpm="darwin-arm64"\narchive="zip"', ('[[platform]]\ntarget="aarch64-apple-darwin"\nnpm="darwin-arm64"\narchive="tar.gz"\n').repeat(2)]){
    writeFileSync(join(cwd,'release-platforms.toml'),document);
    const run=spawnSync(process.execPath,[resolve('scripts/release-bundle.mjs'),'--target','x86_64-unknown-linux-gnu'],{cwd,encoding:'utf8'});
    assert.notEqual(run.status,0);assert.match(run.stderr,/release-platforms.toml/);assert.match(run.stderr,/Next:/);

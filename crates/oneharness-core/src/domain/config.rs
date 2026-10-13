@@ -10,6 +10,7 @@
 //! env reader is injected), so it is unit-testable.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
@@ -206,8 +207,9 @@ pub struct HarnessConfig {
     pub shared_model_catalog: Option<bool>,
     /// How old, in seconds, the shared model catalog may grow before a launch
     /// refreshes it (`codex` only; default
-    /// [`DEFAULT_MODEL_CATALOG_REFRESH_SECONDS`], at least 1).
-    pub model_catalog_refresh_seconds: Option<u64>,
+    /// [`DEFAULT_MODEL_CATALOG_REFRESH_SECONDS`]). Zero is refused at parse:
+    /// a catalog stale the moment it is written would refresh on every launch.
+    pub model_catalog_refresh_seconds: Option<NonZeroU64>,
     /// Let Codex send its analytics (`codex` only). Unset means off: oneharness
     /// starts Codex with `-c analytics.enabled=false`. Resolved apart from
     /// `args`, like `plugins`. See [`FileConfig::analytics_for`].
@@ -357,7 +359,7 @@ pub struct VariantConfig {
     /// This variant's `shared_model_catalog`, beating its harness's.
     pub shared_model_catalog: Option<bool>,
     /// This variant's `model_catalog_refresh_seconds`, beating its harness's.
-    pub model_catalog_refresh_seconds: Option<u64>,
+    pub model_catalog_refresh_seconds: Option<NonZeroU64>,
     /// This variant's `analytics`, beating its harness's.
     pub analytics: Option<bool>,
     pub allowed_tools: Option<Vec<String>>,
@@ -417,7 +419,10 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
 
 /// The default `model_catalog_refresh_seconds`: a shared Codex model catalog
 /// is refreshed once it is an hour old.
-pub const DEFAULT_MODEL_CATALOG_REFRESH_SECONDS: u64 = 3_600;
+pub const DEFAULT_MODEL_CATALOG_REFRESH_SECONDS: NonZeroU64 = match NonZeroU64::new(3_600) {
+    Some(seconds) => seconds,
+    None => unreachable!(),
+};
 
 /// The Codex-only launch keys a `[harness.<id>]` table (or one of its variants)
 /// sets, each by name, so one check refuses every one of them elsewhere.
@@ -425,7 +430,7 @@ fn codex_launch_keys_set(
     plugins: Option<bool>,
     apps: Option<bool>,
     shared_model_catalog: Option<bool>,
-    model_catalog_refresh_seconds: Option<u64>,
+    model_catalog_refresh_seconds: Option<NonZeroU64>,
     analytics: Option<bool>,
 ) -> impl Iterator<Item = &'static str> {
     [
@@ -443,9 +448,11 @@ fn codex_launch_keys_set(
 }
 
 /// Refuse a Codex-only launch key under any other harness, naming the key and
-/// the table, and a zero `model_catalog_refresh_seconds` anywhere (a catalog
-/// that is stale the moment it is written would refresh on every launch).
+/// the table.
 fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
+    if harness::has_plugins_toggle(id) {
+        return Ok(());
+    }
     let tables = std::iter::once((
         format!("[harness.{id}]"),
         codex_launch_keys_set(
@@ -456,7 +463,6 @@ fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
             h.analytics,
         )
         .collect::<Vec<_>>(),
-        h.model_catalog_refresh_seconds,
     ))
     .chain(h.variant.iter().map(|(name, v)| {
         (
@@ -469,19 +475,13 @@ fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
                 v.analytics,
             )
             .collect(),
-            v.model_catalog_refresh_seconds,
         )
     }));
-    for (table, keys, refresh) in tables {
-        if let Some(key) = keys.first().filter(|_| !harness::has_plugins_toggle(id)) {
+    for (table, keys) in tables {
+        if let Some(key) = keys.first() {
             return Err(format!(
                 "`{key}` in `{table}` is not supported for harness `{id}`: only `codex` \
                  has a launch setting for it to become"
-            ));
-        }
-        if refresh == Some(0) {
-            return Err(format!(
-                "`model_catalog_refresh_seconds` in `{table}` must be at least 1"
             ));
         }
     }
@@ -1048,7 +1048,7 @@ impl FileConfig {
     /// How old, in seconds, the shared model catalog a launch of `id` uses may
     /// be: the variant's `model_catalog_refresh_seconds`, else the harness's,
     /// else [`DEFAULT_MODEL_CATALOG_REFRESH_SECONDS`].
-    pub fn model_catalog_refresh_seconds_for(&self, id: &str) -> u64 {
+    pub fn model_catalog_refresh_seconds_for(&self, id: &str) -> NonZeroU64 {
         let (base, _) = self.split_harness_id(id);
         self.variant_for(id)
             .and_then(|variant| variant.model_catalog_refresh_seconds)
@@ -1435,7 +1435,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         let harness_apps = pick(layers, |c| section(c).and_then(|h| h.apps));
         let harness_catalog = pick(layers, |c| section(c).and_then(|h| h.shared_model_catalog));
         let harness_refresh = pick(layers, |c| {
-            section(c).and_then(|h| h.model_catalog_refresh_seconds)
+            section(c).and_then(|h| h.model_catalog_refresh_seconds.map(NonZeroU64::get))
         });
         let harness_analytics = pick(layers, |c| section(c).and_then(|h| h.analytics));
         let mut variants = BTreeMap::new();
@@ -1492,9 +1492,13 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                     }),
                     model_catalog_refresh_seconds: toggles_plugins.then(|| {
                         pick(layers, |c| {
-                            variant(c).and_then(|v| v.model_catalog_refresh_seconds)
+                            variant(c)
+                                .and_then(|v| v.model_catalog_refresh_seconds.map(NonZeroU64::get))
                         })
-                        .or_inherited(&harness_refresh, DEFAULT_MODEL_CATALOG_REFRESH_SECONDS)
+                        .or_inherited(
+                            &harness_refresh,
+                            DEFAULT_MODEL_CATALOG_REFRESH_SECONDS.get(),
+                        )
                     }),
                     analytics: toggles_plugins.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.analytics))
@@ -1521,8 +1525,9 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 plugins: toggles_plugins.then(|| harness_plugins.or_default(false)),
                 apps: toggles_plugins.then(|| harness_apps.or_default(false)),
                 shared_model_catalog: toggles_plugins.then(|| harness_catalog.or_default(true)),
-                model_catalog_refresh_seconds: toggles_plugins
-                    .then(|| harness_refresh.or_default(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS)),
+                model_catalog_refresh_seconds: toggles_plugins.then(|| {
+                    harness_refresh.or_default(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS.get())
+                }),
                 analytics: toggles_plugins.then(|| harness_analytics.or_default(false)),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
@@ -2457,20 +2462,16 @@ args = ["--variant-arg"]
 
     #[test]
     fn a_zero_model_catalog_refresh_interval_is_refused() {
-        for (text, table) in [
-            (
-                "[harness.codex]\nmodel_catalog_refresh_seconds = 0\n",
-                "[harness.codex]",
-            ),
-            (
-                "[harness.codex.variant.w]\nmodel_catalog_refresh_seconds = 0\n",
-                "[harness.codex.variant.w]",
-            ),
+        // The type admits no zero, so the parser refuses it at the line that
+        // set it, at harness and variant level alike.
+        for text in [
+            "[harness.codex]\nmodel_catalog_refresh_seconds = 0\n",
+            "[harness.codex.variant.w]\nmodel_catalog_refresh_seconds = 0\n",
         ] {
             let err = parse(text).unwrap_err();
-            assert!(err.contains("`model_catalog_refresh_seconds`"), "{err}");
-            assert!(err.contains(table), "{err}");
-            assert!(err.contains("at least 1"), "{err}");
+            assert!(err.contains("line 2"), "{err}");
+            assert!(err.contains("model_catalog_refresh_seconds = 0"), "{err}");
+            assert!(err.contains("expected a nonzero u64"), "{err}");
         }
         assert!(parse("[harness.codex]\nmodel_catalog_refresh_seconds = -1\n").is_err());
     }

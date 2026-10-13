@@ -23,14 +23,13 @@ use fs2::FileExt;
 
 use crate::domain::harness::CODEX_ANALYTICS_OFF;
 use crate::domain::model_catalog::{
-    catalog_key, codex_version, is_fresh, read_codex_cache, CacheReading, FailureRecord,
-    CODEX_MODELS_CACHE, MODEL_CATALOG_REFRESH_DEADLINE, MODEL_CATALOG_WAIT,
+    catalog_key, codex_version, is_fresh, is_usable_catalog, read_codex_cache, CacheReading,
+    FailureRecord, CODEX_MODELS_CACHE, CODEX_VERSION_PROBE_TIMEOUT, MODEL_CATALOG_REFRESH_DEADLINE,
+    MODEL_CATALOG_WAIT,
 };
 use crate::io::process::{resolve_program, Finish, Process};
+use crate::io::usage::codex_initialize_request;
 
-/// How long `<bin> --version` may take before the launch goes without a
-/// shared catalog.
-const VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 /// How often a refresh re-reads Codex's cache, and a waiting launch retries
 /// the lock.
 const POLL: Duration = Duration::from_millis(25);
@@ -146,6 +145,10 @@ impl CatalogFiles {
     }
 
     /// The catalog file, when it exists and is younger than `interval`.
+    /// The catalog file, when it exists, is younger than `interval` and
+    /// holds a catalog Codex can read: a file damaged or replaced since it was
+    /// written is no fresh catalog, so the launch refreshes it instead of
+    /// handing Codex something it would refuse.
     fn fresh(&self, interval: Duration) -> Option<PathBuf> {
         let written = fs::metadata(&self.catalog).ok()?.modified().ok()?;
         // A file stamped in the future (a clock stepped back) is as fresh as
@@ -153,7 +156,12 @@ impl CatalogFiles {
         let age = SystemTime::now()
             .duration_since(written)
             .unwrap_or(Duration::ZERO);
-        is_fresh(age, interval).then(|| self.catalog.clone())
+        (is_fresh(age, interval) && self.usable()).then(|| self.catalog.clone())
+    }
+
+    /// Whether the catalog file holds a catalog Codex can read.
+    fn usable(&self) -> bool {
+        fs::read(&self.catalog).is_ok_and(|bytes| is_usable_catalog(&bytes))
     }
 
     /// The fallback while a recorded failure's backoff runs, if one does.
@@ -209,7 +217,7 @@ impl CatalogFiles {
 
     /// The stale catalog when there is one, else none; with the warning.
     fn without_fresh(&self, record: &FailureRecord) -> CatalogChoice {
-        let stale = self.catalog.is_file().then(|| self.catalog.clone());
+        let stale = self.usable().then(|| self.catalog.clone());
         CatalogChoice {
             warning: Some(record.warning(stale.is_some())),
             catalog: stale,
@@ -253,7 +261,7 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Str
         .map_err(|error| format!("cannot start `{} app-server`: {error}", launch.bin))?;
     let mut stdin = helper.take_stdin();
     if let Some(stdin) = stdin.as_mut() {
-        let _ = writeln!(stdin, "{}", initialize_request());
+        let _ = writeln!(stdin, "{}", codex_initialize_request());
         let _ = stdin.flush();
     }
     let cache = home.join(CODEX_MODELS_CACHE);
@@ -265,7 +273,12 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Str
         if let CacheReading::Fresh(catalog) = read_cache() {
             break Ok(catalog);
         }
-        let exited = helper.wait_until(Instant::now()).ok().flatten();
+        // The pause between looks is a wait on the helper, so one that exits
+        // ends the refresh at once rather than at the deadline.
+        let exited = helper
+            .wait_until((Instant::now() + POLL).min(deadline))
+            .ok()
+            .flatten();
         if let Some(status) = exited {
             // One last look: Codex may have written the cache on its way out.
             break match read_cache() {
@@ -283,7 +296,6 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Str
                 MODEL_CATALOG_REFRESH_DEADLINE.as_secs()
             ));
         }
-        std::thread::sleep(POLL);
     };
     drop(stdin);
     helper.finish(Finish::Terminate);
@@ -308,25 +320,6 @@ pub fn refresh_helper_args() -> Vec<String> {
     ]
     .map(str::to_string)
     .to_vec()
-}
-
-/// The JSON-RPC `initialize` the refresh helper is sent, the same request the
-/// usage probe opens with.
-fn initialize_request() -> String {
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "clientInfo": {
-                "name": "oneharness",
-                "title": null,
-                "version": env!("CARGO_PKG_VERSION"),
-            },
-            "capabilities": null,
-        },
-    })
-    .to_string()
 }
 
 /// `<bin> <args>` under the launch's working directory and environment, with
@@ -356,7 +349,7 @@ fn probe_version(launch: &CatalogLaunch<'_>) -> Option<String> {
     let process = Process::spawn(launch_command(launch, &["--version".to_string()])).ok()?;
     let mut process = process;
     let status = process
-        .wait_until(Instant::now() + VERSION_PROBE_TIMEOUT)
+        .wait_until(Instant::now() + CODEX_VERSION_PROBE_TIMEOUT)
         .ok()
         .flatten();
     let finished = process.finish(if status.is_some() {
@@ -405,4 +398,31 @@ fn now_ms() -> i64 {
         .map_or(0, |since| {
             i64::try_from(since.as_millis()).unwrap_or(i64::MAX)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::scratch::ScratchDir;
+
+    #[test]
+    fn a_refresh_helper_that_cannot_start_is_a_failure_naming_it() {
+        // The one refresh failure an end-to-end launch cannot reach: the same
+        // executable answered `--version` a moment earlier.
+        let home = ScratchDir::new("catalog-refresh-spawn").unwrap();
+        let launch = CatalogLaunch {
+            bin: "/nonexistent/oneharness-no-codex",
+            cwd: None,
+            env: &[],
+            env_remove: &[],
+            refresh_interval: Duration::from_secs(60),
+        };
+        let started = Instant::now();
+        let reason = refresh(&launch, &home, "1.2.3").unwrap_err();
+        assert!(
+            reason.contains("cannot start `/nonexistent/oneharness-no-codex app-server`"),
+            "{reason}"
+        );
+        assert!(started.elapsed() < MODEL_CATALOG_REFRESH_DEADLINE);
+    }
 }

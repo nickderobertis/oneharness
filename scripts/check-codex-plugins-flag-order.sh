@@ -32,21 +32,26 @@ set -euo pipefail
 [ "\${1:-} \${2:-}" = "features list" ] || { echo "unexpected codex call: \$*" >&2; exit 2; }
 shift 2
 printf '%s|%s\n' "\${CODEX_HOME:-}" "\$*" >>"$tmp/calls" || { echo "fake codex: could not log to $tmp/calls" >&2; exit 2; }
-value=true enable=false disable=false
-while [ "\$#" -gt 1 ]; do
-  case "\$1 \$2" in
-    "-c features.plugins=true") value=true ;;
-    "-c features.plugins=false") value=false ;;
-    "--enable plugins") enable=true; [ "$model" = argv ] && value=true ;;
-    "--disable plugins") disable=true; [ "$model" = argv ] && value=false ;;
-  esac
+resolve() {
+  local feature="\$1" value=true enable=false disable=false
   shift
-done
-if [ "$model" != argv ]; then
-  [ "\$enable" = true ] && value=true
-  [ "\$disable" = true ] && value=false
-fi
-[ "$model" = silent ] || printf 'plugins                                  stable             %s\n' "\$value"
+  while [ "\$#" -gt 1 ]; do
+    case "\$1 \$2" in
+      "-c features.\$feature=true") value=true ;;
+      "-c features.\$feature=false") value=false ;;
+      "--enable \$feature") enable=true; [ "$model" = argv ] && value=true ;;
+      "--disable \$feature") disable=true; [ "$model" = argv ] && value=false ;;
+    esac
+    shift
+  done
+  if [ "$model" != argv ]; then
+    [ "\$enable" = true ] && value=true
+    [ "\$disable" = true ] && value=false
+  fi
+  printf '%s' "\$value"
+}
+[ "$model" = silent ] || printf 'apps                                     stable             %s\n' "\$(resolve apps "\$@")"
+[ "$model" = silent ] || printf 'plugins                                  stable             %s\n' "\$(resolve plugins "\$@")"
 printf 'shell_tool                               stable             true\n'
 [ "$model" != crashed ] || { echo "fake codex: crashed" >&2; exit 3; }
 FAKE
@@ -70,14 +75,16 @@ write_fake_codex measured
 run_phase
 [ "$status" -eq 0 ] || fail "the measured precedence must pass, got exit $status: $out"
 case "$out" in
-  *"PASS: codex resolves plugins as -c last-wins"*) ;;
+  *"PASS: codex resolves plugins and apps as -c last-wins"*) ;;
   *) fail "a pass must say so, got: $out" ;;
 esac
 calls="$(wc -l <"$tmp/calls")" || fail "the fake codex left no call log at $tmp/calls"
 calls="${calls//[[:space:]]/}"
-[ "$calls" -eq "$rows" ] || fail "the phase must ask codex all $rows rows, asked $calls: $(cat "$tmp/calls")"
+[ "$calls" -eq $((rows * 2)) ] || fail "the phase must ask codex all $rows rows for plugins and for apps, asked $calls: $(cat "$tmp/calls")"
 grep -qx '[^|]*|-c features.plugins=false --enable plugins' "$tmp/calls" ||
   fail "a row's args must reach codex as separate words, got: $(cat "$tmp/calls")"
+grep -qx '[^|]*|-c features.apps=false --enable apps' "$tmp/calls" ||
+  fail "each row must be asked again with plugins spelled apps, got: $(cat "$tmp/calls")"
 home="$(head -n 1 "$tmp/calls")" || fail "could not read the first call from $tmp/calls"
 home="${home%%|*}"
 case "$home" in

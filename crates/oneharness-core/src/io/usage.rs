@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -585,7 +585,7 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
 /// download on start (~29 MB) is most of what a probe costs. The shared model
 /// catalog, when the config keeps it on, spares the probe Codex's own catalog
 /// fetch.
-fn codex_argv(bin: &str, model_catalog: Option<&str>) -> Vec<String> {
+fn codex_argv(bin: &str, model_catalog: Option<&Path>) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
         "app-server".to_string(),
@@ -604,6 +604,26 @@ fn codex_argv(bin: &str, model_catalog: Option<&str>) -> Vec<String> {
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
+/// The JSON-RPC `initialize` oneharness opens every `codex app-server`
+/// conversation with: the usage probe's, and the shared model catalog's
+/// refresh, which sends it and nothing else.
+pub(crate) fn codex_initialize_request() -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "oneharness",
+                "title": null,
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": null,
+        },
+    })
+    .to_string()
+}
+
 /// `initialize`, the `initialized` notification, then the rate-limits read. All
 /// three are written before reading, matching the driver this was sourced from;
 /// the response is matched by JSON-RPC id, so ordering is not assumed.
@@ -612,20 +632,7 @@ fn codex_argv(bin: &str, model_catalog: Option<&str>) -> Vec<String> {
 /// `params: null` (its sibling `account/read` instead *requires* `params: {}`).
 fn codex_request_lines() -> Vec<String> {
     vec![
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {
-                    "name": "oneharness",
-                    "title": null,
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": null,
-            },
-        })
-        .to_string(),
+        codex_initialize_request(),
         serde_json::json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}).to_string(),
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -652,7 +659,6 @@ fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
         }
         choice.catalog
     });
-    let catalog = catalog.map(|path| path.to_string_lossy().into_owned());
     let mut capture = converse(
         request,
         request.deadline(),
@@ -963,7 +969,7 @@ pub fn report(request: &UsageRequest) -> Result<UsageReport, OneharnessError> {
         let variant = variant_of(&id)?;
         let model_catalog_refresh = (has_plugins_toggle(spec.id)
             && loaded.config.shared_model_catalog_for(&id))
-        .then(|| Duration::from_secs(loaded.config.model_catalog_refresh_seconds_for(&id)));
+        .then(|| Duration::from_secs(loaded.config.model_catalog_refresh_seconds_for(&id).get()));
         plans.push(Plan {
             id,
             variant,

@@ -38678,6 +38678,36 @@ impl CatalogWorld {
             .unwrap()
     }
 
+    /// [`Self::launch`] of a plain `exec` with `removed` cleared from the
+    /// environment after `envs` are set; it must succeed.
+    fn launch_removing(&self, envs: &[(&str, &str)], removed: &[&str]) -> CatalogRun {
+        let mut cmd = self.command(CodexLaunchPath::Exec, "codex", &[], envs);
+        for name in removed {
+            cmd.env_remove(name);
+        }
+        let started = std::time::Instant::now();
+        let output = cmd.output().expect("run oneharness");
+        assert!(output.status.success(), "{output:?}");
+        CatalogRun {
+            output,
+            elapsed: started.elapsed(),
+        }
+    }
+
+    /// Wait until the catalog file is older than `interval`, the configured
+    /// `model_catalog_refresh_seconds`: staleness by elapsed time, as a user
+    /// meets it.
+    fn wait_until_stale(&self, interval: std::time::Duration) {
+        let written = std::fs::metadata(self.the_catalog())
+            .unwrap()
+            .modified()
+            .unwrap();
+        let stale_at = written + interval + std::time::Duration::from_millis(100);
+        if let Ok(left) = stale_at.duration_since(std::time::SystemTime::now()) {
+            std::thread::sleep(left);
+        }
+    }
+
     /// Start `count` launches at once and wait for all of them; each must
     /// succeed. A launch still running after [`CATALOG_HANG_GUARD`] fails the
     /// journey rather than hanging the suite.
@@ -38718,16 +38748,6 @@ impl CatalogWorld {
             })
             .collect()
     }
-
-    /// Make the catalog file `age` old.
-    fn age_catalog(&self, age: std::time::Duration) {
-        let file = std::fs::File::options()
-            .write(true)
-            .open(self.the_catalog())
-            .unwrap();
-        file.set_modified(std::time::SystemTime::now() - age)
-            .unwrap();
-    }
 }
 
 /// The longest any catalog journey's launch may run before the journey fails:
@@ -38737,7 +38757,8 @@ const CATALOG_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(6
 /// `MODEL_CATALOG_FAILURE_BACKOFF`, read from the engine so the journeys hold
 /// the deadlines they assert to the constants.
 use oneharness_core::domain::model_catalog::{
-    MODEL_CATALOG_FAILURE_BACKOFF, MODEL_CATALOG_REFRESH_DEADLINE, MODEL_CATALOG_WAIT,
+    catalog_key, CODEX_VERSION_PROBE_TIMEOUT, MODEL_CATALOG_FAILURE_BACKOFF,
+    MODEL_CATALOG_REFRESH_DEADLINE, MODEL_CATALOG_WAIT,
 };
 
 /// A refresh helper's record: `app-server` started with plugins and analytics
@@ -39287,13 +39308,13 @@ fn a_cold_burst_of_launches_costs_one_catalog_fetch_in_total() {
 fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     let world = CatalogWorld::new(
         "catalog-stale-burst",
-        "[harness.codex]\nmodel_catalog_refresh_seconds = 600\n",
+        "[harness.codex]\nmodel_catalog_refresh_seconds = 2\n",
         "",
     );
     world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
     assert_eq!(world.fetches(), 1);
     // Past the configured interval: a burst must not use the stale file.
-    world.age_catalog(std::time::Duration::from_secs(601));
+    world.wait_until_stale(std::time::Duration::from_secs(2));
     let stale = modified_ms(&world.the_catalog());
     let before = world.records().len();
     world.burst(
@@ -39312,7 +39333,7 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
         .filter(|r| !is_refresh_helper(r))
         .collect();
     assert_eq!(launches.len(), 5);
-    assert!(modified_ms(&world.the_catalog()) > stale + 600_000);
+    assert!(modified_ms(&world.the_catalog()) > stale + 2_000);
     assert_every_launch_read(&world, &launches);
     assert_started_after_the_write_and_together(&world, &launches);
 }
@@ -39384,6 +39405,7 @@ fn the_refresh_helper_never_loads_plugins_or_reports_analytics() {
     assert!(record_catalog(&launch).is_some(), "{argv:?}");
 }
 
+// llmlint: ignore-block[tests_mirror_real_usage] The backoff is the plan's fixed five-minute constant (MODEL_CATALOG_FAILURE_BACKOFF), which no config shortens: reaching its end through elapsed time would add five minutes to every run of this suite. The record rewritten is the documented on-disk state the backoff reads (README, *The failure fallback*), and every launch around it goes through the real CLI.
 /// Backdate the one failure record so its backoff has ended.
 fn end_the_backoff(world: &CatalogWorld) {
     let records = world.failure_records();
@@ -39402,6 +39424,7 @@ fn end_the_backoff(world: &CatalogWorld) {
     .into();
     std::fs::write(&records[0], record.to_string()).unwrap();
 }
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 /// Each run printed exactly one warning, naming the failed refresh.
 fn assert_one_catalog_warning_each(runs: &[CatalogRun], uses: &str) {
@@ -39486,9 +39509,13 @@ fn a_failed_refresh_falls_back_for_the_backoff_and_one_refresh_recovers() {
 
 #[test]
 fn a_failed_refresh_of_a_stale_catalog_keeps_launching_with_the_stale_one() {
-    let world = CatalogWorld::new("catalog-fail-stale", "", "");
+    let world = CatalogWorld::new(
+        "catalog-fail-stale",
+        "[harness.codex]\nmodel_catalog_refresh_seconds = 1\n",
+        "",
+    );
     world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
-    world.age_catalog(MODEL_CATALOG_FAILURE_BACKOFF * 20);
+    world.wait_until_stale(std::time::Duration::from_secs(1));
     let stale = resolved(world.the_catalog());
     let fail = [("MOCK_CODEX_CATALOG_FAULT", "fail")];
     let before = world.records().len();
@@ -39550,5 +39577,183 @@ fn a_hung_refresh_returns_at_its_deadline_and_its_waiters_within_theirs() {
         run.elapsed
     );
     assert_eq!(world.helpers().len(), 1);
+}
+
+/// The argv a run report says oneharness started its one harness with.
+fn reported_argv(run: &CatalogRun) -> Vec<String> {
+    command_of(&json_stdout(&run.output), 0)
+}
+
+#[test]
+fn an_executable_that_names_no_codex_version_gets_no_shared_catalog() {
+    // The catalog is keyed by the executable's version: one whose `--version`
+    // names none (a wrapper, another program) launches as before, quietly —
+    // no catalog flag, no refresh, no state written.
+    let world = CatalogWorld::new("catalog-no-version", "", "");
+    let run = world.launch_removing(&[], &["MOCK_CODEX_VERSION"]);
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    let launch = world.launches().pop().unwrap();
+    assert!(launch["catalog"].is_null(), "{launch}");
+    assert_eq!(launch["fetch"], "ok", "Codex's own fetch: {launch}");
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+    assert!(!world.catalog_dir().exists());
+}
+
+#[test]
+fn a_version_probe_that_hangs_is_cut_off_and_the_launch_goes_without() {
+    let world = CatalogWorld::new("catalog-slow-version", "", "");
+    let slow = (CODEX_VERSION_PROBE_TIMEOUT + std::time::Duration::from_secs(4))
+        .as_millis()
+        .to_string();
+    let run = world.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("MOCK_CODEX_VERSION_DELAY_MS", &slow)],
+    );
+    assert!(
+        run.elapsed >= CODEX_VERSION_PROBE_TIMEOUT,
+        "{:?}",
+        run.elapsed
+    );
+    assert!(
+        run.elapsed < CODEX_VERSION_PROBE_TIMEOUT + std::time::Duration::from_secs(3),
+        "the probe was not cut off: {:?}",
+        run.elapsed
+    );
+    let launch = world.launches().pop().unwrap();
+    assert!(launch["catalog"].is_null(), "{launch}");
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+}
+
+#[test]
+fn a_launch_with_no_codex_home_or_no_state_directory_gets_no_shared_catalog() {
+    // No `CODEX_HOME` and no home to find `~/.codex` under: nothing to key a
+    // catalog on. The mock keeps its records in CODEX_HOME, so the argv is
+    // read from what oneharness reports it started.
+    let world = CatalogWorld::new("catalog-no-home", "", "");
+    let homeless = world.launch_removing(
+        &[],
+        &[
+            "CODEX_HOME",
+            "HOME",
+            "USERPROFILE",
+            "MOCK_CODEX_CATALOG_LOG",
+        ],
+    );
+    let argv = reported_argv(&homeless);
+    assert!(
+        !argv.iter().any(|arg| arg.contains("model_catalog_json")),
+        "{argv:?}"
+    );
+    assert_eq!(homeless.warnings(), 0, "{}", homeless.stderr());
+    // A Codex home but no state directory to keep a catalog in.
+    let stateless = world.launch_removing(
+        &[],
+        &["XDG_STATE_HOME", "LOCALAPPDATA", "HOME", "USERPROFILE"],
+    );
+    assert_eq!(stateless.warnings(), 0, "{}", stateless.stderr());
+    let launch = world.launches().pop().unwrap();
+    assert!(launch["catalog"].is_null(), "{launch}");
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+}
+
+#[test]
+fn an_unwritable_state_directory_falls_back_with_one_warning() {
+    let world = CatalogWorld::new("catalog-state-file", "", "");
+    let not_a_dir = world.fx.dir.join("state-is-a-file");
+    std::fs::write(&not_a_dir, "not a directory").unwrap();
+    let state = not_a_dir.display().to_string();
+    let run = world.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("XDG_STATE_HOME", &state), ("LOCALAPPDATA", &state)],
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(run.stderr().contains("cannot create"), "{}", run.stderr());
+    let launch = world.launches().pop().unwrap();
+    assert!(launch["catalog"].is_null(), "{launch}");
+    assert_eq!(launch["fetch"], "ok", "{launch}");
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+}
+
+#[test]
+fn a_launch_whose_wait_for_the_lock_runs_out_falls_back_at_model_catalog_wait() {
+    // Another process holds the catalog's lock past MODEL_CATALOG_WAIT (here,
+    // this test): the launch stops waiting at that bound, warns once and goes
+    // without, and starts no refresh of its own.
+    use fs2::FileExt;
+    let world = CatalogWorld::new("catalog-lock-held", "", "");
+    let key = catalog_key(
+        &resolved(world.home()).to_string_lossy(),
+        &format!("codex-cli {CATALOG_CODEX_VERSION}"),
+    );
+    std::fs::create_dir_all(world.catalog_dir()).unwrap();
+    let lock = std::fs::File::create(world.catalog_dir().join(format!("{key}.lock"))).unwrap();
+    lock.lock_exclusive().unwrap();
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    FileExt::unlock(&lock).unwrap();
+    assert!(run.elapsed >= MODEL_CATALOG_WAIT, "{:?}", run.elapsed);
+    assert!(
+        run.elapsed < MODEL_CATALOG_WAIT + std::time::Duration::from_secs(3),
+        "{:?}",
+        run.elapsed
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(
+        run.stderr().contains("gave no fresh catalog within"),
+        "{}",
+        run.stderr()
+    );
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+    assert!(world.launches().pop().unwrap()["catalog"].is_null());
+}
+
+#[test]
+fn a_catalog_that_cannot_be_written_falls_back_and_backs_off() {
+    // Something occupies the catalog file's path (a directory): it is no
+    // usable catalog, so the launch refreshes; the copy cannot land, so the
+    // refresh is a failure like any other — recorded, warned, and backed off.
+    let world = CatalogWorld::new("catalog-unwritable", "", "");
+    let key = catalog_key(
+        &resolved(world.home()).to_string_lossy(),
+        &format!("codex-cli {CATALOG_CODEX_VERSION}"),
+    );
+    std::fs::create_dir_all(world.catalog_dir().join(format!("{key}.json"))).unwrap();
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(run.stderr().contains("cannot write"), "{}", run.stderr());
+    assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
+    assert!(world.launches().pop().unwrap()["catalog"].is_null());
+    assert_eq!(world.failure_records().len(), 1);
+    let again = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_one_catalog_warning_each(std::slice::from_ref(&again), "Codex's own catalog fetch");
+    assert_eq!(world.helpers().len(), 1, "no refresh during the backoff");
+}
+
+#[test]
+fn a_refresh_helper_that_exits_falls_back_without_waiting_out_the_deadline() {
+    // The helper's Codex exits before it writes a catalog: the refresh fails
+    // as soon as it does, not at MODEL_CATALOG_REFRESH_DEADLINE.
+    let world = CatalogWorld::new("catalog-helper-exits", "", "");
+    let run = world.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("MOCK_CODEX_CATALOG_FAULT", "exit")],
+    );
+    assert!(
+        run.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
+        "{:?}",
+        run.elapsed
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(
+        run.stderr().contains("exited") && run.stderr().contains("before writing a fresh catalog"),
+        "{}",
+        run.stderr()
+    );
+    assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
 }
 // llmlint: ignore-end[e2e_not_mocked]

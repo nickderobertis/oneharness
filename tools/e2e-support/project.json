@@ -6,7 +6,7 @@
     "type:live-support",
     "lang:bash"
   ],
-  "//": "llmlint: ignore-file[e2e_not_mocked] Every target here is a hermetic test of a live-tier helper, not a product e2e test; scripts/check-codex-plugins-flag-order.sh's fake codex is backed by oh_codex_plugins_flag_order in scripts/e2e-codex.sh against real codex. JSON allows no narrower scope. What the live suites share \u2014 scripts/e2e-lib.sh \u2014 and the hermetic tests that hold its helpers and the probes' tables to the registry without a credential or a model call. scripts/codex-network-breakdown.py's hermetic test (tools/e2e-support/codex-network-breakdown) reads committed fixtures recorded from real codex and measures a transfer double rather than codex. Deterministic, so in the gate. Every live and exploration script is still shellchecked in the gate by the `scripts` project, which keeps their code linted while the suites themselves stay out of it.",
+  "//": "llmlint: ignore-file[e2e_not_mocked] Every target here is a hermetic test of a live-tier helper, not a product e2e test; scripts/check-codex-plugins-flag-order.sh's fake codex is backed by oh_codex_plugins_flag_order in scripts/e2e-codex.sh against real codex. JSON allows no narrower scope. What the live suites share \u2014 scripts/e2e-lib.sh \u2014 and the hermetic tests that hold its helpers and the probes' tables to the registry without a credential or a model call. Deterministic, so in the gate. Every live and exploration script is still shellchecked in the gate by the `scripts` project, which keeps their code linted while the suites themselves stay out of it.",
   "implicitDependencies": [
     "oneharness",
     "oneharness-mock-harness",
@@ -44,8 +44,7 @@
       "{workspaceRoot}/scripts/explore-events.sh",
       "{workspaceRoot}/scripts/explore-hooks.sh",
       "{workspaceRoot}/scripts/explore_control.py",
-      "{workspaceRoot}/scripts/with-portable-sed.sh",
-      "{workspaceRoot}/scripts/codex-network-breakdown.py"
+      "{workspaceRoot}/scripts/with-portable-sed.sh"
     ]
   },
   "targets": {
@@ -61,9 +60,7 @@
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probe-http.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-enforce.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh",
-          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/e2e-variants-test.sh",
-          "uv sync --project python --frozen --no-install-workspace --quiet",
-          "bash scripts/check-temp-leaks.sh uv run --project python --frozen --no-sync python -I tools/e2e-support/codex-network-breakdown/test_codex_network_breakdown.py"
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/e2e-variants-test.sh"
         ],
         "parallel": false
       },

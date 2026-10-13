@@ -147,6 +147,7 @@
 //!                              attempt count, no log line — beyond writing
 //!                              MOCK_ARGV_FILE and exiting with MOCK_EXIT, since
 //!                              oneharness asks it before every Codex launch.
+//!   MOCK_CODEX_VERSION_DELAY_MS  how long `--version` takes to answer.
 //!   MOCK_CODEX_CATALOG_LOG     if set to a path, a launch as `exec` or
 //!                              `app-server` acts like Codex about its model
 //!                              catalog and appends one JSON line: `subcommand`,
@@ -171,7 +172,10 @@
 //!                              `hang` makes it never answer (`fetch: "hung"`,
 //!                              no cache written), and an `app-server` launch
 //!                              then waits for its stdin to close, as a server
-//!                              whose fetch is still in flight does.
+//!                              whose fetch is still in flight does; `exit`
+//!                              fails it like `fail`, and an `app-server`
+//!                              launch then exits 1 at once, as a Codex
+//!                              server that cannot start does.
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
@@ -416,6 +420,12 @@ fn installed_codex_plugins() -> Vec<String> {
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
+    if let Some(ms) = std::env::var("MOCK_CODEX_VERSION_DELAY_MS")
+        .ok()
+        .and_then(|ms| ms.parse().ok())
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+    }
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
     }
@@ -507,7 +517,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
         line["fetch"] = match fault.as_str() {
-            "fail" => "failed".into(),
+            "fail" | "exit" => "failed".into(),
             "hang" => "hung".into(),
             _ => {
                 let now = std::time::SystemTime::now()
@@ -553,6 +563,9 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
     log.write_all(format!("{line}\n").as_bytes())
         .expect("MOCK_CODEX_CATALOG_LOG could not be written");
     drop(log);
+    if fault == "exit" && catalog.is_none() && subcommand == "app-server" {
+        std::process::exit(1);
+    }
     if fault == "hang" && catalog.is_none() && subcommand == "app-server" {
         let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
         std::process::exit(0);

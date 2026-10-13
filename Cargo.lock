@@ -681,6 +681,7 @@ name = "oneharness-e2e"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "fs2",
  "oneharness",
  "oneharness-core 0.25.1",
  "serde_json",

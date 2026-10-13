@@ -29,20 +29,24 @@ pub const MODEL_CATALOG_WAIT: Duration = Duration::from_secs(12);
 /// another refresh is tried.
 pub const MODEL_CATALOG_FAILURE_BACKOFF: Duration = Duration::from_secs(300);
 
+/// How long `<codex> --version` may take before a launch goes without a
+/// shared catalog: the version is half the catalog's key.
+pub const CODEX_VERSION_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// The name of the cache Codex writes in its home after each catalog fetch.
 pub const CODEX_MODELS_CACHE: &str = "models_cache.json";
 
 /// The version a Codex executable reports, from its `--version` output
-/// (`codex-cli 0.159.2` → `0.159.2`): the first line's last word, when it reads
-/// as a version. Anything else is no Codex this module can key a catalog for.
+/// (`codex-cli 0.159.2` → `0.159.2`): the first non-empty line must be exactly
+/// `codex-cli <version>`. Anything else — another program's version line, a
+/// wrapper's banner — is no Codex this module can key a catalog for.
 #[must_use]
 pub fn codex_version(version_output: &str) -> Option<&str> {
-    let word = version_output
+    let line = version_output
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())?
-        .split_whitespace()
-        .last()?;
+        .find(|line| !line.is_empty())?;
+    let word = line.strip_prefix(CODEX_VERSION_PREFIX)?.trim();
     let looks_like_a_version = word.starts_with(|c: char| c.is_ascii_digit())
         && word.contains('.')
         && word
@@ -50,6 +54,9 @@ pub fn codex_version(version_output: &str) -> Option<&str> {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '+'));
     looks_like_a_version.then_some(word)
 }
+
+/// What Codex's `--version` prints before the version.
+const CODEX_VERSION_PREFIX: &str = "codex-cli ";
 
 /// The catalog file's stem for one Codex home and one executable: a digest of
 /// the resolved `CODEX_HOME` and the executable's `--version` output, so two
@@ -68,6 +75,7 @@ pub fn is_fresh(age: Duration, interval: Duration) -> bool {
     age < interval
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The cache's fields (`fetched_at`, `client_version`, `models`) are real Codex's `models_cache.json`, which only an installed Codex can confirm; the live phase `oh_usage_enforce codex` (scripts/e2e-lib.sh) runs a usage probe from a cold catalog against real Codex and fails, naming this reader, when the refresh that reads them does. The mock's cache (tests/support/mock_harness.rs) is held to the same fields by the refresh journeys.
 /// What Codex's own cache says to a refresh that started at `started_ms`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheReading {
@@ -100,6 +108,19 @@ pub fn read_codex_cache(text: &str, started_ms: i64, version: &str) -> CacheRead
         }
         _ => CacheReading::NotYet,
     }
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// Whether `bytes` are a catalog file Codex can read: JSON with a non-empty
+/// `models` array, which is what [`read_codex_cache`] writes.
+#[must_use]
+pub fn is_usable_catalog(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes).is_ok_and(|catalog| {
+        catalog
+            .get("models")
+            .and_then(Value::as_array)
+            .is_some_and(|models| !models.is_empty())
+    })
 }
 
 /// The record a failed refresh leaves beside the catalog file, which holds
@@ -156,6 +177,8 @@ mod tests {
             "codex",
             "codex-cli dev",
             "v1.2",
+            "other-cli 1.2.3",
+            "codex-cli 1.2.3 extra",
         ] {
             assert_eq!(codex_version(other), None, "{other:?}");
         }
@@ -272,6 +295,21 @@ mod tests {
                 readme.contains(row),
                 "README's request table must have the row {row}"
             );
+        }
+    }
+
+    #[test]
+    fn only_a_catalog_with_models_is_usable() {
+        assert!(is_usable_catalog(br#"{"models":[{"slug":"m"}]}"#));
+        for bad in [
+            &b""[..],
+            b"{",
+            b"{}",
+            br#"{"models":[]}"#,
+            br#"{"models":{}}"#,
+            b"[]",
+        ] {
+            assert!(!is_usable_catalog(bad), "{}", String::from_utf8_lossy(bad));
         }
     }
 

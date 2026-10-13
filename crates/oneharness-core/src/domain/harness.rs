@@ -18,6 +18,7 @@ use crate::domain::report::OutputFormat;
 use crate::domain::structured::NativeSchema;
 use crate::domain::usage::{UsageProbe, UsageSupport};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 /// Everything `build_argv` needs, with no I/O: the resolved binary, the prompt,
 /// the optional model, whether to request the harness's "don't prompt" mode, and
@@ -93,7 +94,7 @@ pub struct BuildCtx<'a> {
     /// Codex's own (`crate::io::model_catalog`). Only codex reads it: `Some`
     /// adds `-c model_catalog_json=<path>` beside the plugins flag, ahead of the
     /// caller's args; `None` adds nothing and Codex fetches its catalog itself.
-    pub model_catalog: Option<&'a str>,
+    pub model_catalog: Option<&'a Path>,
 }
 
 /// How the user prompt reaches the harness.
@@ -1940,6 +1941,7 @@ fn codex_plugins_off(plugins: bool) -> Vec<String> {
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These are real Codex's config keys, which only an installed Codex can confirm and the deterministic gate does not have; the live codex suite holds them to it: `oh_codex_plugins_flag_order` asks real codex every precedence row for `apps` as for `plugins`, and `oh_usage_enforce codex` starts real Codex with `analytics.enabled=false` and `model_catalog_json=` from a cold catalog and fails if the probe or the catalog refresh does (both in scripts/e2e-lib.sh). What each setting saves on the wire is re-measured by scripts/codex-network-breakdown.py and budgeted by the live tier's `codex-launch-network-bytes`, which the `oneharness-live-network-budget` plan node registers.
 /// The `-c` settings every Codex launch carries right after its subcommand,
 /// ahead of the caller's args so a caller's own later `-c` of the same key wins
 /// (Codex applies `-c` overrides last-wins): plugins off unless opted in, apps
@@ -1974,12 +1976,13 @@ pub const CODEX_ANALYTICS_OFF: &str = "analytics.enabled=false";
 /// because Codex parses a `-c` value as TOML — a Windows path's backslashes
 /// would otherwise read as escapes.
 #[must_use]
-pub fn codex_model_catalog_setting(path: &str) -> String {
+pub fn codex_model_catalog_setting(path: &Path) -> String {
     format!(
         "model_catalog_json={}",
-        toml::Value::String(path.to_string())
+        toml::Value::String(path.to_string_lossy().into_owned())
     )
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The sandbox a codex `exec` turn asks for under `mode`, in codex's own
 /// `SandboxMode` spelling; `None` where the mode names no sandbox (`default`
@@ -3692,7 +3695,7 @@ mod tests {
             (&["exec", "resume"], Some("th-1"), PromptDelivery::Argv),
             (&["app-server"], None, PromptDelivery::ControlStream),
         ];
-        let catalog = r"C:\state\catalog.json";
+        let catalog = Path::new(r"C:\state\catalog.json");
         for (subcommand, resume, delivery) in launches {
             let ctx = BuildCtx {
                 resume,
@@ -3739,11 +3742,11 @@ mod tests {
         }
         // Codex reads a `-c` value as TOML, so the path is a TOML string.
         assert_eq!(
-            codex_model_catalog_setting("/state/a \"b\".json"),
+            codex_model_catalog_setting(Path::new("/state/a \"b\".json")),
             r#"model_catalog_json='/state/a "b".json'"#
         );
         let parsed: toml::Table =
-            toml::from_str(&codex_model_catalog_setting(r"C:\a\b.json")).unwrap();
+            toml::from_str(&codex_model_catalog_setting(Path::new(r"C:\a\b.json"))).unwrap();
         assert_eq!(parsed["model_catalog_json"].as_str(), Some(r"C:\a\b.json"));
         // No other harness reads either.
         for other in all().iter().filter(|spec| spec.id != "codex") {
@@ -3751,7 +3754,7 @@ mod tests {
                 (other.build_argv)(&base_ctx(other)),
                 (other.build_argv)(&BuildCtx {
                     analytics: true,
-                    model_catalog: Some("/catalog.json"),
+                    model_catalog: Some(Path::new("/catalog.json")),
                     ..base_ctx(other)
                 }),
                 "{}",

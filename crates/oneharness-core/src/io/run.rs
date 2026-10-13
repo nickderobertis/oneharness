@@ -1080,7 +1080,8 @@ pub fn run_supervised(
             // A dry run cannot ask the executable for the version the catalog
             // path is keyed by, so it names the flag with a placeholder.
             if shared_model_catalog {
-                harness_plan.model_catalog = Some(model_catalog::PLANNED_MODEL_CATALOG.to_string());
+                harness_plan.model_catalog =
+                    Some(PathBuf::from(model_catalog::PLANNED_MODEL_CATALOG));
             }
             // --print-command never spawns, so nothing is materialized off-argv:
             // the printed command is the deterministic inline form (large prompts
@@ -1166,15 +1167,13 @@ pub fn run_supervised(
                     env: &job_env,
                     env_remove: &env_remove,
                     refresh_interval: Duration::from_secs(
-                        cfg.model_catalog_refresh_seconds_for(selected_id),
+                        cfg.model_catalog_refresh_seconds_for(selected_id).get(),
                     ),
                 });
                 if let Some(warning) = choice.warning {
                     eprintln!("oneharness: warning: {selected_id}: {warning}");
                 }
-                harness_plan.model_catalog = choice
-                    .catalog
-                    .map(|path| path.to_string_lossy().into_owned());
+                harness_plan.model_catalog = choice.catalog;
             }
             let built = harness_plan.build(schema.as_ref(), None);
             if unit_control.is_some() {
@@ -4537,7 +4536,7 @@ struct HarnessPlan {
     analytics: bool,
     /// The shared model catalog this launch reads
     /// ([`model_catalog::resolve`]), or `None` for Codex's own fetch.
-    model_catalog: Option<String>,
+    model_catalog: Option<PathBuf>,
 }
 
 /// The result of building one attempt: the argv to spawn and, when the prompt is

@@ -432,6 +432,60 @@ class Settings(unittest.TestCase):
                 self.assertIn("OH_E2E_PENDING_WAIT must be a whole number of seconds", run.stderr)
                 self.assertNotIn("budget codex", run.stdout)
 
+    def run_budget_step(
+        self, tmp: Path, *, path_first: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        path = f"{path_first}{os.pathsep}{os.environ['PATH']}" if path_first else os.environ["PATH"]
+        return subprocess.run(
+            ["bash", str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "OH_E2E_TELEMETRY_DIR": str(tmp),
+                "OH_E2E_OS": "Linux",
+                "PATH": path,
+            },
+            check=False,
+        )
+
+    def stand_in(self, tmp: Path, name: str, script: str) -> Path:
+        directory = tmp / f"{name}-stand-in"
+        directory.mkdir()
+        (directory / name).write_text(f"#!/usr/bin/env bash\n{script}\n")
+        (directory / name).chmod(0o755)
+        return directory
+
+    def test_the_budget_step_refuses_a_pending_path_it_cannot_list(self) -> None:
+        tmp = scratch(self)
+        (tmp / ".pending").write_text("not a directory")
+        run = self.run_budget_step(tmp)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn(
+            f"cannot read {tmp / '.pending'} to wait for launches still being measured", run.stderr
+        )
+        self.assertNotIn("budget codex", run.stdout)
+        listed = scratch(self)
+        (listed / ".pending").mkdir()
+        (listed / ".pending" / "codex-1-abc").write_text("")
+        run = self.run_budget_step(
+            listed, path_first=self.stand_in(listed, "find", "echo 'find: failed' >&2; exit 1")
+        )
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn(f"cannot list {listed / '.pending'}", run.stderr)
+        self.assertNotIn("budget codex", run.stdout)
+
+    def test_the_budget_step_stops_when_its_tools_cannot_be_installed(self) -> None:
+        tmp = scratch(self)
+        ran = tmp / "checker-ran"
+        uv = self.stand_in(
+            tmp, "uv", f'[ "$1" = sync ] && {{ echo "uv: no network" >&2; exit 2; }}\ntouch "{ran}"'
+        )
+        run = self.run_budget_step(tmp, path_first=uv)
+        self.assertEqual(run.returncode, 1, run.stderr)
+        self.assertIn("could not install the uv workspace's dev tools (onebudgetspec)", run.stderr)
+        self.assertFalse(ran.exists(), "the budget checker ran without its tools")
+
     def test_a_bad_deadline_or_observer_is_refused_before_the_launch(self) -> None:
         for name, value, said in (
             ("OH_E2E_NET_DEADLINE", "-5", "must be a finite, non-negative number of seconds"),

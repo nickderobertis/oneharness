@@ -506,12 +506,18 @@ class CountingProxy:
         self.lock = threading.Lock()
         self.tunnels: list[Tunnel] = []
         self.refused: list[Refusal] = []
-        self.listener = socket.socket()
-        self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.listener.bind(("127.0.0.1", 0))
-        self.listener.listen(256)
-        self.port = self.listener.getsockname()[1]
-        threading.Thread(target=self._accept, daemon=True).start()
+        try:
+            self.listener = socket.socket()
+            self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.listener.bind(("127.0.0.1", 0))
+            self.listener.listen(256)
+            self.port = self.listener.getsockname()[1]
+            threading.Thread(target=self._accept, daemon=True).start()
+        except (OSError, RuntimeError) as error:
+            raise Unusable(
+                f"cannot start the counting proxy on the namespace's loopback: {error}; "
+                f"{NAMESPACE_ADVICE}"
+            ) from None
 
     def _accept(self) -> None:
         while True:
@@ -772,19 +778,31 @@ def init(args: argparse.Namespace) -> int:
             f"unshare(CLONE_NEWNS|CLONE_NEWPID) failed: {os.strerror(ctypes.get_errno())}; this "
             f"host does not allow the mount and PID namespaces the measurement needs: {NAMESPACE_ADVICE}"
         )
-    child = os.fork()
-    if child:
-        _, status = os.waitpid(child, 0)
-        return os.waitstatus_to_exitcode(status)
+    try:
+        child = os.fork()
+        if child:
+            _, status = os.waitpid(child, 0)
+            return os.waitstatus_to_exitcode(status)
+    except OSError as error:
+        raise Unusable(
+            f"cannot start the measuring namespace's init process: {error}; free some processes "
+            f"or memory and rerun, or {NAMESPACE_ADVICE}"
+        ) from None
 
     private_resolver()
     loopback_up()
-    proc = subprocess.run(["mount", "-t", "proc", "proc", "/proc"], capture_output=True, text=True)
-    if proc.returncode != 0:
+    try:
+        proc = subprocess.run(
+            ["mount", "-t", "proc", "proc", "/proc"], capture_output=True, text=True
+        )
+        unmounted = proc.stderr.strip() if proc.returncode != 0 else None
+    except OSError as error:
+        unmounted = f"`mount` could not run: {error}"
+    if unmounted is not None:
         # Only process listings are affected: the counters are read per network
         # namespace, so the measurement stands, and the reader is told.
         print(
-            f"codex-network-breakdown: warning: /proc was not remounted ({proc.stderr.strip()}); "
+            f"codex-network-breakdown: warning: /proc was not remounted ({unmounted}); "
             "the launch sees the host's process list. The byte counts stand; if the launch "
             "inspects processes, rerun on a host that lets an unprivileged namespace mount proc",
             file=sys.stderr,
@@ -834,10 +852,10 @@ def init(args: argparse.Namespace) -> int:
             now = time.monotonic()
             if deadline is not None and now > deadline and not timed_out:
                 timed_out = True
-                os.kill(-1, signal.SIGTERM)
+                signal_namespace(signal.SIGTERM)
                 deadline = now + 5
             elif timed_out and deadline is not None and now > deadline:
-                os.kill(-1, signal.SIGKILL)
+                signal_namespace(signal.SIGKILL)
                 deadline = now + 3600
             time.sleep(0.02)
     # Let the proxy see the last FINs before the counters are read.
@@ -861,8 +879,23 @@ def init(args: argparse.Namespace) -> int:
     # this file, and must never read half of it.
     partial = Path(args.result + ".partial")
     write_text(partial, json.dumps(asdict(measurement)))
-    os.replace(partial, args.result)
+    try:
+        os.replace(partial, args.result)
+    except OSError as error:
+        raise Unusable(
+            f"cannot move the measurement into place ({partial} -> {args.result}): {error}; "
+            "free space under TMPDIR (or point it at a writable directory) and rerun"
+        ) from None
     return 0
+
+
+def signal_namespace(signum: signal.Signals) -> None:
+    """Signal every process in the measuring namespace but its init. Every one
+    may already have exited since the last wait, which leaves nothing to stop."""
+    try:
+        os.kill(-1, signum)
+    except ProcessLookupError:
+        pass
 
 
 # llmlint: ignore-block[changed_behavior_has_e2e] A real fetch reaches Debian's package archive, which the gate never contacts: the network-breakdown target sets CODEX_NETWORK_BREAKDOWN_NO_FETCH=1. Its test drives this path end to end with stand-in `apt-get` and `dpkg` that take the same argv and leave the same file layout, and the real fetch is what provisioned pasta for the README's measured figures on this repository's host.

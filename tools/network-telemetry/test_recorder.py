@@ -26,6 +26,7 @@ from support import (
     lines,
     measurements,
     need_recorder,
+    path_without,
     run_shim,
     scratch,
     server,
@@ -611,9 +612,7 @@ class Unstarted(unittest.TestCase):
         real.write_text("#!/nonexistent/interpreter\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
-        no_pasta = ":".join(
-            p for p in os.environ["PATH"].split(":") if not (Path(p) / "pasta").exists()
-        )
+        no_pasta = path_without(tmp, "pasta")
         run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"PATH": no_pasta})
         self.assertEqual(run.returncode, 127, run.stderr)
         self.assertIn(b"cannot start", run.stderr)
@@ -803,9 +802,7 @@ class Fallback(unittest.TestCase):
         )
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
-        no_pasta = ":".join(
-            p for p in os.environ["PATH"].split(":") if not (Path(p) / "pasta").exists()
-        )
+        no_pasta = path_without(tmp, "pasta")
         shim = subprocess.Popen(
             [
                 BASH,

@@ -268,6 +268,28 @@ def run_shim(
     )
 
 
+def path_without(tmp: Path, tool: str) -> str:
+    """The test's PATH with `tool` gone and every other executable kept.
+
+    A directory holding `tool` is not dropped, since on a runner that is
+    /usr/bin and every coreutil the shim needs would go with it; it is
+    mirrored as symlinks to everything in it but `tool`.
+    """
+    kept: list[str] = []
+    for index, entry in enumerate(os.environ["PATH"].split(os.pathsep)):
+        directory = Path(entry)
+        if not (directory / tool).exists():
+            kept.append(entry)
+            continue
+        mirror = tmp / f"path-without-{tool}-{index}"
+        mirror.mkdir()
+        for item in directory.iterdir():
+            if item.name != tool:
+                (mirror / item.name).symlink_to(item)
+        kept.append(str(mirror))
+    return os.pathsep.join(kept)
+
+
 def transfer_argv(port: int, down: int, up: int, *flags: str) -> list[str]:
     return [sys.executable, str(TRANSFER), "client", str(port), str(down), str(up), *flags]
 

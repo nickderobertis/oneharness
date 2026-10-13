@@ -131,7 +131,7 @@ job="$(awk '/^  check:$/ { on = 1; print; next } on && /^  [A-Za-z]/ { exit } on
 printf '%s\n' "$job" | grep -x '        os: \[ubuntu-latest, macos-latest, windows-latest\]' >/dev/null ||
   fail "$ci check matrix is not exactly ubuntu/macos/windows; the required contexts are 'check (<os>)' for those three"
 printf '%s\n' "$job" | grep -x '    if: always()' >/dev/null ||
-  fail "$ci check carrier must use always() so routing failures still report"
+  fail "$ci check job lacks the line '    if: always()'; restore it so the check contexts still report when macos-policy fails or is cancelled"
 printf '%s\n' "$job" | grep -x '    needs: macos-policy' >/dev/null ||
   fail "$ci check job lacks the line '    needs: macos-policy'; restore it so the check carrier consumes the authoritative classifier (.github/macos-route.mjs)"
 printf '%s\n' "$job" | grep -x '          fetch-depth: 0' >/dev/null ||
@@ -177,7 +177,7 @@ plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' .github/workflows/rele
   fail ".github/workflows/release-plz.yml finds its release pull request by '$plz_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'"
 
 omission="$(sed -n 's/^readonly MACOS_OMISSION_STEP="\([^"]*\)"$/\1/p' scripts/ci-verdict.sh)"
-[ -n "$omission" ] || fail "ci-verdict.sh must name the authorized Mac omission step"
+[ -n "$omission" ] || fail "scripts/ci-verdict.sh declares no 'readonly MACOS_OMISSION_STEP=\"...\"'; restore it with the name of ci.yml's authorized Mac omission step"
 printf '%s\n' "$job" | grep -xF "      - name: $omission" >/dev/null ||
   fail "$ci check job has no step '      - name: $omission', the authorized Mac omission ci-verdict.sh consumes; restore that step name in the check job (or rename MACOS_OMISSION_STEP in scripts/ci-verdict.sh to match)"
 

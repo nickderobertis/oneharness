@@ -1154,8 +1154,9 @@ fn an_unrepresentable_deadline_waits_for_the_match_to_go() {
 }
 
 /// Windows only: a 32-bit process runs under WOW64 there, with its
-/// environment behind a 32-bit PEB the native layout does not describe. Both
-/// Windows CI legs (x64 and ARM64) carry 32-bit x86 binaries in `SysWOW64`.
+/// environment behind a 32-bit PEB the native layout does not describe. The
+/// CI gate's Windows leg (`windows-latest`) carries 32-bit x86 binaries in
+/// `SysWOW64`.
 #[cfg(windows)]
 #[test]
 fn a_marked_32_bit_process_is_found_and_stopped() {

@@ -614,7 +614,7 @@ mod platform {
     /// and a 32-bit reader cannot address a 64-bit process's memory, so it
     /// would miss every native process while appearing to work.
     pub(super) fn user_pids() -> io::Result<Vec<u32>> {
-        // llmlint: ignore[changed_behavior_has_e2e] Only a 32-bit Windows build takes this branch, and neither Windows leg of the CI gate matrix (x64, ARM64) builds one, so no test there can reach it; the refusal is what keeps such a build from silently reporting an empty table. The WOW64 test covers the reachable half of the 32/64-bit split: a 32-bit target read by the shipped 64-bit reader.
+        // llmlint: ignore[changed_behavior_has_e2e] Only a 32-bit Windows build takes this branch, and the CI gate matrix's one Windows leg (`windows-latest`, x64) never builds one, so no test there can reach it; the refusal is what keeps such a build from silently reporting an empty table. The WOW64 test covers the reachable half of the 32/64-bit split: a 32-bit target read by the shipped 64-bit reader.
         if cfg!(target_pointer_width = "32") {
             return Err(io::Error::new(
                 io::ErrorKind::Unsupported,

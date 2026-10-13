@@ -60,13 +60,17 @@ fn role() {
 /// Start the grandchild, detached, report its pid beside its heartbeat file,
 /// and exit.
 fn spawn_role() {
+    let ticks = PathBuf::from(std::env::var(TICKS_VAR).unwrap());
+    // A panic in the grandchild's fixture setup lands here, for the test's
+    // hang guards to quote.
+    let stderr = std::fs::File::create(stderr_path(&ticks)).unwrap();
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["role", "--exact", "--nocapture", "--test-threads=1"])
         .env(ROLE_VAR, "beat")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        .stderr(stderr);
     if let Ok(mark) = std::env::var(MARK_VAR) {
         let (name, value) = mark.split_once('=').unwrap();
         command.env(name, value);
@@ -76,9 +80,19 @@ fn spawn_role() {
     // Through a file rather than stdout: a pipe the test read would also be
     // held by the grandchild on Windows, where inheritable handles leak into
     // every process spawned, and the read would wait out its whole life.
-    let ticks = PathBuf::from(std::env::var(TICKS_VAR).unwrap());
     std::fs::write(ticks.with_extension("pid"), child.id().to_string()).unwrap();
     std::process::exit(0);
+}
+
+/// Where the grandchild whose heartbeat file is `ticks` writes its stderr.
+fn stderr_path(ticks: &Path) -> PathBuf {
+    ticks.with_extension("stderr")
+}
+
+/// The grandchild's stderr so far, for a hang guard's message.
+#[cfg(windows)]
+fn stderr_of(ticks: &Path) -> String {
+    std::fs::read_to_string(stderr_path(ticks)).unwrap_or_default()
 }
 
 #[cfg(unix)]
@@ -212,26 +226,69 @@ fn child_pids(ticks: &Path) -> Vec<u32> {
 /// A Windows process's power to refuse termination: it denies
 /// `PROCESS_TERMINATE` on its own process object, which binds every other
 /// same-user caller without `SeDebugPrivilege` enabled, while keeping the
-/// query and read rights a scan uses.
+/// query and read rights a scan uses. A test relying on the refusal first
+/// sheds that privilege, which an elevated caller's token can carry enabled —
+/// as a CI runner's does, whose agent enables it and passes it down.
 #[cfg(windows)]
 mod dacl {
     use std::path::{Path, PathBuf};
     use std::ptr;
     use std::time::Duration;
 
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS};
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE, LUID};
     use windows_sys::Win32::Security::Authorization::{
         GetSecurityInfo, SetEntriesInAclW, SetSecurityInfo, DENY_ACCESS, EXPLICIT_ACCESS_W,
         NO_MULTIPLE_TRUSTEE, SE_KERNEL_OBJECT, TRUSTEE_IS_SID, TRUSTEE_IS_WELL_KNOWN_GROUP,
         TRUSTEE_W,
     };
     use windows_sys::Win32::Security::{
-        CreateWellKnownSid, WinWorldSid, ACL, DACL_SECURITY_INFORMATION, NO_INHERITANCE,
-        PSECURITY_DESCRIPTOR, SECURITY_MAX_SID_SIZE,
+        AdjustTokenPrivileges, CreateWellKnownSid, LookupPrivilegeValueW, WinWorldSid, ACL,
+        DACL_SECURITY_INFORMATION, LUID_AND_ATTRIBUTES, NO_INHERITANCE, PSECURITY_DESCRIPTOR,
+        SECURITY_MAX_SID_SIZE, SE_DEBUG_NAME, SE_PRIVILEGE_REMOVED, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_PRIVILEGES,
     };
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_TERMINATE,
+        GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_TERMINATE,
     };
+
+    /// Remove `SeDebugPrivilege` from this process's token for good, so that
+    /// neither this process nor anything it calls can open a process past a
+    /// DACL. Only the stop's caller needs it gone; the other tests never
+    /// relied on the privilege, since a scan reads same-user processes by the
+    /// rights their DACL grants.
+    pub(super) fn shed_debug_privilege() {
+        static SHED: std::sync::Once = std::sync::Once::new();
+        SHED.call_once(|| {
+            let mut luid = LUID::default();
+            // SAFETY: both names are NUL-terminated; `luid` is writable.
+            let found = unsafe { LookupPrivilegeValueW(ptr::null(), SE_DEBUG_NAME, &mut luid) };
+            assert_ne!(found, 0, "{}", std::io::Error::last_os_error());
+            let mut token: HANDLE = ptr::null_mut();
+            // SAFETY: the pseudo-handle names this process; `token` is
+            // writable and closed below.
+            let opened = unsafe {
+                OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut token)
+            };
+            assert_ne!(opened, 0, "{}", std::io::Error::last_os_error());
+            let removal = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                Privileges: [LUID_AND_ATTRIBUTES {
+                    Luid: luid,
+                    Attributes: SE_PRIVILEGE_REMOVED,
+                }],
+            };
+            // SAFETY: `token` carries TOKEN_ADJUST_PRIVILEGES; no previous
+            // state is asked for. A token that never held the privilege
+            // reports success with ERROR_NOT_ALL_ASSIGNED, which is fine.
+            let adjusted = unsafe {
+                AdjustTokenPrivileges(token, 0, &removal, 0, ptr::null_mut(), ptr::null_mut())
+            };
+            let error = std::io::Error::last_os_error();
+            // SAFETY: opened above and not used again.
+            unsafe { CloseHandle(token) };
+            assert_ne!(adjusted, 0, "{error}");
+        });
+    }
 
     /// The file whose appearance tells a `refuse-termination` beat at
     /// `ticks` to give its refusal up.
@@ -436,7 +493,7 @@ mod fork_while_stopping {
     use windows_sys::Win32::Foundation::{FILETIME, HANDLE};
     use windows_sys::Win32::System::Threading::GetProcessTimes;
 
-    use super::dacl::{refuse_termination, refuses_termination};
+    use super::dacl::{refuse_termination, refuses_termination, shed_debug_privilege};
 
     /// The exit code `stop_marked` passes to `TerminateProcess`; a child that
     /// ran out its `LIFETIME` leaves 0.
@@ -477,12 +534,14 @@ mod fork_while_stopping {
     /// Wait (bounded) until the parent refuses termination and its first child
     /// is running, so the stop's first scan meets both.
     pub(super) fn await_ready(parent: &super::Beater) {
+        shed_debug_privilege();
         let guard = Instant::now() + super::PATIENCE;
         while !refuses_termination(parent.pid) || super::child_pids(&parent.ticks).is_empty() {
             assert!(
                 Instant::now() < guard,
-                "the parent never refused termination or never started its first child \
-                 (a caller holding an enabled SeDebugPrivilege bypasses the refusal)"
+                "the parent never refused termination or never started its first child; \
+                 its stderr: {:?}",
+                super::stderr_of(&parent.ticks)
             );
             std::thread::sleep(Duration::from_millis(20));
         }
@@ -896,12 +955,13 @@ fn a_marked_process_that_refuses_termination_is_reported_as_a_survivor() {
         Some((MARKER_NAME, &value)),
         "refuse-termination",
     );
+    dacl::shed_debug_privilege();
     let guard = Instant::now() + PATIENCE;
     while !dacl::refuses_termination(refusing.pid) {
         assert!(
             Instant::now() < guard,
-            "the process never refused termination \
-             (a caller holding an enabled SeDebugPrivilege bypasses the refusal)"
+            "the process never refused termination; its stderr: {:?}",
+            stderr_of(&refusing.ticks)
         );
         std::thread::sleep(Duration::from_millis(20));
     }

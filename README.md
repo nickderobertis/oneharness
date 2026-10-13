@@ -724,6 +724,10 @@ unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
 
 [harness.codex]
 plugins = true                  # codex only: keep Codex plugins on (default off)
+apps = true                     # codex only: keep ChatGPT apps/connectors on (default off)
+analytics = true                # codex only: let Codex send analytics (default off)
+shared_model_catalog = false    # codex only: Codex fetches its own catalog per launch (default true)
+model_catalog_refresh_seconds = 600  # codex only: shared catalog's age limit (default 3600)
 
 # Lifecycle hooks, in the harness's own hooks schema, synced into its config
 # file (Claude Code's .claude/settings.json `hooks` key) uninterpreted.
@@ -963,9 +967,138 @@ in charge. The opt-in is a typed key resolved apart from `args`, so it survives
 a variant or worker that supplies its own `args`. `plugins` under any other
 harness is refused at load. The [`oneharness usage`](#subscription-headroom-oneharness-usage)
 probe never loads plugins, whatever the config says (it starts `codex app-server
---disable plugins --stdio`), and `oneharness config`
+--disable plugins --disable apps -c analytics.enabled=false --stdio`), and `oneharness config`
 shows the resolved `plugins` for each codex harness and variant.
 <!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
+
+**Codex's ChatGPT apps are off by default too.** With its `apps` feature on,
+every Codex session connects to ChatGPT's apps (connectors) MCP server and
+downloads its tool list — about 580 KB, held open for the whole session (table
+below) — and no oneharness run uses a connector. So every Codex turn passes
+`-c features.apps=false` right after the plugins setting, with the same
+precedence: a caller's later `-c features.apps=true` or an `--enable apps` turns
+apps back on. What a launch loses is the ChatGPT apps/connectors you linked
+(Drive, GitHub and the like): they are not offered to the model as tools. To
+keep them, set `apps = true` under `[harness.codex]` or one
+`[harness.codex.variant.<name>]`; it resolves exactly like `plugins` (variant
+over harness, a later layer or `extends` child over an earlier one, apart from
+`args`), is refused under any other harness, and shows in `oneharness config`.
+The usage probe and the catalog refresh below always run with apps off.
+
+**Codex's model catalog is shared, and its analytics are off, by default.**
+Codex fetches its whole model catalog (about 623 KB measured) on every process
+start, ignoring the cache it writes, and `codex exec` uploads analytics — product
+events and, the biggest part, an OTLP metrics export of about 670 KB measured.
+No orchestrated run reads either. So:
+
+- **Analytics:** every Codex launch — `exec`, the `--control` app-server and the
+  usage probe — passes `-c analytics.enabled=false` beside the plugins and apps
+  settings, ahead of the config `args` and the `--` passthrough, so a caller's
+  own later `-c analytics.enabled=true` still wins. Nothing a user sees changes.
+  `analytics = true` under `[harness.codex]` or a variant drops the flag (the
+  usage probe keeps it whatever the config says).
+- **Model catalog:** oneharness keeps one catalog file per Codex home and Codex
+  version, `<state>/oneharness/codex-model-catalog/<digest>.json` (`<state>` is
+  `$XDG_STATE_HOME`, else `~/.local/state`; `%LOCALAPPDATA%` on Windows; the
+  digest is of the resolved `CODEX_HOME` and the executable's `--version`), and
+  starts Codex with `-c model_catalog_json="<that file>"` in the same position,
+  so the launch fetches no catalog. The file is refreshed once it is older than
+  `model_catalog_refresh_seconds` (default `3600`, an hour; at least `1`): one
+  oneharness process takes a per-file lock and starts a short `codex app-server
+  --disable plugins --disable apps -c analytics.enabled=false --stdio` under the
+  launch's environment, sends it `initialize` and nothing else, waits — at most
+  10 s — for Codex to write a fresh `$CODEX_HOME/models_cache.json` stamped with
+  its own version, copies that file's `models` atomically into the catalog
+  file, and stops it. oneharness never calls the models endpoint or handles a
+  ChatGPT credential itself.
+- **The trade-off:** new models, changed defaults and updated model
+  instructions reach a launch only when the catalog file next refreshes —
+  within the interval. Set `shared_model_catalog = false` under `[harness.codex]`
+  or a variant for Codex's own per-launch fetch (no catalog flag, no refresh, no
+  wait), or shorten `model_catalog_refresh_seconds`. Both resolve like `plugins`,
+  apart from `args`, so a variant's or worker's own `args` never change them.
+- **The bounded wait:** a cold or stale burst of launches costs one catalog
+  fetch in total. The launch that takes the lock refreshes; every other launch
+  that needs the file waits for that one result — at most 12 s, the refresh
+  deadline plus the helper's start — and starts with the refreshed file; none
+  uses the stale one while a refresh is under way.
+- **The failure fallback:** when the refresh fails or times out, or the wait
+  ends with no fresh file, the refreshing process records the failure beside
+  the catalog file, and for 5 minutes from it every launch goes without a fresh
+  catalog — with the existing stale file when there is one, else with Codex's
+  own per-launch fetch — prints one warning, and starts no further refresh. A
+  run never fails over its catalog. An executable whose `--version` names no
+  Codex version, or a launch with no Codex home, gets no shared catalog.
+- `oneharness config` shows the resolved `shared_model_catalog`,
+  `model_catalog_refresh_seconds`, `analytics` and `apps` for each codex harness
+  and variant; `--print-command` shows the catalog flag with a
+  `<shared model catalog>` placeholder, since a dry run cannot ask the
+  executable for the version the path is keyed by.
+
+#### What a Codex launch downloads
+
+Every request a default launch and a one-command turn make, measured on
+**codex-cli 0.159.2** (Linux, ChatGPT Pro sign-in, 2026-10-13) with
+[`scripts/codex-network-breakdown.py`](scripts/codex-network-breakdown.py), which
+runs one launch in a rootless network namespace behind a byte-counting CONNECT
+proxy and names each tunnel's request from Codex's own `RUST_LOG` trace. Bytes
+are the payload relayed through each tunnel (TLS included), received / sent,
+per launch:
+
+| Request | Endpoint | Removed by this node's defaults? | Switch | What a launch loses without it | Measured received / sent per launch |
+|---|---|---|---|---|---|
+| Model catalog | `GET chatgpt.com/backend-api/codex/models` | yes — the launch reads the shared catalog file | `shared_model_catalog = false` restores it | new models, changed defaults and model instructions arrive only at the next refresh, within the interval | 0 / 0 under the defaults; 622,993 / 3,723 on `exec` and twice (623,006 / 3,727 and 622,124 / 4,464) on a `--control` launch without them; one refresh per interval per Codex home and version costs 626,985 / 7,389 |
+| Analytics | `POST chatgpt.com/backend-api/codex/analytics-events/events`; OTLP metrics to `ab.chatgpt.com` | yes | `analytics = true` | nothing a user sees | 0 / 0 under the defaults; on `exec` without them three event posts, 17,127 / 18,526, and the OTLP export, 5,935 / 669,587; on `--control`, 6,450 / 4,437 |
+| ChatGPT apps (connectors) MCP | MCP over HTTP to `chatgpt.com`, held for the session (the trace names no path) | yes | `apps = true` | linked ChatGPT apps/connectors are not offered to the model as tools | 0 / 0 under the defaults; 580,312 / 9,865 on `exec`, 580,522 / 9,841 on `--control` without them |
+| Responses websocket: prewarm and turn | `wss://chatgpt.com/backend-api/codex/responses` | no — not avoidable from config (the built-in provider's websocket transport) | none | the turn itself; the prewarm uploads the prompt prefix the turn then reuses | 112,253 / 28,908 (`exec`), 112,537 / 28,908 (`--control`) |
+| Git-attribution read | `GET chatgpt.com/backend-api/wham/settings/user` (by Codex's source; the trace names no path for this thread-start tunnel) | no — not avoidable from config, once per thread | none | Codex's commit-attribution settings | 7,175 / 3,687 |
+| In-turn read | `chatgpt.com`, opened inside the turn's `world_state.build` (the trace names no path) | no — not avoidable from config | none | unknown; found by the measurement, not the source reading | 5,891 / 4,317 |
+| Cloud config bundle | `chatgpt.com` cloud config (Business, Edu and Enterprise plans only) | no — conditional | none | those plans' managed configuration | 0 / 0 measured: this plan loads none (`Cloud config bundle load completed (none)`) |
+| OAuth refresh | `auth.openai.com` (only past 8 days, or after a 401) | no — conditional | none | the session's credentials | 0 / 0 measured: no refresh was due |
+| Usage probe's reads | `chatgpt.com`, three short reads around `account/rateLimits/read` (the trace names no path) | no — the probe's purpose | none | the headroom figures | 22,058 / 11,059 in total |
+
+Each figure comes from one run of
+
+```console
+$ XDG_STATE_HOME=<scratch>/state ONEHARNESS_CONFIG=<config.toml> \
+  scripts/codex-network-breakdown.py --label <name> --trace \
+    --rust-log "debug,hyper=info,hyper_util=info,h2=info,rustls=info,tokio_tungstenite=info,tungstenite=info" \
+    -- oneharness run --harness codex --format json --compact \
+       --prompt 'Run the shell command `echo oneharness-network-measure` and reply with only its output.'
+```
+
+with `--control --session <name> --session-dir <short dir>` added for the
+`--control` turn, `oneharness usage --harness codex --format json --compact` for
+the probe, an empty config for the defaults and `[harness.codex]
+shared_model_catalog = false`, `analytics = true`, `apps = true` for "without",
+from a git repository so `codex exec` runs. The host's own Codex config set
+`[features] plugins = false` (oneharness passes `-c features.plugins=false`
+either way), `approval_policy = "never"` and `sandbox_mode =
+"danger-full-access"`.
+
+**Before and after**, namespace totals received / sent per launch:
+
+- the usage probe: **24,206 / 13,317** under this node's defaults with a fresh
+  catalog, against **650,868 / 19,150** without them (a probe that refreshes a
+  cold catalog first: 655,022 / 23,190);
+- a one-command `codex exec` turn: **129,303 / 41,396** against
+  **1,375,674 / 751,971**;
+- a one-command `--control` turn: **129,751 / 41,556** against
+  **1,986,067 / 79,719**.
+
+The tunnels left 4,484 B (10.8 %) of the defaults `exec` turn's sent bytes
+unaccounted, and 12,250 B (1.6 %) without the defaults — the namespace's own
+framing and DNS. The half a megabyte or more a turn sent that Codex's request
+bodies could not explain was the OTLP metrics export: 669,587 B to
+`ab.chatgpt.com`, which `analytics = false` removes. Under the defaults with a
+fresh catalog file Codex's trace shows no catalog request: its refresh worker's
+`list_models{refresh_strategy=online}` span completes in well under a
+millisecond from the static file and opens no connection, where without the
+defaults the trace names `GET /backend-api/codex/models` (twice on a `--control`
+launch). The measurement corrected the source reading in four places: the
+catalog is about 623 KB, at the top of its estimate; a `--control` launch
+fetches it twice; the apps MCP connection, which the reading missed, is the
+largest request a session makes; and the cloud config bundle made no request.
 
 **The standing-policy path** — a `[[hooks]]` entry synced into the harness's
 own config — remains available for policies that should persist (and is how

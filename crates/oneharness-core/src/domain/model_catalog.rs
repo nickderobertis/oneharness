@@ -226,6 +226,55 @@ mod tests {
         }
     }
 
+    /// The README is where a user learns the catalog's interval, its waits
+    /// and its backoff, and which requests a launch makes; prose that drifted
+    /// from these constants would be confidently wrong.
+    #[test]
+    fn the_readme_states_the_constants_and_every_request_row() {
+        let readme = include_str!("../../../../README.md")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let stated = [
+            format!(
+                "waits — at most {} s — for Codex",
+                MODEL_CATALOG_REFRESH_DEADLINE.as_secs()
+            ),
+            format!(
+                "at most {} s, the refresh deadline plus the helper's start",
+                MODEL_CATALOG_WAIT.as_secs()
+            ),
+            format!(
+                "for {} minutes from it every launch",
+                MODEL_CATALOG_FAILURE_BACKOFF.as_secs() / 60
+            ),
+            format!(
+                "(default `{}`, an hour; at least `1`)",
+                crate::domain::config::DEFAULT_MODEL_CATALOG_REFRESH_SECONDS
+            ),
+        ];
+        for phrase in &stated {
+            assert!(
+                readme.contains(phrase.as_str()),
+                "README must state: {phrase}"
+            );
+        }
+        for row in [
+            "| Model catalog |",
+            "| Analytics |",
+            "| ChatGPT apps (connectors) MCP |",
+            "| Responses websocket: prewarm and turn |",
+            "| Git-attribution read |",
+            "| Cloud config bundle |",
+            "| OAuth refresh |",
+        ] {
+            assert!(
+                readme.contains(row),
+                "README's request table must have the row {row}"
+            );
+        }
+    }
+
     #[test]
     fn a_failure_holds_refreshes_off_for_the_backoff_and_says_what_a_launch_uses() {
         let record = FailureRecord {

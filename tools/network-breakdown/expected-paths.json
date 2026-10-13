@@ -1,0 +1,11 @@
+[
+  ["chatgpt.com:443", ["/backend-api/codex/models"]],
+  ["chatgpt.com:443", []],
+  ["chatgpt.com:443", []],
+  ["chatgpt.com:443", ["/backend-api/codex/analytics-events/events"]],
+  ["chatgpt.com:443", ["/backend-api/codex/responses"]],
+  ["chatgpt.com:443", []],
+  ["chatgpt.com:443", ["/backend-api/codex/analytics-events/events"]],
+  ["chatgpt.com:443", ["/backend-api/codex/analytics-events/events"]],
+  ["ab.chatgpt.com:443", []]
+]

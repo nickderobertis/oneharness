@@ -2331,6 +2331,20 @@ pub fn normalize_timestamp(text: &str) -> Option<UtcInstant> {
 /// Seconds since the UNIX epoch for an RFC 3339 instant. Sub-second precision is
 /// parsed but truncated: window resets are minute-scale.
 fn epoch_from_rfc3339(text: &str) -> Option<i64> {
+    epoch_parts_from_rfc3339(text).map(|(secs, _)| secs)
+}
+
+/// Milliseconds since the UNIX epoch for an RFC 3339 instant, for a timestamp
+/// that has to be ordered against another taken within the same second (a
+/// cache Codex wrote against the moment a refresh started).
+#[must_use]
+pub fn epoch_millis_from_rfc3339(text: &str) -> Option<i64> {
+    epoch_parts_from_rfc3339(text).map(|(secs, millis)| secs * 1_000 + i64::from(millis))
+}
+
+/// The instant as whole seconds since the UNIX epoch and the milliseconds past
+/// it (digits beyond the third are truncated).
+fn epoch_parts_from_rfc3339(text: &str) -> Option<(i64, u32)> {
     let bytes = text.as_bytes();
     if bytes.len() < 19 {
         return None;
@@ -2366,11 +2380,18 @@ fn epoch_from_rfc3339(text: &str) -> Option<i64> {
     }
 
     let mut rest = text.get(19..)?;
+    let mut millis = 0;
     if let Some(fraction) = rest.strip_prefix('.') {
         let digits = fraction.bytes().take_while(u8::is_ascii_digit).count();
         if digits == 0 {
             return None;
         }
+        millis = fraction
+            .bytes()
+            .take(digits.min(3))
+            .chain(std::iter::repeat(b'0'))
+            .take(3)
+            .fold(0, |sum, digit| sum * 10 + u32::from(digit - b'0'));
         rest = fraction.get(digits..)?;
     }
     let offset_secs = parse_offset(rest)?;
@@ -2385,13 +2406,14 @@ fn epoch_from_rfc3339(text: &str) -> Option<i64> {
         return None;
     }
 
-    Some(
+    Some((
         days * 86_400
             + i64::from(hour) * 3_600
             + i64::from(minute) * 60
             + i64::from(second.min(59))
             - offset_secs,
-    )
+        millis,
+    ))
 }
 
 /// The instant's offset from UTC, in seconds. `Z` is zero; a bare instant with

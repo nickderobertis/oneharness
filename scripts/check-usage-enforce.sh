@@ -51,11 +51,11 @@ fail() {
 # Drive oh_usage_enforce once against the stubbed report, in a subshell because
 # its skip/fail paths exit. Captures stdout+stderr in $out and the code in $rc.
 drive() {
-  local stdout="$1" exit_code="$2" no_skip="${3:-}"
+  local stdout="$1" exit_code="$2" no_skip="${3:-}" stderr="${4:-codex: the app-server went away}"
   set +e
   out="$(
     FAKE_STDOUT="$stdout" FAKE_EXIT="$exit_code" \
-      FAKE_STDERR="codex: the app-server went away" \
+      FAKE_STDERR="$stderr" \
       ONEHARNESS_BIN="$tmp/oneharness" OH_E2E_NO_SKIP="$no_skip" \
       bash -c "set -euo pipefail; source '$root/scripts/e2e-lib.sh'; oh_usage_enforce codex" 2>&1
   )"
@@ -102,6 +102,17 @@ drive "" 2
 case "$out" in
   *"exited 2"*"Next, in order:"*"usage/config error"*"FAIL:"*"produced no report"*) ;;
   *) fail "an empty report must name the exit code and a next action, got: $out" ;;
+esac
+
+# 4b. A probe that answered, but whose shared model catalog refresh failed
+#     against the harness: the phase is codex's drift gate for the cache that
+#     refresh reads, so it fails and says where the reader lives.
+drive "$(identity '{"state":"unavailable","reason":"api_key_auth"}')" 0 "" \
+  "oneharness: warning: codex usage probe: the shared Codex model catalog could not be refreshed (Codex wrote no fresh catalog within 10 s)"
+[ "$rc" -eq 1 ] || fail "a failed catalog refresh must fail the phase, got exit $rc: $out"
+case "$out" in
+  *"within 10 s"*"Next, in order:"*"read_codex_cache"*"FAIL:"*"shared model catalog refresh failed"*) ;;
+  *) fail "a failed catalog refresh must quote the warning and name the reader, got: $out" ;;
 esac
 
 # 5. An answer — either flavour, since CI's API-key identity honestly reports

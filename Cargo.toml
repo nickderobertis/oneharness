@@ -23,14 +23,17 @@ repository = "https://github.com/nickderobertis/oneharness"
 # named at the member.
 [workspace.dependencies]
 clap = { version = "4.5", features = ["derive"] }
+fs2 = "0.4"
 libc = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "1.0.7"
+uuid = "1"
 windows-sys = "0.61"
 
 [package]
 name = "oneharness"
-version = "0.23.1"
+version = "0.24.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "One CLI to drive many agentic coding harnesses non-interactively and return uniform JSON."
@@ -59,10 +62,13 @@ sdk-schema = ["oneharness-core/sdk-schema"]
 # crate is publishable: `cargo publish` rewrites the path dep to this registry
 # version, which release-plz keeps in step with `oneharness-core`'s own version.
 [dependencies]
-oneharness-core = { path = "crates/oneharness-core", version = "0.26.0" }
+oneharness-core = { path = "crates/oneharness-core", version = "0.27.0" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# The mock harness decodes a `-c` TOML value with the parser `oneharness-core`
+# encodes it with; already in the tree through the engine, so no extra download.
+toml = { workspace = true }
 
 # Integration tests drive the binaries directly via the cargo-provided
 # CARGO_BIN_EXE_* paths and parse JSON with serde_json (already a dependency),

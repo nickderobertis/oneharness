@@ -1,0 +1,35 @@
+2026-10-13T06:51:08.992865Z DEBUG opentelemetry_sdk:  name="Metrics.InstrumentCreated" instrument_name="codex.sqlite.init.count" cardinality_limit=2000
+2026-10-13T06:51:08.992916Z DEBUG opentelemetry_sdk:  name="Metrics.InstrumentCreated" instrument_name="codex.sqlite.init.duration_ms" cardinality_limit=2000
+2026-10-13T06:51:09.034408Z DEBUG codex.exec{otel.kind="internal"}: codex_core::exec_policy: loaded rules from 0 files
+2026-10-13T06:51:09.034819Z DEBUG codex.exec{otel.kind="internal"}: codex_config::loader::layer_io: /etc/codex/managed_config.toml not found
+2026-10-13T06:51:09.113625Z  INFO codex_cloud_config::service: Cloud config bundle load completed (none) elapsed_ms=0
+2026-10-13T06:51:09.113684Z DEBUG opentelemetry_sdk:  name="Metrics.InstrumentCreated" instrument_name="codex.cloud_config_bundle.load" cardinality_limit=2000
+2026-10-13T06:51:09.113715Z DEBUG opentelemetry_sdk:  name="Metrics.InstrumentCreated" instrument_name="codex.cloud_config_bundle.fetch.duration_ms" cardinality_limit=2000
+2026-10-13T06:51:09.113991Z DEBUG codex.exec{otel.kind="internal"}: codex_config::loader::layer_io: /etc/codex/managed_config.toml not found
+2026-10-13T06:51:09.189533Z  INFO codex_cloud_config::service: Cloud config bundle load completed (none) elapsed_ms=0
+2026-10-13T06:51:09.200143Z DEBUG codex_config::loader::layer_io: /etc/codex/managed_config.toml not found
+2026-10-13T06:51:09.200543Z  INFO codex_http_client::custom_ca: using system root certificates because no CA override environment variable was selected codex_ca_certificate_configured=false ssl_cert_file_configured=false
+2026-10-13T06:51:09.203365Z DEBUG codex_config::loader::layer_io: /etc/codex/managed_config.toml not found
+2026-10-13T06:51:09.212281Z DEBUG list_models{refresh_strategy=online}:endpoint_session.execute_with{http.method=GET api.path="models"}: reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:09.212317Z DEBUG list_models{refresh_strategy=online}:endpoint_session.execute_with{http.method=GET api.path="models"}: reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:09.329333Z DEBUG reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:09.329349Z DEBUG reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:09.434683Z DEBUG codex.exec_server.http_request{otel.kind="client" http.request.method="POST" server.address="chatgpt.com" server.port=443}: reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:09.434711Z DEBUG codex.exec_server.http_request{otel.kind="client" http.request.method="POST" server.address="chatgpt.com" server.port=443}: reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:09.465186Z DEBUG reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:09.465205Z DEBUG reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:09.571567Z DEBUG list_models{refresh_strategy=online}:endpoint_session.execute_with{http.method=GET api.path="models"}: codex_http_client::client: Request completed method=GET url=https://chatgpt.com/backend-api/codex/models?client_version=0.159.2 status=200 OK headers={…}
+2026-10-13T06:51:09.659758Z  INFO model_client.websocket_connection{provider=OpenAI wire_api=responses transport="responses_websocket" api.path="/responses" turn.has_metadata_header=true}:responses_websocket.connect{transport="responses_websocket" api.path="/responses"}: codex_api::endpoint::responses_websocket: connecting to websocket: wss://chatgpt.com/backend-api/codex/responses
+2026-10-13T06:51:09.706467Z DEBUG codex_http_client::client: Request completed method=POST url=https://chatgpt.com/backend-api/codex/analytics-events/events status=200 OK headers={…}
+2026-10-13T06:51:10.783355Z DEBUG session_loop{thread_id=<redacted>}:submission_dispatch{otel.name="op.dispatch.turn_input" submission.id=<redacted> codex.op="turn_input"}:turn{otel.name="session_task.turn" thread.id=<redacted> turn.id=<redacted> model=gpt-6.1-sol codex.turn.reasoning_effort=low}:world_state.build: reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:10.783379Z DEBUG session_loop{thread_id=<redacted>}:submission_dispatch{otel.name="op.dispatch.turn_input" submission.id=<redacted> codex.op="turn_input"}:turn{otel.name="session_task.turn" thread.id=<redacted> turn.id=<redacted> model=gpt-6.1-sol codex.turn.reasoning_effort=low}:world_state.build: reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:18.626503Z DEBUG reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:18.626522Z DEBUG reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:18.787210Z DEBUG codex_http_client::client: Request completed method=POST url=https://chatgpt.com/backend-api/codex/analytics-events/events status=200 OK headers={…}
+2026-10-13T06:51:18.794131Z DEBUG reqwest::connect: starting new connection: https://chatgpt.com/
+2026-10-13T06:51:18.794149Z DEBUG reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://chatgpt.com/'
+2026-10-13T06:51:19.018355Z DEBUG codex_http_client::client: Request completed method=POST url=https://chatgpt.com/backend-api/codex/analytics-events/events status=200 OK headers={…}
+2026-10-13T06:51:19.036937Z DEBUG opentelemetry-otlp:  name="HttpMetricsClient.ExportStarted"
+2026-10-13T06:51:19.047308Z DEBUG reqwest::connect: starting new connection: https://ab.chatgpt.com/
+2026-10-13T06:51:19.047326Z DEBUG reqwest::connect: proxy(http://127.0.0.1:<proxy>/) intercepts 'https://ab.chatgpt.com/'
+2026-10-13T06:51:19.122809Z DEBUG opentelemetry-otlp:  name="HttpMetricsClient.ExportSucceeded"

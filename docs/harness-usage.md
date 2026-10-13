@@ -175,11 +175,14 @@ to them.
 
 ### `codex` — the app-server `account/rateLimits/read`
 
-**Observed.** Spawn `codex app-server --disable plugins --stdio`; send
-`initialize`, the `initialized` notification, then the read; match the reply by
-JSON-RPC id. Plugins stay off whatever the config's `plugins` says: the read
-needs none, and a plugin-enabled start downloads Codex's ~29 MB remote plugin
-catalog first.
+**Observed.** Spawn `codex app-server --disable plugins --disable apps -c
+analytics.enabled=false --stdio`, with `-c model_catalog_json=<file>` before
+`--stdio` while the shared model catalog is on; send `initialize`, the
+`initialized` notification, then the read; match the reply by JSON-RPC id.
+Plugins, apps and analytics stay off whatever the config's `plugins`, `apps` and
+`analytics` say: the read needs none of them, and a plugin-enabled start
+downloads Codex's ~29 MB remote plugin catalog first. The shared catalog follows the config's
+`shared_model_catalog`, as on every Codex launch.
 
 ```console
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"oneharness", ...}}}

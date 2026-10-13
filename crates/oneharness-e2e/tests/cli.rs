@@ -37954,9 +37954,11 @@ fn a_callers_own_plugins_flag_lands_after_the_default_disable_and_wins() {
     // and gets them, under the mock's model of that precedence: on `exec` and
     // on the `--control` app-server alike.
     let spellings: [&[&str]; 2] = [&["--enable", "plugins"], &["-c", "features.plugins=true"]];
-    let mut paths = vec![CodexLaunchPath::Exec];
-    #[cfg(unix)]
-    paths.push(CodexLaunchPath::Control);
+    let paths = [
+        CodexLaunchPath::Exec,
+        #[cfg(unix)]
+        CodexLaunchPath::Control,
+    ];
     for (path, spelling) in paths
         .iter()
         .flat_map(|path| spellings.iter().map(move |spelling| (*path, *spelling)))
@@ -38175,7 +38177,7 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
          [harness.codex.variant.lean]\nplugins = false\n",
         "",
     );
-    let mut launches = vec![
+    let launches = [
         (
             "harness level",
             launch_codex(&fx, CodexLaunchPath::Exec, "codex", &[]),
@@ -38192,17 +38194,17 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
             "a resumed turn",
             launch_codex(&fx, CodexLaunchPath::Resume, "codex:own-args", &[]),
         ),
-    ];
-    #[cfg(unix)]
-    launches.push((
-        "a controlled turn",
-        launch_codex(
-            &fx,
-            CodexLaunchPath::Control,
-            "codex:own-args",
-            &["--worker-arg"],
+        #[cfg(unix)]
+        (
+            "a controlled turn",
+            launch_codex(
+                &fx,
+                CodexLaunchPath::Control,
+                "codex:own-args",
+                &["--worker-arg"],
+            ),
         ),
-    ));
+    ];
     for (context, launch) in &launches {
         assert!(!launch.names_plugins(), "{context}: {:?}", launch.argv);
         launch.assert_plugins_loaded(context);
@@ -38272,9 +38274,11 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
         "[harness.codex]\nplugins = true\n",
     )
     .unwrap();
-    let mut paths = vec![CodexLaunchPath::Exec];
-    #[cfg(unix)]
-    paths.push(CodexLaunchPath::Control);
+    let paths = [
+        CodexLaunchPath::Exec,
+        #[cfg(unix)]
+        CodexLaunchPath::Control,
+    ];
     for path in paths {
         let launch = launch_codex(&child, path, "codex", &[]);
         assert!(!launch.names_plugins(), "{path:?}: {:?}", launch.argv);

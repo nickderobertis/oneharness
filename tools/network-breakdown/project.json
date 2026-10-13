@@ -17,6 +17,46 @@
     ]
   },
   "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ruff format --check --config tools/network-breakdown/ruff.toml scripts/codex-network-breakdown.py tools/network-breakdown"
+        ],
+        "parallel": false
+      }
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ruff format --config tools/network-breakdown/ruff.toml scripts/codex-network-breakdown.py tools/network-breakdown"
+        ],
+        "parallel": false
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ruff check --config tools/network-breakdown/ruff.toml scripts/codex-network-breakdown.py tools/network-breakdown"
+        ],
+        "parallel": false
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync ty check --config-file tools/network-breakdown/ty.toml scripts/codex-network-breakdown.py tools/network-breakdown"
+        ],
+        "parallel": false
+      }
+    },
     "test": {
       "executor": "nx:run-commands",
       "options": {

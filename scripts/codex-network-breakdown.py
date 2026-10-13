@@ -69,7 +69,9 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
+from typing import cast
 
 METHOD = "netns-pasta-ifcounters+connect-proxy"
 BOUNDARY = (
@@ -84,6 +86,7 @@ CLONE_NEWPID = 0x20000000
 # and the proxy's accept) or after it.
 CONNECT_BEFORE_SECONDS = 0.5
 CONNECT_AFTER_SECONDS = 5.0
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's tracing spelling has no schema to reconcile against short of running Codex: the committed fixture (tools/network-breakdown/recorded-codex-trace.log, from codex-cli 0.159.2, the version the README's figures name) pins what these read, and a spelling that moves degrades attribution to empty paths, never to wrong byte counts. Re-measuring against live Codex — the README's invocation, which the `oneharness-live-network-budget` plan node re-runs — is where that surfaces.
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?Z\s+[A-Z]+\s+")
 SPANS = re.compile(r"^(?:[\w.]+\{[^{}]*\}:)+")
@@ -93,6 +96,7 @@ CONNECT = re.compile(
 COMPLETED_URL = re.compile(r"\burl=((?:https?|wss?)://[^\s,]+)")
 SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
 URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d+))?(/[^\s\"'?#]*)?")
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -139,6 +143,13 @@ class Tunnel:
     error: str | None = None
 
 
+class Counter(Enum):
+    """Which of a tunnel's byte counts a relay direction adds to."""
+
+    RECEIVED = "received_bytes"
+    SENT = "sent_bytes"
+
+
 @dataclass(frozen=True)
 class Refusal:
     destination: str
@@ -146,15 +157,82 @@ class Refusal:
     error: str
 
 
-def field_of(record: object, key: str, kinds: tuple, where: str) -> object:
-    """`record[key]`, refused unless `record` is an object carrying it as one
-    of `kinds` (a bool is never taken for a number)."""
-    if not isinstance(record, dict) or key not in record:
-        raise Unusable(f"{where} has no `{key}`")
-    value = record[key]
-    if (isinstance(value, bool) and bool not in kinds) or not isinstance(value, kinds):
-        raise Unusable(f"{where}'s `{key}` is {value!r}, not {kinds[0].__name__}")
+RECORD_ADVICE = "re-record it with `codex-network-breakdown.py --measurement-out PATH -- ARGV...`"
+
+
+def as_object(value: object, where: str) -> dict[str, object]:
+    """`value` as a JSON object, refused with where it was expected."""
+    if not isinstance(value, dict):
+        raise Unusable(f"{where} is not a JSON object; {RECORD_ADVICE}")
+    return cast("dict[str, object]", value)
+
+
+def as_list(value: object, where: str) -> list[object]:
+    if not isinstance(value, list):
+        raise Unusable(f"{where} is not a JSON array; {RECORD_ADVICE}")
+    return cast("list[object]", value)
+
+
+def count_field(record: dict[str, object], key: str, where: str) -> int:
+    """A byte count or port: an integer (never a bool) that is not negative."""
+    value = record.get(key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise Unusable(f"{where}'s `{key}` is {value!r}, not a count; {RECORD_ADVICE}")
     return value
+
+
+def time_field(record: dict[str, object], key: str, where: str) -> float:
+    """A UNIX time or duration: a finite, non-negative number."""
+    value = record.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise Unusable(f"{where}'s `{key}` is {value!r}, not a time; {RECORD_ADVICE}")
+    if not math.isfinite(value) or value < 0:
+        raise Unusable(f"{where}'s `{key}` is {value!r}, not a finite time; {RECORD_ADVICE}")
+    return float(value)
+
+
+def text_field(record: dict[str, object], key: str, where: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str):
+        raise Unusable(f"{where}'s `{key}` is {value!r}, not text; {RECORD_ADVICE}")
+    return value
+
+
+def optional_text(record: dict[str, object], key: str, where: str) -> str | None:
+    """`text_field`, or None when the field is absent or null."""
+    return None if record.get(key) is None else text_field(record, key, where)
+
+
+def optional_time(record: dict[str, object], key: str, where: str) -> float | None:
+    """`time_field`, or None when the field is absent or null."""
+    return None if record.get(key) is None else time_field(record, key, where)
+
+
+def tunnel_from(value: object, where: str) -> Tunnel:
+    record = as_object(value, where)
+    tunnel = Tunnel(
+        host=text_field(record, "host", where),
+        port=count_field(record, "port", where),
+        opened_at=time_field(record, "opened_at", where),
+        received_bytes=count_field(record, "received_bytes", where),
+        sent_bytes=count_field(record, "sent_bytes", where),
+        closed_at=time_field(record, "closed_at", where),
+        error=optional_text(record, "error", where),
+    )
+    if not 0 < tunnel.port < 65536:
+        raise Unusable(f"{where}'s `port` {tunnel.port} is no port; {RECORD_ADVICE}")
+    if tunnel.closed_at is not None and tunnel.closed_at < tunnel.opened_at:
+        raise Unusable(f"{where} closed before it opened; {RECORD_ADVICE}")
+    return tunnel
+
+
+def refusal_from(value: object, where: str) -> Refusal:
+    record = as_object(value, where)
+    return Refusal(
+        destination=text_field(record, "destination", where),
+        at=time_field(record, "at", where),
+        error=text_field(record, "error", where),
+    )
 
 
 @dataclass
@@ -174,44 +252,43 @@ class Measurement:
     @staticmethod
     def from_json(data: object, source: str) -> Measurement:
         """A recorded measurement, refused at the first field that is wrong."""
-        number = (int, float)
-        tunnels = []
-        for index, raw in enumerate(field_of(data, "tunnels", (list,), source)):
-            where = f"{source}: tunnel {index}"
-            tunnel = Tunnel(
-                host=field_of(raw, "host", (str,), where),
-                port=field_of(raw, "port", (int,), where),
-                opened_at=field_of(raw, "opened_at", number, where),
-                received_bytes=field_of(raw, "received_bytes", (int,), where),
-                sent_bytes=field_of(raw, "sent_bytes", (int,), where),
-                closed_at=field_of(raw, "closed_at", number, where),
-                error=raw.get("error") if isinstance(raw.get("error"), str) else None,
+        record = as_object(data, source)
+        argv = as_list(record.get("argv", []), f"{source}'s `argv`")
+        if not all(isinstance(arg, str) for arg in argv):
+            raise Unusable(f"{source}'s `argv` holds a non-text argument; {RECORD_ADVICE}")
+        launch_exit = record.get("launch_exit")
+        if launch_exit is not None and (
+            isinstance(launch_exit, bool) or not isinstance(launch_exit, int)
+        ):
+            raise Unusable(
+                f"{source}'s `launch_exit` is {launch_exit!r}, not an exit code; {RECORD_ADVICE}"
             )
-            if not 0 < tunnel.port < 65536 or min(tunnel.received_bytes, tunnel.sent_bytes) < 0:
-                raise Unusable(f"{where} has an impossible port or byte count")
-            tunnels.append(tunnel)
-        refused = []
-        for index, raw in enumerate(data.get("refused", [])):
-            where = f"{source}: refusal {index}"
-            refused.append(
-                Refusal(
-                    destination=field_of(raw, "destination", (str,), where),
-                    at=field_of(raw, "at", number, where),
-                    error=field_of(raw, "error", (str,), where),
-                )
+        timed_out = record.get("timed_out", False)
+        if not isinstance(timed_out, bool):
+            raise Unusable(
+                f"{source}'s `timed_out` is {timed_out!r}, not true or false; {RECORD_ADVICE}"
             )
-        exit_code = data.get("launch_exit")
-        seconds = data.get("launch_seconds")
+        label = record.get("label", "")
         return Measurement(
-            label=str(data.get("label", "")),
-            argv=[str(arg) for arg in data.get("argv", [])],
-            launch_exit=exit_code if isinstance(exit_code, int) else None,
-            launch_seconds=seconds if isinstance(seconds, number) else None,
-            timed_out=data.get("timed_out") is True,
-            received_bytes=field_of(data, "received_bytes", (int,), source),
-            sent_bytes=field_of(data, "sent_bytes", (int,), source),
-            tunnels=tunnels,
-            refused=refused,
+            label=label if isinstance(label, str) else str(label),
+            argv=[str(arg) for arg in argv],
+            launch_exit=launch_exit,
+            launch_seconds=optional_time(record, "launch_seconds", source),
+            timed_out=timed_out,
+            received_bytes=count_field(record, "received_bytes", source),
+            sent_bytes=count_field(record, "sent_bytes", source),
+            tunnels=[
+                tunnel_from(tunnel, f"{source}: tunnel {index}")
+                for index, tunnel in enumerate(
+                    as_list(record.get("tunnels"), f"{source}'s `tunnels`")
+                )
+            ],
+            refused=[
+                refusal_from(refusal, f"{source}: refusal {index}")
+                for index, refusal in enumerate(
+                    as_list(record.get("refused", []), f"{source}'s `refused`")
+                )
+            ],
         )
 
 
@@ -223,6 +300,8 @@ def parse_url(url: str) -> Url | None:
         return None
     default = 443 if match.group(1) in ("https", "wss") else 80
     port = int(match.group(3)) if match.group(3) else default
+    if not 0 < port < 65536:
+        return None
     return Url(match.group(2), port, match.group(4) or "/")
 
 
@@ -235,15 +314,18 @@ def trace_lines(trace_text: str) -> list[TraceLine]:
         stamp = TIMESTAMP.match(line)
         if not stamp:
             continue
-        whole = datetime.strptime(stamp.group(1), "%Y-%m-%dT%H:%M:%S")
+        try:
+            whole = datetime.strptime(stamp.group(1), "%Y-%m-%dT%H:%M:%S")
+        except ValueError:
+            continue  # shaped like a timestamp, but no date that exists
         # The trace is UTC; a naive `timestamp()` would read it as local time.
         seconds = (whole - datetime(1970, 1, 1)).total_seconds()
         if stamp.group(2):
             seconds += float("0" + stamp.group(2))
-        rest = line[stamp.end():]
+        rest = line[stamp.end() :]
         spans = SPANS.match(rest)
         spans_text = spans.group(0) if spans else ""
-        lines.append(TraceLine(seconds, spans_text, rest[len(spans_text):]))
+        lines.append(TraceLine(seconds, spans_text, rest[len(spans_text) :]))
     return lines
 
 
@@ -264,7 +346,7 @@ def trace_connections(trace_text: str) -> list[Connection]:
         if target is None:
             continue
         path = None
-        for later in lines[index + 1:]:
+        for later in lines[index + 1 :]:
             if later.spans != line.spans:
                 continue
             again = CONNECT.search(later.message)
@@ -316,20 +398,24 @@ def oneharness_stderr(stdout_text: str) -> str:
     """The Codex stderr a `oneharness run --format json` report carries, one
     result after another; "" when the text is not such a report."""
     try:
-        document = json.loads(stdout_text)
+        document: object = json.loads(stdout_text)
     except ValueError:
         return ""
-    results = document.get("results") if isinstance(document, dict) else None
+    if not isinstance(document, dict):
+        return ""
+    results = cast("dict[str, object]", document).get("results")
     if not isinstance(results, list):
         return ""
-    return "\n".join(
-        result["stderr"]
-        for result in results
-        if isinstance(result, dict) and isinstance(result.get("stderr"), str)
-    )
+    carried = []
+    for result in cast("list[object]", results):
+        if isinstance(result, dict):
+            stderr = cast("dict[str, object]", result).get("stderr")
+            if isinstance(stderr, str):
+                carried.append(stderr)
+    return "\n".join(carried)
 
 
-def report(measurement: Measurement, trace_text: str | None) -> dict:
+def report(measurement: Measurement, trace_text: str | None) -> dict[str, object]:
     """The printed document for one recorded measurement and optional trace."""
     tunnels = sorted(measurement.tunnels, key=lambda tunnel: tunnel.opened_at)
     paths = attribute(tunnels, trace_connections(trace_text) if trace_text is not None else [])
@@ -420,7 +506,7 @@ class CountingProxy:
         if method == "CONNECT":
             host, _, port = target.rpartition(":")
         elif target.startswith("http://"):
-            hostport = target[len("http://"):].split("/", 1)[0]
+            hostport = target[len("http://") :].split("/", 1)[0]
             host, _, port = hostport.partition(":")
             port = port or "80"
         else:
@@ -448,35 +534,41 @@ class CountingProxy:
             forwarded = head
         if forwarded:
             upstream.sendall(forwarded)
-            self._count(tunnel, "sent_bytes", len(forwarded))
+            self._count(tunnel, Counter.SENT, len(forwarded))
         down = threading.Thread(
-            target=self._pump, args=(upstream, client, tunnel, "received_bytes"), daemon=True
+            target=self._pump, args=(upstream, client, tunnel, Counter.RECEIVED), daemon=True
         )
         down.start()
-        self._pump(client, upstream, tunnel, "sent_bytes")
+        self._pump(client, upstream, tunnel, Counter.SENT)
         down.join()
         with self.lock:
             tunnel.closed_at = time.time()
         client.close()
         upstream.close()
 
-    def _count(self, tunnel: Tunnel, direction: str, n: int) -> None:
+    def _count(self, tunnel: Tunnel, counter: Counter, n: int) -> None:
         with self.lock:
-            setattr(tunnel, direction, getattr(tunnel, direction) + n)
+            if counter is Counter.RECEIVED:
+                tunnel.received_bytes += n
+            else:
+                tunnel.sent_bytes += n
 
-    def _pump(self, src: socket.socket, dst: socket.socket, tunnel: Tunnel, direction: str) -> None:
+    def _pump(
+        self, src: socket.socket, dst: socket.socket, tunnel: Tunnel, counter: Counter
+    ) -> None:
         try:
             while True:
                 data = src.recv(65536)
                 if not data:
                     break
                 dst.sendall(data)
-                self._count(tunnel, direction, len(data))
+                self._count(tunnel, counter, len(data))
         except OSError as error:
             # A reset is how many TLS peers end a connection; it is recorded
             # rather than swallowed, so a relay that broke is visible.
             with self.lock:
-                tunnel.error = tunnel.error or f"{direction}: {type(error).__name__}: {error}"
+                if tunnel.error is None:
+                    tunnel.error = f"{counter.value}: {type(error).__name__}: {error}"
         finally:
             try:
                 dst.shutdown(socket.SHUT_WR)
@@ -489,10 +581,20 @@ class CountingProxy:
         now = time.time()
         with self.lock:
             tunnels = [
-                Tunnel(**{**asdict(tunnel), "closed_at": tunnel.closed_at or now})
+                Tunnel(
+                    host=tunnel.host,
+                    port=tunnel.port,
+                    opened_at=tunnel.opened_at,
+                    received_bytes=tunnel.received_bytes,
+                    sent_bytes=tunnel.sent_bytes,
+                    closed_at=now if tunnel.closed_at is None else tunnel.closed_at,
+                    error=tunnel.error,
+                )
                 for tunnel in self.tunnels
             ]
             return tunnels, list(self.refused)
+
+
 # llmlint: ignore-end[async_typed_clients_at_boundaries]
 
 
@@ -517,7 +619,9 @@ def read_counters() -> dict[str, Counters]:
 def counter_delta(start: dict[str, Counters], end: dict[str, Counters]) -> Counters:
     zero = Counters(0, 0)
     return Counters(
-        received=sum(after.received - start.get(name, zero).received for name, after in end.items()),
+        received=sum(
+            after.received - start.get(name, zero).received for name, after in end.items()
+        ),
         sent=sum(after.sent - start.get(name, zero).sent for name, after in end.items()),
     )
 
@@ -602,9 +706,10 @@ def init(args: argparse.Namespace) -> int:
     start = read_counters()
     t0 = time.monotonic()
     launch = subprocess.Popen(args.argv, stdout=stdout, stderr=stderr, env=env)
-    launch_exit = None
-    launch_seconds = None
-    deadline = t0 + args.timeout if args.timeout > 0 else None
+    launch_exit: int | None = None
+    launch_seconds: float | None = None
+    timeout = float(args.timeout)
+    deadline: float | None = t0 + timeout if timeout > 0 else None
     timed_out = False
     while True:
         try:
@@ -617,11 +722,11 @@ def init(args: argparse.Namespace) -> int:
             launch.returncode = launch_exit
         if pid == 0:
             now = time.monotonic()
-            if deadline and now > deadline and not timed_out:
+            if deadline is not None and now > deadline and not timed_out:
                 timed_out = True
                 os.kill(-1, signal.SIGTERM)
                 deadline = now + 5
-            elif timed_out and deadline and now > deadline:
+            elif timed_out and deadline is not None and now > deadline:
                 os.kill(-1, signal.SIGKILL)
                 deadline = now + 3600
             time.sleep(0.02)
@@ -633,7 +738,9 @@ def init(args: argparse.Namespace) -> int:
         label=args.label,
         argv=args.argv,
         launch_exit=launch_exit,
-        launch_seconds=round(launch_seconds or time.monotonic() - t0, 3),
+        launch_seconds=round(
+            time.monotonic() - t0 if launch_seconds is None else launch_seconds, 3
+        ),
         timed_out=timed_out,
         received_bytes=delta.received,
         sent_bytes=delta.sent,
@@ -646,7 +753,9 @@ def init(args: argparse.Namespace) -> int:
 
 def fetch_step(argv: list[str], cwd: Path | None, what: str) -> None:
     """One step of fetching pasta; a failure names the step's own error."""
-    advice = "install passt (`apt install passt`) or set CODEX_NETWORK_BREAKDOWN_PASTA to a pasta binary"
+    advice = (
+        "install passt (`apt install passt`) or set CODEX_NETWORK_BREAKDOWN_PASTA to a pasta binary"
+    )
     try:
         done = subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
     except OSError as error:
@@ -661,11 +770,11 @@ def fetch_step(argv: list[str], cwd: Path | None, what: str) -> None:
 def find_pasta() -> str:
     """The pasta to build the namespace with, fetching it without root only
     when nothing else provides it and fetching is allowed."""
-    explicit = os.environ.get("CODEX_NETWORK_BREAKDOWN_PASTA")
-    if explicit:
+    explicit = os.environ.get("CODEX_NETWORK_BREAKDOWN_PASTA", "")
+    if explicit != "":
         return explicit
     on_path = shutil.which("pasta")
-    if on_path:
+    if on_path is not None:
         return on_path
     cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
     tools = cache / "oneharness-network-breakdown"
@@ -709,16 +818,45 @@ def measure(args: argparse.Namespace) -> int:
         launch_stdout = args.launch_stdout or (
             os.path.join(scratch, "launch.stdout") if args.trace else None
         )
-        inner = [sys.executable, "-I", str(Path(__file__).resolve()), "--_init", result,
-                 "--label", args.label, "--timeout", str(args.timeout)]
+        inner = [
+            sys.executable,
+            "-I",
+            str(Path(__file__).resolve()),
+            "--_init",
+            result,
+            "--label",
+            args.label,
+            "--timeout",
+            str(args.timeout),
+        ]
         if args.trace:
-            inner += ["--trace", "--rust-log", args.rust_log, "--_trace-file",
-                      os.path.abspath(trace_file)]
-        if launch_stdout:
+            inner += [
+                "--trace",
+                "--rust-log",
+                args.rust_log,
+                "--_trace-file",
+                os.path.abspath(trace_file),
+            ]
+        if launch_stdout is not None:
             inner += ["--launch-stdout", os.path.abspath(launch_stdout)]
-        command = [pasta, "--config-net", "--quiet", "-4",
-                   "-t", "none", "-u", "none", "-T", "none", "-U", "none",
-                   "--", *inner, "--", *args.argv]
+        command = [
+            pasta,
+            "--config-net",
+            "--quiet",
+            "-4",
+            "-t",
+            "none",
+            "-u",
+            "none",
+            "-T",
+            "none",
+            "-U",
+            "none",
+            "--",
+            *inner,
+            "--",
+            *args.argv,
+        ]
         try:
             run = subprocess.Popen(command, env=env, start_new_session=True, stdout=sys.stderr)
         except OSError as error:
@@ -737,23 +875,56 @@ def measure(args: argparse.Namespace) -> int:
                 "user namespaces (Ubuntu 24.04's AppArmor), allow them: "
                 "`sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`"
             )
-        measurement = Measurement.from_json(json.loads(Path(result).read_text()), result)
-        if args.measurement_out:
-            Path(args.measurement_out).write_text(json.dumps(asdict(measurement), indent=2) + "\n")
+        measurement = Measurement.from_json(json.loads(read_text(Path(result))), result)
+        if args.measurement_out is not None:
+            write_text(Path(args.measurement_out), json.dumps(asdict(measurement), indent=2) + "\n")
         trace_text = None
-        if args.trace:
-            stdout_text = Path(launch_stdout).read_text(errors="replace")
-            if not args.launch_stdout:
+        if args.trace and launch_stdout is not None:
+            stdout_text = read_text(Path(launch_stdout))
+            if args.launch_stdout is None:
                 sys.stderr.write(stdout_text)
-            trace_text = Path(trace_file).read_text(errors="replace")
+            trace_text = read_text(Path(trace_file))
             carried = oneharness_stderr(stdout_text)
             if carried:
                 trace_text += "\n" + carried
-                Path(trace_file).write_text(trace_text)
+                write_text(Path(trace_file), trace_text)
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        remove_scratch(Path(scratch))
     print(json.dumps(report(measurement, trace_text)))
     return 0
+
+
+def read_text(path: Path) -> str:
+    """A file this script reads, or why not and what to do about it."""
+    try:
+        return path.read_text(errors="replace")
+    except OSError as error:
+        raise Unusable(
+            f"cannot read {path}: {error}; check the path exists and is readable, then rerun"
+        ) from None
+
+
+def write_text(path: Path, text: str) -> None:
+    """A file this script writes, or why not and what to do about it."""
+    try:
+        path.write_text(text)
+    except OSError as error:
+        raise Unusable(
+            f"cannot write {path}: {error}; point the option at a writable path, then rerun"
+        ) from None
+
+
+def remove_scratch(scratch: Path) -> None:
+    """Remove this run's scratch directory, saying so when part of it stays."""
+
+    def left_behind(_function: object, path: str, error: object) -> None:
+        print(
+            f"codex-network-breakdown: warning: could not remove {path} ({error}); delete "
+            f"{scratch} by hand",
+            file=sys.stderr,
+        )
+
+    shutil.rmtree(scratch, onerror=left_behind)
 
 
 def report_mode(argv: list[str]) -> int:
@@ -761,15 +932,13 @@ def report_mode(argv: list[str]) -> int:
     parser.add_argument("measurement")
     parser.add_argument("--trace")
     args = parser.parse_args(argv)
+    text = read_text(Path(args.measurement))
     try:
-        data = json.loads(Path(args.measurement).read_text())
-    except (OSError, ValueError) as error:
-        raise Unusable(f"cannot read the measurement {args.measurement}: {error}") from None
+        data: object = json.loads(text)
+    except ValueError as error:
+        raise Unusable(f"{args.measurement} is not JSON ({error}); {RECORD_ADVICE}") from None
     measurement = Measurement.from_json(data, args.measurement)
-    try:
-        trace_text = Path(args.trace).read_text(errors="replace") if args.trace else None
-    except OSError as error:
-        raise Unusable(f"cannot read the trace {args.trace}: {error}") from None
+    trace_text = read_text(Path(args.trace)) if args.trace is not None else None
     print(json.dumps(report(measurement, trace_text)))
     return 0
 
@@ -787,10 +956,17 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--label", default="")
     parser.add_argument("--env", action="append", default=[], metavar="K=V", type=env_pair)
-    parser.add_argument("--timeout", type=timeout_seconds, default=0.0,
-                        help="after S seconds SIGTERM every process left, SIGKILL 5 s later")
-    parser.add_argument("--trace", action="store_true",
-                        help="set RUST_LOG for the launch and attribute request paths from it")
+    parser.add_argument(
+        "--timeout",
+        type=timeout_seconds,
+        default=0.0,
+        help="after S seconds SIGTERM every process left, SIGKILL 5 s later",
+    )
+    parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="set RUST_LOG for the launch and attribute request paths from it",
+    )
     parser.add_argument("--rust-log", default=DEFAULT_RUST_LOG)
     parser.add_argument("--trace-out", help="keep the launch's trace here")
     parser.add_argument("--launch-stdout")

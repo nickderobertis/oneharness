@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The launch `test_codex_network_breakdown.py` measures in Codex's place.
 
-    transfer_double.py [--detach] TRANSFER...
+    transfer_double.py [--detach] [--loopback] TRANSFER...
     TRANSFER = PORT:DIRECTION:BYTES[:TRACE]
 
 Run inside the measuring namespace, it does what a Codex launch does with the
@@ -15,7 +15,8 @@ where the double logs the connection the way Codex's trace does: `stderr`, or
 `report` — a `oneharness run`-shaped JSON report on stdout whose result carries
 the line as its stderr. `--detach` hands every transfer to a detached child
 and exits at once, so only a measurement that follows the whole process tree
-sees them.
+sees them. `--loopback` asks for the namespace's own loopback instead of the
+host's, where a port nothing listens on refuses at once.
 """
 
 from __future__ import annotations
@@ -27,11 +28,22 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
-DIRECTIONS = ("down", "up", "http")
-TRACES = ("", "stderr", "report")
+
+class Direction(Enum):
+    DOWN = "down"
+    UP = "up"
+    HTTP = "http"
+
+
+class TraceTo(Enum):
+    NOWHERE = ""
+    STDERR = "stderr"
+    REPORT = "report"
 
 
 @dataclass(frozen=True)
@@ -43,9 +55,9 @@ class Proxy:
 @dataclass(frozen=True)
 class Transfer:
     port: int
-    direction: str
+    direction: Direction
     size: int
-    trace: str
+    trace: TraceTo
 
     @staticmethod
     def parse(text: str) -> Transfer:
@@ -56,17 +68,22 @@ class Transfer:
         trace = parts[3] if len(parts) == 4 else ""
         if not port.isdigit() or not 0 < int(port) < 65536:
             raise SystemExit(f"transfer_double: {port!r} is not a port")
-        if direction not in DIRECTIONS or trace not in TRACES:
-            raise SystemExit(f"transfer_double: {text!r} names an unknown direction or trace")
         if not size.isdigit():
             raise SystemExit(f"transfer_double: {size!r} is not a byte count")
-        return Transfer(int(port), direction, int(size), trace)
+        try:
+            return Transfer(int(port), Direction(direction), int(size), TraceTo(trace))
+        except ValueError:
+            raise SystemExit(
+                f"transfer_double: {text!r} names an unknown direction or trace"
+            ) from None
 
 
 def proxy_from(name: str) -> Proxy:
     url = urlparse(os.environ.get(name, ""))
-    if url.scheme != "http" or not url.hostname or not url.port:
-        raise SystemExit(f"transfer_double: {name} is not an http://host:port proxy: {url.geturl()!r}")
+    if url.scheme != "http" or url.hostname is None or url.port is None:
+        raise SystemExit(
+            f"transfer_double: {name} is not an http://host:port proxy: {url.geturl()!r}"
+        )
     return Proxy(url.hostname, url.port)
 
 
@@ -83,7 +100,7 @@ def trace_line(host: str, transfer: Transfer) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     return (
         f"{now} DEBUG reqwest::connect: starting new connection: "
-        f"http://{host}:{transfer.port}/transfer/{transfer.direction}"
+        f"http://{host}:{transfer.port}/transfer/{transfer.direction.value}"
     )
 
 
@@ -96,6 +113,7 @@ def receive(conn: socket.socket, size: int) -> None:
         got += len(data)
 
 
+# llmlint: ignore-block[async_typed_clients_at_boundaries] This double stands in for Codex at the one boundary the measurement observes — raw bytes through an HTTP proxy — so it speaks the proxy protocol by hand on purpose: a typed client would hide the CONNECT exchange and the byte counts the test asserts. It moves one transfer at a time inside a test, with nothing to overlap.
 def connect_tunnel(proxy: Proxy, host: str, port: int) -> socket.socket:
     conn = socket.create_connection((proxy.host, proxy.port))
     conn.sendall(f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode())
@@ -110,24 +128,36 @@ def connect_tunnel(proxy: Proxy, host: str, port: int) -> socket.socket:
     return conn
 
 
-def run(transfer: Transfer, host: str) -> None:
-    if transfer.direction == "http":
-        proxy = proxy_from("HTTP_PROXY")
-        with socket.create_connection((proxy.host, proxy.port)) as conn:
-            conn.sendall(
-                f"GET http://{host}:{transfer.port}/{transfer.size} HTTP/1.1\r\n"
-                f"Host: {host}:{transfer.port}\r\n\r\n".encode()
-            )
-            receive(conn, transfer.size)
-        return
+def download(transfer: Transfer, host: str) -> None:
     with connect_tunnel(proxy_from("HTTPS_PROXY"), host, transfer.port) as conn:
-        if transfer.direction == "down":
-            conn.sendall(f"GET {transfer.size}\n".encode())
-            receive(conn, transfer.size)
-        else:
-            conn.sendall(f"PUT {transfer.size}\n".encode() + os.urandom(transfer.size))
-            if conn.recv(16).strip() != b"OK":
-                raise SystemExit("transfer_double: the upload was not acknowledged")
+        conn.sendall(f"GET {transfer.size}\n".encode())
+        receive(conn, transfer.size)
+
+
+def upload(transfer: Transfer, host: str) -> None:
+    with connect_tunnel(proxy_from("HTTPS_PROXY"), host, transfer.port) as conn:
+        conn.sendall(f"PUT {transfer.size}\n".encode() + os.urandom(transfer.size))
+        if conn.recv(16).strip() != b"OK":
+            raise SystemExit("transfer_double: the upload was not acknowledged")
+
+
+def plain_http(transfer: Transfer, host: str) -> None:
+    proxy = proxy_from("HTTP_PROXY")
+    with socket.create_connection((proxy.host, proxy.port)) as conn:
+        conn.sendall(
+            f"GET http://{host}:{transfer.port}/{transfer.size} HTTP/1.1\r\n"
+            f"Host: {host}:{transfer.port}\r\n\r\n".encode()
+        )
+        receive(conn, transfer.size)
+
+
+# llmlint: ignore-end[async_typed_clients_at_boundaries]
+
+TRANSFERS: dict[Direction, Callable[[Transfer, str], None]] = {
+    Direction.DOWN: download,
+    Direction.UP: upload,
+    Direction.HTTP: plain_http,
+}
 
 
 def main(argv: list[str]) -> int:
@@ -138,15 +168,18 @@ def main(argv: list[str]) -> int:
             stdin=subprocess.DEVNULL,
         )
         return 0
-    transfers = [Transfer.parse(text) for text in argv]
-    host = default_gateway()
-    carried = []
+    loopback = argv[:1] == ["--loopback"]
+    transfers = [Transfer.parse(text) for text in (argv[1:] if loopback else argv)]
+    host = "127.0.0.1" if loopback else default_gateway()
+    carried: list[str] = []
+    traced: dict[TraceTo, Callable[[str], None]] = {
+        TraceTo.NOWHERE: lambda _line: None,
+        TraceTo.STDERR: lambda line: print(line, file=sys.stderr, flush=True),
+        TraceTo.REPORT: carried.append,
+    }
     for transfer in transfers:
-        if transfer.trace == "stderr":
-            print(trace_line(host, transfer), file=sys.stderr, flush=True)
-        elif transfer.trace == "report":
-            carried.append(trace_line(host, transfer))
-        run(transfer, host)
+        traced[transfer.trace](trace_line(host, transfer))
+        TRANSFERS[transfer.direction](transfer, host)
     if carried:
         print(json.dumps({"results": [{"stderr": "\n".join(carried)}]}))
     return 0

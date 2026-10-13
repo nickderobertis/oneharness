@@ -255,6 +255,15 @@ oh_telemetry_setup() {
   need jq
   dir="${OH_E2E_TELEMETRY_DIR:-$OH_REPO_ROOT/target/e2e-telemetry/network}"
   case "$dir" in /* | [A-Za-z]:*) ;; *) dir="$PWD/$dir" ;; esac
+  # Git Bash spells a drive-letter directory as /c/...: its colon would split
+  # the PATH entry the shims go on.
+  case "$dir" in [A-Za-z]:*)
+    if command -v cygpath >/dev/null 2>&1; then
+      dir="$(cygpath -u "$dir")" && [ -n "$dir" ] ||
+        fail "cannot convert the telemetry directory ${OH_E2E_TELEMETRY_DIR:-} to a Git Bash path; point OH_E2E_TELEMETRY_DIR at a /c/... directory"
+    fi
+    ;;
+  esac
   _OH_SHIM_DIR="$dir/.shims/$suite"
   mkdir -p "$_OH_SHIM_DIR" ||
     fail "cannot create the telemetry directory $dir; point OH_E2E_TELEMETRY_DIR at a writable directory"

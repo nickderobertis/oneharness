@@ -182,47 +182,98 @@ class EverySuiteRecords(unittest.TestCase):
         self.assertEqual(sorted(declared.group(1).split()), registry)
 
 
-@unittest.skipIf(WINDOWS, "the doubles are bash scripts")
-class Setup(unittest.TestCase):
-    """oh_telemetry_setup itself, driven as a suite drives it."""
+def setup_and(
+    tmp: Path,
+    script: str,
+    *,
+    path_first: Path | None = None,
+    telemetry_dir: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """oh_telemetry_setup's library sourced in the test's scratch, then `script`."""
+    env = suite_env(tmp, "codex")
+    if path_first is not None:
+        env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
+    if telemetry_dir is not None:
+        env["OH_E2E_TELEMETRY_DIR"] = telemetry_dir
+    return subprocess.run(
+        [
+            BASH,
+            "-c",
+            f'set -euo pipefail; source "$1"; {script}',
+            "_",
+            str(ROOT / "scripts" / "e2e-lib.sh"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=tmp,
+        env=env,
+        check=False,
+    )
 
-    def setup_and(
-        self,
-        tmp: Path,
-        script: str,
-        *,
-        path_first: Path | None = None,
-        telemetry_dir: str | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        env = suite_env(tmp, "codex")
-        if path_first is not None:
-            env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
-        if telemetry_dir is not None:
-            env["OH_E2E_TELEMETRY_DIR"] = telemetry_dir
-        return subprocess.run(
-            [
-                BASH,
-                "-c",
-                f'set -euo pipefail; source "$1"; {script}',
-                "_",
-                str(ROOT / "scripts" / "e2e-lib.sh"),
-            ],
-            capture_output=True,
-            text=True,
-            cwd=tmp,
-            env=env,
-            check=False,
+
+def plain_codex(directory: Path) -> None:
+    """A `codex` that exits 0, standing for the harness the setup shims."""
+    directory.mkdir(exist_ok=True)
+    (directory / "codex").write_text("#!/usr/bin/env bash\nexit 0\n")
+    (directory / "codex").chmod(0o755)
+
+
+class WindowsFormDirectory(unittest.TestCase):
+    """A drive-letter OH_E2E_TELEMETRY_DIR is that directory, never joined onto
+    the cwd, and its shims still go first on Git Bash's PATH."""
+
+    def assert_recorded_in(self, run: subprocess.CompletedProcess[str], directory: Path) -> None:
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertTrue((directory / ".shims" / "codex" / "codex").is_file(), run.stderr)
+        records = lines(directory / "codex.jsonl")
+        (start,) = starts(records)
+        self.assertEqual(start["argv"], ["--version"])
+        self.assertEqual(len(measurements(records, start["launch_id"])), 1)
+
+    @unittest.skipUnless(WINDOWS, "Git Bash's own cygpath and drive letters")
+    def test_on_windows_setup_puts_its_shims_first_and_records_in_that_directory(self) -> None:
+        tmp = scratch(self)
+        plain_codex(tmp / "real-bin")
+        directory = tmp / "telemetry-win"
+        run = setup_and(
+            tmp,
+            "oh_telemetry_setup codex; codex --version",
+            path_first=tmp / "real-bin",
+            telemetry_dir=str(directory),
         )
+        self.assertRegex(str(directory), r"^[A-Za-z]:\\")
+        self.assert_recorded_in(run, directory)
 
-    def test_a_windows_form_telemetry_directory_is_taken_as_that_directory(self) -> None:
-        # Unix reads C:\... as relative, so the shims land under the cwd here;
-        # what matters is that the shim records to and names the directory as
-        # given, never prefixed with the cwd. (Its colon splits PATH on unix,
-        # so the PATH check that follows is Windows's own, not this test's.)
-        need_builds(self)
+    @unittest.skipIf(WINDOWS, "names the Windows form through a stand-in cygpath on unix")
+    def test_setup_converts_a_drive_letter_directory_through_cygpath(self) -> None:
+        # The stand-in maps drive C: into the scratch, as Git Bash's maps it to /c.
+        tmp = scratch(self)
+        win_bin = tmp / "win-bin"
+        plain_codex(win_bin)
+        (win_bin / "cygpath").write_text(
+            "#!/usr/bin/env bash\n"
+            'if [ "$1" = -u ]; then p="${2#[A-Za-z]:}"; '
+            f'printf "%s\\n" "{tmp}/c-drive${{p//\\\\//}}"; '
+            'else printf "W:%s" "${@: -1}"; fi\n'
+        )
+        (win_bin / "cygpath").chmod(0o755)
+        run = setup_and(
+            tmp,
+            "oh_telemetry_setup codex; codex --version",
+            path_first=win_bin,
+            telemetry_dir=r"C:\oh-telemetry",
+        )
+        self.assert_recorded_in(run, tmp / "c-drive" / "oh-telemetry")
+
+    @unittest.skipIf(WINDOWS, "spells the Windows form without Git Bash on unix")
+    def test_without_cygpath_the_directory_keeps_its_spelling(self) -> None:
+        # Unix reads C:\... as relative, so the shims land under the cwd (the
+        # scratch) here; what matters is that the shim records to and names the
+        # directory as given, never prefixed with the cwd. Its colon splits
+        # PATH on unix, so the PATH check that follows is Windows's own.
         tmp = scratch(self)
         windows_form = r"C:\oh-telemetry"
-        self.setup_and(tmp, "oh_telemetry_setup codex", telemetry_dir=windows_form)
+        setup_and(tmp, "oh_telemetry_setup codex", telemetry_dir=windows_form)
         shim = (tmp / windows_form / ".shims" / "codex" / "codex").read_text()
         quoted = windows_form.replace("\\", "\\\\")
         self.assertIn(f"--file {quoted}/codex.jsonl ", shim)
@@ -231,11 +282,16 @@ class Setup(unittest.TestCase):
             str(tmp), shim.split("--self", 1)[1], "the directory was joined onto the cwd"
         )
 
+
+@unittest.skipIf(WINDOWS, "the doubles are bash scripts")
+class Setup(unittest.TestCase):
+    """oh_telemetry_setup itself, driven as a suite drives it."""
+
     def test_a_suite_started_under_another_suites_shims_wraps_the_real_executable(self) -> None:
         need_builds(self)
         tmp = scratch(self)
         lib = ROOT / "scripts" / "e2e-lib.sh"
-        run = self.setup_and(
+        run = setup_and(
             tmp,
             "oh_telemetry_setup outer; OH_E2E_SUITE= OH_E2E_TELEMETRY_FILE= "
             f"bash -c 'set -euo pipefail; source \"{lib}\"; oh_telemetry_setup inner; codex --version >/dev/null'",
@@ -262,7 +318,7 @@ class Setup(unittest.TestCase):
         # the old one for its own.
         need_builds(self)
         tmp = scratch(self)
-        self.assertEqual(self.setup_and(tmp, "oh_telemetry_setup again").returncode, 0)
+        self.assertEqual(setup_and(tmp, "oh_telemetry_setup again").returncode, 0)
         moved = tmp / "moved-bin"
         moved.mkdir()
         (moved / "codex").write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -270,7 +326,7 @@ class Setup(unittest.TestCase):
         shims = tmp / "telemetry" / ".shims" / "again"
         shims.chmod(0o555)
         self.addCleanup(shims.chmod, 0o755)
-        run = self.setup_and(tmp, "oh_telemetry_setup again", path_first=moved)
+        run = setup_and(tmp, "oh_telemetry_setup again", path_first=moved)
         self.assertNotEqual(run.returncode, 0)
         self.assertIn(
             f"PATH resolves codex to '{shims / 'codex'}', not this suite's measuring shim",
@@ -286,7 +342,7 @@ class Setup(unittest.TestCase):
         stand_in.mkdir()
         (stand_in / "cygpath").write_text('#!/usr/bin/env bash\nprintf "W:%s" "${@: -1}"\n')
         (stand_in / "cygpath").chmod(0o755)
-        run = self.setup_and(tmp, "oh_telemetry_setup winleg", path_first=stand_in)
+        run = setup_and(tmp, "oh_telemetry_setup winleg", path_first=stand_in)
         self.assertEqual(run.returncode, 0, run.stderr)
         shims = tmp / "telemetry" / ".shims" / "winleg"
         adapter = (shims / "codex.cmd").read_bytes()
@@ -294,7 +350,7 @@ class Setup(unittest.TestCase):
             [BASH, "-c", "command -v bash"], capture_output=True, text=True
         ).stdout.strip()
         self.assertEqual(adapter, f'@"W:{bash}" "W:{shims / "codex"}" %*\r\n'.encode())
-        stale = self.setup_and(
+        stale = setup_and(
             tmp,
             'oh_telemetry_setup winleg; printf "@other %%*\\r\\n" >"$OH_E2E_TELEMETRY_DIR/.shims/winleg/codex.cmd"; _oh_shims_first',
             path_first=stand_in,
@@ -690,19 +746,23 @@ class Legs(unittest.TestCase):
         # Git Bash hands the step a drive-letter path; joined onto the working
         # directory it named D:\repo\C:\Users\... and waited on nothing.
         tmp = scratch(self)
-        windows_form = r"C:\oh-net-test-absent\telemetry"
+        cwd = tmp / "elsewhere"
+        cwd.mkdir()
+        # Unix has no drive letters, so there the spelling stands relative to
+        # the scratch cwd; Windows names an absent directory inside the scratch.
+        windows_form = str(tmp / "absent" / "telemetry") if WINDOWS else r"C:\absent\telemetry"
         run = subprocess.run(
             [BASH, str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
             capture_output=True,
             text=True,
-            cwd=tmp,
+            cwd=cwd,
             env={**os.environ, "OH_E2E_TELEMETRY_DIR": windows_form, "OH_E2E_OS": "Linux"},
             timeout=600,
             check=False,
         )
         self.assertNotEqual(run.returncode, 0, run.stdout)
         self.assertIn(f"no telemetry at {windows_form}", run.stdout)
-        self.assertNotIn(tmp.name, run.stdout + run.stderr, "the directory was joined onto the cwd")
+        self.assertNotIn(str(cwd), run.stdout + run.stderr, "the directory was joined onto the cwd")
 
     @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_the_unsupported_legs_select_the_fallback_launch(self) -> None:

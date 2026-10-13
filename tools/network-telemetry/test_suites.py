@@ -20,6 +20,7 @@ import time
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 from typing import NamedTuple
 
 from support import (
@@ -635,7 +636,8 @@ class Settings(unittest.TestCase):
                 self.assertFalse(ran.exists(), "the launch ran on a bad setting")
                 self.assertFalse((tmp / "t.jsonl").exists())
 
-    def test_a_malformed_namespace_result_never_becomes_a_measurement(self) -> None:
+    def netmeasure(self) -> ModuleType:
+        """The recorder's own module, loaded from its script."""
         spec = importlib.util.spec_from_file_location(
             "netmeasure", ROOT / "scripts" / "e2e-netmeasure.py"
         )
@@ -645,6 +647,10 @@ class Settings(unittest.TestCase):
         sys.modules["netmeasure"] = netmeasure
         self.addCleanup(sys.modules.pop, "netmeasure", None)
         spec.loader.exec_module(netmeasure)
+        return netmeasure
+
+    def test_a_malformed_namespace_result_never_becomes_a_measurement(self) -> None:
+        netmeasure = self.netmeasure()
         good = {
             "moved": [10, 1, 5, 1],
             "namespace_tcp_retrans_segs": 0,
@@ -663,6 +669,8 @@ class Settings(unittest.TestCase):
             ("a boolean duration", {"seconds": True}),
             ("an infinite duration", {"seconds": float("inf")}),
             ("a fractional exit", {"exit": 1.5}),
+            ("an exit that would wrap to success", {"exit": 256}),
+            ("a negative exit", {"exit": -1}),
             ("a window that ends before it begins", {"start": {"before_ns": 5, "after_ns": 2}}),
             ("windows out of order", {"start": {"before_ns": 6, "after_ns": 7}}),
             ("a window that is not an object", {"end": [3, 4]}),
@@ -670,6 +678,20 @@ class Settings(unittest.TestCase):
             with self.subTest(result=name):
                 with self.assertRaises(ValueError):
                     netmeasure.NamespaceResult.from_json(json.dumps({**good, **change}))
+
+    def test_a_supervisor_report_with_an_out_of_range_exit_is_no_report(self) -> None:
+        netmeasure = self.netmeasure()
+        report = {"ending": "exited", "reason": ""}
+        for code in (0, 137, 255):
+            with self.subTest(code=code):
+                outcome = netmeasure.Outcome.decode(json.dumps({**report, "code": code}).encode())
+                self.assertIsNotNone(outcome)
+                self.assertEqual(outcome.code, code)
+        for code in (256, -1, True, "0"):
+            with self.subTest(code=code):
+                self.assertIsNone(
+                    netmeasure.Outcome.decode(json.dumps({**report, "code": code}).encode())
+                )
 
 
 class Legs(unittest.TestCase):

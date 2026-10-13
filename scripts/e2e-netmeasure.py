@@ -161,9 +161,15 @@ class Outcome:
         except ValueError:
             return None
         code, reason = fields.get("code"), fields.get("reason")
-        if isinstance(code, bool) or not isinstance(code, int) or not isinstance(reason, str):
+        if not is_exit_status(code) or not isinstance(reason, str):
             return None
         return Outcome(ending, code, reason)
+
+
+def is_exit_status(code: object) -> bool:
+    """Whether code is one a shell can report: anything outside 0..255 would
+    wrap when passed to sys.exit (256 reads as success)."""
+    return isinstance(code, int) and not isinstance(code, bool) and 0 <= code <= 255
 
 
 @dataclass(frozen=True)
@@ -237,8 +243,8 @@ class NamespaceResult:
             or seconds < 0
         ):
             raise ValueError(f"seconds is not a finite non-negative number: {seconds!r}")
-        if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
-            raise ValueError(f"exit is not an integer or null: {code!r}")
+        if code is not None and not is_exit_status(code):
+            raise ValueError(f"exit is not an exit status (0 to 255) or null: {code!r}")
         start, end = Window.read(fields["start"]), Window.read(fields["end"])
         if start.after_ns > end.before_ns:
             raise ValueError("the last counter read began before the first one ended")

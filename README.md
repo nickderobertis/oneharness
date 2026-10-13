@@ -1007,7 +1007,8 @@ No orchestrated run reads either. So:
   oneharness process takes a per-file lock and starts a short `codex app-server
   --disable plugins --disable apps -c analytics.enabled=false --stdio` under the
   launch's environment, sends it `initialize` and nothing else, waits — at most
-  10 s — for Codex to write a fresh `$CODEX_HOME/models_cache.json` stamped with
+  10 s — for Codex to write a `$CODEX_HOME/models_cache.json` whose
+  `fetched_at` is at or after the millisecond the refresh started, stamped with
   its own version, copies that file's `models` atomically into the catalog
   file, and stops it. oneharness never calls the models endpoint or handles a
   ChatGPT credential itself.

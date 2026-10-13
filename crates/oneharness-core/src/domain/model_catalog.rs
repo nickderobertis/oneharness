@@ -94,8 +94,8 @@ pub enum CacheReading {
     /// The cache holds a catalog fetched no earlier than the millisecond the
     /// refresh started, by this executable's version.
     Fresh(Catalog),
-    /// Not yet: no cache, one from before the refresh, or one another version
-    /// of Codex wrote.
+    /// Not yet: no cache, one fetched in a millisecond before the refresh's, or
+    /// one another version of Codex wrote.
     NotYet,
 }
 
@@ -247,20 +247,6 @@ mod tests {
             fresh,
             CacheReading::Fresh(Catalog(r#"{"models":[{"slug":"m"}]}"#.to_string()))
         );
-        // Timestamps are read to the millisecond, and a helper that starts
-        // and fetches inside the refresh's own millisecond is still after it.
-        assert!(matches!(
-            read_codex_cache(
-                &cache(
-                    "2026-10-13T05:54:41.500900Z",
-                    "0.159.2",
-                    r#"[{"slug":"m"}]"#
-                ),
-                started,
-                "0.159.2",
-            ),
-            CacheReading::Fresh(_)
-        ));
         for (text, why) in [
             (
                 cache("2026-10-13T05:54:41.499Z", "0.159.2", r#"[{"slug":"m"}]"#),
@@ -292,6 +278,25 @@ mod tests {
                 read_codex_cache(&text, started, "0.159.2"),
                 CacheReading::NotYet,
                 "{why}"
+            );
+        }
+    }
+
+    /// A helper can start and fetch inside the refresh's own millisecond (the
+    /// mock codex's fetch lands 0 ms after its start), and both instants are
+    /// read to the millisecond: that fetch is the refresh's, not an older one.
+    #[test]
+    fn a_cache_fetched_in_the_refreshs_starting_millisecond_is_fresh() {
+        let started = epoch_millis_from_rfc3339("2026-10-13T05:54:41.500Z").unwrap();
+        let models = r#"[{"slug":"m"}]"#;
+        for fetched_at in ["2026-10-13T05:54:41.500Z", "2026-10-13T05:54:41.500999999Z"] {
+            let text = format!(
+                r#"{{"fetched_at":"{fetched_at}","client_version":"0.159.2","models":{models}}}"#
+            );
+            assert_eq!(
+                read_codex_cache(&text, started, "0.159.2"),
+                CacheReading::Fresh(Catalog(format!(r#"{{"models":{models}}}"#))),
+                "{fetched_at}"
             );
         }
     }

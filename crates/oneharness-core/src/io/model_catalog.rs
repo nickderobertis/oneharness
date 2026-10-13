@@ -288,8 +288,8 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// Start the refresh helper — `codex app-server` with plugins and analytics
 /// off and no catalog flag, under the launch's environment — send it
 /// `initialize` and nothing else (no thread, so no session-start fetch races
-/// it), and wait for Codex to write a catalog fetched after the start into its
-/// cache. Returns the catalog file's contents, or why there are none.
+/// it), and wait for Codex to write a catalog fetched at or after the start's
+/// millisecond into its cache. Returns the catalog file's contents, or why there are none.
 fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Catalog, String> {
     let started_ms = now_ms();
     let deadline = Instant::now() + MODEL_CATALOG_REFRESH_DEADLINE;

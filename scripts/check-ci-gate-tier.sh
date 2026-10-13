@@ -133,7 +133,7 @@ printf '%s\n' "$job" | grep -x '        os: \[ubuntu-latest, macos-latest, windo
 printf '%s\n' "$job" | grep -x '    if: always()' >/dev/null ||
   fail "$ci check carrier must use always() so routing failures still report"
 printf '%s\n' "$job" | grep -x '    needs: macos-policy' >/dev/null ||
-  fail "$ci check carrier must consume the authoritative classifier"
+  fail "$ci check job lacks the line '    needs: macos-policy'; restore it so the check carrier consumes the authoritative classifier (.github/macos-route.mjs)"
 printf '%s\n' "$job" | grep -x '          fetch-depth: 0' >/dev/null ||
   fail "$ci check job's checkout is shallow; the affected tier needs the merge base's history"
 printf '%s\n' "$job" | grep -x '        run: bash scripts/ci-gate-tier.sh' >/dev/null ||
@@ -179,10 +179,11 @@ plz_prefix="$(sed -n 's/.*startswith("\([^"]*\)").*/\1/p' .github/workflows/rele
 omission="$(sed -n 's/^readonly MACOS_OMISSION_STEP="\([^"]*\)"$/\1/p' scripts/ci-verdict.sh)"
 [ -n "$omission" ] || fail "ci-verdict.sh must name the authorized Mac omission step"
 printf '%s\n' "$job" | grep -xF "      - name: $omission" >/dev/null ||
-  fail "$ci must produce the omission step name ci-verdict.sh consumes"
+  fail "$ci check job has no step '      - name: $omission', the authorized Mac omission ci-verdict.sh consumes; restore that step name in the check job (or rename MACOS_OMISSION_STEP in scripts/ci-verdict.sh to match)"
 
 classifier_prefix="$(sed -n 's/^const RELEASE_BRANCH_PREFIX = "\([^"]*\)";$/\1/p' .github/macos-policy.mjs)"
-[ "$classifier_prefix" = "$tier_prefix" ] || fail "the semantic classifier must recognize the release-plz branch prefix the workflow actually uses"
+[ "$classifier_prefix" = "$tier_prefix" ] ||
+  fail ".github/macos-policy.mjs recognizes release pull requests by '$classifier_prefix' but scripts/ci-gate-tier.sh sweeps '$tier_prefix'; make RELEASE_BRANCH_PREFIX in .github/macos-policy.mjs match"
 
 # The other required contexts keep their names and never wait on `check`.
 for name in pr-title deny llmlint; do

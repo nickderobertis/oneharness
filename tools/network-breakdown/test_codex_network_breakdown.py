@@ -183,6 +183,26 @@ class ReportFromRecordedFixtures(unittest.TestCase):
             (None, None, "received_bytes", -1, "`received_bytes` is -1, not a count"),
             (None, None, "refused", 1, "`refused` is not a JSON array"),
             ("tunnels", 0, "opened_at", 10**400, "too large to be a time"),
+            ("tunnels", 0, "opened_at", "soon", "is 'soon', not a time"),
+            ("tunnels", 0, "opened_at", True, "is True, not a time"),
+            ("tunnels", 0, "host", 7, "`host` is 7, not text"),
+            ("tunnels", 0, "error", 7, "`error` is 7, not text"),
+            ("tunnels", 0, "port", 0, "`port` 0 is no port"),
+            ("tunnels", 0, "port", 70000, "`port` 70000 is no port"),
+            (None, None, "tunnels", ["x"], "tunnel 0 is not a JSON object"),
+            (None, None, "refused", ["x"], "refusal 0 is not a JSON object"),
+            (
+                None,
+                None,
+                "refused",
+                [{"destination": 1, "at": 1.0, "error": "e"}],
+                "`destination` is 1, not text",
+            ),
+            (None, None, "argv", ["codex", 1], "holds a non-text argument"),
+            (None, None, "launch_exit", True, "`launch_exit` is True, not an exit code"),
+            (None, None, "launch_exit", 1.5, "`launch_exit` is 1.5, not an exit code"),
+            (None, None, "timed_out", "yes", "`timed_out` is 'yes', not true or false"),
+            (None, None, "label", 3, "`label` is 3, not text"),
         ]
         for listed, index, key, value, said in cases:
             broken = json.loads(json.dumps(recorded))
@@ -196,6 +216,12 @@ class ReportFromRecordedFixtures(unittest.TestCase):
             self.assertEqual(run.stdout, "")
             self.assertIn(said, run.stderr, key)
             self.assertIn("--measurement-out", run.stderr, key)
+        with tempfile.TemporaryDirectory() as scratch:
+            path = Path(scratch) / "array.json"
+            path.write_text("[]")
+            run = run_script("report", str(path))
+        self.assertEqual(run.returncode, 3, run)
+        self.assertIn("is not a JSON object", run.stderr)
 
 
 def without_pasta_env(cache: Path, **extra: str) -> dict[str, str]:

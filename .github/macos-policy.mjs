@@ -77,7 +77,7 @@ export function classify(event, base, head, cwd = process.cwd()) {
   });
   if (event?.event_name !== undefined && typeof event.event_name !== "string")
     return ordinary("invalid event type");
-  if (event?.event_name !== undefined && event.event_name !== "pull_request" && !["push","release","workflow_run","repository_dispatch","schedule","workflow_dispatch"].includes(event.event_name)) return ordinary("unknown event identity");
+  if (event?.event_name !== undefined && event.event_name !== "pull_request" && !["push","release","workflow_run","repository_dispatch","schedule","workflow_dispatch"].includes(event.event_name)) return ordinary(`unrecognised event name ${JSON.stringify(event.event_name)}`);
   if (event?.event_name && event.event_name !== "pull_request")
     return {
       isReleaseOnly: false,

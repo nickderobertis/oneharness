@@ -151,7 +151,37 @@ test("real git histories classify automation versions and fail closed on forged/
     assert.equal(run(event, "missing-ref").macosRequired, true);
     assert.equal(run("{").macosRequired, true);
     assert.equal(run({ event_name: "push" }).macosRequired, false);
-    for (const event_name of ["pull_requset","not-an-event",""]) assert.equal(run({...event,event_name}).macosRequired,true);
+    for (const event_name of ["pull_requset", "not-an-event", ""]) {
+      const unknown = run({ ...event, event_name });
+      assert.equal(unknown.macosRequired, true, `${event_name}: unknown event fails closed`);
+      assert.ok(unknown.reason.includes(JSON.stringify(event_name)), `${event_name}: reason names the event`);
+    }
+    // Every known non-PR automatic event stays Mac-free, whatever it carries.
+    for (const event_name of ["push", "release", "workflow_run", "repository_dispatch", "schedule", "workflow_dispatch"]) {
+      const known = run({ ...event, event_name });
+      assert.deepEqual([known.isReleaseOnly, known.macosRequired], [false, false], `${event_name}: no Mac`);
+    }
+    // A registry dependency sharing the repository's own package name is told
+    // apart by its source: bumping it is a dependency change, not a release.
+    const withRegistryTwin = (version) =>
+      'version=4\n[[package]]\nname="oneharness"\nversion="1.0.1"\n[[package]]\nname="oneharness-core"\n' +
+      `version="${version}"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n` +
+      '[[package]]\nname="serde"\nversion="1.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n';
+    writeFileSync(join(cwd, "Cargo.lock"), withRegistryTwin("0.9.0"));
+    git("add", "Cargo.lock");
+    git("commit", "-qm", "registry twin baseline");
+    git("tag", "twin-base");
+    writeFileSync(join(cwd, "Cargo.lock"), withRegistryTwin("0.9.1"));
+    git("add", "Cargo.lock");
+    git("commit", "-qm", "registry twin bump");
+    const twinRun = (head) => {
+      writeFileSync(join(cwd, "event.json"), JSON.stringify(event));
+      return JSON.parse(execFileSync(process.execPath, [cli, "classify", "--event", join(cwd, "event.json"), "--base", "twin-base", "--head", head], { cwd, encoding: "utf8" }));
+    };
+    const twin = twinRun("HEAD");
+    assert.deepEqual([twin.isReleaseOnly, twin.macosRequired], [false, true], "same-named registry dependency bump requires Mac");
+    git("checkout", "-q", "twin-base", "--", "Cargo.lock");
+    git("commit", "-qm", "restore registry twin");
     writeFileSync(
       join(cwd, "Cargo.lock"),
       'version=4\n[[package]]\nname="oneharness"\nversion="1.0.1"\n[[package]]\nname="serde"\nversion="2.0.0"\nsource="registry+https://github.com/rust-lang/crates.io-index"\n',

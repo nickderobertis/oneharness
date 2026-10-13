@@ -9,8 +9,10 @@ network as far as the measurement can tell: it finds its proxy only through
 `HTTPS_PROXY` / `HTTP_PROXY`, and reaches the host's loopback (pasta's gateway
 address stands for it inside the namespace) through one tunnel per transfer,
 moving exactly BYTES with the test servers' protocol. DIRECTION is `down`
-(CONNECT, then `GET n`), `up` (CONNECT, then `PUT n` and the bytes) or `http`
-(a plain-HTTP absolute-URI `GET` through the proxy). TRACE, when given, is
+(CONNECT, then `GET n`), `up` (CONNECT, then `PUT n` and the bytes), `http`
+(a plain-HTTP absolute-URI `GET` through the proxy) or `direct` (`GET n`
+straight to the destination, around the proxy, as a launch that ignores the
+proxy variables would). TRACE, when given, is
 where the double logs the connection the way Codex's trace does: `stderr`, or
 `report` — a `oneharness run`-shaped JSON report on stdout whose result carries
 the line as its stderr. `--detach` hands every transfer to a detached child
@@ -38,6 +40,7 @@ class Direction(Enum):
     DOWN = "down"
     UP = "up"
     HTTP = "http"
+    DIRECT = "direct"
 
 
 class TraceTo(Enum):
@@ -66,9 +69,12 @@ class Transfer:
             raise SystemExit(f"transfer_double: {text!r} is not PORT:DIRECTION:BYTES[:TRACE]")
         port, direction, size = parts[:3]
         trace = parts[3] if len(parts) == 4 else ""
-        if not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
+        if (
+            not (0 < len(port) <= 5 and port.isascii() and port.isdigit())
+            or not 0 < int(port) < 65536
+        ):
             raise SystemExit(f"transfer_double: {port!r} is not a port")
-        if not (size.isascii() and size.isdigit()):
+        if not (0 < len(size) <= 12 and size.isascii() and size.isdigit()):
             raise SystemExit(f"transfer_double: {size!r} is not a byte count")
         try:
             return Transfer(int(port), Direction(direction), int(size), TraceTo(trace))
@@ -151,12 +157,19 @@ def plain_http(transfer: Transfer, host: str) -> None:
         receive(conn, transfer.size)
 
 
+def direct(transfer: Transfer, host: str) -> None:
+    with socket.create_connection((host, transfer.port)) as conn:
+        conn.sendall(f"GET {transfer.size}\n".encode())
+        receive(conn, transfer.size)
+
+
 # llmlint: ignore-end[async_typed_clients_at_boundaries]
 
 TRANSFERS: dict[Direction, Callable[[Transfer, str], None]] = {
     Direction.DOWN: download,
     Direction.UP: upload,
     Direction.HTTP: plain_http,
+    Direction.DIRECT: direct,
 }
 
 

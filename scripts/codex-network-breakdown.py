@@ -100,7 +100,7 @@ COMPLETED_URL = re.compile(r"\burl=((?:https?|wss?)://[^\s,]+)")
 SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
 # The authority ends at a path, query, fragment, separator or the end: a URL
 # whose port is not digits (`host:x`) is no URL this reads.
-URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d+))?(?=$|[/?#\s,])(/[^\s\"'?#]*)?")
+URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d{1,5}))?(?=$|[/?#\s,])(/[^\s\"'?#]*)?")
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -542,7 +542,7 @@ class CountingProxy:
             self._refuse(client, "400 Bad Request", target, f"not a proxy request: {request!r}")
             return
         host = host.strip("[]")
-        if not host or not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
+        if not host or not is_port(port):
             self._refuse(client, "400 Bad Request", target, f"no host and port in {target!r}")
             return
         destination = f"{host}:{port}"
@@ -801,6 +801,7 @@ def init(args: argparse.Namespace) -> int:
     return 0
 
 
+# llmlint: ignore-block[changed_behavior_has_e2e] A real fetch reaches Debian's package archive, which the gate never contacts: the network-breakdown target sets CODEX_NETWORK_BREAKDOWN_NO_FETCH=1. Its test drives this path end to end with stand-in `apt-get` and `dpkg` that take the same argv and leave the same file layout, and the real fetch is what provisioned pasta for the README's measured figures on this repository's host.
 def fetch_step(argv: list[str], cwd: Path | None, what: str) -> None:
     """One step of fetching pasta; a failure names the step's own error."""
     advice = (
@@ -853,10 +854,18 @@ def find_pasta() -> str:
     return str(pasta)
 
 
+# llmlint: ignore-end[changed_behavior_has_e2e]
+
+
+def is_port(text: str) -> bool:
+    """Whether `text` is a TCP port: one to five ASCII digits naming 1 to 65535."""
+    return 0 < len(text) <= 5 and text.isascii() and text.isdigit() and 0 < int(text) < 65536
+
+
 def env_pair(text: str) -> tuple[str, str]:
     """One `--env NAME=VALUE`, with NAME a variable name and no NUL in VALUE."""
     key, sep, value = text.partition("=")
-    if not sep or not ENV_NAME.match(key) or "\0" in value:
+    if not sep or not ENV_NAME.fullmatch(key) or "\0" in value:
         raise argparse.ArgumentTypeError(
             f"wants NAME=VALUE with NAME a variable name and no NUL in VALUE, got {text!r}"
         )

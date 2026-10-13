@@ -140,11 +140,10 @@ class ReportFromRecordedFixtures(unittest.TestCase):
         self.assertEqual(self.attributed([f"1.0 {span}"], [10.0]), [[]])
         self.assertEqual(self.attributed([f"10.0 {span}"], [1.0]), [[]])
 
-    def test_a_url_whose_port_is_not_digits_names_nothing(self) -> None:
+    def test_a_url_whose_port_is_not_a_port_names_nothing(self) -> None:
         span = 'list_models{api.path="models"}: '
-        self.assertEqual(
-            self.attributed([f"1.0 {span}"], [1.01], url="https://chatgpt.com:invalid/"), [[]]
-        )
+        for url in ("https://chatgpt.com:invalid/", f"https://chatgpt.com:{'4' * 5000}/"):
+            self.assertEqual(self.attributed([f"1.0 {span}"], [1.01], url=url), [[]], url[:40])
 
     def test_one_connection_names_one_tunnel_however_many_could_match(self) -> None:
         span = 'list_models{api.path="models"}: '
@@ -295,6 +294,7 @@ class RefusalsWithoutANamespace(unittest.TestCase):
             (["--timeout", "-1", "--", "true"], "seconds >= 0"),
             (["--timeout", "nan", "--", "true"], "seconds >= 0"),
             (["--env", "1BAD=x", "--", "true"], "NAME=VALUE"),
+            (["--env", "BAD\n=x", "--", "true"], "NAME=VALUE"),
             (["--timeout", "\u00b2", "--", "true"], "seconds >= 0"),
             ([], "argv after --"),
         ):
@@ -607,6 +607,32 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertEqual(run.stdout, "")
         self.assertIn(f"cannot write {scratch}", run.stderr)
         self.assertIn("writable path", run.stderr)
+
+    def test_traffic_around_the_proxy_is_counted_as_unaccounted(self) -> None:
+        self.need_namespace()
+        port = loopback_server()
+        report = breakdown(
+            "--", sys.executable, "-I", str(DOUBLE), f"{port}:direct:{self.DOWN_SECOND}"
+        )
+        self.assertEqual(report["launch_exit"], 0, report)
+        self.assertEqual(report["tunnels"], [])
+        self.assertGreaterEqual(report["received_bytes"], self.DOWN_SECOND)
+        self.assertGreaterEqual(report["unaccounted_received_bytes"], self.DOWN_SECOND)
+
+    def test_an_oversized_port_in_a_proxy_request_is_refused(self) -> None:
+        self.need_namespace()
+        client = (
+            "import os, socket\n"
+            "from urllib.parse import urlparse\n"
+            "proxy = urlparse(os.environ['HTTPS_PROXY'])\n"
+            "with socket.create_connection((proxy.hostname, proxy.port)) as conn:\n"
+            "    conn.sendall(b'CONNECT example.invalid:' + b'4' * 5000 + b' HTTP/1.1\\r\\n\\r\\n')\n"
+            "    assert conn.recv(64).startswith(b'HTTP/1.1 400')\n"
+        )
+        report = breakdown("--", sys.executable, "-I", "-c", client)
+        self.assertEqual(report["launch_exit"], 0, report)
+        self.assertEqual(len(report["refused"]), 1, report)
+        self.assertIn("no host and port", report["refused"][0]["error"])
 
     def test_a_relay_the_destination_breaks_reports_its_error(self) -> None:
         self.need_namespace()

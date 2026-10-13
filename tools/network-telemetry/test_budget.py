@@ -437,6 +437,54 @@ class Detail(BudgetCase):
                 ),
                 "names launch codex-orphan, which has no start line",
             ),
+            "a boolean received count": (
+                mutate(lambda r: measurement_of(r, first).update(rx_bytes=True)),
+                "no non-negative integer rx_bytes",
+            ),
+            "a fractional sent count": (
+                mutate(lambda r: measurement_of(r, first).update(tx_bytes=12.5)),
+                "no non-negative integer tx_bytes",
+            ),
+            "a start of another suite": (
+                mutate(
+                    lambda r: next(
+                        x for x in r if x.get("launch_id") == first and "argv" in x
+                    ).update(suite="claude")
+                ),
+                f"(launch {first}) names suite 'claude', not 'codex'",
+            ),
+            "a start of another harness": (
+                mutate(
+                    lambda r: next(
+                        x for x in r if x.get("launch_id") == first and "argv" in x
+                    ).update(harness="claude-code")
+                ),
+                f"(launch {first}) names harness 'claude-code', not 'codex'",
+            ),
+            "a start with no phase": (
+                mutate(
+                    lambda r: next(x for x in r if x.get("launch_id") == first and "argv" in x).pop(
+                        "phase"
+                    )
+                ),
+                f"(launch {first}) has no phase string",
+            ),
+            "a start whose argv is not strings": (
+                mutate(
+                    lambda r: next(
+                        x for x in r if x.get("launch_id") == first and "argv" in x
+                    ).update(argv=[1, 2])
+                ),
+                f"(launch {first}) has an argv that is not a list of strings",
+            ),
+            "an expectation of another suite": (
+                mutate(
+                    lambda r: r.append(
+                        {"suite": "claude", "phase": "run", "kind": "exec", "expected": True}
+                    )
+                ),
+                "expects a launch of suite 'claude', not 'codex'",
+            ),
             "an expected phase with no measured launch": (
                 mutate(
                     lambda r: r.append(
@@ -455,6 +503,16 @@ class Detail(BudgetCase):
             for case, (records, named) in cases.items():
                 with self.subTest(mode=mode, case=case):
                     write_lines(tmp / "codex.jsonl", records)
+                    run = budget(*mode, telemetry_dir=tmp)
+                    self.assertNotEqual(run.returncode, 0, run.stdout)
+                    self.assertIn(named, run.stderr)
+            for case, text, named in (
+                ("a line that is not JSON", "{not json\n", "line 1 is not JSON"),
+                ("a line that is not an object", "[1, 2]\n", "line 1 is not a JSON object"),
+                ("an empty record", "\n\n", "records no launch at all"),
+            ):
+                with self.subTest(mode=mode, case=case):
+                    (tmp / "codex.jsonl").write_text(text)
                     run = budget(*mode, telemetry_dir=tmp)
                     self.assertNotEqual(run.returncode, 0, run.stdout)
                     self.assertIn(named, run.stderr)

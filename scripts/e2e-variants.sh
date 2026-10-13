@@ -235,10 +235,7 @@ codex_plugins_opt_in() {
   id="$(oh_launch_measured_assert "$OH_E2E_TELEMETRY_FILE" codex-plugins-opt-in exec "$seconds")"
   argv="$(jq -c --arg id "$id" 'select(.launch_id == $id and .argv) | .argv' "$OH_E2E_TELEMETRY_FILE")" ||
     fail "cannot read launch $id's argv from $OH_E2E_TELEMETRY_FILE (jq failed above); rerun the suite so it is written again"
-  printf '%s' "$argv" | jq -e 'index(["-c", "model_reasoning_effort=\"low\""]) != null' >/dev/null ||
-    fail "the opted-in launch's argv lacks the variant's own args (-c model_reasoning_effort=\"low\"): $argv; check that [harness.codex.variant.plugins] args still reaches codex in oneharness's argv (oneharness run --print-command), then rerun"
-  printf '%s' "$argv" | jq -e '(index(["-c", "features.plugins=false"]) == null) and (index(["--disable", "plugins"]) == null)' >/dev/null ||
-    fail "the opted-in launch still carried a plugins-off flag despite plugins = true: $argv; a variant's plugins opt-in no longer reaches codex — check oneharness's plugins resolution (FileConfig::plugins_for), then rerun"
+  oh_codex_opted_in_argv_assert "$argv"
   if [ -z "${OH_E2E_PLUGINS_EVIDENCE:-}" ]; then
     # The first thread.started event names the launch's thread; none leaves
     # the marker alone to attribute the launch's log rows.

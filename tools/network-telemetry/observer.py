@@ -28,6 +28,7 @@ import struct
 import sys
 import time
 from dataclasses import asdict, dataclass, field
+from typing import Literal
 
 ETH_P_ALL = 0x0003
 SOL_PACKET = 263
@@ -40,7 +41,7 @@ BUFFER = 1 << 18
 @dataclass(frozen=True)
 class Frame:
     stamp_ns: int
-    direction: str  # "rx" or "tx"
+    direction: Literal["rx", "tx"]
     length: int
 
 

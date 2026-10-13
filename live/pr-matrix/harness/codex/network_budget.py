@@ -48,6 +48,10 @@ LAUNCH_CAP = 2_500_000
 SUITE_CAP = 30_000_000
 
 LaunchId = NewType("LaunchId", str)
+# A launch kind as the shim derives it: `exec`, `app-server`,
+# `shared-app-server` or `local`, else the Codex subcommand itself — an open
+# set, since a Codex release can add subcommands the record must still count.
+LaunchKind = NewType("LaunchKind", str)
 
 
 @dataclass(frozen=True)
@@ -56,7 +60,7 @@ class Start:
 
     launch_id: LaunchId
     phase: str
-    kind: str
+    kind: LaunchKind
     argv: list[str]
 
 
@@ -76,7 +80,7 @@ class Expectation:
     """A phase must produce a measured launch of this kind."""
 
     phase: str
-    kind: str
+    kind: LaunchKind
 
 
 Line = Union[Start, Measurement, Expectation]
@@ -86,7 +90,7 @@ Line = Union[Start, Measurement, Expectation]
 class Launch:
     launch_id: LaunchId
     phase: str
-    kind: str
+    kind: LaunchKind
     argv: list[str]
     rx: int
     tx: int
@@ -134,7 +138,9 @@ def parse(number: int, record: object) -> Line:
             raise Incomplete(
                 f"{where} expects a launch of suite {record.get('suite')!r}, not {SUITE!r}"
             )
-        return Expectation(text_field(record, "phase", where), text_field(record, "kind", where))
+        return Expectation(
+            text_field(record, "phase", where), LaunchKind(text_field(record, "kind", where))
+        )
     if "argv" in record:
         launch_id = LaunchId(text_field(record, "launch_id", f"{where}, a start line,"))
         where = f"{where} (launch {launch_id})"
@@ -146,9 +152,8 @@ def parse(number: int, record: object) -> Line:
         argv = record["argv"]
         if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
             raise Incomplete(f"{where} has an argv that is not a list of strings")
-        return Start(
-            launch_id, text_field(record, "phase", where), text_field(record, "kind", where), argv
-        )
+        kind = LaunchKind(text_field(record, "kind", where))
+        return Start(launch_id, text_field(record, "phase", where), kind, argv)
     launch_id = LaunchId(
         text_field(record, "launch_id", f"{where}, neither a start nor an expected line,")
     )
@@ -248,8 +253,8 @@ def describe(launch: Launch) -> str:
     return f"launch {launch.launch_id} (phase {launch.phase}, kind {launch.kind}: codex {head})"
 
 
-def kinds(launches: list[Launch]) -> dict[str, list[Launch]]:
-    grouped: dict[str, list[Launch]] = {}
+def kinds(launches: list[Launch]) -> dict[LaunchKind, list[Launch]]:
+    grouped: dict[LaunchKind, list[Launch]] = {}
     for launch in launches:
         grouped.setdefault(launch.kind, []).append(launch)
     return dict(sorted(grouped.items()))
@@ -331,9 +336,9 @@ class Condition:
 
 @dataclass(frozen=True)
 class LargestLaunch:
-    launch_id: str
+    launch_id: LaunchId
     phase: str
-    kind: str
+    kind: LaunchKind
     received: int
 
 

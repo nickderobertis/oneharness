@@ -21,7 +21,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -129,7 +129,7 @@ def need_builds(test: unittest.TestCase) -> None:
 
 
 class Request(NamedTuple):
-    verb: str  # GET or PUT
+    verb: Literal["GET", "PUT"]
     size: int
     pace: float
 
@@ -151,7 +151,7 @@ class Request(NamedTuple):
             return None
         if size < 0 or not math.isfinite(pace) or pace < 0:
             return None
-        return Request(words[0], size, pace)
+        return Request("GET" if words[0] == "GET" else "PUT", size, pace)
 
 
 class LoopbackServer:

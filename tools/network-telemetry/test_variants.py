@@ -202,6 +202,43 @@ class OptedInLaunch(unittest.TestCase):
             )
 
         self.assertEqual(lines_case([*rest, journey.launch, measured]).returncode, 0)
+        second = {**journey.launch, "launch_id": "variants-2-second"}
+        for name, records, said in (
+            ("no start", [*rest, measured], f"has no exec launch for phase {PHASE}"),
+            (
+                "two starts",
+                [*rest, journey.launch, measured, second],
+                f"more than one exec launch for phase {PHASE}",
+            ),
+        ):
+            with self.subTest(starts=name):
+                run = lines_case(records)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(said, run.stderr)
+
+        def argv_case(argv: list[str]) -> subprocess.CompletedProcess[str]:
+            return run_lib("oh_codex_opted_in_argv_assert", json.dumps(argv))
+
+        self.assertEqual(argv_case(journey.launch["argv"]).returncode, 0)
+        own_args = ["-c", 'model_reasoning_effort="low"']
+        without_args = [w for w in journey.launch["argv"] if w not in own_args]
+        for name, argv, said in (
+            ("without the variant's args", without_args, "lacks the variant's own args"),
+            (
+                "with -c features.plugins=false",
+                [*journey.launch["argv"], "-c", "features.plugins=false"],
+                "still carried a plugins-off flag",
+            ),
+            (
+                "with --disable plugins",
+                ["--disable", "plugins", *journey.launch["argv"]],
+                "still carried a plugins-off flag",
+            ),
+        ):
+            with self.subTest(argv=name):
+                run = argv_case(argv)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(said, run.stderr)
         unavailable = {
             "launch_id": launch_id,
             "method": "unavailable",

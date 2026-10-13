@@ -16,7 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
 from support import (
     BASH,
@@ -42,7 +42,7 @@ class Frame(NamedTuple):
     """One frame the observer captured (observer.py's Frame, read back)."""
 
     stamp_ns: int
-    direction: str
+    direction: Literal["rx", "tx"]
     length: int
 
 
@@ -60,6 +60,7 @@ class MeasuredLaunch(unittest.TestCase):
         heartbeat = tmp / "heartbeat"
         unrelated: dict[str, int] = {}
 
+        # llmlint: ignore-block[async_typed_clients_at_boundaries] An unrelated host process moving opaque bytes from the tests' own loopback server, which the recorder must not count; no service API exists for a typed client to model.
         def unrelated_download() -> None:
             # A host process outside the launch, moving more than the launch
             # does across the whole of it, through the same server.
@@ -74,6 +75,8 @@ class MeasuredLaunch(unittest.TestCase):
                         break
                     got += len(data)
             unrelated["received"] = got
+
+        # llmlint: ignore-end[async_typed_clients_at_boundaries]
 
         other = threading.Thread(target=unrelated_download)
         other.start()

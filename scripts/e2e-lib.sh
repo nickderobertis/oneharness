@@ -3939,6 +3939,16 @@ oh_launch_measured_assert() {
   printf '%s' "$id"
 }
 
+# The opted-in launch's argv ($1, a JSON array, as its `start` line records
+# it): it carries the codex:plugins variant's own args, and no plugins-off flag.
+oh_codex_opted_in_argv_assert() {
+  local argv="$1"
+  printf '%s' "$argv" | jq -e 'index(["-c", "model_reasoning_effort=\"low\""]) != null' >/dev/null ||
+    fail "the opted-in launch's argv lacks the variant's own args (-c model_reasoning_effort=\"low\"): $argv; check that [harness.codex.variant.plugins] args still reaches codex in oneharness's argv (oneharness run --print-command), then rerun"
+  printf '%s' "$argv" | jq -e '(index(["-c", "features.plugins=false"]) == null) and (index(["--disable", "plugins"]) == null)' >/dev/null ||
+    fail "the opted-in launch still carried a plugins-off flag despite plugins = true: $argv; a variant's plugins opt-in no longer reaches codex — check oneharness's plugins resolution (FileConfig::plugins_for), then rerun"
+}
+
 # The plugins evidence of the opted-in launch. $2 holds one JSON record per
 # Codex process — {"process", "text", "catalog_request", "plugin_load_ran"} —
 # and the launch's own records are those whose text carries its marker $1:

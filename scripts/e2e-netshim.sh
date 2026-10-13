@@ -68,7 +68,8 @@ _canonical() {
 [ -x "$real" ] || die "the executable this shim wraps, $real, is gone; rerun the suite so oh_telemetry_setup resolves it again"
 real_path="$(_canonical "$real")" || die "cannot resolve the directory of $real; check its permissions, then rerun the suite"
 self_path="$(_canonical "$self")" || die "cannot resolve the directory of the shim $self; rerun the suite so oh_telemetry_setup writes it again"
-head_bytes="$(head -c 512 "$real" | tr -d '\0')" ||
+# Bytes, not text: BSD tr refuses a native binary's head under a UTF-8 locale.
+head_bytes="$(head -c 512 "$real" | LC_ALL=C tr -d '\0')" ||
   die "cannot read $real to check it is not a network shim; check its permissions, then rerun the suite"
 wraps_a_shim=false
 case "$head_bytes" in *"$MARKER"*) wraps_a_shim=true ;; esac

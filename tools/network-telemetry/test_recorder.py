@@ -707,6 +707,26 @@ class Fallback(unittest.TestCase):
                 )
                 self.assert_unavailable(tmp, run, blob, f"this leg is {leg}")
 
+    @unittest.skipIf(WINDOWS, "the legs' platforms are named through OH_E2E_OS on unix")
+    def test_a_native_binary_is_wrapped_under_a_utf8_locale(self) -> None:
+        # A native harness (opencode's Mach-O on macOS) starts with bytes no
+        # UTF-8 decodes, which BSD tr refuses under a UTF-8 locale; the
+        # self-wrap check must still read them and run the launch.
+        tmp = scratch(self)
+        real = tmp / "native-double"
+        real.write_bytes(b"#!/usr/bin/env bash\n# \xcf\xfa\xed\xfe\x80\xff\ncat\nexit 5\n")
+        real.chmod(0o755)
+        blob = os.urandom(4_096)
+        run = run_shim(
+            tmp,
+            [str(real)],
+            ["run", "hi"],
+            harness="opencode",
+            stdin=blob,
+            env={"OH_E2E_OS": "Darwin", "LC_ALL": "en_US.UTF-8"},
+        )
+        self.assert_unavailable(tmp, run, blob, "this leg is Darwin")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without pasta")
     def test_a_linux_host_without_pasta_runs_the_launch_unmeasured(self) -> None:
         tmp = scratch(self)

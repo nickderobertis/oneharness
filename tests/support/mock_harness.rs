@@ -474,25 +474,28 @@ fn millis_knob(name: &str) -> Option<u64> {
     }
 }
 
-/// The last `-c model_catalog_json=<value>` in `argv`, its TOML string decoded
-/// the way Codex reads it: a literal `'…'` as is, a basic `"…"` through its
-/// escapes, anything else as the raw text (Codex reads a `-c` value that is no
-/// TOML as a string). A quoted value that is no TOML string stops the mock.
+/// The last `-c model_catalog_json=<value>` in `argv`, decoded the way Codex
+/// reads a `-c` value: as TOML (through the same `toml` parser oneharness
+/// writes it with, so a literal `'…'`, a basic `"…"` and every escape decode as
+/// they would in Codex), else as the raw text, since Codex reads a `-c` value
+/// that is no TOML as a string. A quoted value that is no TOML string stops the
+/// mock rather than standing for a path with its quotes in it.
 fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
     let value = argv
         .windows(2)
         .filter(|pair| pair[0] == "-c")
         .filter_map(|pair| pair[1].strip_prefix("model_catalog_json="))
         .next_back()?;
-    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
-        return Some(inner.to_string());
+    let parsed = toml::from_str::<toml::Table>(&format!("value = {value}"))
+        .ok()
+        .and_then(|table| table.get("value")?.as_str().map(str::to_string));
+    if let Some(path) = parsed {
+        return Some(path);
     }
-    if value.starts_with('"') {
-        return Some(serde_json::from_str(value).unwrap_or_else(|_| {
-            refuse(&format!(
-                "model_catalog_json `{value}` is quoted but no TOML basic string"
-            ))
-        }));
+    if value.starts_with(['"', '\'']) {
+        refuse(&format!(
+            "model_catalog_json `{value}` is quoted but no TOML string"
+        ));
     }
     Some(value.to_string())
 }
@@ -2194,10 +2197,58 @@ pub fn run() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_feature_enabled, codex_plugins_enabled};
+    use super::{codex_feature_enabled, codex_model_catalog_arg, codex_plugins_enabled};
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn a_catalog_path_decodes_back_from_the_toml_oneharness_writes_it_as() {
+        // Encoded as `domain::harness::codex_model_catalog_setting` encodes it:
+        // the path as a TOML string, whatever it holds.
+        for path in [
+            "/state/oneharness/codex-model-catalog/0f.json",
+            r"C:\Users\a b\AppData\Local\oneharness\0f.json",
+            "/tmp/it's \"quoted\"\tand\u{e9}\u{1f600}.json",
+            "/tmp/a line\nbreak.json",
+        ] {
+            let setting = format!(
+                "model_catalog_json={}",
+                toml::Value::String(path.to_string())
+            );
+            let args = argv(&["exec", "-c", &setting, "go"]);
+            assert_eq!(codex_model_catalog_arg(&args).as_deref(), Some(path));
+        }
+        // A literal string, a value that is no TOML (raw text, as Codex reads
+        // it), the last setting winning, and none at all.
+        for (args, want) in [
+            (
+                &["exec", "-c", "model_catalog_json='C:\\x\\y.json'"][..],
+                Some(r"C:\x\y.json"),
+            ),
+            (
+                &["exec", "-c", "model_catalog_json=/a b/c.json"],
+                Some("/a b/c.json"),
+            ),
+            (
+                &[
+                    "exec",
+                    "-c",
+                    "model_catalog_json=\"/a\"",
+                    "-c",
+                    "model_catalog_json=\"/b\"",
+                ],
+                Some("/b"),
+            ),
+            (&["exec", "-c", "analytics.enabled=false"], None),
+        ] {
+            assert_eq!(
+                codex_model_catalog_arg(&argv(args)).as_deref(),
+                want,
+                "{args:?}"
+            );
+        }
     }
 
     #[test]

@@ -633,6 +633,7 @@ dependencies = [
  "oneharness-core 0.26.0",
  "serde",
  "serde_json",
+ "toml",
  "windows-sys",
 ]
 

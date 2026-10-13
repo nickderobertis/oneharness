@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import struct
 import subprocess
 import sys
 import tempfile
@@ -93,6 +94,52 @@ class ReportFromRecordedFixtures(unittest.TestCase):
         # The trace names nothing for at least one tunnel, which gets no path.
         self.assertIn([], [tunnel["paths"] for tunnel in report["tunnels"]])
         self.assertTrue(any(tunnel["paths"] for tunnel in report["tunnels"]))
+
+    def attributed(self, connections: list[str], opened: list[float]) -> list[list[str]]:
+        """The paths report mode gives tunnels to chatgpt.com:443 opened at
+        `opened` (seconds after 2026-10-13T00:00:00Z), under a trace of
+        `connections` (each `<seconds> <span chain>`)."""
+        epoch = 1_791_849_600.0  # 2026-10-13T00:00:00Z
+        trace = "\n".join(
+            f"2026-10-13T00:00:{float(at):09.6f}Z DEBUG {spans}reqwest::connect: "
+            "starting new connection: https://chatgpt.com/"
+            for at, spans in (line.split(" ", 1) for line in connections)
+        )
+        measurement = {
+            "received_bytes": 100,
+            "sent_bytes": 100,
+            "tunnels": [
+                {
+                    "host": "chatgpt.com",
+                    "port": 443,
+                    "opened_at": epoch + at,
+                    "closed_at": epoch + at + 1,
+                    "received_bytes": 10,
+                    "sent_bytes": 10,
+                }
+                for at in opened
+            ],
+        }
+        with tempfile.TemporaryDirectory() as scratch:
+            (Path(scratch) / "m.json").write_text(json.dumps(measurement))
+            (Path(scratch) / "t.log").write_text(trace)
+            report = breakdown(
+                "report", str(Path(scratch) / "m.json"), "--trace", str(Path(scratch) / "t.log")
+            )
+        return [tunnel["paths"] for tunnel in report["tunnels"]]
+
+    def test_a_span_api_path_names_a_connection_no_url_names(self) -> None:
+        span = 'list_models{refresh_strategy=online}:endpoint_session.execute_with{api.path="models"}: '
+        self.assertEqual(self.attributed([f"1.0 {span}"], [1.01]), [["/models"]])
+
+    def test_a_connection_outside_a_tunnels_window_names_nothing(self) -> None:
+        span = 'list_models{api.path="models"}: '
+        self.assertEqual(self.attributed([f"1.0 {span}"], [10.0]), [[]])
+        self.assertEqual(self.attributed([f"10.0 {span}"], [1.0]), [[]])
+
+    def test_one_connection_names_one_tunnel_however_many_could_match(self) -> None:
+        span = 'list_models{api.path="models"}: '
+        self.assertEqual(self.attributed([f"1.0 {span}"], [1.1, 1.2]), [["/models"], []])
 
     def test_unreadable_inputs_are_refused_saying_what_to_do(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:
@@ -238,6 +285,7 @@ class RefusalsWithoutANamespace(unittest.TestCase):
             (["--timeout", "-1", "--", "true"], "seconds >= 0"),
             (["--timeout", "nan", "--", "true"], "seconds >= 0"),
             (["--env", "1BAD=x", "--", "true"], "NAME=VALUE"),
+            (["--timeout", "\u00b2", "--", "true"], "seconds >= 0"),
             ([], "argv after --"),
         ):
             run = run_script(*args)
@@ -296,6 +344,30 @@ def loopback_server() -> int:
             except OSError:
                 return
             threading.Thread(target=answer, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=serve, daemon=True).start()
+    return int(listener.getsockname()[1])
+
+
+def resetting_server() -> int:
+    """A loopback server that answers a request line with a few bytes and then
+    resets the connection, as a peer that drops mid-transfer does."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+
+    def serve() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            conn.recv(64)
+            conn.sendall(b"partial")
+            time.sleep(0.2)
+            # SO_LINGER with a zero timeout makes close() send a reset.
+            conn.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+            conn.close()
 
     threading.Thread(target=serve, daemon=True).start()
     return int(listener.getsockname()[1])
@@ -456,6 +528,16 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertEqual(run.stdout, "")
         self.assertIn(f"cannot write {scratch}", run.stderr)
         self.assertIn("writable path", run.stderr)
+
+    def test_a_relay_the_destination_breaks_reports_its_error(self) -> None:
+        self.need_namespace()
+        port = resetting_server()
+        report = breakdown("--", sys.executable, "-I", str(DOUBLE), f"{port}:down:1000000")
+        self.assertNotEqual(report["launch_exit"], 0, report)
+        self.assertEqual(len(report["tunnels"]), 1, report)
+        tunnel = report["tunnels"][0]
+        self.assertEqual(tunnel["received_bytes"], len(b"partial"), tunnel)
+        self.assertIn("ConnectionResetError", tunnel["error"] or "", tunnel)
 
     def test_a_detached_child_is_measured_after_its_parent_exits(self) -> None:
         self.need_namespace()

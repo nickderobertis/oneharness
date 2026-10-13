@@ -39921,4 +39921,24 @@ fn a_helper_that_exits_right_after_its_fetch_still_refreshes_the_catalog() {
     assert_eq!(world.helpers().len(), 1);
     assert_every_launch_read(&world, &world.launches());
 }
+
+// llmlint: ignore-block[tests_mirror_real_usage] A clock stepped back is the one way a catalog file comes to be stamped after "now", and a test cannot step the host's clock; stamping the file is how that state is reached, and every launch around it goes through the real CLI.
+#[test]
+fn a_catalog_stamped_in_the_future_stays_fresh() {
+    // After the clock steps back the file looks newer than now: it is as
+    // fresh as one written now, so no launch refreshes it.
+    let world = CatalogWorld::new("catalog-future-stamp", "", "");
+    world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    std::fs::File::options()
+        .write(true)
+        .open(world.the_catalog())
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() + std::time::Duration::from_secs(3_600))
+        .unwrap();
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
+    assert_every_launch_read(&world, &world.launches());
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
 // llmlint: ignore-end[e2e_not_mocked]

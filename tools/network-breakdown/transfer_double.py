@@ -66,9 +66,9 @@ class Transfer:
             raise SystemExit(f"transfer_double: {text!r} is not PORT:DIRECTION:BYTES[:TRACE]")
         port, direction, size = parts[:3]
         trace = parts[3] if len(parts) == 4 else ""
-        if not port.isdigit() or not 0 < int(port) < 65536:
+        if not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
             raise SystemExit(f"transfer_double: {port!r} is not a port")
-        if not size.isdigit():
+        if not (size.isascii() and size.isdigit()):
             raise SystemExit(f"transfer_double: {size!r} is not a byte count")
         try:
             return Transfer(int(port), Direction(direction), int(size), TraceTo(trace))

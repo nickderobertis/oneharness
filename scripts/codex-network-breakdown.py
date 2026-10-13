@@ -478,7 +478,13 @@ class CountingProxy:
         while True:
             try:
                 client, _ = self.listener.accept()
-            except OSError:
+            except OSError as error:
+                print(
+                    f"codex-network-breakdown: warning: the proxy stopped accepting connections "
+                    f"({type(error).__name__}: {error}); any opened after this are missing from "
+                    "`tunnels` — rerun the measurement",
+                    file=sys.stderr,
+                )
                 return
             threading.Thread(target=self._handle, args=(client,), daemon=True).start()
 
@@ -492,6 +498,18 @@ class CountingProxy:
         client.close()
 
     def _handle(self, client: socket.socket) -> None:
+        """Serve one proxy connection; one whose handshake fails is recorded
+        as refused, with the error, rather than lost with its thread."""
+        try:
+            self._serve(client)
+        except OSError as error:
+            with self.lock:
+                self.refused.append(
+                    Refusal("?", time.time(), f"handshake: {type(error).__name__}: {error}")
+                )
+            client.close()
+
+    def _serve(self, client: socket.socket) -> None:
         head = b""
         while b"\r\n\r\n" not in head:
             data = client.recv(4096)
@@ -515,7 +533,7 @@ class CountingProxy:
             self._refuse(client, "400 Bad Request", target, f"not a proxy request: {request!r}")
             return
         host = host.strip("[]")
-        if not host or not port.isdigit() or not 0 < int(port) < 65536:
+        if not host or not (port.isascii() and port.isdigit()) or not 0 < int(port) < 65536:
             self._refuse(client, "400 Bad Request", target, f"no host and port in {target!r}")
             return
         destination = f"{host}:{port}"
@@ -690,7 +708,8 @@ def init(args: argparse.Namespace) -> int:
         # namespace, so the measurement stands, and the reader is told.
         print(
             f"codex-network-breakdown: warning: /proc was not remounted ({proc.stderr.strip()}); "
-            "the launch sees the host's process list",
+            "the launch sees the host's process list. The byte counts stand; if the launch "
+            "inspects processes, rerun on a host that lets an unprivileged namespace mount proc",
             file=sys.stderr,
         )
     signal.signal(signal.SIGTERM, lambda *_: os.kill(-1, signal.SIGKILL))
@@ -957,7 +976,12 @@ def report_mode(argv: list[str]) -> int:
 
 
 def timeout_seconds(text: str) -> float:
-    seconds = float(text)
+    try:
+        seconds = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"wants a finite number of seconds >= 0, got {text!r}"
+        ) from None
     if not math.isfinite(seconds) or seconds < 0:
         raise argparse.ArgumentTypeError(f"wants a finite number of seconds >= 0, got {text}")
     return seconds

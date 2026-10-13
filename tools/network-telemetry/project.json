@@ -94,7 +94,7 @@
       "options": {
         "commands": [
           "uv sync --project python --frozen --no-install-workspace --quiet",
-          "bash scripts/shell-test.sh network-telemetry scripts/check-network-telemetry.sh"
+          "bash scripts/shell-test.sh network-telemetry scripts/with-portable-sed.sh scripts/check-network-telemetry.sh"
         ],
         "parallel": false
       },

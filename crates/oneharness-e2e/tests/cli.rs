@@ -37695,7 +37695,10 @@ fn assert_codex_plugin_discovery_fails(
     let home_arg = codex_home.map(|home| home.display().to_string());
     let mut envs = vec![("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str())];
     envs.extend_from_slice(extra_envs);
-    let mut removed = Vec::new();
+    // The mock refuses by panicking, and oneharness quotes only the tail of a
+    // harness's stderr: an ambient backtrace (CI sets one) would push the
+    // diagnostic out of that tail.
+    let mut removed = vec!["RUST_BACKTRACE", "RUST_LIB_BACKTRACE"];
     match &home_arg {
         Some(home) => envs.push(("CODEX_HOME", home.as_str())),
         None => removed.push("CODEX_HOME"),
@@ -37805,10 +37808,7 @@ fn an_opted_in_codex_with_an_unreadable_plugin_entry_fails_rather_than_skipping_
         &fx,
         Some(&home),
         &[],
-        &format!(
-            "$CODEX_HOME/plugins entry {} could not be read",
-            plugins.join("dangling").display()
-        ),
+        "$CODEX_HOME/plugins entry `dangling` could not be read",
     );
 }
 

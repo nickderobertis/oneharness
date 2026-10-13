@@ -357,9 +357,11 @@ fn installed_codex_plugins() -> Vec<String> {
         .into_iter()
         .filter(|entry| match std::fs::metadata(entry.path()) {
             Ok(metadata) => metadata.is_dir(),
+            // Named by its file name alone: the full path carries the scratch
+            // directory's pid, which a `401`/`403` in it reads as an auth refusal.
             Err(err) => panic!(
-                "$CODEX_HOME/plugins entry {} could not be read: {err}",
-                entry.path().display()
+                "$CODEX_HOME/plugins entry `{}` could not be read: {err}",
+                entry.file_name().to_string_lossy()
             ),
         })
         .map(|entry| entry.file_name().to_string_lossy().into_owned())

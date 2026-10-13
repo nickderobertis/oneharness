@@ -330,15 +330,16 @@ _oh_phase() {
   if [ "${outer:-main}:$line" != "$_OH_PHASE_KEY" ]; then
     _OH_PHASE_KEY="${outer:-main}:$line"
     _OH_PHASE_COUNT=$((_OH_PHASE_COUNT + 1))
+    # Matched as text before any comparison, so no value can overflow it.
     case "${OH_E2E_PHASE_LIMIT:-}" in
       "") ;;
-      *[!0-9]*) fail "OH_E2E_PHASE_LIMIT must be a whole number of phases, got '$OH_E2E_PHASE_LIMIT'" ;;
-      *)
+      [0-9] | [1-9][0-9] | [1-9][0-9][0-9])
         if [ "$_OH_PHASE_COUNT" -gt "$OH_E2E_PHASE_LIMIT" ]; then
           note "STOP: OH_E2E_PHASE_LIMIT=$OH_E2E_PHASE_LIMIT reached; phase $name and every later one did not run"
           exit 0
         fi
         ;;
+      *) fail "OH_E2E_PHASE_LIMIT must be a whole number of phases from 0 to 999, got '$OH_E2E_PHASE_LIMIT'; unset it to run every phase" ;;
     esac
   fi
   OH_E2E_PHASE="$name"

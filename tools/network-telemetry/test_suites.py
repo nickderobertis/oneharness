@@ -8,11 +8,13 @@ standing for every harness executable, so nothing real or paid is launched.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
 import signal
 import subprocess
+import sys
 import time
 import unittest
 from dataclasses import dataclass
@@ -370,6 +372,114 @@ def named(steps_run: list[Step], fragment: str) -> int:
         if fragment in step.name or fragment in step.run:
             return index
     return -1
+
+
+@unittest.skipIf(WINDOWS, "the suites are bash scripts")
+class Settings(unittest.TestCase):
+    """Every setting the recorder, the suites and the budget step read is
+    refused, saying what it accepts, before anything runs on a bad value."""
+
+    def test_a_bad_phase_limit_stops_the_suite_before_its_first_launch(self) -> None:
+        need_builds(self)
+        for value in ("x", "-1", "1000", "99999999999999999999", "1.5"):
+            with self.subTest(value=value):
+                tmp = scratch(self)
+                run = run_suite("codex", suite_env(tmp, "codex", OH_E2E_PHASE_LIMIT=value))
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(
+                    "OH_E2E_PHASE_LIMIT must be a whole number of phases from 0 to 999", run.stderr
+                )
+                self.assertEqual(starts(lines(tmp / "telemetry" / "codex.jsonl")), [])
+
+    def test_a_bad_pending_wait_is_refused_before_the_check(self) -> None:
+        for value in ("x", "08", "99999", "-1"):
+            with self.subTest(value=value):
+                tmp = scratch(self)
+                run = subprocess.run(
+                    ["bash", str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "OH_E2E_TELEMETRY_DIR": str(tmp),
+                        "OH_E2E_OS": "Linux",
+                        "OH_E2E_PENDING_WAIT": value,
+                    },
+                    check=False,
+                )
+                self.assertEqual(run.returncode, 2)
+                self.assertIn("OH_E2E_PENDING_WAIT must be a whole number of seconds", run.stderr)
+                self.assertNotIn("budget codex", run.stdout)
+
+    def test_a_bad_deadline_or_observer_is_refused_before_the_launch(self) -> None:
+        for name, value, said in (
+            ("OH_E2E_NET_DEADLINE", "-5", "must be a finite, non-negative number of seconds"),
+            ("OH_E2E_NET_DEADLINE", "nan", "must be a finite, non-negative number of seconds"),
+            ("OH_E2E_NET_DEADLINE", "soon", "must be a finite, non-negative number of seconds"),
+            ("OH_E2E_NET_OBSERVER", '"python3"', "must be a JSON array of non-empty strings"),
+            ("OH_E2E_NET_OBSERVER", '["python3", 2]', "must be a JSON array of non-empty strings"),
+            ("OH_E2E_NET_OBSERVER", "not json", "must be a JSON array of non-empty strings"),
+        ):
+            with self.subTest(setting=name, value=value):
+                tmp = scratch(self)
+                ran = tmp / "ran"
+                run = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts" / "e2e-netmeasure.py"),
+                        "--line-file",
+                        str(tmp / "t.jsonl"),
+                        "--launch-id",
+                        "x",
+                        "--",
+                        "touch",
+                        str(ran),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    env={**os.environ, name: value},
+                    check=False,
+                )
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(said, run.stderr)
+                self.assertFalse(ran.exists(), "the launch ran on a bad setting")
+                self.assertFalse((tmp / "t.jsonl").exists())
+
+    def test_a_malformed_namespace_result_never_becomes_a_measurement(self) -> None:
+        spec = importlib.util.spec_from_file_location(
+            "netmeasure", ROOT / "scripts" / "e2e-netmeasure.py"
+        )
+        assert spec is not None and spec.loader is not None
+        netmeasure = importlib.util.module_from_spec(spec)
+        # Its dataclasses resolve their annotations through sys.modules.
+        sys.modules["netmeasure"] = netmeasure
+        self.addCleanup(sys.modules.pop, "netmeasure", None)
+        spec.loader.exec_module(netmeasure)
+        good = {
+            "moved": [10, 1, 5, 1],
+            "namespace_tcp_retrans_segs": 0,
+            "seconds": 1.5,
+            "exit": 0,
+            "start": {"before_ns": 1, "after_ns": 2},
+            "end": {"before_ns": 3, "after_ns": 4},
+        }
+        self.assertEqual(
+            netmeasure.NamespaceResult.from_json(json.dumps(good)).line("x").rx_bytes, 10
+        )
+        for name, change in (
+            ("a negative count", {"moved": [-1, 1, 5, 1]}),
+            ("a boolean count", {"moved": [True, 1, 5, 1]}),
+            ("three counters", {"moved": [10, 1, 5]}),
+            ("a boolean duration", {"seconds": True}),
+            ("an infinite duration", {"seconds": float("inf")}),
+            ("a fractional exit", {"exit": 1.5}),
+            ("a window that ends before it begins", {"start": {"before_ns": 5, "after_ns": 2}}),
+            ("windows out of order", {"start": {"before_ns": 6, "after_ns": 7}}),
+            ("a window that is not an object", {"end": [3, 4]}),
+        ):
+            with self.subTest(result=name):
+                with self.assertRaises(ValueError):
+                    netmeasure.NamespaceResult.from_json(json.dumps({**good, **change}))
 
 
 class Legs(unittest.TestCase):

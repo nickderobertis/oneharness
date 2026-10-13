@@ -276,6 +276,43 @@ class OptedInLaunch(unittest.TestCase):
                 self.assertIn(said, run.stderr)
 
 
+class PluginsSleep(unittest.TestCase):
+    @unittest.skipIf(WINDOWS, "the suite is a bash script")
+    def test_a_bad_sleep_is_refused_before_the_opted_in_launch(self) -> None:
+        need_builds(self)
+        for value in ("0", "601", "18446744073709551617", "08", "abc"):
+            with self.subTest(value=value):
+                tmp = scratch(self)
+                env = suite_env(
+                    tmp,
+                    "claude",
+                    "codex",
+                    ANTHROPIC_API_KEY="test-material",
+                    OPENAI_API_KEY="test-material",
+                    OH_E2E_VARIANTS_API_ONLY="1",
+                    OH_E2E_VARIANTS_CORE_ONLY="1",
+                    OH_E2E_CODEX_SUBSCRIPTION="1",
+                    OH_E2E_PLUGINS_SLEEP=value,
+                    OH_E2E_PROVIDER_DOUBLE=str(MOCK),
+                )
+                claude = Path(env["PATH"].split(os.pathsep)[0]) / "claude"
+                claude.write_text(
+                    f'#!/usr/bin/env bash\nexec bash "{PROVIDER_DOUBLE}" --provider-tool=claude "$@"\n'
+                )
+                run = run_suite("variants", env)
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(
+                    "OH_E2E_PLUGINS_SLEEP must be a whole number of seconds from 1 to 600",
+                    run.stderr,
+                )
+                opted = [
+                    s
+                    for s in starts(lines(tmp / "telemetry" / "variants.jsonl"))
+                    if s["phase"] == PHASE and s["kind"] == "exec"
+                ]
+                self.assertEqual(opted, [], "the opted-in launch ran on a bad sleep")
+
+
 class CodexHomePlugins(unittest.TestCase):
     """oh_codex_home_allows_plugins over every top-level spelling of the setting."""
 

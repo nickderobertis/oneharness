@@ -29,6 +29,7 @@ import socket
 import sys
 import threading
 import time
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 CHUNK = 64 * 1024
@@ -53,9 +54,19 @@ def recv_exact(conn: socket.socket, n: int) -> int:
     return got
 
 
-def transfer(port: int, down: int, up: int) -> dict[str, object]:
+@dataclass(frozen=True)
+class Moved:
+    """What one client moved: the line it writes to stderr."""
+
+    received: int
+    sent: int
+    reply: str = ""
+    host: str = ""
+
+
+def transfer(port: int, down: int, up: int) -> Moved:
     if not down and not up:
-        return {"received": 0, "sent": 0}
+        return Moved(0, 0)
     host = gateway()
     got = 0
     if down:
@@ -67,7 +78,7 @@ def transfer(port: int, down: int, up: int) -> dict[str, object]:
         with socket.create_connection((host, port)) as conn:
             conn.sendall(f"PUT {up}\n".encode() + os.urandom(up))
             reply = conn.recv(64).decode().strip()
-    return {"received": got, "sent": up, "reply": reply, "host": host}
+    return Moved(got, up, reply, host)
 
 
 def beat(path: str, stop: threading.Event) -> None:
@@ -85,7 +96,7 @@ def child(args: argparse.Namespace) -> None:
         threading.Thread(target=beat, args=(args.heartbeat, stop), daemon=True).start()
     if args.detach:
         time.sleep(0.3)  # the launch's own process has exited by now
-    print(json.dumps(transfer(args.port, args.down, args.up)), file=sys.stderr, flush=True)
+    print(json.dumps(asdict(transfer(args.port, args.down, args.up))), file=sys.stderr, flush=True)
     time.sleep(args.linger)
     stop.set()
 

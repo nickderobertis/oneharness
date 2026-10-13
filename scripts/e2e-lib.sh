@@ -187,6 +187,7 @@ oh_sandbox_prepare() {
   esac
 }
 
+# llmlint: ignore[comments_earn_their_place] This library's sections are delimited by these dividers throughout its 3,900 lines; this one keeps the recorder's helpers findable the same way.
 # --- network telemetry -------------------------------------------------------
 #
 # Every live suite records what each harness launch it makes spends on the
@@ -217,9 +218,9 @@ _OH_PHASE_COUNT=0
 # `.oh-network-shims` is skipped), so a suite started under another suite's
 # shims still wraps the real executable.
 _oh_unshimmed() {
-  local exe="$1" entry candidate
-  local IFS=:
-  for entry in $PATH; do
+  local exe="$1" entry candidate entries=()
+  IFS=: read -r -a entries <<<"$PATH"
+  for entry in "${entries[@]+"${entries[@]}"}"; do
     [ -n "$entry" ] && [ ! -e "$entry/.oh-network-shims" ] || continue
     for candidate in "$entry/$exe" "$entry/$exe.exe"; do
       if [ -f "$candidate" ] && [ -x "$candidate" ]; then
@@ -228,6 +229,18 @@ _oh_unshimmed() {
       fi
     done
   done
+  return 1
+}
+
+# Write stdin to $1 whole or not at all: a partial shim
+# must never stand where the setup's check would read it. Says why on failure.
+_oh_write_whole() {
+  local target="$1" partial="$1.$$.partial"
+  if cat 2>/dev/null >"$partial" && mv -f "$partial" "$target" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$partial" 2>/dev/null || true
+  note "  could not write $target (its directory is not writable); the check below names what PATH resolves instead"
   return 1
 }
 
@@ -244,9 +257,9 @@ oh_telemetry_setup() {
   OH_E2E_TELEMETRY_FILE="$dir/$suite.jsonl"
   export OH_E2E_SUITE OH_E2E_TELEMETRY_FILE
   : >"$OH_E2E_TELEMETRY_FILE" || fail "cannot write $OH_E2E_TELEMETRY_FILE; check that $dir is writable"
-  # A write that fails here is caught by _oh_shims_first below, which names
-  # what PATH resolves instead.
-  : 2>/dev/null >"$_OH_SHIM_DIR/.oh-network-shims" || true
+  # The marker is what keeps a nested suite from wrapping these shims.
+  : >"$_OH_SHIM_DIR/.oh-network-shims" ||
+    fail "cannot mark $_OH_SHIM_DIR as the suite's shim directory; check that it is writable, or remove it and rerun"
   _OH_SHIMMED=()
   for pair in "${OH_HARNESS_EXECUTABLES[@]}"; do
     exe="${pair%%:*}" harness="${pair#*:}"
@@ -256,12 +269,13 @@ oh_telemetry_setup() {
       printf '#!/usr/bin/env bash\n# %s suite=%s\n' "$OH_NETWORK_SHIM_MARKER" "$suite"
       printf 'exec bash %q --suite %q --harness %q --real %q --self %q --file %q -- "$@"\n' \
         "$OH_REPO_ROOT/scripts/e2e-netshim.sh" "$suite" "$harness" "$real" "$shim" "$OH_E2E_TELEMETRY_FILE"
-    } 2>/dev/null >"$shim" && chmod +x "$shim" 2>/dev/null || true
+    } | _oh_write_whole "$shim" && chmod +x "$shim" ||
+      true # _oh_shims_first below refuses whatever stands in its place
     if command -v cygpath >/dev/null 2>&1; then
       # A native process (oneharness) resolves `codex` through PATHEXT, so
       # Windows needs a .cmd beside the script Git Bash runs.
-      printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$shim")" \
-        2>/dev/null >"$shim.cmd" || true
+      printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$shim")" |
+        _oh_write_whole "$shim.cmd" || true # checked below, like the script
     fi
     _OH_SHIMMED+=("$exe")
   done
@@ -272,17 +286,23 @@ oh_telemetry_setup() {
 }
 
 # Fail unless every executable the setup shimmed resolves first to this
-# suite's shim: a launch that bypassed it would leave the record incomplete.
+# suite's shim (and, on Windows, its .cmd to that shim): a launch that
+# bypassed it would leave the record incomplete.
 _oh_shims_first() {
-  local exe resolved
+  local exe resolved faults=()
   [ -n "$_OH_SHIM_DIR" ] || return 0
   for exe in "${_OH_SHIMMED[@]+"${_OH_SHIMMED[@]}"}"; do
     resolved="$(command -v "$exe" 2>/dev/null || true)"
     if [ "$resolved" != "$_OH_SHIM_DIR/$exe" ] ||
       ! grep -q "$OH_NETWORK_SHIM_MARKER suite=$OH_E2E_SUITE" "$resolved" 2>/dev/null; then
-      fail "PATH resolves $exe to '${resolved:-nothing}', not this suite's measuring shim $_OH_SHIM_DIR/$exe; a launch through it would go unrecorded. Remove whatever stands in the shim's place (or the PATH entry ahead of it) and rerun"
+      faults+=("PATH resolves $exe to '${resolved:-nothing}', not this suite's measuring shim $_OH_SHIM_DIR/$exe")
+    elif command -v cygpath >/dev/null 2>&1 &&
+      ! grep -qF "$(cygpath -w "$resolved")" "$resolved.cmd" 2>/dev/null; then
+      faults+=("$resolved.cmd does not launch this suite's measuring shim, so oneharness (which resolves $exe through PATHEXT) would bypass it")
     fi
   done
+  [ "${#faults[@]}" -eq 0 ] ||
+    fail "$(printf '%s; ' "${faults[@]}")a launch through any of them would go unrecorded. Remove whatever stands in the shim's place (or the PATH entry ahead of it) and rerun"
 }
 
 # Name the phase whose launches follow, and export it for the shim. With no
@@ -3821,6 +3841,7 @@ JSON
   note "PASS: $id mock deny enforcement (run --mock-rules)"
 }
 
+# llmlint: ignore[comments_earn_their_place] This library's sections are delimited by these dividers throughout its 3,900 lines; this one keeps the opted-in launch's helpers findable the same way.
 # --- the opted-in Codex launch (e2e-variants.sh) -----------------------------
 #
 # The live-codex budget only ever sees oneharness's defaults, so a Codex home
@@ -3831,47 +3852,52 @@ JSON
 
 # Fail, naming the file, when $1's config.toml turns Codex plugins off.
 oh_codex_home_allows_plugins() {
-  local cfg="$1/config.toml"
+  local cfg="$1/config.toml" rc=0
   [ -f "$cfg" ] || return 0
-  if awk '
+  awk '
       /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section) }
       section == "[features]" && /^[[:space:]]*plugins[[:space:]]*=[[:space:]]*false/ { off = 1 }
       section == "" && /^[[:space:]]*features\.plugins[[:space:]]*=[[:space:]]*false/ { off = 1 }
-      END { exit !off }
-    ' "$cfg"; then
-    fail "$cfg disables Codex plugins ([features] plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun"
-  fi
+      END { exit off ? 0 : 1 }
+    ' "$cfg" || rc=$?
+  case "$rc" in
+    0) fail "$cfg disables Codex plugins ([features] plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
+    1) ;;
+    *) fail "could not read $cfg (awk exited $rc); check its permissions with ls -l, then rerun" ;;
+  esac
 }
 
 # The measurement of the one launch phase $2 made, from telemetry file $1:
 # exactly one `start` line of kind $3, exactly one measurement line joined to
 # it, lasting at least $4 seconds (so the sustained command ran inside it) and,
-# on Linux, measured with both byte fields. Prints its launch id.
+# on Linux, measured with non-negative integer byte fields. Prints its launch id.
 oh_launch_measured_assert() {
   local file="$1" phase="$2" kind="$3" min_seconds="$4" starts id lines os
+  local rerun="rerun 'just live-variants'; if it recurs, read the recorder's own diagnostics on stderr and live/AGENTS.md"
   starts="$(jq -rs --arg p "$phase" --arg k "$kind" \
     'map(select(.launch_id and .argv and .phase == $p and .kind == $k) | .launch_id) | join(" ")' "$file")" ||
     fail "cannot read the telemetry file $file; rerun the suite so oh_telemetry_setup recreates it"
   case "$starts" in
-    "") fail "$file has no $kind launch for phase $phase: the launch did not go through the measuring shim" ;;
-    *" "*) fail "$file has more than one $kind launch for phase $phase ($starts); the phase must make exactly one" ;;
+    "") fail "$file has no $kind launch for phase $phase: the launch did not go through the measuring shim; check that oh_telemetry_setup ran before the phase and that nothing put another executable ahead of the shim on PATH, then $rerun" ;;
+    *" "*) fail "$file has more than one $kind launch for phase $phase ($starts); the phase must make exactly one — check what else it launches, then $rerun" ;;
   esac
   id="$starts"
   lines="$(jq -c --arg id "$id" 'select(.launch_id == $id and (.argv | not))' "$file")"
-  [ -n "$lines" ] || fail "launch $id (phase $phase) has no measurement line in $file: the recorder never finished it"
+  [ -n "$lines" ] || fail "launch $id (phase $phase) has no measurement line in $file: the recorder never finished it; $rerun"
   [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" = 1 ] ||
-    fail "launch $id (phase $phase) has more than one measurement line in $file; each launch is recorded once"
+    fail "launch $id (phase $phase) has more than one measurement line in $file; each launch is recorded once, so two recorders wrapped it — check PATH for a second shim, then $rerun"
   os="${OH_E2E_OS:-$(uname -s)}"
   case "$os" in
     Linux*)
       printf '%s' "$lines" | jq -e '.method == "netns-pasta"' >/dev/null ||
-        fail "launch $id (phase $phase) was not measured: $(printf '%s' "$lines" | jq -r '"method \(.method)" + (if .reason then ": \(.reason)" else "" end)')"
-      printf '%s' "$lines" | jq -e '(.rx_bytes | type) == "number" and (.tx_bytes | type) == "number"' >/dev/null ||
-        fail "launch $id (phase $phase) has an incomplete measurement line (no numeric rx_bytes/tx_bytes): $lines"
+        fail "launch $id (phase $phase) was not measured ($(printf '%s' "$lines" | jq -r '"method \(.method)" + (if .reason then ": \(.reason)" else "" end)')); give this host pasta and unprivileged user namespaces (live/AGENTS.md), then $rerun"
+      printf '%s' "$lines" | jq -e '
+          [.rx_bytes, .tx_bytes] | all(type == "number" and . >= 0 and . == floor)' >/dev/null ||
+        fail "launch $id (phase $phase) has an incomplete measurement line (rx_bytes and tx_bytes must be non-negative integers): $lines; $rerun"
       ;;
   esac
   printf '%s' "$lines" | jq -e --argjson min "$min_seconds" '(.seconds | type) == "number" and .seconds >= $min' >/dev/null ||
-    fail "launch $id (phase $phase) lasted $(printf '%s' "$lines" | jq -r '.seconds') s, under the $min_seconds s its sustained shell command takes: the turn did not run it"
+    fail "launch $id (phase $phase) lasted $(printf '%s' "$lines" | jq -r '.seconds') s, under the $min_seconds s its sustained shell command takes: the turn did not run it; read the turn's events in the run's report, then $rerun"
   printf '%s' "$id"
 }
 
@@ -3881,14 +3907,15 @@ oh_launch_measured_assert() {
 # together they must show the plugin catalog requested and plugins loaded.
 oh_codex_plugins_evidence_assert() {
   local marker="$1" evidence="$2" mine
-  [ -s "$evidence" ] || fail "no Codex plugins evidence was recorded ($evidence is empty or missing): the opted-in launch logged nothing to show its plugins ran"
+  local look="read Codex's own log of the launch (logs_2.sqlite in its CODEX_HOME, rows since the phase began) to see what it did"
+  [ -s "$evidence" ] || fail "no Codex plugins evidence was recorded ($evidence is empty or missing): the opted-in launch logged nothing to show its plugins ran; $look"
   mine="$(jq -sc --arg m "$marker" 'map(select((.text // "") | contains($m)))' "$evidence")" ||
-    fail "cannot read the Codex plugins evidence $evidence"
-  [ "$mine" != "[]" ] || fail "none of the Codex plugins evidence in $evidence belongs to the opted-in launch (marker $marker); any there is another launch's"
+    fail "cannot read the Codex plugins evidence $evidence; rerun the phase so it is written again"
+  [ "$mine" != "[]" ] || fail "none of the Codex plugins evidence in $evidence belongs to the opted-in launch (marker $marker); any there is another launch's. $look"
   printf '%s' "$mine" | jq -e 'any(.catalog_request == true)' >/dev/null ||
-    fail "the opted-in launch (marker $marker) never requested the plugin catalog: plugins = true did not reach Codex, or Codex no longer fetches it"
+    fail "the opted-in launch (marker $marker) never requested the plugin catalog: plugins = true did not reach Codex, or Codex no longer fetches it; check the launch's argv in variants.jsonl for a plugins-off flag, then $look"
   printf '%s' "$mine" | jq -e 'any(.plugins_loaded == true)' >/dev/null ||
-    fail "the opted-in launch (marker $marker) never loaded its plugins"
+    fail "the opted-in launch (marker $marker) never loaded its plugins; $look"
 }
 
 # Codex's own log of the opted-in launch, as oh_codex_plugins_evidence_assert
@@ -3897,6 +3924,8 @@ oh_codex_plugins_evidence_assert() {
 # thread $3 — the launch's process — and its catalog request and plugin
 # bundle sync from Codex's own log lines.
 oh_codex_log_evidence() {
+  [ -f "$1/logs_2.sqlite" ] ||
+    fail "Codex wrote no log at $1/logs_2.sqlite, so the opted-in launch's plugins cannot be read; check that this codex logs there (codex-cli 0.159 does), then rerun"
   python3 - "$1/logs_2.sqlite" "$2" "$3" "$4" <<'PY'
 import json
 import sqlite3

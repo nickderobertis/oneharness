@@ -35,23 +35,68 @@ import json
 import os
 import statistics
 import sys
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import NamedTuple, NewType, Optional, Union
 
 ROOT = Path(__file__).resolve().parents[4]
 MEASURED = "netns-pasta"
+SUITE = "codex"
+# The caps the calibration report is stated against: budgets.yaml's thresholds,
+# held equal to them by tools/network-telemetry's tests.
 LAUNCH_CAP = 2_500_000
 SUITE_CAP = 30_000_000
+
+LaunchId = NewType("LaunchId", str)
+
+
+@dataclass(frozen=True)
+class Start:
+    """A launch began: the shim's `start` line."""
+
+    launch_id: LaunchId
+    phase: str
+    kind: str
+    argv: list[str]
+
+
+@dataclass(frozen=True)
+class Measurement:
+    """A launch's measurement line; bytes are None when absent or not counts."""
+
+    launch_id: LaunchId
+    method: object
+    reason: Optional[str]
+    rx: Optional[int]
+    tx: Optional[int]
+
+
+@dataclass(frozen=True)
+class Expectation:
+    """A phase must produce a measured launch of this kind."""
+
+    phase: str
+    kind: str
+
+
+Line = Union[Start, Measurement, Expectation]
 
 
 @dataclass(frozen=True)
 class Launch:
-    launch_id: str
+    launch_id: LaunchId
     phase: str
     kind: str
     argv: list[str]
     rx: int
     tx: int
+
+
+class Figure(NamedTuple):
+    """What one budget reports: its value and the detail onebudgetspec shows."""
+
+    value: float
+    detail: str
 
 
 class Incomplete(Exception):
@@ -64,11 +109,53 @@ def telemetry_file() -> Path:
     return base / "codex.jsonl"
 
 
-def byte_field(record: dict, key: str) -> int | None:
+def byte_field(record: dict[str, object], key: str) -> Optional[int]:
     value = record.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def text_field(record: dict[str, object], key: str, where: str) -> str:
+    value = record.get(key)
+    if not isinstance(value, str) or not value:
+        raise Incomplete(f"{where} has no {key} string")
+    return value
+
+
+# llmlint: ignore[structural_pattern_matching] This file is linted and type-checked at the uv workspace's Python 3.9 floor (ruff target py39, ty python-version 3.9), where `match` does not parse; the record shapes are told apart by explicit checks instead.
+def parse(number: int, record: object) -> Line:
+    """One telemetry line as the recorder writes it, or Incomplete saying why not."""
+    where = f"line {number}"
+    if not isinstance(record, dict):
+        raise Incomplete(f"{where} is not a JSON object")
+    if record.get("expected") is True:
+        return Expectation(text_field(record, "phase", where), text_field(record, "kind", where))
+    if "argv" in record:
+        launch_id = LaunchId(text_field(record, "launch_id", f"{where}, a start line,"))
+        where = f"{where} (launch {launch_id})"
+        for key, want in (("suite", SUITE), ("harness", SUITE)):
+            if record.get(key) != want:
+                raise Incomplete(
+                    f"{where} names {key} {record.get(key)!r}, not {want!r}: it is not a live-codex launch"
+                )
+        argv = record["argv"]
+        if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
+            raise Incomplete(f"{where} has an argv that is not a list of strings")
+        return Start(
+            launch_id, text_field(record, "phase", where), text_field(record, "kind", where), argv
+        )
+    launch_id = LaunchId(
+        text_field(record, "launch_id", f"{where}, neither a start nor an expected line,")
+    )
+    reason = record.get("reason")
+    return Measurement(
+        launch_id,
+        record.get("method"),
+        reason if isinstance(reason, str) else None,
+        byte_field(record, "rx_bytes"),
+        byte_field(record, "tx_bytes"),
+    )
 
 
 def load(path: Path) -> list[Launch]:
@@ -78,39 +165,35 @@ def load(path: Path) -> list[Launch]:
             f"no telemetry at {path}: run `just live-codex` (scripts/e2e-codex.sh records it), "
             "or point OH_E2E_TELEMETRY_DIR at the directory holding codex.jsonl"
         )
-    starts: dict[str, dict] = {}
-    measurements: dict[str, list[dict]] = {}
-    expected: list[dict] = []
+    starts: dict[LaunchId, Start] = {}
+    measurements: dict[LaunchId, list[Measurement]] = {}
+    expected: list[Expectation] = []
     faults: list[str] = []
     for number, text in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not text.strip():
             continue
         try:
-            record = json.loads(text)
+            line = parse(number, json.loads(text))
         except json.JSONDecodeError as error:
             faults.append(f"line {number} is not JSON ({error.msg})")
             continue
-        if not isinstance(record, dict):
-            faults.append(f"line {number} is not a JSON object")
-        elif record.get("expected") is True:
-            expected.append(record)
-        elif "argv" in record:
-            launch_id = record.get("launch_id")
-            if not isinstance(launch_id, str) or not launch_id:
-                faults.append(f"line {number} is a start line with no launch_id")
-            elif launch_id in starts:
+        except Incomplete as fault:
+            faults.append(str(fault))
+            continue
+        if isinstance(line, Expectation):
+            expected.append(line)
+        elif isinstance(line, Start):
+            if line.launch_id in starts:
                 faults.append(
-                    f"launch {launch_id} has two start lines (duplicate launch id, line {number})"
+                    f"launch {line.launch_id} has two start lines (duplicate launch id, line {number})"
                 )
             else:
-                starts[launch_id] = record
-        elif isinstance(record.get("launch_id"), str):
-            measurements.setdefault(record["launch_id"], []).append(record)
+                starts[line.launch_id] = line
         else:
-            faults.append(f"line {number} is neither a start, a measurement nor an expected line")
+            measurements.setdefault(line.launch_id, []).append(line)
     launches: list[Launch] = []
     for launch_id, start in starts.items():
-        where = f"launch {launch_id} (phase {start.get('phase')}, kind {start.get('kind')})"
+        where = f"launch {launch_id} (phase {start.phase}, kind {start.kind})"
         lines = measurements.get(launch_id, [])
         if not lines:
             faults.append(f"{where} has no measurement line")
@@ -121,40 +204,34 @@ def load(path: Path) -> list[Launch]:
             )
             continue
         line = lines[0]
-        if line.get("method") != MEASURED:
-            reason = f": {line['reason']}" if line.get("reason") else ""
-            faults.append(f"{where} was not measured (method {line.get('method')!r}{reason})")
+        if line.method != MEASURED:
+            reason = f": {line.reason}" if line.reason else ""
+            faults.append(f"{where} was not measured (method {line.method!r}{reason})")
             continue
-        rx, tx = byte_field(line, "rx_bytes"), byte_field(line, "tx_bytes")
-        missing = [key for key, value in (("rx_bytes", rx), ("tx_bytes", tx)) if value is None]
-        if rx is None or tx is None:
+        if line.rx is None or line.tx is None:
+            missing = [
+                key
+                for key, value in (("rx_bytes", line.rx), ("tx_bytes", line.tx))
+                if value is None
+            ]
             faults.append(f"{where} has no non-negative integer {' or '.join(missing)}")
             continue
-        argv = start.get("argv")
-        launches.append(
-            Launch(
-                launch_id,
-                str(start.get("phase")),
-                str(start.get("kind")),
-                [str(a) for a in argv] if isinstance(argv, list) else [],
-                rx,
-                tx,
-            )
-        )
+        launches.append(Launch(launch_id, start.phase, start.kind, start.argv, line.rx, line.tx))
     for launch_id in measurements:
         if launch_id not in starts:
             faults.append(f"a measurement line names launch {launch_id}, which has no start line")
     measured = {(launch.phase, launch.kind) for launch in launches}
     for want in expected:
-        if (want.get("phase"), want.get("kind")) not in measured:
-            faults.append(
-                f"phase {want.get('phase')} expected a measured {want.get('kind')} launch and has none"
-            )
+        if (want.phase, want.kind) not in measured:
+            faults.append(f"phase {want.phase} expected a measured {want.kind} launch and has none")
     if not starts and not faults:
         faults.append(f"{path} records no launch at all")
     if faults:
         raise Incomplete(
-            f"the record in {path} is incomplete:\n" + "\n".join(f"  - {fault}" for fault in faults)
+            f"the record in {path} is incomplete:\n"
+            + "\n".join(f"  - {fault}" for fault in faults)
+            + "\nrerun `just live-codex` on a Linux host with pasta and unprivileged user namespaces "
+            "(live/AGENTS.md); a launch named here went unmeasured or was recorded wrongly"
         )
     return launches
 
@@ -184,20 +261,21 @@ def per_kind_lines(launches: list[Launch], largest: bool) -> list[str]:
     return lines
 
 
-def largest_launch(launches: list[Launch]) -> tuple[float, str]:
+def largest_launch(launches: list[Launch]) -> Figure:
     top = max(launches, key=lambda x: x.rx)
     detail = [
         f"largest: {describe(top)} received {top.rx} B (sent {top.tx} B; sent bytes are recorded, not gated)",
         *per_kind_lines(launches, largest=True),
     ]
-    return float(top.rx), "\n".join(detail)
+    return Figure(float(top.rx), "\n".join(detail))
 
 
-def usage_probe(launches: list[Launch]) -> tuple[float, str]:
+def usage_probe(launches: list[Launch]) -> Figure:
     probes = [x for x in launches if x.phase == "usage-probe" and x.kind == "app-server"]
     if not probes:
         raise Incomplete(
-            "phase usage-probe has no measured app-server launch: the record holds no usage probe"
+            "phase usage-probe has no measured app-server launch: the record holds no usage probe; "
+            "check that scripts/e2e-codex.sh still runs oh_usage_enforce codex, then rerun `just live-codex`"
         )
     top = max(probes, key=lambda x: x.rx)
     detail = [
@@ -205,16 +283,16 @@ def usage_probe(launches: list[Launch]) -> tuple[float, str]:
         f"usage probes: {len(probes)}",
         *(f"{x.launch_id}: received {x.rx} B, sent {x.tx} B" for x in probes),
     ]
-    return float(top.rx), "\n".join(detail)
+    return Figure(float(top.rx), "\n".join(detail))
 
 
-def suite_total(launches: list[Launch]) -> tuple[float, str]:
+def suite_total(launches: list[Launch]) -> Figure:
     total = sum(x.rx for x in launches)
     detail = [
         f"suite total: {total} B received over {len(launches)} launches (sent {sum(x.tx for x in launches)} B)",
         *per_kind_lines(launches, largest=False),
     ]
-    return float(total), "\n".join(detail)
+    return Figure(float(total), "\n".join(detail))
 
 
 def model_turn(launch: Launch) -> bool:
@@ -223,60 +301,88 @@ def model_turn(launch: Launch) -> bool:
     )
 
 
-def evidence_report(launches: list[Launch]) -> dict:
+@dataclass(frozen=True)
+class Spread:
+    median: float
+    largest: int
+    total: int
+
+
+@dataclass(frozen=True)
+class KindFigures:
+    launches: int
+    received: Spread
+    sent: Spread
+
+
+@dataclass(frozen=True)
+class Condition:
+    value: float
+    cap: int
+    holds: bool
+
+
+@dataclass(frozen=True)
+class LargestLaunch:
+    launch_id: str
+    phase: str
+    kind: str
+    received: int
+
+
+@dataclass(frozen=True)
+class ModelTurns:
+    launches: int
+    median_received: Optional[float]
+
+
+@dataclass(frozen=True)
+class EvidenceReport:
     """One pass's calibration figures, as the plan's ruling (d) states them."""
+
+    method: str
+    boundary: str
+    launches: int
+    largest_launch: LargestLaunch
+    per_kind: dict[str, KindFigures]
+    model_turns: ModelTurns
+    suite_total_received: int
+    calibration: dict[str, Condition]
+
+
+def spread(values: list[int]) -> Spread:
+    return Spread(statistics.median(values), max(values), sum(values))
+
+
+def evidence_report(launches: list[Launch]) -> EvidenceReport:
     top = max(launches, key=lambda x: x.rx)
     total = sum(x.rx for x in launches)
     turns = [x.rx for x in launches if model_turn(x)]
-    per_kind = {}
-    for kind, group in kinds(launches).items():
-        per_kind[kind] = {
-            "launches": len(group),
-            "received": {
-                "median": statistics.median(x.rx for x in group),
-                "largest": max(x.rx for x in group),
-                "total": sum(x.rx for x in group),
-            },
-            "sent": {
-                "median": statistics.median(x.tx for x in group),
-                "largest": max(x.tx for x in group),
-                "total": sum(x.tx for x in group),
-            },
-        }
-    return {
-        "method": MEASURED,
-        "boundary": "bytes at each launch's network-namespace boundary (pasta TAP), not host-NIC wire bytes",
-        "launches": len(launches),
-        "largest_launch": {
-            "launch_id": top.launch_id,
-            "phase": top.phase,
-            "kind": top.kind,
-            "received": top.rx,
+    return EvidenceReport(
+        method=MEASURED,
+        boundary="bytes at each launch's network-namespace boundary (pasta TAP), not host-NIC wire bytes",
+        launches=len(launches),
+        largest_launch=LargestLaunch(top.launch_id, top.phase, top.kind, top.rx),
+        per_kind={
+            kind: KindFigures(
+                len(group), spread([x.rx for x in group]), spread([x.tx for x in group])
+            )
+            for kind, group in kinds(launches).items()
         },
-        "per_kind": per_kind,
-        "model_turns": {
-            "launches": len(turns),
-            "median_received": statistics.median(turns) if turns else None,
+        model_turns=ModelTurns(len(turns), statistics.median(turns) if turns else None),
+        suite_total_received=total,
+        calibration={
+            "largest_x1_5_within_launch_cap": Condition(
+                top.rx * 1.5, LAUNCH_CAP, top.rx * 1.5 <= LAUNCH_CAP
+            ),
+            "suite_total_x1_2_within_suite_cap": Condition(
+                total * 1.2, SUITE_CAP, total * 1.2 <= SUITE_CAP
+            ),
+            "doubled_pass_exceeds_suite_cap": Condition(
+                total * 2, SUITE_CAP, total * 2 > SUITE_CAP
+            ),
         },
-        "suite_total_received": total,
-        "calibration": {
-            "largest_x1_5_within_launch_cap": {
-                "value": top.rx * 1.5,
-                "cap": LAUNCH_CAP,
-                "holds": top.rx * 1.5 <= LAUNCH_CAP,
-            },
-            "suite_total_x1_2_within_suite_cap": {
-                "value": total * 1.2,
-                "cap": SUITE_CAP,
-                "holds": total * 1.2 <= SUITE_CAP,
-            },
-            "doubled_pass_exceeds_suite_cap": {
-                "value": total * 2,
-                "cap": SUITE_CAP,
-                "holds": total * 2 > SUITE_CAP,
-            },
-        },
-    }
+    )
 
 
 def main(argv: list[str]) -> int:
@@ -295,14 +401,14 @@ def main(argv: list[str]) -> int:
     try:
         launches = load(path)
         if args.evidence_report:
-            print(json.dumps(evidence_report(launches), indent=2))
+            print(json.dumps(asdict(evidence_report(launches)), indent=2))
             return 0
         if args.kind:
-            value, detail = usage_probe(launches)
+            figure = usage_probe(launches)
         elif args.total:
-            value, detail = suite_total(launches)
+            figure = suite_total(launches)
         else:
-            value, detail = largest_launch(launches)
+            figure = largest_launch(launches)
     except Incomplete as error:
         print(f"network_budget: {error}", file=sys.stderr)
         return 1
@@ -311,8 +417,8 @@ def main(argv: list[str]) -> int:
     from onebudgetspec_sdk import report  # ty: ignore[unresolved-import]
 
     # Inside `onebudgetspec check` the result file carries it; run by hand, say it.
-    if not report(value, detail):
-        print(f"{value:.0f} B\n{detail}")
+    if not report(figure.value, figure.detail):
+        print(f"{figure.value:.0f} B\n{figure.detail}")
     return 0
 
 

@@ -41,7 +41,9 @@ ONEHARNESS = ROOT / "target" / "debug" / f"oneharness{EXE}"
 MOCK = ROOT / "target" / "debug" / f"oneharness-mock-harness{EXE}"
 BASH = shutil.which("bash") or "bash"
 CHUNK = 64 * 1024
-# One telemetry line, as JSON decodes it.
+# One telemetry line, as JSON decodes it. Deliberately untyped: the tests write
+# lines the recorder never would (negative or string bytes, missing fields) to
+# prove the budget command refuses them, which a typed model could not express.
 Record = dict[str, Any]
 
 

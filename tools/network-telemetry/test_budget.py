@@ -18,10 +18,11 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 from support import (
     BASH,
+    BUDGETS,
     LIB,
     NETSHIM,
     ROOT,
@@ -50,33 +51,44 @@ FEATURES = ["features", "list", "-c", "features.hooks=true"]
 EXECPOLICY = ["execpolicy", "check", "--rules", "r", "rm"]
 SANDBOX = ["sandbox", "-c", "sandbox_mode=read-only", "--", "bash"]
 
-# (phase, the launch kind it must produce or None, each launch's argv)
-Plan = list[tuple[str, Optional[str], list[list[str]]]]
+
+class Phase(NamedTuple):
+    """One phase of a recorded fixture: the launch kind it must produce (None
+    for a phase that expects nothing) and each launch's argv."""
+
+    name: str
+    expects: Optional[str]
+    launches: list[list[str]]
+
+
+Plan = list[Phase]
 
 # The budget workload: one live-codex pass's 50 default-config launches —
 # 22 model turns, 1 usage probe, 26 network-free launches and 1 controlled
 # turn — as (phase, the kind it must produce or None, launches).
 WORKLOAD: Plan = [
-    ("run", "exec", [EXEC, VERSION]),
-    ("controlled-turn", "app-server", [APP_SERVER, VERSION]),
-    ("usage-probe", "app-server", [APP_SERVER, VERSION]),
-    ("codex-rules-enforce", "exec", [EXEC, EXEC, EXECPOLICY, EXECPOLICY, EXECPOLICY, EXECPOLICY]),
-    ("long-prompt-enforce", "exec", [["exec", "--json", "-"], VERSION]),
-    ("mode-enforce", "exec", [EXEC, EXEC, SANDBOX, SANDBOX]),
-    ("resume-mode-enforce", "exec", [EXEC, RESUME] * 4 + [SANDBOX] * 4),
-    ("codex-feature-flag-order", None, [FEATURES] * 8),
-    ("mock-enforce", "exec", [EXEC, EXEC]),
-    ("events-assert", "exec", [EXEC, EXEC, VERSION]),
-    ("stream-assert", "exec", [EXEC, EXEC, VERSION]),
-    ("reasoning-enforce", "exec", [EXEC, EXEC, VERSION, VERSION]),
+    Phase("run", "exec", [EXEC, VERSION]),
+    Phase("controlled-turn", "app-server", [APP_SERVER, VERSION]),
+    Phase("usage-probe", "app-server", [APP_SERVER, VERSION]),
+    Phase(
+        "codex-rules-enforce", "exec", [EXEC, EXEC, EXECPOLICY, EXECPOLICY, EXECPOLICY, EXECPOLICY]
+    ),
+    Phase("long-prompt-enforce", "exec", [["exec", "--json", "-"], VERSION]),
+    Phase("mode-enforce", "exec", [EXEC, EXEC, SANDBOX, SANDBOX]),
+    Phase("resume-mode-enforce", "exec", [EXEC, RESUME] * 4 + [SANDBOX] * 4),
+    Phase("codex-feature-flag-order", None, [FEATURES] * 8),
+    Phase("mock-enforce", "exec", [EXEC, EXEC]),
+    Phase("events-assert", "exec", [EXEC, EXEC, VERSION]),
+    Phase("stream-assert", "exec", [EXEC, EXEC, VERSION]),
+    Phase("reasoning-enforce", "exec", [EXEC, EXEC, VERSION, VERSION]),
 ]
 # Several launches of every kind, for the detail's per-kind figures.
 KINDS: Plan = [
-    ("run", "exec", [EXEC, RESUME, EXEC]),
-    ("controlled-turn", "app-server", [APP_SERVER]),
-    ("usage-probe", "app-server", [APP_SERVER, APP_SERVER]),
-    ("shared-server", "shared-app-server", [SHARED, SHARED]),
-    ("rules", None, [VERSION, FEATURES, EXECPOLICY]),
+    Phase("run", "exec", [EXEC, RESUME, EXEC]),
+    Phase("controlled-turn", "app-server", [APP_SERVER]),
+    Phase("usage-probe", "app-server", [APP_SERVER, APP_SERVER]),
+    Phase("shared-server", "shared-app-server", [SHARED, SHARED]),
+    Phase("rules", None, [VERSION, FEATURES, EXECPOLICY]),
 ]
 
 
@@ -89,11 +101,11 @@ def record(tmp: Path, plan: Plan) -> list[Record]:
     script = [
         'set -euo pipefail; source "$1"; export OH_E2E_SUITE=codex OH_E2E_TELEMETRY_FILE="$2"; : >"$2"'
     ]
-    for phase, kind, launches in plan:
-        script.append(f"export OH_E2E_PHASE={phase}")
-        if kind is not None:
-            script.append(f"_oh_expect codex {kind}")
-        for argv in launches:
+    for phase in plan:
+        script.append(f"export OH_E2E_PHASE={phase.name}")
+        if phase.expects is not None:
+            script.append(f"_oh_expect codex {phase.expects}")
+        for argv in phase.launches:
             words = " ".join(f"'{w}'" for w in argv)
             script.append(
                 f'bash "$3" --suite codex --harness codex --real "$4" --self "$5" --file "$2" -- {words} </dev/null'
@@ -131,6 +143,7 @@ def with_bytes(records: list[Record], received: Callable[[Record], int]) -> list
     return out
 
 
+# llmlint: ignore[structural_pattern_matching] The tests run at the uv workspace's Python 3.9 floor, where `match` does not parse.
 def plausible(start: Record) -> int:
     """A post-fix pass of exactly 20,000,000 B, its probe at 400,000 B."""
     if start["phase"] == "usage-probe" and start["kind"] == "app-server":
@@ -638,15 +651,19 @@ class CodexSuite(BudgetCase):
 
     def test_the_suite_fails_when_codex_on_path_is_not_its_shim(self) -> None:
         tmp = scratch(self)
-        foreign = tmp / "telemetry" / ".shims" / "codex"
-        foreign.mkdir(parents=True)
-        # A stale executable the setup cannot replace stands where the shim goes.
-        (foreign / "codex").write_text("#!/usr/bin/env bash\necho 'not a shim'\n")
-        (foreign / "codex").chmod(0o555)
+        # A stale shim directory the setup cannot rewrite, holding a foreign
+        # `codex` where the shim goes.
+        stale = tmp / "telemetry" / ".shims" / "codex"
+        stale.mkdir(parents=True)
+        (stale / ".oh-network-shims").write_text("")
+        (stale / "codex").write_text("#!/usr/bin/env bash\necho 'not a shim'\n")
+        (stale / "codex").chmod(0o755)
+        stale.chmod(0o555)
+        self.addCleanup(stale.chmod, 0o755)
         run = self.run_codex(tmp)
         self.assertNotEqual(run.returncode, 0)
         self.assertIn(
-            f"PATH resolves codex to '{foreign / 'codex'}', not this suite's measuring shim",
+            f"PATH resolves codex to '{stale / 'codex'}', not this suite's measuring shim",
             run.stderr,
         )
 
@@ -716,6 +733,37 @@ class Evidence(unittest.TestCase):
         self.assertEqual(committed["largest_launch"]["received"], max(received.values()))
         self.assertEqual(committed["suite_total_received"], sum(received.values()))
         calibration = committed["calibration"]
+        # The caps the report states its conditions against are budgets.yaml's.
+        listed = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--project",
+                str(ROOT / "python"),
+                "--frozen",
+                "--no-sync",
+                "onebudgetspec",
+                "list",
+                "--json",
+                str(BUDGETS),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        thresholds = {b["id"]: b["threshold"] for b in json.loads(listed.stdout)["budgets"]}
+        self.assertEqual(
+            calibration["largest_x1_5_within_launch_cap"]["cap"],
+            thresholds["codex-launch-network-bytes"],
+        )
+        self.assertEqual(
+            calibration["suite_total_x1_2_within_suite_cap"]["cap"],
+            thresholds["codex-live-suite-network-bytes"],
+        )
+        self.assertEqual(
+            calibration["doubled_pass_exceeds_suite_cap"]["cap"],
+            thresholds["codex-live-suite-network-bytes"],
+        )
         self.assertEqual(
             calibration["largest_x1_5_within_launch_cap"]["holds"],
             max(received.values()) * 1.5 <= 2_500_000,

@@ -67,8 +67,8 @@ done
 # OH_TEST_TRANSFER_PHASE, only that phase's.
 if [ -n "${OH_TEST_TRANSFER:-}" ] && { [ "$subcommand" = exec ] || [ "$subcommand" = app-server ]; } &&
   [ "${OH_TEST_TRANSFER_PHASE:-${OH_E2E_PHASE:-}}" = "${OH_E2E_PHASE:-}" ]; then
-  # shellcheck disable=SC2086 # the variable is the client's own word list
-  python3 "$here/transfer.py" client $OH_TEST_TRANSFER
+  read -r -a transfer <<<"$OH_TEST_TRANSFER"
+  python3 "$here/transfer.py" client "${transfer[@]}"
 fi
 case "$subcommand" in
   login)

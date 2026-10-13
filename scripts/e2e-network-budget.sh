@@ -42,11 +42,25 @@ case "$wait_seconds" in "" | *[!0-9]*)
   exit 2
   ;;
 esac
+pending="$dir/.pending"
+if [ -e "$pending" ] && { [ ! -d "$pending" ] || [ ! -r "$pending" ] || [ ! -x "$pending" ]; }; then
+  echo "e2e-network-budget: cannot read $pending to wait for launches still being measured; restore its permissions (chmod u+rx) or remove it, then rerun" >&2
+  exit 1
+fi
+still_measuring() {
+  if [ -d "$pending" ]; then
+    find "$pending" -mindepth 1 -maxdepth 1 | sed 's#.*/##'
+  fi
+}
 waited=0
-while [ -n "$(ls -A "$dir/.pending" 2>/dev/null)" ] && [ "$waited" -lt "$((wait_seconds * 5))" ]; do
+while [ -n "$(still_measuring)" ] && [ "$waited" -lt "$((wait_seconds * 5))" ]; do
   sleep 0.2
   waited=$((waited + 1))
 done
+left="$(still_measuring | tr '\n' ' ')"
+if [ -n "$left" ]; then
+  echo "network budget ($suite): still measuring after ${wait_seconds}s: ${left}— the check below names any launch left without its line" >&2
+fi
 
 uv sync --project "$root/python" --frozen --no-install-workspace --quiet || {
   echo "e2e-network-budget: could not install the uv workspace's dev tools (onebudgetspec); run 'just bootstrap', then rerun" >&2

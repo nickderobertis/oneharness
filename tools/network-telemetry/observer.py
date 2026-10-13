@@ -12,11 +12,11 @@ each frame on the named interfaces until SIGTERM: its kernel receive timestamp,
 its direction and its whole length, Ethernet header and control traffic
 included. On SIGTERM it reads the socket's PACKET_STATISTICS and writes OUT:
 
-    {"ready_ns", "stopped_ns", "drops", "packets_seen", "truncated",
-     "frames": [[ts_ns, "rx"|"tx", length], ...]}
+    {"ready_ns", "stopped_ns", "drops", "packets_seen", "truncated", "frames"}
 
 A frame is "tx" when the namespace sent it (PACKET_OUTGOING) and "rx" otherwise,
-the directions the TAP's tx_bytes/rx_bytes counters count.
+the directions the TAP's tx_bytes/rx_bytes counters count. Each frame is written
+as {"stamp_ns", "direction", "length"}.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ import socket
 import struct
 import sys
 import time
+from dataclasses import asdict, dataclass, field
 
 ETH_P_ALL = 0x0003
 SOL_PACKET = 263
@@ -34,6 +35,23 @@ PACKET_STATISTICS = 6
 PACKET_OUTGOING = 4
 SO_TIMESTAMPNS = 35
 BUFFER = 1 << 18
+
+
+@dataclass(frozen=True)
+class Frame:
+    stamp_ns: int
+    direction: str  # "rx" or "tx"
+    length: int
+
+
+@dataclass
+class Capture:
+    ready_ns: int
+    stopped_ns: int = 0
+    drops: int = 0
+    packets_seen: int = 0
+    truncated: int = 0
+    frames: list[Frame] = field(default_factory=list)
 
 
 def main() -> int:
@@ -49,9 +67,7 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, stop)
     sock.settimeout(0.05)
-    frames = []
-    truncated = 0
-    ready_ns = time.time_ns()
+    capture = Capture(ready_ns=time.time_ns())
     print("ready", flush=True)
     while not stopping:
         try:
@@ -69,23 +85,17 @@ def main() -> int:
                 seconds, nanoseconds = struct.unpack("qq", payload[:16])
                 stamp = seconds * 1_000_000_000 + nanoseconds
         if flags & socket.MSG_TRUNC:
-            truncated += 1
-        frames.append([stamp, "tx" if address[2] == PACKET_OUTGOING else "rx", len(data)])
-    stopped_ns = time.time_ns()
-    # tp_packets, tp_drops: reading them also resets them, once, here.
-    packets, drops = struct.unpack("II", sock.getsockopt(SOL_PACKET, PACKET_STATISTICS, 8))
-    with open(out, "w") as handle:
-        json.dump(
-            {
-                "ready_ns": ready_ns,
-                "stopped_ns": stopped_ns,
-                "drops": drops,
-                "packets_seen": packets,
-                "truncated": truncated,
-                "frames": frames,
-            },
-            handle,
+            capture.truncated += 1
+        capture.frames.append(
+            Frame(stamp, "tx" if address[2] == PACKET_OUTGOING else "rx", len(data))
         )
+    capture.stopped_ns = time.time_ns()
+    # tp_packets, tp_drops: reading them also resets them, once, here.
+    capture.packets_seen, capture.drops = struct.unpack(
+        "II", sock.getsockopt(SOL_PACKET, PACKET_STATISTICS, 8)
+    )
+    with open(out, "w") as handle:
+        json.dump(asdict(capture), handle)
     return 0
 
 

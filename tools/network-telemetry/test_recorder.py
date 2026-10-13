@@ -16,7 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import NamedTuple
 
 from support import (
     BASH,
@@ -38,10 +38,16 @@ UP = 3_000_000
 UNRELATED = 7_777_777
 
 
-def frame_sums(frames: list[list[Any]], direction: str, low: int, high: int) -> int:
-    return int(
-        sum(length for stamp, way, length in frames if way == direction and low <= stamp <= high)
-    )
+class Frame(NamedTuple):
+    """One frame the observer captured (observer.py's Frame, read back)."""
+
+    stamp_ns: int
+    direction: str
+    length: int
+
+
+def frame_sums(frames: list[Frame], direction: str, low: int, high: int) -> int:
+    return sum(f.length for f in frames if f.direction == direction and low <= f.stamp_ns <= high)
 
 
 class MeasuredLaunch(unittest.TestCase):
@@ -99,6 +105,7 @@ class MeasuredLaunch(unittest.TestCase):
         beats = heartbeat.read_text().splitlines()
         self.assertGreater(len(beats), 2)
         observed = json.loads(capture.read_text())
+        frames = [Frame(f["stamp_ns"], f["direction"], f["length"]) for f in observed["frames"]]
         window = json.loads(windows.read_text())
         self.assertEqual(
             observed["drops"], 0, "the capture dropped frames, so it cannot vouch for the counters"
@@ -118,8 +125,8 @@ class MeasuredLaunch(unittest.TestCase):
             ("rx", line["rx_bytes"], DOWN),
             ("tx", line["tx_bytes"], UP),
         ):
-            outer = frame_sums(observed["frames"], direction, window["start"][0], window["end"][1])
-            inner = frame_sums(observed["frames"], direction, window["start"][1], window["end"][0])
+            outer = frame_sums(frames, direction, window["start"][0], window["end"][1])
+            inner = frame_sums(frames, direction, window["start"][1], window["end"][0])
             self.assertLessEqual(
                 inner, recorded, f"{direction}: the counters missed captured frames"
             )
@@ -137,6 +144,37 @@ class MeasuredLaunch(unittest.TestCase):
         self.assertLess(line["tx_bytes"], UP + UNRELATED // 2)
         self.assertGreater(line["payload_rx_estimate"], DOWN - 1)
         self.assertFalse(list((tmp / ".pending").glob("*")), "a pending marker outlived its line")
+
+    def test_the_launch_resolves_through_the_hosts_upstream_resolvers(self) -> None:
+        # Inside the namespace the host's 127.0.0.53 stub is the namespace's
+        # own empty loopback; the recorder binds the upstream list over it.
+        need_recorder(self)
+        tmp = scratch(self)
+        reader = tmp / "resolv-reader"
+        reader.write_text("#!/usr/bin/env bash\ncat /etc/resolv.conf\n")
+        reader.chmod(0o755)
+        run = run_shim(tmp, [str(reader)], ["exec", "x"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        inside = [
+            w.split()[1] for w in run.stdout.decode().splitlines() if w.startswith("nameserver")
+        ]
+        host = [
+            w.split()[1]
+            for w in Path("/etc/resolv.conf").read_text().splitlines()
+            if w.startswith("nameserver")
+        ]
+        upstream = Path("/run/systemd/resolve/resolv.conf")
+        self.assertTrue(inside, "the namespace has no nameserver")
+        if host and all(server.startswith("127.") for server in host) and upstream.exists():
+            self.assertFalse([s for s in inside if s.startswith("127.")], inside)
+            want = [
+                w.split()[1]
+                for w in upstream.read_text().splitlines()
+                if w.startswith("nameserver")
+            ]
+            self.assertEqual(inside, want)
+        else:
+            self.assertEqual(inside, host)
 
     def test_binary_stdin_and_stdout_and_the_exit_status_pass_through(self) -> None:
         need_recorder(self)
@@ -336,25 +374,34 @@ class Refusal(unittest.TestCase):
                 self.assertEqual(lines(tmp / "codex.jsonl"), [], "a refused launch was recorded")
 
 
+class KindCase(NamedTuple):
+    harness: str
+    argv: list[str]
+    kind: str
+
+
 class Kinds(unittest.TestCase):
     """The launch kind each argv is recorded under (on the fallback, which is quick)."""
 
-    CASES = (
-        ("codex", ["exec", "--json", "hi"], "exec"),
-        ("codex", ["exec", "resume", "-c", "sandbox_mode=read-only", "th", "hi"], "exec"),
-        ("codex", ["-c", "features.hooks=true", "exec", "hi"], "exec"),
-        ("codex", ["app-server", "--disable", "plugins", "--stdio"], "app-server"),
-        ("codex", ["app-server", "--listen", "unix:///tmp/s"], "shared-app-server"),
-        ("codex", ["app-server", "--listen=unix:///tmp/s"], "shared-app-server"),
-        ("codex", ["--version"], "local"),
-        ("codex", ["features", "list", "-c", "features.hooks=true"], "local"),
-        ("codex", ["execpolicy", "check", "--rules", "r", "rm"], "local"),
-        ("codex", ["sandbox", "-c", "sandbox_mode=read-only", "--", "bash"], "local"),
-        ("codex", ["login", "status"], "local"),
-        ("codex", ["mcp", "list"], "mcp"),
-        ("claude-code", ["-p", "hi", "--output-format", "json"], "turn"),
-        ("claude-code", ["--version"], "local"),
-        ("claude-code", ["auth", "status", "--json"], "local"),
+    CASES = tuple(
+        KindCase(*case)
+        for case in (
+            ("codex", ["exec", "--json", "hi"], "exec"),
+            ("codex", ["exec", "resume", "-c", "sandbox_mode=read-only", "th", "hi"], "exec"),
+            ("codex", ["-c", "features.hooks=true", "exec", "hi"], "exec"),
+            ("codex", ["app-server", "--disable", "plugins", "--stdio"], "app-server"),
+            ("codex", ["app-server", "--listen", "unix:///tmp/s"], "shared-app-server"),
+            ("codex", ["app-server", "--listen=unix:///tmp/s"], "shared-app-server"),
+            ("codex", ["--version"], "local"),
+            ("codex", ["features", "list", "-c", "features.hooks=true"], "local"),
+            ("codex", ["execpolicy", "check", "--rules", "r", "rm"], "local"),
+            ("codex", ["sandbox", "-c", "sandbox_mode=read-only", "--", "bash"], "local"),
+            ("codex", ["login", "status"], "local"),
+            ("codex", ["mcp", "list"], "mcp"),
+            ("claude-code", ["-p", "hi", "--output-format", "json"], "turn"),
+            ("claude-code", ["--version"], "local"),
+            ("claude-code", ["auth", "status", "--json"], "local"),
+        )
     )
 
     @unittest.skipIf(WINDOWS, "the fallback leg is named through OH_E2E_OS on unix")
@@ -363,12 +410,12 @@ class Kinds(unittest.TestCase):
         true = tmp / "true-double"
         true.write_text("#!/usr/bin/env bash\nexit 0\n")
         true.chmod(0o755)
-        for harness, argv, _kind in self.CASES:
-            run_shim(tmp, [str(true)], argv, harness=harness, env={"OH_E2E_OS": "Darwin"})
+        for case in self.CASES:
+            run_shim(tmp, [str(true)], case.argv, harness=case.harness, env={"OH_E2E_OS": "Darwin"})
         recorded = [
-            (s["harness"], s["argv"], s["kind"]) for s in starts(lines(tmp / "codex.jsonl"))
+            KindCase(s["harness"], s["argv"], s["kind"]) for s in starts(lines(tmp / "codex.jsonl"))
         ]
-        self.assertEqual(recorded, [(h, a, k) for h, a, k in self.CASES])
+        self.assertEqual(recorded, list(self.CASES))
 
 
 if __name__ == "__main__":

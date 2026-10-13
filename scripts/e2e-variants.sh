@@ -221,25 +221,28 @@ codex_plugins_opt_in() {
   local home="$1" seconds="${OH_E2E_PLUGINS_SLEEP:-25}" id since thread argv
   local report="$tmp/codex-plugins.json" plugins_marker="${marker}_pl"
   local evidence_file="${OH_E2E_PLUGINS_EVIDENCE:-$tmp/codex-plugins-evidence.jsonl}"
-  case "$seconds" in "" | *[!0-9]*) fail "OH_E2E_PLUGINS_SLEEP must be a whole number of seconds, got '$seconds'" ;; esac
+  case "$seconds" in "" | *[!0-9]*) seconds=invalid ;; esac
+  [ "$seconds" != invalid ] && [ "$((10#$seconds))" -ge 1 ] && [ "$((10#$seconds))" -le 600 ] ||
+    fail "OH_E2E_PLUGINS_SLEEP must be a whole number of seconds from 1 to 600, got '${OH_E2E_PLUGINS_SLEEP:-}'; unset it for the 25 s default"
+  seconds="$((10#$seconds))"
   oh_codex_home_allows_plugins "$home"
   since="$(($(date +%s) - 1))"
   OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$home" "$OH" run --config "$config" --harness codex:plugins \
     --prompt "$plugins_marker: with your shell tool run exactly \`sleep $seconds\` and wait for it to finish, then reply with exactly $plugins_marker" \
     --mode bypass --timeout "$((seconds + 180))" --compact >"$report" 2>"$tmp/codex-plugins.stderr" ||
-    fail "codex:plugins exited nonzero ($(jq -r '.results[0] | "status=\(.status) exit_code=\(.exit_code)"' "$report" 2>/dev/null || echo 'no report')); verify the ChatGPT login in $home"
+    fail "codex:plugins exited nonzero ($(jq -r '.results[0] | "status=\(.status) exit_code=\(.exit_code)"' "$report" 2>/dev/null || echo 'no report')); its stderr tail: $(tail -5 "$tmp/codex-plugins.stderr" | sed -E -e 's/(sk-[A-Za-z0-9_-]+|Bearer [A-Za-z0-9._-]+)/<redacted>/g' | tr '\n' ' '); verify the ChatGPT login in $home with 'codex login status', then rerun"
   jq -e --arg m "$plugins_marker" '.results[0].status == "ok" and (.results[0].stdout | contains($m))' "$report" >/dev/null ||
     fail "codex:plugins did not complete with its marker ($(jq -r '.results[0].status' "$report")); rerun with OH_E2E_EVIDENCE=1"
   id="$(oh_launch_measured_assert "$OH_E2E_TELEMETRY_FILE" codex-plugins-opt-in exec "$seconds")"
   argv="$(jq -c --arg id "$id" 'select(.launch_id == $id and .argv) | .argv' "$OH_E2E_TELEMETRY_FILE")"
   printf '%s' "$argv" | jq -e 'index(["-c", "model_reasoning_effort=\"low\""]) != null' >/dev/null ||
-    fail "the opted-in launch's argv lacks the variant's own args: $argv"
+    fail "the opted-in launch's argv lacks the variant's own args (-c model_reasoning_effort=\"low\"): $argv; check that [harness.codex.variant.plugins] args still reaches codex in oneharness's argv (oneharness run --print-command), then rerun"
   printf '%s' "$argv" | jq -e '(index(["-c", "features.plugins=false"]) == null) and (index(["--disable", "plugins"]) == null)' >/dev/null ||
-    fail "the opted-in launch still carried a plugins-off flag despite plugins = true: $argv"
+    fail "the opted-in launch still carried a plugins-off flag despite plugins = true: $argv; a variant's plugins opt-in no longer reaches codex — check oneharness's plugins resolution (FileConfig::plugins_for), then rerun"
   if [ -z "${OH_E2E_PLUGINS_EVIDENCE:-}" ]; then
     thread="$(jq -r '.results[0].stdout' "$report" | jq -rR 'fromjson? | select(.type == "thread.started") | .thread_id' | head -1)"
     oh_codex_log_evidence "$home" "$plugins_marker" "$thread" "$since" >"$evidence_file" ||
-      fail "could not read Codex's log $home/logs_2.sqlite for the opted-in launch's plugins evidence"
+      fail "could not read Codex's log $home/logs_2.sqlite for the opted-in launch's plugins evidence; check that python3 has sqlite3 and the file is readable (sqlite3 $home/logs_2.sqlite .tables), then rerun"
   fi
   oh_codex_plugins_evidence_assert "$plugins_marker" "$evidence_file"
   evidence "IDENTITY codex:plugins: plugins=true args=variant measured=$id catalog_requested=yes plugins_loaded=yes"

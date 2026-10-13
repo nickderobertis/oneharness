@@ -14,5 +14,8 @@ extend = "../../python/oneharness-sdk/pyproject.toml"
     "S603", # Every argv is fixed by the test.
     "S607", # bash, uv and the suites' tools are resolved from PATH, as a run resolves them.
 ]
-"**/support.py" = ["S404", "S603", "S607"]
-"**/transfer.py" = ["S404", "S603"]
+"**/support.py" = [
+    "S404", # The shim, suites and check step are run as subprocesses, as a live run runs them.
+    "S603", # Every argv is built here from fixed words and the test's own paths.
+    "S607", # bash and uv are resolved from PATH, as the recipes resolve them.
+]

@@ -29,8 +29,6 @@
       "{workspaceRoot}/scripts/e2e-variants-invalid-report-double.sh",
       "{workspaceRoot}/scripts/e2e-netshim.sh",
       "{workspaceRoot}/scripts/e2e-netmeasure.py",
-      "{workspaceRoot}/tools/network-telemetry/harness_double.sh",
-      "{workspaceRoot}/tools/network-telemetry/transfer.py",
       "{workspaceRoot}/scripts/e2e-claude.sh",
       "{workspaceRoot}/scripts/e2e-codex.sh",
       "{workspaceRoot}/scripts/e2e-opencode.sh",

@@ -15,7 +15,9 @@ import signal
 import subprocess
 import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 from support import (
     ROOT,
@@ -33,20 +35,29 @@ from support import (
 )
 
 EXECUTABLES = ("claude", "codex", "copilot", "crush", "cursor-agent", "goose", "opencode", "qwen")
-# suite -> (the executable its first launch runs, its harness id, its auth env)
+
+
+class Suite(NamedTuple):
+    """A live suite as these tests drive it."""
+
+    executable: str  # what its first launch runs
+    harness: str  # that launch's harness id
+    auth: dict[str, str]  # the credentials its preflight asks for
+
+
 SUITES = {
-    "claude": ("claude", "claude-code", {"ANTHROPIC_API_KEY": "test-material"}),
-    "copilot": ("copilot", "copilot", {"COPILOT_GITHUB_TOKEN": "test-material"}),
-    "crush": ("crush", "crush", {"ANTHROPIC_API_KEY": "test-material"}),
-    "cursor": ("cursor-agent", "cursor", {"CURSOR_API_KEY": "test-material"}),
-    "goose": ("goose", "goose", {"OPENAI_API_KEY": "test-material"}),
-    "opencode": ("opencode", "opencode", {"ANTHROPIC_API_KEY": "test-material"}),
-    "qwen": ("qwen", "qwen", {"OPENAI_API_KEY": "test-material"}),
+    "claude": Suite("claude", "claude-code", {"ANTHROPIC_API_KEY": "test-material"}),
+    "copilot": Suite("copilot", "copilot", {"COPILOT_GITHUB_TOKEN": "test-material"}),
+    "crush": Suite("crush", "crush", {"ANTHROPIC_API_KEY": "test-material"}),
+    "cursor": Suite("cursor-agent", "cursor", {"CURSOR_API_KEY": "test-material"}),
+    "goose": Suite("goose", "goose", {"OPENAI_API_KEY": "test-material"}),
+    "opencode": Suite("opencode", "opencode", {"ANTHROPIC_API_KEY": "test-material"}),
+    "qwen": Suite("qwen", "qwen", {"OPENAI_API_KEY": "test-material"}),
     # The first controllable harness with credentials runs first; codex's
     # double speaks the app-server its control phase drives.
-    "control": ("codex", "codex", {"CODEX_E2E_AUTH": "1"}),
-    "schema": ("claude", "claude-code", {"ANTHROPIC_API_KEY": "test-material"}),
-    "variants": (
+    "control": Suite("codex", "codex", {"CODEX_E2E_AUTH": "1"}),
+    "schema": Suite("claude", "claude-code", {"ANTHROPIC_API_KEY": "test-material"}),
+    "variants": Suite(
         "claude",
         "claude-code",
         {
@@ -107,7 +118,7 @@ def run_until_recorded(suite: str, env: dict[str, str], harness: str, limit: flo
 class EverySuiteRecords(unittest.TestCase):
     def test_each_suite_records_its_first_launch_through_its_own_shim(self) -> None:
         need_builds(self)
-        for suite, (_exe, harness, auth) in SUITES.items():
+        for suite, (_exe, harness, auth) in SUITES.items():  # Suite unpacks in field order
             with self.subTest(suite=suite):
                 tmp = scratch(self)
                 stderr = run_until_recorded(
@@ -132,10 +143,15 @@ class EverySuiteRecords(unittest.TestCase):
         for suite, (exe, _harness, auth) in SUITES.items():
             with self.subTest(suite=suite):
                 tmp = scratch(self)
+                # A stale shim directory the setup cannot rewrite, holding a
+                # foreign executable where the shim goes.
                 stale = tmp / "telemetry" / ".shims" / suite
                 stale.mkdir(parents=True)
+                (stale / ".oh-network-shims").write_text("")
                 (stale / exe).write_text("#!/usr/bin/env bash\necho 'not a shim'\n")
-                (stale / exe).chmod(0o555)
+                (stale / exe).chmod(0o755)
+                stale.chmod(0o555)
+                self.addCleanup(stale.chmod, 0o755)
                 run = run_suite(suite, suite_env(tmp, *EXECUTABLES, OH_E2E_PHASE_LIMIT="1", **auth))
                 self.assertNotEqual(run.returncode, 0)
                 self.assertIn(
@@ -205,39 +221,78 @@ class DirectCodexLaunches(unittest.TestCase):
             (evidence["catalog_request"], evidence["plugins_loaded"]), (False, False), evidence
         )
 
+    def test_the_direct_launch_defaults_are_the_ones_oneharness_applies(self) -> None:
+        # _OH_CODEX_DEFAULTS restates oneharness's own Codex defaults; held to
+        # the argv oneharness builds, so the two cannot drift apart.
+        need_builds(self)
+        planned = json.loads(
+            subprocess.run(
+                [
+                    str(ROOT / "target" / "debug" / "oneharness"),
+                    "run",
+                    "--harness",
+                    "codex",
+                    "--prompt",
+                    "x",
+                    "--print-command",
+                    "--compact",
+                ],
+                capture_output=True,
+                text=True,
+                env={**os.environ, "ONEHARNESS_NO_CONFIG": "1"},
+                check=True,
+            ).stdout
+        )
+        argv = json.dumps(planned)
+        library = (ROOT / "scripts" / "e2e-lib.sh").read_text()
+        declared = re.search(r"^_OH_CODEX_DEFAULTS=\((.*)\)$", library, re.M)
+        assert declared is not None
+        words = declared.group(1).split()
+        self.assertEqual(words[::2], ["-c"] * 3)
+        for setting in words[1::2]:
+            self.assertIn(
+                f'"-c", "{setting}"',
+                argv.replace('","', '", "'),
+                f"oneharness no longer applies {setting}",
+            )
 
-# --- the legs ---------------------------------------------------------------
 
-LEGS = {"Linux": "ubuntu-latest", "macOS": "macos-latest", "Windows": "windows-latest"}
+LEGS = ("Linux", "macOS", "Windows")
 
 
-def steps(workflow: Path, job: str) -> list[dict[str, str]]:
-    """The job's steps in order, each as its `name`/`if`/`run`/`uses` and env text."""
+@dataclass(frozen=True)
+class Step:
+    """One workflow step, as much of it as leg selection reads."""
+
+    name: str
+    condition: str  # its `if:`, "" when it always runs
+    run: str
+    text: str  # the whole step, env block included
+
+
+def steps(workflow: Path, job: str) -> list[Step]:
+    """The job's steps in order."""
     text = workflow.read_text()
     body = re.search(rf"^  {job}:\n(.*?)(?=^  \S|\Z)", text, re.M | re.S)
     assert body is not None, f"{workflow} has no job {job}"
-    found = []
-    for chunk in re.split(r"^      - ", body.group(1).split("    steps:\n", 1)[1], flags=re.M)[1:]:
-        step: dict[str, str] = {"text": chunk}
-        for key in ("name", "if", "run", "uses"):
-            match = re.search(rf"^(?:{key}|        {key}): (.*)$", chunk, re.M)
-            if match:
-                step[key] = match.group(1).strip()
-        found.append(step)
-    return found
+
+    def field(chunk: str, key: str) -> str:
+        match = re.search(rf"^(?:{key}|        {key}): (.*)$", chunk, re.M)
+        return str(match.group(1)).strip() if match else ""
+
+    chunks = re.split(r"^      - ", body.group(1).split("    steps:\n", 1)[1], flags=re.M)[1:]
+    return [Step(field(c, "name"), field(c, "if"), field(c, "run"), c) for c in chunks]
 
 
-def selected(step: dict[str, str], runner_os: str) -> bool:
+def selected(step: Step, runner_os: str) -> bool:
     """Whether a step runs on `runner_os`: its `runner.os` comparisons decide;
     any other condition (an earlier step's output) is taken as met."""
-    return all(
-        other == runner_os for other in re.findall(r"runner\.os == '(\w+)'", step.get("if", ""))
-    )
+    return all(other == runner_os for other in re.findall(r"runner\.os == '(\w+)'", step.condition))
 
 
-def named(steps_run: list[dict[str, str]], fragment: str) -> int:
+def named(steps_run: list[Step], fragment: str) -> int:
     for index, step in enumerate(steps_run):
-        if fragment in step.get("name", "") or fragment in step.get("run", ""):
+        if fragment in step.name or fragment in step.run:
             return index
     return -1
 
@@ -260,19 +315,17 @@ class Legs(unittest.TestCase):
                     if runner_os == "Linux":
                         self.assertGreaterEqual(prepare, 0)
                         self.assertLess(prepare, measure, "pasta is prepared after it is needed")
-                        self.assertIn("apt-get install -y -q passt", run[prepare]["run"])
+                        self.assertIn("apt-get install -y -q passt", run[prepare].run)
                     else:
                         self.assertEqual(
                             prepare, -1, f"{runner_os} has no AppArmor userns restriction to lift"
                         )
         gate = [
-            s
-            for s in steps(ROOT / ".github/workflows/ci.yml", "check")
-            if "just check" in s.get("run", "")
+            s for s in steps(ROOT / ".github/workflows/ci.yml", "check") if "just check" in s.run
         ]
         self.assertEqual(len(gate), 2)
         for step in gate:
-            self.assertIn("OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}", step["text"])
+            self.assertIn("OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}", step.text)
         self.assertLess(
             named(steps(ROOT / ".github/workflows/ci.yml", "check"), self.PREPARE),
             named(steps(ROOT / ".github/workflows/ci.yml", "check"), "Bootstrap"),
@@ -294,6 +347,39 @@ class Legs(unittest.TestCase):
                     self.assertEqual(run.returncode, 0, run.stderr)
                     self.assertIn(f"not checked on {leg}", run.stdout)
                     self.assertNotIn("budget codex", run.stdout)
+
+    def test_the_budget_step_waits_for_a_launch_still_being_measured(self) -> None:
+        # A namespace still winding down holds its pending marker until its
+        # line is in; the step waits for it — and only up to its bound.
+        tmp = scratch(self)
+        pending = tmp / ".pending"
+        pending.mkdir()
+        (pending / "codex-1-abc").write_text("")
+        remover = subprocess.Popen(["bash", "-c", f'sleep 1.5; rm -f "{pending}/codex-1-abc"'])
+        started = time.monotonic()
+        run = check_step(tmp)
+        remover.wait()
+        self.assertGreaterEqual(
+            time.monotonic() - started, 1.5, "the step did not wait for the pending launch"
+        )
+        self.assertNotIn("still measuring", run.stderr)
+        (pending / "codex-2-def").write_text("")
+        started = time.monotonic()
+        run = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+            capture_output=True,
+            text=True,
+            env={
+                **os.environ,
+                "OH_E2E_TELEMETRY_DIR": str(tmp),
+                "OH_E2E_OS": "Linux",
+                "OH_E2E_PENDING_WAIT": "1",
+            },
+            check=False,
+        )
+        self.assertLess(time.monotonic() - started, 60)
+        self.assertIn("still measuring after 1s: codex-2-def", run.stderr)
+        self.assertNotEqual(run.returncode, 0, "a check over no telemetry passed")
 
     @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_the_unsupported_legs_select_the_fallback_launch(self) -> None:

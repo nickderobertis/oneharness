@@ -20,8 +20,10 @@
 # are the launch's own and the exit status is the launch's.
 #
 # OH_E2E_OS (default: `uname -s`) selects the platform, so a test can drive the
-# fallback a macOS or Windows leg takes.
-set -uo pipefail
+# fallback a macOS or Windows leg takes. A recorder that cannot record exits
+# 126 (refused before the launch) or 125 (the launch ran but its line could not
+# be written), saying why, rather than passing an unrecorded launch off as one.
+set -euo pipefail
 
 MARKER="oneharness-network-shim"
 
@@ -33,18 +35,23 @@ die() {
 suite="" harness="" real="" self="" file=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
+    --)
+      shift
+      break
+      ;;
+    --suite | --harness | --real | --self | --file)
+      [ "$#" -ge 2 ] || die "option '$1' needs a value; regenerate the shim with oh_telemetry_setup"
+      ;;
+    *) die "unknown option '$1'; the shim oh_telemetry_setup writes passes --suite --harness --real --self --file --" ;;
+  esac
+  case "$1" in
     --suite) suite="$2" ;;
     --harness) harness="$2" ;;
     --real) real="$2" ;;
     --self) self="$2" ;;
     --file) file="$2" ;;
-    --)
-      shift
-      break
-      ;;
-    *) die "unknown option '$1'; the shim oh_telemetry_setup writes passes --suite --harness --real --self --file --" ;;
   esac
-  shift 2 || die "option '$1' needs a value"
+  shift 2
 done
 [ -n "$suite" ] && [ -n "$harness" ] && [ -n "$real" ] && [ -n "$self" ] && [ -n "$file" ] ||
   die "--suite, --harness, --real, --self and --file are all required; regenerate the shim with oh_telemetry_setup"
@@ -119,7 +126,9 @@ _kind() {
 }
 
 kind="$(_kind "$harness" "$@")"
-launch_id="$suite-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+entropy="$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')" && [ "${#entropy}" -eq 12 ] ||
+  die "could not read /dev/urandom for a launch id, so two launches could share one; check /dev/urandom, then rerun"
+launch_id="$suite-$$-$entropy"
 phase="${OH_E2E_PHASE:-unphased}"
 # NUL-separated, so no argument is ever read as a jq option; each is cut to
 # 200 characters (a prompt is evidence enough by its head).
@@ -133,8 +142,12 @@ start="$(jq -nc --arg suite "$suite" --arg phase "$phase" --arg harness "$harnes
   '{suite: $suite, phase: $phase, harness: $harness, kind: $kind, launch_id: $id, argv: $argv}' |
   tr -d '\r')" || die "jq could not write the start line; install jq (the live suites need it) and rerun"
 printf '%s\n' "$start" >>"$file" || die "cannot append to $file; check that its directory is writable"
+# Marks the launch as still being measured until its line is in, so the
+# budget step waits for a namespace still winding down.
 pending="$(dirname "$file")/.pending/$launch_id"
-mkdir -p "$(dirname "$pending")" && : >"$pending"
+if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
+  die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
+fi
 
 os="${OH_E2E_OS:-$(uname -s)}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -154,11 +167,17 @@ esac
 # dispositions; a signal to the process group ends it and this still records.
 trap ':' TERM INT HUP
 t0="$(date +%s)"
-"$real" "$@"
-rc=$?
+rc=0
+"$real" "$@" || rc=$?
+unrecorded() {
+  printf 'e2e-netshim: %s exited %s, but its measurement line could not be written to %s (%s); check that the directory is writable, then rerun the suite\n' \
+    "$real" "$rc" "$file" "$1" >&2
+  exit 125
+}
 line="$(jq -nc --arg id "$launch_id" --arg reason "$reason" --argjson seconds "$(($(date +%s) - t0))" \
   --argjson exit "$rc" \
-  '{launch_id: $id, method: "unavailable", reason: $reason, seconds: $seconds, exit: $exit}' | tr -d '\r')"
-printf '%s\n' "$line" >>"$file"
-rm -f "$pending"
+  '{launch_id: $id, method: "unavailable", reason: $reason, seconds: $seconds, exit: $exit}' | tr -d '\r')" ||
+  unrecorded "jq failed"
+printf '%s\n' "$line" >>"$file" || unrecorded "the append failed"
+rm -f "$pending" || unrecorded "its pending marker $pending could not be removed"
 exit "$rc"

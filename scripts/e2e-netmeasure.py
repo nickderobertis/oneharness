@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import math
 import os
 import select
 import shutil
@@ -53,8 +54,10 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import NamedTuple, Optional
 
 METHOD = "netns-pasta"
 # Ethernet 14 + IPv4 20 + TCP 20: what one TAP frame carries beyond its payload.
@@ -73,9 +76,85 @@ NAMESPACE_ADVICE = (
 )
 
 
-def append_line(path: str, record: dict[str, object]) -> None:
+class Counters(NamedTuple):
+    """One interface's — or the namespace's summed — `/proc/net/dev` counters."""
+
+    rx_bytes: int
+    rx_frames: int
+    tx_bytes: int
+    tx_frames: int
+
+    def __sub__(self, earlier: object) -> Counters:
+        if not isinstance(earlier, Counters):
+            return NotImplemented
+        return Counters(*(now - then for now, then in zip(self, earlier)))
+
+
+class Snapshot(NamedTuple):
+    """The namespace's summed counters, between the two wall-clock instants of the read."""
+
+    before_ns: int
+    counters: Counters
+    after_ns: int
+
+
+@dataclass(frozen=True)
+class Measured:
+    """The line of a launch the namespace measured."""
+
+    launch_id: str
+    rx_bytes: int
+    tx_bytes: int
+    payload_rx_estimate: int
+    payload_tx_estimate: int
+    namespace_tcp_retrans_segs: int
+    seconds: float
+    exit: Optional[int]
+    method: str = METHOD
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    """The line of a launch that ran without the namespace, and why."""
+
+    launch_id: str
+    reason: str
+    seconds: float
+    exit: Optional[int]
+    method: str = "unavailable"
+
+
+class Ending(Enum):
+    """How the supervisor's work ended, as it tells the shim."""
+
+    EXITED = "exited"  # the launch ran in the namespace; `code` is its status
+    UNLAUNCHED = "unlaunched"  # the namespace never ran it; `reason` says why
+
+
+@dataclass(frozen=True)
+class Outcome:
+    ending: Ending
+    code: int = 0
+    reason: str = ""
+
+    def encode(self) -> bytes:
+        return json.dumps(
+            {"ending": self.ending.value, "code": self.code, "reason": self.reason}
+        ).encode()
+
+    @staticmethod
+    def decode(message: bytes) -> Optional[Outcome]:
+        """The supervisor's report, or None when it ended without a whole one."""
+        try:
+            fields = json.loads(message)
+            return Outcome(Ending(fields["ending"]), int(fields["code"]), str(fields["reason"]))
+        except (ValueError, KeyError, TypeError):
+            return None
+
+
+def append_line(path: str, record: Measured | Unavailable) -> None:
     """Append one JSON line in a single write, so concurrent launches never interleave."""
-    data = (json.dumps(record, separators=(",", ":")) + "\n").encode()
+    data = (json.dumps(asdict(record), separators=(",", ":")) + "\n").encode()
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
         os.write(fd, data)
@@ -97,12 +176,32 @@ def deadline_seconds() -> float:
         value = float(text)
     except ValueError:
         value = -1.0
-    if value < 0:
+    if not math.isfinite(value) or value < 0:
         sys.exit(
-            f"e2e-netmeasure: OH_E2E_NET_DEADLINE must be a non-negative number of seconds, "
-            f"got {text!r}; unset it for the {DEFAULT_DEADLINE:.0f} s default"
+            f"e2e-netmeasure: OH_E2E_NET_DEADLINE must be a finite, non-negative number of seconds, "
+            f"got {text!r}; unset it for the {DEFAULT_DEADLINE:.0f} s default, or 0 for none"
         )
     return value
+
+
+def observer_argv() -> Optional[list[str]]:
+    """The self-check's observer command (`OH_E2E_NET_OBSERVER`), validated."""
+    text = os.environ.get("OH_E2E_NET_OBSERVER")
+    if text is None:
+        return None
+    try:
+        decoded: object = json.loads(text)
+    except ValueError:
+        decoded = None
+    words: list[str] = (
+        [str(w) for w in decoded if isinstance(w, str) and w] if isinstance(decoded, list) else []
+    )
+    if not words or not isinstance(decoded, list) or len(words) != len(decoded):
+        sys.exit(
+            f"e2e-netmeasure: OH_E2E_NET_OBSERVER must be a JSON array of non-empty strings "
+            f"(an argv), got {text!r}; unset it outside the recorder's self-check"
+        )
+    return words
 
 
 def remove_quietly(path: Optional[str]) -> None:
@@ -113,19 +212,16 @@ def remove_quietly(path: Optional[str]) -> None:
             pass
 
 
-# --- the namespace's side -------------------------------------------------
-
-
-def read_counters() -> dict[str, tuple[int, int, int, int]]:
+def read_counters() -> dict[str, Counters]:
     """Every non-loopback interface's byte and frame counters in this network namespace."""
-    counters: dict[str, tuple[int, int, int, int]] = {}
+    counters: dict[str, Counters] = {}
     for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
         name, _, rest = line.partition(":")
         name = name.strip()
         if name == "lo":
             continue
         fields = [int(x) for x in rest.split()]
-        counters[name] = (fields[0], fields[1], fields[8], fields[9])
+        counters[name] = Counters(fields[0], fields[1], fields[8], fields[9])
     return counters
 
 
@@ -136,11 +232,16 @@ def tcp_retrans() -> int:
     return int(dict(zip(rows[0][1:], rows[1][1:]))["RetransSegs"])
 
 
-def timed_counters() -> tuple[int, dict[str, tuple[int, int, int, int]], int]:
-    """Counters with the wall-clock instants just before and just after the read."""
+def snapshot() -> Snapshot:
     before = time.time_ns()
     counters = read_counters()
-    return before, counters, time.time_ns()
+    after = time.time_ns()
+    summed = (
+        Counters(*(sum(column) for column in zip(*counters.values())))
+        if counters
+        else Counters(0, 0, 0, 0)
+    )
+    return Snapshot(before, summed, after)
 
 
 def private_resolver() -> None:
@@ -163,22 +264,26 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     Writes `launched` just before the launch starts and `result.json` once the
     whole tree has exited; the supervisor asks for a stop by creating `stop`."""
     observer = None
-    observer_argv = os.environ.get("OH_E2E_NET_OBSERVER")
-    if observer_argv is not None:
+    observing = observer_argv()
+    if observing is not None:
         # Outside the launch's PID namespace, so it is not part of the tree the
         # init waits for, but inside the network namespace it observes.
         observer = subprocess.Popen(
-            [*json.loads(observer_argv), ",".join(sorted(read_counters()))],
+            [*observing, ",".join(sorted(read_counters()))],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
         )
         if observer.stdout is None or observer.stdout.readline().strip() != b"ready":
             observer.kill()
-            sys.exit("e2e-netmeasure: the observer did not report ready")
+            sys.exit(
+                f"e2e-netmeasure: the observer {observing[0]} exited {observer.wait()} without "
+                "reporting ready; run it alone inside `pasta --config-net -- ...` to see its error"
+            )
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
         sys.exit(
-            f"e2e-netmeasure: unshare(CLONE_NEWNS|CLONE_NEWPID): {os.strerror(ctypes.get_errno())}"
+            f"e2e-netmeasure: unshare(CLONE_NEWNS|CLONE_NEWPID): "
+            f"{os.strerror(ctypes.get_errno())}; {NAMESPACE_ADVICE}"
         )
     child = os.fork()
     if child:
@@ -199,7 +304,7 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
         stop_requested = True
 
     signal.signal(signal.SIGTERM, request_stop)
-    start = timed_counters()
+    start = snapshot()
     retrans_start = tcp_retrans()
     t0 = time.monotonic()
     (scratch / "launched").touch()
@@ -231,20 +336,20 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
         time.sleep(0.02)
     seconds = time.monotonic() - t0
     time.sleep(SETTLE)
-    end = timed_counters()
-    rx = sum(c[0] for c in end[1].values()) - sum(c[0] for c in start[1].values())
-    rx_frames = sum(c[1] for c in end[1].values()) - sum(c[1] for c in start[1].values())
-    tx = sum(c[2] for c in end[1].values()) - sum(c[2] for c in start[1].values())
-    tx_frames = sum(c[3] for c in end[1].values()) - sum(c[3] for c in start[1].values())
+    end = snapshot()
+    moved = end.counters - start.counters
     result = {
-        "rx_bytes": rx,
-        "tx_bytes": tx,
-        "payload_rx_estimate": rx - FRAME_HEADERS * rx_frames,
-        "payload_tx_estimate": tx - FRAME_HEADERS * tx_frames,
+        "rx_bytes": moved.rx_bytes,
+        "tx_bytes": moved.tx_bytes,
+        "payload_rx_estimate": moved.rx_bytes - FRAME_HEADERS * moved.rx_frames,
+        "payload_tx_estimate": moved.tx_bytes - FRAME_HEADERS * moved.tx_frames,
         "namespace_tcp_retrans_segs": tcp_retrans() - retrans_start,
         "seconds": round(seconds, 3),
         "exit": launch_exit,
-        "windows": {"start": [start[0], start[2]], "end": [end[0], end[2]]},
+        "windows": {
+            "start": [start.before_ns, start.after_ns],
+            "end": [end.before_ns, end.after_ns],
+        },
     }
     partial = scratch / "result.json.partial"
     partial.write_text(json.dumps(result))
@@ -252,41 +357,20 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     return 0
 
 
-# --- the host's side --------------------------------------------------------
-
-
-def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int, done: int) -> None:
-    """In its own session: run pasta, stop the namespace if the shim goes, write the line.
-
-    Tells the shim on `done` either `exit N` or `unlaunched REASON` (the
-    namespace never ran the launch, so the shim runs it directly)."""
+def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) -> Outcome:
+    """In its own session: run pasta, stop the namespace if the shim goes, write the line."""
     t0 = time.monotonic()
     inner = [sys.executable, os.path.abspath(__file__), "--_init", str(scratch), "--", *args.argv]
+    no_ports = ["-t", "none", "-u", "none", "-T", "none", "-U", "none"]
     try:
         pasta_run = subprocess.Popen(
-            [
-                pasta,
-                "--config-net",
-                "--quiet",
-                "-4",
-                "-t",
-                "none",
-                "-u",
-                "none",
-                "-T",
-                "none",
-                "-U",
-                "none",
-                "--",
-                *inner,
-            ],
+            [pasta, "--config-net", "--quiet", "-4", *no_ports, "--", *inner],
             stderr=subprocess.PIPE,
         )
     except OSError as error:
-        os.write(
-            done, f"unlaunched cannot start pasta ({pasta}): {error}; {NAMESPACE_ADVICE}".encode()
+        return Outcome(
+            Ending.UNLAUNCHED, reason=f"cannot start pasta ({pasta}): {error}; {NAMESPACE_ADVICE}"
         )
-        return
     if pasta_run.stderr is None:  # stderr=PIPE always gives one; this narrows the type
         raise RuntimeError("pasta started without its stderr pipe")
     stderr_tail = b""
@@ -313,31 +397,38 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int, do
         result = json.loads(result_path.read_text())
         windows = os.environ.get("OH_E2E_NET_WINDOWS")
         if windows is not None:
-            Path(windows).write_text(json.dumps(result.pop("windows")))
-        else:
-            result.pop("windows")
-        append_line(args.line_file, {"launch_id": args.launch_id, "method": METHOD, **result})
-        os.write(done, f"exit {result['exit'] if result['exit'] is not None else 137}".encode())
-        return
-    reason = stderr_tail.decode(errors="replace").strip().replace("\n", " | ")[-500:]
-    if not (scratch / "launched").exists():
-        os.write(
-            done,
-            f"unlaunched the measuring namespace could not start (pasta exit {pasta_code}: "
-            f"{reason or 'no message'}); {NAMESPACE_ADVICE}".encode(),
+            Path(windows).write_text(json.dumps(result["windows"]))
+        append_line(
+            args.line_file,
+            Measured(
+                args.launch_id,
+                result["rx_bytes"],
+                result["tx_bytes"],
+                result["payload_rx_estimate"],
+                result["payload_tx_estimate"],
+                result["namespace_tcp_retrans_segs"],
+                result["seconds"],
+                result["exit"],
+            ),
         )
-        return
+        return Outcome(Ending.EXITED, code=result["exit"] if result["exit"] is not None else 137)
+    said = stderr_tail.decode(errors="replace").strip().replace("\n", " | ")[-500:] or "no message"
+    if not (scratch / "launched").exists():
+        return Outcome(
+            Ending.UNLAUNCHED,
+            reason=f"the measuring namespace could not start (pasta exit {pasta_code}: {said}); {NAMESPACE_ADVICE}",
+        )
     append_line(
         args.line_file,
-        {
-            "launch_id": args.launch_id,
-            "method": "unavailable",
-            "reason": f"the measuring namespace ended without a measurement (pasta exit {pasta_code}: {reason or 'no message'})",
-            "seconds": round(time.monotonic() - t0, 3),
-            "exit": None,
-        },
+        Unavailable(
+            args.launch_id,
+            f"the measuring namespace ended without a measurement (pasta exit {pasta_code}: {said}); "
+            "rerun the launch, and if it recurs run scripts/e2e-netmeasure.py by hand around it",
+            round(time.monotonic() - t0, 3),
+            None,
+        ),
     )
-    os.write(done, b"exit 137")
+    return Outcome(Ending.EXITED, code=137)
 
 
 def run_direct(args: argparse.Namespace, reason: str) -> int:
@@ -346,16 +437,7 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
     try:
         launch = subprocess.Popen(args.argv)
     except OSError as error:
-        append_line(
-            args.line_file,
-            {
-                "launch_id": args.launch_id,
-                "method": "unavailable",
-                "reason": reason,
-                "seconds": 0.0,
-                "exit": 127,
-            },
-        )
+        append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, 127))
         remove_quietly(args.pending)
         print(f"e2e-netshim: cannot start {args.argv[0]}: {error}", file=sys.stderr)
         return 127
@@ -364,14 +446,7 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
     code = launch.wait()
     code = 128 - code if code < 0 else code
     append_line(
-        args.line_file,
-        {
-            "launch_id": args.launch_id,
-            "method": "unavailable",
-            "reason": reason,
-            "seconds": round(time.monotonic() - t0, 3),
-            "exit": code,
-        },
+        args.line_file, Unavailable(args.launch_id, reason, round(time.monotonic() - t0, 3), code)
     )
     remove_quietly(args.pending)
     return code
@@ -390,8 +465,10 @@ def measure(args: argparse.Namespace) -> int:
         os.close(life_w)
         os.close(done_r)
         try:
-            supervise(args, pasta, scratch, life_r, done_w)
-            remove_quietly(args.pending)
+            outcome = supervise(args, pasta, scratch, life_r)
+            if outcome.ending is Ending.EXITED:
+                remove_quietly(args.pending)
+            os.write(done_w, outcome.encode())
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
             os._exit(0)
@@ -418,22 +495,24 @@ def measure(args: argparse.Namespace) -> int:
             break
         message += chunk
     os.waitpid(supervisor, 0)
-    verb, _, rest = message.decode(errors="replace").partition(" ")
-    if verb == "exit":
-        return int(rest)
-    if verb == "unlaunched":
-        return run_direct(args, rest)
-    append_line(
-        args.line_file,
-        {
-            "launch_id": args.launch_id,
-            "method": "unavailable",
-            "reason": "the measuring supervisor ended without reporting",
-            "seconds": 0.0,
-            "exit": None,
-        },
-    )
-    return 137
+    outcome = Outcome.decode(message)
+    # llmlint: ignore[structural_pattern_matching] Linted and type-checked at the uv workspace's Python 3.9 floor, where `match` does not parse; the outcome is a closed Enum told apart by identity.
+    if outcome is None:
+        append_line(
+            args.line_file,
+            Unavailable(
+                args.launch_id,
+                "the measuring supervisor ended without reporting, so this launch's bytes are "
+                "unknown; rerun it, and if it recurs run scripts/e2e-netmeasure.py by hand around it",
+                0.0,
+                None,
+            ),
+        )
+        remove_quietly(args.pending)
+        return 137
+    if outcome.ending is Ending.UNLAUNCHED:
+        return run_direct(args, outcome.reason)
+    return outcome.code
 
 
 def main(argv: list[str]) -> int:
@@ -452,7 +531,9 @@ def main(argv: list[str]) -> int:
         return namespace_init(Path(args.init), deadline_seconds(), args.argv)
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
-    deadline_seconds()  # refuse a bad value before anything runs
+    # Refuse a bad value before anything runs, not inside the namespace.
+    deadline_seconds()
+    observer_argv()
     return measure(args)
 
 

@@ -28,6 +28,7 @@ function render(value, context) {
   });
 }
 const { values } = parseArgs({ options: { root: { type: "string" } } });
+if (!values.root?.trim()) throw Error("Missing --root. Next: supply the release bundle directory.");
 const root = resolve(values.root);
 const target = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu"}`;
 if (!readPlatforms().some((p) => p.target === target) || !readdirSync(root).includes(target))

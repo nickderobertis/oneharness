@@ -29,3 +29,25 @@ test('real release builder rejects malformed platform declarations and package-d
  }finally{rmSync(cwd,{recursive:true,force:true});}
 });
 // llmlint: ignore-end[shell_test_tiers_stay_split]
+
+test('workflow and release helpers reject absent or blank boundary paths before IO',()=>{
+ for(const input of [undefined,'','   ']) {
+  for(const [script,flag] of [
+   ['.github/integration/rejection-journey.mjs','--root'],
+   ['.github/integration/transfer-journey.mjs','--root'],
+   ['.github/macos-budget.mjs','--telemetry'],
+  ]) {
+   const args=[script,...(input===undefined?[]:[flag,input])];
+   const run=spawnSync(process.execPath,args,{encoding:'utf8'});
+   assert.notEqual(run.status,0);
+   assert.match(run.stderr,new RegExp(`Missing ${flag}\\. Next:`));
+  }
+  for(const script of ['.github/macos-route.mjs','.github/live-paths.mjs']) {
+   const env={...process.env};delete env.GITHUB_OUTPUT;
+   if(input!==undefined) env.GITHUB_OUTPUT=input;
+   const run=spawnSync(process.execPath,[script],{env,encoding:'utf8'});
+   assert.notEqual(run.status,0);
+   assert.match(run.stderr,/Missing GITHUB_OUTPUT\. Next:/);
+  }
+ }
+});

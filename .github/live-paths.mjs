@@ -3,6 +3,7 @@ import { readFileSync, readdirSync, appendFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { matches, validateWorkflow } from "./workflow-graph.mjs";
+if (!process.env.GITHUB_OUTPUT?.trim()) throw Error("Missing GITHUB_OUTPUT. Next: supply the Actions output file path.");
 const paths = execFileSync(
   "git",
   [

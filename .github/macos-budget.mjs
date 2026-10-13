@@ -8,7 +8,8 @@ import { digest } from "./workflow-graph.mjs";
 const { values } = parseArgs({
   options: { metric: { type: "string" }, telemetry: { type: "string" } },
 });
-const path = resolve(values.telemetry ?? "");
+if (!values.telemetry?.trim()) throw Error("Missing --telemetry. Next: supply the recorded telemetry JSON path.");
+const path = resolve(values.telemetry);
 process.chdir(resolve(dirname(fileURLToPath(import.meta.url)), ".."));
 const telemetry = assertTelemetry(JSON.parse(readFileSync(path, "utf8")));
 if (telemetry.sourceDigest !== digest())

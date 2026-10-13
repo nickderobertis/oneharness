@@ -7,6 +7,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { parseArgs } from 'node:util';
 const {values} = parseArgs({options:{root:{type:'string'}}});
+if (!values.root?.trim()) throw Error("Missing --root. Next: supply the release bundle directory.");
 const root=resolve(values.root), target=`${process.arch==='arm64'?'aarch64':'x86_64'}-${process.platform==='darwin'?'apple-darwin':'unknown-linux-gnu'}`;
 const work=mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR??tmpdir(),'release-rejections-'));
 let count=0;

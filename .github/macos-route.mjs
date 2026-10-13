@@ -1,5 +1,6 @@
 import { readFileSync, appendFileSync } from "node:fs";
 import { classify } from "./macos-policy.mjs";
+if (!process.env.GITHUB_OUTPUT?.trim()) throw Error("Missing GITHUB_OUTPUT. Next: supply the Actions output file path.");
 let event;
 try {
   event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));

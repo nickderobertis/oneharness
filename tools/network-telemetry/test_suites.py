@@ -187,11 +187,18 @@ class Setup(unittest.TestCase):
     """oh_telemetry_setup itself, driven as a suite drives it."""
 
     def setup_and(
-        self, tmp: Path, script: str, *, path_first: Path | None = None
+        self,
+        tmp: Path,
+        script: str,
+        *,
+        path_first: Path | None = None,
+        telemetry_dir: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         env = suite_env(tmp, "codex")
         if path_first is not None:
             env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
+        if telemetry_dir is not None:
+            env["OH_E2E_TELEMETRY_DIR"] = telemetry_dir
         return subprocess.run(
             [
                 BASH,
@@ -202,8 +209,26 @@ class Setup(unittest.TestCase):
             ],
             capture_output=True,
             text=True,
+            cwd=tmp,
             env=env,
             check=False,
+        )
+
+    def test_a_windows_form_telemetry_directory_is_taken_as_that_directory(self) -> None:
+        # Unix reads C:\... as relative, so the shims land under the cwd here;
+        # what matters is that the shim records to and names the directory as
+        # given, never prefixed with the cwd. (Its colon splits PATH on unix,
+        # so the PATH check that follows is Windows's own, not this test's.)
+        need_builds(self)
+        tmp = scratch(self)
+        windows_form = r"C:\oh-telemetry"
+        self.setup_and(tmp, "oh_telemetry_setup codex", telemetry_dir=windows_form)
+        shim = (tmp / windows_form / ".shims" / "codex" / "codex").read_text()
+        quoted = windows_form.replace("\\", "\\\\")
+        self.assertIn(f"--file {quoted}/codex.jsonl ", shim)
+        self.assertIn(f"--self {quoted}/.shims/codex/codex ", shim)
+        self.assertNotIn(
+            str(tmp), shim.split("--self", 1)[1], "the directory was joined onto the cwd"
         )
 
     def test_a_suite_started_under_another_suites_shims_wraps_the_real_executable(self) -> None:
@@ -660,6 +685,24 @@ class Legs(unittest.TestCase):
         self.assertLess(time.monotonic() - started, 60)
         self.assertIn("still measuring after 1s: codex-2-def", run.stderr)
         self.assertNotEqual(run.returncode, 0, "a check over no telemetry passed")
+
+    def test_the_budget_step_reads_a_windows_form_directory_as_that_directory(self) -> None:
+        # Git Bash hands the step a drive-letter path; joined onto the working
+        # directory it named D:\repo\C:\Users\... and waited on nothing.
+        tmp = scratch(self)
+        windows_form = r"C:\oh-net-test-absent\telemetry"
+        run = subprocess.run(
+            [BASH, str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+            capture_output=True,
+            text=True,
+            cwd=tmp,
+            env={**os.environ, "OH_E2E_TELEMETRY_DIR": windows_form, "OH_E2E_OS": "Linux"},
+            timeout=600,
+            check=False,
+        )
+        self.assertNotEqual(run.returncode, 0, run.stdout)
+        self.assertIn(f"no telemetry at {windows_form}", run.stdout)
+        self.assertNotIn(tmp.name, run.stdout + run.stderr, "the directory was joined onto the cwd")
 
     @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_the_unsupported_legs_select_the_fallback_launch(self) -> None:

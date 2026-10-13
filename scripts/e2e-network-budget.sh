@@ -32,7 +32,8 @@ case "$os" in
 esac
 
 dir="${OH_E2E_TELEMETRY_DIR:-$root/target/e2e-telemetry/network}"
-case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+# A drive-letter directory (C:\... on Git Bash) is as absolute as /...
+case "$dir" in /* | [A-Za-z]:*) ;; *) dir="$PWD/$dir" ;; esac
 
 # A launch oneharness stopped is still being measured while its namespace
 # winds down (at most the 5 s kill grace); its marker goes once its line is in.

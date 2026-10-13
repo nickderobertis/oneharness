@@ -37530,6 +37530,16 @@ enum CodexLaunchPath {
     Usage,
 }
 
+/// `paths`, then the `--control` path where the platform runs it (the mock
+/// app-server journeys are unix-only).
+fn with_control(paths: &[CodexLaunchPath]) -> Vec<CodexLaunchPath> {
+    let control: &[CodexLaunchPath] = &[
+        #[cfg(unix)]
+        CodexLaunchPath::Control,
+    ];
+    [paths, control].concat()
+}
+
 /// What the mock codex was started with, and what it did about plugins.
 struct CodexLaunch {
     argv: Vec<String>,
@@ -38584,7 +38594,6 @@ impl CatalogWorld {
         passthrough: &[&str],
         envs: &[(&str, &str)],
     ) -> Command {
-        static SESSIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let mut cmd = Command::new(oneharness_bin());
         cmd.env("ONEHARNESS_CONFIG", self.fx.user_config());
         for var in ENV_OVERRIDE_VARS {
@@ -38631,6 +38640,8 @@ impl CatalogWorld {
         .collect();
         #[cfg(unix)]
         if matches!(path, CodexLaunchPath::Control) {
+            static SESSIONS: std::sync::atomic::AtomicUsize =
+                std::sync::atomic::AtomicUsize::new(0);
             let session = format!(
                 "catalog{}",
                 SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -38847,9 +38858,7 @@ fn with_no_new_key_every_codex_launch_carries_analytics_off_and_the_shared_catal
         "[harness.codex]\nargs = [\"--config-arg\"]\n",
         "",
     );
-    let mut paths = vec![CodexLaunchPath::Exec, CodexLaunchPath::Resume];
-    #[cfg(unix)]
-    paths.push(CodexLaunchPath::Control);
+    let paths = with_control(&[CodexLaunchPath::Exec, CodexLaunchPath::Resume]);
     for path in paths {
         let run = world.launch(path, "codex", &["--passthrough-arg"], &[]);
         assert_eq!(run.warnings(), 0, "{}", run.stderr());
@@ -38930,9 +38939,7 @@ fn a_callers_own_analytics_or_catalog_setting_lands_after_oneharness_s() {
         "model_catalog_json={}",
         serde_json::to_string(&caller_catalog.display().to_string()).unwrap()
     );
-    let mut paths = vec![CodexLaunchPath::Exec];
-    #[cfg(unix)]
-    paths.push(CodexLaunchPath::Control);
+    let paths = with_control(&[CodexLaunchPath::Exec]);
     for path in paths {
         world.launch(path, "codex", &["-c", &setting], &[]);
         let launch = world.launches().pop().unwrap();
@@ -38962,9 +38969,7 @@ fn a_callers_own_apps_enable_lands_after_the_default_and_wins() {
     // `--` — comes after oneharness's default `-c features.apps=false` and
     // gets them, under the mock's model of Codex's measured precedence.
     let spellings: [&[&str]; 2] = [&["-c", "features.apps=true"], &["--enable", "apps"]];
-    let mut paths = vec![CodexLaunchPath::Exec];
-    #[cfg(unix)]
-    paths.push(CodexLaunchPath::Control);
+    let paths = with_control(&[CodexLaunchPath::Exec]);
     for spelling in spellings {
         let config_args = format!(
             "[harness.codex]\nargs = [{}]\n",
@@ -39030,9 +39035,7 @@ fn an_apps_opt_in_survives_a_variants_own_args_and_an_extends_child() {
             "[harness.codex]\napps = true\n",
         )
         .unwrap();
-        let mut paths = vec![CodexLaunchPath::Exec];
-        #[cfg(unix)]
-        paths.push(CodexLaunchPath::Control);
+        let paths = with_control(&[CodexLaunchPath::Exec]);
         for path in paths {
             world.launch(path, harness, &[], &[]);
             let launch = world.launches().pop().unwrap();

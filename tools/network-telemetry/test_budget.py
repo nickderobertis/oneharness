@@ -65,7 +65,7 @@ class Phase(NamedTuple):
 
 Plan = list[Phase]
 
-# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the budget workload as the task's acceptance criteria state it (50 default-config launches), not a restatement of what the suite launches today: the recorder now also sees oneharness's `--version` probe before every launch (97 in the committed pass), and the thresholds are tested at their exact values over this stated workload. What the suite really launches is held by the committed evidence and its recomputation (class Evidence).
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the budget workload as the task's acceptance criteria state it (50 default-config launches), not a restatement of what the suite launches today: the recorder now also sees oneharness's `--version` probe before every launch, so the committed pass records more launches than these 50, and the thresholds are tested at their exact values over this stated workload. What the suite really launches is held by the committed evidence and its recomputation (class Evidence).
 # The budget workload as the task's acceptance criteria state it: 50
 # default-config launches — 22 model turns, 1 usage probe, 26 network-free
 # launches and 1 controlled turn.

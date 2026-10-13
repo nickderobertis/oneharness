@@ -379,7 +379,7 @@ class CodexLogEvidence(unittest.TestCase):
         tmp = scratch(self)
         home = tmp / "codex-home"
         home.mkdir()
-        # llmlint: ignore[async_typed_clients_at_boundaries] This writes a fixture in Codex's own logs_2.sqlite schema for the code under test to read; the database is Codex's file on disk, not a service boundary oneharness owns, and the test must produce exactly the rows Codex would.
+        # llmlint: ignore-block[async_typed_clients_at_boundaries, contracts_have_one_source_or_a_drift_gate] This writes a fixture in Codex's own logs_2.sqlite schema, with its catalog-fetch and plugin-sync lines, for oh_codex_log_evidence to read: the database is Codex's file on disk, not a service boundary oneharness owns, so the test must produce exactly the rows Codex would. Neither the schema nor the lines have a published contract to reconcile against short of running Codex (they are read off codex-cli 0.159.2, as the reader's own directive in scripts/e2e-lib.sh says); the live-variants run of that phase against real Codex is the drift alarm, where a moved line fails loudly.
         db = sqlite3.connect(home / "logs_2.sqlite")
         db.execute(
             "create table logs (id integer primary key autoincrement, ts integer not null, ts_nanos integer not null,"
@@ -424,6 +424,7 @@ class CodexLogEvidence(unittest.TestCase):
             )
         db.commit()
         db.close()
+        # llmlint: ignore-end[async_typed_clients_at_boundaries, contracts_have_one_source_or_a_drift_gate]
         run = run_lib("oh_codex_log_evidence", str(home), "OH_VARIANT_1_2_pl", "th-mine", "1500")
         self.assertEqual(run.returncode, 0, run.stderr)
         records = sorted(

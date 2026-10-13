@@ -35,6 +35,10 @@ use crate::io::usage::codex_initialize_request;
 /// the lock.
 const POLL: Duration = Duration::from_millis(25);
 
+/// How long a refresh helper that wrote the catalog is given to exit on its
+/// own once its stdin closes, before it is signalled.
+const HELPER_EXIT_GRACE: Duration = Duration::from_secs(1);
+
 /// What `--print-command` shows in place of the catalog path: a dry run spawns
 /// nothing, so it cannot ask the executable for the version the path is keyed
 /// by.
@@ -307,17 +311,19 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Cat
         Ok(text) => read_codex_cache(&text, started_ms, version),
         Err(_) => CacheReading::NotYet,
     };
+    let mut exited = false;
     let outcome = loop {
         if let CacheReading::Fresh(catalog) = read_cache() {
             break Ok(catalog);
         }
         // The pause between looks is a wait on the helper, so one that exits
         // ends the refresh at once rather than at the deadline.
-        let exited = helper
+        let status = helper
             .wait_until((Instant::now() + POLL).min(deadline))
             .ok()
             .flatten();
-        if let Some(status) = exited {
+        if let Some(status) = status {
+            exited = true;
             // One last look: Codex may have written the cache on its way out.
             break match read_cache() {
                 CacheReading::Fresh(catalog) => Ok(catalog),
@@ -335,8 +341,25 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Cat
             ));
         }
     };
-    drop(stdin);
-    helper.finish(Finish::Terminate);
+    // A helper that delivered closes with its stdin, as `codex app-server`
+    // does, and is given a moment to: one signalled while it exits loses its
+    // at-exit work (an instrumented build's coverage profile is truncated). One
+    // that did not deliver is signalled with its stdin still open, so the stop
+    // never races an exit the close would start and adds nothing to the
+    // refresh's deadline.
+    if outcome.is_ok() && !exited {
+        drop(stdin);
+        exited = helper
+            .wait_until(Instant::now() + HELPER_EXIT_GRACE)
+            .ok()
+            .flatten()
+            .is_some();
+    }
+    helper.finish(if exited {
+        Finish::Exited
+    } else {
+        Finish::Terminate
+    });
     outcome
 }
 
@@ -471,5 +494,52 @@ mod tests {
             "{reason}"
         );
         assert!(started.elapsed() < MODEL_CATALOG_REFRESH_DEADLINE);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_helper_that_wrote_the_catalog_finishes_its_own_exit_before_any_signal() {
+        // The helper writes a fresh cache, then exits once its stdin closes, as
+        // `codex app-server` does — and takes a moment over that exit, as an
+        // instrumented build writing its coverage profile does. A signal sent
+        // straight after the close lands inside that exit and the marker its
+        // last step leaves is never written.
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = ScratchDir::new("catalog-refresh-exit").unwrap();
+        let marker = scratch.join("exited-by-itself");
+        let helper = scratch.join("codex");
+        fs::write(
+            &helper,
+            format!(
+                "#!/bin/sh\n\
+                 read -r _initialize\n\
+                 printf '%s' '{{\"fetched_at\":\"2999-01-01T00:00:00Z\",\"client_version\":\"1.2.3\",\"models\":[{{\"slug\":\"m\"}}]}}' \
+                   > \"$CODEX_HOME/{CODEX_MODELS_CACHE}\"\n\
+                 cat > /dev/null\n\
+                 sleep 0.3\n\
+                 : > '{}'\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let bin = helper.to_str().unwrap();
+        let env = [(
+            "CODEX_HOME".to_string(),
+            scratch.to_str().unwrap().to_string(),
+        )];
+        let launch = CatalogLaunch {
+            bin,
+            cwd: None,
+            env: &env,
+            env_remove: &[],
+            refresh_seconds: NonZeroU64::new(60).unwrap(),
+        };
+        let catalog = refresh(&launch, &scratch, "1.2.3").unwrap();
+        assert!(is_usable_catalog(catalog.as_str().as_bytes()));
+        assert!(
+            marker.exists(),
+            "the refresh signalled a helper that was exiting on its own"
+        );
     }
 }

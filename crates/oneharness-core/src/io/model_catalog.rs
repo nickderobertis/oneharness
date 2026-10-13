@@ -121,7 +121,6 @@ pub fn resolve(launch: &CatalogLaunch<'_>) -> CatalogChoice {
             return files.fallback(&format!("cannot open {}: {error}", files.lock.display()))
         }
     };
-    let waited_since_ms = now_ms();
     let waited_until = Instant::now() + MODEL_CATALOG_WAIT;
     loop {
         if lock.try_lock_exclusive().is_ok() {
@@ -130,7 +129,7 @@ pub fn resolve(launch: &CatalogLaunch<'_>) -> CatalogChoice {
             return choice;
         }
         if Instant::now() >= waited_until {
-            return files.waited_out(launch.refresh_interval(), waited_since_ms);
+            return files.waited_out(launch.refresh_interval());
         }
         std::thread::sleep(POLL);
     }
@@ -234,10 +233,12 @@ impl CatalogFiles {
     /// holder may be stalled and never record its own failure, so this launch
     /// records one — unless, looking again, a refresh has landed or the holder
     /// has recorded a failure of its own. The record is stamped with the
-    /// moment the wait began: any catalog a concurrent refresh writes after
-    /// that is newer than the record, which then holds nothing off
-    /// ([`Self::backing_off`]), so this record never outranks a success.
-    fn waited_out(&self, interval: Duration, waited_since_ms: i64) -> CatalogChoice {
+    /// moment the wait ran out, so the backoff runs in full from the failure's
+    /// end; the stamp is taken before looking again, so a catalog a concurrent
+    /// refresh writes after the look is newer than the record, which then
+    /// holds nothing off ([`Self::backing_off`]).
+    fn waited_out(&self, interval: Duration) -> CatalogChoice {
+        let expired_ms = now_ms();
         if let Some(fresh) = self.fresh(interval) {
             return CatalogChoice::fresh(fresh);
         }
@@ -245,7 +246,7 @@ impl CatalogFiles {
             return choice;
         }
         self.record_failure(&FailureRecord {
-            failed_at_ms: waited_since_ms,
+            failed_at_ms: expired_ms,
             reason: format!(
                 "another launch's refresh gave no fresh catalog within {} s",
                 MODEL_CATALOG_WAIT.as_secs()

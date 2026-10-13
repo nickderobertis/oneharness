@@ -39413,7 +39413,7 @@ fn the_refresh_helper_never_loads_plugins_or_reports_analytics() {
     assert!(record_catalog(&launch).is_some(), "{argv:?}");
 }
 
-// llmlint: ignore-block[tests_mirror_real_usage] The backoff is the plan's fixed five-minute constant (MODEL_CATALOG_FAILURE_BACKOFF), which no config shortens: reaching its end through elapsed time would add five minutes to every run of this suite. The record rewritten is the documented on-disk state the backoff reads (README, *The failure fallback*), and every launch around it goes through the real CLI.
+// llmlint: ignore-block[tests_mirror_real_usage] The backoff is the plan's fixed five-minute constant (MODEL_CATALOG_FAILURE_BACKOFF), which no config shortens: reaching its end, or a point just short of it, through elapsed time would add five minutes to every run of this suite. The record rewritten is the documented on-disk state the backoff reads (README, *The failure fallback*), and every launch around it goes through the real CLI.
 /// Backdate the one failure record so its backoff has ended.
 fn end_the_backoff(world: &CatalogWorld) {
     let records = world.failure_records();
@@ -39432,7 +39432,44 @@ fn end_the_backoff(world: &CatalogWorld) {
     .into();
     std::fs::write(&records[0], record.to_string()).unwrap();
 }
+
+/// Move the one failure record's moment, and the catalog file's write when
+/// there is one, `by` into the past: as if that much of the backoff had
+/// elapsed, with the two still in the order they were written.
+fn age_the_failure(world: &CatalogWorld, by: std::time::Duration) {
+    let records = world.failure_records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let mut record: Value =
+        serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    let aged = failed_at_ms(world) - u64::try_from(by.as_millis()).unwrap();
+    record["failed_at_ms"] = aged.into();
+    std::fs::write(&records[0], record.to_string()).unwrap();
+    let (catalog, _, _) = catalog_paths(world);
+    if let Ok(file) = std::fs::File::options().write(true).open(&catalog) {
+        let written = file.metadata().unwrap().modified().unwrap();
+        file.set_modified(written - by).unwrap();
+    }
+}
 // llmlint: ignore-end[tests_mirror_real_usage]
+
+/// The one failure record's moment, in milliseconds since the epoch.
+fn failed_at_ms(world: &CatalogWorld) -> u64 {
+    let records = world.failure_records();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record: Value =
+        serde_json::from_str(&std::fs::read_to_string(&records[0]).unwrap()).unwrap();
+    record["failed_at_ms"].as_u64().unwrap()
+}
+
+/// `time` in milliseconds since the epoch.
+fn epoch_ms(time: std::time::SystemTime) -> u64 {
+    u64::try_from(
+        time.duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
 
 /// Each run printed exactly one warning, naming the failed refresh.
 fn assert_one_catalog_warning_each(runs: &[CatalogRun], uses: &str) {
@@ -39704,9 +39741,11 @@ fn a_launch_whose_wait_for_the_lock_runs_out_keeps_the_stale_catalog_through_the
 /// Another process holds the catalog's lock past MODEL_CATALOG_WAIT (here,
 /// this test): the launch stops waiting at that bound, warns once and goes
 /// without — on the stale catalog when `stale`, else on Codex's own fetch —
-/// starts no refresh of its own, and records the failure. Once the lock is
-/// released, a launch inside the backoff still starts no refresh and does not
-/// wait; after the backoff, one refresh restores the shared catalog.
+/// starts no refresh of its own, and records the failure as ending when the
+/// wait ran out. Once the lock is released, a launch inside the backoff — even
+/// one a few seconds short of a full backoff from that expiry — still starts
+/// no refresh and does not wait; after the backoff, one refresh restores the
+/// shared catalog.
 fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
     use fs2::FileExt;
     let tag = if stale { "stale" } else { "absent" };
@@ -39730,7 +39769,9 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
     std::fs::create_dir_all(world.catalog_dir()).unwrap();
     let lock = std::fs::File::create(&lock_path).unwrap();
     lock.lock_exclusive().unwrap();
+    let launched_ms = epoch_ms(std::time::SystemTime::now());
     let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    let returned_ms = epoch_ms(std::time::SystemTime::now());
     FileExt::unlock(&lock).unwrap();
     drop(lock);
     assert!(
@@ -39764,8 +39805,22 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
         1,
         "{tag}: the expired wait must be recorded so the backoff holds"
     );
+    let failed_at = failed_at_ms(&world);
+    let wait_expired_ms = launched_ms + u64::try_from(MODEL_CATALOG_WAIT.as_millis()).unwrap();
+    assert!(
+        (wait_expired_ms..=returned_ms).contains(&failed_at),
+        "{tag}: the failure ends when the wait runs out ({wait_expired_ms}..={returned_ms}), \
+         not when it began: {failed_at}"
+    );
 
-    // The lock is free now, but the backoff holds: no refresh, no wait.
+    // The lock is free now, but the backoff holds — even with all but a few
+    // seconds of it gone since the wait ran out: no refresh, no wait. Short of
+    // the wait itself, so a record stamped when the wait began would already
+    // have let this launch refresh.
+    age_the_failure(
+        &world,
+        MODEL_CATALOG_FAILURE_BACKOFF - MODEL_CATALOG_WAIT / 2,
+    );
     let during = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
     assert!(
         during.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
@@ -39799,7 +39854,7 @@ fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 
-// llmlint: ignore-block[tests_mirror_real_usage] The record a launch leaves when its wait outlasts a stalled lock holder is stamped with the moment its wait began, and the refresh that lands meanwhile is another process's; writing that record directly is how a test reaches the interleaving without a stalled process, and every launch goes through the real CLI.
+// llmlint: ignore-block[tests_mirror_real_usage] The record a launch leaves when its wait outlasts a stalled lock holder is stamped with the moment its wait ran out, before it looks again, and the refresh that lands between that look and the record's write is another process's; writing that record directly is how a test reaches the interleaving without a stalled process, and every launch goes through the real CLI.
 #[test]
 fn a_failure_recorded_before_the_catalog_was_written_holds_nothing_off() {
     // A launch whose wait expired while another process's refresh was landing

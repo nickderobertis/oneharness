@@ -38,11 +38,9 @@
       "{workspaceRoot}/rust-toolchain.toml",
       "{workspaceRoot}/.cargo/config.toml",
       "{workspaceRoot}/scripts/nx",
-      "{workspaceRoot}/.github/gate-env.mjs",
-      "{workspaceRoot}/.github/workflow-graph.mjs",
-      "{workspaceRoot}/scripts/e2e-lib.sh",
       "{workspaceRoot}/scripts/check-usage-enforce.sh",
-      "{workspaceRoot}/scripts/with-portable-sed.sh"
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/scripts/e2e-lib.sh"
     ]
   },
   "targets": {

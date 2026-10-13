@@ -117,6 +117,7 @@ fi
 # discontinued @oneharness/cli-darwin-x64 package. process.platform/arch are the
 # only host facts it reads, so a preload presents an Intel Mac to the real shim.
 # llmlint: ignore-block[tests_mirror_real_usage] No hosted or local runner is an Intel Mac any more, and Node's process.platform/process.arch are the launcher's whole host boundary: the preload sets exactly those two facts and the committed shim then runs unmodified, as `oneharness` on an Intel Mac would.
+# llmlint: ignore-block[e2e_not_mocked] No hosted or local runner is an Intel Mac any more, and Node's process.platform/process.arch are the launcher's whole host boundary: the preload sets exactly those two facts and the committed shim then runs unmodified, as `oneharness` on an Intel Mac would.
 cat >"$tmp/intel-mac.cjs" <<'PRELOAD'
 Object.defineProperty(process, "platform", { value: "darwin" });
 Object.defineProperty(process, "arch", { value: "x64" });
@@ -131,6 +132,7 @@ case "$intel_err" in
   *"Intel macOS (darwin-x64) is no longer supported"*) ;;
   *) fail "launcher on Intel macOS must say Intel macOS is no longer supported, got: $intel_err" ;;
 esac
+# llmlint: ignore-end[e2e_not_mocked]
 # llmlint: ignore-end[tests_mirror_real_usage]
 
 say "npm-e2e: ok (launcher resolved @oneharness/cli-$key and ran oneharness $bin_ver)"

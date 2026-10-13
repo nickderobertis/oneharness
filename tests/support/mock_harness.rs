@@ -162,11 +162,16 @@
 //!                              missing or empty catalog fails the launch, as it
 //!                              fails Codex. Without one it fetches: `fetch` is
 //!                              `ok` (with `fetched_ms`) after it writes
-//!                              `$CODEX_HOME/models_cache.json` stamped with
+//!                              `$CODEX_HOME/models_cache.json` (Codex's
+//!                              default `~/.codex` when CODEX_HOME is unset)
+//!                              stamped with MOCK_CODEX_CACHE_VERSION, else
 //!                              MOCK_CODEX_VERSION, else the fault's outcome.
 //!                              It then carries on as it otherwise would.
 //!   MOCK_CODEX_CATALOG_FETCH_MS  with MOCK_CODEX_CATALOG_LOG, how long a fetch
 //!                              takes before it writes the cache.
+//!   MOCK_CODEX_CATALOG_THEN_EXIT  with MOCK_CODEX_CATALOG_LOG, an `app-server`
+//!                              launch that fetched exits 0 right after,
+//!                              instead of serving its stdin.
 //!   MOCK_CODEX_CATALOG_FAULT   with MOCK_CODEX_CATALOG_LOG, `fail` makes every
 //!                              fetch fail (`fetch: "failed"`, no cache written);
 //!                              `hang` makes it never answer (`fetch: "hung"`,
@@ -380,8 +385,9 @@ fn record_codex_plugins(path: &str, argv: &[String]) {
 /// none installed, so each stops the mock rather than record a launch nobody
 /// set up.
 fn installed_codex_plugins() -> Vec<String> {
-    let home = std::env::var_os("CODEX_HOME")
-        .expect("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
+    let Some(home) = std::env::var_os("CODEX_HOME") else {
+        refuse("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
+    };
     // Listing and reading the entries is one fallible step, so a failure part
     // way through the listing takes the same refusal as one opening it.
     let listed =
@@ -395,7 +401,7 @@ fn installed_codex_plugins() -> Vec<String> {
     let entries = match listed {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
-        Err(err) => panic!("$CODEX_HOME/plugins could not be read: {err}"),
+        Err(err) => refuse(&format!("$CODEX_HOME/plugins could not be read: {err}")),
     };
     // An entry whose type cannot be read is refused rather than read as no
     // plugin, the way `Path::is_dir` would.
@@ -405,10 +411,10 @@ fn installed_codex_plugins() -> Vec<String> {
             Ok(metadata) => metadata.is_dir(),
             // Named by its file name alone: the full path carries the scratch
             // directory's pid, which a `401`/`403` in it reads as an auth refusal.
-            Err(err) => panic!(
+            Err(err) => refuse(&format!(
                 "$CODEX_HOME/plugins entry `{}` could not be read: {err}",
                 entry.file_name().to_string_lossy()
-            ),
+            )),
         })
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
@@ -416,6 +422,14 @@ fn installed_codex_plugins() -> Vec<String> {
     loaded
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// Stop the mock the way a panic would — its message on stderr, exit 101 —
+/// but without a panic's `file:line`, whose digits shift with every edit to
+/// this file and, as a `401` or `403`, read as an auth refusal.
+fn refuse(message: &str) -> ! {
+    let _ = writeln!(std::io::stderr(), "mock harness: {message}");
+    std::process::exit(101);
+}
 
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
@@ -481,8 +495,15 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         return;
     };
     let started_ms = epoch_ms();
-    let home = std::env::var("CODEX_HOME")
-        .expect("MOCK_CODEX_CATALOG_LOG keeps its catalog cache in CODEX_HOME, which is unset");
+    // Codex's own default when CODEX_HOME is unset: `.codex` in the user's home.
+    let home = std::env::var("CODEX_HOME").unwrap_or_else(|_| {
+        let user = std::env::var(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .expect("MOCK_CODEX_CATALOG_LOG needs CODEX_HOME or a home directory for ~/.codex");
+        std::path::Path::new(&user)
+            .join(".codex")
+            .display()
+            .to_string()
+    });
     let catalog = codex_model_catalog_arg(argv);
     let mut line = serde_json::json!({
         "subcommand": subcommand,
@@ -531,8 +552,9 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                     .trim_end_matches('Z'),
                     now.subsec_nanos()
                 );
-                let version =
-                    std::env::var("MOCK_CODEX_VERSION").unwrap_or_else(|_| "0.0.0".into());
+                let version = std::env::var("MOCK_CODEX_CACHE_VERSION")
+                    .or_else(|_| std::env::var("MOCK_CODEX_VERSION"))
+                    .unwrap_or_else(|_| "0.0.0".into());
                 let cache = serde_json::json!({
                     "fetched_at": fetched_at,
                     "etag": "W/\"mock\"",
@@ -565,6 +587,12 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
     drop(log);
     if fault == "exit" && catalog.is_none() && subcommand == "app-server" {
         std::process::exit(1);
+    }
+    if std::env::var_os("MOCK_CODEX_CATALOG_THEN_EXIT").is_some()
+        && catalog.is_none()
+        && subcommand == "app-server"
+    {
+        std::process::exit(0);
     }
     if fault == "hang" && catalog.is_none() && subcommand == "app-server" {
         let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());

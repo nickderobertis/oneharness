@@ -37701,9 +37701,10 @@ fn assert_codex_plugin_discovery_fails(
     let home_arg = codex_home.map(|home| home.display().to_string());
     let mut envs = vec![("MOCK_CODEX_PLUGINS_LOG", log_arg.as_str())];
     envs.extend_from_slice(extra_envs);
-    // The mock refuses by panicking, and oneharness quotes only the tail of a
-    // harness's stderr: an ambient backtrace (CI sets one) would push the
-    // diagnostic out of that tail.
+    // The mock refuses with a panic's exit code (101) and its message on
+    // stderr, and oneharness quotes only the tail of a harness's stderr: were
+    // a panic ever to carry the refusal, an ambient backtrace (CI sets one)
+    // would push the diagnostic out of that tail.
     let mut removed = vec!["RUST_BACKTRACE", "RUST_LIB_BACKTRACE"];
     match &home_arg {
         Some(home) => envs.push(("CODEX_HOME", home.as_str())),
@@ -38681,7 +38682,12 @@ impl CatalogWorld {
     /// [`Self::launch`] of a plain `exec` with `removed` cleared from the
     /// environment after `envs` are set; it must succeed.
     fn launch_removing(&self, envs: &[(&str, &str)], removed: &[&str]) -> CatalogRun {
-        let mut cmd = self.command(CodexLaunchPath::Exec, "codex", &[], envs);
+        self.launch_as("codex", envs, removed)
+    }
+
+    /// [`Self::launch_removing`] of `harness` (`codex` or `codex:<variant>`).
+    fn launch_as(&self, harness: &str, envs: &[(&str, &str)], removed: &[&str]) -> CatalogRun {
+        let mut cmd = self.command(CodexLaunchPath::Exec, harness, &[], envs);
         for name in removed {
             cmd.env_remove(name);
         }
@@ -39814,5 +39820,105 @@ fn a_malformed_failure_record_holds_nothing_off() {
     assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
     assert_every_launch_read(&world, &world.launches());
     assert!(!failure.exists(), "a successful refresh clears the record");
+}
+
+#[test]
+fn every_spelling_of_one_codex_home_shares_one_catalog() {
+    // Codex's default `~/.codex`, the same home reached by a variant that
+    // unsets an ambient CODEX_HOME, spelled with a trailing `/.`, and spelled
+    // relative to the directory the launch starts in: one home, so one
+    // catalog and one refresh.
+    let world = CatalogWorld::new(
+        "catalog-home-spellings",
+        "[harness.codex.variant.unset]\nunset_env = [\"CODEX_HOME\"]\n",
+        "",
+    );
+    let user = world.fx.dir.join("user");
+    let default_home = user.join(".codex");
+    std::fs::create_dir_all(&default_home).unwrap();
+    let user = user.display().to_string();
+    let home_vars = [("HOME", user.as_str()), ("USERPROFILE", user.as_str())];
+    world.launch_removing(&home_vars, &["CODEX_HOME"]);
+    let elsewhere = world.home().display().to_string();
+    let mut unset = home_vars.to_vec();
+    unset.push(("CODEX_HOME", &elsewhere));
+    world.launch_as("codex:unset", &unset, &[]);
+    let dotted = format!("{}{}.", default_home.display(), std::path::MAIN_SEPARATOR);
+    let mut spelled = home_vars.to_vec();
+    spelled.push(("CODEX_HOME", &dotted));
+    world.launch_removing(&spelled, &[]);
+    let mut relative = home_vars.to_vec();
+    let relative_home = format!("user{}.codex", std::path::MAIN_SEPARATOR);
+    relative.push(("CODEX_HOME", &relative_home));
+    world.launch_removing(&relative, &[]);
+    let helpers = world.helpers();
+    assert_eq!(helpers.len(), 1, "{:?}", world.records());
+    assert_eq!(
+        resolved(helpers[0]["codex_home"].as_str().unwrap()),
+        resolved(&default_home)
+    );
+    assert_eq!(world.catalogs().len(), 1);
+    let launches = world.launches();
+    assert_eq!(launches.len(), 4, "{launches:?}");
+    assert_every_launch_read(&world, &launches);
+}
+
+#[test]
+fn a_refresh_takes_no_cache_from_before_it_or_from_another_version() {
+    // A cache the home already held, fetched before the refresh started, is
+    // not a fresh catalog, nor is one another Codex version wrote; either way
+    // the refresh fails, the launch falls back, and no catalog is written.
+    let world = CatalogWorld::new("catalog-old-cache", "", "");
+    std::fs::write(
+        world.home().join("models_cache.json"),
+        serde_json::json!({
+            "fetched_at": "2026-01-01T00:00:00Z",
+            "client_version": CATALOG_CODEX_VERSION,
+            "models": [{"slug": "old"}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let run = world.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("MOCK_CODEX_CATALOG_FAULT", "exit")],
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(world.catalogs().is_empty());
+
+    let other = CatalogWorld::new("catalog-other-version", "", "");
+    let run = other.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[
+            ("MOCK_CODEX_CACHE_VERSION", "9.9.9"),
+            ("MOCK_CODEX_CATALOG_THEN_EXIT", "1"),
+        ],
+    );
+    assert!(
+        run.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
+        "{:?}",
+        run.elapsed
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert_eq!(other.helpers()[0]["fetch"], "ok", "the helper did fetch");
+    assert!(other.catalogs().is_empty());
+}
+
+#[test]
+fn a_helper_that_exits_right_after_its_fetch_still_refreshes_the_catalog() {
+    let world = CatalogWorld::new("catalog-helper-quick-exit", "", "");
+    let run = world.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("MOCK_CODEX_CATALOG_THEN_EXIT", "1")],
+    );
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    assert_eq!(world.helpers().len(), 1);
+    assert_every_launch_read(&world, &world.launches());
 }
 // llmlint: ignore-end[e2e_not_mocked]

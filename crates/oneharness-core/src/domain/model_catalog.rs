@@ -55,7 +55,6 @@ pub fn codex_version(version_output: &str) -> Option<&str> {
     looks_like_a_version.then_some(word)
 }
 
-/// What Codex's `--version` prints before the version.
 const CODEX_VERSION_PREFIX: &str = "codex-cli ";
 
 /// The catalog file's stem for one Codex home and one executable: a digest of
@@ -319,8 +318,10 @@ mod tests {
             "| ChatGPT apps (connectors) MCP |",
             "| Responses websocket: prewarm and turn |",
             "| Git-attribution read |",
+            "| In-turn read |",
             "| Cloud config bundle |",
             "| OAuth refresh |",
+            "| Usage probe's reads |",
         ] {
             assert!(
                 readme.contains(row),

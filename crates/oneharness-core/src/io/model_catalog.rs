@@ -135,7 +135,6 @@ pub fn resolve(launch: &CatalogLaunch<'_>) -> CatalogChoice {
     }
 }
 
-/// The three files of one catalog key.
 struct CatalogFiles {
     catalog: PathBuf,
     lock: PathBuf,
@@ -368,8 +367,10 @@ fn probe_version(launch: &CatalogLaunch<'_>) -> Option<String> {
 }
 
 /// The Codex home the launch reads: its `CODEX_HOME` (the launch's own
-/// environment over the ambient one), else Codex's default `~/.codex`;
-/// canonicalized when it exists, so two spellings of one home share a catalog.
+/// environment over the ambient one), else Codex's default `~/.codex`. A
+/// relative one is relative to the directory the launch starts in, as Codex
+/// reads it; the result is canonicalized when it exists, so two spellings of
+/// one home share a catalog.
 fn codex_home(launch: &CatalogLaunch<'_>) -> Option<PathBuf> {
     let var = |name: &str| -> Option<String> {
         if launch.env_remove.iter().any(|key| key == name) {
@@ -388,6 +389,15 @@ fn codex_home(launch: &CatalogLaunch<'_>) -> Option<PathBuf> {
         let user = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
         var(user).map(|home| PathBuf::from(home).join(".codex"))
     })?;
+    let home = if home.is_relative() {
+        let start = launch
+            .cwd
+            .map(Path::to_path_buf)
+            .or_else(|| std::env::current_dir().ok())?;
+        start.join(home)
+    } else {
+        home
+    };
     Some(fs::canonicalize(&home).unwrap_or(home))
 }
 

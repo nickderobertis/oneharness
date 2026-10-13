@@ -14,7 +14,8 @@
       "{workspaceRoot}/scripts/check-temp-leaks.sh",
       "{workspaceRoot}/python/pyproject.toml",
       "{workspaceRoot}/python/uv.lock",
-      "{workspaceRoot}/python/oneharness-sdk/pyproject.toml"
+      "{workspaceRoot}/python/oneharness-sdk/pyproject.toml",
+      "{workspaceRoot}/python/oneharness-sdk/src/oneharness_sdk/_generated/schemas.json"
     ]
   },
   "targets": {

@@ -412,7 +412,9 @@ def attribute(tunnels: list[Tunnel], connections: list[Connection]) -> list[list
 
 def oneharness_stderr(stdout_text: str) -> str:
     """The Codex stderr a `oneharness run --format json` report carries, one
-    result after another; "" when the text is not such a report."""
+    result after another; "" when the text is not such a report. The fields
+    read (`results[].stderr`) are held to the generated run report schema by
+    the test's RunReportShape."""
     try:
         document: object = json.loads(stdout_text)
     except ValueError:
@@ -542,12 +544,14 @@ class CountingProxy:
                 )
                 return
         request = head.split(b"\r\n", 1)[0].decode("latin-1")
+        # llmlint: ignore-block[structural_pattern_matching] The script's ruff and ty settings are the Python SDK's, which target Python 3.9 (tools/network-breakdown/project.json says why they are shared); `match` is a syntax error there, so the request line is dispatched with length and prefix checks.
         parts = request.split(" ")
         if len(parts) != 3:
             self._refuse(client, "400 Bad Request", "?", f"malformed request line {request!r}")
             return
         method, target, _ = parts
-        if method == "CONNECT":
+        connect = method == "CONNECT"
+        if connect:
             host, _, port = target.rpartition(":")
         elif target.startswith("http://"):
             hostport = target[len("http://") :].split("/", 1)[0]
@@ -556,6 +560,7 @@ class CountingProxy:
         else:
             self._refuse(client, "400 Bad Request", target, f"not a proxy request: {request!r}")
             return
+        # llmlint: ignore-end[structural_pattern_matching]
         host = host.strip("[]")
         if not HOST.fullmatch(host) or not is_port(port):
             self._refuse(client, "400 Bad Request", target, f"no host and port in {target!r}")
@@ -571,7 +576,7 @@ class CountingProxy:
         with self.lock:
             self.tunnels.append(tunnel)
         rest = head.split(b"\r\n\r\n", 1)[1]
-        if method == "CONNECT":
+        if connect:
             client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
             forwarded = rest
         else:

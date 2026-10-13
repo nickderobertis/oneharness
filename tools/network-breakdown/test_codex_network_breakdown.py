@@ -38,6 +38,11 @@ SCRIPT = ROOT / "scripts" / "codex-network-breakdown.py"
 DOUBLE = HERE / "transfer_double.py"
 MEASUREMENT = HERE / "recorded-measurement.json"
 TRACE = HERE / "recorded-codex-trace.log"
+# Generated from oneharness's own report types; the SDK contract tests hold it
+# to them, so it is the producer's word on the run report's shape.
+SCHEMAS = (
+    ROOT / "python" / "oneharness-sdk" / "src" / "oneharness_sdk" / "_generated" / "schemas.json"
+)
 # A launch still running after this fails the test rather than hanging it.
 HANG_GUARD_SECONDS = 120
 
@@ -240,6 +245,20 @@ def executable(path: Path, text: str) -> Path:
     path.write_text(text)
     path.chmod(0o755)
     return path
+
+
+class RunReportShape(unittest.TestCase):
+    """The run report fields the script reads a launch's stderr from, against
+    the generated schema of the report oneharness actually prints."""
+
+    def test_the_run_report_carries_each_results_stderr_as_a_string(self) -> None:
+        schema = json.loads(SCHEMAS.read_text())["run_report"]
+        self.assertIn("results", schema["required"])
+        results = schema["properties"]["results"]
+        self.assertEqual(results["type"], "array")
+        result = schema["$defs"][results["items"]["$ref"].rsplit("/", 1)[-1]]
+        self.assertIn("stderr", result["required"])
+        self.assertEqual(result["properties"]["stderr"]["type"], "string")
 
 
 class RefusalsWithoutANamespace(unittest.TestCase):

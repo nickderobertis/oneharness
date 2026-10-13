@@ -363,6 +363,11 @@ MSYS_NT-10.0-26100|x86_64|AMD64|ARM64 Family 8 Model 1 Revision 201, Qualcomm Te
 host||||$TARGET
 CASES
 
+  # llmlint: ignore-block[tests_mirror_real_usage, e2e_not_mocked] No runner is
+  # an Intel Mac, and none is a Rosetta shell on demand. The Intel case poses
+  # install.sh's documented ONEHARNESS_HOST_OS/ARCH inputs, as every case above
+  # does; the Rosetta cases stub only uname -m and sysctl hw.optional.arm64, the
+  # kernel facts install.sh reads. Download, checksum and extraction run for real.
   # Intel macOS is discontinued. Serve a decoy archive for it anyway, so an
   # installer that still mapped an Intel Mac would install it and pass; the
   # refusal must come from install.sh itself, by name, before any download.
@@ -396,10 +401,6 @@ CASES
   # else. sysctl answering 1 installs the native arm64 build; 0, or a failed
   # probe (an Intel kernel has no such key), refuses by name.
   local stubs answer rc
-  # llmlint: ignore-block[e2e_not_mocked] No runner is both an x86_64-reporting
-  # shell and an Apple Silicon or Intel kernel on demand; uname -m and sysctl
-  # hw.optional.arm64 are the two kernel facts install.sh reads there, so only
-  # they are stubbed, while its download, checksum and extraction run for real.
   stubs="$work/platform-stubs"
   mkdir -p "$stubs"
   cat >"$stubs/uname" <<'STUB'
@@ -442,7 +443,7 @@ STUB
       fi
     fi
   done
-  # llmlint: ignore-end[e2e_not_mocked]
+  # llmlint: ignore-end[tests_mirror_real_usage, e2e_not_mocked]
 }
 
 verify_trust_root_independence

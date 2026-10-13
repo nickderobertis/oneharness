@@ -27,4 +27,4 @@ serde_json = { workspace = true }
 fs2 = { workspace = true }
 # Keys a shared model catalog's files as the engine does, so a journey can
 # seed a lock, record or catalog before any launch writes one.
-uuid = { version = "1", features = ["v5"] }
+uuid = { workspace = true, features = ["v5"] }

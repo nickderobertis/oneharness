@@ -38759,13 +38759,28 @@ impl CatalogWorld {
 /// The longest any catalog journey's launch may run before the journey fails:
 /// a hang guard, well past every deadline the journeys assert.
 const CATALOG_HANG_GUARD: std::time::Duration = std::time::Duration::from_secs(60);
-/// `MODEL_CATALOG_REFRESH_DEADLINE`, `MODEL_CATALOG_WAIT` and
-/// `MODEL_CATALOG_FAILURE_BACKOFF`, read from the engine so the journeys hold
-/// the deadlines they assert to the constants.
-use oneharness_core::domain::model_catalog::{
-    catalog_key, CODEX_VERSION_PROBE_TIMEOUT, MODEL_CATALOG_FAILURE_BACKOFF,
-    MODEL_CATALOG_REFRESH_DEADLINE, MODEL_CATALOG_WAIT,
-};
+// The engine's catalog machinery is crate-internal, so the journeys restate
+// the deadlines the README documents and the catalog file's key. Neither copy
+// can drift unseen: a key that differs from the engine's points every
+// pre-seeded lock, record and catalog at a path no launch reads, and a deadline
+// that differs fails the journeys that time launches against it.
+/// `MODEL_CATALOG_REFRESH_DEADLINE`: the longest one refresh waits.
+const MODEL_CATALOG_REFRESH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+/// `MODEL_CATALOG_WAIT`: the longest a launch waits for another's refresh.
+const MODEL_CATALOG_WAIT: std::time::Duration = std::time::Duration::from_secs(12);
+/// `MODEL_CATALOG_FAILURE_BACKOFF`: how long a failure holds refreshes off.
+const MODEL_CATALOG_FAILURE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(300);
+/// `CODEX_VERSION_PROBE_TIMEOUT`: the longest `<codex> --version` may take.
+const CODEX_VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The catalog file's stem for one Codex home and `--version` output: a v5
+/// UUID over both, as the engine keys it.
+fn catalog_key(codex_home: &str, version_output: &str) -> String {
+    let material = format!("{codex_home}\n{}", version_output.trim());
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, material.as_bytes())
+        .simple()
+        .to_string()
+}
 
 /// Whether a record's argv is a refresh helper's: `app-server` with plugins,
 /// apps and analytics off and no catalog. A usage probe under

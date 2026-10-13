@@ -685,6 +685,7 @@ dependencies = [
  "oneharness",
  "oneharness-core 0.26.0",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

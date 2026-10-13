@@ -18,7 +18,9 @@ pub mod hooks;
 pub mod http;
 pub mod mock;
 pub mod mode;
-pub mod model_catalog;
+// The shared Codex model catalog's pure half; only `io::model_catalog` reads
+// it, so it is no surface of this crate.
+pub(crate) mod model_catalog;
 pub mod normalize;
 pub mod render;
 pub mod report;

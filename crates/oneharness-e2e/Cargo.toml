@@ -25,3 +25,6 @@ serde_json = { workspace = true }
 # Holds a shared model catalog's lock from the test process, so a journey can
 # keep a launch waiting past MODEL_CATALOG_WAIT; the engine locks with it too.
 fs2 = { workspace = true }
+# Keys a shared model catalog's files as the engine does, so a journey can
+# seed a lock, record or catalog before any launch writes one.
+uuid = { version = "1", features = ["v5"] }

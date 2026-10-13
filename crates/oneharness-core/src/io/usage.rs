@@ -133,7 +133,7 @@ pub struct UsageProbeRequest {
     /// and its diagnostics actually use.
     pub timeout: Duration,
     /// The resolved `model_catalog_refresh_seconds` when the codex probe reads
-    /// the shared model catalog ([`crate::io::model_catalog`]); `None` leaves
+    /// the shared model catalog (`shared_model_catalog`); `None` leaves
     /// Codex to fetch its own. Read only by the codex probe, before its
     /// timeout starts.
     pub model_catalog_refresh_seconds: Option<NonZeroU64>,

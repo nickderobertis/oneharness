@@ -152,7 +152,7 @@
 //!                              catalog and appends one JSON line: `subcommand`,
 //!                              `pid`, `started_ms`, `codex_home`, `catalog`
 //!                              (the `-c model_catalog_json=` path, last one
-//!                              winning, else null) and `fetch`. With a catalog
+//!                              winning, else null), `fetch` and `argv`. With a catalog
 //!                              it reads that file (`catalog_models`, its model
 //!                              count) and fetches nothing (`fetch` null); a
 //!                              missing or empty catalog fails the launch, as it
@@ -470,6 +470,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         "codex_home": home,
         "catalog": catalog,
         "fetch": null,
+        "argv": argv,
     });
     let fault = std::env::var("MOCK_CODEX_CATALOG_FAULT").unwrap_or_default();
     if let Some(catalog) = &catalog {
@@ -536,7 +537,9 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         .append(true)
         .open(path)
         .expect("MOCK_CODEX_CATALOG_LOG could not be opened");
-    writeln!(log, "{line}").expect("MOCK_CODEX_CATALOG_LOG could not be written");
+    // One write per line, so launches appending at once never interleave.
+    log.write_all(format!("{line}\n").as_bytes())
+        .expect("MOCK_CODEX_CATALOG_LOG could not be written");
     drop(log);
     if fault == "hang" && catalog.is_none() && subcommand == "app-server" {
         let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());

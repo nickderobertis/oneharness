@@ -9,6 +9,7 @@ standing for every harness executable, so nothing real or paid is launched.
 from __future__ import annotations
 
 import importlib.util
+import itertools
 import json
 import os
 import re
@@ -376,7 +377,17 @@ def steps(workflow: Path, job: str) -> list[Step]:
 
     def field(chunk: str, key: str) -> str:
         match = re.search(rf"^(?:{key}|        {key}): (.*)$", chunk, re.M)
-        return str(match.group(1)).strip() if match else ""
+        if match is None:
+            return ""
+        value = str(match.group(1)).strip()
+        if value not in ("|", ">"):
+            return value
+        # A block scalar: its body is the lines indented past the key.
+        block = chunk[match.end() :].splitlines()[1:]
+        lines = itertools.takewhile(
+            lambda line: line.startswith(" " * 10) or not line.strip(), block
+        )
+        return "\n".join(line.strip() for line in lines if line.strip())
 
     chunks = re.split(r"^      - ", body.group(1).split("    steps:\n", 1)[1], flags=re.M)[1:]
     return [Step(field(c, "name"), field(c, "if"), field(c, "run"), c) for c in chunks]
@@ -575,7 +586,15 @@ class Legs(unittest.TestCase):
                     if runner_os == "Linux":
                         self.assertGreaterEqual(prepare, 0)
                         self.assertLess(prepare, measure, "pasta is prepared after it is needed")
-                        self.assertIn("apt-get install -y -q passt", run[prepare].run)
+                        # The image's passt profile alone does not admit
+                        # pasta's namespace: the restriction itself is lifted,
+                        # then the pasta the recorder resolves is proven to
+                        # start one.
+                        lift = "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0"
+                        probe = "pasta --config-net --quiet -- true"
+                        self.assertIn(lift, run[prepare].run)
+                        self.assertIn(probe, run[prepare].run)
+                        self.assertLess(run[prepare].run.index(lift), run[prepare].run.index(probe))
                     else:
                         self.assertEqual(
                             prepare, -1, f"{runner_os} has no AppArmor userns restriction to lift"

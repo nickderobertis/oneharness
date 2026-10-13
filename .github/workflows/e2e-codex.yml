@@ -101,13 +101,17 @@ jobs:
       # onebudgetspec after the suite (scripts/e2e-network-budget.sh).
       - uses: astral-sh/setup-uv@v6
       # The suite's recorder measures each codex launch in an unprivileged
-      # user+network namespace behind pasta (live/AGENTS.md); Ubuntu 24.04's
-      # AppArmor refuses those namespaces except to a binary whose profile
-      # permits them, which installing passt provides. Other legs record no
-      # bytes and check no budget.
+      # user+network namespace behind the pasta first on PATH (live/AGENTS.md).
+      # The ubuntu-24.04 image already carries passt, but its AppArmor profile
+      # does not admit pasta's namespace (`Couldn't write to /proc/self/uid_map`),
+      # so the step lifts the restriction and proves that same pasta can start
+      # one. Other legs record no bytes and check no budget.
       - name: Permit pasta's unprivileged namespaces (network recorder)
         if: runner.os == 'Linux'
-        run: sudo apt-get update -q && sudo apt-get install -y -q passt
+        run: |
+          command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          pasta --config-net --quiet -- true
       - name: Install Codex CLI
         run: |
           npm install -g @openai/codex

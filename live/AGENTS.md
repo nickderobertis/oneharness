@@ -22,8 +22,12 @@ each runs from its own `.github/workflows/e2e-*.yml` (and `just live-<id>`).
   descendants included) — payload plus per-frame headers, not host-NIC wire
   bytes. Say so wherever a figure is quoted.
 - **Linux only, and it needs pasta plus unprivileged user namespaces**, not
-  root: on Ubuntu 24.04, `sudo apt-get install -y passt` (the Linux legs of
-  `e2e-codex.yml` and `ci.yml` run it first). The macOS and Windows legs, or a
+  root. GitHub's ubuntu-24.04 image already carries passt, yet its AppArmor
+  profile does not admit pasta's namespace (`Couldn't write to
+  /proc/self/uid_map`): the Linux legs of `e2e-codex.yml` and `ci.yml` first
+  run `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`, then
+  prove the pasta first on `PATH` — the one the recorder runs — starts a
+  namespace, before the recorder tests and the suite. The macOS and Windows legs, or a
   Linux host without them, record `"method": "unavailable"` and the budgets are
   unsupported there: the check runs on Linux alone, where an unmeasured launch
   fails every budget, naming it. The gate never checks real telemetry.

@@ -71,8 +71,8 @@ CLONE_NEWPID = 0x20000000
 # frames of its last connections are counted with it.
 SETTLE = 0.2
 NAMESPACE_ADVICE = (
-    "install passt (`sudo apt-get install -y passt`, whose AppArmor profile permits pasta's "
-    "namespaces) or allow unprivileged user namespaces "
+    "install passt (`sudo apt-get install -y passt`) and, where AppArmor restricts "
+    "unprivileged user namespaces (Ubuntu 24.04), allow them "
     "(`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`)"
 )
 

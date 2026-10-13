@@ -1,0 +1,372 @@
+"""The network recorder, driven as a live suite drives it: through the real shim.
+
+The measuring cases need Linux, pasta and unprivileged user namespaces; where
+those are absent they skip saying why, unless OH_NET_NO_SKIP=1 (CI's Linux leg)
+makes that a failure. The fallback and refusal cases run everywhere.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+import unittest
+from pathlib import Path
+
+from support import (
+    BASH,
+    NETSHIM,
+    OBSERVER,
+    WINDOWS,
+    lines,
+    measurements,
+    need_recorder,
+    run_shim,
+    scratch,
+    server,
+    starts,
+    transfer_argv,
+)
+
+DOWN = 5_000_000
+UP = 3_000_000
+UNRELATED = 7_777_777
+
+
+def frame_sums(frames: list, direction: str, low: int, high: int) -> int:
+    return sum(length for stamp, way, length in frames if way == direction and low <= stamp <= high)
+
+
+class MeasuredLaunch(unittest.TestCase):
+    def test_counts_exactly_what_crossed_the_namespace_boundary_against_an_independent_capture(
+        self,
+    ) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        serving = server(self)
+        heartbeat = tmp / "heartbeat"
+        unrelated: dict = {}
+
+        def unrelated_download() -> None:
+            # A host process outside the launch, moving more than the launch
+            # does across the whole of it, through the same server.
+            import socket
+
+            with socket.create_connection(("127.0.0.1", serving.port)) as conn:
+                conn.sendall(f"GET {UNRELATED} 4.0\n".encode())
+                got = 0
+                while got < UNRELATED:
+                    data = conn.recv(65536)
+                    if not data:
+                        break
+                    got += len(data)
+            unrelated["received"] = got
+
+        other = threading.Thread(target=unrelated_download)
+        other.start()
+        time.sleep(0.3)
+        capture, windows = tmp / "capture.json", tmp / "windows.json"
+        run = run_shim(
+            tmp,
+            transfer_argv(serving.port, DOWN, UP, "--detach", "--heartbeat", str(heartbeat)),
+            ["exec", "--json", "probe"],
+            env={
+                "OH_E2E_PHASE": "self-check",
+                "OH_E2E_NET_OBSERVER": json.dumps([sys.executable, str(OBSERVER), str(capture)]),
+                "OH_E2E_NET_WINDOWS": str(windows),
+            },
+        )
+        other.join()
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(unrelated.get("received"), UNRELATED)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        self.assertEqual(
+            (start["phase"], start["kind"], start["harness"], start["suite"]),
+            ("self-check", "exec", "codex", "codex"),
+        )
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+        # The detached child moved its payloads after the launch's own process
+        # had exited, and they are in the figure.
+        beats = heartbeat.read_text().splitlines()
+        self.assertGreater(len(beats), 2)
+        observed = json.loads(capture.read_text())
+        window = json.loads(windows.read_text())
+        self.assertEqual(
+            observed["drops"], 0, "the capture dropped frames, so it cannot vouch for the counters"
+        )
+        self.assertEqual(observed["truncated"], 0)
+        self.assertLess(
+            observed["ready_ns"],
+            window["start"][0],
+            "the capture began after the first counter read",
+        )
+        self.assertGreater(
+            observed["stopped_ns"],
+            window["end"][1],
+            "the capture ended before the last counter read",
+        )
+        for direction, recorded, payload in (
+            ("rx", line["rx_bytes"], DOWN),
+            ("tx", line["tx_bytes"], UP),
+        ):
+            outer = frame_sums(observed["frames"], direction, window["start"][0], window["end"][1])
+            inner = frame_sums(observed["frames"], direction, window["start"][1], window["end"][0])
+            self.assertLessEqual(
+                inner, recorded, f"{direction}: the counters missed captured frames"
+            )
+            self.assertLessEqual(
+                recorded, outer, f"{direction}: the counters exceed every captured frame"
+            )
+            # Headers and control frames are in it: payload-only accounting
+            # would sit below even the inner bound.
+            self.assertGreater(
+                inner, payload, f"{direction}: capture holds no more than the payload"
+            )
+        self.assertLess(
+            line["rx_bytes"], DOWN + UNRELATED // 2, "the unrelated transfer was counted"
+        )
+        self.assertLess(line["tx_bytes"], UP + UNRELATED // 2)
+        self.assertGreater(line["payload_rx_estimate"], DOWN - 1)
+        self.assertFalse(list((tmp / ".pending").glob("*")), "a pending marker outlived its line")
+
+    def test_binary_stdin_and_stdout_and_the_exit_status_pass_through(self) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        blob = bytes(range(256)) * 512 + b"\x00\r\n\xff"
+        run = run_shim(
+            tmp, transfer_argv(0, 0, 0, "--echo", "--exit", "7"), ["exec", "-"], stdin=blob
+        )
+        self.assertEqual(run.returncode, 7, run.stderr)
+        self.assertEqual(run.stdout, blob)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 7))
+
+    def test_a_detached_descendant_is_stopped_at_the_deadline_and_recorded_once(self) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        deadline = 2
+        started = time.monotonic()
+        run = run_shim(
+            tmp,
+            transfer_argv(
+                0, 0, 0, "--detach", "--stubborn", "--linger", "600", "--heartbeat", str(heartbeat)
+            ),
+            ["exec", "stay"],
+            env={"OH_E2E_NET_DEADLINE": str(deadline)},
+        )
+        took = time.monotonic() - started
+        self.assertEqual(run.returncode, 0, run.stderr)
+        # SIGTERM at the deadline is ignored; SIGKILL 5 s later is not.
+        self.assertLess(took, deadline + 5 + 3, "the shim outlived its deadline and the kill grace")
+        self.assertGreater(took, deadline + 4, "the stubborn child was not given its grace")
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the detached child is still alive")
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta")
+        self.assertGreaterEqual(line["seconds"], deadline)
+
+    def test_a_shim_its_caller_kills_with_its_process_group_still_records_once(self) -> None:
+        # oneharness ends a launch it stops by SIGTERM to the process group
+        # and SIGKILL 100 ms later; the line must survive the shim's death.
+        need_recorder(self)
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        real = tmp / "real"
+        real.write_text(
+            f"#!/usr/bin/env bash\nexec {' '.join(transfer_argv(0, 0, 0, '--linger', '600', '--heartbeat', str(heartbeat)))}\n"
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "app-server",
+                "--stdio",
+            ],
+            start_new_session=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(100):
+            if heartbeat.exists():
+                break
+            time.sleep(0.1)
+        os.killpg(shim.pid, signal.SIGTERM)
+        time.sleep(0.1)
+        try:
+            os.killpg(shim.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        shim.wait()
+        for _ in range(100):
+            records = lines(file)
+            if len(records) == 2:
+                break
+            time.sleep(0.1)
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", line)
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the stop")
+        time.sleep(0.5)
+        self.assertEqual(len(lines(file)), 2, "the launch was recorded more than once")
+
+
+class Fallback(unittest.TestCase):
+    """Where the method cannot run, the launch still runs, unmeasured and said so."""
+
+    def assert_unavailable(
+        self, tmp: Path, run: subprocess.CompletedProcess, blob: bytes, reason: str
+    ) -> None:
+        self.assertEqual(run.returncode, 5, run.stderr)
+        self.assertEqual(run.stdout, blob)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn(reason, line["reason"])
+        self.assertEqual(line["exit"], 5)
+        for field in ("rx_bytes", "tx_bytes", "payload_rx_estimate", "payload_tx_estimate"):
+            self.assertNotIn(field, line)
+
+    def echo(self, tmp: Path) -> Path:
+        real = tmp / "echo-double"
+        real.write_text("#!/usr/bin/env bash\ncat\nexit 5\n")
+        real.chmod(0o755)
+        return real
+
+    @unittest.skipIf(WINDOWS, "the legs' platforms are named through OH_E2E_OS on unix")
+    def test_macos_and_windows_legs_run_the_launch_unmeasured(self) -> None:
+        for leg in ("Darwin", "MINGW64_NT-10.0-20348"):
+            with self.subTest(leg=leg):
+                tmp = scratch(self)
+                blob = os.urandom(70_000) + b"\x00\r\n"
+                run = run_shim(
+                    tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"OH_E2E_OS": leg}
+                )
+                self.assert_unavailable(tmp, run, blob, f"this leg is {leg}")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without pasta")
+    def test_a_linux_host_without_pasta_runs_the_launch_unmeasured(self) -> None:
+        tmp = scratch(self)
+        bare = tmp / "bare-path"
+        bare.mkdir()
+        for tool in (
+            "bash",
+            "jq",
+            "python3",
+            "cat",
+            "od",
+            "tr",
+            "dirname",
+            "uname",
+            "date",
+            "head",
+            "grep",
+            "mkdir",
+            "rm",
+        ):
+            found = subprocess.run(
+                ["bash", "-c", f"command -v {tool}"], capture_output=True, text=True
+            ).stdout.strip()
+            if found:
+                (bare / tool).symlink_to(found)
+        blob = os.urandom(70_000)
+        run = run_shim(
+            tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"PATH": str(bare)}
+        )
+        self.assert_unavailable(tmp, run, blob, "no pasta on PATH")
+
+    def test_this_platform_records_every_launch_once(self) -> None:
+        # Whatever this host is, a launch through the shim gets one start and
+        # one measurement line, measured or not.
+        tmp = scratch(self)
+        run = run_shim(tmp, [str(self.echo(tmp))], ["--version"], stdin=b"x")
+        self.assertEqual(run.returncode, 5, run.stderr)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        self.assertEqual(start["kind"], "local")
+        self.assertEqual(len(measurements(records, start["launch_id"])), 1)
+
+
+class Refusal(unittest.TestCase):
+    def test_the_shim_refuses_to_wrap_itself_or_another_shim(self) -> None:
+        tmp = scratch(self)
+        own = tmp / "shims" / "codex"
+        own.parent.mkdir(parents=True)
+        own.write_text("#!/usr/bin/env bash\n# oneharness-network-shim suite=codex\nexit 0\n")
+        own.chmod(0o755)
+        other = tmp / "other-shim"
+        other.write_text(own.read_text())
+        other.chmod(0o755)
+        for real in (own, other):
+            with self.subTest(real=real.name):
+                run = run_shim(tmp, [str(real)], ["exec", "x"])
+                self.assertEqual(run.returncode, 126)
+                self.assertIn(b"refusing to wrap", run.stderr)
+                self.assertEqual(lines(tmp / "codex.jsonl"), [], "a refused launch was recorded")
+
+
+class Kinds(unittest.TestCase):
+    """The launch kind each argv is recorded under (on the fallback, which is quick)."""
+
+    CASES = (
+        ("codex", ["exec", "--json", "hi"], "exec"),
+        ("codex", ["exec", "resume", "-c", "sandbox_mode=read-only", "th", "hi"], "exec"),
+        ("codex", ["-c", "features.hooks=true", "exec", "hi"], "exec"),
+        ("codex", ["app-server", "--disable", "plugins", "--stdio"], "app-server"),
+        ("codex", ["app-server", "--listen", "unix:///tmp/s"], "shared-app-server"),
+        ("codex", ["app-server", "--listen=unix:///tmp/s"], "shared-app-server"),
+        ("codex", ["--version"], "local"),
+        ("codex", ["features", "list", "-c", "features.hooks=true"], "local"),
+        ("codex", ["execpolicy", "check", "--rules", "r", "rm"], "local"),
+        ("codex", ["sandbox", "-c", "sandbox_mode=read-only", "--", "bash"], "local"),
+        ("codex", ["login", "status"], "local"),
+        ("codex", ["mcp", "list"], "mcp"),
+        ("claude-code", ["-p", "hi", "--output-format", "json"], "turn"),
+        ("claude-code", ["--version"], "local"),
+        ("claude-code", ["auth", "status", "--json"], "local"),
+    )
+
+    @unittest.skipIf(WINDOWS, "the fallback leg is named through OH_E2E_OS on unix")
+    def test_each_argv_is_recorded_under_its_launch_kind(self) -> None:
+        tmp = scratch(self)
+        true = tmp / "true-double"
+        true.write_text("#!/usr/bin/env bash\nexit 0\n")
+        true.chmod(0o755)
+        for harness, argv, _kind in self.CASES:
+            run_shim(tmp, [str(true)], argv, harness=harness, env={"OH_E2E_OS": "Darwin"})
+        recorded = [
+            (s["harness"], s["argv"], s["kind"]) for s in starts(lines(tmp / "codex.jsonl"))
+        ]
+        self.assertEqual(recorded, [(h, a, k) for h, a, k in self.CASES])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -73,7 +73,7 @@ NAMESPACE_ADVICE = (
 )
 
 
-def append_line(path: str, record: dict) -> None:
+def append_line(path: str, record: dict[str, object]) -> None:
     """Append one JSON line in a single write, so concurrent launches never interleave."""
     data = (json.dumps(record, separators=(",", ":")) + "\n").encode()
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
@@ -106,7 +106,7 @@ def deadline_seconds() -> float:
 
 
 def remove_quietly(path: Optional[str]) -> None:
-    if path:
+    if path is not None:
         try:
             os.unlink(path)
         except OSError:
@@ -116,9 +116,9 @@ def remove_quietly(path: Optional[str]) -> None:
 # --- the namespace's side -------------------------------------------------
 
 
-def read_counters() -> dict:
+def read_counters() -> dict[str, tuple[int, int, int, int]]:
     """Every non-loopback interface's byte and frame counters in this network namespace."""
-    counters = {}
+    counters: dict[str, tuple[int, int, int, int]] = {}
     for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
         name, _, rest = line.partition(":")
         name = name.strip()
@@ -130,11 +130,13 @@ def read_counters() -> dict:
 
 
 def tcp_retrans() -> int:
-    rows = [r.split() for r in Path("/proc/net/snmp").read_text().splitlines() if r.startswith("Tcp:")]
+    rows = [
+        r.split() for r in Path("/proc/net/snmp").read_text().splitlines() if r.startswith("Tcp:")
+    ]
     return int(dict(zip(rows[0][1:], rows[1][1:]))["RetransSegs"])
 
 
-def timed_counters() -> tuple:
+def timed_counters() -> tuple[int, dict[str, tuple[int, int, int, int]], int]:
     """Counters with the wall-clock instants just before and just after the read."""
     before = time.time_ns()
     counters = read_counters()
@@ -155,14 +157,14 @@ def private_resolver() -> None:
         subprocess.run(["mount", "--bind", str(upstream), "/etc/resolv.conf"], check=True)
 
 
-def namespace_init(scratch: Path, deadline: float, argv: list) -> int:
+def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     """Inside pasta's user and network namespace: run the launch as PID 1's child.
 
     Writes `launched` just before the launch starts and `result.json` once the
     whole tree has exited; the supervisor asks for a stop by creating `stop`."""
     observer = None
     observer_argv = os.environ.get("OH_E2E_NET_OBSERVER")
-    if observer_argv:
+    if observer_argv is not None:
         # Outside the launch's PID namespace, so it is not part of the tree the
         # init waits for, but inside the network namespace it observes.
         observer = subprocess.Popen(
@@ -170,13 +172,14 @@ def namespace_init(scratch: Path, deadline: float, argv: list) -> int:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
         )
-        assert observer.stdout is not None
-        if observer.stdout.readline().strip() != b"ready":
+        if observer.stdout is None or observer.stdout.readline().strip() != b"ready":
             observer.kill()
             sys.exit("e2e-netmeasure: the observer did not report ready")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
-        sys.exit(f"e2e-netmeasure: unshare(CLONE_NEWNS|CLONE_NEWPID): {os.strerror(ctypes.get_errno())}")
+        sys.exit(
+            f"e2e-netmeasure: unshare(CLONE_NEWNS|CLONE_NEWPID): {os.strerror(ctypes.get_errno())}"
+        )
     child = os.fork()
     if child:
         _, status = os.waitpid(child, 0)
@@ -215,7 +218,11 @@ def namespace_init(scratch: Path, deadline: float, argv: list) -> int:
         if pid:
             continue
         now = time.monotonic()
-        if kill_at is None and (stop_requested or (scratch / "stop").exists() or (stop_at and now >= stop_at)):
+        if kill_at is None and (
+            stop_requested
+            or (scratch / "stop").exists()
+            or (stop_at is not None and now >= stop_at)
+        ):
             os.kill(-1, signal.SIGTERM)
             kill_at = now + KILL_GRACE
         elif kill_at is not None and now >= kill_at:
@@ -257,13 +264,31 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int, do
     inner = [sys.executable, os.path.abspath(__file__), "--_init", str(scratch), "--", *args.argv]
     try:
         pasta_run = subprocess.Popen(
-            [pasta, "--config-net", "--quiet", "-4", "-t", "none", "-u", "none", "-T", "none", "-U", "none", "--", *inner],
+            [
+                pasta,
+                "--config-net",
+                "--quiet",
+                "-4",
+                "-t",
+                "none",
+                "-u",
+                "none",
+                "-T",
+                "none",
+                "-U",
+                "none",
+                "--",
+                *inner,
+            ],
             stderr=subprocess.PIPE,
         )
     except OSError as error:
-        os.write(done, f"unlaunched cannot start pasta ({pasta}): {error}; {NAMESPACE_ADVICE}".encode())
+        os.write(
+            done, f"unlaunched cannot start pasta ({pasta}): {error}; {NAMESPACE_ADVICE}".encode()
+        )
         return
-    assert pasta_run.stderr is not None
+    if pasta_run.stderr is None:  # stderr=PIPE always gives one; this narrows the type
+        raise RuntimeError("pasta started without its stderr pipe")
     stderr_tail = b""
     errors = pasta_run.stderr.fileno()
     watched = [life, errors]
@@ -287,7 +312,7 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int, do
     if result_path.exists():
         result = json.loads(result_path.read_text())
         windows = os.environ.get("OH_E2E_NET_WINDOWS")
-        if windows:
+        if windows is not None:
             Path(windows).write_text(json.dumps(result.pop("windows")))
         else:
             result.pop("windows")
@@ -323,7 +348,13 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
     except OSError as error:
         append_line(
             args.line_file,
-            {"launch_id": args.launch_id, "method": "unavailable", "reason": reason, "seconds": 0.0, "exit": 127},
+            {
+                "launch_id": args.launch_id,
+                "method": "unavailable",
+                "reason": reason,
+                "seconds": 0.0,
+                "exit": 127,
+            },
         )
         remove_quietly(args.pending)
         print(f"e2e-netshim: cannot start {args.argv[0]}: {error}", file=sys.stderr)
@@ -405,7 +436,7 @@ def measure(args: argparse.Namespace) -> int:
     return 137
 
 
-def main(argv: list) -> int:
+def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--line-file")
     parser.add_argument("--launch-id")

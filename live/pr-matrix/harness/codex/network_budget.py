@@ -99,7 +99,9 @@ def load(path: Path) -> list[Launch]:
             if not isinstance(launch_id, str) or not launch_id:
                 faults.append(f"line {number} is a start line with no launch_id")
             elif launch_id in starts:
-                faults.append(f"launch {launch_id} has two start lines (duplicate launch id, line {number})")
+                faults.append(
+                    f"launch {launch_id} has two start lines (duplicate launch id, line {number})"
+                )
             else:
                 starts[launch_id] = record
         elif isinstance(record.get("launch_id"), str):
@@ -114,7 +116,9 @@ def load(path: Path) -> list[Launch]:
             faults.append(f"{where} has no measurement line")
             continue
         if len(lines) > 1:
-            faults.append(f"{where} has {len(lines)} measurement lines; each launch is measured once")
+            faults.append(
+                f"{where} has {len(lines)} measurement lines; each launch is measured once"
+            )
             continue
         line = lines[0]
         if line.get("method") != MEASURED:
@@ -143,11 +147,15 @@ def load(path: Path) -> list[Launch]:
     measured = {(launch.phase, launch.kind) for launch in launches}
     for want in expected:
         if (want.get("phase"), want.get("kind")) not in measured:
-            faults.append(f"phase {want.get('phase')} expected a measured {want.get('kind')} launch and has none")
+            faults.append(
+                f"phase {want.get('phase')} expected a measured {want.get('kind')} launch and has none"
+            )
     if not starts and not faults:
         faults.append(f"{path} records no launch at all")
     if faults:
-        raise Incomplete(f"the record in {path} is incomplete:\n" + "\n".join(f"  - {fault}" for fault in faults))
+        raise Incomplete(
+            f"the record in {path} is incomplete:\n" + "\n".join(f"  - {fault}" for fault in faults)
+        )
     return launches
 
 
@@ -188,7 +196,9 @@ def largest_launch(launches: list[Launch]) -> tuple[float, str]:
 def usage_probe(launches: list[Launch]) -> tuple[float, str]:
     probes = [x for x in launches if x.phase == "usage-probe" and x.kind == "app-server"]
     if not probes:
-        raise Incomplete("phase usage-probe has no measured app-server launch: the record holds no usage probe")
+        raise Incomplete(
+            "phase usage-probe has no measured app-server launch: the record holds no usage probe"
+        )
     top = max(probes, key=lambda x: x.rx)
     detail = [
         f"largest: {describe(top)} received {top.rx} B",
@@ -208,7 +218,9 @@ def suite_total(launches: list[Launch]) -> tuple[float, str]:
 
 
 def model_turn(launch: Launch) -> bool:
-    return launch.kind == "exec" or (launch.kind == "app-server" and launch.phase == "controlled-turn")
+    return launch.kind == "exec" or (
+        launch.kind == "app-server" and launch.phase == "controlled-turn"
+    )
 
 
 def evidence_report(launches: list[Launch]) -> dict:
@@ -235,9 +247,17 @@ def evidence_report(launches: list[Launch]) -> dict:
         "method": MEASURED,
         "boundary": "bytes at each launch's network-namespace boundary (pasta TAP), not host-NIC wire bytes",
         "launches": len(launches),
-        "largest_launch": {"launch_id": top.launch_id, "phase": top.phase, "kind": top.kind, "received": top.rx},
+        "largest_launch": {
+            "launch_id": top.launch_id,
+            "phase": top.phase,
+            "kind": top.kind,
+            "received": top.rx,
+        },
         "per_kind": per_kind,
-        "model_turns": {"launches": len(turns), "median_received": statistics.median(turns) if turns else None},
+        "model_turns": {
+            "launches": len(turns),
+            "median_received": statistics.median(turns) if turns else None,
+        },
         "suite_total_received": total,
         "calibration": {
             "largest_x1_5_within_launch_cap": {
@@ -262,9 +282,13 @@ def evidence_report(launches: list[Launch]) -> dict:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--kind", choices=["usage-probe"], help="the largest launch of this phase alone")
+    mode.add_argument(
+        "--kind", choices=["usage-probe"], help="the largest launch of this phase alone"
+    )
     mode.add_argument("--total", action="store_true", help="the pass's total received bytes")
-    mode.add_argument("--evidence-report", action="store_true", help="print the calibration report as JSON")
+    mode.add_argument(
+        "--evidence-report", action="store_true", help="print the calibration report as JSON"
+    )
     parser.add_argument("--file", type=Path, help="read this telemetry file instead of codex.jsonl")
     args = parser.parse_args(argv)
     path = args.file or telemetry_file()
@@ -282,7 +306,9 @@ def main(argv: list[str]) -> int:
     except Incomplete as error:
         print(f"network_budget: {error}", file=sys.stderr)
         return 1
-    from onebudgetspec_sdk import report  # noqa: PLC0415  # ty: ignore[unresolved-import]  # the script's own env (its PEP 723 header) has it; the gate's 3.9 workspace does not
+    # The script's own environment (its PEP 723 header) has the SDK; the gate's
+    # Python 3.9 workspace, which only lints and type-checks this file, does not.
+    from onebudgetspec_sdk import report  # ty: ignore[unresolved-import]
 
     # Inside `onebudgetspec check` the result file carries it; run by hand, say it.
     if not report(value, detail):

@@ -2,6 +2,7 @@
 """Loopback transfers of generated payloads, for the network recorder's tests.
 
     transfer.py client PORT DOWN UP [--detach] [--heartbeat FILE] [--linger S] [--stubborn]
+                                    [--echo] [--exit N]
 
 The test's server (`serve` in test_network_telemetry.py) listens on the host's
 127.0.0.1; inside the measuring namespace pasta's gateway address stands for
@@ -14,6 +15,8 @@ already exited (a double fork), so only a measurement that follows the whole
 process tree sees them. `--heartbeat FILE` makes that child append a line to
 FILE every 0.1 s until it exits; `--linger S` keeps it alive S seconds after
 its transfers; `--stubborn` makes it ignore SIGTERM, so only SIGKILL ends it.
+`--echo` first copies stdin to stdout byte for byte, and `--exit N` is the
+launch's own exit status. A DOWN and UP of 0 moves nothing.
 """
 
 from __future__ import annotations
@@ -51,6 +54,8 @@ def recv_exact(conn: socket.socket, n: int) -> int:
 
 
 def transfer(port: int, down: int, up: int) -> dict:
+    if not down and not up:
+        return {"received": 0, "sent": 0}
     host = gateway()
     got = 0
     if down:
@@ -95,12 +100,19 @@ def main() -> int:
     parser.add_argument("--heartbeat")
     parser.add_argument("--linger", type=float, default=0.0)
     parser.add_argument("--stubborn", action="store_true")
-    args = parser.parse_args()
+    parser.add_argument("--echo", action="store_true")
+    parser.add_argument("--exit", type=int, default=0)
+    # Anything after these is the harness argv the shim passed through, which
+    # the double accepts and ignores, as a harness would act on it.
+    args, _harness_argv = parser.parse_known_args()
+    if args.echo:
+        sys.stdout.buffer.write(sys.stdin.buffer.read())
+        sys.stdout.buffer.flush()
     if not args.detach:
         child(args)
-        return 0
+        return args.exit
     if os.fork():
-        return 0
+        return args.exit
     os.setsid()
     if os.fork():
         os._exit(0)

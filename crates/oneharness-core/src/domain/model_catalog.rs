@@ -91,8 +91,8 @@ impl Catalog {
 /// What Codex's own cache says to a refresh that started at `started_ms`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheReading {
-    /// The cache holds a catalog fetched after the refresh started, by this
-    /// executable's version.
+    /// The cache holds a catalog fetched no earlier than the millisecond the
+    /// refresh started, by this executable's version.
     Fresh(Catalog),
     /// Not yet: no cache, one from before the refresh, or one another version
     /// of Codex wrote.
@@ -109,11 +109,14 @@ pub fn read_codex_cache(text: &str, started_ms: i64, version: &str) -> CacheRead
     let Ok(cache) = serde_json::from_str::<Value>(text) else {
         return CacheReading::NotYet;
     };
+    // Both instants are read to the millisecond, so a fetch inside the
+    // refresh's own starting millisecond counts as after it: a helper can
+    // start and fetch within one.
     let fetched_after_start = cache
         .get("fetched_at")
         .and_then(Value::as_str)
         .and_then(epoch_millis_from_rfc3339)
-        .is_some_and(|fetched| fetched > started_ms);
+        .is_some_and(|fetched| fetched >= started_ms);
     let same_version = cache.get("client_version").and_then(Value::as_str) == Some(version);
     match cache.get("models") {
         Some(Value::Array(models)) if fetched_after_start && same_version && are_models(models) => {
@@ -244,10 +247,24 @@ mod tests {
             fresh,
             CacheReading::Fresh(Catalog(r#"{"models":[{"slug":"m"}]}"#.to_string()))
         );
+        // Timestamps are read to the millisecond, and a helper that starts
+        // and fetches inside the refresh's own millisecond is still after it.
+        assert!(matches!(
+            read_codex_cache(
+                &cache(
+                    "2026-10-13T05:54:41.500900Z",
+                    "0.159.2",
+                    r#"[{"slug":"m"}]"#
+                ),
+                started,
+                "0.159.2",
+            ),
+            CacheReading::Fresh(_)
+        ));
         for (text, why) in [
             (
-                cache("2026-10-13T05:54:41.500Z", "0.159.2", r#"[{"slug":"m"}]"#),
-                "not after the start",
+                cache("2026-10-13T05:54:41.499Z", "0.159.2", r#"[{"slug":"m"}]"#),
+                "before the start",
             ),
             (
                 cache("2026-10-13T05:54:41.900Z", "0.159.1", r#"[{"slug":"m"}]"#),

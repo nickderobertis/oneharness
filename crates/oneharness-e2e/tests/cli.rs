@@ -39941,4 +39941,60 @@ fn a_catalog_stamped_in_the_future_stays_fresh() {
     assert_every_launch_read(&world, &world.launches());
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
+
+#[test]
+fn a_failure_that_cannot_be_recorded_says_so_and_holds_nothing_off() {
+    let world = CatalogWorld::new("catalog-unrecordable", "", "");
+    let (_, _, failure) = catalog_paths(&world);
+    std::fs::create_dir_all(&failure).unwrap();
+    let exit = [("MOCK_CODEX_CATALOG_FAULT", "exit")];
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &exit);
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(
+        run.stderr().contains("could not be recorded") && run.stderr().contains("tries the refresh again"),
+        "{}",
+        run.stderr()
+    );
+    world.launch(CodexLaunchPath::Exec, "codex", &[], &exit);
+    assert_eq!(world.helpers().len(), 2, "no backoff without a record: {:?}", world.records());
+}
+
+#[test]
+fn a_refresh_rejects_a_cache_codex_could_not_read() {
+    // The helper writes a cache that is not JSON, has no readable fetch time,
+    // has no models, or has a model that is no object: none is a catalog,
+    // so the refresh fails and the launch falls back.
+    for corrupt in ["json", "time", "empty", "models"] {
+        let world = CatalogWorld::new(&format!("catalog-corrupt-{corrupt}"), "", "");
+        let run = world.launch(
+            CodexLaunchPath::Exec,
+            "codex",
+            &[],
+            &[
+                ("MOCK_CODEX_CACHE_CORRUPT", corrupt),
+                ("MOCK_CODEX_CATALOG_THEN_EXIT", "1"),
+            ],
+        );
+        assert!(run.elapsed < MODEL_CATALOG_REFRESH_DEADLINE, "{corrupt}: {:?}", run.elapsed);
+        assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+        assert!(world.catalogs().is_empty(), "{corrupt}");
+        assert!(world.launches().pop().unwrap()["catalog"].is_null(), "{corrupt}");
+    }
+}
+
+#[test]
+fn a_version_probe_that_fails_leaves_the_launch_without_a_shared_catalog() {
+    let world = CatalogWorld::new("catalog-version-fails", "", "");
+    let run = world.launch(
+        CodexLaunchPath::Exec,
+        "codex",
+        &[],
+        &[("MOCK_CODEX_VERSION_EXIT", "3")],
+    );
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+    let launch = world.launches().pop().unwrap();
+    assert!(launch["catalog"].is_null(), "{launch}");
+    assert_eq!(launch["fetch"], "ok", "Codex's own fetch: {launch}");
+}
 // llmlint: ignore-end[e2e_not_mocked]

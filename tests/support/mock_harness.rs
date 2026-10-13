@@ -148,6 +148,12 @@
 //!                              MOCK_ARGV_FILE and exiting with MOCK_EXIT, since
 //!                              oneharness asks it before every Codex launch.
 //!   MOCK_CODEX_VERSION_DELAY_MS  how long `--version` takes to answer.
+//!   MOCK_CODEX_VERSION_EXIT    the exit code `--version` answers with (the
+//!                              launch itself keeps MOCK_EXIT).
+//!   MOCK_CODEX_CACHE_CORRUPT   with MOCK_CODEX_CATALOG_LOG, a fetch writes a
+//!                              cache Codex would not: `json` (not JSON), `time`
+//!                              (an unreadable fetched_at), `empty` (no models)
+//!                              or `models` (a model that is no object).
 //!   MOCK_CODEX_CATALOG_LOG     if set to a path, a launch as `exec` or
 //!                              `app-server` acts like Codex about its model
 //!                              catalog and appends one JSON line: `subcommand`,
@@ -448,7 +454,8 @@ fn answer_version(argv: &[String]) -> ! {
     let _ = out.write_all(answer.as_bytes());
     let _ = out.flush();
     std::process::exit(
-        std::env::var("MOCK_EXIT")
+        std::env::var("MOCK_CODEX_VERSION_EXIT")
+            .or_else(|_| std::env::var("MOCK_EXIT"))
             .ok()
             .and_then(|code| code.parse().ok())
             .unwrap_or(0),
@@ -564,7 +571,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                 let version = std::env::var("MOCK_CODEX_CACHE_VERSION")
                     .or_else(|_| std::env::var("MOCK_CODEX_VERSION"))
                     .unwrap_or_else(|_| "0.0.0".into());
-                let cache = serde_json::json!({
+                let mut cache = serde_json::json!({
                     "fetched_at": fetched_at,
                     "etag": "W/\"mock\"",
                     "client_version": version,
@@ -573,9 +580,24 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                         {"slug": "mock-model-b", "display_name": "Mock B"},
                     ],
                 });
+                let corrupt = std::env::var("MOCK_CODEX_CACHE_CORRUPT").unwrap_or_default();
+                match corrupt.as_str() {
+                    "" | "json" => {}
+                    "time" => cache["fetched_at"] = "not a time".into(),
+                    "empty" => cache["models"] = serde_json::json!([]),
+                    "models" => cache["models"] = serde_json::json!([null]),
+                    other => refuse(&format!(
+                        "MOCK_CODEX_CACHE_CORRUPT must be `json`, `time`, `empty` or `models`, got `{other}`"
+                    )),
+                }
+                let text = if corrupt == "json" {
+                    "{\"models\":".to_string()
+                } else {
+                    cache.to_string()
+                };
                 let cache_path = std::path::Path::new(&home).join("models_cache.json");
                 let temp = cache_path.with_extension(format!("{}.tmp", std::process::id()));
-                std::fs::write(&temp, cache.to_string())
+                std::fs::write(&temp, text)
                     .and_then(|()| std::fs::rename(&temp, &cache_path))
                     .expect("the mock's models_cache.json could not be written");
                 line["fetched_ms"] = u64::try_from(now.as_millis())

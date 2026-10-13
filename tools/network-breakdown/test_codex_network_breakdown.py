@@ -429,8 +429,6 @@ class MeasureAroundATransferDouble(unittest.TestCase):
             self.skipTest(why)
 
     def assert_payload(self, tunnel: dict[str, Any], expected: Expected) -> None:
-        # One tunnel of the document `breakdown` returns, read by key the same
-        # way.
         self.assertEqual(tunnel["port"], expected.port, tunnel)
         self.assertEqual(tunnel["destination"], f"{tunnel['host']}:{expected.port}", tunnel)
         side = expected.side.value
@@ -503,7 +501,8 @@ class MeasureAroundATransferDouble(unittest.TestCase):
             "from urllib.parse import urlparse\n"
             "proxy = urlparse(os.environ['HTTPS_PROXY'])\n"
             "for head in (b'NONSENSE\\r\\n\\r\\n', b'GET /relative HTTP/1.1\\r\\n\\r\\n',\n"
-            "             b'CONNECT example.invalid:99999 HTTP/1.1\\r\\n\\r\\n'):\n"
+            "             b'CONNECT example.invalid:99999 HTTP/1.1\\r\\n\\r\\n',\n"
+            "             b'CONNECT bad_host!:443 HTTP/1.1\\r\\n\\r\\n'):\n"
             "    with socket.create_connection((proxy.hostname, proxy.port)) as conn:\n"
             "        conn.sendall(head)\n"
             "        assert conn.recv(64).startswith(b'HTTP/1.1 400'), head\n"
@@ -512,10 +511,11 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertEqual(report["launch_exit"], 0, report)
         self.assertEqual(report["tunnels"], [])
         errors = [refusal["error"] for refusal in report["refused"]]
-        self.assertEqual(len(errors), 3, report)
+        self.assertEqual(len(errors), 4, report)
         self.assertIn("malformed request line", errors[0])
         self.assertIn("not a proxy request", errors[1])
         self.assertIn("no host and port", errors[2])
+        self.assertIn("no host and port in 'bad_host!:443'", errors[3])
 
     def test_env_values_reach_the_measured_launch(self) -> None:
         self.need_namespace()

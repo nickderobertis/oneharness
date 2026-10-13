@@ -196,15 +196,25 @@ impl CatalogFiles {
     }
 
     /// Record a failed refresh and fall back for this launch.
+    /// A record that cannot be written holds no backoff, so the warning says
+    /// the next launch will try the refresh again.
     fn fallback(&self, reason: &str) -> CatalogChoice {
         let record = FailureRecord {
             failed_at_ms: now_ms(),
             reason: reason.to_string(),
         };
-        if let Ok(text) = serde_json::to_vec(&record) {
-            let _ = write_atomically(&self.failure, &text);
+        let recorded = serde_json::to_vec(&record)
+            .map_err(std::io::Error::other)
+            .and_then(|text| write_atomically(&self.failure, &text));
+        let mut choice = self.without_fresh(&record);
+        if let (Err(error), Some(warning)) = (recorded, choice.warning.as_mut()) {
+            warning.push_str(&format!(
+                "; that failure could not be recorded at {} ({error}), so the next launch \
+                 tries the refresh again",
+                self.failure.display()
+            ));
         }
-        self.without_fresh(&record)
+        choice
     }
 
     /// The launch whose wait for another process's refresh ran out. That

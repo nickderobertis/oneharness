@@ -85,12 +85,16 @@ class Transfer:
 
 
 def proxy_from(name: str) -> Proxy:
-    url = urlparse(os.environ.get(name, ""))
-    if url.scheme != "http" or url.hostname is None or url.port is None:
-        raise SystemExit(
-            f"transfer_double: {name} is not an http://host:port proxy: {url.geturl()!r}"
-        )
-    return Proxy(url.hostname, url.port)
+    text = os.environ.get(name, "")
+    refusal = f"transfer_double: {name} is not an http://host:port proxy: {text!r}"
+    try:
+        url = urlparse(text)
+        port = url.port
+    except ValueError:
+        raise SystemExit(refusal) from None
+    if url.scheme != "http" or url.hostname is None or port is None:
+        raise SystemExit(refusal)
+    return Proxy(url.hostname, port)
 
 
 def default_gateway() -> str:

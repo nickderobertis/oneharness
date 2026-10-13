@@ -103,6 +103,9 @@ SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
 URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d{1,5}))?(?=$|[/?#\s,])(/[^\s\"'?#]*)?")
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# A destination a proxy request may name: a hostname, an IPv4 address, or an
+# IPv6 address without its brackets.
+HOST = re.compile(r"[A-Za-z0-9.-]{1,253}|[0-9A-Fa-f:.]{2,45}")
 
 
 class Unusable(Exception):
@@ -542,7 +545,7 @@ class CountingProxy:
             self._refuse(client, "400 Bad Request", target, f"not a proxy request: {request!r}")
             return
         host = host.strip("[]")
-        if not host or not is_port(port):
+        if not HOST.fullmatch(host) or not is_port(port):
             self._refuse(client, "400 Bad Request", target, f"no host and port in {target!r}")
             return
         destination = f"{host}:{port}"

@@ -22,7 +22,7 @@ let values = {};
 try { ({ values } = parseArgs({ options: { root: { type: "string" } } }));
  } catch (error) { throw Error(`${error.message}. Next: node scripts/release-install.mjs --root <directory>.`, {cause:error}); }
 function main() {
-if (!values.root) throw Error("Missing --root. Next: pass the staged release bundle directory.");
+if (!values.root?.trim()) throw Error("Missing --root. Next: pass the staged release bundle directory.");
 const target = `${process.arch === "arm64" ? "aarch64" : "x86_64"}-${process.platform === "darwin" ? "apple-darwin" : "unknown-linux-gnu"}`;
 const source = resolve(values.root, target);
 const record = assertPayload(

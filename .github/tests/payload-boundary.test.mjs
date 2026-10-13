@@ -33,6 +33,7 @@ test('real release builder rejects malformed platform declarations and package-d
 test('workflow and release helpers reject absent or blank boundary paths before IO',()=>{
  for(const input of [undefined,'','   ']) {
   for(const [script,flag] of [
+   ['scripts/release-install.mjs','--root'],
    ['.github/integration/rejection-journey.mjs','--root'],
    ['.github/integration/transfer-journey.mjs','--root'],
    ['.github/macos-budget.mjs','--telemetry'],

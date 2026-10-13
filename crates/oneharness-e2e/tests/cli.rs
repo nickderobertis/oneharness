@@ -6167,6 +6167,50 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
     assert!(result["events_source"].is_null());
 }
 
+/// A controlled codex turn reports what its app-server's agent message said:
+/// with `MOCK_CODEX_ECHO_PROMPT` the mock answers the turn's own input, which
+/// is how the live tier's network-recorder journeys (tools/network-telemetry)
+/// drive scripts/e2e-codex.sh's controlled-turn phase to its marker.
+#[cfg(not(windows))]
+#[test]
+fn controlled_codex_reports_the_text_an_echoing_app_server_answered() {
+    let session_dir = control_store_dir("ep");
+    let app_server_log = session_dir.join("app-server.log");
+    let output = run(
+        &[
+            "run",
+            "--harness",
+            "codex",
+            "--prompt",
+            "confirm ONEHARNESS-LIVE-4242",
+            "--control",
+            "--session",
+            "echoed",
+            "--session-dir",
+            session_dir.to_str().unwrap(),
+            "--bin",
+            &bin_override("codex"),
+            "--compact",
+        ],
+        &[
+            (
+                "MOCK_CODEX_APP_SERVER_LOG",
+                app_server_log.to_str().unwrap(),
+            ),
+            ("MOCK_CODEX_COMPLETE_TURN", "1"),
+            ("MOCK_CODEX_ECHO_PROMPT", "1"),
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result = &json_stdout(&output)["results"][0];
+    assert_eq!(result["text_source"], "jsonrpc:codex-app-server");
+    assert_eq!(result["text"], "confirm ONEHARNESS-LIVE-4242");
+}
+
 #[test]
 fn controlled_codex_normalizes_captured_app_server_tool_events() {
     assert_controlled_codex_normalizes_captured_app_server_tool_events();

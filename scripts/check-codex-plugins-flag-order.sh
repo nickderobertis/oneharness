@@ -29,7 +29,7 @@ write_fake_codex() {
   cat >"$bin/codex" <<FAKE || fail "could not write the fake codex to $bin/codex"
 #!/usr/bin/env bash
 set -euo pipefail
-[ "\$1 \$2" = "features list" ] || { echo "unexpected codex call: \$*" >&2; exit 2; }
+[ "\${1:-} \${2:-}" = "features list" ] || { echo "unexpected codex call: \$*" >&2; exit 2; }
 shift 2
 printf '%s|%s\n' "\${CODEX_HOME:-}" "\$*" >>"$tmp/calls" || { echo "fake codex: could not log to $tmp/calls" >&2; exit 2; }
 value=true enable=false disable=false
@@ -63,6 +63,7 @@ run_phase() {
 }
 
 rows="$(jq -e '.rows | length' "$matrix")" || fail "could not count the rows of $matrix — restore it from git"
+rows="${rows//$'\r'/}" # native Windows jq ends its output with CRLF
 
 # 1. Real codex's precedence passes, asking every row under an empty CODEX_HOME.
 write_fake_codex measured

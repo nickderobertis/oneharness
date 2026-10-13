@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.23.1](https://github.com/nickderobertis/oneharness/compare/v0.23.0...v0.23.1) - 2026-10-13
+
+### Fixed
+
+- *(hooks)* remove CI-duplicated pre-push checks ([#1459](https://github.com/nickderobertis/oneharness/pull/1459))
+
+## [0.23.0](https://github.com/nickderobertis/oneharness/compare/v0.22.2...v0.23.0) - 2026-10-13
+
+### Added
+
+- *(codex)* [**breaking**] launch Codex with plugins off unless a config opts in ([#1457](https://github.com/nickderobertis/oneharness/pull/1457))
+
 ## [0.22.2](https://github.com/nickderobertis/oneharness/compare/v0.22.1...v0.22.2) - 2026-10-13
 
 ### Added

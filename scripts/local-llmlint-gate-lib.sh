@@ -49,7 +49,7 @@ LLMLINT_VERDICT_FORMAT='oneharness-llmlint-verdict 1'
 # call, not what the judge asks: with no override the field is null however PATH
 # resolves oneharness, so the caller's value gave each environment its own key for
 # one unchanged judge. That is what kept the lifecycle publication re-rolling — it
-# points llmlint at a sandbox wrapper, so its pre-push gate could never replay the
+# points llmlint at a sandbox wrapper, so its manual gate could never replay the
 # green the working tree's own gate had just recorded. Clearing it here does not
 # touch the judge run below, which still dispatches through the caller's wrapper.
 llmlint_judge_fingerprint() {
@@ -144,7 +144,7 @@ llmlint_record_verdict() {
 # that runs its own agents through oneharness carries `ONEHARNESS_HARNESSES`,
 # which then reselects: on such a host both calls died on `unknown harness
 # variant`, naming a harness this repo's config never mentions, and took the
-# whole pre-push gate down with nothing wrong in the tree.
+# whole manual gate down with nothing wrong in the tree.
 #
 # Only the overrides that pick a harness are dropped, and the list is deliberate
 # rather than "every ONEHARNESS_*". A broader strip also changed how the judge

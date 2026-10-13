@@ -41,7 +41,6 @@
         "default",
         "^default",
         "{workspaceRoot}/.gitattributes",
-        "{workspaceRoot}/.githooks/**/*",
         "{workspaceRoot}/scripts/shell-tools.sh",
         "{workspaceRoot}/.shell-tool-versions"
       ]

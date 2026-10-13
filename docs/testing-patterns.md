@@ -58,6 +58,8 @@ const report = await new OneHarness().runMock(
 | `MOCK_NATIVE_GRANDCHILD_MS` | Launch a native descendant for this many milliseconds. |
 | `MOCK_TICK_FILE` | In native-descendant mode, append one byte per tick. |
 | `MOCK_CODEX_PLUGINS_LOG` | Record what each `exec`/`app-server` launch did about Codex plugins, one JSON line per launch; the fields and the feature resolution are documented in the header of `tests/support/mock_harness.rs`. |
+| `MOCK_CODEX_VERSION` | Answer `--version` as `codex-cli <it>` and stamp the catalog cache with it; unset, `--version` names no Codex version, so oneharness keeps no shared catalog for the mock. |
+| `MOCK_CODEX_CATALOG_LOG` | Act like Codex about its model catalog (fetch into `$CODEX_HOME/models_cache.json` unless started with `-c model_catalog_json=`) and record each `exec`/`app-server` launch, one JSON line each; `MOCK_CODEX_CATALOG_FETCH_MS` and `MOCK_CODEX_CATALOG_FAULT` (`fail`, `hang`) shape the fetch. Fields in the header of `tests/support/mock_harness.rs`. |
 
 The SDK helpers cover stdout, stderr, exit, and latency. Put advanced variables
 in the run options' `env` map; explicit helper script values take precedence.

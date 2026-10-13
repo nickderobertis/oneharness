@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -147,9 +148,77 @@ class Outcome:
         """The supervisor's report, or None when it ended without a whole one."""
         try:
             fields = json.loads(message)
-            return Outcome(Ending(fields["ending"]), int(fields["code"]), str(fields["reason"]))
+            ending = Ending(fields["ending"])
         except (ValueError, KeyError, TypeError):
             return None
+        code, reason = fields.get("code"), fields.get("reason")
+        if isinstance(code, bool) or not isinstance(code, int) or not isinstance(reason, str):
+            return None
+        return Outcome(ending, code, reason)
+
+
+@dataclass(frozen=True)
+class Window:
+    """The wall-clock instants just before and just after one counter read."""
+
+    before_ns: int
+    after_ns: int
+
+
+@dataclass(frozen=True)
+class NamespaceResult:
+    """What the namespace's init hands the supervisor in `result.json`."""
+
+    moved: Counters
+    namespace_tcp_retrans_segs: int
+    seconds: float
+    exit: Optional[int]
+    start: Window
+    end: Window
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "moved": list(self.moved),
+                "namespace_tcp_retrans_segs": self.namespace_tcp_retrans_segs,
+                "seconds": self.seconds,
+                "exit": self.exit,
+                "start": asdict(self.start),
+                "end": asdict(self.end),
+            }
+        )
+
+    @staticmethod
+    def from_json(text: str) -> NamespaceResult:
+        """Read back what to_json wrote, refusing anything else with ValueError."""
+        fields = json.loads(text)
+        moved, retrans = fields["moved"], fields["namespace_tcp_retrans_segs"]
+        seconds, code = fields["seconds"], fields["exit"]
+        counts = [*moved, retrans] if isinstance(moved, list) else []
+        if len(counts) != 5 or not all(
+            isinstance(n, int) and not isinstance(n, bool) and n >= 0 for n in counts
+        ):
+            raise ValueError(
+                f"counters are not four non-negative integers and a retransmit count: {moved!r}"
+            )
+        if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+            raise ValueError(f"seconds is not a finite non-negative number: {seconds!r}")
+        if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
+            raise ValueError(f"exit is not an integer or null: {code!r}")
+        start, end = Window(**fields["start"]), Window(**fields["end"])
+        return NamespaceResult(Counters(*moved), retrans, float(seconds), code, start, end)
+
+    def line(self, launch_id: str) -> Measured:
+        return Measured(
+            launch_id,
+            self.moved.rx_bytes,
+            self.moved.tx_bytes,
+            self.moved.rx_bytes - FRAME_HEADERS * self.moved.rx_frames,
+            self.moved.tx_bytes - FRAME_HEADERS * self.moved.tx_frames,
+            self.namespace_tcp_retrans_segs,
+            self.seconds,
+            self.exit,
+        )
 
 
 def append_line(path: str, record: Measured | Unavailable) -> None:
@@ -337,22 +406,16 @@ def namespace_init(scratch: Path, deadline: float, argv: list[str]) -> int:
     seconds = time.monotonic() - t0
     time.sleep(SETTLE)
     end = snapshot()
-    moved = end.counters - start.counters
-    result = {
-        "rx_bytes": moved.rx_bytes,
-        "tx_bytes": moved.tx_bytes,
-        "payload_rx_estimate": moved.rx_bytes - FRAME_HEADERS * moved.rx_frames,
-        "payload_tx_estimate": moved.tx_bytes - FRAME_HEADERS * moved.tx_frames,
-        "namespace_tcp_retrans_segs": tcp_retrans() - retrans_start,
-        "seconds": round(seconds, 3),
-        "exit": launch_exit,
-        "windows": {
-            "start": [start.before_ns, start.after_ns],
-            "end": [end.before_ns, end.after_ns],
-        },
-    }
+    result = NamespaceResult(
+        end.counters - start.counters,
+        tcp_retrans() - retrans_start,
+        round(seconds, 3),
+        launch_exit,
+        Window(start.before_ns, start.after_ns),
+        Window(end.before_ns, end.after_ns),
+    )
     partial = scratch / "result.json.partial"
-    partial.write_text(json.dumps(result))
+    partial.write_text(result.to_json())
     os.replace(partial, scratch / "result.json")
     return 0
 
@@ -394,24 +457,27 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     pasta_code = pasta_run.wait()
     result_path = scratch / "result.json"
     if result_path.exists():
-        result = json.loads(result_path.read_text())
+        try:
+            result = NamespaceResult.from_json(result_path.read_text())
+        except (ValueError, KeyError, TypeError) as error:
+            append_line(
+                args.line_file,
+                Unavailable(
+                    args.launch_id,
+                    f"the measuring namespace wrote an unreadable result ({error}); rerun the launch, "
+                    "and if it recurs run scripts/e2e-netmeasure.py by hand around it",
+                    round(time.monotonic() - t0, 3),
+                    None,
+                ),
+            )
+            return Outcome(Ending.EXITED, code=137)
         windows = os.environ.get("OH_E2E_NET_WINDOWS")
         if windows is not None:
-            Path(windows).write_text(json.dumps(result["windows"]))
-        append_line(
-            args.line_file,
-            Measured(
-                args.launch_id,
-                result["rx_bytes"],
-                result["tx_bytes"],
-                result["payload_rx_estimate"],
-                result["payload_tx_estimate"],
-                result["namespace_tcp_retrans_segs"],
-                result["seconds"],
-                result["exit"],
-            ),
-        )
-        return Outcome(Ending.EXITED, code=result["exit"] if result["exit"] is not None else 137)
+            Path(windows).write_text(
+                json.dumps({"start": asdict(result.start), "end": asdict(result.end)})
+            )
+        append_line(args.line_file, result.line(args.launch_id))
+        return Outcome(Ending.EXITED, code=result.exit if result.exit is not None else 137)
     said = stderr_tail.decode(errors="replace").strip().replace("\n", " | ")[-500:] or "no message"
     if not (scratch / "launched").exists():
         return Outcome(
@@ -439,7 +505,11 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
     except OSError as error:
         append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, 127))
         remove_quietly(args.pending)
-        print(f"e2e-netshim: cannot start {args.argv[0]}: {error}", file=sys.stderr)
+        print(
+            f"e2e-netshim: cannot start {args.argv[0]}: {error}; check that the harness is still "
+            "installed there (the shim resolved it at setup), then rerun the suite to resolve it again",
+            file=sys.stderr,
+        )
         return 127
     for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
         signal.signal(signum, lambda n, _f: launch.send_signal(n))
@@ -466,6 +536,17 @@ def measure(args: argparse.Namespace) -> int:
         os.close(done_r)
         try:
             outcome = supervise(args, pasta, scratch, life_r)
+        except Exception as error:
+            # The shim still gets an answer and the launch a line: run it
+            # directly if it never started, else record why it went unmeasured.
+            traceback.print_exc()
+            reason = f"the measuring supervisor failed ({error!r}; its traceback is on stderr)"
+            if (scratch / "launched").exists():
+                append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, None))
+                outcome = Outcome(Ending.EXITED, code=137)
+            else:
+                outcome = Outcome(Ending.UNLAUNCHED, reason=reason)
+        try:
             if outcome.ending is Ending.EXITED:
                 remove_quietly(args.pending)
             os.write(done_w, outcome.encode())

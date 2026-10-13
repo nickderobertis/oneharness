@@ -178,6 +178,81 @@ class EverySuiteRecords(unittest.TestCase):
         self.assertEqual(sorted(declared.group(1).split()), registry)
 
 
+@unittest.skipIf(WINDOWS, "the doubles are bash scripts")
+class Setup(unittest.TestCase):
+    """oh_telemetry_setup itself, driven as a suite drives it."""
+
+    def setup_and(
+        self, tmp: Path, script: str, *, path_first: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        env = suite_env(tmp, "codex")
+        if path_first is not None:
+            env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                f'set -euo pipefail; source "$1"; {script}',
+                "_",
+                str(ROOT / "scripts" / "e2e-lib.sh"),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+
+    def test_a_suite_started_under_another_suites_shims_wraps_the_real_executable(self) -> None:
+        need_builds(self)
+        tmp = scratch(self)
+        lib = ROOT / "scripts" / "e2e-lib.sh"
+        run = self.setup_and(
+            tmp,
+            "oh_telemetry_setup outer; OH_E2E_SUITE= OH_E2E_TELEMETRY_FILE= "
+            f"bash -c 'set -euo pipefail; source \"{lib}\"; oh_telemetry_setup inner; codex --version >/dev/null'",
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        inner = lines(tmp / "telemetry" / "inner.jsonl")
+        (launch,) = starts(inner)
+        self.assertEqual(len(measurements(inner, launch["launch_id"])), 1)
+        self.assertEqual(
+            lines(tmp / "telemetry" / "outer.jsonl"),
+            [],
+            "the outer shim recorded the inner launch too",
+        )
+        shim = (tmp / "telemetry" / ".shims" / "inner" / "codex").read_text()
+        self.assertIn(
+            str(tmp / "double-bin" / "codex"),
+            shim,
+            "the inner shim wraps the outer one, not the real codex",
+        )
+
+    def test_windows_gets_a_cmd_adapter_and_refuses_one_that_bypasses_the_shim(self) -> None:
+        # Git Bash's cygpath is stood in for by one that marks the Windows form,
+        # so the adapter oh_telemetry_setup writes there can be read here.
+        need_builds(self)
+        tmp = scratch(self)
+        stand_in = tmp / "cygpath-bin"
+        stand_in.mkdir()
+        (stand_in / "cygpath").write_text('#!/usr/bin/env bash\nprintf "W:%s" "${@: -1}"\n')
+        (stand_in / "cygpath").chmod(0o755)
+        run = self.setup_and(tmp, "oh_telemetry_setup winleg", path_first=stand_in)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        shims = tmp / "telemetry" / ".shims" / "winleg"
+        adapter = (shims / "codex.cmd").read_bytes()
+        bash = subprocess.run(
+            ["bash", "-c", "command -v bash"], capture_output=True, text=True
+        ).stdout.strip()
+        self.assertEqual(adapter, f'@"W:{bash}" "W:{shims / "codex"}" %*\r\n'.encode())
+        stale = self.setup_and(
+            tmp,
+            'oh_telemetry_setup winleg; printf "@other %%*\\r\\n" >"$OH_E2E_TELEMETRY_DIR/.shims/winleg/codex.cmd"; _oh_shims_first',
+            path_first=stand_in,
+        )
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("codex.cmd does not launch this suite's measuring shim", stale.stderr)
+
+
 @unittest.skipIf(WINDOWS, "the double is a bash script")
 class DirectCodexLaunches(unittest.TestCase):
     """The suite's own `codex exec` launches (the synced-rules phase) start Codex
@@ -218,7 +293,7 @@ class DirectCodexLaunches(unittest.TestCase):
             json.loads(line) for line in (tmp / "plugins.jsonl").read_text().splitlines()
         ]
         self.assertEqual(
-            (evidence["catalog_request"], evidence["plugins_loaded"]), (False, False), evidence
+            (evidence["catalog_request"], evidence["plugin_load_ran"]), (False, False), evidence
         )
 
     def test_the_direct_launch_defaults_are_the_ones_oneharness_applies(self) -> None:

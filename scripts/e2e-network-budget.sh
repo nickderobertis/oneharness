@@ -38,7 +38,7 @@ case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
 # winds down (at most the 5 s kill grace); its marker goes once its line is in.
 wait_seconds="${OH_E2E_PENDING_WAIT:-30}"
 case "$wait_seconds" in "" | *[!0-9]*)
-  echo "e2e-network-budget: OH_E2E_PENDING_WAIT must be a whole number of seconds, got '$wait_seconds'" >&2
+  echo "e2e-network-budget: OH_E2E_PENDING_WAIT must be a whole number of seconds, got '$wait_seconds'; unset it for the 30 s default or set one, as in OH_E2E_PENDING_WAIT=60" >&2
   exit 2
   ;;
 esac
@@ -49,15 +49,20 @@ if [ -e "$pending" ] && { [ ! -d "$pending" ] || [ ! -r "$pending" ] || [ ! -x "
 fi
 still_measuring() {
   if [ -d "$pending" ]; then
-    find "$pending" -mindepth 1 -maxdepth 1 | sed 's#.*/##'
+    find "$pending" -mindepth 1 -maxdepth 1 | sed 's#.*/##' | tr '\n' ' '
   fi
 }
+listing_failed() {
+  echo "e2e-network-budget: cannot list $pending to wait for launches still being measured; restore its permissions (chmod u+rx) or remove it, then rerun" >&2
+  exit 1
+}
 waited=0
-while [ -n "$(still_measuring)" ] && [ "$waited" -lt "$((wait_seconds * 5))" ]; do
+left="$(still_measuring)" || listing_failed
+while [ -n "$left" ] && [ "$waited" -lt "$((wait_seconds * 5))" ]; do
   sleep 0.2
   waited=$((waited + 1))
+  left="$(still_measuring)" || listing_failed
 done
-left="$(still_measuring | tr '\n' ' ')"
 if [ -n "$left" ]; then
   echo "network budget ($suite): still measuring after ${wait_seconds}s: ${left}— the check below names any launch left without its line" >&2
 fi

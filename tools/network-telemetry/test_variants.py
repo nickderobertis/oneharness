@@ -169,8 +169,8 @@ class OptedInLaunch(unittest.TestCase):
             ),
             (
                 "no plugin load",
-                [*others, *({**r, "plugins_loaded": False} for r in mine)],
-                "never loaded its plugins",
+                [*others, *({**r, "plugin_load_ran": False} for r in mine)],
+                "never ran its plugin-load step",
             ),
             (
                 "only another launch's",
@@ -239,6 +239,31 @@ class OptedInLaunch(unittest.TestCase):
                 self.assertIn(said, run.stderr)
 
 
+class CodexHomePlugins(unittest.TestCase):
+    """oh_codex_home_allows_plugins over every top-level spelling of the setting."""
+
+    def test_each_spelling_that_turns_plugins_off_is_refused_naming_the_file(self) -> None:
+        cases = {
+            "[features]\nplugins = false\n": False,
+            '[ features ] # trailing\n"plugins"=false # comment\n': False,
+            "features.plugins = false\n": False,
+            "features = { apps = true, plugins = false }\n": False,
+            "[features]\nplugins = true\n": True,
+            "[profiles.fast.features]\nplugins = false\n": True,
+            "[features]\n# plugins = false\n": True,
+            "[features]\napps = false\n[other]\nplugins = false\n": True,
+            'model = "gpt"\n': True,
+        }
+        for text, allowed in cases.items():
+            with self.subTest(config=text):
+                home = scratch(self)
+                (home / "config.toml").write_text(text)
+                run = run_lib("oh_codex_home_allows_plugins", str(home))
+                self.assertEqual(run.returncode == 0, allowed, run.stderr)
+                if not allowed:
+                    self.assertIn(f"{home / 'config.toml'} disables Codex plugins", run.stderr)
+
+
 class CodexLogEvidence(unittest.TestCase):
     """The live run reads Codex's own log: rows of `logs_2.sqlite` in Codex's
     schema, attributed to the opted-in launch's process by its marker or its
@@ -304,13 +329,13 @@ class CodexLogEvidence(unittest.TestCase):
                     "process": "pid:7:aaa",
                     "text": "OH_VARIANT_1_2_pl",
                     "catalog_request": True,
-                    "plugins_loaded": True,
+                    "plugin_load_ran": True,
                 },
                 {
                     "process": "pid:9:bbb",
                     "text": "",
                     "catalog_request": True,
-                    "plugins_loaded": False,
+                    "plugin_load_ran": False,
                 },
             ],
         )

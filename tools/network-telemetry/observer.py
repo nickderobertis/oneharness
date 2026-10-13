@@ -55,7 +55,13 @@ class Capture:
 
 
 def main() -> int:
-    out, names = sys.argv[1], sys.argv[2].split(",")
+    if len(sys.argv) != 3 or not [name for name in sys.argv[2].split(",") if name]:
+        print(
+            "usage: observer.py OUT IFACE[,IFACE...] (e2e-netmeasure.py appends the interfaces)",
+            file=sys.stderr,
+        )
+        return 2
+    out, names = sys.argv[1], [name for name in sys.argv[2].split(",") if name]
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 24)
     sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)

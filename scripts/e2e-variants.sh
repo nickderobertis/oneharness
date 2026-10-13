@@ -214,7 +214,7 @@ run_marker() {
 # Codex's asynchronous plugin catalog download to finish inside the launch.
 # Its bytes go to variants.jsonl, never live-codex's budgeted codex.jsonl; this
 # phase holds that it was measured, ran the sleep, and requested the catalog
-# and loaded plugins — read from Codex's own log, or from
+# and ran its plugin-load step — read from Codex's own log, or from
 # OH_E2E_PLUGINS_EVIDENCE when a hermetic double records it instead.
 codex_plugins_opt_in() {
   _oh_phase codex-plugins-opt-in
@@ -245,7 +245,7 @@ codex_plugins_opt_in() {
       fail "could not read Codex's log $home/logs_2.sqlite for the opted-in launch's plugins evidence; check that python3 has sqlite3 and the file is readable (sqlite3 $home/logs_2.sqlite .tables), then rerun"
   fi
   oh_codex_plugins_evidence_assert "$plugins_marker" "$evidence_file"
-  evidence "IDENTITY codex:plugins: plugins=true args=variant measured=$id catalog_requested=yes plugins_loaded=yes"
+  evidence "IDENTITY codex:plugins: plugins=true args=variant measured=$id catalog_requested=yes plugin_load_ran=yes"
 }
 
 marker="OH_VARIANT_$(date +%s)_$RANDOM"

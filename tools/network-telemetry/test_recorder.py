@@ -107,26 +107,27 @@ class MeasuredLaunch(unittest.TestCase):
         observed = json.loads(capture.read_text())
         frames = [Frame(f["stamp_ns"], f["direction"], f["length"]) for f in observed["frames"]]
         window = json.loads(windows.read_text())
+        start, end = window["start"], window["end"]
         self.assertEqual(
             observed["drops"], 0, "the capture dropped frames, so it cannot vouch for the counters"
         )
         self.assertEqual(observed["truncated"], 0)
         self.assertLess(
             observed["ready_ns"],
-            window["start"][0],
+            start["before_ns"],
             "the capture began after the first counter read",
         )
         self.assertGreater(
             observed["stopped_ns"],
-            window["end"][1],
+            end["after_ns"],
             "the capture ended before the last counter read",
         )
         for direction, recorded, payload in (
             ("rx", line["rx_bytes"], DOWN),
             ("tx", line["tx_bytes"], UP),
         ):
-            outer = frame_sums(frames, direction, window["start"][0], window["end"][1])
-            inner = frame_sums(frames, direction, window["start"][1], window["end"][0])
+            outer = frame_sums(frames, direction, start["before_ns"], end["after_ns"])
+            inner = frame_sums(frames, direction, start["after_ns"], end["before_ns"])
             self.assertLessEqual(
                 inner, recorded, f"{direction}: the counters missed captured frames"
             )
@@ -279,6 +280,70 @@ class MeasuredLaunch(unittest.TestCase):
         self.assertEqual(len(lines(file)), 2, "the launch was recorded more than once")
 
 
+class SupervisorLoss(unittest.TestCase):
+    def test_a_supervisor_that_dies_still_leaves_the_launch_one_line(self) -> None:
+        # The measuring supervisor is the line's writer; if it is lost, the
+        # shim records that the launch went unmeasured and clears its marker.
+        need_recorder(self)
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\nexec "
+            + " ".join(transfer_argv(0, 0, 0, "--linger", "3", "--heartbeat", str(heartbeat)))
+            + "\n"
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "TMPDIR": str(tmp)},
+        )
+        for _ in range(100):
+            if heartbeat.exists():
+                break
+            time.sleep(0.1)
+        # The supervisor: the shim's child that leads its own session.
+        supervisors = []
+        for stat in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                fields = stat.read_text().rsplit(")", 1)[1].split()
+            except OSError:
+                continue
+            pid = int(stat.parent.name)
+            if int(fields[1]) == shim.pid and int(fields[3]) == pid:
+                supervisors.append(pid)
+        self.assertEqual(len(supervisors), 1, supervisors)
+        os.kill(supervisors[0], signal.SIGKILL)
+        self.assertEqual(shim.wait(timeout=30), 137)
+        records = lines(file)
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("the measuring supervisor ended without reporting", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")), "the pending marker outlived the line")
+        time.sleep(3.5)  # the orphaned launch finishes its linger and the namespace goes
+
+
 class Fallback(unittest.TestCase):
     """Where the method cannot run, the launch still runs, unmeasured and said so."""
 
@@ -343,6 +408,37 @@ class Fallback(unittest.TestCase):
             tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"PATH": str(bare)}
         )
         self.assert_unavailable(tmp, run, blob, "no pasta on PATH")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without python3")
+    def test_a_linux_host_without_python3_runs_the_launch_unmeasured(self) -> None:
+        tmp = scratch(self)
+        bare = tmp / "bare-path"
+        bare.mkdir()
+        for tool in (
+            "bash",
+            "jq",
+            "cat",
+            "od",
+            "tr",
+            "dirname",
+            "uname",
+            "date",
+            "mkdir",
+            "rm",
+            "head",
+            "grep",
+            "pasta",
+        ):
+            found = subprocess.run(
+                ["bash", "-c", f"command -v {tool}"], capture_output=True, text=True
+            ).stdout.strip()
+            if found:
+                (bare / tool).symlink_to(found)
+        blob = os.urandom(70_000)
+        run = run_shim(
+            tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"PATH": str(bare)}
+        )
+        self.assert_unavailable(tmp, run, blob, "no python3 on PATH")
 
     def test_this_platform_records_every_launch_once(self) -> None:
         # Whatever this host is, a launch through the shim gets one start and

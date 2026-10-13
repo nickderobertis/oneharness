@@ -444,16 +444,22 @@ oh_run() {
 # sees that launch kind measured beside the exec turns and the usage probe.
 #   $1 harness id
 oh_controlled_turn() {
-  local id="$1" marker sandbox
+  local id="$1" marker sandbox status=0
   _oh_phase controlled-turn
   marker="$(oh_marker)"
   sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   # --control needs a handle an `oneharness interrupt` could address; this
-  # turn is never interrupted, so a throwaway one in the sandbox serves.
-  oh_run "$id" "$(oh_prompt "$marker")" --control --session "ohnet${RANDOM}" \
-    --session-dir "$(oh_native_path "$sandbox")/sessions" --cwd "$(oh_native_path "$sandbox")"
-  rm -rf "$sandbox"
-  oh_assert_echoed "$id" "$marker"
+  # turn is never interrupted, so a throwaway one in the sandbox serves. The
+  # turn and its assertion run in a subshell, so the sandbox goes however the
+  # phase ends — a skip or a failure exits that subshell, and its status this
+  # helper.
+  (
+    oh_run "$id" "$(oh_prompt "$marker")" --control --session "ohnet${RANDOM}" \
+      --session-dir "$(oh_native_path "$sandbox")/sessions" --cwd "$(oh_native_path "$sandbox")"
+    oh_assert_echoed "$id" "$marker"
+  ) || status=$?
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
+  [ "$status" -eq 0 ] || exit "$status"
 }
 
 # Read a field from the stored report.
@@ -3850,18 +3856,29 @@ JSON
 # and asserts, with these helpers, that it did fetch the plugin catalog and
 # load plugins — and that the recorder measured it.
 
-# Fail, naming the file, when $1's config.toml turns Codex plugins off.
+# Fail, naming the file, when $1's config.toml turns Codex plugins off. It
+# reads every top-level TOML spelling of that setting — a `[features]` table
+# (quoted keys, comments and spacing allowed), a dotted `features.plugins` key,
+# or an inline `features = { ... }` table; a `[profiles.*]` table applies only
+# when a run selects that profile, which these launches never do.
 oh_codex_home_allows_plugins() {
   local cfg="$1/config.toml" rc=0
   [ -f "$cfg" ] || return 0
   awk '
-      /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section) }
-      section == "[features]" && /^[[:space:]]*plugins[[:space:]]*=[[:space:]]*false/ { off = 1 }
-      section == "" && /^[[:space:]]*features\.plugins[[:space:]]*=[[:space:]]*false/ { off = 1 }
+      {
+        line = $0
+        sub(/#.*/, "", line)                # a comment (no setting here holds a "#")
+        gsub(/[[:space:]"\047]/, "", line) # spacing, and the quotes a key may wear
+      }
+      line ~ /^\[[^][]*\]$/ { section = substr(line, 2, length(line) - 2); next }
+      line ~ /^\[\[/ { section = "(array)"; next }
+      section == "features" && line == "plugins=false" { off = 1 }
+      section == "" && line == "features.plugins=false" { off = 1 }
+      section == "" && line ~ /^features=\{/ && line ~ /[{,]plugins=false[,}]/ { off = 1 }
       END { exit off ? 0 : 1 }
     ' "$cfg" || rc=$?
   case "$rc" in
-    0) fail "$cfg disables Codex plugins ([features] plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
+    0) fail "$cfg disables Codex plugins (features.plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
     1) ;;
     *) fail "could not read $cfg (awk exited $rc); check its permissions with ls -l, then rerun" ;;
   esac
@@ -3902,9 +3919,11 @@ oh_launch_measured_assert() {
 }
 
 # The plugins evidence of the opted-in launch. $2 holds one JSON record per
-# Codex process — {"process", "text", "catalog_request", "plugins_loaded"} —
+# Codex process — {"process", "text", "catalog_request", "plugin_load_ran"} —
 # and the launch's own records are those whose text carries its marker $1:
-# together they must show the plugin catalog requested and plugins loaded.
+# together they must show the plugin catalog requested and the plugin-load
+# step run (real Codex: its installed-plugin bundle sync completed, whatever it
+# materialized; the mock: it loaded the plugin installed in its CODEX_HOME).
 oh_codex_plugins_evidence_assert() {
   local marker="$1" evidence="$2" mine
   local look="read Codex's own log of the launch (logs_2.sqlite in its CODEX_HOME, rows since the phase began) to see what it did"
@@ -3914,15 +3933,15 @@ oh_codex_plugins_evidence_assert() {
   [ "$mine" != "[]" ] || fail "none of the Codex plugins evidence in $evidence belongs to the opted-in launch (marker $marker); any there is another launch's. $look"
   printf '%s' "$mine" | jq -e 'any(.catalog_request == true)' >/dev/null ||
     fail "the opted-in launch (marker $marker) never requested the plugin catalog: plugins = true did not reach Codex, or Codex no longer fetches it; check the launch's argv in variants.jsonl for a plugins-off flag, then $look"
-  printf '%s' "$mine" | jq -e 'any(.plugins_loaded == true)' >/dev/null ||
-    fail "the opted-in launch (marker $marker) never loaded its plugins; $look"
+  printf '%s' "$mine" | jq -e 'any(.plugin_load_ran == true)' >/dev/null ||
+    fail "the opted-in launch (marker $marker) never ran its plugin-load step (no installed-plugin bundle sync completed); $look"
 }
 
 # Codex's own log of the opted-in launch, as oh_codex_plugins_evidence_assert
 # reads it: one record per process that logged to $1/logs_2.sqlite since epoch
 # second $4, its text the marker $2 when one of its rows names the marker or
-# thread $3 — the launch's process — and its catalog request and plugin
-# bundle sync from Codex's own log lines.
+# thread $3 — the launch's process — and its catalog request and completed
+# installed-plugin bundle sync from Codex's own log lines.
 oh_codex_log_evidence() {
   [ -f "$1/logs_2.sqlite" ] ||
     fail "Codex wrote no log at $1/logs_2.sqlite, so the opted-in launch's plugins cannot be read; check that this codex logs there (codex-cli 0.159 does), then rerun"
@@ -3939,7 +3958,7 @@ rows = con.execute(
 processes = {}
 for process, row_thread, body in rows:
     record = processes.setdefault(
-        process, {"process": process, "text": "", "catalog_request": False, "plugins_loaded": False}
+        process, {"process": process, "text": "", "catalog_request": False, "plugin_load_ran": False}
     )
     body = body or ""
     if marker in body or (thread and row_thread == thread):
@@ -3947,7 +3966,7 @@ for process, row_thread, body in rows:
     if body.startswith("fetching remote plugin catalog"):
         record["catalog_request"] = True
     if body.startswith("completed remote installed plugin bundle sync"):
-        record["plugins_loaded"] = True
+        record["plugin_load_ran"] = True
 for record in processes.values():
     print(json.dumps(record))
 PY

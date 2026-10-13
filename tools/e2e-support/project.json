@@ -28,7 +28,6 @@
       "{workspaceRoot}/scripts/e2e-variants-provider-double.sh",
       "{workspaceRoot}/scripts/e2e-variants-invalid-report-double.sh",
       "{workspaceRoot}/scripts/e2e-netshim.sh",
-      "{workspaceRoot}/scripts/e2e-netmeasure.py",
       "{workspaceRoot}/scripts/e2e-claude.sh",
       "{workspaceRoot}/scripts/e2e-codex.sh",
       "{workspaceRoot}/scripts/e2e-opencode.sh",

@@ -123,13 +123,15 @@ def text_field(record: dict[str, object], key: str, where: str) -> str:
     return value
 
 
-# llmlint: ignore[structural_pattern_matching] This file is linted and type-checked at the uv workspace's Python 3.9 floor (ruff target py39, ty python-version 3.9), where `match` does not parse; the record shapes are told apart by explicit checks instead.
+# llmlint: ignore-block[structural_pattern_matching] This file is linted and type-checked at the uv workspace's Python 3.9 floor (ruff target py39, ty python-version 3.9), where `match` does not parse; the record shapes and the Line union are told apart by explicit checks instead.
 def parse(number: int, record: object) -> Line:
     """One telemetry line as the recorder writes it, or Incomplete saying why not."""
     where = f"line {number}"
     if not isinstance(record, dict):
         raise Incomplete(f"{where} is not a JSON object")
     if record.get("expected") is True:
+        if record.get("suite") != SUITE:
+            raise Incomplete(f"{where} expects a launch of suite {record.get('suite')!r}, not {SUITE!r}")
         return Expectation(text_field(record, "phase", where), text_field(record, "kind", where))
     if "argv" in record:
         launch_id = LaunchId(text_field(record, "launch_id", f"{where}, a start line,"))
@@ -236,6 +238,9 @@ def load(path: Path) -> list[Launch]:
     return launches
 
 
+# llmlint: ignore-end[structural_pattern_matching]
+
+
 def describe(launch: Launch) -> str:
     head = " ".join(launch.argv)[:120]
     return f"launch {launch.launch_id} (phase {launch.phase}, kind {launch.kind}: codex {head})"
@@ -338,7 +343,10 @@ class ModelTurns:
 
 @dataclass(frozen=True)
 class EvidenceReport:
-    """One pass's calibration figures, as the plan's ruling (d) states them."""
+    """One pass's calibration figures: the largest launch and the suite total
+    against the caps, by the three conditions the caps were set to meet — the
+    largest launch x1.5 within the launch cap, the total x1.2 within the suite
+    cap, and a doubled pass over the suite cap."""
 
     method: str
     boundary: str

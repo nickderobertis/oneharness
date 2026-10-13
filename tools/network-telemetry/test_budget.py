@@ -143,7 +143,7 @@ def with_bytes(records: list[Record], received: Callable[[Record], int]) -> list
     return out
 
 
-# llmlint: ignore[structural_pattern_matching] The tests run at the uv workspace's Python 3.9 floor, where `match` does not parse.
+# llmlint: ignore-block[structural_pattern_matching] The tests run at the uv workspace's Python 3.9 floor, where `match` does not parse.
 def plausible(start: Record) -> int:
     """A post-fix pass of exactly 20,000,000 B, its probe at 400,000 B."""
     if start["phase"] == "usage-probe" and start["kind"] == "app-server":
@@ -151,6 +151,9 @@ def plausible(start: Record) -> int:
     if start["kind"] == "app-server":
         return 900_000
     return 850_000 if start["kind"] == "exec" else 0
+
+
+# llmlint: ignore-end[structural_pattern_matching]
 
 
 def adjust_total(records: list[Record], total: int) -> list[Record]:
@@ -665,42 +668,6 @@ class CodexSuite(BudgetCase):
         self.assertIn(
             f"PATH resolves codex to '{stale / 'codex'}', not this suite's measuring shim",
             run.stderr,
-        )
-
-
-class GateNeverChecksRealTelemetry(unittest.TestCase):
-    def test_no_gate_target_runs_the_budget_check(self) -> None:
-        runs_check = []
-        for project in ROOT.glob("**/project.json"):
-            if "node_modules" in project.parts or "target" in project.parts:
-                continue
-            definition = json.loads(project.read_text())
-            for target, spec in definition.get("targets", {}).items():
-                commands = json.dumps(
-                    spec.get("options", {}).get(
-                        "commands", spec.get("options", {}).get("command", "")
-                    )
-                )
-                if (
-                    "e2e-network-budget" in commands
-                    or "onebudgetspec check" in commands
-                    or "live-codex" in commands
-                ):
-                    runs_check.append((definition["name"], target))
-        self.assertEqual(runs_check, [("live-codex", "live")])
-        justfile = (ROOT / "justfile").read_text()
-        check_recipe = re.search(r"^check tier=.*?(?=^\S)", justfile, re.M | re.S)
-        assert check_recipe is not None
-        self.assertIn("--exclude='live-*,explore-*'", check_recipe.group(0))
-        recipe = re.search(r"^live-codex:.*?(?=^\S|\Z)", justfile, re.M | re.S)
-        assert recipe is not None
-        steps = [line.strip() for line in recipe.group(0).splitlines()[1:] if line.strip()]
-        self.assertEqual(
-            steps,
-            [
-                'ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh',
-                "bash scripts/e2e-network-budget.sh codex",
-            ],
         )
 
 

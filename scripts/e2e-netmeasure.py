@@ -656,16 +656,12 @@ def measure(args: argparse.Namespace) -> int:
     outcome = Outcome.decode(message)
     # llmlint: ignore[structural_pattern_matching] Linted and type-checked at the uv workspace's Python 3.9 floor, where `match` does not parse; the outcome is a closed Enum told apart by identity.
     if outcome is None:
-        append_line(
-            args.line_file,
-            Unavailable(
-                args.launch_id,
-                "the measuring supervisor ended without reporting, so this launch's bytes are "
-                "unknown; rerun it, and if it recurs run scripts/e2e-netmeasure.py by hand around it",
-                0.0,
-                None,
-            ),
+        reason = (
+            "the measuring supervisor ended without reporting, so this launch's bytes are "
+            "unknown; rerun it, and if it recurs run scripts/e2e-netmeasure.py by hand around it"
         )
+        print(f"e2e-netmeasure: launch {args.launch_id}: {reason}", file=sys.stderr)
+        append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, None))
         remove_pending(args.pending)
         return 137
     if outcome.ending is Ending.UNLAUNCHED:

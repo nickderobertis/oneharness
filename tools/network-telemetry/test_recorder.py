@@ -423,6 +423,7 @@ class SupervisorLoss(unittest.TestCase):
         self.assertEqual(len(supervisors), 1, supervisors)
         os.kill(supervisors[0], signal.SIGKILL)
         self.assertEqual(shim.wait(timeout=30), 137)
+        self.assertTrue(file.exists())
         records = lines(file)
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
@@ -451,6 +452,78 @@ class SupervisorLoss(unittest.TestCase):
         self.assertEqual(line["method"], "unavailable")
         self.assertIn("the measuring supervisor failed (IsADirectoryError", line["reason"])
         self.assertFalse(list((tmp / ".pending").glob("*")))
+
+
+class Deadline(unittest.TestCase):
+    def test_a_zero_deadline_leaves_the_launch_running_and_one_second_ends_it(self) -> None:
+        need_recorder(self)
+        for deadline, ran_out in (("0", False), ("1", True)):
+            with self.subTest(deadline=deadline):
+                tmp = scratch(self)
+                run = run_shim(
+                    tmp,
+                    transfer_argv(0, 0, 0, "--linger", "3"),
+                    ["exec", "x"],
+                    env={"OH_E2E_NET_DEADLINE": deadline},
+                )
+                (start,) = starts(lines(tmp / "codex.jsonl"))
+                (line,) = measurements(lines(tmp / "codex.jsonl"), start["launch_id"])
+                if ran_out:
+                    self.assertEqual(run.returncode, 128 + signal.SIGTERM, run.stderr)
+                    self.assertLess(line["seconds"], 2.5)
+                else:
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    self.assertGreaterEqual(line["seconds"], 3)
+
+
+class Arguments(unittest.TestCase):
+    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    def test_a_long_argument_is_recorded_cut_and_passed_whole(self) -> None:
+        tmp = scratch(self)
+        got = tmp / "got"
+        real = tmp / "argv-double"
+        real.write_text(f'#!/usr/bin/env bash\nprintf "%s" "$2" >"{got}"\n')
+        real.chmod(0o755)
+        prompt = "p" * 199 + "Q" + "r" * 300
+        run_shim(tmp, [str(real)], ["exec", prompt], env={"OH_E2E_OS": "Darwin"})
+        self.assertEqual(got.read_text(), prompt, "the harness did not get the whole argument")
+        (start,) = starts(lines(tmp / "codex.jsonl"))
+        self.assertEqual(start["argv"], ["exec", "p" * 199 + "Q" + "…"])
+
+
+class MalformedResult(unittest.TestCase):
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
+    )
+    def test_a_malformed_namespace_result_is_recorded_as_unmeasured(self) -> None:
+        # A stand-in pasta runs the launch itself and leaves a result the
+        # supervisor must refuse, the way a namespace that wrote garbage would.
+        tmp = scratch(self)
+        fake = tmp / "fake-pasta-bin"
+        fake.mkdir()
+        (fake / "pasta").write_text(
+            "#!/usr/bin/env bash\n"
+            'while [ "$1" != --_init ]; do shift; done\n'
+            'scratch="$2"; shift 3\n'
+            ': >"$scratch/launched"\n'
+            '"$@"\n'
+            'printf \'{"moved": "garbage"}\' >"$scratch/result.json"\n'
+        )
+        (fake / "pasta").chmod(0o755)
+        ran = tmp / "ran"
+        real = tmp / "real"
+        real.write_text(f'#!/usr/bin/env bash\ntouch "{ran}"\n')
+        real.chmod(0o755)
+        env = {"PATH": f"{fake}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}
+        run = run_shim(tmp, [str(real)], ["exec", "x"], env=env)
+        self.assertEqual(run.returncode, 137, run.stderr)
+        self.assertTrue(ran.exists())
+        (start,) = starts(lines(tmp / "codex.jsonl"))
+        (line,) = measurements(lines(tmp / "codex.jsonl"), start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("the measuring supervisor failed (ValueError", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
 
 
 class Unstarted(unittest.TestCase):

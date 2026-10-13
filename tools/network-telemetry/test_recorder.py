@@ -16,6 +16,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 from support import (
     BASH,
@@ -37,8 +38,10 @@ UP = 3_000_000
 UNRELATED = 7_777_777
 
 
-def frame_sums(frames: list, direction: str, low: int, high: int) -> int:
-    return sum(length for stamp, way, length in frames if way == direction and low <= stamp <= high)
+def frame_sums(frames: list[list[Any]], direction: str, low: int, high: int) -> int:
+    return int(
+        sum(length for stamp, way, length in frames if way == direction and low <= stamp <= high)
+    )
 
 
 class MeasuredLaunch(unittest.TestCase):
@@ -49,7 +52,7 @@ class MeasuredLaunch(unittest.TestCase):
         tmp = scratch(self)
         serving = server(self)
         heartbeat = tmp / "heartbeat"
-        unrelated: dict = {}
+        unrelated: dict[str, int] = {}
 
         def unrelated_download() -> None:
             # A host process outside the launch, moving more than the launch
@@ -242,7 +245,7 @@ class Fallback(unittest.TestCase):
     """Where the method cannot run, the launch still runs, unmeasured and said so."""
 
     def assert_unavailable(
-        self, tmp: Path, run: subprocess.CompletedProcess, blob: bytes, reason: str
+        self, tmp: Path, run: subprocess.CompletedProcess[bytes], blob: bytes, reason: str
     ) -> None:
         self.assertEqual(run.returncode, 5, run.stderr)
         self.assertEqual(run.stdout, blob)

@@ -53,7 +53,7 @@ def recv_exact(conn: socket.socket, n: int) -> int:
     return got
 
 
-def transfer(port: int, down: int, up: int) -> dict:
+def transfer(port: int, down: int, up: int) -> dict[str, object]:
     if not down and not up:
         return {"received": 0, "sent": 0}
     host = gateway()
@@ -110,9 +110,9 @@ def main() -> int:
         sys.stdout.buffer.flush()
     if not args.detach:
         child(args)
-        return args.exit
+        return int(args.exit)
     if os.fork():
-        return args.exit
+        return int(args.exit)
     os.setsid()
     if os.fork():
         os._exit(0)

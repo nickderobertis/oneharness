@@ -20,6 +20,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -40,6 +41,8 @@ ONEHARNESS = ROOT / "target" / "debug" / f"oneharness{EXE}"
 MOCK = ROOT / "target" / "debug" / f"oneharness-mock-harness{EXE}"
 BASH = shutil.which("bash") or "bash"
 CHUNK = 64 * 1024
+# One telemetry line, as JSON decodes it.
+Record = dict[str, Any]
 
 
 def scratch(test: unittest.TestCase) -> Path:
@@ -49,7 +52,7 @@ def scratch(test: unittest.TestCase) -> Path:
     return path
 
 
-def lines(path: Path) -> list[dict]:
+def lines(path: Path) -> list[Record]:
     if not path.exists():
         return []
     return [
@@ -57,15 +60,15 @@ def lines(path: Path) -> list[dict]:
     ]
 
 
-def starts(records: list[dict]) -> list[dict]:
+def starts(records: list[Record]) -> list[Record]:
     return [r for r in records if "argv" in r]
 
 
-def measurements(records: list[dict], launch_id: str) -> list[dict]:
+def measurements(records: list[Record], launch_id: str) -> list[Record]:
     return [r for r in records if r.get("launch_id") == launch_id and "argv" not in r]
 
 
-def write_lines(path: Path, records: list[dict]) -> None:
+def write_lines(path: Path, records: list[Record]) -> None:
     path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
 
 
@@ -188,10 +191,10 @@ def run_shim(
     file: Path | None = None,
     harness: str = "codex",
     suite: str = "codex",
-    env: dict | None = None,
+    env: dict[str, str] | None = None,
     stdin: bytes = b"",
     timeout: float = 120,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[bytes]:
     """One launch through the real shim. `real` is the executable it wraps;
     an argv of more than one word is written to a script first."""
     executable = Path(real[0])
@@ -243,7 +246,7 @@ def double_bin(tmp: Path, *tools: str) -> Path:
     return directory
 
 
-def suite_env(tmp: Path, *tools: str, **extra: str) -> dict:
+def suite_env(tmp: Path, *tools: str, **extra: str) -> dict[str, str]:
     """The environment a suite runs a double under: the double first on PATH,
     the built binaries, telemetry and every home in the test's own scratch."""
     home = tmp / "home"
@@ -277,7 +280,9 @@ def suite_env(tmp: Path, *tools: str, **extra: str) -> dict:
     return env
 
 
-def run_suite(name: str, env: dict, timeout: float = 600) -> subprocess.CompletedProcess:
+def run_suite(
+    name: str, env: dict[str, str], timeout: float = 600
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [BASH, str(SCRIPTS / f"e2e-{name}.sh")],
         capture_output=True,
@@ -288,7 +293,7 @@ def run_suite(name: str, env: dict, timeout: float = 600) -> subprocess.Complete
     )
 
 
-def check_step(telemetry_dir: Path, os_name: str = "Linux") -> subprocess.CompletedProcess:
+def check_step(telemetry_dir: Path, os_name: str = "Linux") -> subprocess.CompletedProcess[str]:
     """The live-codex recipe's budget step, as `just live-codex` runs it."""
     return subprocess.run(
         [BASH, str(CHECK_STEP), "codex"],
@@ -300,7 +305,7 @@ def check_step(telemetry_dir: Path, os_name: str = "Linux") -> subprocess.Comple
     )
 
 
-def budget(*args: str, telemetry_dir: Path) -> subprocess.CompletedProcess:
+def budget(*args: str, telemetry_dir: Path) -> subprocess.CompletedProcess[str]:
     """The budgets' command, run as budgets.yaml runs it, outside a check."""
     return subprocess.run(
         ["uv", "run", "--quiet", "--locked", "--script", str(BUDGET), *args],

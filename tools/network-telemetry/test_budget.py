@@ -18,12 +18,14 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from typing import Callable, Optional
 
 from support import (
     BASH,
     LIB,
     NETSHIM,
     ROOT,
+    Record,
     budget,
     check_step,
     lines,
@@ -47,10 +49,13 @@ FEATURES = ["features", "list", "-c", "features.hooks=true"]
 EXECPOLICY = ["execpolicy", "check", "--rules", "r", "rm"]
 SANDBOX = ["sandbox", "-c", "sandbox_mode=read-only", "--", "bash"]
 
+# (phase, the launch kind it must produce or None, each launch's argv)
+Plan = list[tuple[str, Optional[str], list[list[str]]]]
+
 # The budget workload: one live-codex pass's 50 default-config launches —
 # 22 model turns, 1 usage probe, 26 network-free launches and 1 controlled
 # turn — as (phase, the kind it must produce or None, launches).
-WORKLOAD = [
+WORKLOAD: Plan = [
     ("run", "exec", [EXEC, VERSION]),
     ("controlled-turn", "app-server", [APP_SERVER, VERSION]),
     ("usage-probe", "app-server", [APP_SERVER, VERSION]),
@@ -65,7 +70,7 @@ WORKLOAD = [
     ("reasoning-enforce", "exec", [EXEC, EXEC, VERSION, VERSION]),
 ]
 # Several launches of every kind, for the detail's per-kind figures.
-KINDS = [
+KINDS: Plan = [
     ("run", "exec", [EXEC, RESUME, EXEC]),
     ("controlled-turn", "app-server", [APP_SERVER]),
     ("usage-probe", "app-server", [APP_SERVER, APP_SERVER]),
@@ -74,7 +79,7 @@ KINDS = [
 ]
 
 
-def record(tmp: Path, plan: list) -> list[dict]:
+def record(tmp: Path, plan: Plan) -> list[Record]:
     """The lines the real writers produce for `plan`, every launch measured."""
     true = tmp / "true-double"
     true.write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -85,7 +90,7 @@ def record(tmp: Path, plan: list) -> list[dict]:
     ]
     for phase, kind, launches in plan:
         script.append(f"export OH_E2E_PHASE={phase}")
-        if kind:
+        if kind is not None:
             script.append(f"_oh_expect codex {kind}")
         for argv in launches:
             words = " ".join(f"'{w}'" for w in argv)
@@ -113,7 +118,7 @@ def record(tmp: Path, plan: list) -> list[dict]:
     return lines(file)
 
 
-def with_bytes(records: list[dict], received) -> list[dict]:
+def with_bytes(records: list[Record], received: Callable[[Record], int]) -> list[Record]:
     """A copy whose measurement lines carry `received(start)` bytes (sent: a third)."""
     by_id = {s["launch_id"]: s for s in starts(records)}
     out = copy.deepcopy(records)
@@ -125,7 +130,7 @@ def with_bytes(records: list[dict], received) -> list[dict]:
     return out
 
 
-def plausible(start: dict) -> int:
+def plausible(start: Record) -> int:
     """A post-fix pass of exactly 20,000,000 B, its probe at 400,000 B."""
     if start["phase"] == "usage-probe" and start["kind"] == "app-server":
         return 400_000
@@ -134,7 +139,7 @@ def plausible(start: dict) -> int:
     return 850_000 if start["kind"] == "exec" else 0
 
 
-def adjust_total(records: list[dict], total: int) -> list[dict]:
+def adjust_total(records: list[Record], total: int) -> list[Record]:
     """Spread the difference to `total` over the exec launches, the remainder
     on the first, so no one launch nears its own cap."""
     out = copy.deepcopy(records)
@@ -147,7 +152,7 @@ def adjust_total(records: list[dict], total: int) -> list[dict]:
     return out
 
 
-def set_rx(records: list[dict], launch_id: str, rx: int) -> list[dict]:
+def set_rx(records: list[Record], launch_id: str, rx: int) -> list[Record]:
     out = copy.deepcopy(records)
     for line in out:
         if line.get("launch_id") == launch_id and "argv" not in line:
@@ -160,28 +165,25 @@ def verdicts(output: str) -> dict[str, str]:
     return dict(re.findall(r"^budget ([a-z0-9-]+): .*?(within|over|error)", output, re.M))
 
 
+# Each fixture is recorded once per run and copied for every case.
+_RECORDED: dict[str, list[Record]] = {}
+
+
 class BudgetCase(unittest.TestCase):
-    workload: list[dict]
-    kinds: list[dict]
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._recorded: dict = {}
-
-    def recorded(self, name: str, plan: list) -> list[dict]:
+    def recorded(self, name: str, plan: Plan) -> list[Record]:
         need_recorder(self)
-        if name not in self._recorded:
-            self._recorded[name] = record(scratch(self), plan)
-        return copy.deepcopy(self._recorded[name])
+        if name not in _RECORDED:
+            _RECORDED[name] = record(scratch(self), plan)
+        return copy.deepcopy(_RECORDED[name])
 
-    def check(self, records: list[dict]) -> subprocess.CompletedProcess:
+    def check(self, records: list[Record]) -> subprocess.CompletedProcess[str]:
         tmp = scratch(self)
         write_lines(tmp / "codex.jsonl", records)
         return check_step(tmp)
 
 
 class Thresholds(BudgetCase):
-    def base(self) -> list[dict]:
+    def base(self) -> list[Record]:
         records = with_bytes(self.recorded("workload", WORKLOAD), plausible)
         return adjust_total(records, 20_000_000)
 
@@ -302,7 +304,7 @@ class Thresholds(BudgetCase):
 
 
 class Detail(BudgetCase):
-    def figures(self) -> list[dict]:
+    def figures(self) -> list[Record]:
         sizes = iter(range(1, 100))
         return with_bytes(
             self.recorded("kinds", KINDS), lambda s: 10_000 * next(sizes) + len(s["kind"])
@@ -354,10 +356,10 @@ class Detail(BudgetCase):
         base = self.figures()
         first = starts(base)[0]["launch_id"]
 
-        def measurement_of(records: list[dict], launch_id: str) -> dict:
+        def measurement_of(records: list[Record], launch_id: str) -> Record:
             return next(r for r in records if r.get("launch_id") == launch_id and "argv" not in r)
 
-        def mutate(change) -> list[dict]:
+        def mutate(change) -> list[Record]:
             out = copy.deepcopy(base)
             change(out)
             return out
@@ -540,7 +542,7 @@ class SmallCannotCarryLarge(BudgetCase):
 class CodexSuite(BudgetCase):
     """scripts/e2e-codex.sh itself, `codex` the mock codex harness behind the shim."""
 
-    def run_codex(self, tmp: Path, **extra: str) -> subprocess.CompletedProcess:
+    def run_codex(self, tmp: Path, **extra: str) -> subprocess.CompletedProcess[str]:
         need_builds(self)
         return run_suite("codex", suite_env(tmp, "codex", OH_E2E_PHASE_LIMIT="3", **extra))
 

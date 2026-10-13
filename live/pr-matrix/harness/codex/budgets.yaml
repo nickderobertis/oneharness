@@ -46,9 +46,11 @@ budgets:
       up to the next 0.5 MB: 6,986,981 B x1.2 = 8,384,377 B, so 8,500,000 B
       (down from the plan's 30,000,000 B, set against a 17-24.5 MB post-fix
       estimate the measured pass came in well under), so an across-the-board
-      doubling of the pass fails (evidence/live-codex-report.json). A
-      single-launch jump is the per-launch budget's. Linux only; the same
-      completeness rule applies.
+      doubling of the pass fails (evidence/live-codex-report.json). The
+      per-launch cap stays 2,500,000 B beside that pass's largest launch,
+      1,383,470 B x1.5 = 2,075,205 B; a single-launch jump is that budget's.
+      The check's detail restates both from the committed pass. Linux only;
+      the same completeness rule applies.
     measure: reported
     command: ["uv", "run", "--quiet", "--locked", "--script", "network_budget.py", "--total"]
     unit: bytes

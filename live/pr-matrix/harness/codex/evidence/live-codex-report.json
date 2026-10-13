@@ -70,5 +70,21 @@
       "cap": 8500000,
       "holds": true
     }
+  },
+  "caps": {
+    "planned_suite_cap": 30000000,
+    "suite_cap": 8500000,
+    "suite_total_received": 6986981,
+    "suite_total_x1_2": 8384377.199999999,
+    "suite_total_x1_2_rounded_up": 8500000,
+    "recalibration_matches_suite_cap": true,
+    "launch_cap": 2500000,
+    "largest_received": 1383470,
+    "largest_x1_5": 2075205.0,
+    "launch_cap_kept_above_largest_x1_5": true,
+    "statement": [
+      "suite cap: planned 30000000 B, recalibrated to 8500000 B = the committed pass's suite total 6986981 B x1.2 = 8384377.2 B, rounded up to the next 500000 B: 8500000 B",
+      "launch cap: 2500000 B kept, beside the committed pass's largest launch 1383470 B x1.5 = 2075205.0 B"
+    ]
   }
 }

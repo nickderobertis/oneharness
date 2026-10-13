@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import statistics
 import sys
@@ -46,6 +47,13 @@ SUITE = "codex"
 # held equal to them by tools/network-telemetry's tests.
 LAUNCH_CAP = 2_500_000
 SUITE_CAP = 8_500_000
+# The suite cap the plan set before any post-fix pass was measured; SUITE_CAP
+# is its recalibration to the committed pass below (its total x1.2, rounded up
+# to the next SUITE_CAP_STEP), which a doubled pass exceeds and 30 MB did not.
+PLANNED_SUITE_CAP = 30_000_000
+SUITE_CAP_STEP = 500_000
+# The committed finished-tree pass both caps are calibrated against.
+EVIDENCE = Path(__file__).resolve().parent / "evidence" / "live-codex.jsonl"
 
 LaunchId = NewType("LaunchId", str)
 # A launch kind as the shim derives it: `exec`, `app-server`,
@@ -303,6 +311,7 @@ def suite_total(launches: list[Launch]) -> Figure:
     detail = [
         f"suite total: {total} B received over {len(launches)} launches (sent {sum(x.tx for x in launches)} B)",
         *per_kind_lines(launches, largest=False),
+        *cap_basis(load(EVIDENCE)).statement,
     ]
     return Figure(float(total), "\n".join(detail))
 
@@ -335,6 +344,51 @@ class Condition:
 
 
 @dataclass(frozen=True)
+class CapBasis:
+    """Where both caps stand against one pass: the suite cap recalibrated from
+    the plan's to that pass's total x1.2 rounded up to the next 0.5 MB, and
+    the per-launch cap kept beside that pass's largest launch x1.5."""
+
+    planned_suite_cap: int
+    suite_cap: int
+    suite_total_received: int
+    suite_total_x1_2: float
+    suite_total_x1_2_rounded_up: int
+    recalibration_matches_suite_cap: bool
+    launch_cap: int
+    largest_received: int
+    largest_x1_5: float
+    launch_cap_kept_above_largest_x1_5: bool
+    statement: list[str]
+
+
+def cap_basis(launches: list[Launch]) -> CapBasis:
+    total = sum(x.rx for x in launches)
+    largest = max(x.rx for x in launches)
+    scaled = total * 1.2
+    rounded = math.ceil(scaled / SUITE_CAP_STEP) * SUITE_CAP_STEP
+    return CapBasis(
+        planned_suite_cap=PLANNED_SUITE_CAP,
+        suite_cap=SUITE_CAP,
+        suite_total_received=total,
+        suite_total_x1_2=scaled,
+        suite_total_x1_2_rounded_up=rounded,
+        recalibration_matches_suite_cap=rounded == SUITE_CAP,
+        launch_cap=LAUNCH_CAP,
+        largest_received=largest,
+        largest_x1_5=largest * 1.5,
+        launch_cap_kept_above_largest_x1_5=largest * 1.5 <= LAUNCH_CAP,
+        statement=[
+            f"suite cap: planned {PLANNED_SUITE_CAP} B, recalibrated to {SUITE_CAP} B = the committed "
+            f"pass's suite total {total} B x1.2 = {scaled:.1f} B, rounded up to the next "
+            f"{SUITE_CAP_STEP} B: {rounded} B",
+            f"launch cap: {LAUNCH_CAP} B kept, beside the committed pass's largest launch "
+            f"{largest} B x1.5 = {largest * 1.5:.1f} B",
+        ],
+    )
+
+
+@dataclass(frozen=True)
 class LargestLaunch:
     launch_id: LaunchId
     phase: str
@@ -354,7 +408,8 @@ class EvidenceReport:
     against the caps, and whether each of the three conditions the caps are
     checked against holds for this pass — the largest launch x1.5 within the
     launch cap, the total x1.2 within the suite cap, and a doubled pass over
-    the suite cap."""
+    the suite cap — and, under `caps`, the arithmetic that set both caps from
+    this pass."""
 
     method: str
     boundary: str
@@ -364,6 +419,7 @@ class EvidenceReport:
     model_turns: ModelTurns
     suite_total_received: int
     calibration: dict[str, Condition]
+    caps: CapBasis
 
 
 def spread(values: list[int]) -> Spread:
@@ -398,6 +454,7 @@ def evidence_report(launches: list[Launch]) -> EvidenceReport:
                 total * 2, SUITE_CAP, total * 2 > SUITE_CAP
             ),
         },
+        caps=cap_basis(launches),
     )
 
 

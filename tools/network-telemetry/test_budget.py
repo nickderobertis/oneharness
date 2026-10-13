@@ -305,6 +305,11 @@ class Thresholds(BudgetCase):
                     run.stdout, r"exec: 22 launches, total received \d+ B, total sent \d+ B"
                 )
                 self.assertRegex(run.stdout, r"local: 26 launches, total received 0 B")
+                self.assertIn(
+                    f"suite cap: planned 30000000 B, recalibrated to {self.suite_cap} B",
+                    run.stdout,
+                )
+                self.assertIn(f"launch cap: {self.launch_cap} B kept", run.stdout)
 
     def test_doubling_a_plausible_pass_fails_the_suite_total_alone(self) -> None:
         # A pass at 80% of the cap — the cap is the measured pass x1.2,
@@ -838,8 +843,8 @@ class Evidence(unittest.TestCase):
             calibration["doubled_pass_exceeds_suite_cap"]["cap"],
             thresholds["codex-live-suite-network-bytes"],
         )
-        launch_cap = thresholds["codex-launch-network-bytes"]
-        suite_cap = thresholds["codex-live-suite-network-bytes"]
+        launch_cap = int(thresholds["codex-launch-network-bytes"])
+        suite_cap = int(thresholds["codex-live-suite-network-bytes"])
         total = sum(received.values())
         self.assertEqual(
             calibration["largest_x1_5_within_launch_cap"]["holds"],
@@ -854,6 +859,41 @@ class Evidence(unittest.TestCase):
         # The suite cap is this evidence's total x1.2, rounded up to the next
         # 0.5 MB: re-measuring onto another step means moving the cap with it.
         self.assertEqual(suite_cap, math.ceil(total * 1.2 / 500_000) * 500_000)
+        # The report states the planned cap, the one it was recalibrated to,
+        # and the arithmetic from this pass, beside the per-launch cap kept.
+        largest = max(received.values())
+        self.assertEqual(
+            committed["caps"],
+            {
+                "planned_suite_cap": 30_000_000,
+                "suite_cap": suite_cap,
+                "suite_total_received": total,
+                "suite_total_x1_2": total * 1.2,
+                "suite_total_x1_2_rounded_up": suite_cap,
+                "recalibration_matches_suite_cap": True,
+                "launch_cap": launch_cap,
+                "largest_received": largest,
+                "largest_x1_5": largest * 1.5,
+                "launch_cap_kept_above_largest_x1_5": largest * 1.5 <= launch_cap,
+                "statement": [
+                    f"suite cap: planned 30000000 B, recalibrated to {suite_cap} B = the committed "
+                    f"pass's suite total {total} B x1.2 = {total * 1.2:.1f} B, rounded up to the "
+                    f"next 500000 B: {suite_cap} B",
+                    f"launch cap: {launch_cap} B kept, beside the committed pass's largest launch "
+                    f"{largest} B x1.5 = {largest * 1.5:.1f} B",
+                ],
+            },
+        )
+        # budgets.yaml's description states the same figures.
+        description = " ".join(BUDGETS.read_text().split())
+        for figure in (
+            "30,000,000 B",
+            f"{total:,} B x1.2 = {total * 1.2:,.0f} B",
+            f"{suite_cap:,} B",
+            f"{largest:,} B x1.5 = {largest * 3 // 2:,} B",
+            f"{launch_cap:,} B",
+        ):
+            self.assertIn(figure, description)
 
 
 class OneVersion(unittest.TestCase):

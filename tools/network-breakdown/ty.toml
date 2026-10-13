@@ -1,9 +1,0 @@
-# Every ty rule an error, on the Python 3.9 floor, as for the Python SDK.
-[environment]
-python-version = "3.9"
-
-[rules]
-all = "error"
-
-[terminal]
-error-on-warning = true

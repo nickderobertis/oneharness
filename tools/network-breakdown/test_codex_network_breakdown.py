@@ -51,6 +51,9 @@ def run_script(*args: str, env: dict[str, str] | None = None) -> subprocess.Comp
     )
 
 
+# The script's document is JSON this test reads by key, and those keys' shapes
+# are exactly what its assertions check, so it is held as `Any` rather than
+# modelled twice.
 def breakdown(*args: str) -> dict[str, Any]:
     """The script's document, which must be one line on stdout."""
     run = run_script(*args)
@@ -90,6 +93,25 @@ class ReportFromRecordedFixtures(unittest.TestCase):
         # The trace names nothing for at least one tunnel, which gets no path.
         self.assertIn([], [tunnel["paths"] for tunnel in report["tunnels"]])
         self.assertTrue(any(tunnel["paths"] for tunnel in report["tunnels"]))
+
+    def test_unreadable_inputs_are_refused_saying_what_to_do(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            missing = str(Path(scratch) / "missing.json")
+            not_json = Path(scratch) / "not.json"
+            not_json.write_text("{")
+            for args, said in (
+                (["report", missing], f"cannot read {missing}"),
+                (["report", str(MEASUREMENT), "--trace", missing], f"cannot read {missing}"),
+                (["report", str(not_json)], "is not JSON"),
+            ):
+                run = run_script(*args)
+                self.assertEqual(run.returncode, 3, (args, run))
+                self.assertEqual(run.stdout, "")
+                self.assertIn(said, run.stderr, args)
+                self.assertTrue(
+                    "check the path" in run.stderr or "--measurement-out" in run.stderr,
+                    run.stderr,
+                )
 
     def test_without_a_trace_no_tunnel_has_a_path(self) -> None:
         report = breakdown("report", str(MEASUREMENT))
@@ -325,6 +347,8 @@ class MeasureAroundATransferDouble(unittest.TestCase):
             self.skipTest(why)
 
     def assert_payload(self, tunnel: dict[str, Any], expected: Expected) -> None:
+        # One tunnel of the document `breakdown` returns, read by key the same
+        # way.
         self.assertEqual(tunnel["port"], expected.port, tunnel)
         self.assertEqual(tunnel["destination"], f"{tunnel['host']}:{expected.port}", tunnel)
         side = expected.side.value
@@ -389,6 +413,49 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         refusal = report["refused"][0]
         self.assertTrue(refusal["destination"].endswith(f":{port}"), refusal)
         self.assertIn("ConnectionRefusedError", refusal["error"])
+
+    def test_malformed_proxy_requests_are_refused_and_reported(self) -> None:
+        self.need_namespace()
+        client = (
+            "import os, socket\n"
+            "from urllib.parse import urlparse\n"
+            "proxy = urlparse(os.environ['HTTPS_PROXY'])\n"
+            "for head in (b'NONSENSE\\r\\n\\r\\n', b'GET /relative HTTP/1.1\\r\\n\\r\\n',\n"
+            "             b'CONNECT example.invalid:99999 HTTP/1.1\\r\\n\\r\\n'):\n"
+            "    with socket.create_connection((proxy.hostname, proxy.port)) as conn:\n"
+            "        conn.sendall(head)\n"
+            "        assert conn.recv(64).startswith(b'HTTP/1.1 400'), head\n"
+        )
+        report = breakdown("--", sys.executable, "-I", "-c", client)
+        self.assertEqual(report["launch_exit"], 0, report)
+        self.assertEqual(report["tunnels"], [])
+        errors = [refusal["error"] for refusal in report["refused"]]
+        self.assertEqual(len(errors), 3, report)
+        self.assertIn("malformed request line", errors[0])
+        self.assertIn("not a proxy request", errors[1])
+        self.assertIn("no host and port", errors[2])
+
+    def test_env_values_reach_the_measured_launch(self) -> None:
+        self.need_namespace()
+        report = breakdown(
+            "--env",
+            "BREAKDOWN_PROBE=reached",
+            "--",
+            sys.executable,
+            "-I",
+            "-c",
+            "import os, sys; sys.exit(0 if os.environ.get('BREAKDOWN_PROBE') == 'reached' else 7)",
+        )
+        self.assertEqual(report["launch_exit"], 0, report)
+
+    def test_an_unwritable_output_path_is_refused_saying_what_to_do(self) -> None:
+        self.need_namespace()
+        with tempfile.TemporaryDirectory() as scratch:
+            run = run_script("--measurement-out", scratch, "--", "true")
+        self.assertEqual(run.returncode, 3, run)
+        self.assertEqual(run.stdout, "")
+        self.assertIn(f"cannot write {scratch}", run.stderr)
+        self.assertIn("writable path", run.stderr)
 
     def test_a_detached_child_is_measured_after_its_parent_exits(self) -> None:
         self.need_namespace()

@@ -6,14 +6,15 @@
     "type:tooling",
     "lang:python"
   ],
-  "//": "scripts/codex-network-breakdown.py and its hermetic test, apart from every other project because the test's measuring half needs host tools no other suite needs (pasta and unprivileged user namespaces, Linux only): it skips, saying why, where they are absent, and never fetches pasta itself. Its reporting half reads fixtures recorded from real codex and needs neither. Nothing depends on it, and only an edit to the script or this directory selects it.",
+  "//": "scripts/codex-network-breakdown.py and its hermetic test, apart from every other project because the test's measuring half needs host tools no other suite needs (pasta and unprivileged user namespaces, Linux only): it skips, saying why, where they are absent, and never fetches pasta itself. Its reporting half reads fixtures recorded from real codex and needs neither. Nothing depends on it, and only an edit to the script or this directory selects it. Its ruff and ty settings are the Python SDK's (tools/network-breakdown/ruff.toml extends them; `ty check --project python/oneharness-sdk` reads them), so the two cannot drift.",
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
       "{workspaceRoot}/scripts/codex-network-breakdown.py",
       "{workspaceRoot}/scripts/check-temp-leaks.sh",
       "{workspaceRoot}/python/pyproject.toml",
-      "{workspaceRoot}/python/uv.lock"
+      "{workspaceRoot}/python/uv.lock",
+      "{workspaceRoot}/python/oneharness-sdk/pyproject.toml"
     ]
   },
   "targets": {
@@ -52,7 +53,7 @@
       "options": {
         "commands": [
           "uv sync --project python --frozen --no-install-workspace --quiet",
-          "uv run --project python --frozen --no-sync ty check --config-file tools/network-breakdown/ty.toml scripts/codex-network-breakdown.py tools/network-breakdown"
+          "uv run --project python --frozen --no-sync ty check --project python/oneharness-sdk scripts/codex-network-breakdown.py tools/network-breakdown"
         ],
         "parallel": false
       }

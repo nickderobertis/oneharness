@@ -269,8 +269,10 @@ class Measurement:
                 f"{source}'s `timed_out` is {timed_out!r}, not true or false; {RECORD_ADVICE}"
             )
         label = record.get("label", "")
+        if not isinstance(label, str):
+            raise Unusable(f"{source}'s `label` is {label!r}, not text; {RECORD_ADVICE}")
         return Measurement(
-            label=label if isinstance(label, str) else str(label),
+            label=label,
             argv=[str(arg) for arg in argv],
             launch_exit=launch_exit,
             launch_seconds=optional_time(record, "launch_seconds", source),
@@ -788,7 +790,13 @@ def find_pasta() -> str:
             "or run once without CODEX_NETWORK_BREAKDOWN_NO_FETCH to fetch it"
         )
     debs = tools / "debs"
-    debs.mkdir(parents=True, exist_ok=True)
+    try:
+        debs.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise Unusable(
+            f"cannot create {debs} to fetch pasta into: {error}; point XDG_CACHE_HOME at a "
+            "writable directory, or set CODEX_NETWORK_BREAKDOWN_PASTA"
+        ) from None
     fetch_step(["apt-get", "download", "passt"], debs, "fetch pasta")
     for deb in debs.glob("*.deb"):
         fetch_step(["dpkg", "-x", str(deb), str(tools / "root")], None, f"unpack {deb}")
@@ -811,7 +819,12 @@ def measure(args: argparse.Namespace) -> int:
     env = dict(os.environ)
     env.update(args.env)
     pasta = find_pasta()
-    scratch = tempfile.mkdtemp(prefix="codex-network-breakdown-")
+    try:
+        scratch = tempfile.mkdtemp(prefix="codex-network-breakdown-")
+    except OSError as error:
+        raise Unusable(
+            f"cannot create a scratch directory: {error}; point TMPDIR at a writable directory"
+        ) from None
     try:
         result = os.path.join(scratch, "measurement.json")
         trace_file = args.trace_out or os.path.join(scratch, "trace.log")

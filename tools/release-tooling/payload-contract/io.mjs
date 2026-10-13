@@ -41,6 +41,10 @@ export function readPlatforms() {
   return value;
 }
 export function assertPackageDirectory(returned, expected, name, version) {
+  if (typeof returned !== "string")
+    throw Error(
+      `Package builder output was ${returned === null ? "null" : typeof returned}, expected a staging directory path. Next: rerun scripts/npm-build.mjs into the release staging directory and capture its stdout as text.`,
+    );
   const candidate = returned.trim();
   try {
   if (

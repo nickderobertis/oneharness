@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { assertPayload, makePayload, assertPackResponse } from "./contract.mjs";
+import { assertPackageDirectory } from "./io.mjs";
 test("release payload v1 golden round-trips through the producer and consumer API", () => {
   const golden = JSON.parse(
     readFileSync(new URL("./payload-v1.json", import.meta.url), "utf8"),
@@ -38,4 +39,15 @@ test("release payload v1 golden round-trips through the producer and consumer AP
     [{ filename: "a.tgz" }, { filename: "b.tgz" }],
   ])
     assert.throws(() => assertPackResponse(value, "/staging"), /npm pack/);
+});
+
+test("package-directory boundary refuses non-string builder output before trimming it", () => {
+  for (const returned of [undefined, null, 42, Buffer.from("/tmp/stage"), ["/tmp/stage"]]) {
+    assert.throws(
+      () => assertPackageDirectory(returned, "/tmp/stage", "oneharness-cli", "1.2.3"),
+      (error) =>
+        !(error instanceof TypeError) &&
+        /Package builder output was .*expected a staging directory path\. Next:/.test(error.message),
+    );
+  }
 });

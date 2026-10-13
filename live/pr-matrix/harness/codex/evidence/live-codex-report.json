@@ -1,0 +1,74 @@
+{
+  "method": "netns-pasta",
+  "boundary": "bytes at each launch's network-namespace boundary (pasta TAP), not host-NIC wire bytes",
+  "launches": 97,
+  "largest_launch": {
+    "launch_id": "codex-1582204-8b104e1c62b4",
+    "phase": "codex-rules-enforce",
+    "kind": "exec",
+    "received": 1383208
+  },
+  "per_kind": {
+    "app-server": {
+      "launches": 3,
+      "received": {
+        "median": 92965,
+        "largest": 633845,
+        "total": 751753
+      },
+      "sent": {
+        "median": 14815,
+        "largest": 41130,
+        "total": 66348
+      }
+    },
+    "exec": {
+      "launches": 24,
+      "received": {
+        "median": 129460.5,
+        "largest": 1383208,
+        "total": 5611536
+      },
+      "sent": {
+        "median": 42857.5,
+        "largest": 77929,
+        "total": 1050560
+      }
+    },
+    "local": {
+      "launches": 70,
+      "received": {
+        "median": 0.0,
+        "largest": 0,
+        "total": 0
+      },
+      "sent": {
+        "median": 86.0,
+        "largest": 176,
+        "total": 4142
+      }
+    }
+  },
+  "model_turns": {
+    "launches": 25,
+    "median_received": 129369
+  },
+  "suite_total_received": 6363289,
+  "calibration": {
+    "largest_x1_5_within_launch_cap": {
+      "value": 2074812.0,
+      "cap": 2500000,
+      "holds": true
+    },
+    "suite_total_x1_2_within_suite_cap": {
+      "value": 7635946.8,
+      "cap": 30000000,
+      "holds": true
+    },
+    "doubled_pass_exceeds_suite_cap": {
+      "value": 12726578,
+      "cap": 30000000,
+      "holds": false
+    }
+  }
+}

@@ -25,6 +25,7 @@ from support import (
     LIB,
     NETSHIM,
     ROOT,
+    WINDOWS,
     Record,
     budget,
     check_step,
@@ -683,6 +684,49 @@ class GateNeverChecksRealTelemetry(unittest.TestCase):
                 'ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh',
                 "bash scripts/e2e-network-budget.sh codex",
             ],
+        )
+
+
+class Evidence(unittest.TestCase):
+    """The committed finished-tree pass: its telemetry is a complete record
+    under the recorder-to-command contract, and its report is exactly what the
+    committed network_budget.py computes from it."""
+
+    EVIDENCE = ROOT / "live/pr-matrix/harness/codex/evidence"
+
+    def test_the_committed_report_is_what_the_committed_telemetry_yields(self) -> None:
+        telemetry, report = (
+            self.EVIDENCE / "live-codex.jsonl",
+            self.EVIDENCE / "live-codex-report.json",
+        )
+        self.assertTrue(
+            telemetry.is_file() and report.is_file(), "the live-codex pass's evidence is missing"
+        )
+        if WINDOWS:
+            self.skipTest("recomputed on the unix legs; the budgets are Linux's")
+        recomputed = budget(
+            "--evidence-report", "--file", str(telemetry), telemetry_dir=self.EVIDENCE
+        )
+        self.assertEqual(recomputed.returncode, 0, recomputed.stderr)
+        committed = json.loads(report.read_text())
+        self.assertEqual(json.loads(recomputed.stdout), committed)
+        records = lines(telemetry)
+        received = {m["launch_id"]: m["rx_bytes"] for m in records if "rx_bytes" in m}
+        self.assertEqual(committed["launches"], len(starts(records)))
+        self.assertEqual(committed["largest_launch"]["received"], max(received.values()))
+        self.assertEqual(committed["suite_total_received"], sum(received.values()))
+        calibration = committed["calibration"]
+        self.assertEqual(
+            calibration["largest_x1_5_within_launch_cap"]["holds"],
+            max(received.values()) * 1.5 <= 2_500_000,
+        )
+        self.assertEqual(
+            calibration["suite_total_x1_2_within_suite_cap"]["holds"],
+            sum(received.values()) * 1.2 <= 30_000_000,
+        )
+        self.assertEqual(
+            calibration["doubled_pass_exceeds_suite_cap"]["holds"],
+            sum(received.values()) * 2 > 30_000_000,
         )
 
 

@@ -35,9 +35,10 @@ same namespace. It prints one JSON document, on one line, on stdout:
 its stderr as Codex's trace — plus, when the launch is `oneharness run` and its
 stdout is the JSON report, the Codex stderr each result carries, since
 oneharness captures it; `--trace-out` keeps that trace. Without `--trace` the
-launch's stderr passes through. The launch's stdout goes to this script's
-stderr, or to `--launch-stdout`. `--measurement-out` keeps the raw record
-(counters and tunnels) that report mode reads.
+launch's stderr passes through. The launch's stdout is kept in
+`--launch-stdout`, else in scratch, and only a launch that exits non-zero or
+times out has its last lines shown on stderr. `--measurement-out` keeps the raw
+record (counters and tunnels) that report mode reads.
 
 Report mode assembles the same document from a recorded measurement and a
 trace, so the attribution can be checked against committed fixtures with no
@@ -54,6 +55,7 @@ every failure is reported on stderr with what to do next.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import json
 import math
@@ -90,6 +92,8 @@ MAX_REQUEST_HEAD = 65536
 # How long, after a signal ends pasta, the script waits for the namespace to
 # finish recording the measurement it took.
 RECORD_AFTER_SIGNAL_SECONDS = 5.0
+# How much of a failed launch's stdout is shown when it was not kept.
+LAUNCH_STDOUT_TAIL_LINES = 20
 CONNECT_AFTER_SECONDS = 5.0
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's tracing spelling has no schema to reconcile against short of running Codex: the committed fixture (tools/network-breakdown/recorded-codex-trace.log, from codex-cli 0.159.2, the version the README's figures name) pins what these read, and a spelling that moves degrades attribution to empty paths, never to wrong byte counts. Re-measuring against live Codex — the README's invocation, which the `oneharness-live-network-budget` plan node re-runs — is where that surfaces.
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -756,7 +760,7 @@ def init(args: argparse.Namespace) -> int:
     if args.trace:
         env["RUST_LOG"] = args.rust_log
     try:
-        stdout = open(args.launch_stdout, "wb") if args.launch_stdout else sys.stderr.buffer
+        stdout = open(args.launch_stdout, "wb")
         stderr = open(args.trace_file, "wb") if args.trace else None
     except OSError as error:
         raise Unusable(
@@ -905,9 +909,7 @@ def measure(args: argparse.Namespace) -> int:
     try:
         result = os.path.join(scratch, "measurement.json")
         trace_file = args.trace_out or os.path.join(scratch, "trace.log")
-        launch_stdout = args.launch_stdout or (
-            os.path.join(scratch, "launch.stdout") if args.trace else None
-        )
+        launch_stdout = args.launch_stdout or os.path.join(scratch, "launch.stdout")
         inner = [
             sys.executable,
             "-I",
@@ -927,8 +929,7 @@ def measure(args: argparse.Namespace) -> int:
                 "--_trace-file",
                 os.path.abspath(trace_file),
             ]
-        if launch_stdout is not None:
-            inner += ["--launch-stdout", os.path.abspath(launch_stdout)]
+        inner += ["--launch-stdout", os.path.abspath(launch_stdout)]
         command = [
             pasta,
             "--config-net",
@@ -958,7 +959,10 @@ def measure(args: argparse.Namespace) -> int:
 
         def forward(signum: int, _frame: object) -> None:
             interrupted.append(signum)
-            os.killpg(run.pid, signal.SIGTERM)
+            # pasta may have exited between the signal and this handler; the
+            # wait below then returns at once, and nothing is left to end.
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(run.pid, signal.SIGTERM)
 
         for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(signum, forward)
@@ -979,11 +983,19 @@ def measure(args: argparse.Namespace) -> int:
         measurement = Measurement.from_json(json.loads(read_text(Path(result))), result)
         if args.measurement_out is not None:
             write_text(Path(args.measurement_out), json.dumps(asdict(measurement), indent=2) + "\n")
+        stdout_text = read_text(Path(launch_stdout))
+        if measurement.launch_exit != 0 and args.launch_stdout is None:
+            tail = stdout_text.splitlines()[-LAUNCH_STDOUT_TAIL_LINES:]
+            print(
+                f"codex-network-breakdown: the launch exited {measurement.launch_exit} "
+                f"(none: timed out); the last {len(tail)} line(s) of its stdout follow. "
+                "The measurement stands; rerun with --launch-stdout PATH to keep all of it",
+                *tail,
+                sep="\n",
+                file=sys.stderr,
+            )
         trace_text = None
-        if args.trace and launch_stdout is not None:
-            stdout_text = read_text(Path(launch_stdout))
-            if args.launch_stdout is None:
-                sys.stderr.write(stdout_text)
+        if args.trace:
             trace_text = read_text(Path(trace_file))
             carried = oneharness_stderr(stdout_text)
             if carried:

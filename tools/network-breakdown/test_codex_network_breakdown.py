@@ -668,6 +668,29 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertEqual(script.returncode, 0, stdout)
         self.assertIn("received_bytes", stdout)
 
+    def test_a_launchs_stdout_is_quiet_on_success_and_its_tail_shown_on_failure(self) -> None:
+        self.need_namespace()
+        chatter = "import sys\nfor n in range(50): print(f'line {n}')\nsys.exit(int(sys.argv[1]))\n"
+        run = run_script("--", sys.executable, "-I", "-c", chatter, "0")
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+        self.assertNotIn("line ", run.stderr)
+        run = run_script("--", sys.executable, "-I", "-c", chatter, "4")
+        self.assertEqual(run.returncode, 0, run)
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 4, run)
+        self.assertIn("the launch exited 4", run.stderr)
+        self.assertIn("--launch-stdout PATH", run.stderr)
+        self.assertIn("line 30\n", run.stderr)
+        self.assertIn("line 49", run.stderr)
+        self.assertNotIn("line 29\n", run.stderr)
+        with tempfile.TemporaryDirectory() as scratch:
+            kept = Path(scratch) / "stdout"
+            run = run_script(
+                "--launch-stdout", str(kept), "--", sys.executable, "-I", "-c", chatter, "4"
+            )
+            self.assertEqual(run.returncode, 0, run)
+            self.assertNotIn("line ", run.stderr)
+            self.assertEqual(len(kept.read_text().splitlines()), 50)
+
     def test_a_launch_that_cannot_start_is_refused_saying_what_to_do(self) -> None:
         self.need_namespace()
         run = run_script("--", "/nonexistent/oneharness-no-launch")

@@ -24,4 +24,4 @@ clap = { workspace = true }
 serde_json = { workspace = true }
 # Holds a shared model catalog's lock from the test process, so a journey can
 # keep a launch waiting past MODEL_CATALOG_WAIT; the engine locks with it too.
-fs2 = "0.4"
+fs2 = { workspace = true }

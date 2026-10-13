@@ -39951,12 +39951,18 @@ fn a_failure_that_cannot_be_recorded_says_so_and_holds_nothing_off() {
     let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &exit);
     assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
     assert!(
-        run.stderr().contains("could not be recorded") && run.stderr().contains("tries the refresh again"),
+        run.stderr().contains("could not be recorded")
+            && run.stderr().contains("tries the refresh again"),
         "{}",
         run.stderr()
     );
     world.launch(CodexLaunchPath::Exec, "codex", &[], &exit);
-    assert_eq!(world.helpers().len(), 2, "no backoff without a record: {:?}", world.records());
+    assert_eq!(
+        world.helpers().len(),
+        2,
+        "no backoff without a record: {:?}",
+        world.records()
+    );
 }
 
 #[test]
@@ -39975,10 +39981,17 @@ fn a_refresh_rejects_a_cache_codex_could_not_read() {
                 ("MOCK_CODEX_CATALOG_THEN_EXIT", "1"),
             ],
         );
-        assert!(run.elapsed < MODEL_CATALOG_REFRESH_DEADLINE, "{corrupt}: {:?}", run.elapsed);
+        assert!(
+            run.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
+            "{corrupt}: {:?}",
+            run.elapsed
+        );
         assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
         assert!(world.catalogs().is_empty(), "{corrupt}");
-        assert!(world.launches().pop().unwrap()["catalog"].is_null(), "{corrupt}");
+        assert!(
+            world.launches().pop().unwrap()["catalog"].is_null(),
+            "{corrupt}"
+        );
     }
 }
 

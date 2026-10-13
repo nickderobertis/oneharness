@@ -52,7 +52,7 @@ uuid = { version = "1", features = ["serde", "v5", "v7"] }
 # The history index is shared by independent oneharness processes. `fs2` keeps
 # the locking primitive portable across Unix and Windows without leaking I/O
 # into the pure domain layer.
-fs2 = "0.4"
+fs2 = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

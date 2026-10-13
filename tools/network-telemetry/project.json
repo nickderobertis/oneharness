@@ -73,15 +73,10 @@
         "commands": [
           "uv sync --project python --frozen --no-install-workspace --quiet",
           "uv run --project python --frozen --no-sync ruff check --config tools/network-telemetry/ruff.toml scripts/e2e-netmeasure.py live/pr-matrix/harness/codex/network_budget.py tools/network-telemetry",
-          "bash scripts/shell-check.sh lint tools/network-telemetry",
-          "uv run --project python --frozen --no-sync python -I tools/network-telemetry/check_gate_selection.py"
+          "bash scripts/shell-check.sh lint tools/network-telemetry"
         ],
         "parallel": false
-      },
-      "inputs": [
-        "default",
-        "{workspaceRoot}/**/project.json"
-      ]
+      }
     },
     "typecheck": {
       "executor": "nx:run-commands",

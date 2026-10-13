@@ -694,6 +694,42 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertEqual(script.returncode, 0, stdout)
         self.assertIn("received_bytes", stdout)
 
+    def test_a_launch_resolves_through_the_hosts_upstream_not_its_loopback_stub(self) -> None:
+        # The namespace's loopback is its own, so a host resolving through
+        # systemd-resolved's 127.0.0.53 stub would leave a launch with no
+        # resolver at all; the launch must see the stub's upstream list instead.
+        self.need_namespace()
+
+        def nameservers(text: str) -> list[str]:
+            lines = (line.split() for line in text.splitlines())
+            return [words[1] for words in lines if len(words) >= 2 and words[0] == "nameserver"]
+
+        host = Path("/etc/resolv.conf").read_text()
+        upstream = Path("/run/systemd/resolve/resolv.conf")
+        on_stub = bool(nameservers(host)) and all(
+            server.startswith("127.") for server in nameservers(host)
+        )
+        expected = upstream.read_text() if on_stub and upstream.exists() else host
+        with tempfile.TemporaryDirectory() as scratch:
+            seen = Path(scratch) / "resolv.conf"
+            run = run_script(
+                "--launch-stdout",
+                str(seen),
+                "--",
+                sys.executable,
+                "-I",
+                "-c",
+                "import sys; sys.stdout.write(open('/etc/resolv.conf').read())",
+            )
+            self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+            self.assertEqual(seen.read_text(), expected)
+        if on_stub and upstream.exists():
+            self.assertTrue(nameservers(expected), expected)
+            self.assertFalse(
+                [server for server in nameservers(expected) if server.startswith("127.")],
+                expected,
+            )
+
     def test_a_launchs_stdout_is_quiet_on_success_and_its_tail_shown_on_failure(self) -> None:
         self.need_namespace()
         chatter = "import sys\nfor n in range(50): print(f'line {n}')\nsys.exit(int(sys.argv[1]))\n"

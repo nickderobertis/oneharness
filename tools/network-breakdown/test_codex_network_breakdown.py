@@ -265,6 +265,20 @@ class RefusalsWithoutANamespace(unittest.TestCase):
     """How the script finds pasta, and what it says when it cannot measure: on
     stderr, with a next action, exit 3; and its usage errors, exit 2."""
 
+    def test_the_transfer_double_refuses_a_proxy_that_names_no_port(self) -> None:
+        for proxy in ("http://127.0.0.1:0", "http://127.0.0.1", "socks5://127.0.0.1:8080"):
+            with self.subTest(proxy=proxy):
+                run = subprocess.run(
+                    [sys.executable, "-I", str(DOUBLE), "--loopback", "9:down:1"],
+                    env=dict(os.environ, HTTPS_PROXY=proxy),
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(run.returncode, 1, run)
+                self.assertIn(
+                    f"HTTPS_PROXY is not an http://host:port proxy: {proxy!r}", run.stderr
+                )
+
     def test_a_pasta_that_cannot_start_says_how_to_get_one(self) -> None:
         env = dict(os.environ, CODEX_NETWORK_BREAKDOWN_PASTA="/nonexistent/oneharness-no-pasta")
         run = run_script("--", "true", env=env)

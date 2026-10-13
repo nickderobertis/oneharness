@@ -92,7 +92,8 @@ def proxy_from(name: str) -> Proxy:
         port = url.port
     except ValueError:
         raise SystemExit(refusal) from None
-    if url.scheme != "http" or url.hostname is None or port is None:
+    # urlparse reads `http://host:0` as port 0, which names no destination.
+    if url.scheme != "http" or url.hostname is None or port is None or port == 0:
         raise SystemExit(refusal)
     return Proxy(url.hostname, port)
 

@@ -181,6 +181,12 @@ cp "$tmp/saved.just" "$ws/justfile"
 [ "$status" -ne 0 ] || fail "a live-codex recipe without its budget check should have failed the boundary check"
 grep -qF "live-codex recipe is" "$tmp/err" ||
   fail "the check failed but did not name the live-codex recipe that dropped its budget check"
+# A Windows checkout (core.autocrlf=true) ends the justfile's lines in CRLF;
+# the same recipes still pass.
+awk '{ printf "%s\r\n", $0 }' "$tmp/saved.just" >"$ws/justfile"
+check
+cp "$tmp/saved.just" "$ws/justfile"
+[ "$status" -eq 0 ] || fail "a CRLF justfile should pass the boundary check; it said: $(cat "$tmp/err")"
 
 # A graph Nx cannot compute (an nx.json plugin it cannot load): the check fails
 # naming that, and still gives back the scratch directory it made for the graph.

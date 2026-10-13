@@ -240,7 +240,8 @@ for (const [name, node] of Object.entries(graph.nodes)) {
 		}
 	}
 }
-const justfile = readFileSync(join(root, "justfile"), "utf8");
+// A Windows checkout (core.autocrlf) ends its lines in CRLF, and `.` matches no `\r`.
+const justfile = readFileSync(join(root, "justfile"), "utf8").replace(/\r\n/gu, "\n");
 if (!/^check tier=[\s\S]*?--exclude='live-\*,explore-\*'/mu.test(justfile)) {
 	failures.push(`the justfile's check recipe no longer excludes the live-* projects, so the gate would check the network budgets against whatever telemetry is lying around; restore --exclude='live-*,explore-*'`);
 }

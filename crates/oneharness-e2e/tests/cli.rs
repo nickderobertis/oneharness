@@ -39693,34 +39693,145 @@ fn an_unwritable_state_directory_falls_back_with_one_warning() {
 // llmlint: ignore-block[tests_mirror_real_usage] Through the CLI a launch's wait can only outlast MODEL_CATALOG_WAIT when another process holds the lock past the refresh deadline — a oneharness stopped or stalled mid-refresh — which no launch this suite starts can be made to be on demand; the test holds the lock as that process would, and the launch that waits goes through the real CLI.
 #[test]
 fn a_launch_whose_wait_for_the_lock_runs_out_falls_back_at_model_catalog_wait() {
-    // Another process holds the catalog's lock past MODEL_CATALOG_WAIT (here,
-    // this test): the launch stops waiting at that bound, warns once and goes
-    // without, and starts no refresh of its own.
+    wait_out_the_lock_then_back_off_and_recover(false);
+}
+
+#[test]
+fn a_launch_whose_wait_for_the_lock_runs_out_keeps_the_stale_catalog_through_the_backoff() {
+    wait_out_the_lock_then_back_off_and_recover(true);
+}
+
+/// Another process holds the catalog's lock past MODEL_CATALOG_WAIT (here,
+/// this test): the launch stops waiting at that bound, warns once and goes
+/// without — on the stale catalog when `stale`, else on Codex's own fetch —
+/// starts no refresh of its own, and records the failure. Once the lock is
+/// released, a launch inside the backoff still starts no refresh and does not
+/// wait; after the backoff, one refresh restores the shared catalog.
+fn wait_out_the_lock_then_back_off_and_recover(stale: bool) {
     use fs2::FileExt;
-    let world = CatalogWorld::new("catalog-lock-held", "", "");
-    let key = catalog_key(
-        &resolved(world.home()).to_string_lossy(),
-        &format!("codex-cli {CATALOG_CODEX_VERSION}"),
+    let tag = if stale { "stale" } else { "absent" };
+    let world = CatalogWorld::new(
+        &format!("catalog-lock-held-{tag}"),
+        "[harness.codex]\nmodel_catalog_refresh_seconds = 1\n",
+        "",
     );
+    let uses = if stale {
+        "the existing stale catalog"
+    } else {
+        "Codex's own catalog fetch"
+    };
+    if stale {
+        world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+        world.wait_until_stale(std::time::Duration::from_secs(1));
+    }
+    let expected_catalog = stale.then(|| resolved(world.the_catalog()));
+    let helpers_before = world.helpers().len();
+    let (_, lock_path, _) = catalog_paths(&world);
     std::fs::create_dir_all(world.catalog_dir()).unwrap();
-    let lock = std::fs::File::create(world.catalog_dir().join(format!("{key}.lock"))).unwrap();
+    let lock = std::fs::File::create(&lock_path).unwrap();
     lock.lock_exclusive().unwrap();
     let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
     FileExt::unlock(&lock).unwrap();
-    assert!(run.elapsed >= MODEL_CATALOG_WAIT, "{:?}", run.elapsed);
+    drop(lock);
     assert!(
-        run.elapsed < MODEL_CATALOG_WAIT + std::time::Duration::from_secs(3),
-        "{:?}",
+        run.elapsed >= MODEL_CATALOG_WAIT,
+        "{tag}: {:?}",
         run.elapsed
     );
-    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(
+        run.elapsed < MODEL_CATALOG_WAIT + std::time::Duration::from_secs(3),
+        "{tag}: {:?}",
+        run.elapsed
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), uses);
     assert!(
         run.stderr().contains("gave no fresh catalog within"),
         "{}",
         run.stderr()
     );
-    assert!(world.helpers().is_empty(), "{:?}", world.records());
-    assert!(world.launches().pop().unwrap()["catalog"].is_null());
+    assert_eq!(
+        world.helpers().len(),
+        helpers_before,
+        "{tag}: {:?}",
+        world.records()
+    );
+    assert_eq!(
+        record_catalog(&world.launches().pop().unwrap()),
+        expected_catalog
+    );
+    assert_eq!(
+        world.failure_records().len(),
+        1,
+        "{tag}: the expired wait must be recorded so the backoff holds"
+    );
+
+    // The lock is free now, but the backoff holds: no refresh, no wait.
+    let during = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert!(
+        during.elapsed < MODEL_CATALOG_REFRESH_DEADLINE,
+        "{tag}: {:?}",
+        during.elapsed
+    );
+    assert_one_catalog_warning_each(std::slice::from_ref(&during), uses);
+    assert_eq!(
+        world.helpers().len(),
+        helpers_before,
+        "{tag}: {:?}",
+        world.records()
+    );
+    assert_eq!(
+        record_catalog(&world.launches().pop().unwrap()),
+        expected_catalog
+    );
+
+    // After the backoff one refresh restores the shared catalog.
+    end_the_backoff(&world);
+    let after = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_eq!(after.warnings(), 0, "{tag}: {}", after.stderr());
+    assert_eq!(
+        world.helpers().len(),
+        helpers_before + 1,
+        "{tag}: {:?}",
+        world.records()
+    );
+    assert_every_launch_read(&world, &[world.launches().pop().unwrap()]);
+    assert!(world.failure_records().is_empty(), "{tag}");
+}
+// llmlint: ignore-end[tests_mirror_real_usage]
+
+// llmlint: ignore-block[tests_mirror_real_usage] The record a launch leaves when its wait outlasts a stalled lock holder is stamped with the moment its wait began, and the refresh that lands meanwhile is another process's; writing that record directly is how a test reaches the interleaving without a stalled process, and every launch goes through the real CLI.
+#[test]
+fn a_failure_recorded_before_the_catalog_was_written_holds_nothing_off() {
+    // A launch whose wait expired while another process's refresh was landing
+    // leaves a record older than that refresh's catalog. The success outranks
+    // it: once the catalog goes stale, the next launch refreshes rather than
+    // backing off.
+    let world = CatalogWorld::new(
+        "catalog-superseded-failure",
+        "[harness.codex]\nmodel_catalog_refresh_seconds = 1\n",
+        "",
+    );
+    world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    let (catalog, _, failure) = catalog_paths(&world);
+    let before_catalog = modified_ms(&catalog) - 2_000;
+    std::fs::write(
+        &failure,
+        serde_json::json!({
+            "failed_at_ms": before_catalog,
+            "reason": "another launch's refresh gave no fresh catalog within 12 s",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    world.wait_until_stale(std::time::Duration::from_secs(1));
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    assert_eq!(world.helpers().len(), 2, "{:?}", world.records());
+    assert_every_launch_read(&world, &world.launches());
+    assert!(
+        !failure.exists(),
+        "the refresh clears the superseded record"
+    );
 }
 // llmlint: ignore-end[tests_mirror_real_usage]
 

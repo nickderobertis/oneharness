@@ -121,6 +121,7 @@ pub fn resolve(launch: &CatalogLaunch<'_>) -> CatalogChoice {
             return files.fallback(&format!("cannot open {}: {error}", files.lock.display()))
         }
     };
+    let waited_since_ms = now_ms();
     let waited_until = Instant::now() + MODEL_CATALOG_WAIT;
     loop {
         if lock.try_lock_exclusive().is_ok() {
@@ -129,7 +130,7 @@ pub fn resolve(launch: &CatalogLaunch<'_>) -> CatalogChoice {
             return choice;
         }
         if Instant::now() >= waited_until {
-            return files.waited_out();
+            return files.waited_out(launch.refresh_interval(), waited_since_ms);
         }
         std::thread::sleep(POLL);
     }
@@ -169,11 +170,21 @@ impl CatalogFiles {
     }
 
     /// The fallback while a recorded failure's backoff runs, if one does.
+    /// A record older than the catalog file holds nothing off: a refresh
+    /// succeeded after it, whichever process wrote it.
     fn backing_off(&self) -> Option<CatalogChoice> {
         let record: FailureRecord = serde_json::from_slice(&fs::read(&self.failure).ok()?).ok()?;
-        record
-            .backing_off(now_ms())
-            .then(|| self.without_fresh(&record))
+        let superseded = self
+            .written_ms()
+            .is_some_and(|written| written > record.failed_at_ms);
+        (!superseded && record.backing_off(now_ms())).then(|| self.without_fresh(&record))
+    }
+
+    /// When the catalog file was last written, in milliseconds since the epoch.
+    fn written_ms(&self) -> Option<i64> {
+        let written = fs::metadata(&self.catalog).ok()?.modified().ok()?;
+        let since = written.duration_since(UNIX_EPOCH).ok()?;
+        i64::try_from(since.as_millis()).ok()
     }
 
     /// The launch's catalog with the lock held: another process may have
@@ -198,14 +209,17 @@ impl CatalogFiles {
     /// A record that cannot be written holds no backoff, so the warning says
     /// the next launch will try the refresh again.
     fn fallback(&self, reason: &str) -> CatalogChoice {
-        let record = FailureRecord {
+        self.record_failure(&FailureRecord {
             failed_at_ms: now_ms(),
             reason: reason.to_string(),
-        };
+        })
+    }
+
+    fn record_failure(&self, record: &FailureRecord) -> CatalogChoice {
         let recorded = serde_json::to_vec(&record)
             .map_err(std::io::Error::other)
             .and_then(|text| write_atomically(&self.failure, &text));
-        let mut choice = self.without_fresh(&record);
+        let mut choice = self.without_fresh(record);
         if let (Err(error), Some(warning)) = (recorded, choice.warning.as_mut()) {
             warning.push_str(&format!(
                 "; that failure could not be recorded at {} ({error}), so the next launch \
@@ -216,17 +230,27 @@ impl CatalogFiles {
         choice
     }
 
-    /// The launch whose wait for another process's refresh ran out. That
-    /// process records its own failure, so this one only falls back.
-    fn waited_out(&self) -> CatalogChoice {
-        let record = FailureRecord {
-            failed_at_ms: now_ms(),
+    /// The launch whose wait for another process's refresh ran out. The lock
+    /// holder may be stalled and never record its own failure, so this launch
+    /// records one — unless, looking again, a refresh has landed or the holder
+    /// has recorded a failure of its own. The record is stamped with the
+    /// moment the wait began: any catalog a concurrent refresh writes after
+    /// that is newer than the record, which then holds nothing off
+    /// ([`Self::backing_off`]), so this record never outranks a success.
+    fn waited_out(&self, interval: Duration, waited_since_ms: i64) -> CatalogChoice {
+        if let Some(fresh) = self.fresh(interval) {
+            return CatalogChoice::fresh(fresh);
+        }
+        if let Some(choice) = self.backing_off() {
+            return choice;
+        }
+        self.record_failure(&FailureRecord {
+            failed_at_ms: waited_since_ms,
             reason: format!(
                 "another launch's refresh gave no fresh catalog within {} s",
                 MODEL_CATALOG_WAIT.as_secs()
             ),
-        };
-        self.without_fresh(&record)
+        })
     }
 
     fn without_fresh(&self, record: &FailureRecord) -> CatalogChoice {

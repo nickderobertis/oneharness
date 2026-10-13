@@ -3814,6 +3814,109 @@ JSON
   note "PASS: $id mock deny enforcement (run --mock-rules)"
 }
 
+# --- the opted-in Codex launch (e2e-variants.sh) -----------------------------
+#
+# The live-codex budget only ever sees oneharness's defaults, so a Codex home
+# that turns plugins off itself would hide a plugins-default regression from
+# it. e2e-variants.sh therefore runs one launch that opts in (`plugins = true`)
+# and asserts, with these helpers, that it did fetch the plugin catalog and
+# load plugins — and that the recorder measured it.
+
+# Fail, naming the file, when $1's config.toml turns Codex plugins off.
+oh_codex_home_allows_plugins() {
+  local cfg="$1/config.toml"
+  [ -f "$cfg" ] || return 0
+  if awk '
+      /^[[:space:]]*\[/ { section = $0; gsub(/[[:space:]]/, "", section) }
+      section == "[features]" && /^[[:space:]]*plugins[[:space:]]*=[[:space:]]*false/ { off = 1 }
+      section == "" && /^[[:space:]]*features\.plugins[[:space:]]*=[[:space:]]*false/ { off = 1 }
+      END { exit !off }
+    ' "$cfg"; then
+    fail "$cfg disables Codex plugins ([features] plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun"
+  fi
+}
+
+# The measurement of the one launch phase $2 made, from telemetry file $1:
+# exactly one `start` line of kind $3, exactly one measurement line joined to
+# it, lasting at least $4 seconds (so the sustained command ran inside it) and,
+# on Linux, measured with both byte fields. Prints its launch id.
+oh_launch_measured_assert() {
+  local file="$1" phase="$2" kind="$3" min_seconds="$4" starts id lines os
+  starts="$(jq -rs --arg p "$phase" --arg k "$kind" \
+    'map(select(.launch_id and .argv and .phase == $p and .kind == $k) | .launch_id) | join(" ")' "$file")" ||
+    fail "cannot read the telemetry file $file; rerun the suite so oh_telemetry_setup recreates it"
+  case "$starts" in
+    "") fail "$file has no $kind launch for phase $phase: the launch did not go through the measuring shim" ;;
+    *" "*) fail "$file has more than one $kind launch for phase $phase ($starts); the phase must make exactly one" ;;
+  esac
+  id="$starts"
+  lines="$(jq -c --arg id "$id" 'select(.launch_id == $id and (.argv | not))' "$file")"
+  [ -n "$lines" ] || fail "launch $id (phase $phase) has no measurement line in $file: the recorder never finished it"
+  [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" = 1 ] ||
+    fail "launch $id (phase $phase) has more than one measurement line in $file; each launch is recorded once"
+  os="${OH_E2E_OS:-$(uname -s)}"
+  case "$os" in
+    Linux*)
+      printf '%s' "$lines" | jq -e '.method == "netns-pasta"' >/dev/null ||
+        fail "launch $id (phase $phase) was not measured: $(printf '%s' "$lines" | jq -r '"method \(.method)" + (if .reason then ": \(.reason)" else "" end)')"
+      printf '%s' "$lines" | jq -e '(.rx_bytes | type) == "number" and (.tx_bytes | type) == "number"' >/dev/null ||
+        fail "launch $id (phase $phase) has an incomplete measurement line (no numeric rx_bytes/tx_bytes): $lines"
+      ;;
+  esac
+  printf '%s' "$lines" | jq -e --argjson min "$min_seconds" '(.seconds | type) == "number" and .seconds >= $min' >/dev/null ||
+    fail "launch $id (phase $phase) lasted $(printf '%s' "$lines" | jq -r '.seconds') s, under the $min_seconds s its sustained shell command takes: the turn did not run it"
+  printf '%s' "$id"
+}
+
+# The plugins evidence of the opted-in launch. $2 holds one JSON record per
+# Codex process — {"process", "text", "catalog_request", "plugins_loaded"} —
+# and the launch's own records are those whose text carries its marker $1:
+# together they must show the plugin catalog requested and plugins loaded.
+oh_codex_plugins_evidence_assert() {
+  local marker="$1" evidence="$2" mine
+  [ -s "$evidence" ] || fail "no Codex plugins evidence was recorded ($evidence is empty or missing): the opted-in launch logged nothing to show its plugins ran"
+  mine="$(jq -sc --arg m "$marker" 'map(select((.text // "") | contains($m)))' "$evidence")" ||
+    fail "cannot read the Codex plugins evidence $evidence"
+  [ "$mine" != "[]" ] || fail "none of the Codex plugins evidence in $evidence belongs to the opted-in launch (marker $marker); any there is another launch's"
+  printf '%s' "$mine" | jq -e 'any(.catalog_request == true)' >/dev/null ||
+    fail "the opted-in launch (marker $marker) never requested the plugin catalog: plugins = true did not reach Codex, or Codex no longer fetches it"
+  printf '%s' "$mine" | jq -e 'any(.plugins_loaded == true)' >/dev/null ||
+    fail "the opted-in launch (marker $marker) never loaded its plugins"
+}
+
+# Codex's own log of the opted-in launch, as oh_codex_plugins_evidence_assert
+# reads it: one record per process that logged to $1/logs_2.sqlite since epoch
+# second $4, its text the marker $2 when one of its rows names the marker or
+# thread $3 — the launch's process — and its catalog request and plugin
+# bundle sync from Codex's own log lines.
+oh_codex_log_evidence() {
+  python3 - "$1/logs_2.sqlite" "$2" "$3" "$4" <<'PY'
+import json
+import sqlite3
+import sys
+
+db, marker, thread, since = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = con.execute(
+    "select process_uuid, thread_id, feedback_log_body from logs where ts >= ?", (since,)
+).fetchall()
+processes = {}
+for process, row_thread, body in rows:
+    record = processes.setdefault(
+        process, {"process": process, "text": "", "catalog_request": False, "plugins_loaded": False}
+    )
+    body = body or ""
+    if marker in body or (thread and row_thread == thread):
+        record["text"] = marker
+    if body.startswith("fetching remote plugin catalog"):
+        record["catalog_request"] = True
+    if body.startswith("completed remote installed plugin bundle sync"):
+        record["plugins_loaded"] = True
+for record in processes.values():
+    print(json.dumps(record))
+PY
+}
+
 # --- structured output enforcement -------------------------------------------
 
 # Live proof that `oneharness run --schema` produces a schema-VALID structured

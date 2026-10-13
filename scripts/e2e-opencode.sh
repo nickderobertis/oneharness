@@ -9,6 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: opencode =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/opencode.jsonl.
+oh_telemetry_setup opencode
 need_env "OpenCode provider key" ANTHROPIC_API_KEY OPENAI_API_KEY
 
 export OH_MODEL="${OPENCODE_E2E_MODEL:-anthropic/claude-haiku-4-5}"

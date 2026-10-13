@@ -12,8 +12,10 @@
 #   exec ...             a turn whose agent message echoes the prompt's marker
 #   app-server           a usage probe (OH_E2E_PHASE=usage-probe) answering
 #                        `account/rateLimits/read`, else a controlled turn
-#                        echoing its input; under OH_TEST_PLUGINS_LOG the mock
-#                        records its plugins evidence there
+#                        echoing its input
+# and, under OH_TEST_PLUGINS_EVIDENCE, appends the mock's plugins record of an
+# exec or app-server launch there as one {process, text, catalog_request,
+# plugins_loaded} line;
 # and a prompt naming `sleep N` runs that sleep, as an agent's shell tool would.
 set -euo pipefail
 
@@ -64,7 +66,6 @@ for arg in "$@"; do
       ;;
   esac
 done
-[ -z "${OH_TEST_PLUGINS_LOG:-}" ] || export MOCK_CODEX_PLUGINS_LOG="$OH_TEST_PLUGINS_LOG"
 case "$subcommand" in
   login)
     echo "Logged in using ChatGPT"
@@ -88,4 +89,19 @@ case "$subcommand" in
     fi
     ;;
 esac
-exec "$mock" "$@"
+if [ -z "${OH_TEST_PLUGINS_EVIDENCE:-}" ]; then
+  exec "$mock" "$@"
+fi
+# The mock's own plugins record of this launch, as the per-process evidence
+# e2e-variants.sh's opted-in phase reads in place of Codex's log: its text is
+# this launch's argv, which carries the prompt's marker.
+record="$(mktemp)"
+rc=0
+MOCK_CODEX_PLUGINS_LOG="$record" "$mock" "$@" || rc=$?
+if [ -s "$record" ]; then
+  printf '%s\0' "$@" | jq -Rsc --slurpfile mock "$record" --arg pid "$$" \
+    '{process: $pid, text: (split("\u0000")[:-1] | join(" ")), catalog_request: $mock[0].catalog_fetched,
+      plugins_loaded: ($mock[0].loaded | length > 0)}' >>"$OH_TEST_PLUGINS_EVIDENCE"
+fi
+rm -f "$record"
+exit "$rc"

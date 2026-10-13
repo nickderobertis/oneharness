@@ -9,6 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: goose =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/goose.jsonl.
+oh_telemetry_setup goose
 
 # Goose reads its provider/model from the environment. Default to OpenAI; allow
 # any of Goose's documented provider keys to satisfy the auth preflight.

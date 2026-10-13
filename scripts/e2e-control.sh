@@ -42,6 +42,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: out-of-band turn control (--control / interrupt [--input]) =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/control.jsonl.
+oh_telemetry_setup control
 
 # Wall-clock, formatted. Every phase drives a real multi-step turn, waits out a
 # 15s freeze window, and retries an inconclusive attempt up to three times, so

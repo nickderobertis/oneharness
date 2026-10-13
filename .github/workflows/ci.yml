@@ -83,12 +83,14 @@ jobs:
       # the step lifts the restriction and proves that same pasta can start
       # one. Below, OH_NET_NO_SKIP turns a recorder that cannot measure here
       # into a failure rather than a skip.
+      # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] The task names this sysctl as the lever, and the runner is an ephemeral single-tenant VM where every step already holds passwordless root, so lifting the userns restriction grants no process more than sudo does; a pasta-only AppArmor profile could not be proven off the hosted image and would move the pasta the recorder resolves. The step proves itself end to end: `pasta --config-net -- true` starts a namespace with the pasta first on PATH under bash -e, so any failed line fails the leg before the recorder runs; Legs pins its order and commands, and the hosted run is the provisioning's proof.
       - name: Permit pasta's unprivileged namespaces (network recorder)
         if: runner.os == 'Linux'
         run: |
           command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
           pasta --config-net --quiet -- true
+      # llmlint: ignore-end[least_privilege_grants, changed_behavior_has_e2e]
       - name: Bootstrap
         run: just bootstrap
       - name: Select the gate tier

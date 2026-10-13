@@ -148,8 +148,13 @@ class Outcome:
         """The supervisor's report, or None when it ended without a whole one."""
         try:
             fields = json.loads(message)
-            ending = Ending(fields["ending"])
-        except (ValueError, KeyError, TypeError):
+        except ValueError:
+            return None
+        if not isinstance(fields, dict):
+            return None
+        try:
+            ending = Ending(fields.get("ending"))
+        except ValueError:
             return None
         code, reason = fields.get("code"), fields.get("reason")
         if isinstance(code, bool) or not isinstance(code, int) or not isinstance(reason, str):
@@ -163,6 +168,23 @@ class Window:
 
     before_ns: int
     after_ns: int
+
+    @staticmethod
+    def read(fields: object) -> Window:
+        """A window as to_json wrote it, refusing anything else with ValueError."""
+        if not isinstance(fields, dict):
+            raise ValueError(f"a counter-read window is not an object: {fields!r}")
+        before, after = fields.get("before_ns"), fields.get("after_ns")
+        if (
+            not isinstance(before, int)
+            or not isinstance(after, int)
+            or isinstance(before, bool)
+            or isinstance(after, bool)
+        ):
+            raise ValueError(f"a counter-read window is not two nanosecond stamps: {fields!r}")
+        if not 0 < before <= after:
+            raise ValueError(f"a counter-read window ends before it begins: {fields!r}")
+        return Window(before, after)
 
 
 @dataclass(frozen=True)
@@ -205,7 +227,9 @@ class NamespaceResult:
             raise ValueError(f"seconds is not a finite non-negative number: {seconds!r}")
         if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
             raise ValueError(f"exit is not an integer or null: {code!r}")
-        start, end = Window(**fields["start"]), Window(**fields["end"])
+        start, end = Window.read(fields["start"]), Window.read(fields["end"])
+        if start.after_ns > end.before_ns:
+            raise ValueError("the last counter read began before the first one ended")
         return NamespaceResult(Counters(*moved), retrans, float(seconds), code, start, end)
 
     def line(self, launch_id: str) -> Measured:
@@ -457,20 +481,9 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     pasta_code = pasta_run.wait()
     result_path = scratch / "result.json"
     if result_path.exists():
-        try:
-            result = NamespaceResult.from_json(result_path.read_text())
-        except (ValueError, KeyError, TypeError) as error:
-            append_line(
-                args.line_file,
-                Unavailable(
-                    args.launch_id,
-                    f"the measuring namespace wrote an unreadable result ({error}); rerun the launch, "
-                    "and if it recurs run scripts/e2e-netmeasure.py by hand around it",
-                    round(time.monotonic() - t0, 3),
-                    None,
-                ),
-            )
-            return Outcome(Ending.EXITED, code=137)
+        # An unreadable result raises here, into the supervisor's one failure
+        # path (in measure), which records the launch as unmeasured, saying why.
+        result = NamespaceResult.from_json(result_path.read_text())
         windows = os.environ.get("OH_E2E_NET_WINDOWS")
         if windows is not None:
             Path(windows).write_text(
@@ -549,7 +562,10 @@ def measure(args: argparse.Namespace) -> int:
         try:
             if outcome.ending is Ending.EXITED:
                 remove_quietly(args.pending)
-            os.write(done_w, outcome.encode())
+            try:
+                os.write(done_w, outcome.encode())
+            except BrokenPipeError:
+                pass  # the shim is gone — signalled away — and the line already recorded
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
             os._exit(0)

@@ -3856,31 +3856,46 @@ JSON
 # and asserts, with these helpers, that it did fetch the plugin catalog and
 # load plugins — and that the recorder measured it.
 
-# Fail, naming the file, when $1's config.toml turns Codex plugins off. It
-# reads every top-level TOML spelling of that setting — a `[features]` table
-# (quoted keys, comments and spacing allowed), a dotted `features.plugins` key,
-# or an inline `features = { ... }` table; a `[profiles.*]` table applies only
-# when a run selects that profile, which these launches never do.
+# A Python that reads TOML (tomllib, 3.11+): the first such python3 on PATH,
+# else one uv provides. Prints its argv, one word per line.
+_oh_toml_python() {
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import tomllib' 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  command -v uv >/dev/null 2>&1 || return 1
+  printf '%s\n' uv run --quiet --no-project --python '>=3.11' python
+}
+
+# Fail, naming the file, when $1's config.toml turns Codex plugins off
+# (`features.plugins = false`, however TOML spells it), or is not TOML Codex
+# could read. A `[profiles.*]` table applies only when a run selects that
+# profile, which these launches never do.
 oh_codex_home_allows_plugins() {
-  local cfg="$1/config.toml" rc=0
+  local cfg="$1/config.toml" rc=0 python=()
   [ -f "$cfg" ] || return 0
-  awk '
-      {
-        line = $0
-        sub(/#.*/, "", line)                # a comment (no setting here holds a "#")
-        gsub(/[[:space:]"\047]/, "", line) # spacing, and the quotes a key may wear
-      }
-      line ~ /^\[[^][]*\]$/ { section = substr(line, 2, length(line) - 2); next }
-      line ~ /^\[\[/ { section = "(array)"; next }
-      section == "features" && line == "plugins=false" { off = 1 }
-      section == "" && line == "features.plugins=false" { off = 1 }
-      section == "" && line ~ /^features=\{/ && line ~ /[{,]plugins=false[,}]/ { off = 1 }
-      END { exit off ? 0 : 1 }
-    ' "$cfg" || rc=$?
+  mapfile -t python < <(_oh_toml_python) && [ "${#python[@]}" -gt 0 ] ||
+    fail "reading $cfg needs Python 3.11+ (tomllib) or uv; install either, then rerun"
+  "${python[@]}" - "$cfg" <<'PY' || rc=$?
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as handle:
+        config = tomllib.load(handle)
+except (OSError, tomllib.TOMLDecodeError) as error:
+    print(error, file=sys.stderr)
+    sys.exit(2)
+features = config.get("features")
+sys.exit(0 if isinstance(features, dict) and features.get("plugins") is False else 1)
+PY
   case "$rc" in
     0) fail "$cfg disables Codex plugins (features.plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
     1) ;;
-    *) fail "could not read $cfg (awk exited $rc); check its permissions with ls -l, then rerun" ;;
+    *) fail "could not read $cfg as TOML (its error is above); fix it so Codex can read it too, then rerun" ;;
   esac
 }
 
@@ -3899,7 +3914,8 @@ oh_launch_measured_assert() {
     *" "*) fail "$file has more than one $kind launch for phase $phase ($starts); the phase must make exactly one — check what else it launches, then $rerun" ;;
   esac
   id="$starts"
-  lines="$(jq -c --arg id "$id" 'select(.launch_id == $id and (.argv | not))' "$file")"
+  lines="$(jq -c --arg id "$id" 'select(.launch_id == $id and (.argv | not))' "$file")" ||
+    fail "cannot read the measurement lines of launch $id from $file (jq failed above); rerun the suite so it is written again"
   [ -n "$lines" ] || fail "launch $id (phase $phase) has no measurement line in $file: the recorder never finished it; $rerun"
   [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" = 1 ] ||
     fail "launch $id (phase $phase) has more than one measurement line in $file; each launch is recorded once, so two recorders wrapped it — check PATH for a second shim, then $rerun"

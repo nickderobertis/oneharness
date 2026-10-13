@@ -100,7 +100,7 @@ fi
 # e2e-variants.sh's opted-in phase reads in place of Codex's log: its text is
 # this launch's argv, which carries the prompt's marker.
 record="$(mktemp)"
-trap 'rm -f "$record"' EXIT
+trap 'rm -f "$record" || { echo "harness_double: could not remove its scratch file $record; delete it by hand" >&2; exit 1; }' EXIT
 rc=0
 MOCK_CODEX_PLUGINS_LOG="$record" "$mock" "$@" || rc=$?
 if [ -s "$record" ]; then

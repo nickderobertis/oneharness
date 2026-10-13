@@ -263,6 +263,13 @@ class CodexHomePlugins(unittest.TestCase):
                 if not allowed:
                     self.assertIn(f"{home / 'config.toml'} disables Codex plugins", run.stderr)
 
+    def test_a_config_that_is_not_toml_is_refused_naming_the_file(self) -> None:
+        home = scratch(self)
+        (home / "config.toml").write_text("[features\nplugins = false\n")
+        run = run_lib("oh_codex_home_allows_plugins", str(home))
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn(f"could not read {home / 'config.toml'} as TOML", run.stderr)
+
 
 class CodexLogEvidence(unittest.TestCase):
     """The live run reads Codex's own log: rows of `logs_2.sqlite` in Codex's

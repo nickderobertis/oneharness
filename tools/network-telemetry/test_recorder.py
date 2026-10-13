@@ -343,6 +343,27 @@ class SupervisorLoss(unittest.TestCase):
         self.assertFalse(list((tmp / ".pending").glob("*")), "the pending marker outlived the line")
         time.sleep(3.5)  # the orphaned launch finishes its linger and the namespace goes
 
+    def test_a_supervisor_that_fails_after_the_launch_records_it_unmeasured(self) -> None:
+        # Any failure in the supervisor once the launch has run (here: the
+        # self-check's windows file cannot be written) is recorded, not lost.
+        need_recorder(self)
+        tmp = scratch(self)
+        (tmp / "a-directory").mkdir()
+        run = run_shim(
+            tmp,
+            transfer_argv(0, 0, 0, "--exit", "3"),
+            ["exec", "x"],
+            env={"OH_E2E_NET_WINDOWS": str(tmp / "a-directory"), "TMPDIR": str(tmp)},
+        )
+        self.assertEqual(run.returncode, 137, run.stderr)
+        self.assertIn(b"Traceback", run.stderr)
+        records = lines(tmp / "codex.jsonl")
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("the measuring supervisor failed (IsADirectoryError", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+
 
 class Fallback(unittest.TestCase):
     """Where the method cannot run, the launch still runs, unmeasured and said so."""
@@ -439,6 +460,22 @@ class Fallback(unittest.TestCase):
             tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"PATH": str(bare)}
         )
         self.assert_unavailable(tmp, run, blob, "no python3 on PATH")
+
+    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    def test_a_launch_whose_line_cannot_be_written_fails_the_shim(self) -> None:
+        # The launch ran, but an unrecorded launch must not pass for a
+        # recorded one: the shim exits 125, saying why.
+        tmp = scratch(self)
+        file = tmp / "codex.jsonl"
+        real = tmp / "locking-double"
+        real.write_text(f'#!/usr/bin/env bash\nchmod a-w "{file}"\nexit 4\n')
+        real.chmod(0o755)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"OH_E2E_OS": "Darwin"})
+        file.chmod(0o644)
+        self.assertEqual(run.returncode, 125, run.stderr)
+        self.assertIn(b"exited 4, but its measurement line could not be written", run.stderr)
+        (start,) = starts(lines(file))
+        self.assertEqual(measurements(lines(file), start["launch_id"]), [])
 
     def test_this_platform_records_every_launch_once(self) -> None:
         # Whatever this host is, a launch through the shim gets one start and

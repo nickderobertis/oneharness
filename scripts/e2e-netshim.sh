@@ -70,7 +70,9 @@ real_path="$(_canonical "$real")" || die "cannot resolve the directory of $real;
 self_path="$(_canonical "$self")" || die "cannot resolve the directory of the shim $self; rerun the suite so oh_telemetry_setup writes it again"
 head_bytes="$(head -c 512 "$real" | tr -d '\0')" ||
   die "cannot read $real to check it is not a network shim; check its permissions, then rerun the suite"
-if [ "$real_path" = "$self_path" ] || case "$head_bytes" in *"$MARKER"*) true ;; *) false ;; esac then
+wraps_a_shim=false
+case "$head_bytes" in *"$MARKER"*) wraps_a_shim=true ;; esac
+if [ "$real_path" = "$self_path" ] || [ "$wraps_a_shim" = true ]; then
   die "refusing to wrap $real: it is this shim (or another network shim), not the real $harness; resolve the real executable before putting the shim first on PATH"
 fi
 

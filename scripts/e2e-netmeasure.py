@@ -257,14 +257,33 @@ class NamespaceResult:
         )
 
 
+class Unrecorded(Exception):
+    """A launch's measurement line could not be written; already reported on stderr."""
+
+
+# The exit status of a launch that ran but could not be recorded, as the
+# shim's own fallback reports it.
+UNRECORDED = 125
+
+
 def append_line(path: str, record: Measured | Unavailable) -> None:
-    """Append one JSON line in a single write, so concurrent launches never interleave."""
+    """Append one JSON line in a single write, so concurrent launches never interleave.
+
+    Raises Unrecorded, having said on stderr which file, why, and what to do."""
     data = (json.dumps(asdict(record), separators=(",", ":")) + "\n").encode()
-    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
     try:
-        os.write(fd, data)
-    finally:
-        os.close(fd)
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, data)
+        finally:
+            os.close(fd)
+    except OSError as error:
+        print(
+            f"e2e-netmeasure: cannot append launch {record.launch_id}'s measurement line to {path} "
+            f"({error}); check that its directory is writable and has space, then rerun the suite",
+            file=sys.stderr,
+        )
+        raise Unrecorded(path) from error
 
 
 def exit_code(status: int) -> int:
@@ -583,6 +602,8 @@ def measure(args: argparse.Namespace) -> int:
         os.close(done_r)
         try:
             outcome = supervise(args, pasta, scratch, life_r)
+        except Unrecorded:
+            outcome = Outcome(Ending.EXITED, code=UNRECORDED)
         except Exception as error:
             # The shim still gets an answer and the launch a line: run it
             # directly if it never started, else record why it went unmeasured.
@@ -592,8 +613,11 @@ def measure(args: argparse.Namespace) -> int:
                 "the launch, and if it recurs report that traceback against scripts/e2e-netmeasure.py"
             )
             if (scratch / "launched").exists():
-                append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, None))
-                outcome = Outcome(Ending.EXITED, code=137)
+                try:
+                    append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, None))
+                    outcome = Outcome(Ending.EXITED, code=137)
+                except Unrecorded:
+                    outcome = Outcome(Ending.EXITED, code=UNRECORDED)
             else:
                 outcome = Outcome(Ending.UNLAUNCHED, reason=reason)
         try:
@@ -668,7 +692,13 @@ def main(argv: list[str]) -> int:
     # Refuse a bad value before anything runs, not inside the namespace.
     deadline_seconds()
     observer_argv()
-    return measure(args)
+    try:
+        return measure(args)
+    except Unrecorded:
+        # The launch ran but its line is not in (append_line said why): an
+        # unrecorded launch must not pass for a recorded one.
+        remove_pending(args.pending)
+        return UNRECORDED
 
 
 if __name__ == "__main__":

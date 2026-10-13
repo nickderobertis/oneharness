@@ -275,8 +275,14 @@ oh_telemetry_setup() {
     if command -v cygpath >/dev/null 2>&1; then
       # A native process (oneharness) resolves `codex` through PATHEXT, so
       # Windows needs a .cmd beside the script Git Bash runs.
-      printf '@"%s" "%s" %%*\r\n' "$(cygpath -w "$(command -v bash)")" "$(cygpath -w "$shim")" |
-        _oh_write_whole "$shim.cmd" || true # checked below, like the script
+      local win_bash win_shim
+      if win_bash="$(cygpath -w "$(command -v bash)")" && win_shim="$(cygpath -w "$shim")" &&
+        [ -n "$win_bash" ] && [ -n "$win_shim" ]; then
+        printf '@"%s" "%s" %%*\r\n' "$win_bash" "$win_shim" |
+          _oh_write_whole "$shim.cmd" || true # checked below, like the script
+      else
+        note "  could not convert bash's or $shim's path for Windows; the check below refuses the missing $exe.cmd"
+      fi
     fi
     _OH_SHIMMED+=("$exe")
   done
@@ -297,9 +303,12 @@ _oh_shims_first() {
     if [ "$resolved" != "$_OH_SHIM_DIR/$exe" ] ||
       ! grep -q "$OH_NETWORK_SHIM_MARKER suite=$OH_E2E_SUITE" "$resolved" 2>/dev/null; then
       faults+=("PATH resolves $exe to '${resolved:-nothing}', not this suite's measuring shim $_OH_SHIM_DIR/$exe")
-    elif command -v cygpath >/dev/null 2>&1 &&
-      ! grep -qF "$(cygpath -w "$resolved")" "$resolved.cmd" 2>/dev/null; then
-      faults+=("$resolved.cmd does not launch this suite's measuring shim, so oneharness (which resolves $exe through PATHEXT) would bypass it")
+    elif command -v cygpath >/dev/null 2>&1; then
+      local windows_shim=""
+      if ! windows_shim="$(cygpath -w "$resolved")" || [ -z "$windows_shim" ] ||
+        ! grep -qF "\"$windows_shim\"" "$resolved.cmd" 2>/dev/null; then
+        faults+=("$resolved.cmd does not launch this suite's measuring shim (${windows_shim:-its Windows path did not convert}), so oneharness (which resolves $exe through PATHEXT) would bypass it")
+      fi
     fi
   done
   [ "${#faults[@]}" -eq 0 ] ||

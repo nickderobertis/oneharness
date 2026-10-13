@@ -453,6 +453,28 @@ class SupervisorLoss(unittest.TestCase):
         self.assertFalse(list((tmp / ".pending").glob("*")))
 
 
+class Unwritable(unittest.TestCase):
+    def test_a_measured_launch_whose_line_cannot_be_written_fails_the_shim(self) -> None:
+        # The launch makes the telemetry file read-only; the supervisor, on the
+        # host, cannot append its line, says which file and why, and the shim
+        # exits 125 rather than pass the launch off as recorded.
+        need_recorder(self)
+        tmp = scratch(self)
+        file = tmp / "codex.jsonl"
+        real = tmp / "locking-double"
+        real.write_text(f'#!/usr/bin/env bash\nchmod a-w "{file}"\nexit 4\n')
+        real.chmod(0o755)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"TMPDIR": str(tmp)})
+        file.chmod(0o644)
+        self.assertEqual(run.returncode, 125, run.stderr)
+        self.assertIn(f"measurement line to {file}".encode(), run.stderr)
+        (start,) = starts(lines(file))
+        self.assertEqual(measurements(lines(file), start["launch_id"]), [])
+        self.assertFalse(
+            list((tmp / ".pending").glob("*")), "the pending marker outlived the failure"
+        )
+
+
 class LostResult(unittest.TestCase):
     def test_a_namespace_that_ran_the_launch_but_left_no_result_records_it_unmeasured(self) -> None:
         # The launch plants a directory where the namespace's init writes its

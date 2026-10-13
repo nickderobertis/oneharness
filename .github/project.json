@@ -16,9 +16,7 @@
       "{workspaceRoot}/scripts/ci-verdict.sh",
       "{workspaceRoot}/scripts/release-payload.mjs",
       "{workspaceRoot}/tools/release-tooling/payload-contract/**/*",
-      "{workspaceRoot}/scripts/check-usage-enforce.sh",
-      "{workspaceRoot}/scripts/e2e-lib.sh",
-      "{workspaceRoot}/scripts/with-portable-sed.sh"
+      "{workspaceRoot}/scripts/e2e-lib.sh"
     ]
   },
   "targets": {

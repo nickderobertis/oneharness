@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, delimiter } from "node:path";
 import { spawnSync } from "node:child_process";
 import { parse } from "yaml";
@@ -53,32 +54,45 @@ test("a job-level no-skip demand is caught for every platform", () => {
   }
 });
 
-test("hermetic usage-enforce check passes under each platform's gate env without claude-code", () => {
-  // The host PATH minus every directory holding a claude-code CLI.
-  const bin = (process.env.PATH ?? "")
-    .split(delimiter)
-    .filter((dir) => dir && !existsSync(join(dir, "claude")) && !existsSync(join(dir, "claude.exe")))
-    .join(delimiter);
-  // Every platform's gate env, run once per distinct value (they coincide
-  // today, and the script takes tens of seconds).
-  const envs = new Map();
-  for (const os of check.strategy.matrix.os) {
-    const ciEnv = gateEnv(os, "affected");
-    const key = JSON.stringify(ciEnv);
-    envs.set(key, [[...(envs.get(key)?.[0] ?? []), os], ciEnv]);
-  }
-  assert.equal(spawnSync("bash", ["-c", "command -v claude"], { env: { PATH: bin } }).status, 1);
-  const run = (ciEnv, extra) =>
-    spawnSync("bash", ["scripts/with-portable-sed.sh", "scripts/check-usage-enforce.sh"], {
-      encoding: "utf8",
-      env: { ...process.env, OH_E2E_NO_SKIP: "", PATH: bin, ...ciEnv, ...extra },
+test("absent-harness usage probe skips under each platform's gate env without claude-code", (t) => {
+  if (spawnSync("bash", ["-c", "command -v jq"]).status !== 0) return t.skip("jq absent: oh_usage_enforce parses with it");
+  const scratch = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "gate-env-"));
+  try {
+    // The one boundary doubled is `oneharness usage`'s report, as
+    // scripts/check-usage-enforce.sh does; e2e-lib.sh's real helper reads it.
+    const stub = join(scratch, "oneharness");
+    writeFileSync(stub, '#!/usr/bin/env bash\nprintf \'%s\\n\' "$FAKE_STDOUT"\n');
+    chmodSync(stub, 0o755);
+    const absent = JSON.stringify({
+      schema_version: "0.1",
+      identities: [{
+        harness: "claude-code",
+        availability: { state: "unknown", reason: { kind: "binary_missing", bin: "claude" } },
+        reset_credits: { state: "reported", available_count: 0, credits: [] },
+      }],
     });
-  for (const [platforms, ciEnv] of envs.values()) {
-    const result = run(ciEnv, {});
-    assert.equal(result.status, 0, `${platforms}: ${result.stdout}${result.stderr}`);
+    // The host PATH minus every directory holding a claude-code CLI.
+    const path = (process.env.PATH ?? "")
+      .split(delimiter)
+      .filter((dir) => dir && !existsSync(join(dir, "claude")) && !existsSync(join(dir, "claude.exe")))
+      .join(delimiter);
+    const ambient = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("OH_E2E_")));
+    const probe = (ciEnv) =>
+      spawnSync("bash", ["-c", 'set -euo pipefail; source scripts/e2e-lib.sh; oh_usage_enforce claude-code'], {
+        encoding: "utf8",
+        env: { ...ambient, PATH: path, ONEHARNESS_BIN: stub, FAKE_STDOUT: absent, ...ciEnv },
+      });
+    assert.notEqual(spawnSync("bash", ["-c", "command -v claude"], { env: { PATH: path } }).status, 0);
+    for (const os of check.strategy.matrix.os) {
+      const result = probe(gateEnv(os, "affected"));
+      assert.equal(result.status, 0, `${os}: ${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /SKIP:.*not installed/, `${os}: absent harness skips`);
+    }
+    // The CI failure this guards against, induced: the old job-level demand.
+    const refused = probe({ ...gateEnv("ubuntu-latest", "affected"), OH_E2E_NO_SKIP: "1" });
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /skip disallowed \(OH_E2E_NO_SKIP set\).*not installed/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
-  // The failure this guards against, induced: the old job-level demand.
-  const refused = run({}, { OH_E2E_NO_SKIP: "1" });
-  assert.notEqual(refused.status, 0, "no-skip must refuse the absent-harness case");
-  assert.match(refused.stderr + refused.stdout, /OH_E2E_NO_SKIP must turn the absence into a failure|skip disallowed/);
 });

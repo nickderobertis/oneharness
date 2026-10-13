@@ -1884,14 +1884,9 @@ oh_codex_config_override_order() {
 }
 
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase is the drift gate between the measured matrix and real Codex, which the deterministic gate cannot run; it belongs in the live codex suite.
-# Model-free: real codex's precedence among the spellings of its `plugins`
-# feature, which two things here rest on — oneharness's plugins-off default
-# (`-c features.plugins=false`, `codex_plugins_off` in domain/harness.rs), which
-# a caller's own `-c features.plugins=true` or `--enable plugins` must still
-# override, and the mock codex's model of it (`codex_plugins_enabled` in
-# tests/support/mock_harness.rs). Both are held to one matrix of measured rows,
-# tests/fixtures/codex-plugins-flag-order.json, and this asks real codex every
-# row. Asked under an empty CODEX_HOME, so a config.toml of the host's cannot
+# Model-free: asks real codex every row of
+# tests/fixtures/codex-plugins-flag-order.json for its effective `plugins`
+# feature. Under an empty CODEX_HOME, so a config.toml of the host's cannot
 # decide the unnamed default.
 oh_codex_plugins_flag_order() {
   command -v codex >/dev/null 2>&1 ||

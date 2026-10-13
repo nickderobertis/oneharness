@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from support import (
+    BASH,
     ROOT,
     WINDOWS,
     check_step,
@@ -82,7 +83,7 @@ def run_until_recorded(suite: str, env: dict[str, str], harness: str, limit: flo
     err = Path(env["TMPDIR"]) / "suite.err"
     with err.open("wb") as sink:
         process = subprocess.Popen(
-            ["bash", str(ROOT / "scripts" / f"e2e-{suite}.sh")],
+            [BASH, str(ROOT / "scripts" / f"e2e-{suite}.sh")],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=sink,
@@ -193,7 +194,7 @@ class Setup(unittest.TestCase):
             env["PATH"] = f"{path_first}{os.pathsep}{env['PATH']}"
         return subprocess.run(
             [
-                "bash",
+                BASH,
                 "-c",
                 f'set -euo pipefail; source "$1"; {script}',
                 "_",
@@ -265,7 +266,7 @@ class Setup(unittest.TestCase):
         shims = tmp / "telemetry" / ".shims" / "winleg"
         adapter = (shims / "codex.cmd").read_bytes()
         bash = subprocess.run(
-            ["bash", "-c", "command -v bash"], capture_output=True, text=True
+            [BASH, "-c", "command -v bash"], capture_output=True, text=True
         ).stdout.strip()
         self.assertEqual(adapter, f'@"W:{bash}" "W:{shims / "codex"}" %*\r\n'.encode())
         stale = self.setup_and(
@@ -295,7 +296,7 @@ class DirectCodexLaunches(unittest.TestCase):
         (home / "plugins" / "fixture-plugin").mkdir(parents=True)
         run = subprocess.run(
             [
-                "bash",
+                BASH,
                 "-c",
                 'set -euo pipefail; source "$1"; _oh_codex_direct "$2" "$3" "Reply exactly ONEHARNESS-LIVE-7"',
                 "_",
@@ -428,7 +429,7 @@ class Settings(unittest.TestCase):
             with self.subTest(value=value):
                 tmp = scratch(self)
                 run = subprocess.run(
-                    ["bash", str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+                    [BASH, str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
                     capture_output=True,
                     text=True,
                     env={
@@ -448,7 +449,7 @@ class Settings(unittest.TestCase):
     ) -> subprocess.CompletedProcess[str]:
         path = f"{path_first}{os.pathsep}{os.environ['PATH']}" if path_first else os.environ["PATH"]
         return subprocess.run(
-            ["bash", str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+            [BASH, str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
             capture_output=True,
             text=True,
             env={
@@ -634,7 +635,7 @@ class Legs(unittest.TestCase):
         pending = tmp / ".pending"
         pending.mkdir()
         (pending / "codex-1-abc").write_text("")
-        remover = subprocess.Popen(["bash", "-c", f'sleep 1.5; rm -f "{pending}/codex-1-abc"'])
+        remover = subprocess.Popen([BASH, "-c", f'sleep 1.5; rm -f "{pending}/codex-1-abc"'])
         started = time.monotonic()
         run = check_step(tmp)
         remover.wait()
@@ -645,7 +646,7 @@ class Legs(unittest.TestCase):
         (pending / "codex-2-def").write_text("")
         started = time.monotonic()
         run = subprocess.run(
-            ["bash", str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
+            [BASH, str(ROOT / "scripts" / "e2e-network-budget.sh"), "codex"],
             capture_output=True,
             text=True,
             env={

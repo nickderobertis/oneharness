@@ -335,7 +335,7 @@ class CodexHomePlugins(unittest.TestCase):
                 run = run_lib("oh_codex_home_allows_plugins", str(home))
                 self.assertEqual(run.returncode == 0, allowed, run.stderr)
                 if not allowed:
-                    self.assertIn(f"{home / 'config.toml'} disables Codex plugins", run.stderr)
+                    self.assertIn(f"{home}/config.toml disables Codex plugins", run.stderr)
 
     def test_a_config_codex_could_not_read_is_refused_naming_the_file(self) -> None:
         for name, text in (
@@ -349,7 +349,7 @@ class CodexHomePlugins(unittest.TestCase):
                 run = run_lib("oh_codex_home_allows_plugins", str(home))
                 self.assertNotEqual(run.returncode, 0)
                 self.assertIn(
-                    f"could not read {home / 'config.toml'} as the TOML Codex reads", run.stderr
+                    f"could not read {home}/config.toml as the TOML Codex reads", run.stderr
                 )
 
     def test_a_reader_that_fails_never_passes_for_plugins_on(self) -> None:

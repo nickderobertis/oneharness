@@ -764,6 +764,10 @@ class CodexSuite(BudgetCase):
             run.stdout,
         )
 
+    @unittest.skipIf(
+        WINDOWS,
+        "Windows holds no read-only directory against the setup's rewrite of the stale shim",
+    )
     def test_the_suite_fails_when_codex_on_path_is_not_its_shim(self) -> None:
         tmp = scratch(self)
         # A stale shim directory the setup cannot rewrite, holding a foreign

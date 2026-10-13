@@ -39690,6 +39690,7 @@ fn an_unwritable_state_directory_falls_back_with_one_warning() {
     assert!(world.helpers().is_empty(), "{:?}", world.records());
 }
 
+// llmlint: ignore-block[tests_mirror_real_usage] Through the CLI a launch's wait can only outlast MODEL_CATALOG_WAIT when another process holds the lock past the refresh deadline — a oneharness stopped or stalled mid-refresh — which no launch this suite starts can be made to be on demand; the test holds the lock as that process would, and the launch that waits goes through the real CLI.
 #[test]
 fn a_launch_whose_wait_for_the_lock_runs_out_falls_back_at_model_catalog_wait() {
     // Another process holds the catalog's lock past MODEL_CATALOG_WAIT (here,
@@ -39721,6 +39722,7 @@ fn a_launch_whose_wait_for_the_lock_runs_out_falls_back_at_model_catalog_wait() 
     assert!(world.helpers().is_empty(), "{:?}", world.records());
     assert!(world.launches().pop().unwrap()["catalog"].is_null());
 }
+// llmlint: ignore-end[tests_mirror_real_usage]
 
 #[test]
 fn a_catalog_that_cannot_be_written_falls_back_and_backs_off() {

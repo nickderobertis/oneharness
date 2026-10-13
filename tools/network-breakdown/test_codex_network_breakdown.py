@@ -517,6 +517,37 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertIn("no host and port", errors[2])
         self.assertIn("no host and port in 'bad_host!:443'", errors[3])
 
+    def test_a_request_that_never_completes_is_refused_and_reported(self) -> None:
+        self.need_namespace()
+        client = (
+            "import os, socket, struct\n"
+            "from urllib.parse import urlparse\n"
+            "proxy = urlparse(os.environ['HTTPS_PROXY'])\n"
+            "def conn():\n"
+            "    return socket.create_connection((proxy.hostname, proxy.port))\n"
+            "with conn() as c:\n"
+            "    c.sendall(b'CONNECT example.invalid:443 HTTP/1.1\\r\\n')\n"
+            "    c.shutdown(socket.SHUT_WR)\n"
+            "    c.recv(64)\n"
+            "with conn() as c:\n"
+            "    c.sendall(b'X' * 70000)\n"
+            "    assert c.recv(64).startswith(b'HTTP/1.1 431')\n"
+            "c = conn()\n"
+            "c.sendall(b'CONNECT example.invalid:443 HTTP/1.1\\r\\n')\n"
+            "c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))\n"
+            "c.close()\n"
+        )
+        report = breakdown("--", sys.executable, "-I", "-c", client)
+        self.assertEqual(report["launch_exit"], 0, report)
+        self.assertEqual(report["tunnels"], [])
+        errors = sorted(refusal["error"] for refusal in report["refused"])
+        self.assertEqual(len(errors), 3, report)
+        self.assertTrue(any("closed before its request was complete" in e for e in errors), errors)
+        self.assertTrue(any("request head over 65536 bytes" in e for e in errors), errors)
+        self.assertTrue(
+            any(e.startswith("handshake: ConnectionResetError") for e in errors), errors
+        )
+
     def test_env_values_reach_the_measured_launch(self) -> None:
         self.need_namespace()
         report = breakdown(

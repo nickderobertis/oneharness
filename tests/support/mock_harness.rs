@@ -453,13 +453,15 @@ fn answer_version(argv: &[String]) -> ! {
     let mut out = std::io::stdout();
     let _ = out.write_all(answer.as_bytes());
     let _ = out.flush();
-    std::process::exit(
-        std::env::var("MOCK_CODEX_VERSION_EXIT")
-            .or_else(|_| std::env::var("MOCK_EXIT"))
-            .ok()
-            .and_then(|code| code.parse().ok())
-            .unwrap_or(0),
-    );
+    let code = std::env::var("MOCK_CODEX_VERSION_EXIT").or_else(|_| std::env::var("MOCK_EXIT"));
+    std::process::exit(match code {
+        Err(_) => 0,
+        Ok(code) => code.parse().unwrap_or_else(|_| {
+            refuse(&format!(
+                "`--version`'s exit code must be a number, got `{code}`"
+            ))
+        }),
+    });
 }
 
 /// A milliseconds knob: unset is `None`, and anything but a whole number stops
@@ -474,7 +476,8 @@ fn millis_knob(name: &str) -> Option<u64> {
 
 /// The last `-c model_catalog_json=<value>` in `argv`, its TOML string decoded
 /// the way Codex reads it: a literal `'…'` as is, a basic `"…"` through its
-/// escapes, anything else as the raw text.
+/// escapes, anything else as the raw text (Codex reads a `-c` value that is no
+/// TOML as a string). A quoted value that is no TOML string stops the mock.
 fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
     let value = argv
         .windows(2)
@@ -485,7 +488,11 @@ fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
         return Some(inner.to_string());
     }
     if value.starts_with('"') {
-        return serde_json::from_str(value).ok();
+        return Some(serde_json::from_str(value).unwrap_or_else(|_| {
+            refuse(&format!(
+                "model_catalog_json `{value}` is quoted but no TOML basic string"
+            ))
+        }));
     }
     Some(value.to_string())
 }

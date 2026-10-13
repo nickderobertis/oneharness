@@ -85,6 +85,8 @@ CLONE_NEWPID = 0x20000000
 # to that host that opened this soon before (clock skew between the log line
 # and the proxy's accept) or after it.
 CONNECT_BEFORE_SECONDS = 0.5
+# The most a proxy request's head may hold before it is refused.
+MAX_REQUEST_HEAD = 65536
 # How long, after a signal ends pasta, the script waits for the namespace to
 # finish recording the measurement it took.
 RECORD_AFTER_SIGNAL_SECONDS = 5.0
@@ -525,10 +527,20 @@ class CountingProxy:
         head = b""
         while b"\r\n\r\n" not in head:
             data = client.recv(4096)
-            if not data or len(head) > 65536:
-                client.close()
+            if not data:
+                self._refuse(
+                    client, "400 Bad Request", "?", "closed before its request was complete"
+                )
                 return
             head += data
+            if len(head) > MAX_REQUEST_HEAD:
+                self._refuse(
+                    client,
+                    "431 Request Header Fields Too Large",
+                    "?",
+                    f"request head over {MAX_REQUEST_HEAD} bytes",
+                )
+                return
         request = head.split(b"\r\n", 1)[0].decode("latin-1")
         parts = request.split(" ")
         if len(parts) != 3:

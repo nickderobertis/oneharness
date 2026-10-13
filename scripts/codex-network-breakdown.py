@@ -57,6 +57,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
+import ipaddress
 import json
 import math
 import os
@@ -92,7 +93,8 @@ MAX_REQUEST_HEAD = 65536
 # How long, after a signal ends pasta, the script waits for the namespace to
 # finish recording the measurement it took.
 RECORD_AFTER_SIGNAL_SECONDS = 5.0
-# How much of a failed launch's stdout is shown when it was not kept.
+# How much of a failed launch's stdout, or traced stderr, is shown when it was
+# not kept.
 LAUNCH_STDOUT_TAIL_LINES = 20
 CONNECT_AFTER_SECONDS = 5.0
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's tracing spelling has no schema to reconcile against short of running Codex: the committed fixture (tools/network-breakdown/recorded-codex-trace.log, from codex-cli 0.159.2, the version the README's figures name) pins what these read, and a spelling that moves degrades attribution to empty paths, never to wrong byte counts. Re-measuring against live Codex — the README's invocation, which the `oneharness-live-network-budget` plan node re-runs — is where that surfaces.
@@ -109,9 +111,9 @@ SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
 URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d{1,5}))?(?=$|[/?#\s,])(/[^\s\"'?#]*)?")
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# A destination a proxy request may name: a hostname, an IPv4 address, or an
-# IPv6 address without its brackets.
-HOST = re.compile(r"[A-Za-z0-9.-]{1,253}|[0-9A-Fa-f:.]{2,45}")
+# A hostname a proxy request may name, in the limits the resolver's IDNA
+# encoding holds it to: 1 to 63 characters a label, at most 253 in all.
+HOSTNAME = re.compile(r"(?=.{1,253}\Z)[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.?")
 
 
 class Unusable(Exception):
@@ -566,7 +568,7 @@ class CountingProxy:
             return
         # llmlint: ignore-end[structural_pattern_matching]
         host = host.strip("[]")
-        if not HOST.fullmatch(host) or not is_port(port):
+        if not is_host(host) or not is_port(port):
             self._refuse(client, "400 Bad Request", target, f"no host and port in {target!r}")
             return
         destination = f"{host}:{port}"
@@ -893,6 +895,17 @@ def fetch_pasta() -> str:
 # llmlint: ignore-end[changed_behavior_has_e2e]
 
 
+def is_host(text: str) -> bool:
+    """A destination a proxy request may name: a hostname, an IPv4 address, or
+    an IPv6 address without its brackets and with no zone; nothing the
+    connection's own name resolution would refuse with an error of its own."""
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return HOSTNAME.fullmatch(text) is not None
+    return "%" not in text
+
+
 def is_port(text: str) -> bool:
     """Whether `text` is a TCP port: one to five ASCII digits naming 1 to 65535."""
     return 0 < len(text) <= 5 and text.isascii() and text.isdigit() and 0 < int(text) < 65536
@@ -1005,19 +1018,14 @@ def measure(args: argparse.Namespace) -> int:
         if args.measurement_out is not None:
             write_text(Path(args.measurement_out), json.dumps(asdict(measurement), indent=2) + "\n")
         stdout_text = read_text(Path(launch_stdout))
-        if measurement.launch_exit != 0 and args.launch_stdout is None:
-            tail = stdout_text.splitlines()[-LAUNCH_STDOUT_TAIL_LINES:]
-            print(
-                f"codex-network-breakdown: the launch exited {measurement.launch_exit} "
-                f"(none: timed out); the last {len(tail)} line(s) of its stdout follow. "
-                "The measurement stands; rerun with --launch-stdout PATH to keep all of it",
-                *tail,
-                sep="\n",
-                file=sys.stderr,
-            )
-        trace_text = None
-        if args.trace:
-            trace_text = read_text(Path(trace_file))
+        trace_text = read_text(Path(trace_file)) if args.trace else None
+        if measurement.launch_exit != 0:
+            # What was kept is the reader's to open; what was not is shown.
+            if args.launch_stdout is None:
+                show_tail("stdout", stdout_text, "--launch-stdout", measurement.launch_exit)
+            if trace_text is not None and args.trace_out is None:
+                show_tail("stderr", trace_text, "--trace-out", measurement.launch_exit)
+        if trace_text is not None:
             carried = oneharness_stderr(stdout_text)
             if carried:
                 trace_text += "\n" + carried
@@ -1026,6 +1034,19 @@ def measure(args: argparse.Namespace) -> int:
         remove_scratch(Path(scratch))
     print(json.dumps(report(measurement, trace_text)))
     return 0
+
+
+def show_tail(stream: str, text: str, keep: str, launch_exit: int | None) -> None:
+    """On stderr: a failed launch's last lines of a stream this run did not keep."""
+    tail = text.splitlines()[-LAUNCH_STDOUT_TAIL_LINES:]
+    print(
+        f"codex-network-breakdown: the launch exited {launch_exit} "
+        f"(none: timed out); the last {len(tail)} line(s) of its {stream} follow. "
+        f"The measurement stands; rerun with {keep} PATH to keep all of it",
+        *tail,
+        sep="\n",
+        file=sys.stderr,
+    )
 
 
 def read_text(path: Path) -> str:

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import socket
 import struct
@@ -561,7 +562,13 @@ class MeasureAroundATransferDouble(unittest.TestCase):
             "proxy = urlparse(os.environ['HTTPS_PROXY'])\n"
             "for head in (b'NONSENSE\\r\\n\\r\\n', b'GET /relative HTTP/1.1\\r\\n\\r\\n',\n"
             "             b'CONNECT example.invalid:99999 HTTP/1.1\\r\\n\\r\\n',\n"
-            "             b'CONNECT bad_host!:443 HTTP/1.1\\r\\n\\r\\n'):\n"
+            "             b'CONNECT bad_host!:443 HTTP/1.1\\r\\n\\r\\n',\n"
+            # Each would pass a character check and then fail the connection's
+            # own IDNA encoding: a label over 63 characters, an empty label,
+            # and an IPv6 zone.
+            f"             b'CONNECT {'a' * 64}.invalid:443 HTTP/1.1\\r\\n\\r\\n',\n"
+            "             b'CONNECT a..invalid:443 HTTP/1.1\\r\\n\\r\\n',\n"
+            "             b'CONNECT [fe80::1%..:]:443 HTTP/1.1\\r\\n\\r\\n'):\n"
             "    with socket.create_connection((proxy.hostname, proxy.port)) as conn:\n"
             "        conn.sendall(head)\n"
             "        assert conn.recv(64).startswith(b'HTTP/1.1 400'), head\n"
@@ -570,11 +577,14 @@ class MeasureAroundATransferDouble(unittest.TestCase):
         self.assertEqual(report["launch_exit"], 0, report)
         self.assertEqual(report["tunnels"], [])
         errors = [refusal["error"] for refusal in report["refused"]]
-        self.assertEqual(len(errors), 4, report)
+        self.assertEqual(len(errors), 7, report)
         self.assertIn("malformed request line", errors[0])
         self.assertIn("not a proxy request", errors[1])
         self.assertIn("no host and port", errors[2])
         self.assertIn("no host and port in 'bad_host!:443'", errors[3])
+        self.assertIn(f"no host and port in '{'a' * 64}.invalid:443'", errors[4])
+        self.assertIn("no host and port in 'a..invalid:443'", errors[5])
+        self.assertIn("no host and port in '[fe80::1%..:]:443'", errors[6])
 
     def test_a_request_that_never_completes_is_refused_and_reported(self) -> None:
         self.need_namespace()
@@ -704,6 +714,97 @@ class MeasureAroundATransferDouble(unittest.TestCase):
             self.assertEqual(run.returncode, 0, run)
             self.assertNotIn("line ", run.stderr)
             self.assertEqual(len(kept.read_text().splitlines()), 50)
+
+    def test_a_traced_launchs_stderr_is_shown_on_failure_unless_kept(self) -> None:
+        self.need_namespace()
+        chatter = (
+            "import sys\n"
+            "for n in range(50): print(f'trace {n}', file=sys.stderr)\n"
+            "sys.exit(int(sys.argv[1]))\n"
+        )
+        run = run_script("--trace", "--", sys.executable, "-I", "-c", chatter, "0")
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+        self.assertNotIn("trace ", run.stderr)
+        run = run_script("--trace", "--", sys.executable, "-I", "-c", chatter, "5")
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 5, run)
+        self.assertIn("the last 20 line(s) of its stderr follow", run.stderr)
+        self.assertIn("--trace-out PATH", run.stderr)
+        self.assertIn("trace 49", run.stderr)
+        self.assertNotIn("trace 29\n", run.stderr)
+        with tempfile.TemporaryDirectory() as scratch:
+            kept = Path(scratch) / "trace"
+            run = run_script(
+                "--trace", "--trace-out", str(kept), "--", sys.executable, "-I", "-c", chatter, "5"
+            )
+            self.assertEqual(json.loads(run.stdout)["launch_exit"], 5, run)
+            self.assertNotIn("trace ", run.stderr)
+            self.assertIn("trace 0\n", kept.read_text())
+
+    def test_a_proc_that_cannot_be_remounted_is_warned_about_and_the_run_measured(self) -> None:
+        self.need_namespace()
+        real = shutil.which("mount")
+        self.assertIsNotNone(real)
+        with tempfile.TemporaryDirectory() as scratch:
+            # A `mount` that refuses only /proc, ahead of the real one.
+            executable(
+                Path(scratch) / "mount",
+                "#!/bin/sh\n"
+                'case " $* " in *" proc "*) echo "mount: proc: permission denied" >&2; exit 32;; esac\n'
+                f'exec {real} "$@"\n',
+            )
+            env = dict(os.environ, PATH=f"{scratch}{os.pathsep}{os.environ['PATH']}")
+            run = run_script("--", "true", env=env)
+        self.assertEqual(run.returncode, 0, run)
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+        self.assertIn("/proc was not remounted (mount: proc: permission denied)", run.stderr)
+        self.assertIn("The byte counts stand", run.stderr)
+
+    def test_a_scratch_directory_that_cannot_be_removed_is_named_for_hand_cleanup(self) -> None:
+        self.need_namespace()
+        # The launch leaves an unremovable file in the script's own scratch
+        # directory, which it finds under the TMPDIR they share.
+        launch = (
+            "import glob, os\n"
+            "[scratch] = glob.glob(os.path.join(os.environ['TMPDIR'], 'codex-network-breakdown-*'))\n"
+            "stuck = os.path.join(scratch, 'stuck')\n"
+            "os.mkdir(stuck)\n"
+            "open(os.path.join(stuck, 'file'), 'w').close()\n"
+            "os.chmod(stuck, 0o500)\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            try:
+                run = run_script(
+                    "--", sys.executable, "-I", "-c", launch, env=dict(os.environ, TMPDIR=tmpdir)
+                )
+            finally:
+                for stuck in Path(tmpdir).glob("codex-network-breakdown-*/stuck"):
+                    stuck.chmod(0o700)
+        self.assertEqual(run.returncode, 0, run)
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+        self.assertIn("warning: could not remove", run.stderr)
+        self.assertRegex(run.stderr, r"delete \S*codex-network-breakdown-\S+ by hand")
+
+    def test_a_proxy_that_stops_accepting_says_later_tunnels_are_missing(self) -> None:
+        self.need_namespace()
+        # The launch shares a PID namespace with the proxy, its PID 1: it caps
+        # the proxy's open files at what it holds, so the next accept fails,
+        # then gives the cap back so the measurement can be written.
+        launch = (
+            "import os, resource, socket, time\n"
+            "from urllib.parse import urlparse\n"
+            "proxy = urlparse(os.environ['HTTPS_PROXY'])\n"
+            "limit = resource.prlimit(1, resource.RLIMIT_NOFILE)\n"
+            "resource.prlimit(1, resource.RLIMIT_NOFILE, (len(os.listdir('/proc/1/fd')), limit[1]))\n"
+            "held = [socket.create_connection((proxy.hostname, proxy.port)) for _ in range(3)]\n"
+            "time.sleep(1)\n"
+            "resource.prlimit(1, resource.RLIMIT_NOFILE, limit)\n"
+            "for conn in held: conn.close()\n"
+        )
+        run = run_script("--", sys.executable, "-I", "-c", launch)
+        self.assertEqual(run.returncode, 0, run)
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+        self.assertIn("warning: the proxy stopped accepting connections (OSError:", run.stderr)
+        self.assertIn("missing from `tunnels`", run.stderr)
 
     def test_a_launch_that_cannot_start_is_refused_saying_what_to_do(self) -> None:
         self.need_namespace()

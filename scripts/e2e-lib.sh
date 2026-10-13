@@ -210,7 +210,11 @@ OH_NETWORK_SHIM_MARKER="oneharness-network-shim"
 OH_E2E_SUITE=""
 OH_E2E_TELEMETRY_FILE=""
 _OH_SHIM_DIR=""
+# Parallel arrays (bash 3.2 has no associative ones): each shimmed
+# executable, the shim text the setup wrote for it, and its Windows adapter.
 _OH_SHIMMED=()
+_OH_SHIM_TEXT=()
+_OH_SHIM_CMD=()
 _OH_PHASE_KEY=""
 _OH_PHASE_COUNT=0
 
@@ -247,7 +251,7 @@ _oh_write_whole() {
 
 # Set up this suite's recorder. $1 is the suite (`codex` for e2e-codex.sh).
 oh_telemetry_setup() {
-  local suite="$1" dir pair exe harness real shim
+  local suite="$1" dir pair exe harness real shim text cmd
   need jq
   dir="${OH_E2E_TELEMETRY_DIR:-$OH_REPO_ROOT/target/e2e-telemetry/network}"
   case "$dir" in /* | [A-Za-z]:*) ;; *) dir="$PWD/$dir" ;; esac
@@ -261,30 +265,33 @@ oh_telemetry_setup() {
   # The marker is what keeps a nested suite from wrapping these shims.
   : >"$_OH_SHIM_DIR/.oh-network-shims" ||
     fail "cannot mark $_OH_SHIM_DIR as the suite's shim directory; check that it is writable, or remove it and rerun"
-  _OH_SHIMMED=()
+  _OH_SHIMMED=() _OH_SHIM_TEXT=() _OH_SHIM_CMD=()
   for pair in "${OH_HARNESS_EXECUTABLES[@]}"; do
     exe="${pair%%:*}" harness="${pair#*:}"
     real="$(_oh_unshimmed "$exe")" || continue
     shim="$_OH_SHIM_DIR/$exe"
-    {
+    text="$(
       printf '#!/usr/bin/env bash\n# %s suite=%s\n' "$OH_NETWORK_SHIM_MARKER" "$suite"
-      printf 'exec bash %q --suite %q --harness %q --real %q --self %q --file %q -- "$@"\n' \
+      printf 'exec bash %q --suite %q --harness %q --real %q --self %q --file %q -- "$@"' \
         "$OH_REPO_ROOT/scripts/e2e-netshim.sh" "$suite" "$harness" "$real" "$shim" "$OH_E2E_TELEMETRY_FILE"
-    } | _oh_write_whole "$shim" && chmod +x "$shim" ||
-      true # _oh_shims_first below refuses whatever stands in its place
+    )"
+    # A write that fails leaves whatever stood there, which _oh_shims_first
+    # below refuses: it holds each shim to exactly this text.
+    printf '%s\n' "$text" | _oh_write_whole "$shim" && chmod +x "$shim" || true
+    cmd=""
     if command -v cygpath >/dev/null 2>&1; then
       # A native process (oneharness) resolves `codex` through PATHEXT, so
       # Windows needs a .cmd beside the script Git Bash runs.
       local win_bash win_shim
       if win_bash="$(cygpath -w "$(command -v bash)")" && win_shim="$(cygpath -w "$shim")" &&
         [ -n "$win_bash" ] && [ -n "$win_shim" ]; then
-        printf '@"%s" "%s" %%*\r\n' "$win_bash" "$win_shim" |
-          _oh_write_whole "$shim.cmd" || true # checked below, like the script
+        cmd="@\"$win_bash\" \"$win_shim\" %*"
+        printf '%s\r\n' "$cmd" | _oh_write_whole "$shim.cmd" || true # held to $cmd below, like the script
       else
         note "  could not convert bash's or $shim's path for Windows; the check below refuses the missing $exe.cmd"
       fi
     fi
-    _OH_SHIMMED+=("$exe")
+    _OH_SHIMMED+=("$exe") _OH_SHIM_TEXT+=("$text") _OH_SHIM_CMD+=("$cmd")
   done
   PATH="$_OH_SHIM_DIR:$PATH"
   export PATH
@@ -293,21 +300,22 @@ oh_telemetry_setup() {
 }
 
 # Fail unless every executable the setup shimmed resolves first to this
-# suite's shim (and, on Windows, its .cmd to that shim): a launch that
-# bypassed it would leave the record incomplete.
+# suite's shim — exactly the shim the setup wrote, not a stale or foreign file
+# in its place — and, on Windows, its .cmd to exactly the adapter it wrote: a
+# launch that bypassed them would leave the record incomplete.
 _oh_shims_first() {
-  local exe resolved faults=()
+  local i exe resolved want faults=()
   [ -n "$_OH_SHIM_DIR" ] || return 0
-  for exe in "${_OH_SHIMMED[@]+"${_OH_SHIMMED[@]}"}"; do
+  for i in "${!_OH_SHIMMED[@]}"; do
+    exe="${_OH_SHIMMED[$i]}"
     resolved="$(command -v "$exe" 2>/dev/null || true)"
     if [ "$resolved" != "$_OH_SHIM_DIR/$exe" ] ||
-      ! grep -q "$OH_NETWORK_SHIM_MARKER suite=$OH_E2E_SUITE" "$resolved" 2>/dev/null; then
+      ! cmp -s "$resolved" <(printf '%s\n' "${_OH_SHIM_TEXT[$i]}"); then
       faults+=("PATH resolves $exe to '${resolved:-nothing}', not this suite's measuring shim $_OH_SHIM_DIR/$exe")
     elif command -v cygpath >/dev/null 2>&1; then
-      local windows_shim=""
-      if ! windows_shim="$(cygpath -w "$resolved")" || [ -z "$windows_shim" ] ||
-        ! grep -qF "\"$windows_shim\"" "$resolved.cmd" 2>/dev/null; then
-        faults+=("$resolved.cmd does not launch this suite's measuring shim (${windows_shim:-its Windows path did not convert}), so oneharness (which resolves $exe through PATHEXT) would bypass it")
+      want="${_OH_SHIM_CMD[$i]}"
+      if [ -z "$want" ] || ! cmp -s "$resolved.cmd" <(printf '%s\r\n' "$want"); then
+        faults+=("$resolved.cmd does not launch this suite's measuring shim (${want:-its Windows path did not convert}), so oneharness (which resolves $exe through PATHEXT) would bypass it")
       fi
     fi
   done

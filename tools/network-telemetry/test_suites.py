@@ -229,6 +229,27 @@ class Setup(unittest.TestCase):
             "the inner shim wraps the outer one, not the real codex",
         )
 
+    def test_a_stale_shim_of_the_same_suite_is_refused_when_it_cannot_be_rewritten(self) -> None:
+        # The last run's shim (same suite, same marker) wraps an executable
+        # that has since moved; this run cannot rewrite it, and must not take
+        # the old one for its own.
+        need_builds(self)
+        tmp = scratch(self)
+        self.assertEqual(self.setup_and(tmp, "oh_telemetry_setup again").returncode, 0)
+        moved = tmp / "moved-bin"
+        moved.mkdir()
+        (moved / "codex").write_text("#!/usr/bin/env bash\nexit 0\n")
+        (moved / "codex").chmod(0o755)
+        shims = tmp / "telemetry" / ".shims" / "again"
+        shims.chmod(0o555)
+        self.addCleanup(shims.chmod, 0o755)
+        run = self.setup_and(tmp, "oh_telemetry_setup again", path_first=moved)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn(
+            f"PATH resolves codex to '{shims / 'codex'}', not this suite's measuring shim",
+            run.stderr,
+        )
+
     def test_windows_gets_a_cmd_adapter_and_refuses_one_that_bypasses_the_shim(self) -> None:
         # Git Bash's cygpath is stood in for by one that marks the Windows form,
         # so the adapter oh_telemetry_setup writes there can be read here.

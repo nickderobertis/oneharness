@@ -1,0 +1,93 @@
+{
+  "label": "exec-turn-without-defaults",
+  "argv": [
+    "oneharness",
+    "run",
+    "--harness",
+    "codex",
+    "--prompt",
+    "<one-command prompt>",
+    "--format",
+    "json",
+    "--compact"
+  ],
+  "launch_exit": 0,
+  "launch_seconds": 10.394,
+  "timed_out": false,
+  "received_bytes": 1375674,
+  "sent_bytes": 751971,
+  "tunnels": [
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 622993,
+      "sent_bytes": 3723,
+      "opened_at": 1791874269.2128804,
+      "closed_at": 1791874269.66147
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 7175,
+      "sent_bytes": 3687,
+      "opened_at": 1791874269.3298016,
+      "closed_at": 1791874269.5734565
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 580312,
+      "sent_bytes": 9865,
+      "opened_at": 1791874269.435149,
+      "closed_at": 1791874278.6363811
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 6447,
+      "sent_bytes": 4446,
+      "opened_at": 1791874269.4656792,
+      "closed_at": 1791874269.7080395
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 122185,
+      "sent_bytes": 29896,
+      "opened_at": 1791874269.6648767,
+      "closed_at": 1791874278.6417103
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 5889,
+      "sent_bytes": 4437,
+      "opened_at": 1791874270.7837517,
+      "closed_at": 1791874270.9896338
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 5334,
+      "sent_bytes": 7565,
+      "opened_at": 1791874278.6269138,
+      "closed_at": 1791874278.7887747
+    },
+    {
+      "host": "chatgpt.com",
+      "port": 443,
+      "received_bytes": 5346,
+      "sent_bytes": 6515,
+      "opened_at": 1791874278.7944858,
+      "closed_at": 1791874279.0217483
+    },
+    {
+      "host": "ab.chatgpt.com",
+      "port": 443,
+      "received_bytes": 5935,
+      "sent_bytes": 669587,
+      "opened_at": 1791874279.0476713,
+      "closed_at": 1791874279.12613
+    }
+  ]
+}

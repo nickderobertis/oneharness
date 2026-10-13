@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# The live tier's network recorder: one harness launch, measured.
+#
+#   e2e-netshim.sh --suite S --harness H --real PATH --self SHIM --file FILE -- ARGS...
+#
+# scripts/e2e-lib.sh's oh_telemetry_setup writes a two-line shim per harness
+# executable a suite launches (`codex`, `claude`, ...) that execs this with the
+# real executable it resolved beforehand, and puts those shims first on PATH.
+# For each launch this appends to FILE (target/e2e-telemetry/network/<suite>.jsonl):
+#
+#   {"suite","phase","harness","kind","launch_id","argv"}            before it
+#   one measurement line joined by launch_id                          after it
+#
+# `phase` is OH_E2E_PHASE, which the suite's helpers export; `kind` is derived
+# from the argv (_kind below). On Linux the launch runs under
+# scripts/e2e-netmeasure.py, whose line carries the bytes its network namespace
+# exchanged ("method": "netns-pasta"); where that cannot run — macOS, Windows,
+# a Linux host without python3 or pasta — the launch runs directly and the line
+# is "method": "unavailable" with a reason. Either way stdin, stdout and stderr
+# are the launch's own and the exit status is the launch's.
+#
+# OH_E2E_OS (default: `uname -s`) selects the platform, so a test can drive the
+# fallback a macOS or Windows leg takes.
+set -uo pipefail
+
+MARKER="oneharness-network-shim"
+
+die() {
+  printf 'e2e-netshim: %s\n' "$*" >&2
+  exit 126
+}
+
+suite="" harness="" real="" self="" file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --suite) suite="$2" ;;
+    --harness) harness="$2" ;;
+    --real) real="$2" ;;
+    --self) self="$2" ;;
+    --file) file="$2" ;;
+    --)
+      shift
+      break
+      ;;
+    *) die "unknown option '$1'; the shim oh_telemetry_setup writes passes --suite --harness --real --self --file --" ;;
+  esac
+  shift 2 || die "option '$1' needs a value"
+done
+[ -n "$suite" ] && [ -n "$harness" ] && [ -n "$real" ] && [ -n "$self" ] && [ -n "$file" ] ||
+  die "--suite, --harness, --real, --self and --file are all required; regenerate the shim with oh_telemetry_setup"
+
+_canonical() {
+  local dir
+  dir="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s' "$dir" "$(basename "$1")"
+}
+
+# A shim that would launch itself — or another shim — would recurse or record
+# one launch twice; it refuses instead, before anything runs or is recorded.
+[ -x "$real" ] || die "the executable this shim wraps, $real, is gone; rerun the suite so oh_telemetry_setup resolves it again"
+if [ "$(_canonical "$real")" = "$(_canonical "$self")" ] ||
+  head -c 512 "$real" 2>/dev/null | grep -q "$MARKER"; then
+  die "refusing to wrap $real: it is this shim (or another network shim), not the real $harness; resolve the real executable before putting the shim first on PATH"
+fi
+
+# The launch kind, from the argv alone. Codex: `exec` (fresh or `exec
+# resume`), `app-server` (stdio: a controlled turn or a usage probe — the phase
+# tells them apart), `shared-app-server` (`app-server --listen`), `local` for a
+# launch that runs no turn (`--version`, `features`, `execpolicy`, `sandbox`,
+# `login status`), else the subcommand itself. Other harnesses: `local` for a
+# version/help/auth-status probe, `turn` for anything else.
+_kind() {
+  local h="$1" a sub=""
+  shift
+  if [ "$h" != codex ]; then
+    case "${1:-}:${2:-}" in
+      --version:* | -v:* | -V:* | version:* | --help:* | -h:* | auth:status | login:status) echo local ;;
+      *) echo turn ;;
+    esac
+    return
+  fi
+  while [ "$#" -gt 0 ]; do
+    a="$1"
+    case "$a" in
+      -c | --config | --enable | --disable | -m | --model | -p | --profile | -C | --cd | -s | --sandbox | -a | --ask-for-approval | -i | --image)
+        shift 2 || break
+        continue
+        ;;
+      --version | -V | --help | -h)
+        [ -z "$sub" ] && echo local && return
+        ;;
+      -*) ;;
+      *)
+        sub="$a"
+        break
+        ;;
+    esac
+    shift
+  done
+  case "$sub" in
+    exec | e) echo exec ;;
+    app-server)
+      local arg
+      for arg in "$@"; do
+        case "$arg" in --listen | --listen=*)
+          echo shared-app-server
+          return
+          ;;
+        esac
+      done
+      echo app-server
+      ;;
+    features | execpolicy | sandbox | "") echo local ;;
+    login)
+      [ "${2:-}" = status ] && echo local || echo login
+      ;;
+    *) echo "$sub" ;;
+  esac
+}
+
+kind="$(_kind "$harness" "$@")"
+launch_id="$suite-$$-$(od -An -N6 -tx1 /dev/urandom | tr -d ' \n')"
+phase="${OH_E2E_PHASE:-unphased}"
+# NUL-separated, so no argument is ever read as a jq option; each is cut to
+# 200 characters (a prompt is evidence enough by its head).
+argv='[]'
+if [ "$#" -gt 0 ]; then
+  argv="$(printf '%s\0' "$@" | jq -Rsc 'split("\u0000")[:-1] | map(if length > 200 then .[0:200] + "…" else . end)')" ||
+    die "jq could not encode the launch's argv; install jq (the live suites need it) and rerun"
+fi
+start="$(jq -nc --arg suite "$suite" --arg phase "$phase" --arg harness "$harness" \
+  --arg kind "$kind" --arg id "$launch_id" --argjson argv "$argv" \
+  '{suite: $suite, phase: $phase, harness: $harness, kind: $kind, launch_id: $id, argv: $argv}' |
+  tr -d '\r')" || die "jq could not write the start line; install jq (the live suites need it) and rerun"
+printf '%s\n' "$start" >>"$file" || die "cannot append to $file; check that its directory is writable"
+pending="$(dirname "$file")/.pending/$launch_id"
+mkdir -p "$(dirname "$pending")" && : >"$pending"
+
+os="${OH_E2E_OS:-$(uname -s)}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "$os" in
+  Linux*)
+    if command -v python3 >/dev/null 2>&1; then
+      exec python3 "$here/e2e-netmeasure.py" --line-file "$file" --launch-id "$launch_id" \
+        --pending "$pending" -- "$real" "$@"
+    fi
+    reason="no python3 on PATH to run scripts/e2e-netmeasure.py"
+    ;;
+  *) reason="the netns-pasta method needs Linux network namespaces; this leg is $os, which the network budgets do not support" ;;
+esac
+
+# The fallback: run the launch directly and record that it was not measured.
+# The trap is a handler, not an ignore, so the launch keeps default signal
+# dispositions; a signal to the process group ends it and this still records.
+trap ':' TERM INT HUP
+t0="$(date +%s)"
+"$real" "$@"
+rc=$?
+line="$(jq -nc --arg id "$launch_id" --arg reason "$reason" --argjson seconds "$(($(date +%s) - t0))" \
+  --argjson exit "$rc" \
+  '{launch_id: $id, method: "unavailable", reason: $reason, seconds: $seconds, exit: $exit}' | tr -d '\r')"
+printf '%s\n' "$line" >>"$file"
+rm -f "$pending"
+exit "$rc"

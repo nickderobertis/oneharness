@@ -52,6 +52,8 @@ def scratch(test: unittest.TestCase) -> Path:
     """A directory the test owns and gives back however it ends."""
     path = Path(tempfile.mkdtemp(prefix="oh-net-test-"))
     test.addCleanup(shutil.rmtree, path, True)
+    # Where a shim a test names as `--self` lives, as oh_telemetry_setup's would.
+    (path / "shims").mkdir()
     return path
 
 

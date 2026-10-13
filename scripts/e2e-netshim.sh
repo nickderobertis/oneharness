@@ -57,16 +57,20 @@ done
   die "--suite, --harness, --real, --self and --file are all required; regenerate the shim with oh_telemetry_setup"
 
 _canonical() {
-  local dir
-  dir="$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)" || return 1
-  printf '%s/%s' "$dir" "$(basename "$1")"
+  local dir="${1%/*}" name="${1##*/}"
+  [ "$dir" != "$1" ] || dir=.
+  dir="$(cd "$dir" 2>/dev/null && pwd -P)" || return 1
+  printf '%s/%s' "$dir" "$name"
 }
 
 # A shim that would launch itself — or another shim — would recurse or record
 # one launch twice; it refuses instead, before anything runs or is recorded.
 [ -x "$real" ] || die "the executable this shim wraps, $real, is gone; rerun the suite so oh_telemetry_setup resolves it again"
-if [ "$(_canonical "$real")" = "$(_canonical "$self")" ] ||
-  head -c 512 "$real" 2>/dev/null | grep -q "$MARKER"; then
+real_path="$(_canonical "$real")" || die "cannot resolve the directory of $real; check its permissions, then rerun the suite"
+self_path="$(_canonical "$self")" || die "cannot resolve the directory of the shim $self; rerun the suite so oh_telemetry_setup writes it again"
+head_bytes="$(head -c 512 "$real" | tr -d '\0')" ||
+  die "cannot read $real to check it is not a network shim; check its permissions, then rerun the suite"
+if [ "$real_path" = "$self_path" ] || case "$head_bytes" in *"$MARKER"*) true ;; *) false ;; esac then
   die "refusing to wrap $real: it is this shim (or another network shim), not the real $harness; resolve the real executable before putting the shim first on PATH"
 fi
 

@@ -218,6 +218,9 @@ class NamespaceResult:
     def from_json(text: str) -> NamespaceResult:
         """Read back what to_json wrote, refusing anything else with ValueError."""
         fields = json.loads(text)
+        keys = ("moved", "namespace_tcp_retrans_segs", "seconds", "exit", "start", "end")
+        if not isinstance(fields, dict) or not all(key in fields for key in keys):
+            raise ValueError(f"the result is not an object with {', '.join(keys)}: {text[:200]!r}")
         moved, retrans = fields["moved"], fields["namespace_tcp_retrans_segs"]
         seconds, code = fields["seconds"], fields["exit"]
         counts = [*moved, retrans] if isinstance(moved, list) else []
@@ -375,7 +378,8 @@ def private_resolver() -> None:
     configuration without the stub."""
     subprocess.run(["mount", "--make-rprivate", "/"], check=True)
     current = Path("/etc/resolv.conf").read_text()
-    servers = [line.split()[1] for line in current.splitlines() if line.startswith("nameserver")]
+    words = [line.split() for line in current.splitlines()]
+    servers = [w[1] for w in words if len(w) >= 2 and w[0] == "nameserver"]
     upstream = Path("/run/systemd/resolve/resolv.conf")
     if servers and all(s.startswith("127.") for s in servers) and upstream.exists():
         subprocess.run(["mount", "--bind", str(upstream), "/etc/resolv.conf"], check=True)

@@ -337,12 +337,37 @@ class CodexHomePlugins(unittest.TestCase):
                 if not allowed:
                     self.assertIn(f"{home / 'config.toml'} disables Codex plugins", run.stderr)
 
-    def test_a_config_that_is_not_toml_is_refused_naming_the_file(self) -> None:
+    def test_a_config_codex_could_not_read_is_refused_naming_the_file(self) -> None:
+        for name, text in (
+            ("not TOML", "[features\nplugins = false\n"),
+            ("features not a table", "features = 3\n"),
+            ("plugins not a boolean", '[features]\nplugins = "no"\n'),
+        ):
+            with self.subTest(config=name):
+                home = scratch(self)
+                (home / "config.toml").write_text(text)
+                run = run_lib("oh_codex_home_allows_plugins", str(home))
+                self.assertNotEqual(run.returncode, 0)
+                self.assertIn(
+                    f"could not read {home / 'config.toml'} as the TOML Codex reads", run.stderr
+                )
+
+    def test_a_reader_that_fails_never_passes_for_plugins_on(self) -> None:
+        # A python3 that imports tomllib but then fails reading: its failure is
+        # refused, not taken for a config that leaves plugins on.
         home = scratch(self)
-        (home / "config.toml").write_text("[features\nplugins = false\n")
-        run = run_lib("oh_codex_home_allows_plugins", str(home))
+        (home / "config.toml").write_text("[features]\nplugins = true\n")
+        broken = scratch(self)
+        for name in ("python3.13", "python3.12", "python3.11", "python3"):
+            (broken / name).write_text('#!/usr/bin/env bash\n[ "${1:-}" = -c ] && exit 0\nexit 1\n')
+            (broken / name).chmod(0o755)
+        run = run_lib(
+            "oh_codex_home_allows_plugins",
+            str(home),
+            env={"PATH": f"{broken}{os.pathsep}{os.environ['PATH']}"},
+        )
         self.assertNotEqual(run.returncode, 0)
-        self.assertIn(f"could not read {home / 'config.toml'} as TOML", run.stderr)
+        self.assertIn("could not read", run.stderr)
 
 
 class CodexLogEvidence(unittest.TestCase):

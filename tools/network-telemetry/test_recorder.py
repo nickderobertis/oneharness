@@ -713,7 +713,7 @@ class Refusal(unittest.TestCase):
     def test_the_shim_refuses_to_wrap_itself_or_another_shim(self) -> None:
         tmp = scratch(self)
         own = tmp / "shims" / "codex"
-        own.parent.mkdir(parents=True)
+        own.parent.mkdir(parents=True, exist_ok=True)
         own.write_text("#!/usr/bin/env bash\n# oneharness-network-shim suite=codex\nexit 0\n")
         own.chmod(0o755)
         other = tmp / "other-shim"

@@ -235,13 +235,13 @@ _oh_unshimmed() {
 # Write stdin to $1 whole or not at all: a partial shim
 # must never stand where the setup's check would read it. Says why on failure.
 _oh_write_whole() {
-  local target="$1" partial="$1.$$.partial"
-  if cat 2>/dev/null >"$partial" && mv -f "$partial" "$target" 2>/dev/null; then
+  local target="$1" partial="$1.$$.partial" error
+  if error="$({ cat >"$partial" && mv -f "$partial" "$target"; } 2>&1)"; then
     return 0
   fi
   [ ! -e "$partial" ] || rm -f "$partial" ||
     note "  could not remove the partial shim $partial either; delete it by hand"
-  note "  could not write $target (its directory is not writable); the check below names what PATH resolves instead"
+  note "  could not write $target (${error:-no error given}); the check below names what PATH resolves instead"
   return 1
 }
 
@@ -3885,7 +3885,11 @@ oh_codex_home_allows_plugins() {
   done < <(_oh_toml_python || true)
   [ "${#python[@]}" -gt 0 ] ||
     fail "reading $cfg needs Python 3.11+ (tomllib) or uv; install either, then rerun"
-  "${python[@]}" - "$cfg" <<'PY' || rc=$?
+  # The decision is what the reader prints — `off` or `on` — never its exit
+  # status, so an interpreter (or uv) that fails cannot pass for "on".
+  local decision
+  decision="$(
+    "${python[@]}" - "$cfg" <<'PY'
 import sys
 import tomllib
 
@@ -3893,15 +3897,18 @@ try:
     with open(sys.argv[1], "rb") as handle:
         config = tomllib.load(handle)
 except (OSError, tomllib.TOMLDecodeError) as error:
-    print(error, file=sys.stderr)
-    sys.exit(2)
-features = config.get("features")
-sys.exit(0 if isinstance(features, dict) and features.get("plugins") is False else 1)
+    sys.exit(f"{sys.argv[1]}: {error}")
+features = config.get("features", {})
+plugins = features.get("plugins", True) if isinstance(features, dict) else None
+if not isinstance(plugins, bool):
+    sys.exit(f"{sys.argv[1]}: `features` must be a table and `features.plugins` a boolean, as Codex reads them")
+print("off" if plugins is False else "on")
 PY
-  case "$rc" in
-    0) fail "$cfg disables Codex plugins (features.plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
-    1) ;;
-    *) fail "could not read $cfg as TOML (its error is above); fix it so Codex can read it too, then rerun" ;;
+  )" || rc=$?
+  case "$rc:$decision" in
+    0:off) fail "$cfg disables Codex plugins (features.plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
+    0:on) ;;
+    *) fail "could not read $cfg as the TOML Codex reads (the reader's error is above; exit $rc); fix it so Codex can read it too, then rerun" ;;
   esac
 }
 
@@ -3993,7 +4000,7 @@ for process, row_thread, body in rows:
     record = processes.setdefault(
         process, {"process": process, "text": "", "catalog_request": False, "plugin_load_ran": False}
     )
-    body = body or ""
+    body = body if isinstance(body, str) else ""
     if marker in body or (thread and row_thread == thread):
         record["text"] = marker
     if body.startswith("fetching remote plugin catalog"):

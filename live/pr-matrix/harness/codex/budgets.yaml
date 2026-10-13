@@ -1,0 +1,54 @@
+schema_version: 1
+# Network data the live-codex pass spends, read from the telemetry its recorder
+# writes (live/AGENTS.md): `just live-codex` checks these after its suite, on the
+# Linux leg alone. Each figure is bytes at a launch's own network-namespace
+# boundary — payload plus per-frame headers, pasta TAP counters over the
+# launch's whole process tree — not host-NIC wire bytes.
+budgets:
+  - id: codex-launch-network-bytes
+    description: >-
+      The most bytes any single Codex launch of one default-config live-codex run
+      received (exec turns, the controlled turn's app-server, the usage probe,
+      network-free launches), at its network-namespace boundary over its whole
+      process tree; sent bytes are recorded in the detail, not gated. 2,500,000 B
+      is 1.5x the spike's largest plugins-off launch (2,002,290 B) less the model
+      catalog fetch the shared catalog removes, so a catalog-scale or similar
+      single-launch jump fails. Measured on Linux only: the macOS and Windows legs
+      record no bytes and do not run this check. The figure exists only when
+      every launch has exactly one complete measured line; otherwise the check
+      errors, naming what is missing.
+    measure: reported
+    command: ["uv", "run", "--quiet", "--locked", "--script", "network_budget.py"]
+    unit: bytes
+    direction: max
+    threshold: 2500000
+    timeout_seconds: 300
+  - id: codex-usage-probe-network-bytes
+    description: >-
+      The most bytes any usage-probe launch (`oneharness usage` starting `codex
+      app-server --stdio`) of one default-config live-codex run received, counted
+      as codex-launch-network-bytes counts it: #1442's bound of under 1 MB per
+      probe (the spike measured 649,266 B before the shared model catalog).
+      Linux only, like the other budgets; a run with no measured usage probe
+      errors, naming the missing phase.
+    measure: reported
+    command: ["uv", "run", "--quiet", "--locked", "--script", "network_budget.py", "--kind", "usage-probe"]
+    unit: bytes
+    direction: max
+    threshold: 999999
+    timeout_seconds: 300
+  - id: codex-live-suite-network-bytes
+    description: >-
+      Total bytes received across every default-config Codex launch of one
+      complete live-codex pass (the opted-in plugins variant records to
+      variants.jsonl and is excluded), counted as codex-launch-network-bytes
+      counts each launch. 30,000,000 B leaves about 1.2x over the post-fix
+      estimate of 17-24.5 MB, so an across-the-board doubling fails while a
+      single-launch jump is the per-launch budget's. Linux only; the same
+      completeness rule applies.
+    measure: reported
+    command: ["uv", "run", "--quiet", "--locked", "--script", "network_budget.py", "--total"]
+    unit: bytes
+    direction: max
+    threshold: 30000000
+    timeout_seconds: 300

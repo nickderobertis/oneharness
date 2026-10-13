@@ -726,6 +726,8 @@ def loopback_up() -> None:
 def init(args: argparse.Namespace) -> int:
     """Inside pasta's user and network namespace: become PID 1 of a new PID
     namespace, run the proxy and the launch, and record the measurement."""
+    if sys.platform == "win32":
+        raise Unusable("the measuring namespace is Linux-only; run this inside pasta on Linux")
     libc = ctypes.CDLL(None, use_errno=True)
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
         raise Unusable(
@@ -972,9 +974,18 @@ def measure(args: argparse.Namespace) -> int:
             # pasta may have exited between the signal and this handler; the
             # wait below then returns at once, and nothing is left to end.
             with contextlib.suppress(ProcessLookupError):
-                os.killpg(run.pid, signal.SIGTERM)
+                if sys.platform == "win32":
+                    run.terminate()
+                else:
+                    os.killpg(run.pid, signal.SIGTERM)
 
-        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        # Windows has no SIGHUP and no process groups to end; pasta never runs
+        # there, but its refusals are reached the same way.
+        if sys.platform == "win32":
+            ends = (signal.SIGTERM, signal.SIGINT)
+        else:
+            ends = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+        for signum in ends:
             signal.signal(signum, forward)
         run.wait()
         # A forwarded signal ends pasta at once, while the namespace's init is

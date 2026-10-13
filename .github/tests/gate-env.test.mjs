@@ -1,5 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { parse, stringify } from "yaml";
 import { checkJob, gateEnv, gateSteps } from "../gate-env.mjs";
 
 // The check job's deterministic gate ran with the live suites' OH_E2E_NO_SKIP
@@ -25,5 +29,27 @@ test("a job- or workflow-level no-skip demand reaches every platform's gate", ()
     doubled[level].env = { ...(doubled[level].env ?? {}), OH_E2E_NO_SKIP: 1 };
     for (const os of ci.check.strategy.matrix.os)
       assert.equal(gateEnv(doubled, os, "affected").OH_E2E_NO_SKIP, "1", `${level}/${os}`);
+  }
+});
+
+test("malformed check job input is refused before any environment is derived", () => {
+  const cases = [
+    (d) => { d.jobs.check.steps.push(null); },
+    (d) => { d.jobs.check.steps[0].if = 7; },
+    (d) => { d.jobs.check.env = ["OH_E2E_NO_SKIP=1"]; },
+    (d) => { d.jobs.check.steps.find((s) => s.run === "just check").env = { NX_BASE: { nested: true } }; },
+    (d) => { d.jobs.check.strategy.matrix.os = "ubuntu-latest"; },
+  ];
+  const dir = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "gate-env-input-"));
+  try {
+    for (const mutate of cases) {
+      const document = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+      mutate(document);
+      const path = join(dir, "ci.yml");
+      writeFileSync(path, stringify(document));
+      assert.throws(() => checkJob(path), /Invalid .*(env|steps|matrix)/);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

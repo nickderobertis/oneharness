@@ -396,6 +396,10 @@ CASES
   # else. sysctl answering 1 installs the native arm64 build; 0, or a failed
   # probe (an Intel kernel has no such key), refuses by name.
   local stubs answer rc
+  # llmlint: ignore-block[e2e_not_mocked] No runner is both an x86_64-reporting
+  # shell and an Apple Silicon or Intel kernel on demand; uname -m and sysctl
+  # hw.optional.arm64 are the two kernel facts install.sh reads there, so only
+  # they are stubbed, while its download, checksum and extraction run for real.
   stubs="$work/platform-stubs"
   mkdir -p "$stubs"
   cat >"$stubs/uname" <<'STUB'
@@ -438,6 +442,7 @@ STUB
       fi
     fi
   done
+  # llmlint: ignore-end[e2e_not_mocked]
 }
 
 verify_trust_root_independence

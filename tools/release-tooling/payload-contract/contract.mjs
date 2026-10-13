@@ -34,6 +34,7 @@ export function assertPackResponse(value, directory) {
     !Array.isArray(value) ||
     value.length !== 1 ||
     !value[0] ||
+    // llmlint: ignore[boundary_inputs_validated] The preceding !value[0] short-circuit rejects [null] before filename access with the deliberate npm-pack validation error, pinned by the public contract API test.
     typeof value[0].filename !== "string" ||
     basename(value[0].filename) !== value[0].filename ||
     !value[0].filename.endsWith(".tgz")

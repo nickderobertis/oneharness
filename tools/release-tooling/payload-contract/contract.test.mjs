@@ -33,6 +33,7 @@ test("release payload v1 golden round-trips through the producer and consumer AP
   for (const value of [
     null,
     [],
+    [null],
     [{ filename: "../outside.tgz" }],
     [{ filename: "a.tgz" }, { filename: "b.tgz" }],
   ])

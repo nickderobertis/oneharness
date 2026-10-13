@@ -107,6 +107,18 @@ test("real git histories classify automation versions and fail closed on forged/
         ...event,
         pull_request: {
           ...event.pull_request,
+          user: { login: "github-actions[bot]" },
+          head: { ...event.pull_request.head, ref: "feature" },
+        },
+      }).macosRequired,
+      true,
+      "bot identity alone cannot authorize Mac omission",
+    );
+    assert.equal(
+      run({
+        ...event,
+        pull_request: {
+          ...event.pull_request,
           head: { ...event.pull_request.head, ref: "release-plz-custom" },
         },
       }).isReleaseOnly,

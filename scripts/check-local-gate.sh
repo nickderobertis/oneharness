@@ -485,10 +485,6 @@ cat >"$bootstrap_repo/scripts/shell-tools.sh" <<'STUB'
 printf 'shell-tools %s\n' "$*" >> "$CALL_LOG"
 STUB
 git -C "$bootstrap_repo" init -q
-git -C "$bootstrap_repo" config core.hooksPath retained-hooks || {
-  echo "check-local-gate: could not configure the bootstrap fixture's hooksPath; check that $bootstrap_repo/.git/config is writable, then re-run" >&2
-  exit 1
-}
 for tool in rustup cargo bun uv; do
   cat >"$bootstrap_bin/$tool" <<'STUB'
 #!/usr/bin/env bash
@@ -497,18 +493,28 @@ STUB
   chmod +x "$bootstrap_bin/$tool"
 done
 ln -s "$(command -v just)" "$bootstrap_bin/just"
-CALL_LOG="$log" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
-  just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
-assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.23' "$log" \
-  "bootstrap did not run the llmlint installer"
-assert_file_contains 'shell-tools install' "$log" \
-  "bootstrap did not install the pinned shell toolchain"
-hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath)
-[[ $hooks_path == retained-hooks ]] || {
-  echo "check-local-gate: bootstrap changed hooksPath '$hooks_path', expected 'retained-hooks'" >&2
-  echo "  fix: remove hooksPath writes from the bootstrap recipe in justfile so existing unrelated hooks remain enabled" >&2
-  exit 1
-}
+for expected_hooks_path in retained-hooks 'retained hooks [*]?'; do
+  git -C "$bootstrap_repo" config core.hooksPath "$expected_hooks_path" || {
+    echo "check-local-gate: could not configure the bootstrap fixture's hooksPath; check that $bootstrap_repo/.git/config is writable, then re-run" >&2
+    exit 1
+  }
+  CALL_LOG="$log" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+    just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
+  assert_file_contains 'uv tool install --upgrade llmlint-cli>=0.3.23' "$log" \
+    "bootstrap did not run the llmlint installer"
+  assert_file_contains 'shell-tools install' "$log" \
+    "bootstrap did not install the pinned shell toolchain"
+  hooks_path=$(git -C "$bootstrap_repo" config --local --get core.hooksPath) || {
+    echo "check-local-gate: could not read hooksPath after bootstrap, expected '$expected_hooks_path'" >&2
+    echo "  fix: preserve core.hooksPath in bootstrap and check that $bootstrap_repo/.git/config is readable, then re-run" >&2
+    exit 1
+  }
+  [[ "$hooks_path" == "$expected_hooks_path" ]] || {
+    echo "check-local-gate: bootstrap changed hooksPath '$hooks_path', expected '$expected_hooks_path'" >&2
+    echo "  fix: remove hooksPath writes from the bootstrap recipe in justfile so existing unrelated hooks remain enabled" >&2
+    exit 1
+  }
+done
 
 # The llmlint installer runs from the SessionStart hook, so under its `set -e`
 # every failure it guards must still end in exit 0. Each case drives the real

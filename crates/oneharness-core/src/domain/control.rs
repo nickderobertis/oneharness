@@ -1492,6 +1492,7 @@ mod control_mode_parity {
             schema: None,
             system_file: None,
             delivery,
+            plugins: false,
         })
     }
 

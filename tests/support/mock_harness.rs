@@ -120,6 +120,24 @@
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   MOCK_CODEX_PLUGINS_LOG     if set to a path, a launch as `exec` or
+//!                              `app-server` resolves Codex's `plugins` feature
+//!                              from its argv the way Codex does (on unless
+//!                              named; `-c features.plugins=<bool>` last-wins,
+//!                              then any `--enable plugins`, then any
+//!                              `--disable plugins`) and appends one JSON
+//!                              line: `subcommand`, `plugins`, `catalog_fetched`
+//!                              and `loaded` — the plugins installed under
+//!                              `$CODEX_HOME/plugins/` (one directory each)
+//!                              that it loaded, none when the feature is off
+//!                              (loading them needs `CODEX_HOME` set). Any
+//!                              other launch, `--version` among them, is not
+//!                              recorded.
+//!                              It then carries on as it otherwise would.
+//!   MOCK_CODEX_PLUGINS_LIST_FAULT  with MOCK_CODEX_PLUGINS_LOG, if set, an
+//!                              entry of `$CODEX_HOME/plugins/` fails to read
+//!                              after the directory opened, so that refusal
+//!                              can be driven end to end.
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
@@ -249,6 +267,109 @@ fn scripted_attempt() -> Option<u32> {
         attempt
     })
 }
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex's precedence can only be read from an installed Codex, which the deterministic gate does not have; this task places that reconciliation in the live codex suite (`oh_codex_plugins_flag_order` in scripts/e2e-lib.sh asks real codex every row of tests/fixtures/codex-plugins-flag-order.json), and in the gate this model is held to that same one-source matrix by its unit test below.
+/// Codex's `plugins` feature as an argv resolves it, by the precedence real
+/// codex applies: on when nothing names it; every `-c features.plugins=<bool>`
+/// in argv order, the last one winning; then any `--enable plugins`; then any
+/// `--disable plugins` — both toggles land after every `-c`, wherever they sit,
+/// and `--disable` beats `--enable`. Only those three spellings are modelled;
+/// `tests/fixtures/codex-plugins-flag-order.json` holds the measured rows this
+/// is tested against and `oh_codex_plugins_flag_order` (`scripts/e2e-lib.sh`)
+/// asks real codex.
+fn codex_plugins_enabled(argv: &[String]) -> bool {
+    let mut enabled = true;
+    let (mut enable, mut disable) = (false, false);
+    for pair in argv.windows(2) {
+        match (pair[0].as_str(), pair[1].as_str()) {
+            ("-c", "features.plugins=true") => enabled = true,
+            ("-c", "features.plugins=false") => enabled = false,
+            ("--enable", "plugins") => enable = true,
+            ("--disable", "plugins") => disable = true,
+            _ => {}
+        }
+    }
+    (enabled || enable) && !disable
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] `catalog_fetched` follows the feature because spike-network-accounting measured exactly that on every launch path (6.9–32.2 MB a turn with plugins on, 0.74–1.33 MB with `--disable plugins`), and the live tier's `codex-launch-network-bytes` budget, which the `oneharness-live-network-budget` plan node registers, is the drift gate against real Codex; this double is not a second source of that fact. Codex's own plugin storage is not modelled.
+/// `MOCK_CODEX_PLUGINS_LOG`: what a Codex process started with `argv` did about
+/// plugins — whether it fetched the remote catalog, and which plugins installed
+/// under its `CODEX_HOME` it loaded — appended as one JSON line. Only a launch
+/// of a subcommand that starts Codex (`exec`, `app-server`) is recorded.
+fn record_codex_plugins(path: &str, argv: &[String]) {
+    let Some(subcommand) = argv
+        .first()
+        .filter(|first| matches!(first.as_str(), "exec" | "app-server"))
+    else {
+        return;
+    };
+    let enabled = codex_plugins_enabled(argv);
+    let loaded = if enabled {
+        installed_codex_plugins()
+    } else {
+        Vec::new()
+    };
+    let line = serde_json::json!({
+        "subcommand": subcommand,
+        "plugins": enabled,
+        "catalog_fetched": enabled,
+        "loaded": loaded,
+    });
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("MOCK_CODEX_PLUGINS_LOG could not be opened");
+    writeln!(log, "{line}").expect("MOCK_CODEX_PLUGINS_LOG could not be written");
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This layout is not a claim about where real Codex keeps plugins: it is this double's own fixture convention, and its one other reader is the e2e helper that installs a plugin under it (`launch_codex` in `crates/oneharness-e2e/tests/cli.rs`), whose journeys fail if the two disagree.
+/// The plugins installed under `$CODEX_HOME/plugins/`, one directory each and
+/// sorted; any other file there is not a plugin. No `plugins/` directory is no
+/// plugins installed. A launch that loads plugins with no `CODEX_HOME` would
+/// read the real `~/.codex`, and an unreadable directory or entry would read as
+/// none installed, so each stops the mock rather than record a launch nobody
+/// set up.
+fn installed_codex_plugins() -> Vec<String> {
+    let home = std::env::var_os("CODEX_HOME")
+        .expect("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
+    // Listing and reading the entries is one fallible step, so a failure part
+    // way through the listing takes the same refusal as one opening it.
+    let listed =
+        std::fs::read_dir(std::path::Path::new(&home).join("plugins")).and_then(|entries| {
+            // MOCK_CODEX_PLUGINS_LIST_FAULT: one entry after the real ones fails to
+            // read, the fault no real directory can be made to raise on demand.
+            let fault = std::env::var_os("MOCK_CODEX_PLUGINS_LIST_FAULT")
+                .map(|_| Err(std::io::Error::other("injected listing fault")));
+            entries.chain(fault).collect::<std::io::Result<Vec<_>>>()
+        });
+    let entries = match listed {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => panic!("$CODEX_HOME/plugins could not be read: {err}"),
+    };
+    // An entry whose type cannot be read is refused rather than read as no
+    // plugin, the way `Path::is_dir` would.
+    let mut loaded: Vec<String> = entries
+        .into_iter()
+        .filter(|entry| match std::fs::metadata(entry.path()) {
+            Ok(metadata) => metadata.is_dir(),
+            // Named by its file name alone: the full path carries the scratch
+            // directory's pid, which a `401`/`403` in it reads as an auth refusal.
+            Err(err) => panic!(
+                "$CODEX_HOME/plugins entry `{}` could not be read: {err}",
+                entry.file_name().to_string_lossy()
+            ),
+        })
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    loaded.sort();
+    loaded
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The stdout scripted for this invocation: MOCK_STDOUT_<attempt> when the
 /// attempt is counted and that knob is set, else MOCK_STDOUT, else `default`.
@@ -1514,6 +1635,10 @@ pub fn run() -> ! {
         let _ = std::fs::write(path, argv.join("\n"));
     }
 
+    if let Ok(path) = std::env::var("MOCK_CODEX_PLUGINS_LOG") {
+        record_codex_plugins(&path, &argv);
+    }
+
     // Append one line to the run log (when configured), opening fresh each time so
     // concurrent invocations share the file via the OS's append semantics.
     let log_line = |line: &str| {
@@ -1790,4 +1915,49 @@ pub fn run() -> ! {
         })
         .unwrap_or(0);
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_plugins_enabled;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    #[test]
+    fn codex_plugins_resolve_by_codexs_measured_precedence() {
+        // The rows `oh_codex_plugins_flag_order` asks real codex, from the one
+        // matrix both read.
+        let matrix: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/codex-plugins-flag-order.json"))
+                .expect("the codex plugins matrix is JSON");
+        let rows = matrix["rows"].as_array().expect("rows");
+        assert!(rows.len() >= 12, "{rows:?}");
+        for row in rows {
+            let mut args = argv(&["exec"]);
+            args.extend(
+                row["args"]
+                    .as_array()
+                    .expect("args")
+                    .iter()
+                    .map(|arg| arg.as_str().expect("an arg is text").to_string()),
+            );
+            let want = row["plugins"].as_bool().expect("plugins is a bool");
+            assert_eq!(codex_plugins_enabled(&args), want, "{args:?}");
+        }
+        // Other features, and other spellings, leave it alone.
+        for (args, want) in [
+            (
+                &["exec", "--disable", "apps", "-c", "features.hooks=false"][..],
+                true,
+            ),
+            (
+                &["exec", "--disable", "plugins", "--enable", "hooks"],
+                false,
+            ),
+        ] {
+            assert_eq!(codex_plugins_enabled(&argv(args)), want, "{args:?}");
+        }
+    }
 }

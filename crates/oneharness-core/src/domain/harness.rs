@@ -71,6 +71,12 @@ pub struct BuildCtx<'a> {
     /// stdin shapes ([`PromptDelivery::Stdin`] vs
     /// [`PromptDelivery::ControlStream`]) select different CLI flags.
     pub delivery: PromptDelivery,
+    /// Whether the run opts into the harness's plugins feature (the resolved
+    /// `plugins` config key, [`crate::domain::config::FileConfig::plugins_for`]).
+    /// Only codex reads it: `false` starts Codex with `-c features.plugins=false`
+    /// right after its subcommand, so the caller's own args — which ride later —
+    /// can still turn plugins back on; `true` adds no plugins flag at all.
+    pub plugins: bool,
 }
 
 /// How the user prompt reaches the harness.
@@ -780,6 +786,14 @@ pub fn all() -> &'static [HarnessSpec] {
 /// Look up a harness by its canonical id.
 pub fn by_id(id: &str) -> Option<&'static HarnessSpec> {
     REGISTRY.iter().find(|h| h.id == id)
+}
+
+/// Whether harness `id` has a plugins feature the `plugins` config key toggles.
+/// Only Codex does: its `features.plugins` setting is what that key becomes
+/// (see [`BuildCtx::plugins`]).
+#[must_use]
+pub fn has_plugins_toggle(id: &str) -> bool {
+    id == "codex"
 }
 
 /// Comma-joined list of valid ids, for error messages and help.
@@ -1833,12 +1847,15 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     // argv. NOT `app-server daemon`: that needs a managed standalone install
     // this project does not use, and self-updates from a fixed path.
     if c.delivery.is_control_stream() {
-        return vec![c.bin.into(), "app-server".into()];
+        let mut a = vec![c.bin.into(), "app-server".into()];
+        a.extend(codex_plugins_off(c.plugins));
+        return a;
     }
     let mut a = vec![c.bin.into(), "exec".into()];
     if c.resume.is_some() {
         a.push("resume".into());
     }
+    a.extend(codex_plugins_off(c.plugins));
     // The sandbox is the real control surface under `exec` (approval downgrades
     // to `never`). `Default` keeps the exec default (read-only). `Edit` is not a
     // supported mode for codex, so it is never reached. Bypass is one flag both
@@ -1883,6 +1900,28 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     }
     a
 }
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks this spelling's precedence against it.
+/// `-c features.plugins=false` unless the run opted into plugins. Codex
+/// otherwise downloads its whole remote plugin catalog (~29 MB) on every
+/// process start, uncached.
+///
+/// Spelled as a `-c` override rather than `--disable plugins` so a caller can
+/// still turn plugins back on: codex applies `-c` overrides last-wins among
+/// themselves and every `--enable`/`--disable` after all of them, with
+/// `--disable` beating `--enable` — so after a leading `--disable plugins`
+/// nothing a caller adds re-enables them, while after this override a later
+/// `-c features.plugins=true` or an `--enable plugins` anywhere does. Real
+/// codex's precedence is pinned by `oh_codex_plugins_flag_order`
+/// (`scripts/e2e-lib.sh`).
+fn codex_plugins_off(plugins: bool) -> Vec<String> {
+    if plugins {
+        Vec::new()
+    } else {
+        vec!["-c".into(), "features.plugins=false".into()]
+    }
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The sandbox a codex `exec` turn asks for under `mode`, in codex's own
 /// `SandboxMode` spelling; `None` where the mode names no sandbox (`default`
@@ -2340,6 +2379,7 @@ mod tests {
             schema: None,
             system_file: None,
             delivery: PromptDelivery::Argv,
+            plugins: false,
         }
     }
 
@@ -2747,6 +2787,8 @@ mod tests {
             vec![
                 "codex",
                 "exec",
+                "-c",
+                "features.plugins=false",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "hi"
             ]
@@ -2879,6 +2921,7 @@ mod tests {
             schema: None,
             system_file: None,
             delivery: PromptDelivery::Argv,
+            plugins: false,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -2959,6 +3002,7 @@ mod tests {
             schema: None,
             system_file: None,
             delivery: PromptDelivery::Argv,
+            plugins: false,
         }
     }
 
@@ -3007,7 +3051,7 @@ mod tests {
         // and goose take theirs elsewhere — the app-server negotiates the
         // sandbox per turn, and goose reads `GOOSE_MODE` from the environment.
         let launches = [
-            ("codex", &["app-server"][..]),
+            ("codex", &["app-server", "-c", "features.plugins=false"][..]),
             ("goose", &["acp"][..]),
             (
                 "copilot",
@@ -3390,7 +3434,7 @@ mod tests {
             (PermissionMode::Default, &[]),
         ];
         for (mode, sandbox) in cases {
-            let mut want = vec!["codex", "exec"];
+            let mut want = vec!["codex", "exec", "-c", "features.plugins=false"];
             want.extend_from_slice(sandbox);
             want.extend(["--json", "hi"]);
             assert_eq!(codex_argv(*mode, None), want, "fresh {mode:?}");
@@ -3417,13 +3461,65 @@ mod tests {
         ];
         for (mode, sandbox) in cases {
             let argv = codex_argv(*mode, Some("0199-thread"));
-            let mut want = vec!["codex", "exec", "resume"];
+            let mut want = vec!["codex", "exec", "resume", "-c", "features.plugins=false"];
             want.extend_from_slice(sandbox);
             want.extend(["--json", "0199-thread", "hi"]);
             assert_eq!(argv, want, "resumed {mode:?}");
             assert!(
                 !argv.iter().any(|t| t == "--sandbox"),
                 "`exec resume` rejects --sandbox under {mode:?}: {argv:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn codex_plugins_are_off_unless_the_run_opts_in_on_every_launch() {
+        // Off by default: `-c features.plugins=false` follows the subcommand on
+        // a fresh turn, a resumed one and an app-server launch alike, ahead of
+        // the caller's args so a caller's own `-c features.plugins=true` comes
+        // later and wins. Opted in, no plugins flag at all.
+        let spec = by_id("codex").unwrap();
+        let caller = vec!["-c".to_string(), "features.plugins=true".to_string()];
+        let launches: [(&[&str], Option<&str>, PromptDelivery); 3] = [
+            (&["exec"], None, PromptDelivery::Argv),
+            (&["exec", "resume"], Some("th-1"), PromptDelivery::Argv),
+            (&["app-server"], None, PromptDelivery::ControlStream),
+        ];
+        for (subcommand, resume, delivery) in launches {
+            let off = BuildCtx {
+                resume,
+                delivery,
+                ..base_ctx(spec)
+            };
+            let argv = argv_with_caller_args(spec, &off, &caller);
+            let mut head = vec!["codex"];
+            head.extend_from_slice(subcommand);
+            head.extend(["-c", "features.plugins=false"]);
+            assert_eq!(argv[..head.len()], head, "{subcommand:?}: {argv:?}");
+            assert_eq!(argv[argv.len() - 2..], caller, "{subcommand:?}: {argv:?}");
+            let on = argv_with_caller_args(
+                spec,
+                &BuildCtx {
+                    plugins: true,
+                    ..off
+                },
+                &[],
+            );
+            assert!(
+                !on.iter().any(|t| t.contains("plugins")),
+                "{subcommand:?}: {on:?}"
+            );
+        }
+        // No other harness reads it.
+        for other in all().iter().filter(|spec| spec.id != "codex") {
+            assert_eq!(
+                (other.build_argv)(&base_ctx(other)),
+                (other.build_argv)(&BuildCtx {
+                    plugins: true,
+                    ..base_ctx(other)
+                }),
+                "{}",
+                other.id
             );
         }
     }

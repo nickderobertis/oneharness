@@ -184,6 +184,13 @@ pub struct HarnessConfig {
     /// Extra arguments appended verbatim to this harness's command (the
     /// configurable counterpart of the CLI's trailing `-- <args…>`).
     pub args: Option<Vec<String>>,
+    /// Opt this harness into its plugins feature (`codex` only; refused under
+    /// any other harness). Unset means off: oneharness then starts Codex with
+    /// `-c features.plugins=false`, since Codex otherwise downloads its whole remote
+    /// plugin catalog on every process start. Resolved apart from `args`, so a
+    /// variant or worker that supplies its own `args` keeps the opt-in. See
+    /// [`FileConfig::plugins_for`].
+    pub plugins: Option<bool>,
     /// Allow rules for this harness only; beats the top-level `allowed_tools`.
     /// Rejected at parse time when the harness's config file has no allow-list
     /// concept (`oneharness sync` could not deliver it), so a rule that cannot
@@ -322,6 +329,8 @@ pub struct VariantConfig {
     pub reasoning: Option<String>,
     pub bin: Option<String>,
     pub args: Option<Vec<String>>,
+    /// This variant's plugins opt-in, beating its harness's `plugins`.
+    pub plugins: Option<bool>,
     pub allowed_tools: Option<Vec<String>>,
     pub denied_tools: Option<Vec<String>>,
     pub hooks: Option<toml::Value>,
@@ -443,6 +452,25 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         let spec = harness::by_id(id).expect("ids validated above");
         for name in h.variant.keys() {
             validate_variant_name(name.as_str())?;
+        }
+        // `plugins` toggles one harness's own feature flag; nowhere else is
+        // there a flag for it to become, so setting it there is a mistake.
+        if !harness::has_plugins_toggle(id) {
+            let variant = h
+                .variant
+                .iter()
+                .find(|(_, variant)| variant.plugins.is_some())
+                .map(|(name, _)| name);
+            if h.plugins.is_some() || variant.is_some() {
+                let table = variant.map_or_else(
+                    || format!("[harness.{id}]"),
+                    |name| format!("[harness.{id}.variant.{name}]"),
+                );
+                return Err(format!(
+                    "`plugins` in `{table}` is not supported for harness `{id}`: only \
+                     `codex` has a plugins feature to toggle"
+                ));
+            }
         }
         let sync = spec.sync.as_ref();
         // A raw `settings` table is merged into a JSON config file; Codex's
@@ -747,6 +775,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             reasoning: o.reasoning.or(entry.reasoning.take()),
             bin: o.bin.or(entry.bin.take()),
             args: o.args.or(entry.args.take()),
+            plugins: o.plugins.or(entry.plugins.take()),
             allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
             denied_tools: o.denied_tools.or(entry.denied_tools.take()),
             hooks: o.hooks.or(entry.hooks.take()),
@@ -805,6 +834,7 @@ fn merge_variant_maps(
             reasoning: o.reasoning.or(e.reasoning.take()),
             bin: o.bin.or(e.bin.take()),
             args: o.args.or(e.args.take()),
+            plugins: o.plugins.or(e.plugins.take()),
             allowed_tools: o.allowed_tools.or(e.allowed_tools.take()),
             denied_tools: o.denied_tools.or(e.denied_tools.take()),
             hooks: o.hooks.or(e.hooks.take()),
@@ -880,6 +910,18 @@ impl FileConfig {
             .get(base)
             .and_then(|h| h.args.as_deref())
             .unwrap_or(&[])
+    }
+
+    /// Whether a launch of harness `id` (`codex` or `codex:<variant>`) opts
+    /// into its plugins feature: the variant's `plugins`, else the harness's,
+    /// else `false`. Read apart from [`Self::args_for`], so no layer's `args`
+    /// can drop it.
+    pub fn plugins_for(&self, id: &str) -> bool {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.plugins)
+            .or_else(|| self.harness.get(base).and_then(|h| h.plugins))
+            .unwrap_or(false)
     }
 
     /// Allow rules for one harness: its `[harness.<id>]` override, else the
@@ -1071,6 +1113,10 @@ pub struct HarnessReport {
     pub reasoning: Field<String>,
     pub bin: Field<String>,
     pub args: Field<Vec<String>>,
+    /// The resolved plugins opt-in (`false` by default), present only for a
+    /// harness with a plugins feature (`codex`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Field<bool>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     // llmlint: ignore[invalid_states_unrepresentable] These two fields are deliberately raw passthrough TOML — the whole point is that oneharness does not interpret a harness's own settings table — so the schema says "an arbitrary object", which is the honest description of an uninterpreted value.
@@ -1088,6 +1134,11 @@ pub struct VariantReport {
     pub reasoning: Field<String>,
     pub bin: Field<String>,
     pub args: Field<Vec<String>>,
+    /// The plugins opt-in a launch of this variant resolves to: the variant's
+    /// own, else its harness's, else `false`. Present only for a harness with
+    /// a plugins feature (`codex`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Field<bool>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
@@ -1188,6 +1239,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 }
             }
         }
+        let toggles_plugins = harness::has_plugins_toggle(id);
+        let harness_plugins = pick(layers, |c| section(c).and_then(|h| h.plugins));
         let mut variants = BTreeMap::new();
         let names: std::collections::BTreeSet<&VariantName> = layers
             .iter()
@@ -1228,6 +1281,14 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                     reasoning: pick(layers, |c| variant(c).and_then(|v| v.reasoning)),
                     bin: pick(layers, |c| variant(c).and_then(|v| v.bin)),
                     args: pick(layers, |c| variant(c).and_then(|v| v.args)),
+                    plugins: toggles_plugins.then(|| {
+                        let own = pick(layers, |c| variant(c).and_then(|v| v.plugins));
+                        if own.value.is_some() {
+                            own
+                        } else {
+                            harness_plugins.clone().or_default(false)
+                        }
+                    }),
                     allowed_tools: pick(layers, |c| variant(c).and_then(|v| v.allowed_tools)),
                     denied_tools: pick(layers, |c| variant(c).and_then(|v| v.denied_tools)),
                     hooks: pick(layers, |c| variant(c).and_then(|v| v.hooks)),
@@ -1246,6 +1307,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 reasoning: pick(layers, |c| section(c).and_then(|h| h.reasoning)),
                 bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
+                plugins: toggles_plugins.then(|| harness_plugins.or_default(false)),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
                 hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
@@ -1926,6 +1988,126 @@ model = "child-home"
         let merged = merge(base, over);
         assert_eq!(merged.model_for("claude-code"), Some("project"));
         assert_eq!(merged.bin_for("claude-code"), Some("/usr/bin/claude"));
+    }
+
+    #[test]
+    fn plugins_merge_last_set_layer_wins_at_harness_and_variant_level() {
+        // Every ordered pair of (earlier, later) at both levels: a later `Some`
+        // overrides, a later `None` keeps the earlier value, and nothing set
+        // anywhere resolves to off.
+        let spell = |table: &str, value: Option<bool>| {
+            value.map_or_else(
+                || format!("[{table}]\nmodel = \"m\"\n"),
+                |value| format!("[{table}]\nplugins = {value}\n"),
+            )
+        };
+        let values = [None, Some(false), Some(true)];
+        for earlier in values {
+            for later in values {
+                let want = later.or(earlier).unwrap_or(false);
+                let merged = merge(
+                    parsed(&spell("harness.codex", earlier)),
+                    parsed(&spell("harness.codex", later)),
+                );
+                assert_eq!(
+                    merged.plugins_for("codex"),
+                    want,
+                    "{earlier:?} then {later:?}"
+                );
+                let merged = merge(
+                    parsed(&spell("harness.codex.variant.work", earlier)),
+                    parsed(&spell("harness.codex.variant.work", later)),
+                );
+                assert_eq!(
+                    merged.plugins_for("codex:work"),
+                    want,
+                    "variant {earlier:?} then {later:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn plugins_resolve_variant_then_harness_then_off_whatever_args_say() {
+        let config = parsed(
+            r#"
+[harness.codex]
+plugins = true
+args = ["--harness-arg"]
+[harness.codex.variant.own-args]
+args = ["--variant-arg"]
+[harness.codex.variant.off]
+plugins = false
+args = ["--variant-arg"]
+"#,
+        );
+        assert!(config.plugins_for("codex"));
+        assert!(config.plugins_for("codex:own-args"), "args never drop it");
+        assert!(!config.plugins_for("codex:off"));
+        assert!(
+            config.plugins_for("codex:undeclared"),
+            "falls to the harness"
+        );
+        assert!(!parsed("").plugins_for("codex"));
+        let one = parsed("[harness.codex.variant.on]\nplugins = true\n");
+        assert!(one.plugins_for("codex:on"));
+        assert!(!one.plugins_for("codex"), "one variant's opt-in is its own");
+        // An `extends` parent is folded in with `merge(parent, child)`: a
+        // child that sets only `args` keeps the parent's opt-in.
+        let child = merge(
+            parsed("[harness.codex]\nplugins = true\n"),
+            parsed("[harness.codex]\nargs = [\"--child\"]\n"),
+        );
+        assert!(child.plugins_for("codex"));
+        assert_eq!(child.args_for("codex"), ["--child"]);
+    }
+
+    #[test]
+    fn plugins_outside_codex_is_refused_naming_key_and_harness() {
+        for (text, table) in [
+            (
+                "[harness.claude-code]\nplugins = true\n",
+                "[harness.claude-code]",
+            ),
+            (
+                "[harness.goose.variant.work]\nplugins = false\n",
+                "[harness.goose.variant.work]",
+            ),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains("`plugins`"), "{err}");
+            assert!(err.contains(table), "{err}");
+            assert!(err.contains("not supported for harness"), "{err}");
+        }
+        assert!(parse("[harness.codex.variant.w]\nplugins = true\n").is_ok());
+    }
+
+    #[test]
+    fn explain_reports_resolved_plugins_for_codex_only() {
+        let report = explain(&layers(
+            "[harness.codex]\nplugins = true\n[harness.claude-code]\nmodel = \"m\"\n",
+            "[harness.codex.variant.off]\nplugins = false\n[harness.codex.variant.inherit]\nmodel = \"m\"\n",
+        ));
+        let codex = &report.harness["codex"];
+        let from = |value: bool, source: &str| {
+            Some(Field {
+                value: Some(value),
+                source: Some(source.to_string()),
+            })
+        };
+        assert_eq!(codex.plugins, from(true, "/user.toml"));
+        assert_eq!(codex.variant["off"].plugins, from(false, "/project.toml"));
+        assert_eq!(codex.variant["inherit"].plugins, from(true, "/user.toml"));
+        assert_eq!(report.harness["claude-code"].plugins, None);
+        let serialized = serde_json::to_value(&report.harness["claude-code"]).unwrap();
+        assert!(serialized.get("plugins").is_none(), "{serialized}");
+        let unset = explain(&layers("[harness.codex.variant.v]\nmodel = \"m\"\n", ""));
+        let codex = &unset.harness["codex"];
+        assert_eq!(codex.plugins, Some(Field::default_value(false)));
+        assert_eq!(
+            codex.variant["v"].plugins,
+            Some(Field::default_value(false))
+        );
     }
 
     fn layers(user: &str, project: &str) -> Vec<(String, FileConfig)> {

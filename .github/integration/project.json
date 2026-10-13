@@ -37,14 +37,17 @@
       "{workspaceRoot}/CHANGELOG.md",
       "{workspaceRoot}/rust-toolchain.toml",
       "{workspaceRoot}/.cargo/config.toml",
-      "{workspaceRoot}/scripts/nx"
+      "{workspaceRoot}/scripts/nx",
+      "{workspaceRoot}/.github/gate-env.mjs",
+      "{workspaceRoot}/.github/workflow-graph.mjs",
+      "{workspaceRoot}/scripts/e2e-lib.sh"
     ]
   },
   "targets": {
     "lint": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node --check .github/integration/transfer-journey.mjs && node --check .github/integration/rejection-journey.mjs && node --check .github/integration/journey.mjs && node --check .github/integration/setup-journey.mjs"
+        "command": "node --check .github/integration/transfer-journey.mjs && node --check .github/integration/rejection-journey.mjs && node --check .github/integration/journey.mjs && node --check .github/integration/setup-journey.mjs && node --check .github/integration/gate-env-journey.mjs"
       }
     },
     "e2e": {
@@ -54,7 +57,8 @@
       "options": {
         "commands": [
           "node .github/integration/setup-journey.mjs",
-          "node .github/integration/journey.mjs"
+          "node .github/integration/journey.mjs",
+          "node .github/integration/gate-env-journey.mjs"
         ],
         "parallel": false
       },

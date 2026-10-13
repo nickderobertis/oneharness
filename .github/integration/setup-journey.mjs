@@ -1,14 +1,15 @@
-// Drive the real Nx/just/Bun setup boundary in an owned checkout; installed Nx
-// is a linked third-party dependency, while the private install starts absent.
+// Drive the real Nx/just/Bun setup boundary in an owned checkout: both the root
+// workspace install and the private tooling install start absent, and the
+// repository's own entry (scripts/nx) establishes each through just.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, copyFileSync, rmSync, symlinkSync, statSync, writeFileSync, utimesSync, readFileSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync, statSync, writeFileSync, utimesSync, readFileSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { parse } from 'yaml';
 const work=mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR??tmpdir(),'workflow-setup-'));
 try{
- for(const file of ['scripts/nx','justfile','package.json','bun.lock','nx.json','.github/package.json','.github/bun.lock','.github/project.json','.github/integration/project.json','tools/release-tooling/payload-contract/project.json','.github/variants-routing.mjs','.github/workflows/ci.yml','.github/workflows/e2e-variants.yml']){
+ for(const file of ['scripts/nx','justfile','package.json','bun.lock','nx.json','.github/package.json','.github/bun.lock','.github/project.json','.github/integration/project.json','tools/release-tooling/payload-contract/project.json','.github/variants-routing.mjs','.github/workflows/ci.yml','.github/workflows/e2e-variants.yml','npm/oneharness/package.json','npm/oneharness-sdk/package.json']){
   mkdirSync(dirname(join(work,file)),{recursive:true});copyFileSync(file,join(work,file));
   const source=statSync(file);utimesSync(join(work,file),source.atime,source.mtime);
  }
@@ -27,11 +28,9 @@ try{
  execFileSync('bash', ['-e', '-c', install.run], {cwd:work,stdio:'inherit'});
  execFileSync(process.execPath,args,{cwd:work,stdio:'inherit'});
  rmSync(join(work,'.github/node_modules'),{recursive:true,force:true});
- mkdirSync(join(work,'node_modules'));symlinkSync(resolve('node_modules/nx'),join(work,'node_modules/nx'),'dir');
- copyFileSync('node_modules/.bun-install-stamp',join(work,'node_modules/.bun-install-stamp'));
- const completed=statSync('node_modules/.bun-install-stamp');utimesSync(join(work,'node_modules/.bun-install-stamp'),completed.atime,completed.mtime);
  const run=()=>JSON.parse(execFileSync('bash',['scripts/nx','show','projects','--json'],{cwd:work,encoding:'utf8',stdio:['ignore','pipe','pipe']}));
  assert.ok(run().includes('github-workflows'));
+ assert.ok(statSync(join(work,'node_modules/nx/package.json')).isFile(),'scripts/nx must install the locked root workspace itself');
  const stamp=statSync(join(work,'.github/node_modules/.bun-install-stamp')).mtimeMs;
  assert.ok(run().includes('github-workflows-integration'));
  assert.equal(statSync(join(work,'.github/node_modules/.bun-install-stamp')).mtimeMs,stamp);

@@ -15,8 +15,7 @@
       "{workspaceRoot}/scripts/release-install.mjs",
       "{workspaceRoot}/scripts/ci-verdict.sh",
       "{workspaceRoot}/scripts/release-payload.mjs",
-      "{workspaceRoot}/tools/release-tooling/payload-contract/**/*",
-      "{workspaceRoot}/scripts/e2e-lib.sh"
+      "{workspaceRoot}/tools/release-tooling/payload-contract/**/*"
     ]
   },
   "targets": {

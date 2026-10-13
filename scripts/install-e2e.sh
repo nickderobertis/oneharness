@@ -389,6 +389,55 @@ CASES
   }
   [ ! -e "$probe/oneharness" ] ||
     fail "install.sh left a binary at $probe while refusing an Intel Mac"
+
+  # An unposed Mac whose shell reports x86_64: only the kernel's arm64 answer
+  # tells a Rosetta shell on Apple Silicon from an Intel Mac. uname and sysctl
+  # are the host boundary, so each case stubs them on PATH and poses nothing
+  # else. sysctl answering 1 installs the native arm64 build; 0, or a failed
+  # probe (an Intel kernel has no such key), refuses by name.
+  local stubs answer rc
+  stubs="$work/platform-stubs"
+  mkdir -p "$stubs"
+  cat >"$stubs/uname" <<'STUB'
+#!/bin/sh
+case "$1" in -m) echo x86_64 ;; *) echo Darwin ;; esac
+STUB
+  chmod +x "$stubs/uname"
+  for answer in 1 0 fail; do
+    if [ "$answer" = fail ]; then
+      cat >"$stubs/sysctl" <<'STUB'
+#!/bin/sh
+echo "sysctl: unknown oid hw.optional.arm64" >&2
+exit 1
+STUB
+    else
+      printf '#!/bin/sh\necho %s\n' "$answer" >"$stubs/sysctl"
+    fi
+    chmod +x "$stubs/sysctl"
+    probe="$work/platform-probe/rosetta-$answer"
+    rm -rf "$probe"
+    set +e
+    PATH="$stubs:$PATH" PROCESSOR_ARCHITECTURE="" PROCESSOR_IDENTIFIER="" \
+      ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
+      sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
+      >"$work/platform.out" 2>&1
+    rc=$?
+    set -e
+    if [ "$answer" = 1 ]; then
+      [ "$rc" -eq 0 ] || {
+        cat "$work/platform.out" >&2
+        fail "install.sh refused a Rosetta shell on Apple Silicon (sysctl hw.optional.arm64 = 1); it should install aarch64-apple-darwin — fix detect_target in scripts/install.sh"
+      }
+      installed="$(cat "$probe/oneharness")"
+      [ "$installed" = "oneharness fixture for aarch64-apple-darwin" ] ||
+        fail "install.sh under Rosetta on Apple Silicon installed '$installed'; it should install aarch64-apple-darwin — fix detect_target in scripts/install.sh"
+    else
+      if [ "$rc" -eq 0 ] || ! grep -qF "Intel macOS is no longer supported" "$work/platform.out"; then
+        cat "$work/platform.out" >&2
+        fail "install.sh on an x86_64 Mac whose arm64 probe answered '$answer' exited $rc without refusing Intel macOS by name — fix detect_target in scripts/install.sh"
+      fi
+    fi
+  done
 }
 
 verify_trust_root_independence

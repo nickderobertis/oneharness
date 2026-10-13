@@ -1,5 +1,4 @@
 import {validTarget} from "./contract.mjs";
-// Private release-edge metadata: producer and installers share one versioned shape.
 import { readFileSync, realpathSync } from "node:fs";
 import { resolve, relative, isAbsolute, basename } from "node:path";
 import { execFileSync } from "node:child_process";

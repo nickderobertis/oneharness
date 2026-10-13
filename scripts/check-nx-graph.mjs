@@ -22,7 +22,9 @@
 // a Rust project missing there would leave its crate's coverage silently out of
 // the floor — and the shell test steps shell-coverage depends on, likewise.
 // Every `test` running a shell test step also reads, through its inputs, every
-// file scripts/shell-test.sh reads.
+// file scripts/shell-test.sh reads. And the network budgets, which read live
+// telemetry only `just live-codex` records, are checked by no target but the
+// paid `live-codex:live`, which no gate tier runs (live/AGENTS.md).
 //
 // Quiet on success: one line. Node built-ins only.
 import { execFileSync } from "node:child_process";
@@ -224,6 +226,29 @@ for (const name of shellTests) {
 	if (!(graph.nodes[name].data.targets.test.inputs ?? []).includes("shellTestRunner")) {
 		failures.push(`${name}:test runs scripts/shell-test.sh but does not list the shellTestRunner named input, so a change to the runner replays its stale results; add "shellTestRunner" to its inputs`);
 	}
+}
+
+// The network budgets read real telemetry: only `live-codex:live` (whose
+// recipe runs the suite, then the check) may run their check, and the gate's
+// `check` recipe excludes every live project.
+const runsBudgetCheck = /e2e-network-budget|onebudgetspec check|just live-codex/u;
+for (const [name, node] of Object.entries(graph.nodes)) {
+	for (const [target, spec] of Object.entries(node.data.targets ?? {})) {
+		const commands = JSON.stringify(spec.options?.commands ?? spec.options?.command ?? "");
+		if (runsBudgetCheck.test(commands) && `${name}:${target}` !== "live-codex:live") {
+			failures.push(`${name}:${target} runs the network budget check, which reads live telemetry; keep it in live-codex:live (just live-codex) alone`);
+		}
+	}
+}
+// A Windows checkout (core.autocrlf) ends its lines in CRLF, and `.` matches no `\r`.
+const justfile = readFileSync(join(root, "justfile"), "utf8").replace(/\r\n/gu, "\n");
+if (!/^check tier=[\s\S]*?--exclude='live-\*,explore-\*'/mu.test(justfile)) {
+	failures.push(`the justfile's check recipe no longer excludes the live-* projects, so the gate would check the network budgets against whatever telemetry is lying around; restore --exclude='live-*,explore-*'`);
+}
+const liveCodex = justfile.match(/^live-codex:.*\n((?:[ \t]+\S.*\n)+)/mu)?.[1].trim().split(/\n\s*/u) ?? [];
+const recipe = ['ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh', "bash scripts/e2e-network-budget.sh codex"];
+if (JSON.stringify(liveCodex) !== JSON.stringify(recipe)) {
+	failures.push(`the justfile's live-codex recipe is ${JSON.stringify(liveCodex)}, not the suite then its network budget check ${JSON.stringify(recipe)}`);
 }
 
 // The root AGENTS.md's "Projects in the graph" record names exactly the graph.

@@ -1,0 +1,90 @@
+{
+  "method": "netns-pasta",
+  "boundary": "bytes at each launch's network-namespace boundary (pasta TAP), not host-NIC wire bytes",
+  "launches": 98,
+  "largest_launch": {
+    "launch_id": "codex-4158031-1a7d2daa5526",
+    "phase": "codex-rules-enforce",
+    "kind": "exec",
+    "received": 1383470
+  },
+  "per_kind": {
+    "app-server": {
+      "launches": 4,
+      "received": {
+        "median": 362109.0,
+        "largest": 633958,
+        "total": 1383197
+      },
+      "sent": {
+        "median": 12804.0,
+        "largest": 40776,
+        "total": 76951
+      }
+    },
+    "exec": {
+      "launches": 24,
+      "received": {
+        "median": 129899.5,
+        "largest": 1383470,
+        "total": 5603784
+      },
+      "sent": {
+        "median": 43148.0,
+        "largest": 78063,
+        "total": 1045674
+      }
+    },
+    "local": {
+      "launches": 70,
+      "received": {
+        "median": 0.0,
+        "largest": 0,
+        "total": 0
+      },
+      "sent": {
+        "median": 86.0,
+        "largest": 176,
+        "total": 5026
+      }
+    }
+  },
+  "model_turns": {
+    "launches": 25,
+    "median_received": 129858
+  },
+  "suite_total_received": 6986981,
+  "calibration": {
+    "largest_x1_5_within_launch_cap": {
+      "value": 2075205.0,
+      "cap": 2500000,
+      "holds": true
+    },
+    "suite_total_x1_2_within_suite_cap": {
+      "value": 8384377.199999999,
+      "cap": 8500000,
+      "holds": true
+    },
+    "doubled_pass_exceeds_suite_cap": {
+      "value": 13973962,
+      "cap": 8500000,
+      "holds": true
+    }
+  },
+  "caps": {
+    "planned_suite_cap": 30000000,
+    "suite_cap": 8500000,
+    "suite_total_received": 6986981,
+    "suite_total_x1_2": 8384377.199999999,
+    "suite_total_x1_2_rounded_up": 8500000,
+    "recalibration_matches_suite_cap": true,
+    "launch_cap": 2500000,
+    "largest_received": 1383470,
+    "largest_x1_5": 2075205.0,
+    "launch_cap_kept_above_largest_x1_5": true,
+    "statement": [
+      "suite cap: planned 30000000 B, recalibrated to 8500000 B = the committed pass's suite total 6986981 B x1.2 = 8384377.2 B, rounded up to the next 500000 B: 8500000 B",
+      "launch cap: 2500000 B kept, beside the committed pass's largest launch 1383470 B x1.5 = 2075205.0 B"
+    ]
+  }
+}

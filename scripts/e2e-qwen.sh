@@ -9,6 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: qwen =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/qwen.jsonl.
+oh_telemetry_setup qwen
 need_env "Qwen (OpenAI-compatible) auth" OPENAI_API_KEY DASHSCOPE_API_KEY
 
 export OH_MODEL="${QWEN_E2E_MODEL:-}"

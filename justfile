@@ -260,8 +260,11 @@ _live-install:
 live-claude: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-claude.sh
 
+# The codex suite records every codex launch's network bytes, then holds them
+# to live/pr-matrix/harness/codex/budgets.yaml (Linux only; live/AGENTS.md).
 live-codex: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh
+    bash scripts/e2e-network-budget.sh codex
 
 live-opencode: _live-install
     ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-opencode.sh

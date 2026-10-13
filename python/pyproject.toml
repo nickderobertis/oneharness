@@ -17,3 +17,11 @@ members = ["oneharness-sdk"]
 # leaves the CLI wheel out of the resolve entirely — the never-true marker is
 # uv's spelling of "not here". The release's packaged e2e installs the real one.
 override-dependencies = ["oneharness-cli; sys_platform == 'never'"]
+
+# Development tools the workspace's own projects run, beside each member's
+# toolchain: `onebudgetspec`, which `just live-codex` runs over
+# live/pr-matrix/harness/codex/budgets.yaml (scripts/e2e-network-budget.sh).
+# That file's command pins the SDK at the same version in its PEP 723 header,
+# and tools/network-telemetry's tests hold the two to one version.
+[dependency-groups]
+dev = ["onebudgetspec-cli==0.1.4"]

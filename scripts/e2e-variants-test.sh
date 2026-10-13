@@ -70,6 +70,10 @@ common_env=(
   OPENAI_API_KEY="test-openai-material"
   OH_E2E_VARIANTS_API_ONLY=1
   OH_E2E_VARIANTS_CORE_ONLY=1
+  OH_E2E_TELEMETRY_DIR="$tmp/telemetry"
+  # The recorder's portable fallback: these journeys are about the variants,
+  # and measuring namespaces are tools/network-telemetry's to exercise.
+  OH_E2E_OS=unmeasured
 )
 
 for selector in OH_E2E_VARIANTS_RUN_OPENCODE OH_E2E_VARIANTS_RUN_QWEN; do

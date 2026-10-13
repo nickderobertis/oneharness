@@ -9,6 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: cursor =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/cursor.jsonl.
+oh_telemetry_setup cursor
 need_env "Cursor auth" CURSOR_API_KEY
 
 export OH_MODEL="${CURSOR_E2E_MODEL:-}"

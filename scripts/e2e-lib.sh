@@ -187,6 +187,203 @@ oh_sandbox_prepare() {
   esac
 }
 
+# llmlint: ignore[comments_earn_their_place] This library's sections are delimited by these dividers throughout its 3,900 lines; this one keeps the recorder's helpers findable the same way.
+# --- network telemetry -------------------------------------------------------
+#
+# Every live suite records what each harness launch it makes spends on the
+# network (live/AGENTS.md). oh_telemetry_setup puts a measuring shim
+# (scripts/e2e-netshim.sh) first on PATH for every harness executable this box
+# has, resolved beforehand, and empties the suite's telemetry file,
+# $OH_E2E_TELEMETRY_DIR/<suite>.jsonl (default target/e2e-telemetry/network).
+# Each launch appends a `start` line and one measurement line; each helper
+# exports its phase (OH_E2E_PHASE) before it calls oneharness and, for a Codex
+# launch it must produce, appends an `expected` line naming its kind. Those
+# lines are the contract live/pr-matrix/harness/codex/network_budget.py reads.
+#
+# OH_E2E_PHASE_LIMIT=N stops the suite, passing, as its (N+1)th phase starts:
+# a hermetic test drives a suite's first phases with a double this way.
+
+# The registry's harness executables, as `executable:harness id`.
+OH_HARNESS_EXECUTABLES=(claude:claude-code codex:codex copilot:copilot crush:crush
+  cursor-agent:cursor goose:goose opencode:opencode qwen:qwen)
+OH_NETWORK_SHIM_MARKER="oneharness-network-shim"
+OH_E2E_SUITE=""
+OH_E2E_TELEMETRY_FILE=""
+_OH_SHIM_DIR=""
+# Parallel arrays (bash 3.2 has no associative ones): each shimmed
+# executable, the shim text the setup wrote for it, and its Windows adapter.
+_OH_SHIMMED=()
+_OH_SHIM_TEXT=()
+_OH_SHIM_CMD=()
+_OH_PHASE_KEY=""
+_OH_PHASE_COUNT=0
+
+# The first `$1` on PATH that is not one of these shims (a directory holding
+# `.oh-network-shims` is skipped), so a suite started under another suite's
+# shims still wraps the real executable.
+_oh_unshimmed() {
+  local exe="$1" entry candidate entries=()
+  IFS=: read -r -a entries <<<"$PATH"
+  for entry in "${entries[@]+"${entries[@]}"}"; do
+    [ -n "$entry" ] && [ ! -e "$entry/.oh-network-shims" ] || continue
+    for candidate in "$entry/$exe" "$entry/$exe.exe"; do
+      if [ -f "$candidate" ] && [ -x "$candidate" ]; then
+        printf '%s' "$candidate"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+# Write stdin to $1 whole or not at all: a partial shim
+# must never stand where the setup's check would read it. Says why on failure.
+_oh_write_whole() {
+  local target="$1" partial="$1.$$.partial" error
+  if error="$({ cat >"$partial" && mv -f "$partial" "$target"; } 2>&1)"; then
+    return 0
+  fi
+  [ ! -e "$partial" ] || rm -f "$partial" ||
+    note "  could not remove the partial shim $partial either; delete it by hand"
+  note "  could not write $target (${error:-no error given}); the check below names what PATH resolves instead"
+  return 1
+}
+
+# Set up this suite's recorder. $1 is the suite (`codex` for e2e-codex.sh).
+oh_telemetry_setup() {
+  local suite="$1" dir pair exe harness real shim text cmd
+  need jq
+  dir="${OH_E2E_TELEMETRY_DIR:-$OH_REPO_ROOT/target/e2e-telemetry/network}"
+  case "$dir" in /* | [A-Za-z]:*) ;; *) dir="$PWD/$dir" ;; esac
+  # Git Bash spells a drive-letter directory as /c/...: its colon would split
+  # the PATH entry the shims go on.
+  case "$dir" in [A-Za-z]:*)
+    if command -v cygpath >/dev/null 2>&1; then
+      dir="$(cygpath -u "$dir")" && [ -n "$dir" ] ||
+        fail "cannot convert the telemetry directory ${OH_E2E_TELEMETRY_DIR:-} to a Git Bash path; point OH_E2E_TELEMETRY_DIR at a /c/... directory"
+    fi
+    ;;
+  esac
+  _OH_SHIM_DIR="$dir/.shims/$suite"
+  mkdir -p "$_OH_SHIM_DIR" ||
+    fail "cannot create the telemetry directory $dir; point OH_E2E_TELEMETRY_DIR at a writable directory"
+  OH_E2E_SUITE="$suite"
+  OH_E2E_TELEMETRY_FILE="$dir/$suite.jsonl"
+  export OH_E2E_SUITE OH_E2E_TELEMETRY_FILE
+  : >"$OH_E2E_TELEMETRY_FILE" || fail "cannot write $OH_E2E_TELEMETRY_FILE; check that $dir is writable"
+  # The marker is what keeps a nested suite from wrapping these shims.
+  : >"$_OH_SHIM_DIR/.oh-network-shims" ||
+    fail "cannot mark $_OH_SHIM_DIR as the suite's shim directory; check that it is writable, or remove it and rerun"
+  _OH_SHIMMED=() _OH_SHIM_TEXT=() _OH_SHIM_CMD=()
+  for pair in "${OH_HARNESS_EXECUTABLES[@]}"; do
+    exe="${pair%%:*}" harness="${pair#*:}"
+    real="$(_oh_unshimmed "$exe")" || continue
+    shim="$_OH_SHIM_DIR/$exe"
+    text="$(
+      printf '#!/usr/bin/env bash\n# %s suite=%s\n' "$OH_NETWORK_SHIM_MARKER" "$suite"
+      printf 'exec bash %q --suite %q --harness %q --real %q --self %q --file %q -- "$@"' \
+        "$OH_REPO_ROOT/scripts/e2e-netshim.sh" "$suite" "$harness" "$real" "$shim" "$OH_E2E_TELEMETRY_FILE"
+    )"
+    # A write that fails leaves whatever stood there, which _oh_shims_first
+    # below refuses: it holds each shim to exactly this text.
+    printf '%s\n' "$text" | _oh_write_whole "$shim" && chmod +x "$shim" || true
+    cmd=""
+    if command -v cygpath >/dev/null 2>&1; then
+      # A native process (oneharness) resolves `codex` through PATHEXT, so
+      # Windows needs a .cmd beside the script Git Bash runs.
+      local win_bash win_shim
+      if win_bash="$(cygpath -w "$(command -v bash)")" && win_shim="$(cygpath -w "$shim")" &&
+        [ -n "$win_bash" ] && [ -n "$win_shim" ]; then
+        cmd="@\"$win_bash\" \"$win_shim\" %*"
+        printf '%s\r\n' "$cmd" | _oh_write_whole "$shim.cmd" || true # held to $cmd below, like the script
+      else
+        note "  could not convert bash's or $shim's path for Windows; the check below refuses the missing $exe.cmd"
+      fi
+    fi
+    _OH_SHIMMED+=("$exe") _OH_SHIM_TEXT+=("$text") _OH_SHIM_CMD+=("$cmd")
+  done
+  PATH="$_OH_SHIM_DIR:$PATH"
+  export PATH
+  hash -r
+  _oh_shims_first
+}
+
+# Fail unless every executable the setup shimmed resolves first to this
+# suite's shim — exactly the shim the setup wrote, not a stale or foreign file
+# in its place — and, on Windows, its .cmd to exactly the adapter it wrote: a
+# launch that bypassed them would leave the record incomplete.
+_oh_shims_first() {
+  local i exe resolved want faults=()
+  [ -n "$_OH_SHIM_DIR" ] || return 0
+  for i in "${!_OH_SHIMMED[@]}"; do
+    exe="${_OH_SHIMMED[$i]}"
+    resolved="$(command -v "$exe" 2>/dev/null || true)"
+    if [ "$resolved" != "$_OH_SHIM_DIR/$exe" ] ||
+      ! cmp -s "$resolved" <(printf '%s\n' "${_OH_SHIM_TEXT[$i]}"); then
+      faults+=("PATH resolves $exe to '${resolved:-nothing}', not this suite's measuring shim $_OH_SHIM_DIR/$exe")
+    elif command -v cygpath >/dev/null 2>&1; then
+      want="${_OH_SHIM_CMD[$i]}"
+      if [ -z "$want" ] || ! cmp -s "$resolved.cmd" <(printf '%s\r\n' "$want"); then
+        faults+=("$resolved.cmd does not launch this suite's measuring shim (${want:-its Windows path did not convert}), so oneharness (which resolves $exe through PATHEXT) would bypass it")
+      fi
+    fi
+  done
+  [ "${#faults[@]}" -eq 0 ] ||
+    fail "$(printf '%s; ' "${faults[@]}")a launch through any of them would go unrecorded. Remove whatever stands in the shim's place (or the PATH entry ahead of it) and rerun"
+}
+
+# Name the phase whose launches follow, and export it for the shim. With no
+# argument the phase is the outermost helper the suite called (`oh_mode_enforce`
+# → `mode-enforce`), so a helper another helper calls keeps its caller's
+# phase; a name given by the outermost helper (or at the script's top level)
+# replaces that. Also enforces OH_E2E_PHASE_LIMIT and that the shims are first.
+_oh_phase() {
+  local i outer="" line="${BASH_LINENO[0]}" name
+  for ((i = ${#FUNCNAME[@]} - 1; i >= 1; i--)); do
+    case "${FUNCNAME[$i]}" in main | source) continue ;; esac
+    outer="${FUNCNAME[$i]}" line="${BASH_LINENO[$i]}"
+    break
+  done
+  if [ -n "${1:-}" ] && { [ -z "$outer" ] || [ "$outer" = "${FUNCNAME[1]}" ]; }; then
+    name="$1"
+  elif [ -n "$outer" ]; then
+    name="${outer#_}"
+    name="${name#oh_}"
+    name="${name//_/-}"
+  else
+    name="main"
+  fi
+  if [ "${outer:-main}:$line" != "$_OH_PHASE_KEY" ]; then
+    _OH_PHASE_KEY="${outer:-main}:$line"
+    _OH_PHASE_COUNT=$((_OH_PHASE_COUNT + 1))
+    # Matched as text before any comparison, so no value can overflow it.
+    case "${OH_E2E_PHASE_LIMIT:-}" in
+      "") ;;
+      [0-9] | [1-9][0-9] | [1-9][0-9][0-9])
+        if [ "$_OH_PHASE_COUNT" -gt "$OH_E2E_PHASE_LIMIT" ]; then
+          note "STOP: OH_E2E_PHASE_LIMIT=$OH_E2E_PHASE_LIMIT reached; phase $name and every later one did not run"
+          exit 0
+        fi
+        ;;
+      *) fail "OH_E2E_PHASE_LIMIT must be a whole number of phases from 0 to 999, got '$OH_E2E_PHASE_LIMIT'; unset it to run every phase" ;;
+    esac
+  fi
+  OH_E2E_PHASE="$name"
+  export OH_E2E_PHASE
+  _oh_shims_first
+}
+
+# Record that the current phase must produce a Codex launch of kind $2
+# (`exec`, `app-server`, ...). $1 is the harness id; other harnesses' launches
+# are recorded but not budgeted, so they carry no expectation.
+_oh_expect() {
+  local id="$1" kind="$2"
+  [ "${id%%:*}" = codex ] && [ -n "$OH_E2E_TELEMETRY_FILE" ] || return 0
+  jq -nc --arg suite "$OH_E2E_SUITE" --arg phase "${OH_E2E_PHASE:-unphased}" --arg kind "$kind" \
+    '{suite: $suite, phase: $phase, kind: $kind, expected: true}' | tr -d '\r' >>"$OH_E2E_TELEMETRY_FILE" ||
+    fail "cannot append to $OH_E2E_TELEMETRY_FILE; check that its directory is writable"
+}
+
 # --- driving a harness -----------------------------------------------------
 
 # A high-entropy marker the model cannot reproduce from memory, so its presence
@@ -243,6 +440,14 @@ oh_run() {
     esac
   done
 
+  # A Codex turn runs `codex exec`, or a stdio app-server under --control.
+  local kind=exec
+  for a in "$@"; do
+    [ "$a" = --control ] && kind=app-server
+  done
+  _oh_phase
+  _oh_expect "$id" "$kind"
+
   local errf
   errf="$(mktemp)"
   note "  driving: $bin run --harness $id (timeout ${OH_TIMEOUT:-120}s${OH_MODEL:+, model $OH_MODEL})"
@@ -260,6 +465,32 @@ oh_run() {
     fail "oneharness produced no report for $id (is the binary the right version?)"
   fi
   rm -f "$errf"
+}
+
+# One minimal controlled turn: `run --control` drives the harness's control
+# mechanism (Codex: its stdio app-server, not `exec`), so the network recorder
+# sees that launch kind measured beside the exec turns and the usage probe.
+#   $1 harness id
+oh_controlled_turn() {
+  local id="$1" marker sandbox turn status=0
+  _oh_phase controlled-turn
+  marker="$(oh_marker)"
+  sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  # --control needs a handle an `oneharness interrupt` could address; this
+  # turn is never interrupted, so a throwaway one in the sandbox serves. The
+  # turn and its assertion run in a subshell, so the sandbox goes however the
+  # phase ends — a skip or a failure exits that subshell, and its status this
+  # helper. It runs as a job whose `wait` is tested, not the subshell itself,
+  # so errexit stays in force inside it.
+  (
+    oh_run "$id" "$(oh_prompt "$marker")" --control --session "ohnet${RANDOM}" \
+      --session-dir "$(oh_native_path "$sandbox")/sessions" --cwd "$(oh_native_path "$sandbox")"
+    oh_assert_echoed "$id" "$marker"
+  ) </dev/null &
+  turn=$!
+  wait "$turn" || status=$?
+  rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
+  [ "$status" -eq 0 ] || exit "$status"
 }
 
 # Read a field from the stored report.
@@ -372,6 +603,7 @@ oh_assert_echoed() {
 #   $1 harness id
 #   $2.. extra args forwarded to `oneharness run`
 oh_long_prompt_enforce() {
+  _oh_phase
   local id="$1"
   shift
   local bin marker sandbox pfile sfile pad
@@ -453,6 +685,7 @@ oh_long_prompt_enforce() {
 # lifted from the live harness's own usage block, not a mock.
 #   $1 harness id
 oh_cache_assert() {
+  _oh_phase
   local id="$1"
   local status write1 read1 read2
 
@@ -506,6 +739,10 @@ oh_usage_enforce() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
+  # The probe starts `codex app-server --stdio`; its phase is what tells it
+  # apart from a controlled turn's app-server in the telemetry.
+  _oh_phase usage-probe
+  _oh_expect "$id" app-server
   errf="$(mktemp)" || fail "could not create a scratch file for oneharness's stderr — check that the host temp dir is writable"
   # A state directory of its own, so a codex probe always starts from no shared
   # model catalog and its refresh runs against the real harness: that refresh
@@ -765,6 +1002,7 @@ OH_USAGE_IDENTITY_FIELDS=(auth_mode availability harness plan reset_credits sele
 # never registered.
 #   $1 harness id (one the two dispatches below have an arm for)
 oh_usage_cwd_enforce() {
+  _oh_phase
   local id="$1"
   local bin harness_bin root hooked plain report_hooked report_plain
   local t0 t_control t_probe t_plain rc
@@ -1105,6 +1343,7 @@ _oh_usage_report() {
 #   $3.. extra args forwarded to `oneharness run` (e.g. --output-format
 #        stream-json for a harness whose transcript needs a richer format)
 oh_events_assert() {
+  _oh_phase
   local id="$1"
   shift
   local expected_source="${1:-}"
@@ -1166,6 +1405,7 @@ oh_events_assert() {
 #   $1 harness id
 #   $2.. extra run args
 oh_stream_assert() {
+  _oh_phase
   local id="$1"
   shift
   local bin marker out events_lines result_lines
@@ -1222,6 +1462,7 @@ oh_stream_assert() {
 #     shared --system, the token saving the mode promises.
 # $1 harness id.
 oh_batch_fork_enforce() {
+  _oh_phase
   local id="$1" bin status count warm_write fan_write_max fan_read_min
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -1358,6 +1599,7 @@ _oh_batch_run() {
 # The `present` phase is the positive control: without it, `absent` would pass
 # vacuously on a harness that can't execute anything headlessly.
 oh_sync_enforce() {
+  _oh_phase
   local id="$1" toml="$2" file="$3" expect="$4" label="$5"
   local bin sandbox out
   bin="$(oh_bin)"
@@ -1443,6 +1685,13 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 # Run the real `codex exec` DIRECTLY — the way a user starts it, never through
 # `oneharness run` — in project $1 under CODEX_HOME $2, with the one-line prompt
 # $3 and any further codex flags. Its whole output lands in $_OH_CODEX_OUT.
+#
+# It starts Codex with the defaults oneharness applies (plugins, apps and
+# analytics off): this phase proves synced execpolicy rules, which plugins play
+# no part in, and under a scratch CODEX_HOME Codex's own defaults would download
+# the remote plugin catalog — 5–38 MB a launch on the first measured
+# live-codex pass, which the network budgets (live/AGENTS.md) count.
+_OH_CODEX_DEFAULTS=(-c features.plugins=false -c features.apps=false -c analytics.enabled=false)
 _OH_CODEX_OUT=""
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3"
@@ -1451,7 +1700,7 @@ _oh_codex_direct() {
   [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
   command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
   _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
-    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check \
+    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
     "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
   local refusal
   refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"
@@ -1470,6 +1719,7 @@ _oh_codex_direct() {
 # parse_powershell_command_into_plain_commands) — so this is where a Linux run
 # shows the synced rule matching what a Windows Codex asks about.
 oh_codex_rules_match() {
+  _oh_phase
   local bin scratch cfg out rules file dir argv want got status
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -1554,6 +1804,7 @@ _oh_codex_render_forced_delete() {
 # CODEX_HOME: auth.json copied from the existing login, and a config.toml that
 # trusts only the scratch project — the user's own ~/.codex is never written.
 oh_codex_rules_enforce() {
+  _oh_phase
   local bin auth scratch home proj cfg real out rules dir file del
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
@@ -1656,6 +1907,7 @@ oh_codex_rules_enforce() {
 # Only call this for a (harness, mode) that `oneharness list` marks supported.
 #   $1 harness id   $2 mode to test (read-only | plan; default read-only)
 oh_mode_enforce() {
+  _oh_phase
   local id="$1" mode="${2:-read-only}"
   local bin sandbox file status
   bin="$(oh_bin)"
@@ -1743,6 +1995,7 @@ oh_mode_enforce() {
 # a caller's override and the mode governs both turns alike.
 #   $1 harness id, $2 mode (auto | read-only | plan), $3.. extra run args
 oh_resume_mode_enforce() {
+  _oh_phase
   local id="$1" mode="$2"
   shift 2
   local bin sandbox store name marker file status phase text refusal probe
@@ -1884,6 +2137,7 @@ oh_resume_mode_enforce() {
 # feature flag rather than `sandbox_mode` for exactly that reason; the parse is
 # one clap argument whatever the key (`CliConfigOverrides::raw_overrides`).
 oh_codex_config_override_order() {
+  _oh_phase
   command -v codex >/dev/null 2>&1 || skip "codex is not installed; nothing to verify"
   local spelling first last
   for spelling in "-c" "--config" "--config=" "-c<kv>"; do
@@ -1912,6 +2166,7 @@ oh_codex_config_override_order() {
 # `apps` feature: oneharness turns both off the same way. Under an empty
 # CODEX_HOME, so a config.toml of the host's cannot decide the unnamed default.
 oh_codex_feature_flag_order() {
+  _oh_phase
   command -v codex >/dev/null 2>&1 ||
     skip "codex is not installed; install it (npm install -g @openai/codex) or put it on PATH, then rerun"
   command -v jq >/dev/null 2>&1 ||
@@ -2075,6 +2330,7 @@ _oh_resume_mode_turn() {
 # already `allow`, so the check can't distinguish its env mapping and it is omitted
 # (its `OPENCODE_CONFIG_CONTENT` injection is pinned hermetically instead). $1 id.
 oh_edit_enforce() {
+  _oh_phase
   local id="$1"
   local bin sandbox editfile status
   bin="$(oh_bin)"
@@ -2136,6 +2392,7 @@ oh_edit_enforce() {
 # party's outage as a control-mode violation.
 #   $1 harness id
 oh_control_mode_enforce() {
+  _oh_phase
   local id="$1" attempt attempts=3 started=$SECONDS status
   # llmlint: ignore-block[tool_output_is_signal] WHICH attempt won is the signal, not chatter, for the same reason `oh_control_enforce` states above it: the retries are a backstop for a turn that never starts, so a phase that passes on its third attempt every night is a phase about to fail — and a transcript that only ever printed one final line could never say so, in a CI-only suite nobody can attach a debugger to.
   for attempt in $(seq 1 "$attempts"); do
@@ -2262,6 +2519,7 @@ _oh_control_mode_enforce_once() {
 # spaces), so it carries no quoted arguments: the marker and the oneharness path
 # must be space-free.
 oh_hook_enforce() {
+  _oh_phase
   local id="$1" scope="${2:-project}"
   local bin sandbox marker denyfile allowfile out status home
   bin="$(oh_bin)"
@@ -2442,6 +2700,7 @@ _oh_control_evidence() {
 # whether a controlled turn ends.
 #   $1 harness id, $2 mechanism (for the refusal's own wording)
 oh_control_session_enforce() {
+  _oh_phase
   local id="$1" mechanism="$2"
   local bin sandbox store name marker status text phase first_status
   bin="$(oh_bin)"
@@ -2554,6 +2813,7 @@ _oh_control_session_turn() {
 # different path, so it cannot show a per-harness model failing to.
 #   $1 harness id, $2 the model the config names
 oh_control_model_enforce() {
+  _oh_phase
   local id="$1" model="$2"
   local bin sandbox store report status requested observed kind
   bin="$(oh_bin)"
@@ -2630,6 +2890,7 @@ oh_control_model_enforce() {
 }
 
 oh_control_enforce() {
+  _oh_phase
   local id="$1" expected_mechanism="$2"
   # Three attempts, not two: an inconclusive attempt is a model that refused or
   # raced, and a harness that declines this fixture outright (answers `ok` in
@@ -2874,6 +3135,7 @@ _oh_control_mechanism_matches() {
 # above `oh_control_enforce`: a CI log needs them to attribute a failure inside a
 # multi-minute two-turn exchange to the step that produced it.
 oh_control_redirect_enforce() {
+  _oh_phase
   local id="$1"
   # Attempts and duration reported for the same reason as `oh_control_enforce`:
   # the retries are a backstop for a turn that never starts, so a harness
@@ -3303,6 +3565,7 @@ _OH_ACP_INITIALIZE='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"pro
 # phase, so the reason has to reach the transcript: "copilot skipped" with no
 # answer attached is the silent skip this function exists to end.
 oh_copilot_login_ready() {
+  _oh_phase
   local bin="${1:-copilot}"
   command -v "$bin" >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
@@ -3399,6 +3662,7 @@ _oh_acp_answer() {
 #
 #   $1 harness id
 oh_mock_enforce() {
+  _oh_phase
   local id="$1"
   local bin sandbox marker origfile mockfile rulesfile spyfile status
   bin="$(oh_bin)"
@@ -3555,6 +3819,7 @@ JSON
 #
 #   $1 harness id
 oh_mock_deny_enforce() {
+  _oh_phase
   local id="$1"
   local bin sandbox marker denyfile rulesfile spyfile status attempt
   bin="$(oh_bin)"
@@ -3613,6 +3878,170 @@ JSON
   note "PASS: $id mock deny enforcement (run --mock-rules)"
 }
 
+# llmlint: ignore[comments_earn_their_place] This library's sections are delimited by these dividers throughout its 3,900 lines; this one keeps the opted-in launch's helpers findable the same way.
+# --- the opted-in Codex launch (e2e-variants.sh) -----------------------------
+#
+# The live-codex budget only ever sees oneharness's defaults, so a Codex home
+# that turns plugins off itself would hide a plugins-default regression from
+# it. e2e-variants.sh therefore runs one launch that opts in (`plugins = true`)
+# and asserts, with these helpers, that it did fetch the plugin catalog and
+# load plugins — and that the recorder measured it.
+
+# A Python that reads TOML (tomllib, 3.11+): the first such python3 on PATH,
+# else one uv provides. Prints its argv, one word per line.
+_oh_toml_python() {
+  local candidate
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import tomllib' 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  command -v uv >/dev/null 2>&1 || return 1
+  printf '%s\n' uv run --quiet --no-project --python '>=3.11' python
+}
+
+# Fail, naming the file, when $1's config.toml turns Codex plugins off
+# (`features.plugins = false`, however TOML spells it), or is not TOML Codex
+# could read. A `[profiles.*]` table applies only when a run selects that
+# profile, which these launches never do.
+oh_codex_home_allows_plugins() {
+  local cfg="$1/config.toml" rc=0 python=() word
+  [ -f "$cfg" ] || return 0
+  # A read loop, not mapfile: macOS's system bash is 3.2.
+  while IFS= read -r word; do
+    python+=("$word")
+  done < <(_oh_toml_python || true)
+  [ "${#python[@]}" -gt 0 ] ||
+    fail "reading $cfg needs Python 3.11+ (tomllib) or uv; install either, then rerun"
+  # The decision is what the reader prints — `off` or `on` — never its exit
+  # status, so an interpreter (or uv) that fails cannot pass for "on".
+  local decision
+  decision="$(
+    "${python[@]}" - "$cfg" <<'PY'
+import sys
+import tomllib
+
+try:
+    with open(sys.argv[1], "rb") as handle:
+        config = tomllib.load(handle)
+except (OSError, tomllib.TOMLDecodeError) as error:
+    sys.exit(f"{sys.argv[1]}: {error}")
+features = config.get("features", {})
+plugins = features.get("plugins", True) if isinstance(features, dict) else None
+if not isinstance(plugins, bool):
+    sys.exit(f"{sys.argv[1]}: `features` must be a table and `features.plugins` a boolean, as Codex reads them")
+print("off" if plugins is False else "on")
+PY
+  )" || rc=$?
+  case "$rc:$decision" in
+    0:off) fail "$cfg disables Codex plugins (features.plugins = false), so this opted-in launch cannot show whether plugins download their catalog; remove that setting (oneharness already starts Codex with plugins off unless a run opts in) and rerun" ;;
+    0:on) ;;
+    *) fail "could not read $cfg as the TOML Codex reads (the reader's error is above; exit $rc); fix it so Codex can read it too, then rerun" ;;
+  esac
+}
+
+# The measurement of the one launch phase $2 made, from telemetry file $1:
+# exactly one `start` line of kind $3, exactly one measurement line joined to
+# it, lasting at least $4 seconds (so the sustained command ran inside it) and,
+# on Linux, measured with non-negative integer byte fields. Prints its launch id.
+oh_launch_measured_assert() {
+  local file="$1" phase="$2" kind="$3" min_seconds="$4" starts id lines os
+  local rerun="rerun 'just live-variants'; if it recurs, read the recorder's own diagnostics on stderr and live/AGENTS.md"
+  starts="$(jq -rs --arg p "$phase" --arg k "$kind" \
+    'map(select(.launch_id and .argv and .phase == $p and .kind == $k) | .launch_id) | join(" ")' "$file")" ||
+    fail "cannot read the telemetry file $file; rerun the suite so oh_telemetry_setup recreates it"
+  case "$starts" in
+    "") fail "$file has no $kind launch for phase $phase: the launch did not go through the measuring shim; check that oh_telemetry_setup ran before the phase and that nothing put another executable ahead of the shim on PATH, then $rerun" ;;
+    *" "*) fail "$file has more than one $kind launch for phase $phase ($starts); the phase must make exactly one — check what else it launches, then $rerun" ;;
+  esac
+  id="$starts"
+  lines="$(jq -c --arg id "$id" 'select(.launch_id == $id and (.argv | not))' "$file")" ||
+    fail "cannot read the measurement lines of launch $id from $file (jq failed above); rerun the suite so it is written again"
+  [ -n "$lines" ] || fail "launch $id (phase $phase) has no measurement line in $file: the recorder never finished it; $rerun"
+  [ "$(printf '%s\n' "$lines" | wc -l | tr -d ' ')" = 1 ] ||
+    fail "launch $id (phase $phase) has more than one measurement line in $file; each launch is recorded once, so two recorders wrapped it — check PATH for a second shim, then $rerun"
+  os="${OH_E2E_OS:-$(uname -s)}"
+  case "$os" in
+    Linux*)
+      printf '%s' "$lines" | jq -e '.method == "netns-pasta"' >/dev/null ||
+        fail "launch $id (phase $phase) was not measured ($(printf '%s' "$lines" | jq -r '"method \(.method)" + (if .reason then ": \(.reason)" else "" end)')); give this host pasta and unprivileged user namespaces (live/AGENTS.md), then $rerun"
+      printf '%s' "$lines" | jq -e '
+          [.rx_bytes, .tx_bytes] | all(type == "number" and . >= 0 and . == floor)' >/dev/null ||
+        fail "launch $id (phase $phase) has an incomplete measurement line (rx_bytes and tx_bytes must be non-negative integers): $lines; $rerun"
+      ;;
+  esac
+  printf '%s' "$lines" | jq -e --argjson min "$min_seconds" '(.seconds | type) == "number" and .seconds >= $min' >/dev/null ||
+    fail "launch $id (phase $phase) lasted $(printf '%s' "$lines" | jq -r '.seconds') s, under the $min_seconds s its sustained shell command takes: the turn did not run it; read the turn's events in the run's report, then $rerun"
+  printf '%s' "$id"
+}
+
+# The opted-in launch's argv ($1, a JSON array, as its `start` line records
+# it): it carries the codex:plugins variant's own args, and no plugins-off flag.
+oh_codex_opted_in_argv_assert() {
+  local argv="$1"
+  printf '%s' "$argv" | jq -e 'index(["-c", "model_reasoning_effort=\"low\""]) != null' >/dev/null ||
+    fail "the opted-in launch's argv lacks the variant's own args (-c model_reasoning_effort=\"low\"): $argv; check that [harness.codex.variant.plugins] args still reaches codex in oneharness's argv (oneharness run --print-command), then rerun"
+  printf '%s' "$argv" | jq -e '(index(["-c", "features.plugins=false"]) == null) and (index(["--disable", "plugins"]) == null)' >/dev/null ||
+    fail "the opted-in launch still carried a plugins-off flag despite plugins = true: $argv; a variant's plugins opt-in no longer reaches codex — check oneharness's plugins resolution (FileConfig::plugins_for), then rerun"
+}
+
+# The plugins evidence of the opted-in launch. $2 holds one JSON record per
+# Codex process — {"process", "text", "catalog_request", "plugin_load_ran"} —
+# and the launch's own records are those whose text carries its marker $1:
+# together they must show the plugin catalog requested and the plugin-load
+# step run (real Codex: its installed-plugin bundle sync completed, whatever it
+# materialized; the mock: it loaded the plugin installed in its CODEX_HOME).
+oh_codex_plugins_evidence_assert() {
+  local marker="$1" evidence="$2" mine
+  local look="read Codex's own log of the launch (logs_2.sqlite in its CODEX_HOME, rows since the phase began) to see what it did"
+  [ -s "$evidence" ] || fail "no Codex plugins evidence was recorded ($evidence is empty or missing): the opted-in launch logged nothing to show its plugins ran; $look"
+  mine="$(jq -sc --arg m "$marker" 'map(select((.text // "") | contains($m)))' "$evidence")" ||
+    fail "cannot read the Codex plugins evidence $evidence; rerun the phase so it is written again"
+  [ "$mine" != "[]" ] || fail "none of the Codex plugins evidence in $evidence belongs to the opted-in launch (marker $marker); any there is another launch's. $look"
+  printf '%s' "$mine" | jq -e 'any(.catalog_request == true)' >/dev/null ||
+    fail "the opted-in launch (marker $marker) never requested the plugin catalog: plugins = true did not reach Codex, or Codex no longer fetches it; check the launch's argv in variants.jsonl for a plugins-off flag, then $look"
+  printf '%s' "$mine" | jq -e 'any(.plugin_load_ran == true)' >/dev/null ||
+    fail "the opted-in launch (marker $marker) never ran its plugin-load step (no installed-plugin bundle sync completed); $look"
+}
+
+# Codex's own log of the opted-in launch, as oh_codex_plugins_evidence_assert
+# reads it: one record per process that logged to $1/logs_2.sqlite since epoch
+# second $4, its text the marker $2 when one of its rows names the marker or
+# thread $3 — the launch's process — and its catalog request and completed
+# installed-plugin bundle sync from Codex's own log lines.
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's log database schema and these two log lines have no published contract to reconcile against short of running Codex: they are read off real Codex (codex-cli 0.159.2's logs_2.sqlite, the spike that measured the catalog regression), and the live-variants run of this phase against real Codex is the drift alarm — a moved line fails that run loudly, never passes it.
+oh_codex_log_evidence() {
+  [ -f "$1/logs_2.sqlite" ] ||
+    fail "Codex wrote no log at $1/logs_2.sqlite, so the opted-in launch's plugins cannot be read; check that this codex logs there (codex-cli 0.159 does), then rerun"
+  python3 - "$1/logs_2.sqlite" "$2" "$3" "$4" <<'PY'
+import json
+import sqlite3
+import sys
+
+db, marker, thread, since = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+rows = con.execute(
+    "select process_uuid, thread_id, feedback_log_body from logs where ts >= ?", (since,)
+).fetchall()
+processes = {}
+for process, row_thread, body in rows:
+    record = processes.setdefault(
+        process, {"process": process, "text": "", "catalog_request": False, "plugin_load_ran": False}
+    )
+    body = body if isinstance(body, str) else ""
+    if marker in body or (thread and row_thread == thread):
+        record["text"] = marker
+    if body.startswith("fetching remote plugin catalog"):
+        record["catalog_request"] = True
+    if body.startswith("completed remote installed plugin bundle sync"):
+        record["plugin_load_ran"] = True
+for record in processes.values():
+    print(json.dumps(record))
+PY
+}
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
 # --- structured output enforcement -------------------------------------------
 
 # Live proof that `oneharness run --schema` produces a schema-VALID structured
@@ -3632,6 +4061,7 @@ JSON
 #
 #   $1 harness id
 oh_schema_enforce() {
+  _oh_phase
   local id="$1"
   local bin sandbox schema marker status valid token attempts
 
@@ -3708,6 +4138,7 @@ oh_schema_enforce() {
 # the caller must set OH_MODEL before invoking this for it (guard with an
 # `if [ -n "$OH_MODEL" ]` / `note`, not skip()). $1 id, $2 valid effort, $3 bogus.
 oh_reasoning_enforce() {
+  _oh_phase
   local id="$1" effort="$2" bogus="${3:-banana-not-an-effort}"
   local marker status
 

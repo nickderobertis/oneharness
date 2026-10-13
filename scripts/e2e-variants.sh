@@ -6,6 +6,8 @@ set -euo pipefail
 # shellcheck source=scripts/e2e-lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/variants.jsonl.
+oh_telemetry_setup variants
 RUN_OPENCODE="${OH_E2E_VARIANTS_RUN_OPENCODE:-1}"
 RUN_QWEN="${OH_E2E_VARIANTS_RUN_QWEN:-1}"
 case "$RUN_OPENCODE:$RUN_QWEN" in
@@ -158,8 +160,15 @@ CODEX_HOME = "OH_VARIANT_CODEX_API_HOME"
 unset_env = ["CODEX_API_KEY", "OPENAI_API_KEY"]
 [harness.codex.variant.subscription.env_from]
 CODEX_HOME = "OH_VARIANT_CODEX_SUBSCRIPTION_HOME"
+[harness.codex.variant.plugins]
+plugins = true
+args = ["-c", 'model_reasoning_effort="low"']
+unset_env = ["CODEX_API_KEY", "OPENAI_API_KEY"]
+[harness.codex.variant.plugins.env_from]
+CODEX_HOME = "OH_VARIANT_CODEX_SUBSCRIPTION_HOME"
 EOF
 run_marker() {
+  _oh_phase
   local id="$1" marker="$2"
   local report="$tmp/${id//:/-}.json"
   local command_stderr="$tmp/${id//:/-}.stderr"
@@ -199,6 +208,47 @@ run_marker() {
   evidence "COMMAND $id: oneharness run --config <temporary> --harness $id --prompt 'Reply exactly <marker>' --compact"
   evidence "ASSERT $id: status=ok marker=exact harness_id=$id"
 }
+# The opted-in Codex launch (live/AGENTS.md): the `codex:plugins` variant sets
+# `plugins = true` beside its own `args`, under the ChatGPT login in $1, and its
+# one-line turn runs `sleep` long enough (OH_E2E_PLUGINS_SLEEP, 25 s) for
+# Codex's asynchronous plugin catalog download to finish inside the launch.
+# Its bytes go to variants.jsonl, never live-codex's budgeted codex.jsonl; this
+# phase holds that it was measured, ran the sleep, and requested the catalog
+# and ran its plugin-load step — read from Codex's own log, or from
+# OH_E2E_PLUGINS_EVIDENCE when a hermetic double records it instead.
+codex_plugins_opt_in() {
+  _oh_phase codex-plugins-opt-in
+  local home="$1" seconds="${OH_E2E_PLUGINS_SLEEP:-25}" id since thread argv
+  local report="$tmp/codex-plugins.json" plugins_marker="${marker}_pl"
+  local evidence_file="${OH_E2E_PLUGINS_EVIDENCE:-$tmp/codex-plugins-evidence.jsonl}"
+  # Matched as text before any arithmetic, so no value can wrap or read as octal.
+  [[ "$seconds" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$seconds" -le 600 ] ||
+    fail "OH_E2E_PLUGINS_SLEEP must be a whole number of seconds from 1 to 600, got '${OH_E2E_PLUGINS_SLEEP:-}'; unset it for the 25 s default"
+  oh_codex_home_allows_plugins "$home"
+  since="$(($(date +%s) - 1))"
+  OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$home" "$OH" run --config "$config" --harness codex:plugins \
+    --prompt "$plugins_marker: with your shell tool run exactly \`sleep $seconds\` and wait for it to finish, then reply with exactly $plugins_marker" \
+    --mode bypass --timeout "$((seconds + 180))" --compact >"$report" 2>"$tmp/codex-plugins.stderr" ||
+    fail "codex:plugins exited nonzero ($(jq -r '.results[0] | "status=\(.status) exit_code=\(.exit_code)"' "$report" 2>/dev/null || echo 'no report')); its stderr tail: $(tail -5 "$tmp/codex-plugins.stderr" | sed -E -e 's/(sk-[A-Za-z0-9_-]+|Bearer [A-Za-z0-9._-]+)/<redacted>/g' | tr '\n' ' '); verify the ChatGPT login in $home with 'codex login status', then rerun"
+  jq -e --arg m "$plugins_marker" '.results[0].status == "ok" and (.results[0].stdout | contains($m))' "$report" >/dev/null ||
+    fail "codex:plugins did not complete with its marker ($(jq -r '.results[0].status' "$report")); rerun with OH_E2E_EVIDENCE=1"
+  id="$(oh_launch_measured_assert "$OH_E2E_TELEMETRY_FILE" codex-plugins-opt-in exec "$seconds")"
+  argv="$(jq -c --arg id "$id" 'select(.launch_id == $id and .argv) | .argv' "$OH_E2E_TELEMETRY_FILE")" ||
+    fail "cannot read launch $id's argv from $OH_E2E_TELEMETRY_FILE (jq failed above); rerun the suite so it is written again"
+  oh_codex_opted_in_argv_assert "$argv"
+  if [ -z "${OH_E2E_PLUGINS_EVIDENCE:-}" ]; then
+    # The first thread.started event names the launch's thread; none leaves
+    # the marker alone to attribute the launch's log rows.
+    thread="$(jq -r '.results[0].stdout' "$report" | jq -rR 'fromjson? | select(.type == "thread.started") | .thread_id')" ||
+      fail "cannot read the opted-in launch's events from $report (jq failed above); rerun with OH_E2E_EVIDENCE=1"
+    thread="${thread%%$'\n'*}"
+    oh_codex_log_evidence "$home" "$plugins_marker" "$thread" "$since" >"$evidence_file" ||
+      fail "could not read Codex's log $home/logs_2.sqlite for the opted-in launch's plugins evidence; check that python3 has sqlite3 and the file is readable (sqlite3 $home/logs_2.sqlite .tables), then rerun"
+  fi
+  oh_codex_plugins_evidence_assert "$plugins_marker" "$evidence_file"
+  evidence "IDENTITY codex:plugins: plugins=true args=variant measured=$id catalog_requested=yes plugin_load_ran=yes"
+}
+
 marker="OH_VARIANT_$(date +%s)_$RANDOM"
 if [ -z "${OH_E2E_VARIANTS_CORE_ONLY:-}" ] && [ "$RUN_OPENCODE" = 1 ]; then
   run_marker opencode:apikey "${marker}_oc" \
@@ -297,6 +347,7 @@ fi
 if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
   validate_claude_config_dir OH_CLAUDE_CONFIG_A "$claude_a"
   validate_claude_config_dir OH_CLAUDE_CONFIG_B "$claude_b"
+  _oh_phase claude-subscription-preflight
   for config_dir in "$claude_a" "$claude_b"; do
     auth_method="$(
       CLAUDE_CONFIG_DIR="$config_dir" env -u ANTHROPIC_API_KEY -u CLAUDE_CODE_OAUTH_TOKEN \
@@ -324,6 +375,7 @@ if [ -z "${OH_E2E_VARIANTS_API_ONLY:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_ON
   fallback_target="claude-code:subscription-a"
 fi
 if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+  _oh_phase fallback
   OH_VARIANT_ANTHROPIC_KEY="$ANTHROPIC_MATERIAL" OH_VARIANT_CLAUDE_A="$claude_a" \
     "$OH" run --config "$config" \
     --harness claude-code:invalid --harness "$fallback_target" \
@@ -340,6 +392,7 @@ if [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
   evidence "ASSERT fallback: first_failure_kind=auth next_harness_id=$fallback_target status=ok marker=exact"
 fi
 if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_ONLY:-}" ]; then
+  _oh_phase codex-subscription-preflight
   codex_login_status="$(
     env -u CODEX_API_KEY -u OPENAI_API_KEY codex login status 2>&1
   )" ||
@@ -349,6 +402,7 @@ if [ -n "${OH_E2E_CODEX_SUBSCRIPTION:-}" ] && [ -z "${OH_E2E_VARIANTS_EXTENDED_O
   run_marker codex:subscription "${marker}_cs" \
     OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$HOME/.codex"
   evidence "IDENTITY codex:subscription: login_status='Logged in using ChatGPT' CODEX_HOME=host-login API keys masked"
+  codex_plugins_opt_in "$HOME/.codex"
 else
   :
 fi

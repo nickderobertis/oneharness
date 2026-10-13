@@ -76,6 +76,21 @@ jobs:
       - name: Install kcov's build dependencies
         if: runner.os == 'Linux' && steps.shell-tools.outputs.cache-hit != 'true'
         run: sudo apt-get update -q && sudo apt-get install -y -q binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev
+      # The network recorder's gate-tier tests (tools/network-telemetry, and
+      # the live-variants journey) build unprivileged user+network namespaces
+      # behind the pasta first on PATH. The ubuntu-24.04 image already carries
+      # passt, but its AppArmor profile does not admit pasta's namespace, so
+      # the step lifts the restriction and proves that same pasta can start
+      # one. Below, OH_NET_NO_SKIP turns a recorder that cannot measure here
+      # into a failure rather than a skip.
+      # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] An ephemeral single-tenant runner whose steps already hold passwordless root gains nothing from the restriction. The probe below is the step's own end-to-end proof; its hosted run is the only place it can run.
+      - name: Permit unprivileged namespaces for pasta (network recorder)
+        if: runner.os == 'Linux'
+        run: |
+          command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          pasta --config-net --quiet -- true
+      # llmlint: ignore-end[least_privilege_grants, changed_behavior_has_e2e]
       - name: Bootstrap
         run: just bootstrap
       - name: Select the gate tier
@@ -95,9 +110,12 @@ jobs:
         if: steps.tier.outputs.tier == 'affected'
         env:
           NX_BASE: ${{ steps.tier.outputs.base }}
+          OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: just check
       - name: Full sweep (just check all)
         if: steps.tier.outputs.tier == 'all'
+        env:
+          OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: just check all
 
   # Package both crates exactly as Cargo will verify them at publish time. On its

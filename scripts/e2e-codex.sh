@@ -15,9 +15,30 @@ if [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
 fi
 
 export OH_MODEL="${CODEX_E2E_MODEL:-}"
+# Every codex launch below is measured into target/e2e-telemetry/network/codex.jsonl,
+# which `just live-codex` then holds to live/pr-matrix/harness/codex/budgets.yaml.
+oh_telemetry_setup codex
 marker="$(oh_marker)"
 oh_run codex "$(oh_prompt "$marker")"
 oh_assert_echoed codex "$marker"
+
+# The network budget's launch kinds, one phase each, first: the exec turn
+# above, a controlled turn over the stdio app-server, and the usage probe.
+if [ "${OS:-}" = "Windows_NT" ]; then
+  note "» controlled turn: not run on Windows (the unix legs carry it)"
+else
+  # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log.
+  note "» controlled turn: a --control turn must round-trip over codex's stdio app-server"
+  oh_controlled_turn codex
+fi
+
+# Usage enforcement: the app-server answers `account/rateLimits/read`
+# asynchronously and shuts down on stdin EOF, so the probe holds stdin open until
+# its answer lands. Whatever that answer is — headroom on a ChatGPT login, an
+# auth error under this suite's API key — it must be an answer.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» usage: the zero-turn probe must get an answer out of the real app-server"
+oh_usage_enforce codex
 
 # Synced permission rules, honored by Codex started DIRECTLY (not through
 # `oneharness run`): `sync` writes .codex/rules/oneharness.rules into a trusted
@@ -88,14 +109,6 @@ oh_events_assert codex "json:codex-items" --events
 # --events selecting exec --json), then a terminal result line.
 note "» stream: events must arrive incrementally, then a terminal result line"
 oh_stream_assert codex --events
-
-# Usage enforcement: the app-server answers `account/rateLimits/read`
-# asynchronously and shuts down on stdin EOF, so the probe holds stdin open until
-# its answer lands. Whatever that answer is — headroom on a ChatGPT login, an
-# auth error under this suite's API key — it must be an answer.
-# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
-note "» usage: the zero-turn probe must get an answer out of the real app-server"
-oh_usage_enforce codex
 
 # Reasoning enforcement: `--reasoning high` maps to Codex's
 # `-c model_reasoning_effort=high` and must round-trip; a bogus effort should be

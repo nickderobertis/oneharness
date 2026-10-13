@@ -722,6 +722,9 @@ env_from = { ANTHROPIC_API_KEY = "ANTHROPIC_API_KEY_WORK" }
 env = { CLAUDE_CONFIG_DIR = "/home/me/.claude-work" }
 unset_env = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]
 
+[harness.codex]
+plugins = true                  # codex only: keep Codex plugins on (default off)
+
 # Lifecycle hooks, in the harness's own hooks schema, synced into its config
 # file (Claude Code's .claude/settings.json `hooks` key) uninterpreted.
 [harness.claude-code.hooks]
@@ -936,6 +939,33 @@ one. One caveat: the restore runs on the normal exit path, so a hard kill
 (SIGKILL) mid-run can leave the hook installed — re-running any oneharness
 mock/sync in that workspace, or `git checkout`, puts it back; prefer throwaway
 workspaces for suites.
+
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The user-facing statement of the precedence the task requires here; its source is tests/fixtures/codex-plugins-flag-order.json, and the live phase `oh_codex_plugins_flag_order` checks it against real Codex. -->
+**Codex plugins are off by default.** Codex downloads its whole remote plugin
+catalog (about 29 MB from chatgpt.com) on every process start, uncached between
+processes, so a host launching Codex hundreds of times a day spends gigabytes
+on it — and no oneharness run or probe needs a plugin. So every Codex turn
+oneharness starts passes `-c features.plugins=false` right after its subcommand
+(`codex exec -c features.plugins=false …`, `codex app-server -c
+features.plugins=false`), ahead of the config `args` and the `--` passthrough.
+That spelling, not `--disable plugins`, is deliberate: Codex applies
+`-c features.plugins=` last-wins, then any `--enable plugins`, then any
+`--disable plugins` (both toggles after every `-c`, wherever they sit), so a
+caller's own later `-c features.plugins=true` or an `--enable plugins` still
+turns plugins on, where nothing could override a `--disable plugins`. The live
+codex suite pins that precedence model-free (`oh_codex_plugins_flag_order`).
+To turn plugins back on from config, set
+`plugins = true` under `[harness.codex]` or one `[harness.codex.variant.<name>]`
+(the variant's value beats the harness's; a later config layer or `extends`
+child beats an earlier one, and one that leaves `plugins` unset keeps it).
+oneharness then adds no plugins flag at all, leaving Codex's own configuration
+in charge. The opt-in is a typed key resolved apart from `args`, so it survives
+a variant or worker that supplies its own `args`. `plugins` under any other
+harness is refused at load. The [`oneharness usage`](#subscription-headroom-oneharness-usage)
+probe never loads plugins, whatever the config says (it starts `codex app-server
+--disable plugins --stdio`), and `oneharness config`
+shows the resolved `plugins` for each codex harness and variant.
+<!-- llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate] -->
 
 **The standing-policy path** — a `[[hooks]]` entry synced into the harness's
 own config — remains available for policies that should persist (and is how

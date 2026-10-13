@@ -568,13 +568,21 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
+/// `codex app-server --disable plugins --stdio`. Plugins are off whatever the
+/// config's `plugins` says: a rate-limits read loads no plugin, and the catalog
+/// Codex would otherwise download on start (~29 MB) is most of what a probe
+/// costs.
 fn codex_argv(bin: &str) -> Vec<String> {
     vec![
         bin.to_string(),
         "app-server".to_string(),
+        "--disable".to_string(),
+        "plugins".to_string(),
         "--stdio".to_string(),
     ]
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// `initialize`, the `initialized` notification, then the rate-limits read. All
 /// three are written before reading, matching the driver this was sourced from;
@@ -1196,6 +1204,21 @@ mod tests {
         assert!(
             readme.contains(&prose),
             "README.md must state the precedence as `{prose}`"
+        );
+    }
+
+    /// The codex probe's argv is stated in docs/harness-usage.md, where a
+    /// reader learns what the probe starts; it is generated from `codex_argv`.
+    #[test]
+    fn documented_codex_probe_argv_tracks_codex_argv() {
+        let reference = include_str!("../../../../docs/harness-usage.md")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let spawned = format!("Spawn `{}`", codex_argv("codex").join(" "));
+        assert!(
+            reference.contains(&spawned),
+            "docs/harness-usage.md must state the probe as {spawned}"
         );
     }
 

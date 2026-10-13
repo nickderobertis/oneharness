@@ -859,8 +859,6 @@ class Evidence(unittest.TestCase):
         # The suite cap is this evidence's total x1.2, rounded up to the next
         # 0.5 MB: re-measuring onto another step means moving the cap with it.
         self.assertEqual(suite_cap, math.ceil(total * 1.2 / 500_000) * 500_000)
-        # The report states the planned cap, the one it was recalibrated to,
-        # and the arithmetic from this pass, beside the per-launch cap kept.
         largest = max(received.values())
         self.assertEqual(
             committed["caps"],
@@ -884,7 +882,6 @@ class Evidence(unittest.TestCase):
                 ],
             },
         )
-        # budgets.yaml's description states the same figures.
         description = " ".join(BUDGETS.read_text().split())
         for figure in (
             "30,000,000 B",
@@ -894,6 +891,30 @@ class Evidence(unittest.TestCase):
             f"{launch_cap:,} B",
         ):
             self.assertIn(figure, description)
+
+
+class CapBasisOfAnotherPass(BudgetCase):
+    def test_a_pass_the_caps_were_not_set_from_reports_both_conditions_false(self) -> None:
+        records = with_bytes(
+            self.recorded("kinds", KINDS),
+            lambda s: 2_000_000 if s["kind"] == "exec" else 0,
+        )
+        tmp = scratch(self)
+        file = tmp / "pass.jsonl"
+        write_lines(file, records)
+        run = budget("--evidence-report", "--file", str(file), telemetry_dir=tmp)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        got = json.loads(run.stdout)["caps"]
+        self.assertEqual(got["suite_total_received"], 6_000_000)
+        self.assertEqual(got["suite_total_x1_2_rounded_up"], 7_500_000)
+        self.assertFalse(got["recalibration_matches_suite_cap"])
+        self.assertEqual(got["largest_x1_5"], 3_000_000)
+        self.assertFalse(got["launch_cap_kept_above_largest_x1_5"])
+        self.assertIn(
+            "pass's suite total 6000000 B x1.2 = 7200000.0 B, rounded up to the next 500000 B: "
+            "7500000 B",
+            got["statement"][0],
+        )
 
 
 class OneVersion(unittest.TestCase):

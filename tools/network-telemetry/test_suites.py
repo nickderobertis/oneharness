@@ -162,6 +162,50 @@ class EverySuiteRecords(unittest.TestCase):
         self.assertEqual(sorted(declared.group(1).split()), registry)
 
 
+@unittest.skipIf(WINDOWS, "the double is a bash script")
+class DirectCodexLaunches(unittest.TestCase):
+    """The suite's own `codex exec` launches (the synced-rules phase) start Codex
+    with the defaults oneharness applies, so they fetch no plugin catalog."""
+
+    def test_a_direct_codex_launch_runs_with_plugins_apps_and_analytics_off(self) -> None:
+        need_builds(self)
+        tmp = scratch(self)
+        env = suite_env(tmp, "codex")
+        env.update(
+            OH_TEST_ARGV_LOG=str(tmp / "argv.jsonl"),
+            OH_TEST_PLUGINS_EVIDENCE=str(tmp / "plugins.jsonl"),
+        )
+        project, home = tmp / "project", tmp / "codex-home"
+        project.mkdir()
+        (home / "plugins" / "fixture-plugin").mkdir(parents=True)
+        run = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'set -euo pipefail; source "$1"; _oh_codex_direct "$2" "$3" "Reply exactly ONEHARNESS-LIVE-7"',
+                "_",
+                str(ROOT / "scripts" / "e2e-lib.sh"),
+                str(project),
+                str(home),
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            check=False,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        (launch,) = [json.loads(line) for line in (tmp / "argv.jsonl").read_text().splitlines()]
+        argv = launch["argv"]
+        for flag in ("features.plugins=false", "features.apps=false", "analytics.enabled=false"):
+            self.assertIn(["-c", flag], [argv[i : i + 2] for i in range(len(argv) - 1)], argv)
+        (evidence,) = [
+            json.loads(line) for line in (tmp / "plugins.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual(
+            (evidence["catalog_request"], evidence["plugins_loaded"]), (False, False), evidence
+        )
+
+
 # --- the legs ---------------------------------------------------------------
 
 LEGS = {"Linux": "ubuntu-latest", "macOS": "macos-latest", "Windows": "windows-latest"}

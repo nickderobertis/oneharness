@@ -1628,6 +1628,13 @@ oh_enforce_file() { printf '%s-%s%s.txt' "$1" "${RANDOM}" "${RANDOM}"; }
 # Run the real `codex exec` DIRECTLY — the way a user starts it, never through
 # `oneharness run` — in project $1 under CODEX_HOME $2, with the one-line prompt
 # $3 and any further codex flags. Its whole output lands in $_OH_CODEX_OUT.
+#
+# It starts Codex with the defaults oneharness applies (plugins, apps and
+# analytics off): this phase proves synced execpolicy rules, which plugins play
+# no part in, and under a scratch CODEX_HOME Codex's own defaults would download
+# the remote plugin catalog — 5–38 MB a launch on the first measured
+# live-codex pass, which the network budgets (live/AGENTS.md) count.
+_OH_CODEX_DEFAULTS=(-c features.plugins=false -c features.apps=false -c analytics.enabled=false)
 _OH_CODEX_OUT=""
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3"
@@ -1636,7 +1643,7 @@ _oh_codex_direct() {
   [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
   command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
   _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
-    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check \
+    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
     "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
   local refusal
   refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"

@@ -6,8 +6,6 @@ Subtree rules for `scripts/codex-network-breakdown.py` and its hermetic test.
   downloads* table quotes runs of this script against real Codex; re-measure
   with the invocation stated there when Codex or a launch default changes, and
   update the table and its before-and-after totals together.
-- **To run the measuring test locally, get pasta first:** put it on PATH, or
-  run the script directly once, which fetches it.
 - **Fixtures are recorded, then scrubbed.** `recorded-measurement.json` and
   `recorded-codex-trace.log` come from a real `--measurement-out` / `--trace-out`
   run, trimmed to the connection and request lines and stripped of account,

@@ -18,8 +18,8 @@ default:
 
 # Set up from a clean clone: toolchain components + every ecosystem's one
 # locked resolve (Cargo, the Bun workspace that also carries Nx, the uv
-# workspace under python/), the pinned shell toolchain, the llmlint toolchain
-# and the pre-push hook. The `llvm-tools-preview` component is what `cargo
+# workspace under python/), the pinned shell toolchain, and llmlint.
+# The `llvm-tools-preview` component is what `cargo
 # llvm-cov` needs to instrument each crate's tests for the coverage floor;
 # scripts/shell-tools.sh installs the shellcheck, shfmt and (on Linux) kcov
 # that .shell-tool-versions pins.
@@ -31,7 +31,6 @@ bootstrap:
     uv sync --project python --frozen --no-install-workspace --quiet
     @bash scripts/shell-tools.sh install
     ./scripts/setup-llmlint.sh
-    git config core.hooksPath .githooks
 
 # The quality gate, through the Nx project graph. `just check` is the AFFECTED
 # tier: every gate target of each project the diff since the base can reach
@@ -53,7 +52,7 @@ check tier="affected":
     esac
     echo "check ({{tier}}): ok"
 
-# Complete pre-push gate: deterministic product/dependency/API checks, followed
+# Complete manual gate: deterministic product/dependency/API checks, followed
 # by llmlint validation and its changed-file LLM judge when local credentials
 # exist.
 gate remote="origin" base="": check deps-check package-crates semver-check

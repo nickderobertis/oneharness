@@ -4,8 +4,7 @@ Subtree rules for the repository's tooling scripts.
 
 - **Shell scripts are formatted with shfmt and linted with shellcheck**, the
   versions `.shell-tool-versions` pins, through `scripts/shell-check.sh` (this
-  project's `format` and `lint`, part of `just check`; `githooks` runs the same
-  over `.githooks/`). The style is the flags in `shell-check.sh` (`-i 2 -ci`);
+  project's `format` and `lint`, part of `just check`). The style is the flags in `shell-check.sh` (`-i 2 -ci`);
   `just format` writes it. `just bootstrap` installs the pinned tools
   (`scripts/shell-tools.sh`); the targets run only those, never a PATH copy.
 - **This project owns the scripts; it does not run them.** Every script belongs

@@ -2,14 +2,13 @@
 
 Subtree rules for the CI and local-gate contracts: the workflow drift gates, the
 PR-title lint, CI's tier selection (`scripts/ci-gate-tier.sh`), the setup-just
-action, and the pre-push/llmlint gate.
+action, and the manual llmlint gate.
 
 <!-- llmlint: ignore-block[agents_md_durable_and_terse] Moved verbatim from the root AGENTS.md under this change's instruction to move — not rewrite or trim — the text that governs this project (standalone trimming of AGENTS.md is outside its scope); only references to where its checks now run were updated. Its account of the release jobs is where the constraints it states apply; a durability pass over it is a change of its own. -->
 - `just gate`'s llmlint judge (`scripts/local-llmlint-gate.sh`):
   The judge is non-deterministic, so its greens are recorded and **replayed**:
   one workspace content plus one resolved base commit plus one judge config is
-  judged exactly once, and `pre-push` replays what the working tree's own gate
-  already cleared rather than re-rolling a verdict it can lose. Any of the three
+  judged exactly once, and subsequent manual runs replay the green verdict. Any of the three
   moving re-judges; only a green is ever recorded, so a finding always asks
   again. `ONEHARNESS_LLMLINT_REJUDGE=1 just gate` forces a fresh roll that
   neither reads nor records a verdict. The judge half of that key is read with

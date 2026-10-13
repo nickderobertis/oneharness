@@ -114,10 +114,8 @@ if [ -n "$crate_ver" ] && [ -n "$bin_ver" ] && [ "$crate_ver" != "$bin_ver" ]; t
 fi
 
 # On an Intel Mac the launcher refuses by name instead of hunting for the
-# discontinued @oneharness/cli-darwin-x64 package. process.platform/arch are the
-# only host facts it reads, so a preload presents an Intel Mac to the real shim.
-# llmlint: ignore-block[tests_mirror_real_usage] No hosted or local runner is an Intel Mac any more, and Node's process.platform/process.arch are the launcher's whole host boundary: the preload sets exactly those two facts and the committed shim then runs unmodified, as `oneharness` on an Intel Mac would.
-# llmlint: ignore-block[e2e_not_mocked] No hosted or local runner is an Intel Mac any more, and Node's process.platform/process.arch are the launcher's whole host boundary: the preload sets exactly those two facts and the committed shim then runs unmodified, as `oneharness` on an Intel Mac would.
+# discontinued @oneharness/cli-darwin-x64 package.
+# llmlint: ignore-block[tests_mirror_real_usage, e2e_not_mocked] No runner is an Intel Mac; process.platform/process.arch are the launcher's whole host boundary, so the preload sets only those and the committed shim runs unmodified.
 cat >"$tmp/intel-mac.cjs" <<'PRELOAD'
 Object.defineProperty(process, "platform", { value: "darwin" });
 Object.defineProperty(process, "arch", { value: "x64" });
@@ -127,12 +125,11 @@ intel_err="$(node --require "$tmp/intel-mac.cjs" "$launcher_dir/bin/oneharness.j
 intel_rc=$?
 set -e
 [ "$intel_rc" -eq 1 ] ||
-  fail "launcher on Intel macOS must exit 1, got $intel_rc: $intel_err"
+  fail "launcher on Intel macOS must exit 1, got $intel_rc: $intel_err. Next: restore the darwin-x64 refusal in npm/oneharness/bin/oneharness.js, then re-run 'just npm-e2e'"
 case "$intel_err" in
   *"Intel macOS (darwin-x64) is no longer supported"*) ;;
-  *) fail "launcher on Intel macOS must say Intel macOS is no longer supported, got: $intel_err" ;;
+  *) fail "launcher on Intel macOS must say Intel macOS is no longer supported, got: $intel_err. Next: restore that wording in npm/oneharness/bin/oneharness.js's darwin-x64 refusal, then re-run 'just npm-e2e'" ;;
 esac
-# llmlint: ignore-end[e2e_not_mocked]
-# llmlint: ignore-end[tests_mirror_real_usage]
+# llmlint: ignore-end[tests_mirror_real_usage, e2e_not_mocked]
 
 say "npm-e2e: ok (launcher resolved @oneharness/cli-$key and ran oneharness $bin_ver)"

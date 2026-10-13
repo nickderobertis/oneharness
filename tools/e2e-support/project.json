@@ -6,7 +6,7 @@
     "type:live-support",
     "lang:bash"
   ],
-  "//": "llmlint: ignore-file[e2e_not_mocked] JSON has no comment to scope this to the `test` command running scripts/check-codex-plugins-flag-order.sh, whose fake `codex` is backed by real codex running the same oh_codex_plugins_flag_order phase in scripts/e2e-codex.sh. What the live suites share \u2014 scripts/e2e-lib.sh \u2014 and the hermetic tests that hold its helpers and the probes' tables to the registry without a credential or a model call. Deterministic, so in the gate. Every live and exploration script is still shellchecked in the gate by the `scripts` project, which keeps their code linted while the suites themselves stay out of it.",
+  "//": "What the live suites share \u2014 scripts/e2e-lib.sh \u2014 and the hermetic tests that hold its helpers and the probes' tables to the registry without a credential or a model call. Deterministic, so in the gate. Where a check stands a double in for a harness binary, the live suite asks the real one the same thing: check-codex-plugins-flag-order.sh's fake `codex` is backed by real codex running oh_codex_plugins_flag_order in scripts/e2e-codex.sh. Every live and exploration script is still shellchecked in the gate by the `scripts` project, which keeps their code linted while the suites themselves stay out of it.",
   "implicitDependencies": [
     "oneharness",
     "oneharness-mock-harness",

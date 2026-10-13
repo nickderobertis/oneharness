@@ -62,13 +62,13 @@
     },
     "suite_total_x1_2_within_suite_cap": {
       "value": 7635946.8,
-      "cap": 30000000,
+      "cap": 8000000,
       "holds": true
     },
     "doubled_pass_exceeds_suite_cap": {
       "value": 12726578,
-      "cap": 30000000,
-      "holds": false
+      "cap": 8000000,
+      "holds": true
     }
   }
 }

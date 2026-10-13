@@ -11,4 +11,7 @@ Rules for the `live-codex` suite alone (`scripts/e2e-codex.sh`,
   thresholds were checked against and `evidence/live-codex-report.json` its
   calibration report, written by `network_budget.py --evidence-report --file
   evidence/live-codex.jsonl`; tools/network-telemetry's tests recompute it, so
-  re-measuring means replacing both together.
+  re-measuring means replacing both together — and moving the suite cap to the
+  new total x1.2 rounded up to the next 0.5 MB, which those tests also hold.
+  Lowering a cap to the evidence is that rule; raising one is not this file's
+  to do.

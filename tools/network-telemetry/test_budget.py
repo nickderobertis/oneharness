@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import math
 import os
 import re
 import subprocess
@@ -148,7 +149,9 @@ def with_bytes(records: list[Record], received: Callable[[Record], int]) -> list
 
 # llmlint: ignore-block[structural_pattern_matching] The tests run at the uv workspace's Python 3.9 floor, where `match` does not parse.
 def plausible(start: Record) -> int:
-    """A post-fix pass of exactly 20,000,000 B, its probe at 400,000 B."""
+    """Each launch's share of a plausible pass before adjust_total scales its
+    turns to the total a case wants: the probe at 400,000 B, the controlled
+    turn at 900,000 B."""
     if start["phase"] == "usage-probe" and start["kind"] == "app-server":
         return 400_000
     if start["kind"] == "app-server":
@@ -202,10 +205,48 @@ class BudgetCase(unittest.TestCase):
         return check_step(tmp)
 
 
+_CAPS: dict[str, int] = {}
+
+
+def caps() -> dict[str, int]:
+    """Each budget's threshold, as budgets.yaml registers it (read once)."""
+    if not _CAPS:
+        listed = subprocess.run(
+            [
+                "uv",
+                "run",
+                "--project",
+                str(ROOT / "python"),
+                "--frozen",
+                "--no-sync",
+                "onebudgetspec",
+                "list",
+                "--json",
+                str(BUDGETS),
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        _CAPS.update({b["id"]: int(b["threshold"]) for b in json.loads(listed.stdout)["budgets"]})
+    return _CAPS
+
+
 class Thresholds(BudgetCase):
-    def base(self) -> list[Record]:
+    """Each cap at its exact value, read from budgets.yaml, every other budget
+    kept within its own so the one tested is isolated."""
+
+    def base(self, total: int) -> list[Record]:
         records = with_bytes(self.recorded("workload", WORKLOAD), plausible)
-        return adjust_total(records, 20_000_000)
+        return adjust_total(records, total)
+
+    @property
+    def launch_cap(self) -> int:
+        return caps()["codex-launch-network-bytes"]
+
+    @property
+    def suite_cap(self) -> int:
+        return caps()["codex-live-suite-network-bytes"]
 
     def test_the_fixture_is_the_budget_workload_completely_recorded(self) -> None:
         records = self.recorded("workload", WORKLOAD)
@@ -223,7 +264,8 @@ class Thresholds(BudgetCase):
             self.assertEqual(line["method"], "netns-pasta")
 
     def test_the_largest_launch_passes_at_the_cap_and_fails_one_byte_over_naming_it(self) -> None:
-        base = self.base()
+        self.assertEqual(self.launch_cap, 2_500_000)
+        base = self.base(self.suite_cap // 2)
         target = [s for s in starts(base) if s["kind"] == "exec"][5]["launch_id"]
         run = self.check(set_rx(base, target, 2_500_000))
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
@@ -245,11 +287,11 @@ class Thresholds(BudgetCase):
     def test_the_suite_total_passes_at_its_cap_and_fails_one_byte_over_with_its_breakdown(
         self,
     ) -> None:
-        base = self.base()
+        base = self.base(self.suite_cap // 2)
         for total, verdict in (
-            (30_000_000, "within"),
-            (30_000_001, "over"),
-            (20_000_000, "within"),
+            (self.suite_cap, "within"),
+            (self.suite_cap + 1, "over"),
+            (self.suite_cap * 4 // 5, "within"),
         ):
             with self.subTest(total=total):
                 run = self.check(adjust_total(base, total))
@@ -265,7 +307,10 @@ class Thresholds(BudgetCase):
                 self.assertRegex(run.stdout, r"local: 26 launches, total received 0 B")
 
     def test_doubling_a_plausible_pass_fails_the_suite_total_alone(self) -> None:
-        base = self.base()
+        # A pass at 80% of the cap — the cap is the measured pass x1.2,
+        # rounded up — doubled across the board.
+        plausible_total = self.suite_cap * 4 // 5
+        base = self.base(plausible_total)
         by_id = {m["launch_id"]: m["rx_bytes"] for m in base if "rx_bytes" in m}
         doubled = with_bytes(base, lambda s: 2 * by_id[s["launch_id"]])
         run = self.check(doubled)
@@ -274,11 +319,12 @@ class Thresholds(BudgetCase):
         self.assertEqual(got["codex-live-suite-network-bytes"], "over", run.stdout)
         self.assertEqual(got["codex-launch-network-bytes"], "within", run.stdout)
         self.assertEqual(got["codex-usage-probe-network-bytes"], "within", run.stdout)
-        self.assertIn("suite total: 40000000 B received over 50 launches", run.stdout)
+        self.assertIn(f"suite total: {2 * plausible_total} B received over 50 launches", run.stdout)
         self.assertRegex(run.stdout, r"app-server: 2 launches, total received 2600000 B")
 
     def test_the_usage_probe_is_held_to_under_one_megabyte(self) -> None:
-        base = self.base()
+        self.assertEqual(caps()["codex-usage-probe-network-bytes"], 999_999)
+        base = self.base(self.suite_cap // 2)
         probe = next(
             s["launch_id"]
             for s in starts(base)
@@ -303,7 +349,7 @@ class Thresholds(BudgetCase):
                     )
 
     def test_a_run_with_no_measured_usage_probe_fails_naming_the_phase(self) -> None:
-        base = self.base()
+        base = self.base(self.suite_cap // 2)
         probe = next(
             s["launch_id"]
             for s in starts(base)
@@ -792,18 +838,22 @@ class Evidence(unittest.TestCase):
             calibration["doubled_pass_exceeds_suite_cap"]["cap"],
             thresholds["codex-live-suite-network-bytes"],
         )
+        launch_cap = thresholds["codex-launch-network-bytes"]
+        suite_cap = thresholds["codex-live-suite-network-bytes"]
+        total = sum(received.values())
         self.assertEqual(
             calibration["largest_x1_5_within_launch_cap"]["holds"],
-            max(received.values()) * 1.5 <= 2_500_000,
+            max(received.values()) * 1.5 <= launch_cap,
         )
         self.assertEqual(
-            calibration["suite_total_x1_2_within_suite_cap"]["holds"],
-            sum(received.values()) * 1.2 <= 30_000_000,
+            calibration["suite_total_x1_2_within_suite_cap"]["holds"], total * 1.2 <= suite_cap
         )
         self.assertEqual(
-            calibration["doubled_pass_exceeds_suite_cap"]["holds"],
-            sum(received.values()) * 2 > 30_000_000,
+            calibration["doubled_pass_exceeds_suite_cap"]["holds"], total * 2 > suite_cap
         )
+        # The suite cap is this evidence's total x1.2, rounded up to the next
+        # 0.5 MB: re-measuring onto another step means moving the cap with it.
+        self.assertEqual(suite_cap, math.ceil(total * 1.2 / 500_000) * 500_000)
 
 
 class OneVersion(unittest.TestCase):

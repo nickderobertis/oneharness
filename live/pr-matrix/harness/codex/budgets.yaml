@@ -37,22 +37,21 @@ budgets:
     direction: max
     threshold: 999999
     timeout_seconds: 300
-  # llmlint: ignore-block[changed_behavior_has_e2e] The 30,000,000 B cap is the manager's decided threshold, not this file's to move: the finished-tree pass (evidence/live-codex-report.json) received 6,363,289 B, so doubling it would not exceed the cap, and the ruling was to report that breached calibration condition rather than adjust a cap. The doubling journey in tools/network-telemetry uses the plan's 20 MB post-fix workload, as the task states it.
   - id: codex-live-suite-network-bytes
     description: >-
       Total bytes received across every default-config Codex launch of one
       complete live-codex pass (the opted-in plugins variant records to
       variants.jsonl and is excluded), counted as codex-launch-network-bytes
-      counts each launch. 30,000,000 B leaves about 1.2x over the plan's
-      post-fix estimate of 17-24.5 MB, so an across-the-board doubling of such a
-      pass fails; the measured finished-tree pass received 6,363,289 B, whose
-      doubling would not (evidence/live-codex-report.json states that
-      condition). A single-launch jump is the per-launch budget's. Linux only;
-      the same completeness rule applies.
+      counts each launch. The cap is the measured pass's total x1.2, rounded
+      up to the next 0.5 MB: 6,363,289 B x1.2 = 7,635,947 B, so 8,000,000 B
+      (down from the plan's 30,000,000 B, set against a 17-24.5 MB post-fix
+      estimate the measured pass came in well under), so an across-the-board
+      doubling of the pass fails (evidence/live-codex-report.json). A
+      single-launch jump is the per-launch budget's. Linux only; the same
+      completeness rule applies.
     measure: reported
     command: ["uv", "run", "--quiet", "--locked", "--script", "network_budget.py", "--total"]
     unit: bytes
     direction: max
-    threshold: 30000000
+    threshold: 8000000
     timeout_seconds: 300
-  # llmlint: ignore-end[changed_behavior_has_e2e]

@@ -29,10 +29,15 @@ for (const [os, opencode, qwen] of [
   assert.equal(row?.run_qwen, qwen, `${os}: preserve Qwen variant selector`);
 }
 const check = job(values.ci, 'check');
-if (!object(check.env) || !Array.isArray(check.steps) ||
+if (!Array.isArray(check.steps) ||
     check.steps.some(step => !object(step) ||
       ['run', 'if'].some(key => step[key] !== undefined && typeof step[key] !== 'string')))
-  throw Error('Invalid Mac CI job: restore its env mapping and string command/condition steps');
-assert.equal(check.env.OH_E2E_VARIANTS_RUN_OPENCODE, '1', 'Mac CI: preserve OpenCode variant selector');
-assert.equal(check.env.OH_E2E_VARIANTS_RUN_QWEN, '0', 'Mac CI: preserve Qwen variant exclusion');
+  throw Error('Invalid Mac CI job: restore its string command/condition steps');
+// The selectors live on the live-variants step itself, not the job: job-level
+// OH_E2E_* would also reach the deterministic gate steps of every platform.
+const variants = check.steps.find(step => step.run === 'just live-variants');
+if (!object(variants?.env))
+  throw Error('Invalid Mac CI job: restore the env mapping on its just live-variants step');
+assert.equal(variants.env.OH_E2E_VARIANTS_RUN_OPENCODE, '1', 'Mac CI: preserve OpenCode variant selector');
+assert.equal(variants.env.OH_E2E_VARIANTS_RUN_QWEN, '0', 'Mac CI: preserve Qwen variant exclusion');
 assert.ok(check.steps.some(step => step.run === 'just live-variants' && step.if?.includes("matrix.os == 'macos-latest'")), 'Mac CI must run real live-variants command');

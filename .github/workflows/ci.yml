@@ -75,11 +75,6 @@ jobs:
     defaults:
       run:
         shell: bash
-    env:
-      OH_E2E_NO_SKIP: 1
-      OH_E2E_VARIANTS_API_ONLY: 1
-      OH_E2E_VARIANTS_RUN_OPENCODE: "1"
-      OH_E2E_VARIANTS_RUN_QWEN: "0"
     steps:
       - name: Require routing success
         shell: bash
@@ -188,6 +183,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.claude == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
         run: just live-claude
@@ -223,6 +219,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.codex == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CODEX_E2E_MODEL: ${{ vars.CODEX_E2E_MODEL }}
         run: just live-codex
@@ -249,6 +246,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.opencode == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENCODE_E2E_MODEL: ${{ vars.OPENCODE_E2E_MODEL }}
         run: just live-opencode
@@ -272,6 +270,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.goose == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           GOOSE_PROVIDER: openai
           GOOSE_MODEL: ${{ vars.GOOSE_E2E_MODEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -304,6 +303,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.qwen == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_BASE_URL: ${{ vars.QWEN_OPENAI_BASE_URL || 'https://api.openai.com/v1' }}
           OPENAI_MODEL: ${{ vars.QWEN_E2E_MODEL || 'gpt-4o-mini' }}
@@ -332,6 +332,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.crush == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CRUSH_E2E_MODEL: ${{ vars.CRUSH_E2E_MODEL }}
         run: just live-crush
@@ -358,6 +359,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.copilot == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
           COPILOT_E2E_MODEL: ${{ vars.COPILOT_E2E_MODEL }}
         run: just live-copilot
@@ -395,6 +397,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.cursor == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           CURSOR_E2E_MODEL: ${{ vars.CURSOR_E2E_MODEL }}
           # Reasoning effort is a `-<tier>` suffix on the model id, so `--reasoning
@@ -428,6 +431,7 @@ jobs:
       - name: Live e2e against the real CLI
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.schema == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
         run: just live-schema
@@ -452,6 +456,10 @@ jobs:
       - name: Live API variants and same-harness fallback
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.variants == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
+          OH_E2E_VARIANTS_API_ONLY: 1
+          OH_E2E_VARIANTS_RUN_OPENCODE: "1"
+          OH_E2E_VARIANTS_RUN_QWEN: "0"
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: just live-variants
@@ -511,6 +519,7 @@ jobs:
       - name: Live turn-control e2e against every controllable harness
         if: matrix.os == 'macos-latest' && needs.macos-policy.outputs.macos_required == 'true' && github.repository == 'nickderobertis/oneharness' && github.event.pull_request.head.repo.full_name == github.repository && steps.live-paths.outputs.control == 'true'
         env:
+          OH_E2E_NO_SKIP: 1
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           CLAUDE_E2E_MODEL: ${{ vars.CLAUDE_E2E_MODEL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

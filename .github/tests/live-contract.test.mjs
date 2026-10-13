@@ -26,9 +26,12 @@ test("consolidated Mac job retains real live commands and credential bindings fr
     "control",
   ];
   for (const name of names) {
-    const original = parse(
+    const workflow = parse(
       readFileSync(`.github/workflows/e2e-${name}.yml`, "utf8"),
-    ).jobs.live;
+    );
+    const original = workflow.jobs.live;
+    const noSkip = original.env?.OH_E2E_NO_SKIP ?? workflow.env?.OH_E2E_NO_SKIP;
+    assert.equal(noSkip, 1, `${name}: source workflow demands a no-skip run`);
     for (const step of original.steps.filter(
       (s) => s.run && (!s.if || evaluate(s.if, { runner: { os: "macOS" } })),
     )) {
@@ -48,11 +51,17 @@ test("consolidated Mac job retains real live commands and credential bindings fr
         1,
         `${name}: missing/duplicate command ${step.name}`,
       );
+      // The no-skip/selector flags move from the source workflow or job onto
+      // the consolidated step, so they never reach the check job's gate steps.
+      const { OH_E2E_NO_SKIP, OH_E2E_VARIANTS_API_ONLY, OH_E2E_VARIANTS_RUN_OPENCODE,
+        OH_E2E_VARIANTS_RUN_QWEN, ...credentials } = copies[0].env ?? {};
       assert.deepEqual(
-        copies[0].env,
+        Object.keys(credentials).length ? credentials : undefined,
         step.env,
         `${name}: credential/model drift`,
       );
+      if (/^\s*just live-/m.test(step.run))
+        assert.equal(OH_E2E_NO_SKIP, noSkip, `${name}: live step must keep the no-skip demand`);
       const context = {
         matrix: { os: "macos-latest" },
         needs: { "macos-policy": { outputs: { macos_required: "true" } } },
@@ -76,8 +85,10 @@ test("consolidated Mac job retains real live commands and credential bindings fr
       assert.equal(evaluate(copies[0].if, context), false, `${name}: unselected lane must omit`);
     }
   }
-  assert.equal(ci.env.OH_E2E_VARIANTS_RUN_OPENCODE, "1");
-  assert.equal(ci.env.OH_E2E_VARIANTS_RUN_QWEN, "0");
+  const variants = ci.steps.find((s) => s.run === "just live-variants");
+  assert.equal(variants.env.OH_E2E_VARIANTS_API_ONLY, 1);
+  assert.equal(variants.env.OH_E2E_VARIANTS_RUN_OPENCODE, "1");
+  assert.equal(variants.env.OH_E2E_VARIANTS_RUN_QWEN, "0");
 });
 test("real path-routing subprocess reads workflow filters and keeps former control schedule proof", () => {
   const fixture = history();
@@ -144,12 +155,13 @@ test("live variants preflight accepts the actual consolidated graph and rejects 
     ], { encoding: "utf8" });
     writeFileSync(path, stringify(ci));
     assert.equal(run().status, 0);
-    ci.jobs.check.env.OH_E2E_VARIANTS_RUN_OPENCODE = "0";
+    const variantsStep = ci.jobs.check.steps.find((s) => s.run === "just live-variants");
+    variantsStep.env.OH_E2E_VARIANTS_RUN_OPENCODE = "0";
     writeFileSync(path, stringify(ci));
     const failed = run();
     assert.notEqual(failed.status, 0);
     assert.match(failed.stderr, /Mac CI: preserve OpenCode variant selector/);
-    ci.jobs.check.env.OH_E2E_VARIANTS_RUN_OPENCODE = "1";
+    variantsStep.env.OH_E2E_VARIANTS_RUN_OPENCODE = "1";
     writeFileSync(path, stringify(ci));
     assert.equal(run().status, 0);
     for (const invalid of [null, { jobs: {} }, { jobs: { check: { env: {}, steps: [{} , { if: 7 }] } } }]) {

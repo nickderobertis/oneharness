@@ -164,7 +164,6 @@ impl CatalogFiles {
         (is_fresh(age, interval) && self.usable()).then(|| self.catalog.clone())
     }
 
-    /// Whether the catalog file holds a catalog Codex can read.
     fn usable(&self) -> bool {
         fs::read(&self.catalog).is_ok_and(|bytes| is_usable_catalog(&bytes))
     }
@@ -230,7 +229,6 @@ impl CatalogFiles {
         self.without_fresh(&record)
     }
 
-    /// The stale catalog when there is one, else none; with the warning.
     fn without_fresh(&self, record: &FailureRecord) -> CatalogChoice {
         let stale = self.usable().then(|| self.catalog.clone());
         CatalogChoice {
@@ -411,7 +409,6 @@ fn codex_home(launch: &CatalogLaunch<'_>) -> Option<PathBuf> {
     Some(fs::canonicalize(&home).unwrap_or(home))
 }
 
-/// `<state>/oneharness/codex-model-catalog`.
 fn catalog_root() -> Option<PathBuf> {
     crate::io::server_pool::state_dir()
         .map(|dir| dir.join("oneharness").join("codex-model-catalog"))

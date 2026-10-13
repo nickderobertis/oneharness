@@ -330,8 +330,9 @@ fn record_codex_plugins(path: &str, argv: &[String]) {
 /// The plugins installed under `$CODEX_HOME/plugins/`, one directory each and
 /// sorted; any other file there is not a plugin. No `plugins/` directory is no
 /// plugins installed. A launch that loads plugins with no `CODEX_HOME` would
-/// read the real `~/.codex`, and an unreadable directory would read as none
-/// installed, so both stop the mock rather than record a launch nobody set up.
+/// read the real `~/.codex`, and an unreadable directory or entry would read as
+/// none installed, so each stops the mock rather than record a launch nobody
+/// set up.
 fn installed_codex_plugins() -> Vec<String> {
     let home = std::env::var_os("CODEX_HOME")
         .expect("MOCK_CODEX_PLUGINS_LOG loads plugins from CODEX_HOME, which is unset");
@@ -350,9 +351,17 @@ fn installed_codex_plugins() -> Vec<String> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
         Err(err) => panic!("$CODEX_HOME/plugins could not be read: {err}"),
     };
+    // An entry whose type cannot be read is refused rather than read as no
+    // plugin, the way `Path::is_dir` would.
     let mut loaded: Vec<String> = entries
         .into_iter()
-        .filter(|entry| entry.path().is_dir())
+        .filter(|entry| match std::fs::metadata(entry.path()) {
+            Ok(metadata) => metadata.is_dir(),
+            Err(err) => panic!(
+                "$CODEX_HOME/plugins entry {} could not be read: {err}",
+                entry.path().display()
+            ),
+        })
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
         .collect();
     loaded.sort();

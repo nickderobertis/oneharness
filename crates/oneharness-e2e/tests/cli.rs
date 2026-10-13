@@ -37787,6 +37787,31 @@ fn an_opted_in_codex_whose_plugins_listing_fails_part_way_fails_rather_than_load
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn an_opted_in_codex_with_an_unreadable_plugin_entry_fails_rather_than_skipping_it() {
+    // An entry whose target is gone has no type to read: the mock refuses
+    // rather than record a launch that silently loaded one plugin fewer.
+    let fx = ConfigFixture::new(
+        "codex-plugins-dangling-entry",
+        "[harness.codex]\nplugins = true\n",
+        "",
+    );
+    let home = fx.dir.join("codex-home");
+    let plugins = home.join("plugins");
+    std::fs::create_dir_all(plugins.join("fixture-plugin")).unwrap();
+    std::os::unix::fs::symlink(fx.dir.join("missing-plugin"), plugins.join("dangling")).unwrap();
+    assert_codex_plugin_discovery_fails(
+        &fx,
+        Some(&home),
+        &[],
+        &format!(
+            "$CODEX_HOME/plugins entry {} could not be read",
+            plugins.join("dangling").display()
+        ),
+    );
+}
+
 #[test]
 fn an_opted_in_codex_loads_only_the_plugin_directories_its_codex_home_holds() {
     // Codex loads a plugin per directory under `$CODEX_HOME/plugins/`: a stray

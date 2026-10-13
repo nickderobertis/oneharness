@@ -59,6 +59,11 @@ oh_resume_mode_enforce codex plan
 # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
 note "» config overrides: codex must apply every -c spelling as one last-wins list"
 oh_codex_config_override_order
+# Model-free: oneharness starts codex with `-c features.plugins=false`, which
+# a caller's own `-c features.plugins=true` or `--enable plugins` must override.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» plugins flags: a caller's opt-in must override oneharness's plugins-off default"
+oh_codex_plugins_flag_order
 # A caller's own `-c sandbox_mode=` must not outrank the mode on a resumed turn
 # any more than it does on a fresh one, where `--sandbox` beats it.
 oh_resume_mode_enforce codex auto -- -c sandbox_mode=read-only

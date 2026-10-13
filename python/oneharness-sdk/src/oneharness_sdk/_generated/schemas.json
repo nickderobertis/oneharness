@@ -296,6 +296,17 @@
           "model": {
             "$ref": "#/$defs/Field3"
           },
+          "plugins": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved plugins opt-in (`false` by default), present only for a\nharness with a plugins feature (`codex`)."
+          },
           "reasoning": {
             "$ref": "#/$defs/Field3"
           },
@@ -480,6 +491,17 @@
           },
           "model": {
             "$ref": "#/$defs/Field3"
+          },
+          "plugins": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The plugins opt-in a launch of this variant resolves to: the variant's\nown, else its harness's, else `false`. Present only for a harness with\na plugins feature (`codex`)."
           },
           "reasoning": {
             "$ref": "#/$defs/Field3"

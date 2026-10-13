@@ -1869,12 +1869,12 @@ oh_codex_config_override_order() {
       last="$([ "$first" = true ] && printf false || printf true)"
       # The spelling under test comes last: its value must win.
       _oh_codex_spell "$spelling" "features.hooks=$last"
-      _oh_codex_feature_value -c "features.hooks=$first" "${_OH_SPELLED[@]}"
+      _oh_codex_feature_value hooks -c "features.hooks=$first" "${_OH_SPELLED[@]}"
       [ "$_OH_FEATURE_VAL" = "$last" ] ||
         fail "codex: \`${_OH_SPELLED[*]}\` after \`-c features.hooks=$first\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — that spelling is not a config override codex applies last-wins; drop it from \`sets_codex_sandbox_mode\` (domain/harness.rs) or restate the mode after every caller arg"
       # And first: the plain `-c` after it must win.
       _oh_codex_spell "$spelling" "features.hooks=$first"
-      _oh_codex_feature_value "${_OH_SPELLED[@]}" -c "features.hooks=$last"
+      _oh_codex_feature_value hooks "${_OH_SPELLED[@]}" -c "features.hooks=$last"
       [ "$_OH_FEATURE_VAL" = "$last" ] ||
         fail "codex: \`-c features.hooks=$last\` after \`${_OH_SPELLED[*]}\` left hooks=${_OH_FEATURE_VAL:-<unreadable>} (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — position no longer decides between two overrides; re-read codex-rs \`build_cli_overrides_layer\` and move the restated mode in \`argv_with_caller_args\` to wherever now wins"
     done
@@ -1882,6 +1882,42 @@ oh_codex_config_override_order() {
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: codex applies -c, --config, --config= and -c<kv> as one last-wins list of config overrides"
 }
+
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase is the drift gate between the measured matrix and real Codex, which the deterministic gate cannot run; it belongs in the live codex suite.
+# Model-free: asks real codex every row of
+# tests/fixtures/codex-plugins-flag-order.json for its effective `plugins`
+# feature. Under an empty CODEX_HOME, so a config.toml of the host's cannot
+# decide the unnamed default.
+oh_codex_plugins_flag_order() {
+  command -v codex >/dev/null 2>&1 ||
+    skip "codex is not installed; install it (npm install -g @openai/codex) or put it on PATH, then rerun"
+  command -v jq >/dev/null 2>&1 ||
+    skip "jq is not installed; cannot read the plugins flag matrix — install jq (https://jqlang.org/download/) or put it on PATH, then rerun"
+  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-plugins-flag-order.json" rows
+  # Tab-joined so an argument is one field; jq on Windows ends lines CRLF.
+  rows="$(jq -er '.rows[] | [(.plugins | tostring)] + .args | join("\t")' "$matrix" | tr -d '\r')" ||
+    fail "could not read the rows of $matrix — restore it from git"
+  # A subshell, so its EXIT trap removes the scratch CODEX_HOME however the rows
+  # end — a fail() from this phase or from a helper included.
+  (
+    local home native_home want line
+    local -a args
+    home="$(mktemp -d)" || fail "could not create a scratch CODEX_HOME — check that the host temp dir is writable"
+    trap 'rm -rf "$home" || fail "could not remove the scratch CODEX_HOME $home — check its permissions with ls -la, then delete it by hand"' EXIT
+    native_home="$(oh_native_path "$home")" || fail "could not convert the scratch CODEX_HOME $home to a native path — check that cygpath works on this host"
+    while IFS= read -r line; do
+      IFS=$'\t' read -r -a args <<<"$line"
+      want="${args[0]}"
+      args=("${args[@]:1}")
+      CODEX_HOME="$native_home" _oh_codex_feature_value plugins ${args[@]+"${args[@]}"}
+      [ "$_OH_FEATURE_VAL" = "$want" ] ||
+        fail "codex: \`codex features list ${args[*]-}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
+    done <<<"$rows"
+  )
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
+  note "PASS: codex resolves plugins as -c last-wins, then --enable, then --disable, so a caller can re-enable plugins over oneharness's -c features.plugins=false"
+}
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 # One spelling of a config override, as argv words in $_OH_SPELLED.
 #   $1 spelling (-c | --config | --config= | -c<kv>), $2 key=value
@@ -1894,17 +1930,30 @@ _oh_codex_spell() {
   esac
 }
 
-# The effective value of codex's `hooks` feature under the given args, in
+# The effective value of one codex feature under the given args, in
 # $_OH_FEATURE_VAL, with codex's own stderr in $_OH_FEATURE_ERR for a failure
-# to quote. Globals rather than stdout, so a caller keeps both.
+# to quote. Globals rather than stdout, so a caller keeps both. A codex that
+# exits non-zero answers nothing, whatever it printed: the value is left empty
+# (which every caller reports as unreadable) and the exit status leads the
+# stderr it quotes.
+#   $1 feature name, then the args to ask under
 _OH_FEATURE_VAL=""
 _OH_FEATURE_ERR=""
 _oh_codex_feature_value() {
-  local err
-  err="$(mktemp)"
-  _OH_FEATURE_VAL="$(codex features list "$@" </dev/null 2>"$err" | awk '$1 == "hooks" { print $NF }' | tr -d '\r')" || true
-  _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)"
-  rm -f "$err"
+  local feature="$1" err listed status=0
+  shift
+  err="$(mktemp)" || fail "could not create a scratch file for codex's stderr — check that the host temp dir is writable (df -h \"\${TMPDIR:-/tmp}\")"
+  listed="$(codex features list "$@" </dev/null 2>"$err")" || status=$?
+  _OH_FEATURE_ERR="$(tr -d '\000' <"$err" | tail -c 400)" ||
+    _OH_FEATURE_ERR="<could not read codex's stderr from $err — rerun the phase; if it recurs, check the host temp dir (df -h)>"
+  rm -f "$err" || note "could not remove the scratch file $err; delete it by hand"
+  _OH_FEATURE_VAL=""
+  if [ "$status" -ne 0 ]; then
+    _OH_FEATURE_ERR="codex exited $status: $_OH_FEATURE_ERR"
+    return 0
+  fi
+  _OH_FEATURE_VAL="$(printf '%s\n' "$listed" | awk -v feature="$feature" '$1 == feature { print $NF }' | tr -d '\r')" ||
+    fail "could not read feature \`$feature\` from \`codex features list $*\` (awk or tr failed) — rerun the phase; if it recurs, check that awk and tr are on PATH"
 }
 
 # Whether the harness's own OS sandbox for `mode` can START on this host,

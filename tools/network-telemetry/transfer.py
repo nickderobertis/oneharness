@@ -46,7 +46,9 @@ def gateway() -> str:
     return "127.0.0.1"
 
 
-def recv_exact(conn: socket.socket, n: int) -> int:
+def recv_upto(conn: socket.socket, n: int) -> int:
+    """Read up to n bytes, stopping early at EOF; returns how many arrived, which
+    the JSON line reports beside what was asked for."""
     got = 0
     while got < n:
         data = conn.recv(min(CHUNK, n - got))
@@ -74,7 +76,7 @@ def transfer(port: int, down: int, up: int) -> Moved:
     if down:
         with socket.create_connection((host, port)) as conn:
             conn.sendall(f"GET {down}\n".encode())
-            got = recv_exact(conn, down)
+            got = recv_upto(conn, down)
     reply = ""
     if up:
         with socket.create_connection((host, port)) as conn:

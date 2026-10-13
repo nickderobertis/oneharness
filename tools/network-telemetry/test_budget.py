@@ -63,9 +63,10 @@ class Phase(NamedTuple):
 
 Plan = list[Phase]
 
-# The budget workload: one live-codex pass's 50 default-config launches —
-# 22 model turns, 1 usage probe, 26 network-free launches and 1 controlled
-# turn — as (phase, the kind it must produce or None, launches).
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the budget workload as the task's acceptance criteria state it (50 default-config launches), not a restatement of what the suite launches today: the recorder now also sees oneharness's `--version` probe before every launch (97 in the committed pass), and the thresholds are tested at their exact values over this stated workload. What the suite really launches is held by the committed evidence and its recomputation (class Evidence).
+# The budget workload as the task's acceptance criteria state it: 50
+# default-config launches — 22 model turns, 1 usage probe, 26 network-free
+# launches and 1 controlled turn.
 WORKLOAD: Plan = [
     Phase("run", "exec", [EXEC, VERSION]),
     Phase("controlled-turn", "app-server", [APP_SERVER, VERSION]),
@@ -82,6 +83,7 @@ WORKLOAD: Plan = [
     Phase("stream-assert", "exec", [EXEC, EXEC, VERSION]),
     Phase("reasoning-enforce", "exec", [EXEC, EXEC, VERSION, VERSION]),
 ]
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 # Several launches of every kind, for the detail's per-kind figures.
 KINDS: Plan = [
     Phase("run", "exec", [EXEC, RESUME, EXEC]),

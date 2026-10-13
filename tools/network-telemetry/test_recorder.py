@@ -280,6 +280,75 @@ class MeasuredLaunch(unittest.TestCase):
         self.assertEqual(len(lines(file)), 2, "the launch was recorded more than once")
 
 
+class Concurrency(unittest.TestCase):
+    def test_launches_recorded_at_once_each_get_one_whole_line(self) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        serving = server(self)
+        file = tmp / "codex.jsonl"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\nexec "
+            + " ".join(transfer_argv(serving.port, 300_000, 100_000))
+            + "\n"
+        )
+        real.chmod(0o755)
+        shims = [
+            subprocess.Popen(
+                [
+                    BASH,
+                    str(NETSHIM),
+                    "--suite",
+                    "codex",
+                    "--harness",
+                    "codex",
+                    "--real",
+                    str(real),
+                    "--self",
+                    str(tmp / "shims" / "codex"),
+                    "--file",
+                    str(file),
+                    "--",
+                    "exec",
+                    str(n),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            for n in range(8)
+        ]
+        self.assertEqual([shim.wait(timeout=120) for shim in shims], [0] * 8)
+        records = lines(file)  # every line parses: none was interleaved
+        launched = starts(records)
+        self.assertEqual(len(launched), 8)
+        self.assertEqual(len(records), 16)
+        for launch in launched:
+            (line,) = measurements(records, launch["launch_id"])
+            self.assertGreater(line["rx_bytes"], 300_000)
+
+
+class Cleanup(unittest.TestCase):
+    def test_a_marker_or_scratch_the_recorder_cannot_remove_is_named(self) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        file = tmp / "codex.jsonl"
+        own_tmp = tmp / "own-tmp"
+        own_tmp.mkdir()
+        real = tmp / "locking-double"
+        real.write_text(f'#!/usr/bin/env bash\nchmod a-w "{tmp / ".pending"}" "{own_tmp}"\n')
+        real.chmod(0o755)
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"TMPDIR": str(own_tmp)})
+        (tmp / ".pending").chmod(0o755)
+        own_tmp.chmod(0o755)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn(b"could not remove the pending marker", run.stderr)
+        self.assertIn(b"by hand (rm -rf", run.stderr)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual(line["method"], "netns-pasta", "a cleanup failure cost the measurement")
+
+
 class SupervisorLoss(unittest.TestCase):
     def test_a_supervisor_that_dies_still_leaves_the_launch_one_line(self) -> None:
         # The measuring supervisor is the line's writer; if it is lost, the
@@ -429,6 +498,57 @@ class Fallback(unittest.TestCase):
             tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"PATH": str(bare)}
         )
         self.assert_unavailable(tmp, run, blob, "no pasta on PATH")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without pasta")
+    def test_a_signal_to_an_unmeasured_launch_reaches_it_and_is_recorded(self) -> None:
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\nexec "
+            + " ".join(transfer_argv(0, 0, 0, "--linger", "60", "--heartbeat", str(heartbeat)))
+            + "\n"
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        no_pasta = ":".join(
+            p for p in os.environ["PATH"].split(":") if not (Path(p) / "pasta").exists()
+        )
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PATH": no_pasta},
+        )
+        for _ in range(100):
+            if heartbeat.exists():
+                break
+            time.sleep(0.1)
+        shim.send_signal(signal.SIGTERM)
+        self.assertEqual(shim.wait(timeout=30), 128 + signal.SIGTERM)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + signal.SIGTERM))
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the signal")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without python3")
     def test_a_linux_host_without_python3_runs_the_launch_unmeasured(self) -> None:

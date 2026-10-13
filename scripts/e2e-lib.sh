@@ -239,7 +239,8 @@ _oh_write_whole() {
   if cat 2>/dev/null >"$partial" && mv -f "$partial" "$target" 2>/dev/null; then
     return 0
   fi
-  rm -f "$partial" 2>/dev/null || true
+  [ ! -e "$partial" ] || rm -f "$partial" ||
+    note "  could not remove the partial shim $partial either; delete it by hand"
   note "  could not write $target (its directory is not writable); the check below names what PATH resolves instead"
   return 1
 }
@@ -3875,9 +3876,13 @@ _oh_toml_python() {
 # could read. A `[profiles.*]` table applies only when a run selects that
 # profile, which these launches never do.
 oh_codex_home_allows_plugins() {
-  local cfg="$1/config.toml" rc=0 python=()
+  local cfg="$1/config.toml" rc=0 python=() word
   [ -f "$cfg" ] || return 0
-  mapfile -t python < <(_oh_toml_python) && [ "${#python[@]}" -gt 0 ] ||
+  # A read loop, not mapfile: macOS's system bash is 3.2.
+  while IFS= read -r word; do
+    python+=("$word")
+  done < <(_oh_toml_python || true)
+  [ "${#python[@]}" -gt 0 ] ||
     fail "reading $cfg needs Python 3.11+ (tomllib) or uv; install either, then rerun"
   "${python[@]}" - "$cfg" <<'PY' || rc=$?
 import sys
@@ -3958,6 +3963,7 @@ oh_codex_plugins_evidence_assert() {
 # second $4, its text the marker $2 when one of its rows names the marker or
 # thread $3 — the launch's process — and its catalog request and completed
 # installed-plugin bundle sync from Codex's own log lines.
+# llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's log database schema and these two log lines have no published contract to reconcile against short of running Codex: they are read off real Codex (codex-cli 0.159.2's logs_2.sqlite, the spike that measured the catalog regression), and the live-variants run of this phase against real Codex is the drift alarm — a moved line fails that run loudly, never passes it.
 oh_codex_log_evidence() {
   [ -f "$1/logs_2.sqlite" ] ||
     fail "Codex wrote no log at $1/logs_2.sqlite, so the opted-in launch's plugins cannot be read; check that this codex logs there (codex-cli 0.159 does), then rerun"
@@ -3987,6 +3993,7 @@ for record in processes.values():
     print(json.dumps(record))
 PY
 }
+# llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 # --- structured output enforcement -------------------------------------------
 

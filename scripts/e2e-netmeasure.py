@@ -223,7 +223,12 @@ class NamespaceResult:
             raise ValueError(
                 f"counters are not four non-negative integers and a retransmit count: {moved!r}"
             )
-        if not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds < 0:
+        if (
+            isinstance(seconds, bool)
+            or not isinstance(seconds, (int, float))
+            or not math.isfinite(seconds)
+            or seconds < 0
+        ):
             raise ValueError(f"seconds is not a finite non-negative number: {seconds!r}")
         if code is not None and (isinstance(code, bool) or not isinstance(code, int)):
             raise ValueError(f"exit is not an integer or null: {code!r}")
@@ -297,12 +302,33 @@ def observer_argv() -> Optional[list[str]]:
     return words
 
 
-def remove_quietly(path: Optional[str]) -> None:
-    if path is not None:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
+def remove_pending(path: Optional[str]) -> None:
+    """Remove the launch's pending marker once its line is in; a marker that
+    cannot be removed is reported, since the budget step would wait on it."""
+    if path is None:
+        return
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        print(
+            f"e2e-netmeasure: could not remove the pending marker {path} ({error}); the budget "
+            f"step will wait its bound for it — delete it by hand (rm -f '{path}')",
+            file=sys.stderr,
+        )
+
+
+def remove_scratch(scratch: Path) -> None:
+    """Remove the supervisor's scratch directory, naming any part left behind."""
+
+    def report(_function: object, path: str, error: object) -> None:
+        print(
+            f"e2e-netmeasure: could not remove {path} ({error}); delete {scratch} by hand (rm -rf '{scratch}')",
+            file=sys.stderr,
+        )
+
+    shutil.rmtree(scratch, onerror=report)
 
 
 def read_counters() -> dict[str, Counters]:
@@ -517,7 +543,7 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
         launch = subprocess.Popen(args.argv)
     except OSError as error:
         append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, 127))
-        remove_quietly(args.pending)
+        remove_pending(args.pending)
         print(
             f"e2e-netshim: cannot start {args.argv[0]}: {error}; check that the harness is still "
             "installed there (the shim resolved it at setup), then rerun the suite to resolve it again",
@@ -531,7 +557,7 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
     append_line(
         args.line_file, Unavailable(args.launch_id, reason, round(time.monotonic() - t0, 3), code)
     )
-    remove_quietly(args.pending)
+    remove_pending(args.pending)
     return code
 
 
@@ -553,7 +579,10 @@ def measure(args: argparse.Namespace) -> int:
             # The shim still gets an answer and the launch a line: run it
             # directly if it never started, else record why it went unmeasured.
             traceback.print_exc()
-            reason = f"the measuring supervisor failed ({error!r}; its traceback is on stderr)"
+            reason = (
+                f"the measuring supervisor failed ({error!r}; its traceback is on stderr); rerun "
+                "the launch, and if it recurs report that traceback against scripts/e2e-netmeasure.py"
+            )
             if (scratch / "launched").exists():
                 append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, None))
                 outcome = Outcome(Ending.EXITED, code=137)
@@ -561,13 +590,13 @@ def measure(args: argparse.Namespace) -> int:
                 outcome = Outcome(Ending.UNLAUNCHED, reason=reason)
         try:
             if outcome.ending is Ending.EXITED:
-                remove_quietly(args.pending)
+                remove_pending(args.pending)
             try:
                 os.write(done_w, outcome.encode())
             except BrokenPipeError:
                 pass  # the shim is gone — signalled away — and the line already recorded
         finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+            remove_scratch(scratch)
             os._exit(0)
     os.close(life_r)
     os.close(done_w)
@@ -605,7 +634,7 @@ def measure(args: argparse.Namespace) -> int:
                 None,
             ),
         )
-        remove_quietly(args.pending)
+        remove_pending(args.pending)
         return 137
     if outcome.ending is Ending.UNLAUNCHED:
         return run_direct(args, outcome.reason)

@@ -6167,6 +6167,7 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
     assert!(result["events_source"].is_null());
 }
 
+// llmlint: ignore[e2e_not_mocked] This drives the real built `oneharness run --control` end to end; only the codex app-server is replaced, by the repository's own subprocess double, because what is pinned is that double's MOCK_CODEX_ECHO_PROMPT reply as oneharness extracts it, which tools/network-telemetry's journeys rely on. Real Codex's controlled turn is held by scripts/e2e-codex.sh's controlled-turn phase.
 /// A controlled codex turn reports what its app-server's agent message said:
 /// with `MOCK_CODEX_ECHO_PROMPT` the mock answers the turn's own input, which
 /// is how the live tier's network-recorder journeys (tools/network-telemetry)

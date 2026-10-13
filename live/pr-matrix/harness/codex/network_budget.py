@@ -346,9 +346,10 @@ class ModelTurns:
 @dataclass(frozen=True)
 class EvidenceReport:
     """One pass's calibration figures: the largest launch and the suite total
-    against the caps, by the three conditions the caps were set to meet — the
-    largest launch x1.5 within the launch cap, the total x1.2 within the suite
-    cap, and a doubled pass over the suite cap."""
+    against the caps, and whether each of the three conditions the caps are
+    checked against holds for this pass — the largest launch x1.5 within the
+    launch cap, the total x1.2 within the suite cap, and a doubled pass over
+    the suite cap."""
 
     method: str
     boundary: str

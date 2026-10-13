@@ -131,7 +131,9 @@ def parse(number: int, record: object) -> Line:
         raise Incomplete(f"{where} is not a JSON object")
     if record.get("expected") is True:
         if record.get("suite") != SUITE:
-            raise Incomplete(f"{where} expects a launch of suite {record.get('suite')!r}, not {SUITE!r}")
+            raise Incomplete(
+                f"{where} expects a launch of suite {record.get('suite')!r}, not {SUITE!r}"
+            )
         return Expectation(text_field(record, "phase", where), text_field(record, "kind", where))
     if "argv" in record:
         launch_id = LaunchId(text_field(record, "launch_id", f"{where}, a start line,"))

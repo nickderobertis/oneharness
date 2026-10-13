@@ -37,8 +37,9 @@ case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
 # A launch oneharness stopped is still being measured while its namespace
 # winds down (at most the 5 s kill grace); its marker goes once its line is in.
 wait_seconds="${OH_E2E_PENDING_WAIT:-30}"
-case "$wait_seconds" in "" | *[!0-9]*)
-  echo "e2e-network-budget: OH_E2E_PENDING_WAIT must be a whole number of seconds, got '$wait_seconds'; unset it for the 30 s default or set one, as in OH_E2E_PENDING_WAIT=60" >&2
+# Matched as text before any arithmetic, so no value can wrap or read as octal.
+case "$wait_seconds" in [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9] | 0) ;; *)
+  echo "e2e-network-budget: OH_E2E_PENDING_WAIT must be a whole number of seconds, got '$wait_seconds'; unset it for the 30 s default or set 0 to 9999, as in OH_E2E_PENDING_WAIT=60" >&2
   exit 2
   ;;
 esac
@@ -67,6 +68,7 @@ if [ -n "$left" ]; then
   echo "network budget ($suite): still measuring after ${wait_seconds}s: ${left}— the check below names any launch left without its line" >&2
 fi
 
+# llmlint: ignore[work_goes_through_command_surface] The same frozen sync every Python target in this repository runs before its tool (each project.json's format/lint/test, python-sdk-generate): CI's e2e-codex leg reaches this step without `just bootstrap`, so it syncs the one locked workspace itself rather than through a recipe.
 uv sync --project "$root/python" --frozen --no-install-workspace --quiet || {
   echo "e2e-network-budget: could not install the uv workspace's dev tools (onebudgetspec); run 'just bootstrap', then rerun" >&2
   exit 1

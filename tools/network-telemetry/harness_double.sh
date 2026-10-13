@@ -31,8 +31,14 @@ case "${1:-}" in
     ;;
 esac
 
+refuse() {
+  echo "harness_double: $*" >&2
+  exit 1
+}
+
 if [ -n "${OH_TEST_ARGV_LOG:-}" ]; then
-  printf '%s\0' "$tool" "$@" | jq -Rsc 'split("\u0000")[:-1] | {tool: .[0], argv: .[1:]}' >>"$OH_TEST_ARGV_LOG"
+  printf '%s\0' "$tool" "$@" | jq -Rsc 'split("\u0000")[:-1] | {tool: .[0], argv: .[1:]}' >>"$OH_TEST_ARGV_LOG" ||
+    refuse "cannot append its argv to OH_TEST_ARGV_LOG=$OH_TEST_ARGV_LOG; check that the test's scratch directory is writable"
 fi
 
 # The prompt: the argv after the subcommand, or stdin for `exec -`.
@@ -46,7 +52,8 @@ marker="$(printf '%s' "$prompt" | grep -oE 'ONEHARNESS-LIVE-[0-9]+|OH_VARIANT_[0
 seconds="$(printf '%s' "$prompt" | grep -oE 'sleep [0-9]+' | head -1 | cut -d' ' -f2 || true)"
 if [ -n "$seconds" ]; then
   sleep "$seconds"
-  [ -z "${OH_TEST_RAN_LOG:-}" ] || printf 'sleep %s\n' "$seconds" >>"$OH_TEST_RAN_LOG"
+  [ -z "${OH_TEST_RAN_LOG:-}" ] || printf 'sleep %s\n' "$seconds" >>"$OH_TEST_RAN_LOG" ||
+    refuse "cannot append to OH_TEST_RAN_LOG=$OH_TEST_RAN_LOG; check that the test's scratch directory is writable"
 fi
 
 if [ "$tool" != codex ]; then
@@ -68,7 +75,8 @@ done
 if [ -n "${OH_TEST_TRANSFER:-}" ] && { [ "$subcommand" = exec ] || [ "$subcommand" = app-server ]; } &&
   [ "${OH_TEST_TRANSFER_PHASE:-${OH_E2E_PHASE:-}}" = "${OH_E2E_PHASE:-}" ]; then
   read -r -a transfer <<<"$OH_TEST_TRANSFER"
-  python3 "$here/transfer.py" client "${transfer[@]}"
+  python3 "$here/transfer.py" client "${transfer[@]}" ||
+    refuse "its loopback transfer (${OH_TEST_TRANSFER}) failed; transfer.py's error is above — check the test's server is still listening"
 fi
 case "$subcommand" in
   login)
@@ -99,13 +107,14 @@ fi
 # The mock's own plugins record of this launch, as the per-process evidence
 # e2e-variants.sh's opted-in phase reads in place of Codex's log: its text is
 # this launch's argv, which carries the prompt's marker.
-record="$(mktemp)"
+record="$(mktemp)" || refuse "cannot create a scratch file for the mock's plugins record; check TMPDIR is writable"
 trap 'rm -f "$record" || { echo "harness_double: could not remove its scratch file $record; delete it by hand" >&2; exit 1; }' EXIT
 rc=0
 MOCK_CODEX_PLUGINS_LOG="$record" "$mock" "$@" || rc=$?
 if [ -s "$record" ]; then
   printf '%s\0' "$@" | jq -Rsc --slurpfile mock "$record" --arg pid "$$" \
     '{process: $pid, text: (split("\u0000")[:-1] | join(" ")), catalog_request: $mock[0].catalog_fetched,
-      plugin_load_ran: ($mock[0].loaded | length > 0)}' >>"$OH_TEST_PLUGINS_EVIDENCE"
+      plugin_load_ran: ($mock[0].loaded | length > 0)}' >>"$OH_TEST_PLUGINS_EVIDENCE" ||
+    refuse "cannot turn the mock's plugins record $record into evidence in $OH_TEST_PLUGINS_EVIDENCE (jq's error is above)"
 fi
 exit "$rc"

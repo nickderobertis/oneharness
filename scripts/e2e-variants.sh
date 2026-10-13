@@ -221,10 +221,9 @@ codex_plugins_opt_in() {
   local home="$1" seconds="${OH_E2E_PLUGINS_SLEEP:-25}" id since thread argv
   local report="$tmp/codex-plugins.json" plugins_marker="${marker}_pl"
   local evidence_file="${OH_E2E_PLUGINS_EVIDENCE:-$tmp/codex-plugins-evidence.jsonl}"
-  case "$seconds" in "" | *[!0-9]*) seconds=invalid ;; esac
-  [ "$seconds" != invalid ] && [ "$((10#$seconds))" -ge 1 ] && [ "$((10#$seconds))" -le 600 ] ||
+  # Matched as text before any arithmetic, so no value can wrap or read as octal.
+  [[ "$seconds" =~ ^[1-9][0-9]{0,2}$ ]] && [ "$seconds" -le 600 ] ||
     fail "OH_E2E_PLUGINS_SLEEP must be a whole number of seconds from 1 to 600, got '${OH_E2E_PLUGINS_SLEEP:-}'; unset it for the 25 s default"
-  seconds="$((10#$seconds))"
   oh_codex_home_allows_plugins "$home"
   since="$(($(date +%s) - 1))"
   OH_VARIANT_CODEX_SUBSCRIPTION_HOME="$home" "$OH" run --config "$config" --harness codex:plugins \
@@ -234,13 +233,18 @@ codex_plugins_opt_in() {
   jq -e --arg m "$plugins_marker" '.results[0].status == "ok" and (.results[0].stdout | contains($m))' "$report" >/dev/null ||
     fail "codex:plugins did not complete with its marker ($(jq -r '.results[0].status' "$report")); rerun with OH_E2E_EVIDENCE=1"
   id="$(oh_launch_measured_assert "$OH_E2E_TELEMETRY_FILE" codex-plugins-opt-in exec "$seconds")"
-  argv="$(jq -c --arg id "$id" 'select(.launch_id == $id and .argv) | .argv' "$OH_E2E_TELEMETRY_FILE")"
+  argv="$(jq -c --arg id "$id" 'select(.launch_id == $id and .argv) | .argv' "$OH_E2E_TELEMETRY_FILE")" ||
+    fail "cannot read launch $id's argv from $OH_E2E_TELEMETRY_FILE (jq failed above); rerun the suite so it is written again"
   printf '%s' "$argv" | jq -e 'index(["-c", "model_reasoning_effort=\"low\""]) != null' >/dev/null ||
     fail "the opted-in launch's argv lacks the variant's own args (-c model_reasoning_effort=\"low\"): $argv; check that [harness.codex.variant.plugins] args still reaches codex in oneharness's argv (oneharness run --print-command), then rerun"
   printf '%s' "$argv" | jq -e '(index(["-c", "features.plugins=false"]) == null) and (index(["--disable", "plugins"]) == null)' >/dev/null ||
     fail "the opted-in launch still carried a plugins-off flag despite plugins = true: $argv; a variant's plugins opt-in no longer reaches codex — check oneharness's plugins resolution (FileConfig::plugins_for), then rerun"
   if [ -z "${OH_E2E_PLUGINS_EVIDENCE:-}" ]; then
-    thread="$(jq -r '.results[0].stdout' "$report" | jq -rR 'fromjson? | select(.type == "thread.started") | .thread_id' | head -1)"
+    # The first thread.started event names the launch's thread; none leaves
+    # the marker alone to attribute the launch's log rows.
+    thread="$(jq -r '.results[0].stdout' "$report" | jq -rR 'fromjson? | select(.type == "thread.started") | .thread_id')" ||
+      fail "cannot read the opted-in launch's events from $report (jq failed above); rerun with OH_E2E_EVIDENCE=1"
+    thread="${thread%%$'\n'*}"
     oh_codex_log_evidence "$home" "$plugins_marker" "$thread" "$since" >"$evidence_file" ||
       fail "could not read Codex's log $home/logs_2.sqlite for the opted-in launch's plugins evidence; check that python3 has sqlite3 and the file is readable (sqlite3 $home/logs_2.sqlite .tables), then rerun"
   fi

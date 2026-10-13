@@ -143,7 +143,23 @@ class MeasuredLaunch(unittest.TestCase):
             line["rx_bytes"], DOWN + UNRELATED // 2, "the unrelated transfer was counted"
         )
         self.assertLess(line["tx_bytes"], UP + UNRELATED // 2)
-        self.assertGreater(line["payload_rx_estimate"], DOWN - 1)
+        # The payload estimates are the counters less 54 B per captured frame,
+        # and nothing was retransmitted on the namespace's lossless link.
+        for direction, total, estimate in (
+            ("rx", "rx_bytes", "payload_rx_estimate"),
+            ("tx", "tx_bytes", "payload_tx_estimate"),
+        ):
+            counted = [
+                f
+                for f in frames
+                if f.direction == direction and start["before_ns"] <= f.stamp_ns <= end["after_ns"]
+            ]
+            inner = [f for f in counted if start["after_ns"] <= f.stamp_ns <= end["before_ns"]]
+            if len(inner) == len(counted):
+                self.assertEqual(line[estimate], line[total] - 54 * len(counted), direction)
+        self.assertGreaterEqual(line["payload_rx_estimate"], DOWN)
+        self.assertGreaterEqual(line["payload_tx_estimate"], UP)
+        self.assertEqual(line["namespace_tcp_retrans_segs"], 0)
         self.assertFalse(list((tmp / ".pending").glob("*")), "a pending marker outlived its line")
 
     def test_the_launch_resolves_through_the_hosts_upstream_resolvers(self) -> None:

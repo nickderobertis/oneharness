@@ -455,7 +455,7 @@ oh_run() {
 # sees that launch kind measured beside the exec turns and the usage probe.
 #   $1 harness id
 oh_controlled_turn() {
-  local id="$1" marker sandbox status=0
+  local id="$1" marker sandbox turn status=0
   _oh_phase controlled-turn
   marker="$(oh_marker)"
   sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
@@ -463,12 +463,15 @@ oh_controlled_turn() {
   # turn is never interrupted, so a throwaway one in the sandbox serves. The
   # turn and its assertion run in a subshell, so the sandbox goes however the
   # phase ends — a skip or a failure exits that subshell, and its status this
-  # helper.
+  # helper. It runs as a job whose `wait` is tested, not the subshell itself,
+  # so errexit stays in force inside it.
   (
     oh_run "$id" "$(oh_prompt "$marker")" --control --session "ohnet${RANDOM}" \
       --session-dir "$(oh_native_path "$sandbox")/sessions" --cwd "$(oh_native_path "$sandbox")"
     oh_assert_echoed "$id" "$marker"
-  ) || status=$?
+  ) </dev/null &
+  turn=$!
+  wait "$turn" || status=$?
   rm -rf "$sandbox" || note "  could not remove the scratch directory $sandbox — delete it by hand"
   [ "$status" -eq 0 ] || exit "$status"
 }

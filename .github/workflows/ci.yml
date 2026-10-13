@@ -83,7 +83,7 @@ jobs:
       # the step lifts the restriction and proves that same pasta can start
       # one. Below, OH_NET_NO_SKIP turns a recorder that cannot measure here
       # into a failure rather than a skip.
-      # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] The task names this sysctl as the lever, and the runner is an ephemeral single-tenant VM where every step already holds passwordless root, so lifting the userns restriction grants no process more than sudo does; a pasta-only AppArmor profile could not be proven off the hosted image and would move the pasta the recorder resolves. The step proves itself end to end: `pasta --config-net -- true` starts a namespace with the pasta first on PATH under bash -e, so any failed line fails the leg before the recorder runs; Legs pins its order and commands, and the hosted run is the provisioning's proof.
+      # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] An ephemeral single-tenant runner whose steps already hold passwordless root gains nothing from the restriction. The probe below is the step's own end-to-end proof; its hosted run is the only place it can run.
       - name: Permit pasta's unprivileged namespaces (network recorder)
         if: runner.os == 'Linux'
         run: |

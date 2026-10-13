@@ -2,9 +2,10 @@
 # A harness executable's stand-in for the network recorder's hermetic tests,
 # installed under the executable's own name (`codex`, `claude`, ...) on PATH.
 # It answers as the harness would through the repository's mock harness
-# (OH_TEST_MOCK) and, when OH_TEST_TRANSFER="PORT DOWN UP [flags]" is set,
-# first starts transfer.py's loopback client as its child, so the recorder has
-# bytes to count. OH_TEST_ARGV_LOG, when set, gets each launch's argv as one
+# (OH_TEST_MOCK) and, when OH_TEST_TRANSFER="PORT DOWN UP [flags]" is set, an
+# exec or app-server launch (of phase OH_TEST_TRANSFER_PHASE, when set) first
+# runs transfer.py's loopback client as its child, so the recorder has bytes
+# to count. OH_TEST_ARGV_LOG, when set, gets each launch's argv as one
 # JSON line.
 #
 # Codex's launches are the ones the budget tests drive end to end:
@@ -32,10 +33,6 @@ esac
 
 if [ -n "${OH_TEST_ARGV_LOG:-}" ]; then
   printf '%s\0' "$tool" "$@" | jq -Rsc 'split("\u0000")[:-1] | {tool: .[0], argv: .[1:]}' >>"$OH_TEST_ARGV_LOG"
-fi
-if [ -n "${OH_TEST_TRANSFER:-}" ]; then
-  # shellcheck disable=SC2086 # the variable is the client's own word list
-  python3 "$here/transfer.py" client $OH_TEST_TRANSFER
 fi
 
 # The prompt: the argv after the subcommand, or stdin for `exec -`.
@@ -66,6 +63,13 @@ for arg in "$@"; do
       ;;
   esac
 done
+# A turn's or a probe's own traffic — never `--version`'s — and, with
+# OH_TEST_TRANSFER_PHASE, only that phase's.
+if [ -n "${OH_TEST_TRANSFER:-}" ] && { [ "$subcommand" = exec ] || [ "$subcommand" = app-server ]; } &&
+  [ "${OH_TEST_TRANSFER_PHASE:-${OH_E2E_PHASE:-}}" = "${OH_E2E_PHASE:-}" ]; then
+  # shellcheck disable=SC2086 # the variable is the client's own word list
+  python3 "$here/transfer.py" client $OH_TEST_TRANSFER
+fi
 case "$subcommand" in
   login)
     echo "Logged in using ChatGPT"

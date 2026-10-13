@@ -120,6 +120,23 @@ class Unusable(Exception):
     """An input or host this script cannot use, said with what to do about it."""
 
 
+# What to do when the measuring namespace cannot be built or read.
+NAMESPACE_ADVICE = (
+    "rerun on a Linux host that allows unprivileged user namespaces "
+    "(`sysctl kernel.apparmor_restrict_unprivileged_userns=0` lifts Ubuntu's restriction), "
+    "or measure there with --measurement-out and run `report` on that file here"
+)
+
+
+def read_host_file(path: Path, what: str) -> str:
+    """`path`'s text inside the measuring namespace, or why it cannot be read
+    and what to do."""
+    try:
+        return path.read_text()
+    except OSError as error:
+        raise Unusable(f"cannot read {path} for {what}: {error}; {NAMESPACE_ADVICE}") from None
+
+
 @dataclass(frozen=True)
 class Url:
     host: str
@@ -662,12 +679,19 @@ class Counters:
 def read_counters() -> dict[str, Counters]:
     """Every non-loopback interface's byte counters in this namespace."""
     counters = {}
-    for line in Path("/proc/net/dev").read_text().splitlines()[2:]:
+    dev = Path("/proc/net/dev")
+    for line in read_host_file(dev, "the interface byte counters").splitlines()[2:]:
         name, _, rest = line.partition(":")
         if name.strip() == "lo":
             continue
-        fields = [int(x) for x in rest.split()]
-        counters[name.strip()] = Counters(received=fields[0], sent=fields[8])
+        try:
+            fields = [int(x) for x in rest.split()]
+            counters[name.strip()] = Counters(received=fields[0], sent=fields[8])
+        except (ValueError, IndexError):
+            raise Unusable(
+                f"{dev}'s line for `{name.strip()}` is not the kernel's counter layout; "
+                f"{NAMESPACE_ADVICE}"
+            ) from None
     return counters
 
 
@@ -688,11 +712,15 @@ def run_or_explain(argv: list[str], what: str) -> None:
     try:
         done = subprocess.run(argv, capture_output=True, text=True)
     except OSError as error:
-        raise Unusable(f"{what} failed: `{argv[0]}` could not run ({error})") from None
+        raise Unusable(
+            f"{what} failed: `{argv[0]}` could not run ({error}); install it (iproute2 provides "
+            f"`ip`, util-linux `mount`) or {NAMESPACE_ADVICE}"
+        ) from None
     if done.returncode != 0:
         raise Unusable(
             f"{what} failed (`{' '.join(argv)}` exited {done.returncode}: "
-            f"{done.stderr.strip() or 'no output'}); the namespace cannot be set up on this host"
+            f"{done.stderr.strip() or 'no output'}); the namespace cannot be set up on this "
+            f"host: {NAMESPACE_ADVICE}"
         )
 
 
@@ -703,7 +731,7 @@ def private_resolver() -> None:
     namespace, only an empty loopback there; the upstream list is the same
     configuration minus the stub."""
     run_or_explain(["mount", "--make-rprivate", "/"], "making the mount namespace private")
-    current = Path("/etc/resolv.conf").read_text()
+    current = read_host_file(Path("/etc/resolv.conf"), "the namespace's resolver")
     servers = [
         words[1]
         for words in (line.split() for line in current.splitlines())
@@ -720,8 +748,16 @@ def private_resolver() -> None:
 def loopback_up() -> None:
     """The proxy listens on the namespace's loopback, so it must be up."""
     flags = Path("/sys/class/net/lo/flags")
-    if flags.exists() and int(flags.read_text(), 16) & 0x1:
-        return
+    if flags.exists():
+        text = read_host_file(flags, "the loopback's state")
+        try:
+            up = int(text, 16) & 0x1
+        except ValueError:
+            raise Unusable(
+                f"{flags} holds {text.strip()!r}, not flags; {NAMESPACE_ADVICE}"
+            ) from None
+        if up:
+            return
     run_or_explain(["ip", "link", "set", "lo", "up"], "bringing the namespace's loopback up")
 
 
@@ -734,7 +770,7 @@ def init(args: argparse.Namespace) -> int:
     if libc.unshare(CLONE_NEWNS | CLONE_NEWPID) != 0:
         raise Unusable(
             f"unshare(CLONE_NEWNS|CLONE_NEWPID) failed: {os.strerror(ctypes.get_errno())}; this "
-            "host does not allow the mount and PID namespaces the measurement needs"
+            f"host does not allow the mount and PID namespaces the measurement needs: {NAMESPACE_ADVICE}"
         )
     child = os.fork()
     if child:

@@ -842,20 +842,30 @@ def fetch_step(argv: list[str], cwd: Path | None, what: str) -> None:
         )
 
 
-def find_pasta() -> str:
-    """The pasta to build the namespace with, fetching it without root only
-    when nothing else provides it and fetching is allowed."""
+def pasta_tools() -> Path:
+    """Where a fetched pasta is unpacked, under the user's cache directory."""
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    return cache / "oneharness-network-breakdown"
+
+
+def find_pasta() -> str | None:
+    """The pasta already on this host: the explicit override, then PATH, then
+    one an earlier run fetched. Never fetches."""
     explicit = os.environ.get("CODEX_NETWORK_BREAKDOWN_PASTA", "")
     if explicit != "":
         return explicit
     on_path = shutil.which("pasta")
     if on_path is not None:
         return on_path
-    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
-    tools = cache / "oneharness-network-breakdown"
+    pasta = pasta_tools() / "root" / "usr" / "bin" / "pasta"
+    return str(pasta) if pasta.exists() else None
+
+
+def fetch_pasta() -> str:
+    """Download and unpack Debian's passt package without root, into the cache
+    `pasta_tools` names, unless CODEX_NETWORK_BREAKDOWN_NO_FETCH=1 forbids it."""
+    tools = pasta_tools()
     pasta = tools / "root" / "usr" / "bin" / "pasta"
-    if pasta.exists():
-        return str(pasta)
     if os.environ.get("CODEX_NETWORK_BREAKDOWN_NO_FETCH") == "1":
         raise Unusable(
             f"no pasta on PATH or in {tools}, and CODEX_NETWORK_BREAKDOWN_NO_FETCH=1 forbids "
@@ -899,7 +909,7 @@ def env_pair(text: str) -> tuple[str, str]:
 def measure(args: argparse.Namespace) -> int:
     env = dict(os.environ)
     env.update(args.env)
-    pasta = find_pasta()
+    pasta = find_pasta() or fetch_pasta()
     try:
         scratch = tempfile.mkdtemp(prefix="codex-network-breakdown-")
     except OSError as error:

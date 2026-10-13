@@ -1965,18 +1965,18 @@ fn codex_launch_settings(c: &BuildCtx) -> Vec<String> {
 /// every session connects to ChatGPT's apps MCP server and downloads its tool
 /// list. Spelled as a `-c` override, like the plugins setting, so a caller's
 /// later `-c features.apps=true` or an `--enable apps` still turns it on.
-pub const CODEX_APPS_OFF: &str = "features.apps=false";
+pub(crate) const CODEX_APPS_OFF: &str = "features.apps=false";
 
 /// The `-c` value that turns Codex's analytics off: its `exec` reports metrics
 /// and product events by default.
-pub const CODEX_ANALYTICS_OFF: &str = "analytics.enabled=false";
+pub(crate) const CODEX_ANALYTICS_OFF: &str = "analytics.enabled=false";
 
 /// The `-c` value that points Codex at a static model catalog file, so it never
 /// fetches its own. The path is a TOML string, escaped as TOML escapes it,
 /// because Codex parses a `-c` value as TOML — a Windows path's backslashes
 /// would otherwise read as escapes.
 #[must_use]
-pub fn codex_model_catalog_setting(path: &Path) -> String {
+pub(crate) fn codex_model_catalog_setting(path: &Path) -> String {
     format!(
         "model_catalog_json={}",
         toml::Value::String(path.to_string_lossy().into_owned())

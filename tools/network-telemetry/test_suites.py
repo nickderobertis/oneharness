@@ -265,6 +265,28 @@ class WindowsFormDirectory(unittest.TestCase):
         )
         self.assert_recorded_in(run, tmp / "c-drive" / "oh-telemetry")
 
+    @unittest.skipIf(WINDOWS, "names the Windows form through a stand-in cygpath on unix")
+    def test_a_drive_letter_directory_cygpath_cannot_convert_stops_the_setup(self) -> None:
+        for name, body in (("fails", "exit 1"), ("prints nothing", "exit 0")):
+            with self.subTest(cygpath=name):
+                tmp = scratch(self)
+                win_bin = tmp / "win-bin"
+                plain_codex(win_bin)
+                (win_bin / "cygpath").write_text(f"#!/usr/bin/env bash\n{body}\n")
+                (win_bin / "cygpath").chmod(0o755)
+                run = setup_and(
+                    tmp,
+                    "oh_telemetry_setup codex; codex --version",
+                    path_first=win_bin,
+                    telemetry_dir=r"C:\oh-telemetry",
+                )
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn(
+                    r"cannot convert the telemetry directory C:\oh-telemetry to a Git Bash path",
+                    run.stderr,
+                )
+                self.assertFalse((tmp / "C:\\oh-telemetry").exists(), "setup went on regardless")
+
     @unittest.skipIf(WINDOWS, "spells the Windows form without Git Bash on unix")
     def test_without_cygpath_the_directory_keeps_its_spelling(self) -> None:
         # Unix reads C:\... as relative, so the shims land under the cwd (the

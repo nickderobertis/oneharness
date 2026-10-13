@@ -6,7 +6,7 @@
     "type:live-support",
     "lang:python"
   ],
-  "//": "llmlint: ignore-file[e2e_not_mocked] The hermetic tests of the live tier's network recorder (scripts/e2e-netshim.sh, scripts/e2e-netmeasure.py, scripts/e2e-lib.sh's telemetry helpers) and of live-codex's network budgets (live/pr-matrix/harness/codex/budgets.yaml, network_budget.py, scripts/e2e-network-budget.sh). Only the paid harness is a double (harness_double.sh around the shipped mock harness) and the internet a loopback server; the shim, the namespace, the suites and the onebudgetspec check run for real, and the paid live-codex pass is the real-harness drift alarm. JSON allows no narrower scope. The measuring tests need Linux, pasta and unprivileged user namespaces and skip saying why elsewhere, unless OH_NET_NO_SKIP=1 (ci.yml's Linux leg) makes that a failure. Its ruff and ty settings are the Python SDK's (ruff.toml extends them; `ty check --project python/oneharness-sdk` reads them).",
+  "//": "llmlint: ignore-file[e2e_not_mocked] The hermetic tests of the live tier's network recorder (scripts/e2e-netshim.sh, scripts/e2e-netmeasure.py, scripts/e2e-lib.sh's telemetry helpers) and of live-codex's network budgets (live/pr-matrix/harness/codex/budgets.yaml, network_budget.py, scripts/e2e-network-budget.sh). Only the paid harness is a double (harness_double.sh around the shipped mock harness) and the internet a loopback server; the shim, the namespace, the suites and the onebudgetspec check run for real, and the paid live-codex pass is the real-harness drift alarm. JSON allows no narrower scope. The measuring tests need Linux, pasta and unprivileged user namespaces and skip saying why elsewhere, unless OH_NET_NO_SKIP=1 (ci.yml's Linux leg) makes that a failure. Its ruff and ty settings are the Python SDK's (ruff.toml extends them; `ty check --project python/oneharness-sdk` reads them), and ty assumes Linux on every leg: the recorder and its tests' doubles run there alone, and a Windows leg would otherwise refuse their os.fork.",
   "implicitDependencies": [
     "oneharness",
     "oneharness-mock-harness"
@@ -83,7 +83,7 @@
       "options": {
         "commands": [
           "uv sync --project python --frozen --no-install-workspace --quiet",
-          "uv run --project python --frozen --no-sync ty check --project python/oneharness-sdk --extra-search-path tools/network-telemetry scripts/e2e-netmeasure.py live/pr-matrix/harness/codex/network_budget.py tools/network-telemetry/*.py"
+          "uv run --project python --frozen --no-sync ty check --project python/oneharness-sdk --python-platform linux --extra-search-path tools/network-telemetry scripts/e2e-netmeasure.py live/pr-matrix/harness/codex/network_budget.py tools/network-telemetry/*.py"
         ],
         "parallel": false
       }

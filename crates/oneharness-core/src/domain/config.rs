@@ -449,7 +449,7 @@ fn codex_launch_keys_set(
 
 /// Refuse a Codex-only launch key under any other harness, naming the key and
 /// the table.
-fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
+fn refuse_codex_launch_keys_elsewhere(id: &str, h: &HarnessConfig) -> Result<(), String> {
     if harness::has_plugins_toggle(id) {
         return Ok(());
     }
@@ -557,7 +557,7 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         }
         // These keys become flags on one harness's own launches; nowhere else
         // is there a flag for them to become, so setting one there is a mistake.
-        codex_launch_keys(id, h)?;
+        refuse_codex_launch_keys_elsewhere(id, h)?;
         let sync = spec.sync.as_ref();
         // A raw `settings` table is merged into a JSON config file; Codex's
         // rules file has no keys to merge it into.
@@ -1430,7 +1430,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 }
             }
         }
-        let toggles_plugins = harness::has_plugins_toggle(id);
+        let takes_codex_launch_keys = harness::has_plugins_toggle(id);
         let harness_plugins = pick(layers, |c| section(c).and_then(|h| h.plugins));
         let harness_apps = pick(layers, |c| section(c).and_then(|h| h.apps));
         let harness_catalog = pick(layers, |c| section(c).and_then(|h| h.shared_model_catalog));
@@ -1478,19 +1478,19 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                     reasoning: pick(layers, |c| variant(c).and_then(|v| v.reasoning)),
                     bin: pick(layers, |c| variant(c).and_then(|v| v.bin)),
                     args: pick(layers, |c| variant(c).and_then(|v| v.args)),
-                    plugins: toggles_plugins.then(|| {
+                    plugins: takes_codex_launch_keys.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.plugins))
                             .or_inherited(&harness_plugins, false)
                     }),
-                    apps: toggles_plugins.then(|| {
+                    apps: takes_codex_launch_keys.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.apps))
                             .or_inherited(&harness_apps, false)
                     }),
-                    shared_model_catalog: toggles_plugins.then(|| {
+                    shared_model_catalog: takes_codex_launch_keys.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.shared_model_catalog))
                             .or_inherited(&harness_catalog, true)
                     }),
-                    model_catalog_refresh_seconds: toggles_plugins.then(|| {
+                    model_catalog_refresh_seconds: takes_codex_launch_keys.then(|| {
                         pick(layers, |c| {
                             variant(c)
                                 .and_then(|v| v.model_catalog_refresh_seconds.map(NonZeroU64::get))
@@ -1500,7 +1500,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                             DEFAULT_MODEL_CATALOG_REFRESH_SECONDS.get(),
                         )
                     }),
-                    analytics: toggles_plugins.then(|| {
+                    analytics: takes_codex_launch_keys.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.analytics))
                             .or_inherited(&harness_analytics, false)
                     }),
@@ -1522,13 +1522,14 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 reasoning: pick(layers, |c| section(c).and_then(|h| h.reasoning)),
                 bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
-                plugins: toggles_plugins.then(|| harness_plugins.or_default(false)),
-                apps: toggles_plugins.then(|| harness_apps.or_default(false)),
-                shared_model_catalog: toggles_plugins.then(|| harness_catalog.or_default(true)),
-                model_catalog_refresh_seconds: toggles_plugins.then(|| {
+                plugins: takes_codex_launch_keys.then(|| harness_plugins.or_default(false)),
+                apps: takes_codex_launch_keys.then(|| harness_apps.or_default(false)),
+                shared_model_catalog: takes_codex_launch_keys
+                    .then(|| harness_catalog.or_default(true)),
+                model_catalog_refresh_seconds: takes_codex_launch_keys.then(|| {
                     harness_refresh.or_default(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS.get())
                 }),
-                analytics: toggles_plugins.then(|| harness_analytics.or_default(false)),
+                analytics: takes_codex_launch_keys.then(|| harness_analytics.or_default(false)),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
                 hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),

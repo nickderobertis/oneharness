@@ -4,6 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 // llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
 test('real release builder rejects malformed platform declarations and package-directory boundary rejects defective staging',()=>{
  const cwd=mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR??tmpdir(),'payload-boundary-'));
@@ -14,7 +15,7 @@ test('real release builder rejects malformed platform declarations and package-d
    assert.notEqual(run.status,0);assert.match(run.stderr,/release-platforms.toml/);assert.match(run.stderr,/Next:/);
   }
   const stage=join(cwd,'package');mkdirSync(stage);
-  const api=resolve('scripts/release-payload.mjs');
+  const api=pathToFileURL(resolve('scripts/release-payload.mjs')).href;
   writeFileSync(join(stage,'package.json'),'null');
   const invalidManifest=spawnSync(process.execPath,['--input-type=module','-e',`import {assertPackageDirectory} from ${JSON.stringify(api)}; assertPackageDirectory(${JSON.stringify(stage)},${JSON.stringify(stage)},'oneharness-cli','1.2.3');`],{encoding:'utf8'});
   assert.notEqual(invalidManifest.status,0);assert.match(invalidManifest.stderr,/Invalid package manifest/);

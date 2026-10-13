@@ -373,6 +373,7 @@ def answer(conn: socket.socket) -> None:
             if not data:
                 return
             line += data
+        # llmlint: ignore-block[structural_pattern_matching] This file shares the Python SDK's ruff and ty settings, which target Python 3.9 (tools/network-breakdown/project.json says why they are shared); `match` is a syntax error there, so the request line is dispatched with length and prefix checks, as the script's own proxy does.
         words = line.split()
         if words[:1] == [b"GET"] and len(words) == 3 and words[1].startswith(b"http://"):
             head = line
@@ -385,6 +386,7 @@ def answer(conn: socket.socket) -> None:
         if len(words) != 2 or words[0] not in (b"GET", b"PUT") or not words[1].isdigit():
             return
         size = int(words[1])
+        # llmlint: ignore-end[structural_pattern_matching]
         if words[0] == b"GET":
             block = os.urandom(65536)
             sent = 0

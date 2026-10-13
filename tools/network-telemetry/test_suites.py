@@ -569,7 +569,7 @@ class Settings(unittest.TestCase):
 
 
 class Legs(unittest.TestCase):
-    PREPARE = "Permit pasta's unprivileged namespaces"
+    PREPARE = "Permit unprivileged namespaces for pasta"
 
     def test_only_the_linux_leg_prepares_pasta_and_does_so_before_measuring(self) -> None:
         for workflow, job, measured in (

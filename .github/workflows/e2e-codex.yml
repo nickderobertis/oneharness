@@ -107,7 +107,7 @@ jobs:
       # so the step lifts the restriction and proves that same pasta can start
       # one. Other legs record no bytes and check no budget.
       # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] An ephemeral single-tenant runner whose steps already hold passwordless root gains nothing from the restriction. The probe below is the step's own end-to-end proof; its hosted run is the only place it can run.
-      - name: Permit pasta's unprivileged namespaces (network recorder)
+      - name: Permit unprivileged namespaces for pasta (network recorder)
         if: runner.os == 'Linux'
         run: |
           command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }

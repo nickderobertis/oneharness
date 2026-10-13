@@ -578,18 +578,21 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
 }
 
 // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
-/// `codex app-server --disable plugins -c analytics.enabled=false
-/// [-c model_catalog_json=<catalog>] --stdio`. Plugins and analytics are off
-/// whatever the config says: a rate-limits read loads no plugin and reports
-/// nothing, and the plugin catalog Codex would otherwise download on start
-/// (~29 MB) is most of what a probe costs. The shared model catalog, when the
-/// config keeps it on, spares the probe Codex's own catalog fetch.
+/// `codex app-server --disable plugins --disable apps -c analytics.enabled=false
+/// [-c model_catalog_json=<catalog>] --stdio`. Plugins, apps and analytics are
+/// off whatever the config says: a rate-limits read loads no plugin, calls no
+/// connector and reports nothing, and the plugin catalog Codex would otherwise
+/// download on start (~29 MB) is most of what a probe costs. The shared model
+/// catalog, when the config keeps it on, spares the probe Codex's own catalog
+/// fetch.
 fn codex_argv(bin: &str, model_catalog: Option<&str>) -> Vec<String> {
     let mut argv = vec![
         bin.to_string(),
         "app-server".to_string(),
         "--disable".to_string(),
         "plugins".to_string(),
+        "--disable".to_string(),
+        "apps".to_string(),
         "-c".to_string(),
         CODEX_ANALYTICS_OFF.to_string(),
     ];

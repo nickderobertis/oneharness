@@ -285,6 +285,17 @@
             ],
             "description": "The resolved `analytics` (`false` by default), present only for `codex`."
           },
+          "apps": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `apps` opt-in (`false` by default), present only for\n`codex`."
+          },
           "args": {
             "$ref": "#/$defs/Field2"
           },
@@ -504,6 +515,17 @@
               }
             ],
             "description": "The `analytics` a launch of this variant resolves to: the variant's own,\nelse its harness's, else `false`. Present only for `codex`."
+          },
+          "apps": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The apps opt-in a launch of this variant resolves to: the variant's\nown, else its harness's, else `false`. Present only for `codex`."
           },
           "args": {
             "$ref": "#/$defs/Field2"

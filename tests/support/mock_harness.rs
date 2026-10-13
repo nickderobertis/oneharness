@@ -152,7 +152,10 @@
 //!                              catalog and appends one JSON line: `subcommand`,
 //!                              `pid`, `started_ms`, `codex_home`, `catalog`
 //!                              (the `-c model_catalog_json=` path, last one
-//!                              winning, else null), `fetch` and `argv`. With a catalog
+//!                              winning, else null), `fetch`, `apps` (whether
+//!                              it connects to ChatGPT's apps server: Codex's
+//!                              `apps` feature, resolved like `plugins`) and
+//!                              `argv`. With a catalog
 //!                              it reads that file (`catalog_models`, its model
 //!                              count) and fetches nothing (`fetch` null); a
 //!                              missing or empty catalog fails the launch, as it
@@ -309,14 +312,22 @@ fn scripted_attempt() -> Option<u32> {
 /// is tested against and `oh_codex_plugins_flag_order` (`scripts/e2e-lib.sh`)
 /// asks real codex.
 fn codex_plugins_enabled(argv: &[String]) -> bool {
+    codex_feature_enabled(argv, "plugins")
+}
+
+/// Any default-on Codex feature (`plugins`, `apps`) as an argv resolves it, by
+/// the precedence [`codex_plugins_enabled`] states — the same for every
+/// feature toggle, as `codex features list` shows for `apps` too.
+fn codex_feature_enabled(argv: &[String], feature: &str) -> bool {
+    let set = format!("features.{feature}=");
     let mut enabled = true;
     let (mut enable, mut disable) = (false, false);
     for pair in argv.windows(2) {
         match (pair[0].as_str(), pair[1].as_str()) {
-            ("-c", "features.plugins=true") => enabled = true,
-            ("-c", "features.plugins=false") => enabled = false,
-            ("--enable", "plugins") => enable = true,
-            ("--disable", "plugins") => disable = true,
+            ("-c", value) if value.strip_prefix(set.as_str()) == Some("true") => enabled = true,
+            ("-c", value) if value.strip_prefix(set.as_str()) == Some("false") => enabled = false,
+            ("--enable", name) if name == feature => enable = true,
+            ("--disable", name) if name == feature => disable = true,
             _ => {}
         }
     }
@@ -470,6 +481,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         "codex_home": home,
         "catalog": catalog,
         "fetch": null,
+        "apps": codex_feature_enabled(argv, "apps"),
         "argv": argv,
     });
     let fault = std::env::var("MOCK_CODEX_CATALOG_FAULT").unwrap_or_default();
@@ -2103,7 +2115,7 @@ pub fn run() -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::codex_plugins_enabled;
+    use super::{codex_feature_enabled, codex_plugins_enabled};
 
     fn argv(args: &[&str]) -> Vec<String> {
         args.iter().map(|arg| (*arg).to_string()).collect()
@@ -2142,6 +2154,27 @@ mod tests {
             ),
         ] {
             assert_eq!(codex_plugins_enabled(&argv(args)), want, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn codex_apps_resolve_by_the_same_precedence() {
+        // `codex features list` gives `apps` the plugins rows' answers with the
+        // feature name swapped (measured on codex-cli 0.159.2), and neither
+        // feature's toggles move the other.
+        let matrix: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/codex-plugins-flag-order.json"))
+                .expect("the codex plugins matrix is JSON");
+        for row in matrix["rows"].as_array().expect("rows") {
+            let mut args = argv(&["exec"]);
+            args.extend(row["args"].as_array().expect("args").iter().map(|arg| {
+                arg.as_str()
+                    .expect("an arg is text")
+                    .replace("plugins", "apps")
+            }));
+            let want = row["plugins"].as_bool().expect("plugins is a bool");
+            assert_eq!(codex_feature_enabled(&args, "apps"), want, "{args:?}");
+            assert!(codex_plugins_enabled(&args), "{args:?}");
         }
     }
 }

@@ -175,13 +175,13 @@ to them.
 
 ### `codex` — the app-server `account/rateLimits/read`
 
-**Observed.** Spawn `codex app-server --disable plugins -c
+**Observed.** Spawn `codex app-server --disable plugins --disable apps -c
 analytics.enabled=false --stdio`, with `-c model_catalog_json=<file>` before
 `--stdio` while the shared model catalog is on; send `initialize`, the
 `initialized` notification, then the read; match the reply by JSON-RPC id.
-Plugins and analytics stay off whatever the config's `plugins` and `analytics`
-say: the read needs neither, and a plugin-enabled start downloads Codex's ~29 MB
-remote plugin catalog first. The shared catalog follows the config's
+Plugins, apps and analytics stay off whatever the config's `plugins`, `apps` and
+`analytics` say: the read needs none of them, and a plugin-enabled start
+downloads Codex's ~29 MB remote plugin catalog first. The shared catalog follows the config's
 `shared_model_catalog`, as on every Codex launch (README, *Codex*).
 
 ```console

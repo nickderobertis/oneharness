@@ -290,15 +290,18 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Str
     outcome
 }
 
-/// The refresh helper's arguments: plugins and analytics off whatever the
-/// config says (the helper loads no plugin and reports nothing), and no
-/// catalog flag, so Codex fetches the catalog this refresh is for.
+/// The refresh helper's arguments: plugins, apps and analytics off whatever
+/// the config says (the helper loads no plugin, calls no connector and reports
+/// nothing), and no catalog flag, so Codex fetches the catalog this refresh is
+/// for.
 #[must_use]
 pub fn refresh_helper_args() -> Vec<String> {
     [
         "app-server",
         "--disable",
         "plugins",
+        "--disable",
+        "apps",
         "-c",
         CODEX_ANALYTICS_OFF,
         "--stdio",

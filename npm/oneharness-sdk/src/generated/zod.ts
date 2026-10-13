@@ -452,6 +452,7 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
 export const HarnessReportSchema: z.ZodType<HarnessReport> = z.looseObject({
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   analytics: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
+  apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -3301,6 +3302,7 @@ export const VariantInfoSchema: z.ZodType<VariantInfo> = z.looseObject({
 export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   analytics: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
+  apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
   denied_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),

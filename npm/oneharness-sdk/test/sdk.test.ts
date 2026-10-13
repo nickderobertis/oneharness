@@ -1579,6 +1579,8 @@ describe("OneHarness", () => {
 			"-c",
 			"features.plugins=false",
 			"-c",
+			"features.apps=false",
+			"-c",
 			"analytics.enabled=false",
 			"-c",
 			'model_catalog_json="<shared model catalog>"',

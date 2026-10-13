@@ -117,6 +117,11 @@ export interface HarnessReport {
    * The resolved `analytics` (`false` by default), present only for `codex`.
    */
   analytics?: Field | null | undefined;
+  /**
+   * The resolved `apps` opt-in (`false` by default), present only for
+   * `codex`.
+   */
+  apps?: Field | null | undefined;
   args: Field2;
   bin: Field3;
   denied_tools: Field2;
@@ -168,6 +173,11 @@ export interface VariantReport {
    * else its harness's, else `false`. Present only for `codex`.
    */
   analytics?: Field | null | undefined;
+  /**
+   * The apps opt-in a launch of this variant resolves to: the variant's
+   * own, else its harness's, else `false`. Present only for `codex`.
+   */
+  apps?: Field | null | undefined;
   args: Field2;
   bin: Field3;
   denied_tools: Field2;

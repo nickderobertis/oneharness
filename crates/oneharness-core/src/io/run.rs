@@ -1069,6 +1069,7 @@ pub fn run_supervised(
                 PromptDelivery::Argv
             },
             plugins: cfg.plugins_for(selected_id),
+            apps: cfg.apps_for(selected_id),
             analytics: cfg.analytics_for(selected_id),
             model_catalog: None,
         };
@@ -4528,6 +4529,9 @@ struct HarnessPlan {
     /// The identity's resolved `plugins` opt-in ([`FileConfig::plugins_for`]),
     /// carried apart from `extra` so a variant's own `args` cannot drop it.
     plugins: bool,
+    /// The identity's resolved `apps` opt-in ([`FileConfig::apps_for`]),
+    /// carried apart from `extra` like `plugins`.
+    apps: bool,
     /// The identity's resolved `analytics` ([`FileConfig::analytics_for`]),
     /// carried apart from `extra` like `plugins`.
     analytics: bool,
@@ -4618,6 +4622,7 @@ impl HarnessPlan {
             system_file: self.system_file.as_deref(),
             delivery: self.delivery,
             plugins: self.plugins,
+            apps: self.apps,
             analytics: self.analytics,
             model_catalog: self.model_catalog.as_deref(),
         };
@@ -5294,6 +5299,7 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            apps: false,
             analytics: false,
             model_catalog: None,
         }

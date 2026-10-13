@@ -172,6 +172,10 @@
         "value": true,
         "source": "<dir>/single.toml"
       },
+      "apps": {
+        "value": false,
+        "source": "default"
+      },
       "shared_model_catalog": {
         "value": true,
         "source": "default"
@@ -222,6 +226,10 @@
           "plugins": {
             "value": false,
             "source": "<dir>/single.toml"
+          },
+          "apps": {
+            "value": false,
+            "source": "default"
           },
           "shared_model_catalog": {
             "value": true,

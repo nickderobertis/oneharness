@@ -191,6 +191,12 @@ pub struct HarnessConfig {
     /// variant or worker that supplies its own `args` keeps the opt-in. See
     /// [`FileConfig::plugins_for`].
     pub plugins: Option<bool>,
+    /// Opt this harness into its ChatGPT apps (connectors) feature (`codex`
+    /// only). Unset means off: oneharness then starts Codex with
+    /// `-c features.apps=false`, since Codex otherwise connects to ChatGPT's
+    /// apps MCP server and downloads its tool list (~580 KB) on every session.
+    /// Resolved apart from `args`, like `plugins`. See [`FileConfig::apps_for`].
+    pub apps: Option<bool>,
     /// Share one Codex model catalog per Codex home and Codex version across
     /// launches (`codex` only). Unset means on: oneharness keeps the catalog
     /// file and starts Codex with `-c model_catalog_json=<it>`, so a launch
@@ -346,6 +352,8 @@ pub struct VariantConfig {
     pub args: Option<Vec<String>>,
     /// This variant's plugins opt-in, beating its harness's `plugins`.
     pub plugins: Option<bool>,
+    /// This variant's apps opt-in, beating its harness's `apps`.
+    pub apps: Option<bool>,
     /// This variant's `shared_model_catalog`, beating its harness's.
     pub shared_model_catalog: Option<bool>,
     /// This variant's `model_catalog_refresh_seconds`, beating its harness's.
@@ -415,12 +423,14 @@ pub const DEFAULT_MODEL_CATALOG_REFRESH_SECONDS: u64 = 3_600;
 /// sets, each by name, so one check refuses every one of them elsewhere.
 fn codex_launch_keys_set(
     plugins: Option<bool>,
+    apps: Option<bool>,
     shared_model_catalog: Option<bool>,
     model_catalog_refresh_seconds: Option<u64>,
     analytics: Option<bool>,
 ) -> impl Iterator<Item = &'static str> {
     [
         ("plugins", plugins.is_some()),
+        ("apps", apps.is_some()),
         ("shared_model_catalog", shared_model_catalog.is_some()),
         (
             "model_catalog_refresh_seconds",
@@ -440,6 +450,7 @@ fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
         format!("[harness.{id}]"),
         codex_launch_keys_set(
             h.plugins,
+            h.apps,
             h.shared_model_catalog,
             h.model_catalog_refresh_seconds,
             h.analytics,
@@ -452,6 +463,7 @@ fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
             format!("[harness.{id}.variant.{name}]"),
             codex_launch_keys_set(
                 v.plugins,
+                v.apps,
                 v.shared_model_catalog,
                 v.model_catalog_refresh_seconds,
                 v.analytics,
@@ -850,6 +862,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             bin: o.bin.or(entry.bin.take()),
             args: o.args.or(entry.args.take()),
             plugins: o.plugins.or(entry.plugins.take()),
+            apps: o.apps.or(entry.apps.take()),
             shared_model_catalog: o.shared_model_catalog.or(entry.shared_model_catalog.take()),
             model_catalog_refresh_seconds: o
                 .model_catalog_refresh_seconds
@@ -914,6 +927,7 @@ fn merge_variant_maps(
             bin: o.bin.or(e.bin.take()),
             args: o.args.or(e.args.take()),
             plugins: o.plugins.or(e.plugins.take()),
+            apps: o.apps.or(e.apps.take()),
             shared_model_catalog: o.shared_model_catalog.or(e.shared_model_catalog.take()),
             model_catalog_refresh_seconds: o
                 .model_catalog_refresh_seconds
@@ -1005,6 +1019,18 @@ impl FileConfig {
         self.variant_for(id)
             .and_then(|variant| variant.plugins)
             .or_else(|| self.harness.get(base).and_then(|h| h.plugins))
+            .unwrap_or(false)
+    }
+
+    /// Whether a launch of `id` (`codex` or `codex:<variant>`) opts into
+    /// Codex's ChatGPT apps feature: the variant's `apps`, else the harness's,
+    /// else `false`. Read apart from [`Self::args_for`], like
+    /// [`Self::plugins_for`].
+    pub fn apps_for(&self, id: &str) -> bool {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.apps)
+            .or_else(|| self.harness.get(base).and_then(|h| h.apps))
             .unwrap_or(false)
     }
 
@@ -1250,6 +1276,10 @@ pub struct HarnessReport {
     /// harness with a plugins feature (`codex`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<Field<bool>>,
+    /// The resolved `apps` opt-in (`false` by default), present only for
+    /// `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apps: Option<Field<bool>>,
     /// The resolved `shared_model_catalog` (`true` by default), present only
     /// for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1283,6 +1313,10 @@ pub struct VariantReport {
     /// a plugins feature (`codex`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<Field<bool>>,
+    /// The apps opt-in a launch of this variant resolves to: the variant's
+    /// own, else its harness's, else `false`. Present only for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apps: Option<Field<bool>>,
     /// The `shared_model_catalog` a launch of this variant resolves to: the
     /// variant's own, else its harness's, else `true`. Present only for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1398,6 +1432,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         }
         let toggles_plugins = harness::has_plugins_toggle(id);
         let harness_plugins = pick(layers, |c| section(c).and_then(|h| h.plugins));
+        let harness_apps = pick(layers, |c| section(c).and_then(|h| h.apps));
         let harness_catalog = pick(layers, |c| section(c).and_then(|h| h.shared_model_catalog));
         let harness_refresh = pick(layers, |c| {
             section(c).and_then(|h| h.model_catalog_refresh_seconds)
@@ -1447,6 +1482,10 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                         pick(layers, |c| variant(c).and_then(|v| v.plugins))
                             .or_inherited(&harness_plugins, false)
                     }),
+                    apps: toggles_plugins.then(|| {
+                        pick(layers, |c| variant(c).and_then(|v| v.apps))
+                            .or_inherited(&harness_apps, false)
+                    }),
                     shared_model_catalog: toggles_plugins.then(|| {
                         pick(layers, |c| variant(c).and_then(|v| v.shared_model_catalog))
                             .or_inherited(&harness_catalog, true)
@@ -1480,6 +1519,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
                 plugins: toggles_plugins.then(|| harness_plugins.or_default(false)),
+                apps: toggles_plugins.then(|| harness_apps.or_default(false)),
                 shared_model_catalog: toggles_plugins.then(|| harness_catalog.or_default(true)),
                 model_catalog_refresh_seconds: toggles_plugins
                     .then(|| harness_refresh.or_default(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS)),
@@ -2286,11 +2326,15 @@ args = ["--variant-arg"]
         );
     }
 
-    /// The three Codex launch keys this module resolves apart from `args`:
+    /// The Codex launch keys this module resolves apart from `args` beside
+    /// `plugins` (whose own tests are above):
     /// the key, its default, and two non-default spellings with what each
     /// resolves to (`model_catalog_refresh_seconds` is not a bool).
     type Resolver = fn(&FileConfig, &str) -> String;
-    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 3] = [
+    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 4] = [
+        ("apps", "false", ["true", "false"], |c, id| {
+            c.apps_for(id).to_string()
+        }),
         (
             "shared_model_catalog",
             "true",
@@ -2435,7 +2479,7 @@ args = ["--variant-arg"]
     fn explain_reports_resolved_codex_launch_keys_for_codex_only() {
         let report = explain(&layers(
             "[harness.codex]\nshared_model_catalog = false\nmodel_catalog_refresh_seconds = 60\n\
-             analytics = true\n[harness.claude-code]\nmodel = \"m\"\n",
+             analytics = true\napps = true\n[harness.claude-code]\nmodel = \"m\"\n",
             "[harness.codex.variant.own]\nshared_model_catalog = true\n\
              model_catalog_refresh_seconds = 120\nanalytics = false\n\
              [harness.codex.variant.inherit]\nmodel = \"m\"\n",
@@ -2454,6 +2498,11 @@ args = ["--variant-arg"]
         );
         assert_eq!(
             field(&codex.analytics),
+            Some((Some(true), from("/user.toml")))
+        );
+        assert_eq!(field(&codex.apps), Some((Some(true), from("/user.toml"))));
+        assert_eq!(
+            field(&codex.variant["inherit"].apps),
             Some((Some(true), from("/user.toml")))
         );
         let own = &codex.variant["own"];
@@ -2484,6 +2533,7 @@ args = ["--variant-arg"]
         );
         let claude = serde_json::to_value(&report.harness["claude-code"]).unwrap();
         for key in [
+            "apps",
             "shared_model_catalog",
             "model_catalog_refresh_seconds",
             "analytics",
@@ -2502,6 +2552,7 @@ args = ["--variant-arg"]
             );
             assert_eq!(codex["analytics"]["value"], false, "{codex}");
             assert_eq!(codex["analytics"]["source"], DEFAULT_SOURCE, "{codex}");
+            assert_eq!(codex["apps"]["value"], false, "{codex}");
         }
     }
 

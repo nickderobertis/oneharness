@@ -594,6 +594,8 @@ fn print_command_pins_argv_for_every_harness() {
                 "-c",
                 "features.plugins=false",
                 "-c",
+                "features.apps=false",
+                "-c",
                 "analytics.enabled=false",
                 "-c",
                 "model_catalog_json=\"<shared model catalog>\"",
@@ -35382,7 +35384,7 @@ fn run_text_view_shows_each_command_under_print_command() {
     );
     assert!(
         text.contains(
-            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false -c analytics.enabled=false -c 'model_catalog_json=\"<shared model catalog>\"' --json 'say hi there'\n"
+            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false -c features.apps=false -c analytics.enabled=false -c 'model_catalog_json=\"<shared model catalog>\"' --json 'say hi there'\n"
         ),
         "{text}"
     );
@@ -37936,6 +37938,8 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
                 "-c",
                 "features.plugins=false",
                 "-c",
+                "features.apps=false",
+                "-c",
                 "analytics.enabled=false",
                 "--config-arg",
                 "--passthrough-arg"
@@ -37951,6 +37955,8 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
             "app-server",
             "--disable",
             "plugins",
+            "--disable",
+            "apps",
             "-c",
             "analytics.enabled=false",
             "--stdio"
@@ -38237,6 +38243,8 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
             "app-server",
             "--disable",
             "plugins",
+            "--disable",
+            "apps",
             "-c",
             "analytics.enabled=false",
             "--stdio"
@@ -38254,8 +38262,15 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
     );
     let exec = launch_codex(&own, CodexLaunchPath::Exec, "codex:own", &[]);
     assert_eq!(
-        exec.argv[..4],
-        ["exec", "-c", "analytics.enabled=false", "--json"],
+        exec.argv[..6],
+        [
+            "exec",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "analytics.enabled=false",
+            "--json"
+        ],
         "{:?}",
         exec.argv
     );
@@ -38274,6 +38289,8 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
             control.argv,
             [
                 "app-server",
+                "-c",
+                "features.apps=false",
                 "-c",
                 "analytics.enabled=false",
                 "--own-arg",
@@ -38731,6 +38748,8 @@ fn is_refresh_helper(record: &Value) -> bool {
             "app-server",
             "--disable",
             "plugins",
+            "--disable",
+            "apps",
             "-c",
             "analytics.enabled=false",
             "--stdio"
@@ -38775,9 +38794,10 @@ fn modified_ms(path: &Path) -> u64 {
 fn with_no_new_key_every_codex_launch_carries_analytics_off_and_the_shared_catalog() {
     // Nothing in the config names the new keys. The first launch finds no
     // catalog, refreshes it once, and every launch — exec, resumed exec, a
-    // `--control` app-server and the usage probe — starts Codex with analytics
-    // off and the shared catalog right after the subcommand, ahead of the
-    // config `args` and the `--` passthrough, and fetches no catalog itself.
+    // `--control` app-server and the usage probe — starts Codex with apps and
+    // analytics off and the shared catalog right after the subcommand, ahead
+    // of the config `args` and the `--` passthrough, connects to no apps
+    // server and fetches no catalog itself.
     let world = CatalogWorld::new(
         "catalog-defaults",
         "[harness.codex]\nargs = [\"--config-arg\"]\n",
@@ -38800,21 +38820,24 @@ fn with_no_new_key_every_codex_launch_carries_analytics_off_and_the_shared_catal
         let n = head.len();
         assert_eq!(argv[..n], *head, "{argv:?}");
         assert_eq!(
-            argv[n..n + 5],
+            argv[n..n + 7],
             [
                 "-c",
                 "features.plugins=false",
+                "-c",
+                "features.apps=false",
                 "-c",
                 "analytics.enabled=false",
                 "-c"
             ],
             "{path:?}: {argv:?}"
         );
-        assert!(argv[n + 5].starts_with("model_catalog_json="), "{argv:?}");
+        assert!(argv[n + 7].starts_with("model_catalog_json="), "{argv:?}");
         assert_eq!(record_catalog(&launch), Some(resolved(world.the_catalog())));
         assert!(launch["fetch"].is_null(), "{launch}");
+        assert_eq!(launch["apps"], false, "{launch}");
         assert_eq!(launch["catalog_models"], 2, "{launch}");
-        assert!(argv_position(&argv, &["--config-arg"]) > n + 5, "{argv:?}");
+        assert!(argv_position(&argv, &["--config-arg"]) > n + 7, "{argv:?}");
         assert!(
             argv_position(&argv, &["--passthrough-arg"]) > argv_position(&argv, &["--config-arg"]),
             "{argv:?}"
@@ -38825,22 +38848,26 @@ fn with_no_new_key_every_codex_launch_carries_analytics_off_and_the_shared_catal
     let probe = world.launches().pop().unwrap();
     let argv = record_argv(&probe);
     assert_eq!(
-        argv[..7],
+        argv[..9],
         [
             "app-server",
             "--disable",
             "plugins",
+            "--disable",
+            "apps",
             "-c",
             "analytics.enabled=false",
             "-c",
-            &argv[6]
+            &argv[8]
         ]
     );
-    assert!(argv[6].starts_with("model_catalog_json="), "{argv:?}");
-    assert_eq!(argv[7..], ["--stdio"]);
+    assert!(argv[8].starts_with("model_catalog_json="), "{argv:?}");
+    assert_eq!(argv[9..], ["--stdio"]);
+    assert_eq!(probe["apps"], false, "{probe}");
     assert_eq!(record_catalog(&probe), Some(resolved(world.the_catalog())));
     // One refresh for the whole sequence, which was the only catalog fetch.
     assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
+    assert_eq!(world.helpers()[0]["apps"], false);
     assert_eq!(world.fetches(), 1, "{:?}", world.records());
 }
 
@@ -38881,6 +38908,113 @@ fn a_callers_own_analytics_or_catalog_setting_lands_after_oneharness_s() {
         );
         // The caller's catalog is the one Codex reads: the last `-c` wins.
         assert_eq!(record_catalog(&launch), Some(resolved(&caller_catalog)));
+    }
+}
+
+#[test]
+fn a_callers_own_apps_enable_lands_after_the_default_and_wins() {
+    // Codex applies `-c features.apps=` last-wins and `--enable apps` after
+    // every `-c`, so a caller who asks for apps — in config `args` or after
+    // `--` — comes after oneharness's default `-c features.apps=false` and
+    // gets them, under the mock's model of Codex's measured precedence.
+    let spellings: [&[&str]; 2] = [&["-c", "features.apps=true"], &["--enable", "apps"]];
+    let mut paths = vec![CodexLaunchPath::Exec];
+    #[cfg(unix)]
+    paths.push(CodexLaunchPath::Control);
+    for spelling in spellings {
+        let config_args = format!(
+            "[harness.codex]\nargs = [{}]\n",
+            spelling
+                .iter()
+                .map(|arg| format!("\"{arg}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for (tag, project, passthrough) in [
+            ("config-args", config_args.as_str(), &[][..]),
+            ("passthrough", "", spelling),
+        ] {
+            let world = CatalogWorld::new(&format!("catalog-apps-caller-{tag}"), project, "");
+            for path in &paths {
+                world.launch(*path, "codex", passthrough, &[]);
+                let launch = world.launches().pop().unwrap();
+                let argv = record_argv(&launch);
+                assert!(
+                    argv_position(&argv, spelling)
+                        > argv_position(&argv, &["-c", "features.apps=false"]),
+                    "{tag} {path:?}: {argv:?}"
+                );
+                assert_eq!(launch["apps"], true, "{tag} {path:?}: {launch}");
+            }
+        }
+    }
+}
+
+#[test]
+fn an_apps_opt_in_survives_a_variants_own_args_and_an_extends_child() {
+    // `apps = true` at harness level, at variant level where the variant sets
+    // its own `args`, and from an `extends` parent while the child sets `args`
+    // each leave the apps flag off the launch, so Codex connects its apps; a
+    // variant's own `false` beats its harness's `true`. The usage probe and
+    // the catalog refresh helper never connect apps, whatever the config says.
+    let cases: [(&str, &str, &str, bool); 4] = [
+        ("harness", "[harness.codex]\napps = true\n", "codex", true),
+        (
+            "variant-own-args",
+            "[harness.codex]\nargs = [\"--harness-arg\"]\n\
+             [harness.codex.variant.connected]\napps = true\nargs = [\"--variant-arg\"]\n",
+            "codex:connected",
+            true,
+        ),
+        (
+            "extends-parent",
+            "extends = \"parent.toml\"\n[harness.codex]\nargs = [\"--child-arg\"]\n",
+            "codex",
+            true,
+        ),
+        (
+            "variant-off",
+            "[harness.codex]\napps = true\n[harness.codex.variant.lean]\napps = false\n",
+            "codex:lean",
+            false,
+        ),
+    ];
+    for (tag, project, harness, want) in cases {
+        let world = CatalogWorld::new(&format!("catalog-apps-{tag}"), project, "");
+        std::fs::write(
+            world.fx.dir.join("parent.toml"),
+            "[harness.codex]\napps = true\n",
+        )
+        .unwrap();
+        let mut paths = vec![CodexLaunchPath::Exec];
+        #[cfg(unix)]
+        paths.push(CodexLaunchPath::Control);
+        for path in paths {
+            world.launch(path, harness, &[], &[]);
+            let launch = world.launches().pop().unwrap();
+            let argv = record_argv(&launch);
+            assert_eq!(launch["apps"], want, "{tag} {path:?}: {launch}");
+            assert_eq!(
+                argv.iter().any(|arg| arg == "features.apps=false"),
+                !want,
+                "{tag} {path:?}: {argv:?}"
+            );
+            assert!(
+                argv.contains(&"features.plugins=false".to_string()),
+                "{argv:?}"
+            );
+            for own in ["--variant-arg", "--child-arg"] {
+                if project.contains(own) {
+                    assert!(argv.contains(&own.to_string()), "{tag}: {argv:?}");
+                }
+            }
+        }
+        world.launch(CodexLaunchPath::Usage, harness, &[], &[]);
+        let probe = world.launches().pop().unwrap();
+        assert_eq!(probe["apps"], false, "{tag}: {probe}");
+        let helpers = world.helpers();
+        assert_eq!(helpers.len(), 1, "{tag}: {:?}", world.records());
+        assert_eq!(helpers[0]["apps"], false, "{tag}: {helpers:?}");
     }
 }
 
@@ -39026,6 +39160,7 @@ fn a_later_config_layer_overrides_the_codex_launch_keys_in_both_directions() {
 #[test]
 fn a_codex_launch_key_under_another_harness_is_refused_at_load() {
     for (key, value) in [
+        ("apps", "true"),
         ("shared_model_catalog", "false"),
         ("model_catalog_refresh_seconds", "60"),
         ("analytics", "true"),
@@ -39075,6 +39210,8 @@ fn the_config_report_shows_each_resolved_codex_launch_key() {
         project
     );
     assert_eq!(codex["analytics"]["value"], true);
+    assert_eq!(codex["apps"]["value"], false);
+    assert_eq!(codex["apps"]["source"], "default");
     let lean = &codex["variant"]["lean"];
     assert_eq!(lean["shared_model_catalog"]["value"], false);
     assert_eq!(lean["model_catalog_refresh_seconds"]["value"], 600);

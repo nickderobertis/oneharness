@@ -77,6 +77,13 @@ pub struct BuildCtx<'a> {
     /// right after its subcommand, so the caller's own args — which ride later —
     /// can still turn plugins back on; `true` adds no plugins flag at all.
     pub plugins: bool,
+    /// Whether the run opts into the harness's ChatGPT apps (connectors)
+    /// feature (the resolved `apps` config key,
+    /// [`crate::domain::config::FileConfig::apps_for`]). Only codex reads it:
+    /// `false` adds `-c features.apps=false` right after the plugins setting,
+    /// ahead of the caller's args so a caller's own enable still wins; `true`
+    /// adds no apps flag at all.
+    pub apps: bool,
     /// Whether the run lets the harness send analytics (the resolved
     /// `analytics` config key, [`crate::domain::config::FileConfig::analytics_for`]).
     /// Only codex reads it: `false` adds `-c analytics.enabled=false` beside the
@@ -1935,11 +1942,14 @@ fn codex_plugins_off(plugins: bool) -> Vec<String> {
 
 /// The `-c` settings every Codex launch carries right after its subcommand,
 /// ahead of the caller's args so a caller's own later `-c` of the same key wins
-/// (Codex applies `-c` overrides last-wins): plugins off unless opted in,
-/// analytics off unless opted in, and the shared model catalog when the launch
-/// has one.
+/// (Codex applies `-c` overrides last-wins): plugins off unless opted in, apps
+/// off unless opted in, analytics off unless opted in, and the shared model
+/// catalog when the launch has one.
 fn codex_launch_settings(c: &BuildCtx) -> Vec<String> {
     let mut a = codex_plugins_off(c.plugins);
+    if !c.apps {
+        a.extend(["-c".into(), CODEX_APPS_OFF.into()]);
+    }
     if !c.analytics {
         a.extend(["-c".into(), CODEX_ANALYTICS_OFF.into()]);
     }
@@ -1948,6 +1958,12 @@ fn codex_launch_settings(c: &BuildCtx) -> Vec<String> {
     }
     a
 }
+
+/// The `-c` value that turns Codex's ChatGPT apps (connectors) off: with it on,
+/// every session connects to ChatGPT's apps MCP server and downloads its tool
+/// list. Spelled as a `-c` override, like the plugins setting, so a caller's
+/// later `-c features.apps=true` or an `--enable apps` still turns it on.
+pub const CODEX_APPS_OFF: &str = "features.apps=false";
 
 /// The `-c` value that turns Codex's analytics off: its `exec` reports metrics
 /// and product events by default.
@@ -2422,6 +2438,7 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            apps: false,
             analytics: false,
             model_catalog: None,
         }
@@ -2834,6 +2851,8 @@ mod tests {
                 "-c",
                 "features.plugins=false",
                 "-c",
+                "features.apps=false",
+                "-c",
                 "analytics.enabled=false",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "hi"
@@ -2968,6 +2987,7 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            apps: false,
             analytics: false,
             model_catalog: None,
         };
@@ -3051,6 +3071,7 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            apps: false,
             analytics: false,
             model_catalog: None,
         }
@@ -3107,6 +3128,8 @@ mod tests {
                     "app-server",
                     "-c",
                     "features.plugins=false",
+                    "-c",
+                    "features.apps=false",
                     "-c",
                     "analytics.enabled=false",
                 ][..],
@@ -3499,6 +3522,8 @@ mod tests {
                 "-c",
                 "features.plugins=false",
                 "-c",
+                "features.apps=false",
+                "-c",
                 "analytics.enabled=false",
             ];
             want.extend_from_slice(sandbox);
@@ -3533,6 +3558,8 @@ mod tests {
                 "resume",
                 "-c",
                 "features.plugins=false",
+                "-c",
+                "features.apps=false",
                 "-c",
                 "analytics.enabled=false",
             ];
@@ -3599,6 +3626,55 @@ mod tests {
     }
 
     #[test]
+    fn codex_apps_are_off_beside_plugins_unless_the_run_opts_in() {
+        // `-c features.apps=false` follows the plugins setting on a fresh
+        // turn, a resumed one and an app-server launch alike, ahead of the
+        // caller's args, so a caller's own `-c features.apps=true` comes later
+        // and wins; opted in, no apps flag at all and nothing else moves.
+        let spec = by_id("codex").unwrap();
+        let caller = vec!["-c".to_string(), "features.apps=true".to_string()];
+        let launches: [(&[&str], Option<&str>, PromptDelivery); 3] = [
+            (&["exec"], None, PromptDelivery::Argv),
+            (&["exec", "resume"], Some("th-1"), PromptDelivery::Argv),
+            (&["app-server"], None, PromptDelivery::ControlStream),
+        ];
+        for (subcommand, resume, delivery) in launches {
+            let off = BuildCtx {
+                resume,
+                delivery,
+                ..base_ctx(spec)
+            };
+            let argv = argv_with_caller_args(spec, &off, &caller);
+            let mut head = vec!["codex"];
+            head.extend_from_slice(subcommand);
+            head.extend(["-c", "features.plugins=false", "-c", "features.apps=false"]);
+            assert_eq!(argv[..head.len()], head, "{subcommand:?}: {argv:?}");
+            assert_eq!(argv[argv.len() - 2..], caller, "{subcommand:?}: {argv:?}");
+            let on = (spec.build_argv)(&BuildCtx { apps: true, ..off });
+            assert!(
+                !on.iter().any(|t| t.contains("features.apps")),
+                "{subcommand:?}: {on:?}"
+            );
+            let without_apps: Vec<&String> = argv[..argv.len() - 2]
+                .iter()
+                .filter(|t| *t != "features.apps=false")
+                .collect();
+            assert_eq!(without_apps.len(), on.len() + 1, "only `-c` itself remains");
+        }
+        for other in all().iter().filter(|spec| spec.id != "codex") {
+            assert_eq!(
+                (other.build_argv)(&base_ctx(other)),
+                (other.build_argv)(&BuildCtx {
+                    apps: true,
+                    ..base_ctx(other)
+                }),
+                "{}",
+                other.id
+            );
+        }
+    }
+
+    #[test]
     fn codex_analytics_and_shared_catalog_ride_beside_the_plugins_flag_on_every_launch() {
         // Analytics off and the shared catalog follow the plugins flag right
         // after the subcommand, ahead of the caller's args, on a fresh turn, a
@@ -3630,6 +3706,8 @@ mod tests {
             head.extend([
                 "-c",
                 "features.plugins=false",
+                "-c",
+                "features.apps=false",
                 "-c",
                 "analytics.enabled=false",
                 "-c",

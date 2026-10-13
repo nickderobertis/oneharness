@@ -1493,6 +1493,7 @@ mod control_mode_parity {
             system_file: None,
             delivery,
             plugins: false,
+            apps: false,
             analytics: false,
             model_catalog: None,
         })

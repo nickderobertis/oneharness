@@ -379,6 +379,7 @@ class CodexLogEvidence(unittest.TestCase):
         tmp = scratch(self)
         home = tmp / "codex-home"
         home.mkdir()
+        # llmlint: ignore[async_typed_clients_at_boundaries] This writes a fixture in Codex's own logs_2.sqlite schema for the code under test to read; the database is Codex's file on disk, not a service boundary oneharness owns, and the test must produce exactly the rows Codex would.
         db = sqlite3.connect(home / "logs_2.sqlite")
         db.execute(
             "create table logs (id integer primary key autoincrement, ts integer not null, ts_nanos integer not null,"

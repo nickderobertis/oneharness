@@ -63,6 +63,7 @@ def main() -> int:
         )
         return 2
     out, names = sys.argv[1], [name for name in sys.argv[2].split(",") if name]
+    # llmlint: ignore[async_typed_clients_at_boundaries] The acceptance criteria's independent observer: a raw AF_PACKET capture summing Ethernet frame lengths on the pasta TAP, not a client of any service. No typed or async API exists for kernel frames, and a blocking socket with a short timeout is what lets its capture window stop on SIGTERM without losing frames.
     sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1 << 24)
     sock.setsockopt(socket.SOL_SOCKET, SO_TIMESTAMPNS, 1)

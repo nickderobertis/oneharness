@@ -138,6 +138,37 @@
 //!                              entry of `$CODEX_HOME/plugins/` fails to read
 //!                              after the directory opened, so that refusal
 //!                              can be driven end to end.
+//!   MOCK_CODEX_VERSION         if set, `--version` (alone) answers
+//!                              `codex-cli <it>` and the catalog fetch below
+//!                              stamps its cache with it. Unset, `--version`
+//!                              answers MOCK_STDOUT (else the default document),
+//!                              which names no Codex version. Either way a
+//!                              `--version` run does nothing else — no hold, no
+//!                              attempt count, no log line — beyond writing
+//!                              MOCK_ARGV_FILE and exiting with MOCK_EXIT, since
+//!                              oneharness asks it before every Codex launch.
+//!   MOCK_CODEX_CATALOG_LOG     if set to a path, a launch as `exec` or
+//!                              `app-server` acts like Codex about its model
+//!                              catalog and appends one JSON line: `subcommand`,
+//!                              `pid`, `started_ms`, `codex_home`, `catalog`
+//!                              (the `-c model_catalog_json=` path, last one
+//!                              winning, else null) and `fetch`. With a catalog
+//!                              it reads that file (`catalog_models`, its model
+//!                              count) and fetches nothing (`fetch` null); a
+//!                              missing or empty catalog fails the launch, as it
+//!                              fails Codex. Without one it fetches: `fetch` is
+//!                              `ok` (with `fetched_ms`) after it writes
+//!                              `$CODEX_HOME/models_cache.json` stamped with
+//!                              MOCK_CODEX_VERSION, else the fault's outcome.
+//!                              It then carries on as it otherwise would.
+//!   MOCK_CODEX_CATALOG_FETCH_MS  with MOCK_CODEX_CATALOG_LOG, how long a fetch
+//!                              takes before it writes the cache.
+//!   MOCK_CODEX_CATALOG_FAULT   with MOCK_CODEX_CATALOG_LOG, `fail` makes every
+//!                              fetch fail (`fetch: "failed"`, no cache written);
+//!                              `hang` makes it never answer (`fetch: "hung"`,
+//!                              no cache written), and an `app-server` launch
+//!                              then waits for its stdin to close, as a server
+//!                              whose fetch is still in flight does.
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
@@ -368,6 +399,149 @@ fn installed_codex_plugins() -> Vec<String> {
         .collect();
     loaded.sort();
     loaded
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
+/// when that is set, else MOCK_STDOUT (else the default document).
+fn answer_version(argv: &[String]) -> ! {
+    if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
+        let _ = std::fs::write(path, argv.join("\n"));
+    }
+    let answer = std::env::var("MOCK_CODEX_VERSION").map_or_else(
+        |_| std::env::var("MOCK_STDOUT").unwrap_or_else(|_| "{\"result\":\"mock ok\"}".into()),
+        |version| format!("codex-cli {version}\n"),
+    );
+    let mut out = std::io::stdout();
+    let _ = out.write_all(answer.as_bytes());
+    let _ = out.flush();
+    std::process::exit(
+        std::env::var("MOCK_EXIT")
+            .ok()
+            .and_then(|code| code.parse().ok())
+            .unwrap_or(0),
+    );
+}
+
+/// The last `-c model_catalog_json=<value>` in `argv`, its TOML string decoded
+/// the way Codex reads it: a literal `'…'` as is, a basic `"…"` through its
+/// escapes, anything else as the raw text.
+fn codex_model_catalog_arg(argv: &[String]) -> Option<String> {
+    let value = argv
+        .windows(2)
+        .filter(|pair| pair[0] == "-c")
+        .filter_map(|pair| pair[1].strip_prefix("model_catalog_json="))
+        .next_back()?;
+    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        return Some(inner.to_string());
+    }
+    if value.starts_with('"') {
+        return serde_json::from_str(value).ok();
+    }
+    Some(value.to_string())
+}
+
+fn epoch_ms() -> u64 {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock is past the epoch");
+    u64::try_from(since.as_millis()).expect("milliseconds fit")
+}
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The cache's shape (`fetched_at`, `client_version`, `models`) is real Codex's `models_cache.json` as read on this repository's live host; its one other reader is `domain::model_catalog::read_codex_cache`, whose unit tests pin the same fields, and the refresh journeys fail if the two disagree. The fetch itself stands in for Codex's request to its models endpoint, which the live network breakdown (`scripts/codex-network-breakdown.py`) measures.
+/// MOCK_CODEX_CATALOG_LOG: what a Codex process started with `argv` did about
+/// its model catalog, appended as one JSON line. Only a launch of a subcommand
+/// that starts Codex (`exec`, `app-server`) is recorded.
+fn codex_model_catalog(path: &str, argv: &[String]) {
+    let Some(subcommand) = argv
+        .first()
+        .filter(|first| matches!(first.as_str(), "exec" | "app-server"))
+    else {
+        return;
+    };
+    let started_ms = epoch_ms();
+    let home = std::env::var("CODEX_HOME")
+        .expect("MOCK_CODEX_CATALOG_LOG keeps its catalog cache in CODEX_HOME, which is unset");
+    let catalog = codex_model_catalog_arg(argv);
+    let mut line = serde_json::json!({
+        "subcommand": subcommand,
+        "pid": std::process::id(),
+        "started_ms": started_ms,
+        "codex_home": home,
+        "catalog": catalog,
+        "fetch": null,
+    });
+    let fault = std::env::var("MOCK_CODEX_CATALOG_FAULT").unwrap_or_default();
+    if let Some(catalog) = &catalog {
+        let models = std::fs::read_to_string(catalog)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .and_then(|value| value["models"].as_array().map(Vec::len))
+            .filter(|count| *count > 0);
+        let Some(models) = models else {
+            let _ = writeln!(
+                std::io::stderr(),
+                "mock codex: model_catalog_json `{catalog}` is missing or has no models"
+            );
+            std::process::exit(1);
+        };
+        line["catalog_models"] = models.into();
+    } else {
+        if let Some(ms) = std::env::var("MOCK_CODEX_CATALOG_FETCH_MS")
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+        {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+        line["fetch"] = match fault.as_str() {
+            "fail" => "failed".into(),
+            "hang" => "hung".into(),
+            _ => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("the clock is past the epoch");
+                let fetched_at = format!(
+                    "{}.{:09}Z",
+                    oneharness_core::domain::history::format_rfc3339(
+                        i64::try_from(now.as_secs()).expect("seconds fit")
+                    )
+                    .trim_end_matches('Z'),
+                    now.subsec_nanos()
+                );
+                let version =
+                    std::env::var("MOCK_CODEX_VERSION").unwrap_or_else(|_| "0.0.0".into());
+                let cache = serde_json::json!({
+                    "fetched_at": fetched_at,
+                    "etag": "W/\"mock\"",
+                    "client_version": version,
+                    "models": [
+                        {"slug": "mock-model-a", "display_name": "Mock A"},
+                        {"slug": "mock-model-b", "display_name": "Mock B"},
+                    ],
+                });
+                let cache_path = std::path::Path::new(&home).join("models_cache.json");
+                let temp = cache_path.with_extension(format!("{}.tmp", std::process::id()));
+                std::fs::write(&temp, cache.to_string())
+                    .and_then(|()| std::fs::rename(&temp, &cache_path))
+                    .expect("the mock's models_cache.json could not be written");
+                line["fetched_ms"] = u64::try_from(now.as_millis())
+                    .expect("milliseconds fit")
+                    .into();
+                "ok".into()
+            }
+        };
+    }
+    let mut log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .expect("MOCK_CODEX_CATALOG_LOG could not be opened");
+    writeln!(log, "{line}").expect("MOCK_CODEX_CATALOG_LOG could not be written");
+    drop(log);
+    if fault == "hang" && catalog.is_none() && subcommand == "app-server" {
+        let _ = std::io::copy(&mut std::io::stdin(), &mut std::io::sink());
+        std::process::exit(0);
+    }
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
@@ -1625,11 +1799,14 @@ pub fn run() -> ! {
         run_native_descendant();
     }
 
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if argv == ["--version"] {
+        answer_version(&argv);
+    }
+
     if let Ok(path) = std::env::var("MOCK_HOLD_FILE") {
         wait_until_released(&path);
     }
-
-    let argv: Vec<String> = std::env::args().skip(1).collect();
 
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
@@ -1637,6 +1814,10 @@ pub fn run() -> ! {
 
     if let Ok(path) = std::env::var("MOCK_CODEX_PLUGINS_LOG") {
         record_codex_plugins(&path, &argv);
+    }
+
+    if let Ok(path) = std::env::var("MOCK_CODEX_CATALOG_LOG") {
+        codex_model_catalog(&path, &argv);
     }
 
     // Append one line to the run log (when configured), opening fresh each time so

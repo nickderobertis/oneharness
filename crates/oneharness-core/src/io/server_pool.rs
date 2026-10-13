@@ -267,7 +267,7 @@ pub fn resolve_root(configured: Option<&str>) -> Option<PathBuf> {
 /// The per-user state directory, resolved exactly like the history and session
 /// stores: `%LOCALAPPDATA%` on Windows; `$XDG_STATE_HOME` (else
 /// `~/.local/state`) elsewhere.
-fn state_dir() -> Option<PathBuf> {
+pub(crate) fn state_dir() -> Option<PathBuf> {
     if cfg!(windows) {
         return std::env::var_os("LOCALAPPDATA")
             .filter(|v| !v.is_empty())

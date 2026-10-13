@@ -28,6 +28,9 @@ pub mod http_turn;
 // variable: the one handle on a command a shared server started, which no
 // process tree this crate owns can reach.
 pub mod marked_processes;
+// The shared Codex model catalog a Codex launch reads instead of fetching its
+// own, and the one refresh a burst of launches shares.
+pub mod model_catalog;
 mod process;
 // The registry description `oneharness list` prints, as a call that returns it.
 pub mod registry;

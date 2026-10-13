@@ -113,6 +113,10 @@ export interface Field3 {
  */
 export interface HarnessReport {
   allowed_tools: Field2;
+  /**
+   * The resolved `analytics` (`false` by default), present only for `codex`.
+   */
+  analytics?: Field | null | undefined;
   args: Field2;
   bin: Field3;
   denied_tools: Field2;
@@ -124,6 +128,11 @@ export interface HarnessReport {
   };
   model: Field3;
   /**
+   * The resolved `model_catalog_refresh_seconds` (`3600` by default),
+   * present only for `codex`.
+   */
+  model_catalog_refresh_seconds?: Field5 | null | undefined;
+  /**
    * The resolved plugins opt-in (`false` by default), present only for a
    * harness with a plugins feature (`codex`).
    */
@@ -132,13 +141,33 @@ export interface HarnessReport {
   settings: {
     [k: string]: unknown;
   };
+  /**
+   * The resolved `shared_model_catalog` (`true` by default), present only
+   * for `codex`.
+   */
+  shared_model_catalog?: Field | null | undefined;
   variant: {
     [k: string]: VariantReport;
   };
   [k: string]: unknown;
 }
+/**
+ * One resolved field in the `oneharness config` report: the effective value
+ * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
+ * are `null` when the field is unset everywhere and has no built-in default.
+ */
+export interface Field5 {
+  source: string | null;
+  value: number | null;
+  [k: string]: unknown;
+}
 export interface VariantReport {
   allowed_tools: Field2;
+  /**
+   * The `analytics` a launch of this variant resolves to: the variant's own,
+   * else its harness's, else `false`. Present only for `codex`.
+   */
+  analytics?: Field | null | undefined;
   args: Field2;
   bin: Field3;
   denied_tools: Field2;
@@ -154,6 +183,12 @@ export interface VariantReport {
   };
   model: Field3;
   /**
+   * The `model_catalog_refresh_seconds` a launch of this variant resolves
+   * to: the variant's own, else its harness's, else `3600`. Present only for
+   * `codex`.
+   */
+  model_catalog_refresh_seconds?: Field5 | null | undefined;
+  /**
    * The plugins opt-in a launch of this variant resolves to: the variant's
    * own, else its harness's, else `false`. Present only for a harness with
    * a plugins feature (`codex`).
@@ -163,6 +198,11 @@ export interface VariantReport {
   settings: {
     [k: string]: unknown;
   };
+  /**
+   * The `shared_model_catalog` a launch of this variant resolves to: the
+   * variant's own, else its harness's, else `true`. Present only for `codex`.
+   */
+  shared_model_catalog?: Field | null | undefined;
   unset_env: Field2;
   [k: string]: unknown;
 }
@@ -286,15 +326,5 @@ export interface Field7 {
 export interface Field1 {
   source: string | null;
   value: boolean | null;
-  [k: string]: unknown;
-}
-/**
- * One resolved field in the `oneharness config` report: the effective value
- * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
- * are `null` when the field is unset everywhere and has no built-in default.
- */
-export interface Field5 {
-  source: string | null;
-  value: number | null;
   [k: string]: unknown;
 }

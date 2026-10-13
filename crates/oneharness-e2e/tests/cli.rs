@@ -593,6 +593,10 @@ fn print_command_pins_argv_for_every_harness() {
                 "exec",
                 "-c",
                 "features.plugins=false",
+                "-c",
+                "analytics.enabled=false",
+                "-c",
+                "model_catalog_json=\"<shared model catalog>\"",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "--json",
                 "hi",
@@ -35378,7 +35382,7 @@ fn run_text_view_shows_each_command_under_print_command() {
     );
     assert!(
         text.contains(
-            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false --json 'say hi there'\n"
+            "codex: planned · exit null · not run\n  command: codex exec -c features.plugins=false -c analytics.enabled=false -c 'model_catalog_json=\"<shared model catalog>\"' --json 'say hi there'\n"
         ),
         "{text}"
     );
@@ -37931,6 +37935,8 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
                 "app-server",
                 "-c",
                 "features.plugins=false",
+                "-c",
+                "analytics.enabled=false",
                 "--config-arg",
                 "--passthrough-arg"
             ]
@@ -37941,7 +37947,14 @@ fn every_codex_launch_disables_plugins_by_default_ahead_of_config_args_and_passt
     let usage = launch_codex(&fx, CodexLaunchPath::Usage, "codex", &[]);
     assert_eq!(
         usage.argv,
-        ["app-server", "--disable", "plugins", "--stdio"]
+        [
+            "app-server",
+            "--disable",
+            "plugins",
+            "-c",
+            "analytics.enabled=false",
+            "--stdio"
+        ]
     );
     usage.assert_plugins_off("usage");
 }
@@ -38220,7 +38233,14 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
     let usage = launch_codex(&fx, CodexLaunchPath::Usage, "codex", &[]);
     assert_eq!(
         usage.argv,
-        ["app-server", "--disable", "plugins", "--stdio"]
+        [
+            "app-server",
+            "--disable",
+            "plugins",
+            "-c",
+            "analytics.enabled=false",
+            "--stdio"
+        ]
     );
     usage.assert_plugins_off("usage under plugins = true");
 
@@ -38233,7 +38253,12 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
         "",
     );
     let exec = launch_codex(&own, CodexLaunchPath::Exec, "codex:own", &[]);
-    assert_eq!(exec.argv[..2], ["exec", "--json"], "{:?}", exec.argv);
+    assert_eq!(
+        exec.argv[..4],
+        ["exec", "-c", "analytics.enabled=false", "--json"],
+        "{:?}",
+        exec.argv
+    );
     assert_eq!(exec.argv.last().map(String::as_str), Some("--own-arg"));
     assert!(!exec.names_plugins(), "{:?}", exec.argv);
     exec.assert_plugins_loaded("exec of a variant opting in with its own args");
@@ -38245,7 +38270,16 @@ fn a_plugins_opt_in_loads_the_catalog_and_installed_plugins_wherever_it_is_set()
             "codex:own",
             &["--worker-arg"],
         );
-        assert_eq!(control.argv, ["app-server", "--own-arg", "--worker-arg"]);
+        assert_eq!(
+            control.argv,
+            [
+                "app-server",
+                "-c",
+                "analytics.enabled=false",
+                "--own-arg",
+                "--worker-arg"
+            ]
+        );
         control.assert_plugins_loaded("app-server of a variant opting in with its own args");
     }
 

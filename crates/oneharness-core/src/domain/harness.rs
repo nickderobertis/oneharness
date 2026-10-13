@@ -77,6 +77,16 @@ pub struct BuildCtx<'a> {
     /// right after its subcommand, so the caller's own args — which ride later —
     /// can still turn plugins back on; `true` adds no plugins flag at all.
     pub plugins: bool,
+    /// Whether the run lets the harness send analytics (the resolved
+    /// `analytics` config key, [`crate::domain::config::FileConfig::analytics_for`]).
+    /// Only codex reads it: `false` adds `-c analytics.enabled=false` beside the
+    /// plugins flag, ahead of the caller's args; `true` adds no analytics flag.
+    pub analytics: bool,
+    /// The shared model catalog file this launch reads instead of fetching
+    /// Codex's own (`crate::io::model_catalog`). Only codex reads it: `Some`
+    /// adds `-c model_catalog_json=<path>` beside the plugins flag, ahead of the
+    /// caller's args; `None` adds nothing and Codex fetches its catalog itself.
+    pub model_catalog: Option<&'a str>,
 }
 
 /// How the user prompt reaches the harness.
@@ -1848,14 +1858,14 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     // this project does not use, and self-updates from a fixed path.
     if c.delivery.is_control_stream() {
         let mut a = vec![c.bin.into(), "app-server".into()];
-        a.extend(codex_plugins_off(c.plugins));
+        a.extend(codex_launch_settings(c));
         return a;
     }
     let mut a = vec![c.bin.into(), "exec".into()];
     if c.resume.is_some() {
         a.push("resume".into());
     }
-    a.extend(codex_plugins_off(c.plugins));
+    a.extend(codex_launch_settings(c));
     // The sandbox is the real control surface under `exec` (approval downgrades
     // to `never`). `Default` keeps the exec default (read-only). `Edit` is not a
     // supported mode for codex, so it is never reached. Bypass is one flag both
@@ -1922,6 +1932,38 @@ fn codex_plugins_off(plugins: bool) -> Vec<String> {
     }
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// The `-c` settings every Codex launch carries right after its subcommand,
+/// ahead of the caller's args so a caller's own later `-c` of the same key wins
+/// (Codex applies `-c` overrides last-wins): plugins off unless opted in,
+/// analytics off unless opted in, and the shared model catalog when the launch
+/// has one.
+fn codex_launch_settings(c: &BuildCtx) -> Vec<String> {
+    let mut a = codex_plugins_off(c.plugins);
+    if !c.analytics {
+        a.extend(["-c".into(), CODEX_ANALYTICS_OFF.into()]);
+    }
+    if let Some(path) = c.model_catalog {
+        a.extend(["-c".into(), codex_model_catalog_setting(path)]);
+    }
+    a
+}
+
+/// The `-c` value that turns Codex's analytics off: its `exec` reports metrics
+/// and product events by default.
+pub const CODEX_ANALYTICS_OFF: &str = "analytics.enabled=false";
+
+/// The `-c` value that points Codex at a static model catalog file, so it never
+/// fetches its own. The path is a TOML string, escaped as TOML escapes it,
+/// because Codex parses a `-c` value as TOML — a Windows path's backslashes
+/// would otherwise read as escapes.
+#[must_use]
+pub fn codex_model_catalog_setting(path: &str) -> String {
+    format!(
+        "model_catalog_json={}",
+        toml::Value::String(path.to_string())
+    )
+}
 
 /// The sandbox a codex `exec` turn asks for under `mode`, in codex's own
 /// `SandboxMode` spelling; `None` where the mode names no sandbox (`default`
@@ -2380,6 +2422,8 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            analytics: false,
+            model_catalog: None,
         }
     }
 
@@ -2789,6 +2833,8 @@ mod tests {
                 "exec",
                 "-c",
                 "features.plugins=false",
+                "-c",
+                "analytics.enabled=false",
                 "--dangerously-bypass-approvals-and-sandbox",
                 "hi"
             ]
@@ -2922,6 +2968,8 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            analytics: false,
+            model_catalog: None,
         };
         let argv = (spec.build_argv)(&ctx);
         assert!(
@@ -3003,6 +3051,8 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            analytics: false,
+            model_catalog: None,
         }
     }
 
@@ -3051,7 +3101,16 @@ mod tests {
         // and goose take theirs elsewhere — the app-server negotiates the
         // sandbox per turn, and goose reads `GOOSE_MODE` from the environment.
         let launches = [
-            ("codex", &["app-server", "-c", "features.plugins=false"][..]),
+            (
+                "codex",
+                &[
+                    "app-server",
+                    "-c",
+                    "features.plugins=false",
+                    "-c",
+                    "analytics.enabled=false",
+                ][..],
+            ),
             ("goose", &["acp"][..]),
             (
                 "copilot",
@@ -3434,7 +3493,14 @@ mod tests {
             (PermissionMode::Default, &[]),
         ];
         for (mode, sandbox) in cases {
-            let mut want = vec!["codex", "exec", "-c", "features.plugins=false"];
+            let mut want = vec![
+                "codex",
+                "exec",
+                "-c",
+                "features.plugins=false",
+                "-c",
+                "analytics.enabled=false",
+            ];
             want.extend_from_slice(sandbox);
             want.extend(["--json", "hi"]);
             assert_eq!(codex_argv(*mode, None), want, "fresh {mode:?}");
@@ -3461,7 +3527,15 @@ mod tests {
         ];
         for (mode, sandbox) in cases {
             let argv = codex_argv(*mode, Some("0199-thread"));
-            let mut want = vec!["codex", "exec", "resume", "-c", "features.plugins=false"];
+            let mut want = vec![
+                "codex",
+                "exec",
+                "resume",
+                "-c",
+                "features.plugins=false",
+                "-c",
+                "analytics.enabled=false",
+            ];
             want.extend_from_slice(sandbox);
             want.extend(["--json", "0199-thread", "hi"]);
             assert_eq!(argv, want, "resumed {mode:?}");
@@ -3516,6 +3590,90 @@ mod tests {
                 (other.build_argv)(&base_ctx(other)),
                 (other.build_argv)(&BuildCtx {
                     plugins: true,
+                    ..base_ctx(other)
+                }),
+                "{}",
+                other.id
+            );
+        }
+    }
+
+    #[test]
+    fn codex_analytics_and_shared_catalog_ride_beside_the_plugins_flag_on_every_launch() {
+        // Analytics off and the shared catalog follow the plugins flag right
+        // after the subcommand, ahead of the caller's args, on a fresh turn, a
+        // resumed one and an app-server launch alike; each opt-out removes
+        // exactly its own flag.
+        let spec = by_id("codex").unwrap();
+        let caller = vec![
+            "-c".to_string(),
+            "analytics.enabled=true".to_string(),
+            "-c".to_string(),
+            "model_catalog_json=\"/caller.json\"".to_string(),
+        ];
+        let launches: [(&[&str], Option<&str>, PromptDelivery); 3] = [
+            (&["exec"], None, PromptDelivery::Argv),
+            (&["exec", "resume"], Some("th-1"), PromptDelivery::Argv),
+            (&["app-server"], None, PromptDelivery::ControlStream),
+        ];
+        let catalog = r"C:\state\catalog.json";
+        for (subcommand, resume, delivery) in launches {
+            let ctx = BuildCtx {
+                resume,
+                delivery,
+                model_catalog: Some(catalog),
+                ..base_ctx(spec)
+            };
+            let argv = argv_with_caller_args(spec, &ctx, &caller);
+            let mut head = vec!["codex"];
+            head.extend_from_slice(subcommand);
+            head.extend([
+                "-c",
+                "features.plugins=false",
+                "-c",
+                "analytics.enabled=false",
+                "-c",
+                r"model_catalog_json='C:\state\catalog.json'",
+            ]);
+            assert_eq!(argv[..head.len()], head, "{subcommand:?}: {argv:?}");
+            assert_eq!(argv[argv.len() - 4..], caller, "{subcommand:?}: {argv:?}");
+            let without = |ctx: &BuildCtx| (spec.build_argv)(ctx);
+            let analytics_on = without(&BuildCtx {
+                analytics: true,
+                ..ctx
+            });
+            assert!(
+                !analytics_on.iter().any(|t| t.starts_with("analytics.")),
+                "{analytics_on:?}"
+            );
+            assert!(analytics_on
+                .iter()
+                .any(|t| t.starts_with("model_catalog_json=")));
+            let no_catalog = without(&BuildCtx {
+                model_catalog: None,
+                ..ctx
+            });
+            assert!(
+                !no_catalog.iter().any(|t| t.contains("model_catalog")),
+                "{no_catalog:?}"
+            );
+            assert!(no_catalog.iter().any(|t| t == "analytics.enabled=false"));
+        }
+        // Codex reads a `-c` value as TOML, so the path is a TOML string.
+        assert_eq!(
+            codex_model_catalog_setting("/state/a \"b\".json"),
+            r#"model_catalog_json='/state/a "b".json'"#
+        );
+        let parsed: toml::Table =
+            toml::from_str(&codex_model_catalog_setting(r"C:\a\b.json")).unwrap();
+        assert_eq!(parsed["model_catalog_json"].as_str(), Some(r"C:\a\b.json"));
+        // No other harness reads either.
+        for other in all().iter().filter(|spec| spec.id != "codex") {
+            assert_eq!(
+                (other.build_argv)(&base_ctx(other)),
+                (other.build_argv)(&BuildCtx {
+                    analytics: true,
+                    model_catalog: Some("/catalog.json"),
                     ..base_ctx(other)
                 }),
                 "{}",

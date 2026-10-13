@@ -199,6 +199,8 @@ fn describe(spec: &'static harness::HarnessSpec, cfg: &FileConfig) -> HarnessInf
         system_file: None,
         delivery: harness::PromptDelivery::Argv,
         plugins: cfg.plugins_for(spec.id),
+        analytics: cfg.analytics_for(spec.id),
+        model_catalog: None,
     };
     let sync = spec.sync.as_ref();
     HarnessInfo {

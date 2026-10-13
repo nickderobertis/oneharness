@@ -18,6 +18,7 @@ pub mod hooks;
 pub mod http;
 pub mod mock;
 pub mod mode;
+pub mod model_catalog;
 pub mod normalize;
 pub mod render;
 pub mod report;

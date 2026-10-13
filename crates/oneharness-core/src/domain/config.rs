@@ -191,6 +191,21 @@ pub struct HarnessConfig {
     /// variant or worker that supplies its own `args` keeps the opt-in. See
     /// [`FileConfig::plugins_for`].
     pub plugins: Option<bool>,
+    /// Share one Codex model catalog per Codex home and Codex version across
+    /// launches (`codex` only). Unset means on: oneharness keeps the catalog
+    /// file and starts Codex with `-c model_catalog_json=<it>`, so a launch
+    /// fetches no catalog of its own. `false` leaves Codex fetching it on every
+    /// launch. Resolved apart from `args`, like `plugins`. See
+    /// [`FileConfig::shared_model_catalog_for`].
+    pub shared_model_catalog: Option<bool>,
+    /// How old, in seconds, the shared model catalog may grow before a launch
+    /// refreshes it (`codex` only; default
+    /// [`DEFAULT_MODEL_CATALOG_REFRESH_SECONDS`], at least 1).
+    pub model_catalog_refresh_seconds: Option<u64>,
+    /// Let Codex send its analytics (`codex` only). Unset means off: oneharness
+    /// starts Codex with `-c analytics.enabled=false`. Resolved apart from
+    /// `args`, like `plugins`. See [`FileConfig::analytics_for`].
+    pub analytics: Option<bool>,
     /// Allow rules for this harness only; beats the top-level `allowed_tools`.
     /// Rejected at parse time when the harness's config file has no allow-list
     /// concept (`oneharness sync` could not deliver it), so a rule that cannot
@@ -331,6 +346,12 @@ pub struct VariantConfig {
     pub args: Option<Vec<String>>,
     /// This variant's plugins opt-in, beating its harness's `plugins`.
     pub plugins: Option<bool>,
+    /// This variant's `shared_model_catalog`, beating its harness's.
+    pub shared_model_catalog: Option<bool>,
+    /// This variant's `model_catalog_refresh_seconds`, beating its harness's.
+    pub model_catalog_refresh_seconds: Option<u64>,
+    /// This variant's `analytics`, beating its harness's.
+    pub analytics: Option<bool>,
     pub allowed_tools: Option<Vec<String>>,
     pub denied_tools: Option<Vec<String>>,
     pub hooks: Option<toml::Value>,
@@ -384,6 +405,75 @@ pub fn parse(text: &str) -> Result<FileConfig, String> {
     let config: FileConfig = toml::from_str(text).map_err(|e| e.to_string())?;
     validate(&config)?;
     Ok(config)
+}
+
+/// The default `model_catalog_refresh_seconds`: a shared Codex model catalog
+/// is refreshed once it is an hour old.
+pub const DEFAULT_MODEL_CATALOG_REFRESH_SECONDS: u64 = 3_600;
+
+/// The Codex-only launch keys a `[harness.<id>]` table (or one of its variants)
+/// sets, each by name, so one check refuses every one of them elsewhere.
+fn codex_launch_keys_set(
+    plugins: Option<bool>,
+    shared_model_catalog: Option<bool>,
+    model_catalog_refresh_seconds: Option<u64>,
+    analytics: Option<bool>,
+) -> impl Iterator<Item = &'static str> {
+    [
+        ("plugins", plugins.is_some()),
+        ("shared_model_catalog", shared_model_catalog.is_some()),
+        (
+            "model_catalog_refresh_seconds",
+            model_catalog_refresh_seconds.is_some(),
+        ),
+        ("analytics", analytics.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(key, set)| set.then_some(key))
+}
+
+/// Refuse a Codex-only launch key under any other harness, naming the key and
+/// the table, and a zero `model_catalog_refresh_seconds` anywhere (a catalog
+/// that is stale the moment it is written would refresh on every launch).
+fn codex_launch_keys(id: &str, h: &HarnessConfig) -> Result<(), String> {
+    let tables = std::iter::once((
+        format!("[harness.{id}]"),
+        codex_launch_keys_set(
+            h.plugins,
+            h.shared_model_catalog,
+            h.model_catalog_refresh_seconds,
+            h.analytics,
+        )
+        .collect::<Vec<_>>(),
+        h.model_catalog_refresh_seconds,
+    ))
+    .chain(h.variant.iter().map(|(name, v)| {
+        (
+            format!("[harness.{id}.variant.{name}]"),
+            codex_launch_keys_set(
+                v.plugins,
+                v.shared_model_catalog,
+                v.model_catalog_refresh_seconds,
+                v.analytics,
+            )
+            .collect(),
+            v.model_catalog_refresh_seconds,
+        )
+    }));
+    for (table, keys, refresh) in tables {
+        if let Some(key) = keys.first().filter(|_| !harness::has_plugins_toggle(id)) {
+            return Err(format!(
+                "`{key}` in `{table}` is not supported for harness `{id}`: only `codex` \
+                 has a launch setting for it to become"
+            ));
+        }
+        if refresh == Some(0) {
+            return Err(format!(
+                "`model_catalog_refresh_seconds` in `{table}` must be at least 1"
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate(config: &FileConfig) -> Result<(), String> {
@@ -453,25 +543,9 @@ fn validate(config: &FileConfig) -> Result<(), String> {
         for name in h.variant.keys() {
             validate_variant_name(name.as_str())?;
         }
-        // `plugins` toggles one harness's own feature flag; nowhere else is
-        // there a flag for it to become, so setting it there is a mistake.
-        if !harness::has_plugins_toggle(id) {
-            let variant = h
-                .variant
-                .iter()
-                .find(|(_, variant)| variant.plugins.is_some())
-                .map(|(name, _)| name);
-            if h.plugins.is_some() || variant.is_some() {
-                let table = variant.map_or_else(
-                    || format!("[harness.{id}]"),
-                    |name| format!("[harness.{id}.variant.{name}]"),
-                );
-                return Err(format!(
-                    "`plugins` in `{table}` is not supported for harness `{id}`: only \
-                     `codex` has a plugins feature to toggle"
-                ));
-            }
-        }
+        // These keys become flags on one harness's own launches; nowhere else
+        // is there a flag for them to become, so setting one there is a mistake.
+        codex_launch_keys(id, h)?;
         let sync = spec.sync.as_ref();
         // A raw `settings` table is merged into a JSON config file; Codex's
         // rules file has no keys to merge it into.
@@ -776,6 +850,11 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
             bin: o.bin.or(entry.bin.take()),
             args: o.args.or(entry.args.take()),
             plugins: o.plugins.or(entry.plugins.take()),
+            shared_model_catalog: o.shared_model_catalog.or(entry.shared_model_catalog.take()),
+            model_catalog_refresh_seconds: o
+                .model_catalog_refresh_seconds
+                .or(entry.model_catalog_refresh_seconds.take()),
+            analytics: o.analytics.or(entry.analytics.take()),
             allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
             denied_tools: o.denied_tools.or(entry.denied_tools.take()),
             hooks: o.hooks.or(entry.hooks.take()),
@@ -835,6 +914,11 @@ fn merge_variant_maps(
             bin: o.bin.or(e.bin.take()),
             args: o.args.or(e.args.take()),
             plugins: o.plugins.or(e.plugins.take()),
+            shared_model_catalog: o.shared_model_catalog.or(e.shared_model_catalog.take()),
+            model_catalog_refresh_seconds: o
+                .model_catalog_refresh_seconds
+                .or(e.model_catalog_refresh_seconds.take()),
+            analytics: o.analytics.or(e.analytics.take()),
             allowed_tools: o.allowed_tools.or(e.allowed_tools.take()),
             denied_tools: o.denied_tools.or(e.denied_tools.take()),
             hooks: o.hooks.or(e.hooks.take()),
@@ -921,6 +1005,43 @@ impl FileConfig {
         self.variant_for(id)
             .and_then(|variant| variant.plugins)
             .or_else(|| self.harness.get(base).and_then(|h| h.plugins))
+            .unwrap_or(false)
+    }
+
+    /// Whether a launch of `id` uses the shared Codex model catalog: the
+    /// variant's `shared_model_catalog`, else the harness's, else `true`. Read
+    /// apart from [`Self::args_for`], like [`Self::plugins_for`].
+    pub fn shared_model_catalog_for(&self, id: &str) -> bool {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.shared_model_catalog)
+            .or_else(|| self.harness.get(base).and_then(|h| h.shared_model_catalog))
+            .unwrap_or(true)
+    }
+
+    /// How old, in seconds, the shared model catalog a launch of `id` uses may
+    /// be: the variant's `model_catalog_refresh_seconds`, else the harness's,
+    /// else [`DEFAULT_MODEL_CATALOG_REFRESH_SECONDS`].
+    pub fn model_catalog_refresh_seconds_for(&self, id: &str) -> u64 {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.model_catalog_refresh_seconds)
+            .or_else(|| {
+                self.harness
+                    .get(base)
+                    .and_then(|h| h.model_catalog_refresh_seconds)
+            })
+            .unwrap_or(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS)
+    }
+
+    /// Whether a launch of `id` lets Codex send analytics: the variant's
+    /// `analytics`, else the harness's, else `false`. Read apart from
+    /// [`Self::args_for`], like [`Self::plugins_for`].
+    pub fn analytics_for(&self, id: &str) -> bool {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.analytics)
+            .or_else(|| self.harness.get(base).and_then(|h| h.analytics))
             .unwrap_or(false)
     }
 
@@ -1053,6 +1174,18 @@ impl<T> Field<T> {
             Self::default_value(value)
         }
     }
+
+    /// A variant's own value, else its harness's (`inherited`), else `value`.
+    fn or_inherited(self, inherited: &Self, value: T) -> Self
+    where
+        T: Clone,
+    {
+        if self.value.is_some() {
+            self
+        } else {
+            inherited.clone().or_default(value)
+        }
+    }
 }
 
 /// The `oneharness config` report: the fully layered configuration with the
@@ -1117,6 +1250,17 @@ pub struct HarnessReport {
     /// harness with a plugins feature (`codex`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<Field<bool>>,
+    /// The resolved `shared_model_catalog` (`true` by default), present only
+    /// for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_model_catalog: Option<Field<bool>>,
+    /// The resolved `model_catalog_refresh_seconds` (`3600` by default),
+    /// present only for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_catalog_refresh_seconds: Option<Field<u64>>,
+    /// The resolved `analytics` (`false` by default), present only for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analytics: Option<Field<bool>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     // llmlint: ignore[invalid_states_unrepresentable] These two fields are deliberately raw passthrough TOML — the whole point is that oneharness does not interpret a harness's own settings table — so the schema says "an arbitrary object", which is the honest description of an uninterpreted value.
@@ -1139,6 +1283,19 @@ pub struct VariantReport {
     /// a plugins feature (`codex`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plugins: Option<Field<bool>>,
+    /// The `shared_model_catalog` a launch of this variant resolves to: the
+    /// variant's own, else its harness's, else `true`. Present only for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_model_catalog: Option<Field<bool>>,
+    /// The `model_catalog_refresh_seconds` a launch of this variant resolves
+    /// to: the variant's own, else its harness's, else `3600`. Present only for
+    /// `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_catalog_refresh_seconds: Option<Field<u64>>,
+    /// The `analytics` a launch of this variant resolves to: the variant's own,
+    /// else its harness's, else `false`. Present only for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub analytics: Option<Field<bool>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
@@ -1241,6 +1398,11 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
         }
         let toggles_plugins = harness::has_plugins_toggle(id);
         let harness_plugins = pick(layers, |c| section(c).and_then(|h| h.plugins));
+        let harness_catalog = pick(layers, |c| section(c).and_then(|h| h.shared_model_catalog));
+        let harness_refresh = pick(layers, |c| {
+            section(c).and_then(|h| h.model_catalog_refresh_seconds)
+        });
+        let harness_analytics = pick(layers, |c| section(c).and_then(|h| h.analytics));
         let mut variants = BTreeMap::new();
         let names: std::collections::BTreeSet<&VariantName> = layers
             .iter()
@@ -1282,12 +1444,22 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                     bin: pick(layers, |c| variant(c).and_then(|v| v.bin)),
                     args: pick(layers, |c| variant(c).and_then(|v| v.args)),
                     plugins: toggles_plugins.then(|| {
-                        let own = pick(layers, |c| variant(c).and_then(|v| v.plugins));
-                        if own.value.is_some() {
-                            own
-                        } else {
-                            harness_plugins.clone().or_default(false)
-                        }
+                        pick(layers, |c| variant(c).and_then(|v| v.plugins))
+                            .or_inherited(&harness_plugins, false)
+                    }),
+                    shared_model_catalog: toggles_plugins.then(|| {
+                        pick(layers, |c| variant(c).and_then(|v| v.shared_model_catalog))
+                            .or_inherited(&harness_catalog, true)
+                    }),
+                    model_catalog_refresh_seconds: toggles_plugins.then(|| {
+                        pick(layers, |c| {
+                            variant(c).and_then(|v| v.model_catalog_refresh_seconds)
+                        })
+                        .or_inherited(&harness_refresh, DEFAULT_MODEL_CATALOG_REFRESH_SECONDS)
+                    }),
+                    analytics: toggles_plugins.then(|| {
+                        pick(layers, |c| variant(c).and_then(|v| v.analytics))
+                            .or_inherited(&harness_analytics, false)
                     }),
                     allowed_tools: pick(layers, |c| variant(c).and_then(|v| v.allowed_tools)),
                     denied_tools: pick(layers, |c| variant(c).and_then(|v| v.denied_tools)),
@@ -1308,6 +1480,10 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                 bin: pick(layers, |c| section(c).and_then(|h| h.bin)),
                 args: pick(layers, |c| section(c).and_then(|h| h.args)),
                 plugins: toggles_plugins.then(|| harness_plugins.or_default(false)),
+                shared_model_catalog: toggles_plugins.then(|| harness_catalog.or_default(true)),
+                model_catalog_refresh_seconds: toggles_plugins
+                    .then(|| harness_refresh.or_default(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS)),
+                analytics: toggles_plugins.then(|| harness_analytics.or_default(false)),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
                 hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
@@ -2108,6 +2284,225 @@ args = ["--variant-arg"]
             codex.variant["v"].plugins,
             Some(Field::default_value(false))
         );
+    }
+
+    /// The three Codex launch keys this module resolves apart from `args`:
+    /// the key, its default, and two non-default spellings with what each
+    /// resolves to (`model_catalog_refresh_seconds` is not a bool).
+    type Resolver = fn(&FileConfig, &str) -> String;
+    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 3] = [
+        (
+            "shared_model_catalog",
+            "true",
+            ["false", "true"],
+            |c, id| c.shared_model_catalog_for(id).to_string(),
+        ),
+        (
+            "model_catalog_refresh_seconds",
+            "3600",
+            ["60", "7200"],
+            |c, id| c.model_catalog_refresh_seconds_for(id).to_string(),
+        ),
+        ("analytics", "false", ["true", "false"], |c, id| {
+            c.analytics_for(id).to_string()
+        }),
+    ];
+
+    #[test]
+    fn codex_launch_keys_merge_last_set_layer_wins_at_harness_and_variant_level() {
+        // Every ordered pair of (earlier, later) at both levels: a later value
+        // overrides in either direction, a later layer without the key keeps
+        // the earlier value, and nothing set anywhere resolves to the default.
+        for (key, default, spellings, resolve) in CODEX_LAUNCH_KEYS {
+            let spell = |table: &str, value: Option<&str>| {
+                value.map_or_else(
+                    || format!("[{table}]\nmodel = \"m\"\n"),
+                    |value| format!("[{table}]\n{key} = {value}\n"),
+                )
+            };
+            let values = [None, Some(spellings[0]), Some(spellings[1])];
+            for earlier in values {
+                for later in values {
+                    let want = later.or(earlier).unwrap_or(default);
+                    let merged = merge(
+                        parsed(&spell("harness.codex", earlier)),
+                        parsed(&spell("harness.codex", later)),
+                    );
+                    assert_eq!(
+                        resolve(&merged, "codex"),
+                        want,
+                        "{key} {earlier:?} then {later:?}"
+                    );
+                    let merged = merge(
+                        parsed(&spell("harness.codex.variant.work", earlier)),
+                        parsed(&spell("harness.codex.variant.work", later)),
+                    );
+                    assert_eq!(
+                        resolve(&merged, "codex:work"),
+                        want,
+                        "{key} variant {earlier:?} then {later:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_launch_keys_resolve_variant_then_harness_then_default_whatever_args_say() {
+        for (key, default, [first, second], resolve) in CODEX_LAUNCH_KEYS {
+            let config = parsed(&format!(
+                r#"
+[harness.codex]
+{key} = {first}
+args = ["--harness-arg"]
+[harness.codex.variant.own-args]
+args = ["--variant-arg"]
+[harness.codex.variant.own-value]
+{key} = {second}
+args = ["--variant-arg"]
+"#
+            ));
+            assert_eq!(resolve(&config, "codex"), first, "{key}");
+            assert_eq!(
+                resolve(&config, "codex:own-args"),
+                first,
+                "{key}: args never drop it"
+            );
+            assert_eq!(resolve(&config, "codex:own-value"), second, "{key}");
+            assert_eq!(resolve(&config, "codex:undeclared"), first, "{key}");
+            assert_eq!(resolve(&parsed(""), "codex"), default, "{key}");
+            let one = parsed(&format!("[harness.codex.variant.on]\n{key} = {first}\n"));
+            assert_eq!(resolve(&one, "codex:on"), first, "{key}");
+            assert_eq!(
+                resolve(&one, "codex"),
+                default,
+                "{key}: a variant's value is its own"
+            );
+            // An `extends` parent is folded in with `merge(parent, child)`: a
+            // child that sets only `args` keeps the parent's value.
+            let child = merge(
+                parsed(&format!("[harness.codex]\n{key} = {first}\n")),
+                parsed("[harness.codex]\nargs = [\"--child\"]\n"),
+            );
+            assert_eq!(resolve(&child, "codex"), first, "{key}");
+            assert_eq!(child.args_for("codex"), ["--child"]);
+        }
+    }
+
+    #[test]
+    fn codex_launch_keys_outside_codex_are_refused_naming_key_and_harness() {
+        for (key, _, [value, _], _) in CODEX_LAUNCH_KEYS {
+            for (text, table) in [
+                (
+                    format!("[harness.claude-code]\n{key} = {value}\n"),
+                    "[harness.claude-code]",
+                ),
+                (
+                    format!("[harness.goose.variant.work]\n{key} = {value}\n"),
+                    "[harness.goose.variant.work]",
+                ),
+            ] {
+                let err = parse(&text).unwrap_err();
+                assert!(err.contains(&format!("`{key}`")), "{err}");
+                assert!(err.contains(table), "{err}");
+                assert!(err.contains("not supported for harness"), "{err}");
+            }
+            assert!(parse(&format!("[harness.codex.variant.w]\n{key} = {value}\n")).is_ok());
+        }
+    }
+
+    #[test]
+    fn a_zero_model_catalog_refresh_interval_is_refused() {
+        for (text, table) in [
+            (
+                "[harness.codex]\nmodel_catalog_refresh_seconds = 0\n",
+                "[harness.codex]",
+            ),
+            (
+                "[harness.codex.variant.w]\nmodel_catalog_refresh_seconds = 0\n",
+                "[harness.codex.variant.w]",
+            ),
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains("`model_catalog_refresh_seconds`"), "{err}");
+            assert!(err.contains(table), "{err}");
+            assert!(err.contains("at least 1"), "{err}");
+        }
+        assert!(parse("[harness.codex]\nmodel_catalog_refresh_seconds = -1\n").is_err());
+    }
+
+    #[test]
+    fn explain_reports_resolved_codex_launch_keys_for_codex_only() {
+        let report = explain(&layers(
+            "[harness.codex]\nshared_model_catalog = false\nmodel_catalog_refresh_seconds = 60\n\
+             analytics = true\n[harness.claude-code]\nmodel = \"m\"\n",
+            "[harness.codex.variant.own]\nshared_model_catalog = true\n\
+             model_catalog_refresh_seconds = 120\nanalytics = false\n\
+             [harness.codex.variant.inherit]\nmodel = \"m\"\n",
+        ));
+        let from = |source: &str| Some(source.to_string());
+        let codex = &report.harness["codex"];
+        let field = |f: &Option<Field<bool>>| f.as_ref().map(|f| (f.value, f.source.clone()));
+        let seconds = |f: &Option<Field<u64>>| f.as_ref().map(|f| (f.value, f.source.clone()));
+        assert_eq!(
+            field(&codex.shared_model_catalog),
+            Some((Some(false), from("/user.toml")))
+        );
+        assert_eq!(
+            seconds(&codex.model_catalog_refresh_seconds),
+            Some((Some(60), from("/user.toml")))
+        );
+        assert_eq!(
+            field(&codex.analytics),
+            Some((Some(true), from("/user.toml")))
+        );
+        let own = &codex.variant["own"];
+        assert_eq!(
+            field(&own.shared_model_catalog),
+            Some((Some(true), from("/project.toml")))
+        );
+        assert_eq!(
+            seconds(&own.model_catalog_refresh_seconds),
+            Some((Some(120), from("/project.toml")))
+        );
+        assert_eq!(
+            field(&own.analytics),
+            Some((Some(false), from("/project.toml")))
+        );
+        let inherit = &codex.variant["inherit"];
+        assert_eq!(
+            field(&inherit.shared_model_catalog),
+            Some((Some(false), from("/user.toml")))
+        );
+        assert_eq!(
+            seconds(&inherit.model_catalog_refresh_seconds),
+            Some((Some(60), from("/user.toml")))
+        );
+        assert_eq!(
+            field(&inherit.analytics),
+            Some((Some(true), from("/user.toml")))
+        );
+        let claude = serde_json::to_value(&report.harness["claude-code"]).unwrap();
+        for key in [
+            "shared_model_catalog",
+            "model_catalog_refresh_seconds",
+            "analytics",
+        ] {
+            assert!(claude.get(key).is_none(), "{claude}");
+        }
+        let unset = explain(&layers("[harness.codex.variant.v]\nmodel = \"m\"\n", ""));
+        for codex in [
+            serde_json::to_value(&unset.harness["codex"]).unwrap(),
+            serde_json::to_value(&unset.harness["codex"].variant["v"]).unwrap(),
+        ] {
+            assert_eq!(codex["shared_model_catalog"]["value"], true, "{codex}");
+            assert_eq!(
+                codex["model_catalog_refresh_seconds"]["value"], 3600,
+                "{codex}"
+            );
+            assert_eq!(codex["analytics"]["value"], false, "{codex}");
+            assert_eq!(codex["analytics"]["source"], DEFAULT_SOURCE, "{codex}");
+        }
     }
 
     fn layers(user: &str, project: &str) -> Vec<(String, FileConfig)> {

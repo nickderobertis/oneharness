@@ -45,7 +45,7 @@ SUITE = "codex"
 # The caps the calibration report is stated against: budgets.yaml's thresholds,
 # held equal to them by tools/network-telemetry's tests.
 LAUNCH_CAP = 2_500_000
-SUITE_CAP = 8_000_000
+SUITE_CAP = 8_500_000
 
 LaunchId = NewType("LaunchId", str)
 # A launch kind as the shim derives it: `exec`, `app-server`,

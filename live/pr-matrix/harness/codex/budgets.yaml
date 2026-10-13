@@ -43,7 +43,7 @@ budgets:
       complete live-codex pass (the opted-in plugins variant records to
       variants.jsonl and is excluded), counted as codex-launch-network-bytes
       counts each launch. The cap is the measured pass's total x1.2, rounded
-      up to the next 0.5 MB: 6,363,289 B x1.2 = 7,635,947 B, so 8,000,000 B
+      up to the next 0.5 MB: 6,986,981 B x1.2 = 8,384,377 B, so 8,500,000 B
       (down from the plan's 30,000,000 B, set against a 17-24.5 MB post-fix
       estimate the measured pass came in well under), so an across-the-board
       doubling of the pass fails (evidence/live-codex-report.json). A
@@ -53,5 +53,5 @@ budgets:
     command: ["uv", "run", "--quiet", "--locked", "--script", "network_budget.py", "--total"]
     unit: bytes
     direction: max
-    threshold: 8000000
+    threshold: 8500000
     timeout_seconds: 300

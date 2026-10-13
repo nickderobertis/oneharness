@@ -1,38 +1,38 @@
 {
   "method": "netns-pasta",
   "boundary": "bytes at each launch's network-namespace boundary (pasta TAP), not host-NIC wire bytes",
-  "launches": 97,
+  "launches": 98,
   "largest_launch": {
-    "launch_id": "codex-1582204-8b104e1c62b4",
+    "launch_id": "codex-4158031-1a7d2daa5526",
     "phase": "codex-rules-enforce",
     "kind": "exec",
-    "received": 1383208
+    "received": 1383470
   },
   "per_kind": {
     "app-server": {
-      "launches": 3,
+      "launches": 4,
       "received": {
-        "median": 92965,
-        "largest": 633845,
-        "total": 751753
+        "median": 362109.0,
+        "largest": 633958,
+        "total": 1383197
       },
       "sent": {
-        "median": 14815,
-        "largest": 41130,
-        "total": 66348
+        "median": 12804.0,
+        "largest": 40776,
+        "total": 76951
       }
     },
     "exec": {
       "launches": 24,
       "received": {
-        "median": 129460.5,
-        "largest": 1383208,
-        "total": 5611536
+        "median": 129899.5,
+        "largest": 1383470,
+        "total": 5603784
       },
       "sent": {
-        "median": 42857.5,
-        "largest": 77929,
-        "total": 1050560
+        "median": 43148.0,
+        "largest": 78063,
+        "total": 1045674
       }
     },
     "local": {
@@ -45,29 +45,29 @@
       "sent": {
         "median": 86.0,
         "largest": 176,
-        "total": 4142
+        "total": 5026
       }
     }
   },
   "model_turns": {
     "launches": 25,
-    "median_received": 129369
+    "median_received": 129858
   },
-  "suite_total_received": 6363289,
+  "suite_total_received": 6986981,
   "calibration": {
     "largest_x1_5_within_launch_cap": {
-      "value": 2074812.0,
+      "value": 2075205.0,
       "cap": 2500000,
       "holds": true
     },
     "suite_total_x1_2_within_suite_cap": {
-      "value": 7635946.8,
-      "cap": 8000000,
+      "value": 8384377.199999999,
+      "cap": 8500000,
       "holds": true
     },
     "doubled_pass_exceeds_suite_cap": {
-      "value": 12726578,
-      "cap": 8000000,
+      "value": 13973962,
+      "cap": 8500000,
       "holds": true
     }
   }

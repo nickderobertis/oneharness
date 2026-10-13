@@ -18,6 +18,7 @@
 
 use std::collections::HashMap;
 use std::io::Write;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -135,7 +136,7 @@ pub struct UsageProbeRequest {
     /// the shared model catalog ([`crate::io::model_catalog`]); `None` leaves
     /// Codex to fetch its own. Read only by the codex probe, before its
     /// timeout starts.
-    pub model_catalog_refresh: Option<Duration>,
+    pub model_catalog_refresh_seconds: Option<NonZeroU64>,
 }
 
 impl UsageProbeRequest {
@@ -646,19 +647,21 @@ fn codex_request_lines() -> Vec<String> {
 
 fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
     let selector = env_path_selector(&request.env_view(), CODEX_IDENTITY_ENV);
-    let catalog = request.model_catalog_refresh.and_then(|refresh_interval| {
-        let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
-            bin: &request.bin,
-            cwd: request.cwd.as_deref(),
-            env: &request.env,
-            env_remove: &request.env_remove,
-            refresh_interval,
+    let catalog = request
+        .model_catalog_refresh_seconds
+        .and_then(|refresh_seconds| {
+            let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
+                bin: &request.bin,
+                cwd: request.cwd.as_deref(),
+                env: &request.env,
+                env_remove: &request.env_remove,
+                refresh_seconds,
+            });
+            if let Some(warning) = choice.warning {
+                eprintln!("oneharness: warning: codex usage probe: {warning}");
+            }
+            choice.catalog
         });
-        if let Some(warning) = choice.warning {
-            eprintln!("oneharness: warning: codex usage probe: {warning}");
-        }
-        choice.catalog
-    });
     let mut capture = converse(
         request,
         request.deadline(),
@@ -708,7 +711,7 @@ fn probe_cursor(request: &UsageProbeRequest) -> ProbedIdentity {
             .chain(CURSOR_LOGIN_ENVS.iter().map(|name| (*name).to_string()))
             .collect(),
         timeout: request.timeout,
-        model_catalog_refresh: None,
+        model_catalog_refresh_seconds: None,
     };
     let capture = converse(
         &guarded,
@@ -967,9 +970,9 @@ pub fn report(request: &UsageRequest) -> Result<UsageReport, OneharnessError> {
             .map_or_else(Vec::new, |variant| variant.unset_env.clone());
         let resolved = crate::io::detect::resolve_named(spec, &id, &overrides);
         let variant = variant_of(&id)?;
-        let model_catalog_refresh = (has_plugins_toggle(spec.id)
+        let model_catalog_refresh_seconds = (has_plugins_toggle(spec.id)
             && loaded.config.shared_model_catalog_for(&id))
-        .then(|| Duration::from_secs(loaded.config.model_catalog_refresh_seconds_for(&id).get()));
+        .then(|| loaded.config.model_catalog_refresh_seconds_for(&id));
         plans.push(Plan {
             id,
             variant,
@@ -981,7 +984,7 @@ pub fn report(request: &UsageRequest) -> Result<UsageReport, OneharnessError> {
             env_remove,
             cwd: request.cwd.clone(),
             timeout,
-            model_catalog_refresh,
+            model_catalog_refresh_seconds,
         });
     }
 
@@ -1006,8 +1009,9 @@ struct Plan {
     env_remove: Vec<String>,
     cwd: Option<PathBuf>,
     timeout: Duration,
-    /// [`UsageProbeRequest::model_catalog_refresh`], resolved from config.
-    model_catalog_refresh: Option<Duration>,
+    /// [`UsageProbeRequest::model_catalog_refresh_seconds`], resolved from
+    /// config.
+    model_catalog_refresh_seconds: Option<NonZeroU64>,
 }
 
 /// The variant half of a composed selector (`claude-code:work`), so two
@@ -1065,7 +1069,7 @@ impl Plan {
             env: self.env.clone(),
             env_remove: self.env_remove.clone(),
             timeout: self.timeout,
-            model_catalog_refresh: self.model_catalog_refresh,
+            model_catalog_refresh_seconds: self.model_catalog_refresh_seconds,
         });
         UsageIdentity::new(self.base, probed.selector, probed.parsed)
     }
@@ -1219,7 +1223,7 @@ mod tests {
             env: Vec::new(),
             env_remove: Vec::new(),
             timeout,
-            model_catalog_refresh: None,
+            model_catalog_refresh_seconds: None,
         }
     }
 

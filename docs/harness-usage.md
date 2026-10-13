@@ -182,7 +182,7 @@ analytics.enabled=false --stdio`, with `-c model_catalog_json=<file>` before
 Plugins, apps and analytics stay off whatever the config's `plugins`, `apps` and
 `analytics` say: the read needs none of them, and a plugin-enabled start
 downloads Codex's ~29 MB remote plugin catalog first. The shared catalog follows the config's
-`shared_model_catalog`, as on every Codex launch (README, *Codex*).
+`shared_model_catalog`, as on every Codex launch.
 
 ```console
 → {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"oneharness", ...}}}

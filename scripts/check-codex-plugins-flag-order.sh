@@ -80,7 +80,7 @@ case "$out" in
 esac
 calls="$(wc -l <"$tmp/calls")" || fail "the fake codex left no call log at $tmp/calls"
 calls="${calls//[[:space:]]/}"
-[ "$calls" -eq $((rows * 2)) ] || fail "the phase must ask codex all $rows rows for plugins and for apps, asked $calls: $(cat "$tmp/calls")"
+[ "$calls" -eq "$((rows * 2))" ] || fail "the phase must ask codex all $rows rows for plugins and for apps, asked $calls: $(cat "$tmp/calls")"
 grep -qx '[^|]*|-c features.plugins=false --enable plugins' "$tmp/calls" ||
   fail "a row's args must reach codex as separate words, got: $(cat "$tmp/calls")"
 grep -qx '[^|]*|-c features.apps=false --enable apps' "$tmp/calls" ||

@@ -502,7 +502,7 @@ oh_cache_assert() {
 # nothing back.
 #   $1 harness id
 oh_usage_enforce() {
-  local id="$1" bin report state reason detail credits errf rc catalog_state catalog_warning
+  local id="$1" bin report state reason detail credits errf rc catalog_state native_state catalog_warning grep_rc
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
@@ -511,13 +511,15 @@ oh_usage_enforce() {
   # model catalog and its refresh runs against the real harness: that refresh
   # reading Codex's models_cache.json is what this phase holds to real Codex.
   catalog_state="$(mktemp -d)" || fail "could not create a scratch state directory — check that the host temp dir is writable"
-  report="$(ONEHARNESS_NO_CONFIG=1 XDG_STATE_HOME="$(oh_native_path "$catalog_state")" \
-  LOCALAPPDATA="$(oh_native_path "$catalog_state")" "$bin" usage --harness "$id" \
-    --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
+  native_state="$(oh_native_path "$catalog_state")" || fail "could not convert the scratch state directory $catalog_state to a native path — check that cygpath works on this host"
+  report="$(ONEHARNESS_NO_CONFIG=1 XDG_STATE_HOME="$native_state" LOCALAPPDATA="$native_state" \
+    "$bin" usage --harness "$id" --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
   rm -rf "$catalog_state" || fail "could not remove the scratch state directory $catalog_state — check its permissions with ls -la, then delete it by hand"
-  catalog_warning="$(grep -m 1 'shared Codex model catalog could not be refreshed' "$errf" || true)"
+  # grep's 1 is "no warning"; anything above it is a read that failed.
+  catalog_warning="$(grep -m 1 'shared Codex model catalog could not be refreshed' "$errf")" && grep_rc=0 || grep_rc=$?
+  [ "$grep_rc" -le 1 ] || fail "could not read oneharness's stderr from $errf (grep exited $grep_rc) — check the host temp dir"
   if [ -n "$catalog_warning" ]; then
-    rm -f "$errf"
+    rm -f "$errf" || fail "could not remove the scratch file $errf — check its permissions with ls -la, then delete it by hand"
     note "  oneharness warned: $catalog_warning"
     note "  Next, in order:"
     note "    1. Read what real Codex wrote: CODEX_HOME's models_cache.json must carry"

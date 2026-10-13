@@ -15,6 +15,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,8 +25,8 @@ use fs2::FileExt;
 use crate::domain::harness::CODEX_ANALYTICS_OFF;
 use crate::domain::model_catalog::{
     catalog_key, codex_version, is_fresh, is_usable_catalog, read_codex_cache, CacheReading,
-    FailureRecord, CODEX_MODELS_CACHE, CODEX_VERSION_PROBE_TIMEOUT, MODEL_CATALOG_REFRESH_DEADLINE,
-    MODEL_CATALOG_WAIT,
+    Catalog, FailureRecord, CODEX_MODELS_CACHE, CODEX_VERSION_PROBE_TIMEOUT,
+    MODEL_CATALOG_REFRESH_DEADLINE, MODEL_CATALOG_WAIT,
 };
 use crate::io::process::{resolve_program, Finish, Process};
 use crate::io::usage::codex_initialize_request;
@@ -50,7 +51,13 @@ pub struct CatalogLaunch<'a> {
     /// Variables removed after [`Self::env`].
     pub env_remove: &'a [String],
     /// The resolved `model_catalog_refresh_seconds`.
-    pub refresh_interval: Duration,
+    pub refresh_seconds: NonZeroU64,
+}
+
+impl CatalogLaunch<'_> {
+    fn refresh_interval(&self) -> Duration {
+        Duration::from_secs(self.refresh_seconds.get())
+    }
 }
 
 /// The catalog a launch uses, and the one warning it prints when it goes
@@ -94,7 +101,7 @@ pub fn resolve(launch: &CatalogLaunch<'_>) -> CatalogChoice {
         &root,
         &catalog_key(&home.to_string_lossy(), &version_output),
     );
-    if let Some(fresh) = files.fresh(launch.refresh_interval) {
+    if let Some(fresh) = files.fresh(launch.refresh_interval()) {
         return CatalogChoice::fresh(fresh);
     }
     if let Some(choice) = files.backing_off() {
@@ -144,7 +151,6 @@ impl CatalogFiles {
         }
     }
 
-    /// The catalog file, when it exists and is younger than `interval`.
     /// The catalog file, when it exists, is younger than `interval` and
     /// holds a catalog Codex can read: a file damaged or replaced since it was
     /// written is no fresh catalog, so the launch refreshes it instead of
@@ -175,7 +181,7 @@ impl CatalogFiles {
     /// The launch's catalog with the lock held: another process may have
     /// refreshed (or failed to) while this one waited, so look again first.
     fn under_lock(&self, launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> CatalogChoice {
-        if let Some(fresh) = self.fresh(launch.refresh_interval) {
+        if let Some(fresh) = self.fresh(launch.refresh_interval()) {
             return CatalogChoice::fresh(fresh);
         }
         if let Some(choice) = self.backing_off() {
@@ -224,8 +230,8 @@ impl CatalogFiles {
         }
     }
 
-    fn write(&self, catalog: &str) -> Result<(), String> {
-        write_atomically(&self.catalog, catalog.as_bytes())
+    fn write(&self, catalog: &Catalog) -> Result<(), String> {
+        write_atomically(&self.catalog, catalog.as_str().as_bytes())
             .map_err(|error| format!("cannot write {}: {error}", self.catalog.display()))
     }
 }
@@ -252,7 +258,7 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// `initialize` and nothing else (no thread, so no session-start fetch races
 /// it), and wait for Codex to write a catalog fetched after the start into its
 /// cache. Returns the catalog file's contents, or why there are none.
-fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<String, String> {
+fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Catalog, String> {
     let started_ms = now_ms();
     let deadline = Instant::now() + MODEL_CATALOG_REFRESH_DEADLINE;
     let mut command = launch_command(launch, &refresh_helper_args());
@@ -306,8 +312,7 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Str
 /// the config says (the helper loads no plugin, calls no connector and reports
 /// nothing), and no catalog flag, so Codex fetches the catalog this refresh is
 /// for.
-#[must_use]
-pub fn refresh_helper_args() -> Vec<String> {
+fn refresh_helper_args() -> Vec<String> {
     [
         "app-server",
         "--disable",
@@ -415,7 +420,7 @@ mod tests {
             cwd: None,
             env: &[],
             env_remove: &[],
-            refresh_interval: Duration::from_secs(60),
+            refresh_seconds: NonZeroU64::new(60).unwrap(),
         };
         let started = Instant::now();
         let reason = refresh(&launch, &home, "1.2.3").unwrap_err();

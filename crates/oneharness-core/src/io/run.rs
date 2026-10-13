@@ -1166,9 +1166,7 @@ pub fn run_supervised(
                     cwd: args.cwd.as_deref(),
                     env: &job_env,
                     env_remove: &env_remove,
-                    refresh_interval: Duration::from_secs(
-                        cfg.model_catalog_refresh_seconds_for(selected_id).get(),
-                    ),
+                    refresh_seconds: cfg.model_catalog_refresh_seconds_for(selected_id),
                 });
                 if let Some(warning) = choice.warning {
                     eprintln!("oneharness: warning: {selected_id}: {warning}");

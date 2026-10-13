@@ -38547,20 +38547,20 @@ impl CatalogWorld {
             .collect()
     }
 
-    /// The records of oneharness's refresh helpers.
+    /// The records whose argv is a refresh helper's ([`has_refresh_helper_argv`]).
     fn helpers(&self) -> Vec<Value> {
         self.records()
             .into_iter()
-            .filter(is_refresh_helper)
+            .filter(has_refresh_helper_argv)
             .collect()
     }
 
-    /// The records of the launches a caller asked for (every one that is not
-    /// a refresh helper).
+    /// The records of the launches a caller asked for: every one whose argv
+    /// is not a refresh helper's.
     fn launches(&self) -> Vec<Value> {
         self.records()
             .into_iter()
-            .filter(|record| !is_refresh_helper(record))
+            .filter(|record| !has_refresh_helper_argv(record))
             .collect()
     }
 
@@ -38761,9 +38761,11 @@ use oneharness_core::domain::model_catalog::{
     MODEL_CATALOG_REFRESH_DEADLINE, MODEL_CATALOG_WAIT,
 };
 
-/// A refresh helper's record: `app-server` started with plugins and analytics
-/// off and no catalog, exactly as oneharness starts one and nothing else does.
-fn is_refresh_helper(record: &Value) -> bool {
+/// Whether a record's argv is a refresh helper's: `app-server` with plugins,
+/// apps and analytics off and no catalog. A usage probe under
+/// `shared_model_catalog = false` starts with exactly that argv too, so a
+/// journey that runs one tells the two apart by order, not by this.
+fn has_refresh_helper_argv(record: &Value) -> bool {
     record["argv"]
         == serde_json::json!([
             "app-server",
@@ -39327,10 +39329,10 @@ fn a_stale_catalog_is_refreshed_once_for_a_burst_that_waits_for_it() {
     let burst: Vec<Value> = world.records().split_off(before);
     let fetched: Vec<&Value> = burst.iter().filter(|r| !r["fetch"].is_null()).collect();
     assert_eq!(fetched.len(), 1, "{burst:?}");
-    assert!(is_refresh_helper(fetched[0]), "{burst:?}");
+    assert!(has_refresh_helper_argv(fetched[0]), "{burst:?}");
     let launches: Vec<Value> = burst
         .into_iter()
-        .filter(|r| !is_refresh_helper(r))
+        .filter(|r| !has_refresh_helper_argv(r))
         .collect();
     assert_eq!(launches.len(), 5);
     assert!(modified_ms(&world.the_catalog()) > stale + 2_000);
@@ -39439,6 +39441,7 @@ fn assert_one_catalog_warning_each(runs: &[CatalogRun], uses: &str) {
     }
 }
 
+// llmlint: ignore-block[expensive_tests_stay_behind_their_own_edge] The task's acceptance criteria place these journeys in this suite, against the real binary and the mock codex it already builds, and require them to assert the refresh deadline, the wait and the version probe near their constants, which only waiting them out shows. They run concurrently with the rest of the suite, so its wall time grows by the longest one (about 12 s of about 140 s), and their only inputs are this suite's own.
 #[test]
 fn a_failed_refresh_falls_back_for_the_backoff_and_one_refresh_recovers() {
     // The mock's catalog fetch fails, and like Codex its app-server stays up
@@ -39501,7 +39504,7 @@ fn a_failed_refresh_falls_back_for_the_backoff_and_one_refresh_recovers() {
     );
     let launches: Vec<Value> = burst
         .into_iter()
-        .filter(|r| !is_refresh_helper(r))
+        .filter(|r| !has_refresh_helper_argv(r))
         .collect();
     assert_every_launch_read(&world, &launches);
     assert!(world.failure_records().is_empty());
@@ -39525,7 +39528,10 @@ fn a_failed_refresh_of_a_stale_catalog_keeps_launching_with_the_stale_one() {
     // The failed refresh is the burst's only fetch; every launch read the
     // stale file.
     assert_eq!(burst.iter().filter(|r| !r["fetch"].is_null()).count(), 1);
-    let launches: Vec<&Value> = burst.iter().filter(|r| !is_refresh_helper(r)).collect();
+    let launches: Vec<&Value> = burst
+        .iter()
+        .filter(|r| !has_refresh_helper_argv(r))
+        .collect();
     assert_eq!(launches.len(), 5);
     for launch in launches {
         assert_eq!(record_catalog(launch), Some(stale.clone()), "{launch}");
@@ -39755,5 +39761,58 @@ fn a_refresh_helper_that_exits_falls_back_without_waiting_out_the_deadline() {
         run.stderr()
     );
     assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
+}
+// llmlint: ignore-end[expensive_tests_stay_behind_their_own_edge]
+
+/// The catalog file, lock and failure record `world`'s launches key to.
+fn catalog_paths(world: &CatalogWorld) -> (PathBuf, PathBuf, PathBuf) {
+    let key = catalog_key(
+        &resolved(world.home()).to_string_lossy(),
+        &format!("codex-cli {CATALOG_CODEX_VERSION}"),
+    );
+    let dir = world.catalog_dir();
+    (
+        dir.join(format!("{key}.json")),
+        dir.join(format!("{key}.lock")),
+        dir.join(format!("{key}.failure.json")),
+    )
+}
+
+#[test]
+fn a_lock_that_cannot_be_opened_falls_back_with_one_warning() {
+    let world = CatalogWorld::new("catalog-lock-unopenable", "", "");
+    let (_, lock, _) = catalog_paths(&world);
+    std::fs::create_dir_all(&lock).unwrap();
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_one_catalog_warning_each(std::slice::from_ref(&run), "Codex's own catalog fetch");
+    assert!(run.stderr().contains("cannot open"), "{}", run.stderr());
+    assert!(world.helpers().is_empty(), "{:?}", world.records());
+    assert_eq!(world.launches().pop().unwrap()["fetch"], "ok");
+}
+
+#[test]
+fn a_damaged_catalog_is_refreshed_rather_than_handed_to_codex() {
+    // Damaged inside its interval, the file is no fresh catalog: the next
+    // launch refreshes it and reads the refreshed one.
+    let world = CatalogWorld::new("catalog-damaged", "", "");
+    world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    std::fs::write(world.the_catalog(), "{\"models\":").unwrap();
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    assert_eq!(world.helpers().len(), 2, "{:?}", world.records());
+    assert_every_launch_read(&world, &world.launches());
+}
+
+#[test]
+fn a_malformed_failure_record_holds_nothing_off() {
+    let world = CatalogWorld::new("catalog-bad-failure-record", "", "");
+    let (_, _, failure) = catalog_paths(&world);
+    std::fs::create_dir_all(world.catalog_dir()).unwrap();
+    std::fs::write(&failure, "not a failure record").unwrap();
+    let run = world.launch(CodexLaunchPath::Exec, "codex", &[], &[]);
+    assert_eq!(run.warnings(), 0, "{}", run.stderr());
+    assert_eq!(world.helpers().len(), 1, "{:?}", world.records());
+    assert_every_launch_read(&world, &world.launches());
+    assert!(!failure.exists(), "a successful refresh clears the record");
 }
 // llmlint: ignore-end[e2e_not_mocked]

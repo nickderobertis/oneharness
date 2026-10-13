@@ -76,12 +76,25 @@ pub fn is_fresh(age: Duration, interval: Duration) -> bool {
 }
 
 // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The cache's fields (`fetched_at`, `client_version`, `models`) are real Codex's `models_cache.json`, which only an installed Codex can confirm; the live phase `oh_usage_enforce codex` (scripts/e2e-lib.sh) runs a usage probe from a cold catalog against real Codex and fails, naming this reader, when the refresh that reads them does. The mock's cache (tests/support/mock_harness.rs) is held to the same fields by the refresh journeys.
+/// A catalog file's contents, `{"models": [...]}`, each model an object with
+/// a `slug`: only [`read_codex_cache`] makes one, from a cache it validated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Catalog(String);
+
+impl Catalog {
+    /// The file's text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// What Codex's own cache says to a refresh that started at `started_ms`.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CacheReading {
     /// The cache holds a catalog fetched after the refresh started, by this
-    /// executable's version: the catalog file's whole contents.
-    Fresh(String),
+    /// executable's version.
+    Fresh(Catalog),
     /// Not yet: no cache, one from before the refresh, or one another version
     /// of Codex wrote.
     NotYet,
@@ -90,7 +103,8 @@ pub enum CacheReading {
 /// Read Codex's `models_cache.json` text for a refresh that started at
 /// `started_ms` (milliseconds since the UNIX epoch) against executable version
 /// `version`. A cache that is not JSON, or whose `models` is not a non-empty
-/// array, reads as not yet: Codex may be mid-write, and the deadline bounds it.
+/// array of model objects (each with a string `slug`), reads as not yet: Codex
+/// may be mid-write, and the deadline bounds it.
 #[must_use]
 pub fn read_codex_cache(text: &str, started_ms: i64, version: &str) -> CacheReading {
     let Ok(cache) = serde_json::from_str::<Value>(text) else {
@@ -103,23 +117,32 @@ pub fn read_codex_cache(text: &str, started_ms: i64, version: &str) -> CacheRead
         .is_some_and(|fetched| fetched > started_ms);
     let same_version = cache.get("client_version").and_then(Value::as_str) == Some(version);
     match cache.get("models") {
-        Some(Value::Array(models)) if fetched_after_start && same_version && !models.is_empty() => {
-            CacheReading::Fresh(serde_json::json!({ "models": models }).to_string())
+        Some(Value::Array(models)) if fetched_after_start && same_version && are_models(models) => {
+            CacheReading::Fresh(Catalog(serde_json::json!({ "models": models }).to_string()))
         }
         _ => CacheReading::NotYet,
     }
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
-/// Whether `bytes` are a catalog file Codex can read: JSON with a non-empty
-/// `models` array, which is what [`read_codex_cache`] writes.
+/// A non-empty list of model objects, each naming its `slug`: the least a
+/// catalog Codex reads must hold.
+fn are_models(models: &[Value]) -> bool {
+    !models.is_empty()
+        && models
+            .iter()
+            .all(|model| model.get("slug").is_some_and(Value::is_string))
+}
+
+/// Whether `bytes` are a catalog file Codex can read: JSON whose `models` is a
+/// non-empty array of model objects, which is what [`read_codex_cache`] makes.
 #[must_use]
 pub fn is_usable_catalog(bytes: &[u8]) -> bool {
     serde_json::from_slice::<Value>(bytes).is_ok_and(|catalog| {
         catalog
             .get("models")
             .and_then(Value::as_array)
-            .is_some_and(|models| !models.is_empty())
+            .is_some_and(|models| are_models(models))
     })
 }
 
@@ -220,7 +243,7 @@ mod tests {
         );
         assert_eq!(
             fresh,
-            CacheReading::Fresh(r#"{"models":[{"slug":"m"}]}"#.to_string())
+            CacheReading::Fresh(Catalog(r#"{"models":[{"slug":"m"}]}"#.to_string()))
         );
         for (text, why) in [
             (
@@ -234,6 +257,14 @@ mod tests {
             (
                 cache("2026-10-13T05:54:41.900Z", "0.159.2", "[]"),
                 "no models",
+            ),
+            (
+                cache("2026-10-13T05:54:41.900Z", "0.159.2", "[null]"),
+                "a model that is no object",
+            ),
+            (
+                cache("2026-10-13T05:54:41.900Z", "0.159.2", r#"[{"name":"m"}]"#),
+                "a model naming no slug",
             ),
             (
                 cache("not a time", "0.159.2", r#"[{"slug":"m"}]"#),
@@ -308,6 +339,8 @@ mod tests {
             br#"{"models":[]}"#,
             br#"{"models":{}}"#,
             b"[]",
+            br#"{"models":[null]}"#,
+            br#"{"models":[{"slug":1}]}"#,
         ] {
             assert!(!is_usable_catalog(bad), "{}", String::from_utf8_lossy(bad));
         }

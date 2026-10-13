@@ -63,6 +63,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      - uses: oven-sh/setup-bun@v2
+      - name: Install workflow policy tooling
+        run: just github-install
       - name: Install real CLIs
         run: bash scripts/live-variants-tools-e2e.sh
       - name: Live API variants and same-harness fallback

@@ -11,7 +11,14 @@
   "namedInputs": {
     "default": [
       "{projectRoot}/**/*",
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock",
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/.github/project.json",
       "{workspaceRoot}/.github/workflows/release.yml",
+      "{workspaceRoot}/.github/workflows/ci.yml",
+      "{workspaceRoot}/.github/workflows/e2e-variants.yml",
+      "{workspaceRoot}/.github/variants-routing.mjs",
       "{workspaceRoot}/.github/package.json",
       "{workspaceRoot}/.github/bun.lock",
       "{workspaceRoot}/scripts/release-*.mjs",
@@ -41,7 +48,7 @@
       }
     },
     "e2e": {
-      "//": "llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] This artifact integration edge has release-specific inputs only; registry tool setup and local packing/install proofs make no model or paid calls and remain separate from fast workflow tests.",
+      "//": "llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Artifact construction and private workflow-tool setup are integration proofs selected by the files each reads; locked registry setup and local packing/install journeys make no model or paid calls and remain separate from fast workflow tests.",
       "executor": "nx:run-commands",
       "cache": false,
       "options": {

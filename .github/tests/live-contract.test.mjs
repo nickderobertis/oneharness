@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
+import { readFileSync, cpSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { history } from "./history.mjs";
 import { evaluate } from "../workflow-graph.mjs";
+import { tmpdir } from "node:os";
 // Paid Mac CLI execution requires hosted credentials and a Mac runner.
 // Structural command/credential checks do not claim native execution.
 // llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
@@ -130,13 +131,16 @@ test("real path-routing subprocess reads workflow filters and keeps former contr
 // llmlint: ignore-end[shell_test_tiers_stay_split]
 
 test("live variants preflight accepts the actual consolidated graph and rejects selector drift", () => {
-  const fixture = history();
+  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "variants-routing-"));
   try {
     const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
-    const path = join(fixture.cwd, "ci.yml");
+    const path = join(cwd, "ci.yml");
+    const workflowPath = join(cwd, "variants.yml");
+    const workflowText = readFileSync(".github/workflows/e2e-variants.yml", "utf8");
+    writeFileSync(workflowPath, workflowText);
     const run = () => spawnSync(process.execPath, [
       resolve(".github/variants-routing.mjs"), "--workflow",
-      resolve(".github/workflows/e2e-variants.yml"), "--ci", path,
+      workflowPath, "--ci", path,
     ], { encoding: "utf8" });
     writeFileSync(path, stringify(ci));
     assert.equal(run().status, 0);
@@ -148,8 +152,23 @@ test("live variants preflight accepts the actual consolidated graph and rejects 
     ci.jobs.check.env.OH_E2E_VARIANTS_RUN_OPENCODE = "1";
     writeFileSync(path, stringify(ci));
     assert.equal(run().status, 0);
+    for (const invalid of [null, { jobs: {} }, { jobs: { check: { env: {}, steps: [{} , { if: 7 }] } } }]) {
+      writeFileSync(path, stringify(invalid));
+      const invalidRun = run();
+      assert.notEqual(invalidRun.status, 0);
+      assert.match(invalidRun.stderr, /Invalid .*?(mapping|steps)/);
+    }
+    writeFileSync(path, stringify(ci));
+    for (const include of [null, {}, [null], [{ os: "ubuntu-latest", run_opencode: 1, run_qwen: "1" }]]) {
+      writeFileSync(workflowPath, stringify({ jobs: { live: { strategy: { matrix: { include } } } } }));
+      const invalidRun = run();
+      assert.notEqual(invalidRun.status, 0);
+      assert.match(invalidRun.stderr, /Invalid variants matrix/);
+    }
+    writeFileSync(workflowPath, workflowText);
+    assert.equal(run().status, 0);
     const missing = spawnSync(process.execPath, [resolve(".github/variants-routing.mjs")], { encoding: "utf8" });
     assert.notEqual(missing.status, 0);
     assert.match(missing.stderr, /--workflow requires a workflow file path/);
-  } finally { fixture.dispose(); }
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });

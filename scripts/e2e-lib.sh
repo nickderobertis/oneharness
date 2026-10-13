@@ -502,13 +502,35 @@ oh_cache_assert() {
 # nothing back.
 #   $1 harness id
 oh_usage_enforce() {
-  local id="$1" bin report state reason detail credits errf rc
+  local id="$1" bin report state reason detail credits errf rc catalog_state native_state catalog_warning grep_rc
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  errf="$(mktemp)"
-  report="$(ONEHARNESS_NO_CONFIG=1 "$bin" usage --harness "$id" \
-    --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
+  errf="$(mktemp)" || fail "could not create a scratch file for oneharness's stderr — check that the host temp dir is writable"
+  # A state directory of its own, so a codex probe always starts from no shared
+  # model catalog and its refresh runs against the real harness: that refresh
+  # reading Codex's models_cache.json is what this phase holds to real Codex.
+  catalog_state="$(mktemp -d)" || fail "could not create a scratch state directory — check that the host temp dir is writable"
+  native_state="$(oh_native_path "$catalog_state")" || fail "could not convert the scratch state directory $catalog_state to a native path — check that cygpath works on this host"
+  report="$(ONEHARNESS_NO_CONFIG=1 XDG_STATE_HOME="$native_state" LOCALAPPDATA="$native_state" \
+    "$bin" usage --harness "$id" --timeout "${OH_TIMEOUT:-120}" --compact 2>"$errf")" && rc=0 || rc=$?
+  rm -rf "$catalog_state" || fail "could not remove the scratch state directory $catalog_state — check its permissions with ls -la, then delete it by hand"
+  # grep's 1 is "no warning"; anything above it is a read that failed.
+  catalog_warning="$(grep -m 1 'shared Codex model catalog could not be refreshed' "$errf")" && grep_rc=0 || grep_rc=$?
+  [ "$grep_rc" -le 1 ] || fail "could not read oneharness's stderr from $errf (grep exited $grep_rc) — check the host temp dir"
+  if [ -n "$catalog_warning" ]; then
+    rm -f "$errf" || fail "could not remove the scratch file $errf — check its permissions with ls -la, then delete it by hand"
+    note "  oneharness warned: $catalog_warning"
+    note "  Next, in order:"
+    note "    1. Read what real Codex wrote: CODEX_HOME's models_cache.json must carry"
+    note "       fetched_at (RFC 3339), client_version (the \`codex --version\` number)"
+    note "       and a non-empty models array; read_codex_cache"
+    note "       (crates/oneharness-core/src/domain/model_catalog.rs) reads exactly those."
+    note "    2. If a field moved, update read_codex_cache and the mock's cache"
+    note "       (codex_model_catalog in tests/support/mock_harness.rs), then re-run:"
+    note "         just live-$id"
+    fail "$id: the shared model catalog refresh failed against the real harness"
+  fi
   if [ -z "$report" ]; then
     note "  oneharness exited $rc and emitted no JSON on stdout. Its stderr:"
     sed 's/^/    /' "$errf" >&2 || true
@@ -1885,37 +1907,44 @@ oh_codex_config_override_order() {
 
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase is the drift gate between the measured matrix and real Codex, which the deterministic gate cannot run; it belongs in the live codex suite.
 # Model-free: asks real codex every row of
-# tests/fixtures/codex-plugins-flag-order.json for its effective `plugins`
-# feature. Under an empty CODEX_HOME, so a config.toml of the host's cannot
-# decide the unnamed default.
-oh_codex_plugins_flag_order() {
+# tests/fixtures/codex-feature-flag-order.json for its effective `plugins`
+# feature, and the same row with `plugins` spelled `apps` for its effective
+# `apps` feature: oneharness turns both off the same way. Under an empty
+# CODEX_HOME, so a config.toml of the host's cannot decide the unnamed default.
+oh_codex_feature_flag_order() {
   command -v codex >/dev/null 2>&1 ||
     skip "codex is not installed; install it (npm install -g @openai/codex) or put it on PATH, then rerun"
   command -v jq >/dev/null 2>&1 ||
-    skip "jq is not installed; cannot read the plugins flag matrix — install jq (https://jqlang.org/download/) or put it on PATH, then rerun"
-  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-plugins-flag-order.json" rows
+    skip "jq is not installed; cannot read the feature flag matrix — install jq (https://jqlang.org/download/) or put it on PATH, then rerun"
+  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-feature-flag-order.json" rows
   # Tab-joined so an argument is one field; jq on Windows ends lines CRLF.
   rows="$(jq -er '.rows[] | [(.plugins | tostring)] + .args | join("\t")' "$matrix" | tr -d '\r')" ||
     fail "could not read the rows of $matrix — restore it from git"
   # A subshell, so its EXIT trap removes the scratch CODEX_HOME however the rows
   # end — a fail() from this phase or from a helper included.
   (
-    local home native_home want line
-    local -a args
+    local home native_home want line feature i
+    local -a args call_args
     home="$(mktemp -d)" || fail "could not create a scratch CODEX_HOME — check that the host temp dir is writable"
     trap 'rm -rf "$home" || fail "could not remove the scratch CODEX_HOME $home — check its permissions with ls -la, then delete it by hand"' EXIT
     native_home="$(oh_native_path "$home")" || fail "could not convert the scratch CODEX_HOME $home to a native path — check that cygpath works on this host"
     while IFS= read -r line; do
       IFS=$'\t' read -r -a args <<<"$line"
       want="${args[0]}"
-      args=("${args[@]:1}")
-      CODEX_HOME="$native_home" _oh_codex_feature_value plugins ${args[@]+"${args[@]}"}
-      [ "$_OH_FEATURE_VAL" = "$want" ] ||
-        fail "codex: \`codex features list ${args[*]-}\` left plugins=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.plugins=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` (domain/harness.rs) so a caller can still re-enable plugins, and \`codex_plugins_enabled\` (tests/support/mock_harness.rs)"
+      for feature in plugins apps; do
+        # The feature leads, so the array is never empty under bash 3.2's set -u.
+        call_args=("$feature")
+        for ((i = 1; i < ${#args[@]}; i++)); do
+          call_args+=("${args[i]//plugins/$feature}")
+        done
+        CODEX_HOME="$native_home" _oh_codex_feature_value "${call_args[@]}"
+        [ "$_OH_FEATURE_VAL" = "$want" ] ||
+          fail "codex: \`codex features list ${call_args[*]:1}\` left $feature=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.$feature=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` / \`CODEX_APPS_OFF\` (domain/harness.rs) so a caller can still re-enable $feature, and \`codex_feature_enabled\` (tests/support/mock_harness.rs)"
+      done
     done <<<"$rows"
   )
   # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
-  note "PASS: codex resolves plugins as -c last-wins, then --enable, then --disable, so a caller can re-enable plugins over oneharness's -c features.plugins=false"
+  note "PASS: codex resolves plugins and apps as -c last-wins, then --enable, then --disable, so a caller can re-enable either over oneharness's -c features.<name>=false"
 }
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 

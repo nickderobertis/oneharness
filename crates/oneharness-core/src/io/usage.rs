@@ -18,13 +18,17 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::num::NonZeroU64;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::domain::config::VariantName;
+use crate::domain::harness::{
+    codex_model_catalog_setting, has_plugins_toggle, CODEX_ANALYTICS_OFF,
+};
 use crate::domain::usage::{
     claude_control_response, claude_usage_snapshot_missing, parse_claude_get_usage,
     parse_codex_rate_limits, parse_copilot_http, parse_cursor_about, without_control_chars,
@@ -33,6 +37,7 @@ use crate::domain::usage::{
     UtcInstant,
 };
 use crate::errors::OneharnessError;
+use crate::io::model_catalog;
 use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
 
 /// The environment variable selecting a Claude Code identity. Per-process, and
@@ -127,6 +132,11 @@ pub struct UsageProbeRequest {
     /// — see [`UsageProbeRequest::effective_timeout`], which is what the probe
     /// and its diagnostics actually use.
     pub timeout: Duration,
+    /// The resolved `model_catalog_refresh_seconds` when the codex probe reads
+    /// the shared model catalog (`shared_model_catalog`); `None` leaves
+    /// Codex to fetch its own. Read only by the codex probe, before its
+    /// timeout starts.
+    pub model_catalog_refresh_seconds: Option<NonZeroU64>,
 }
 
 impl UsageProbeRequest {
@@ -568,21 +578,52 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
-/// `codex app-server --disable plugins --stdio`. Plugins are off whatever the
-/// config's `plugins` says: a rate-limits read loads no plugin, and the catalog
-/// Codex would otherwise download on start (~29 MB) is most of what a probe
-/// costs.
-fn codex_argv(bin: &str) -> Vec<String> {
-    vec![
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_feature_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
+/// `codex app-server --disable plugins --disable apps -c analytics.enabled=false
+/// [-c model_catalog_json=<catalog>] --stdio`. Plugins, apps and analytics are
+/// off whatever the config says: a rate-limits read loads no plugin, calls no
+/// connector and reports nothing, and the plugin catalog Codex would otherwise
+/// download on start (~29 MB) is most of what a probe costs. The shared model
+/// catalog, when the config keeps it on, spares the probe Codex's own catalog
+/// fetch.
+fn codex_argv(bin: &str, model_catalog: Option<&Path>) -> Vec<String> {
+    let mut argv = vec![
         bin.to_string(),
         "app-server".to_string(),
         "--disable".to_string(),
         "plugins".to_string(),
-        "--stdio".to_string(),
-    ]
+        "--disable".to_string(),
+        "apps".to_string(),
+        "-c".to_string(),
+        CODEX_ANALYTICS_OFF.to_string(),
+    ];
+    if let Some(path) = model_catalog {
+        argv.extend(["-c".to_string(), codex_model_catalog_setting(path)]);
+    }
+    argv.push("--stdio".to_string());
+    argv
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// The JSON-RPC `initialize` oneharness opens every `codex app-server`
+/// conversation with: the usage probe's, and the shared model catalog's
+/// refresh, which sends it and nothing else.
+pub(crate) fn codex_initialize_request() -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "clientInfo": {
+                "name": "oneharness",
+                "title": null,
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "capabilities": null,
+        },
+    })
+    .to_string()
+}
 
 /// `initialize`, the `initialized` notification, then the rate-limits read. All
 /// three are written before reading, matching the driver this was sourced from;
@@ -592,20 +633,7 @@ fn codex_argv(bin: &str) -> Vec<String> {
 /// `params: null` (its sibling `account/read` instead *requires* `params: {}`).
 fn codex_request_lines() -> Vec<String> {
     vec![
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "clientInfo": {
-                    "name": "oneharness",
-                    "title": null,
-                    "version": env!("CARGO_PKG_VERSION"),
-                },
-                "capabilities": null,
-            },
-        })
-        .to_string(),
+        codex_initialize_request(),
         serde_json::json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}).to_string(),
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -619,10 +647,25 @@ fn codex_request_lines() -> Vec<String> {
 
 fn probe_codex(request: &UsageProbeRequest) -> ProbedIdentity {
     let selector = env_path_selector(&request.env_view(), CODEX_IDENTITY_ENV);
+    let catalog = request
+        .model_catalog_refresh_seconds
+        .and_then(|refresh_seconds| {
+            let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
+                bin: &request.bin,
+                cwd: request.cwd.as_deref(),
+                env: &request.env,
+                env_remove: &request.env_remove,
+                refresh_seconds,
+            });
+            if let Some(warning) = choice.warning {
+                eprintln!("oneharness: warning: codex usage probe: {warning}");
+            }
+            choice.catalog
+        });
     let mut capture = converse(
         request,
         request.deadline(),
-        &codex_argv(&request.bin),
+        &codex_argv(&request.bin, catalog.as_deref()),
         &codex_request_lines(),
         StdinAfterRequests::HoldUntilAnswered,
         {
@@ -668,6 +711,7 @@ fn probe_cursor(request: &UsageProbeRequest) -> ProbedIdentity {
             .chain(CURSOR_LOGIN_ENVS.iter().map(|name| (*name).to_string()))
             .collect(),
         timeout: request.timeout,
+        model_catalog_refresh_seconds: None,
     };
     let capture = converse(
         &guarded,
@@ -926,6 +970,9 @@ pub fn report(request: &UsageRequest) -> Result<UsageReport, OneharnessError> {
             .map_or_else(Vec::new, |variant| variant.unset_env.clone());
         let resolved = crate::io::detect::resolve_named(spec, &id, &overrides);
         let variant = variant_of(&id)?;
+        let model_catalog_refresh_seconds = (has_plugins_toggle(spec.id)
+            && loaded.config.shared_model_catalog_for(&id))
+        .then(|| loaded.config.model_catalog_refresh_seconds_for(&id));
         plans.push(Plan {
             id,
             variant,
@@ -937,6 +984,7 @@ pub fn report(request: &UsageRequest) -> Result<UsageReport, OneharnessError> {
             env_remove,
             cwd: request.cwd.clone(),
             timeout,
+            model_catalog_refresh_seconds,
         });
     }
 
@@ -961,6 +1009,9 @@ struct Plan {
     env_remove: Vec<String>,
     cwd: Option<PathBuf>,
     timeout: Duration,
+    /// [`UsageProbeRequest::model_catalog_refresh_seconds`], resolved from
+    /// config.
+    model_catalog_refresh_seconds: Option<NonZeroU64>,
 }
 
 /// The variant half of a composed selector (`claude-code:work`), so two
@@ -1018,6 +1069,7 @@ impl Plan {
             env: self.env.clone(),
             env_remove: self.env_remove.clone(),
             timeout: self.timeout,
+            model_catalog_refresh_seconds: self.model_catalog_refresh_seconds,
         });
         UsageIdentity::new(self.base, probed.selector, probed.parsed)
     }
@@ -1171,6 +1223,7 @@ mod tests {
             env: Vec::new(),
             env_remove: Vec::new(),
             timeout,
+            model_catalog_refresh_seconds: None,
         }
     }
 
@@ -1215,7 +1268,7 @@ mod tests {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
-        let spawned = format!("Spawn `{}`", codex_argv("codex").join(" "));
+        let spawned = format!("Spawn `{}`", codex_argv("codex", None).join(" "));
         assert!(
             reference.contains(&spawned),
             "docs/harness-usage.md must state the probe as {spawned}"

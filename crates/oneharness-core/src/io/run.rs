@@ -65,6 +65,7 @@ use crate::io::http_turn;
 use crate::io::identity::{
     variant_environment, variant_unprovisioned_identity, UnprovisionedIdentity,
 };
+use crate::io::model_catalog;
 use crate::io::runner::{self, Job, NextRun, Outcome, ProcessSupervisor, SpawnControls};
 use crate::io::server_pool;
 use crate::io::session as session_io;
@@ -1068,9 +1069,20 @@ pub fn run_supervised(
                 PromptDelivery::Argv
             },
             plugins: cfg.plugins_for(selected_id),
+            apps: cfg.apps_for(selected_id),
+            analytics: cfg.analytics_for(selected_id),
+            model_catalog: None,
         };
+        let shared_model_catalog =
+            harness::has_plugins_toggle(spec.id) && cfg.shared_model_catalog_for(selected_id);
 
         if args.print_command {
+            // A dry run cannot ask the executable for the version the catalog
+            // path is keyed by, so it names the flag with a placeholder.
+            if shared_model_catalog {
+                harness_plan.model_catalog =
+                    Some(PathBuf::from(model_catalog::PLANNED_MODEL_CATALOG));
+            }
             // --print-command never spawns, so nothing is materialized off-argv:
             // the printed command is the deterministic inline form (large prompts
             // that would actually run via file/stdin are shown inline).
@@ -1131,10 +1143,6 @@ pub fn run_supervised(
             // Mutates `harness_plan` (so the structured-output retry rebuilds the
             // same delivery) and may write a temp file for the system prompt.
             plan_large_input(&mut harness_plan, spec, system, job_index, &mut temp_files)?;
-            let built = harness_plan.build(schema.as_ref(), None);
-            if unit_control.is_some() {
-                unit_control_prompt = Some(built.prompt.clone());
-            }
             // Env layers, applied in order (the runner is last-write-wins):
             // the harness's declared defaults, then any env that delivers the
             // approval mode (Goose's GOOSE_MODE), then config ([env], then
@@ -1152,6 +1160,23 @@ pub fn run_supervised(
             let env_remove = cfg
                 .variant_for(selected_id)
                 .map_or_else(Vec::new, |variant| variant.unset_env.clone());
+            if shared_model_catalog {
+                let choice = model_catalog::resolve(&model_catalog::CatalogLaunch {
+                    bin: &resolved.bin,
+                    cwd: args.cwd.as_deref(),
+                    env: &job_env,
+                    env_remove: &env_remove,
+                    refresh_seconds: cfg.model_catalog_refresh_seconds_for(selected_id),
+                });
+                if let Some(warning) = choice.warning {
+                    eprintln!("oneharness: warning: {selected_id}: {warning}");
+                }
+                harness_plan.model_catalog = choice.catalog;
+            }
+            let built = harness_plan.build(schema.as_ref(), None);
+            if unit_control.is_some() {
+                unit_control_prompt = Some(built.prompt.clone());
+            }
             jobs.push(Job {
                 argv: built.argv,
                 cwd: args.cwd.clone(),
@@ -4501,6 +4526,15 @@ struct HarnessPlan {
     /// The identity's resolved `plugins` opt-in ([`FileConfig::plugins_for`]),
     /// carried apart from `extra` so a variant's own `args` cannot drop it.
     plugins: bool,
+    /// The identity's resolved `apps` opt-in ([`FileConfig::apps_for`]),
+    /// carried apart from `extra` like `plugins`.
+    apps: bool,
+    /// The identity's resolved `analytics` ([`FileConfig::analytics_for`]),
+    /// carried apart from `extra` like `plugins`.
+    analytics: bool,
+    /// The shared model catalog this launch reads
+    /// ([`model_catalog::resolve`]), or `None` for Codex's own fetch.
+    model_catalog: Option<PathBuf>,
 }
 
 /// The result of building one attempt: the argv to spawn and, when the prompt is
@@ -4585,6 +4619,9 @@ impl HarnessPlan {
             system_file: self.system_file.as_deref(),
             delivery: self.delivery,
             plugins: self.plugins,
+            apps: self.apps,
+            analytics: self.analytics,
+            model_catalog: self.model_catalog.as_deref(),
         };
         let argv = harness::argv_with_caller_args(self.spec, &ctx, &self.extra);
         let prompt =
@@ -5259,6 +5296,9 @@ mod tests {
             system_file: None,
             delivery: PromptDelivery::Argv,
             plugins: false,
+            apps: false,
+            analytics: false,
+            model_catalog: None,
         }
     }
 

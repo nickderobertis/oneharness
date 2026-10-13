@@ -1,0 +1,19 @@
+# The Python SDK's ruff settings, which this project's files share (their
+# Python 3.9 floor and rule set), plus what only these files do.
+extend = "../../python/oneharness-sdk/pyproject.toml"
+
+[lint.per-file-ignores]
+"**/codex-network-breakdown.py" = [
+    "S404", # Building the namespace means running pasta, mount, ip, apt-get and dpkg.
+    "S603", # Each argv is fixed by this script or is the caller's own launch argv.
+    "S607", # Those tools are resolved from PATH on purpose, as the caller's shell would.
+]
+"**/test_codex_network_breakdown.py" = [
+    "S101", # Assertions are the test contract.
+    "S404", # The script under test is driven as a subprocess, as a user runs it.
+    "S603", # Every argv is fixed by the test.
+]
+"**/transfer_double.py" = [
+    "S404", # --detach hands its transfers to a detached child process.
+    "S603", # That child's argv is this file and its own validated arguments.
+]

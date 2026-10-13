@@ -274,6 +274,28 @@
           "allowed_tools": {
             "$ref": "#/$defs/Field2"
           },
+          "analytics": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `analytics` (`false` by default), present only for `codex`."
+          },
+          "apps": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `apps` opt-in (`false` by default), present only for\n`codex`."
+          },
           "args": {
             "$ref": "#/$defs/Field2"
           },
@@ -296,6 +318,17 @@
           "model": {
             "$ref": "#/$defs/Field3"
           },
+          "model_catalog_refresh_seconds": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field5"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `model_catalog_refresh_seconds` (`3600` by default),\npresent only for `codex`."
+          },
           "plugins": {
             "anyOf": [
               {
@@ -313,6 +346,17 @@
           "settings": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "shared_model_catalog": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `shared_model_catalog` (`true` by default), present only\nfor `codex`."
           },
           "variant": {
             "additionalProperties": {
@@ -461,6 +505,28 @@
           "allowed_tools": {
             "$ref": "#/$defs/Field2"
           },
+          "analytics": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `analytics` a launch of this variant resolves to: the variant's own,\nelse its harness's, else `false`. Present only for `codex`."
+          },
+          "apps": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The apps opt-in a launch of this variant resolves to: the variant's\nown, else its harness's, else `false`. Present only for `codex`."
+          },
           "args": {
             "$ref": "#/$defs/Field2"
           },
@@ -492,6 +558,17 @@
           "model": {
             "$ref": "#/$defs/Field3"
           },
+          "model_catalog_refresh_seconds": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field5"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `model_catalog_refresh_seconds` a launch of this variant resolves\nto: the variant's own, else its harness's, else `3600`. Present only for\n`codex`."
+          },
           "plugins": {
             "anyOf": [
               {
@@ -509,6 +586,17 @@
           "settings": {
             "additionalProperties": true,
             "type": "object"
+          },
+          "shared_model_catalog": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `shared_model_catalog` a launch of this variant resolves to: the\nvariant's own, else its harness's, else `true`. Present only for `codex`."
           },
           "unset_env": {
             "$ref": "#/$defs/Field2"

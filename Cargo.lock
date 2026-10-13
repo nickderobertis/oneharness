@@ -633,6 +633,7 @@ dependencies = [
  "oneharness-core 0.26.0",
  "serde",
  "serde_json",
+ "toml",
  "windows-sys",
 ]
 
@@ -681,9 +682,11 @@ name = "oneharness-e2e"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "fs2",
  "oneharness",
  "oneharness-core 0.26.0",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]

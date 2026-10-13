@@ -172,6 +172,22 @@
         "value": true,
         "source": "<dir>/single.toml"
       },
+      "apps": {
+        "value": false,
+        "source": "default"
+      },
+      "shared_model_catalog": {
+        "value": true,
+        "source": "default"
+      },
+      "model_catalog_refresh_seconds": {
+        "value": 3600,
+        "source": "default"
+      },
+      "analytics": {
+        "value": false,
+        "source": "default"
+      },
       "allowed_tools": {
         "value": null,
         "source": null
@@ -210,6 +226,22 @@
           "plugins": {
             "value": false,
             "source": "<dir>/single.toml"
+          },
+          "apps": {
+            "value": false,
+            "source": "default"
+          },
+          "shared_model_catalog": {
+            "value": true,
+            "source": "default"
+          },
+          "model_catalog_refresh_seconds": {
+            "value": 3600,
+            "source": "default"
+          },
+          "analytics": {
+            "value": false,
+            "source": "default"
           },
           "allowed_tools": {
             "value": null,

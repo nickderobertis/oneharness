@@ -85,6 +85,9 @@ CLONE_NEWPID = 0x20000000
 # to that host that opened this soon before (clock skew between the log line
 # and the proxy's accept) or after it.
 CONNECT_BEFORE_SECONDS = 0.5
+# How long, after a signal ends pasta, the script waits for the namespace to
+# finish recording the measurement it took.
+RECORD_AFTER_SIGNAL_SECONDS = 5.0
 CONNECT_AFTER_SECONDS = 5.0
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Codex's tracing spelling has no schema to reconcile against short of running Codex: the committed fixture (tools/network-breakdown/recorded-codex-trace.log, from codex-cli 0.159.2, the version the README's figures name) pins what these read, and a spelling that moves degrades attribution to empty paths, never to wrong byte counts. Re-measuring against live Codex — the README's invocation, which the `oneharness-live-network-budget` plan node re-runs — is where that surfaces.
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -95,7 +98,9 @@ CONNECT = re.compile(
 )
 COMPLETED_URL = re.compile(r"\burl=((?:https?|wss?)://[^\s,]+)")
 SPAN_PATH = re.compile(r'api\.path="?([^"\s}]+)')
-URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d+))?(/[^\s\"'?#]*)?")
+# The authority ends at a path, query, fragment, separator or the end: a URL
+# whose port is not digits (`host:x`) is no URL this reads.
+URL = re.compile(r"^(https?|wss?)://([A-Za-z0-9.-]+)(?::(\d+))?(?=$|[/?#\s,])(/[^\s\"'?#]*)?")
 # llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -186,7 +191,11 @@ def time_field(record: dict[str, object], key: str, where: str) -> float:
     value = record.get(key)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise Unusable(f"{where}'s `{key}` is {value!r}, not a time; {RECORD_ADVICE}")
-    if not math.isfinite(value) or value < 0:
+    try:
+        seconds = float(value)
+    except OverflowError:
+        raise Unusable(f"{where}'s `{key}` is too large to be a time; {RECORD_ADVICE}") from None
+    if not math.isfinite(seconds) or seconds < 0:
         raise Unusable(f"{where}'s `{key}` is {value!r}, not a finite time; {RECORD_ADVICE}")
     return float(value)
 
@@ -669,7 +678,11 @@ def private_resolver() -> None:
     configuration minus the stub."""
     run_or_explain(["mount", "--make-rprivate", "/"], "making the mount namespace private")
     current = Path("/etc/resolv.conf").read_text()
-    servers = [line.split()[1] for line in current.splitlines() if line.startswith("nameserver")]
+    servers = [
+        words[1]
+        for words in (line.split() for line in current.splitlines())
+        if len(words) >= 2 and words[0] == "nameserver"
+    ]
     upstream = Path("/run/systemd/resolve/resolv.conf")
     if servers and all(server.startswith("127.") for server in servers) and upstream.exists():
         run_or_explain(
@@ -722,11 +735,23 @@ def init(args: argparse.Namespace) -> int:
         env.pop(name, None)
     if args.trace:
         env["RUST_LOG"] = args.rust_log
-    stdout = open(args.launch_stdout, "wb") if args.launch_stdout else sys.stderr.buffer
-    stderr = open(args.trace_file, "wb") if args.trace else None
+    try:
+        stdout = open(args.launch_stdout, "wb") if args.launch_stdout else sys.stderr.buffer
+        stderr = open(args.trace_file, "wb") if args.trace else None
+    except OSError as error:
+        raise Unusable(
+            f"cannot open the launch's output file: {error}; point --launch-stdout or "
+            "--trace-out at a writable path, then rerun"
+        ) from None
     start = read_counters()
     t0 = time.monotonic()
-    launch = subprocess.Popen(args.argv, stdout=stdout, stderr=stderr, env=env)
+    try:
+        launch = subprocess.Popen(args.argv, stdout=stdout, stderr=stderr, env=env)
+    except OSError as error:
+        raise Unusable(
+            f"cannot start the launch `{args.argv[0]}`: {error}; check the command after `--` "
+            "is installed and on PATH inside the namespace"
+        ) from None
     launch_exit: int | None = None
     launch_seconds: float | None = None
     timeout = float(args.timeout)
@@ -768,7 +793,11 @@ def init(args: argparse.Namespace) -> int:
         tunnels=tunnels,
         refused=refused,
     )
-    Path(args.result).write_text(json.dumps(asdict(measurement)))
+    # Written whole and then renamed: the script outside may be waiting for
+    # this file, and must never read half of it.
+    partial = Path(args.result + ".partial")
+    write_text(partial, json.dumps(asdict(measurement)))
+    os.replace(partial, args.result)
     return 0
 
 
@@ -896,9 +925,20 @@ def measure(args: argparse.Namespace) -> int:
                 f"cannot start pasta ({pasta}): {error}; install passt (`apt install passt`) or "
                 "point CODEX_NETWORK_BREAKDOWN_PASTA at a pasta binary"
             ) from None
+        interrupted: list[int] = []
+
+        def forward(signum: int, _frame: object) -> None:
+            interrupted.append(signum)
+            os.killpg(run.pid, signal.SIGTERM)
+
         for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(signum, lambda *_: os.killpg(run.pid, signal.SIGTERM))
+            signal.signal(signum, forward)
         run.wait()
+        # A forwarded signal ends pasta at once, while the namespace's init is
+        # still ending the launch's tree and recording what it measured.
+        record_by = time.monotonic() + RECORD_AFTER_SIGNAL_SECONDS
+        while interrupted and not os.path.exists(result) and time.monotonic() < record_by:
+            time.sleep(0.05)
         if not os.path.exists(result):
             raise Unusable(
                 f"no measurement: pasta exited {run.returncode} before the namespace recorded "

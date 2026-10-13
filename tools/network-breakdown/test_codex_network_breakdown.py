@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import socket
 import struct
 import subprocess
@@ -95,14 +96,16 @@ class ReportFromRecordedFixtures(unittest.TestCase):
         self.assertIn([], [tunnel["paths"] for tunnel in report["tunnels"]])
         self.assertTrue(any(tunnel["paths"] for tunnel in report["tunnels"]))
 
-    def attributed(self, connections: list[str], opened: list[float]) -> list[list[str]]:
+    def attributed(
+        self, connections: list[str], opened: list[float], url: str = "https://chatgpt.com/"
+    ) -> list[list[str]]:
         """The paths report mode gives tunnels to chatgpt.com:443 opened at
         `opened` (seconds after 2026-10-13T00:00:00Z), under a trace of
-        `connections` (each `<seconds> <span chain>`)."""
+        `connections` (each `<seconds> <span chain>`) to `url`."""
         epoch = 1_791_849_600.0  # 2026-10-13T00:00:00Z
         trace = "\n".join(
             f"2026-10-13T00:00:{float(at):09.6f}Z DEBUG {spans}reqwest::connect: "
-            "starting new connection: https://chatgpt.com/"
+            f"starting new connection: {url}"
             for at, spans in (line.split(" ", 1) for line in connections)
         )
         measurement = {
@@ -136,6 +139,12 @@ class ReportFromRecordedFixtures(unittest.TestCase):
         span = 'list_models{api.path="models"}: '
         self.assertEqual(self.attributed([f"1.0 {span}"], [10.0]), [[]])
         self.assertEqual(self.attributed([f"10.0 {span}"], [1.0]), [[]])
+
+    def test_a_url_whose_port_is_not_digits_names_nothing(self) -> None:
+        span = 'list_models{api.path="models"}: '
+        self.assertEqual(
+            self.attributed([f"1.0 {span}"], [1.01], url="https://chatgpt.com:invalid/"), [[]]
+        )
 
     def test_one_connection_names_one_tunnel_however_many_could_match(self) -> None:
         span = 'list_models{api.path="models"}: '
@@ -174,6 +183,7 @@ class ReportFromRecordedFixtures(unittest.TestCase):
             ("tunnels", 1, "opened_at", float("inf"), "not a finite time"),
             (None, None, "received_bytes", -1, "`received_bytes` is -1, not a count"),
             (None, None, "refused", 1, "`refused` is not a JSON array"),
+            ("tunnels", 0, "opened_at", 10**400, "too large to be a time"),
         ]
         for listed, index, key, value, said in cases:
             broken = json.loads(json.dumps(recorded))
@@ -519,6 +529,75 @@ class MeasureAroundATransferDouble(unittest.TestCase):
             "import os, sys; sys.exit(0 if os.environ.get('BREAKDOWN_PROBE') == 'reached' else 7)",
         )
         self.assertEqual(report["launch_exit"], 0, report)
+
+    def test_ambient_proxy_settings_cannot_route_around_the_counting_proxy(self) -> None:
+        self.need_namespace()
+        port = loopback_server()
+        ambient = dict(
+            os.environ,
+            NO_PROXY="*",
+            no_proxy="*",
+            ALL_PROXY="http://127.0.0.1:1",
+            https_proxy="http://127.0.0.1:1",
+        )
+        check = (
+            "import os, sys\n"
+            "proxies = {os.environ[name] for name in "
+            "('HTTPS_PROXY', 'HTTP_PROXY', 'https_proxy', 'http_proxy')}\n"
+            "bypass = [n for n in ('NO_PROXY', 'no_proxy', 'ALL_PROXY', 'all_proxy') if n in os.environ]\n"
+            "sys.exit(0 if len(proxies) == 1 and not bypass else 7)\n"
+        )
+        run = run_script("--", sys.executable, "-I", "-c", check, env=ambient)
+        self.assertEqual(json.loads(run.stdout)["launch_exit"], 0, run)
+        run = run_script(
+            "--", sys.executable, "-I", str(DOUBLE), f"{port}:down:{self.DOWN_SECOND}", env=ambient
+        )
+        report = json.loads(run.stdout)
+        self.assertEqual(report["launch_exit"], 0, run)
+        self.assert_payload(report["tunnels"][0], Expected(port, Side.RECEIVED, self.DOWN_SECOND))
+
+    def test_a_signal_to_the_script_ends_the_whole_measured_tree(self) -> None:
+        self.need_namespace()
+        with tempfile.TemporaryDirectory() as scratch:
+            ticks = Path(scratch) / "ticks"
+            # The launch leaves a detached grandchild ticking into a file, then
+            # waits: a signal to the script must end both.
+            grandchild = (
+                "import time\n"
+                f"with open({str(ticks)!r}, 'a') as out:\n"
+                "    while True:\n"
+                "        out.write('.'); out.flush(); time.sleep(0.1)\n"
+            )
+            launch = (
+                "import subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-I', '-c', {grandchild!r}], "
+                "start_new_session=True)\n"
+                "time.sleep(60)\n"
+            )
+            script = subprocess.Popen(
+                [sys.executable, "-I", str(SCRIPT), "--", sys.executable, "-I", "-c", launch],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            deadline = time.monotonic() + 20
+            while not (ticks.exists() and ticks.stat().st_size > 3):
+                self.assertLess(time.monotonic(), deadline, "the grandchild never ticked")
+                time.sleep(0.1)
+            script.send_signal(signal.SIGTERM)
+            stdout, _ = script.communicate(timeout=20)
+            settled = ticks.stat().st_size
+            time.sleep(0.5)
+            self.assertEqual(ticks.stat().st_size, settled, "the grandchild outlived the script")
+        self.assertEqual(script.returncode, 0, stdout)
+        self.assertIn("received_bytes", stdout)
+
+    def test_a_launch_that_cannot_start_is_refused_saying_what_to_do(self) -> None:
+        self.need_namespace()
+        run = run_script("--", "/nonexistent/oneharness-no-launch")
+        self.assertEqual(run.returncode, 3, run)
+        self.assertEqual(run.stdout, "")
+        self.assertIn("cannot start the launch `/nonexistent/oneharness-no-launch`", run.stderr)
 
     def test_an_unwritable_output_path_is_refused_saying_what_to_do(self) -> None:
         self.need_namespace()

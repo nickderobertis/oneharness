@@ -434,10 +434,7 @@ fn refuse(message: &str) -> ! {
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
-    if let Some(ms) = std::env::var("MOCK_CODEX_VERSION_DELAY_MS")
-        .ok()
-        .and_then(|ms| ms.parse().ok())
-    {
+    if let Some(ms) = millis_knob("MOCK_CODEX_VERSION_DELAY_MS") {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
@@ -456,6 +453,16 @@ fn answer_version(argv: &[String]) -> ! {
             .and_then(|code| code.parse().ok())
             .unwrap_or(0),
     );
+}
+
+/// A milliseconds knob: unset is `None`, and anything but a whole number stops
+/// the mock, so a mistyped knob cannot quietly drive a different scenario.
+fn millis_knob(name: &str) -> Option<u64> {
+    let text = std::env::var(name).ok()?;
+    match text.parse() {
+        Ok(ms) => Some(ms),
+        Err(_) => refuse(&format!("{name} must be whole milliseconds, got `{text}`")),
+    }
 }
 
 /// The last `-c model_catalog_json=<value>` in `argv`, its TOML string decoded
@@ -516,6 +523,11 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         "argv": argv,
     });
     let fault = std::env::var("MOCK_CODEX_CATALOG_FAULT").unwrap_or_default();
+    if !matches!(fault.as_str(), "" | "fail" | "hang" | "exit") {
+        refuse(&format!(
+            "MOCK_CODEX_CATALOG_FAULT must be `fail`, `hang` or `exit`, got `{fault}`"
+        ));
+    }
     if let Some(catalog) = &catalog {
         let models = std::fs::read_to_string(catalog)
             .ok()
@@ -531,10 +543,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         };
         line["catalog_models"] = models.into();
     } else {
-        if let Some(ms) = std::env::var("MOCK_CODEX_CATALOG_FETCH_MS")
-            .ok()
-            .and_then(|ms| ms.parse().ok())
-        {
+        if let Some(ms) = millis_knob("MOCK_CODEX_CATALOG_FETCH_MS") {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
         line["fetch"] = match fault.as_str() {

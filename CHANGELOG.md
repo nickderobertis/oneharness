@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/nickderobertis/oneharness/compare/v0.23.1...v0.24.0) - 2026-10-13
+
+### Added
+
+- *(codex)* [**breaking**] share one Codex model catalog per home and keep Codex analytics off by default ([#1464](https://github.com/nickderobertis/oneharness/pull/1464))
+
 ## [0.23.1](https://github.com/nickderobertis/oneharness/compare/v0.23.0...v0.23.1) - 2026-10-13
 
 ### Fixed

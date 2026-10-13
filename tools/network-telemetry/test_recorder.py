@@ -453,6 +453,59 @@ class SupervisorLoss(unittest.TestCase):
         self.assertFalse(list((tmp / ".pending").glob("*")))
 
 
+class Unstarted(unittest.TestCase):
+    def test_an_observer_that_never_reports_ready_falls_back_to_running_the_launch_once(
+        self,
+    ) -> None:
+        # The self-check's observer exits without its `ready`: the namespace
+        # never starts the launch, so it runs directly — once — unmeasured.
+        need_recorder(self)
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        real = tmp / "counting-double"
+        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        run = run_shim(
+            tmp,
+            [str(real)],
+            ["exec", "x"],
+            file=file,
+            env={"OH_E2E_NET_OBSERVER": '["false"]', "TMPDIR": str(tmp)},
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertIn(b"without reporting ready", run.stderr)
+        self.assertEqual(ran.read_text().splitlines(), ["run"], "the launch ran other than once")
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("the measuring namespace could not start", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(
+            sorted(p.name for p in tmp.glob("oh-netmeasure-*")),
+            [],
+            "the supervisor left its scratch",
+        )
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without pasta")
+    def test_a_direct_launch_that_cannot_start_is_recorded_as_127(self) -> None:
+        tmp = scratch(self)
+        real = tmp / "broken-interpreter"
+        real.write_text("#!/nonexistent/interpreter\n")
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        no_pasta = ":".join(
+            p for p in os.environ["PATH"].split(":") if not (Path(p) / "pasta").exists()
+        )
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"PATH": no_pasta})
+        self.assertEqual(run.returncode, 127, run.stderr)
+        self.assertIn(b"cannot start", run.stderr)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("unavailable", 127))
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+
+
 class Unwritable(unittest.TestCase):
     def test_a_measured_launch_whose_line_cannot_be_written_fails_the_shim(self) -> None:
         # The launch makes the telemetry file read-only; the supervisor, on the

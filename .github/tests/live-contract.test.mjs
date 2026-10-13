@@ -2,8 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, cpSync, writeFileSync, mkdirSync } from "node:fs";
 import { resolve, join } from "node:path";
-import { execFileSync } from "node:child_process";
-import { parse } from "yaml";
+import { execFileSync, spawnSync } from "node:child_process";
+import { parse, stringify } from "yaml";
 import { history } from "./history.mjs";
 import { evaluate } from "../workflow-graph.mjs";
 // Paid Mac CLI execution requires hosted credentials and a Mac runner.
@@ -128,3 +128,28 @@ test("real path-routing subprocess reads workflow filters and keeps former contr
   }
 });
 // llmlint: ignore-end[shell_test_tiers_stay_split]
+
+test("live variants preflight accepts the actual consolidated graph and rejects selector drift", () => {
+  const fixture = history();
+  try {
+    const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+    const path = join(fixture.cwd, "ci.yml");
+    const run = () => spawnSync(process.execPath, [
+      resolve(".github/variants-routing.mjs"), "--workflow",
+      resolve(".github/workflows/e2e-variants.yml"), "--ci", path,
+    ], { encoding: "utf8" });
+    writeFileSync(path, stringify(ci));
+    assert.equal(run().status, 0);
+    ci.jobs.check.env.OH_E2E_VARIANTS_RUN_OPENCODE = "0";
+    writeFileSync(path, stringify(ci));
+    const failed = run();
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /Mac CI: preserve OpenCode variant selector/);
+    ci.jobs.check.env.OH_E2E_VARIANTS_RUN_OPENCODE = "1";
+    writeFileSync(path, stringify(ci));
+    assert.equal(run().status, 0);
+    const missing = spawnSync(process.execPath, [resolve(".github/variants-routing.mjs")], { encoding: "utf8" });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /--workflow requires a workflow file path/);
+  } finally { fixture.dispose(); }
+});

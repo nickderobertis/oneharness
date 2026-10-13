@@ -3,7 +3,8 @@ budgets:
   - id: oneharness-macos-jobs-per-run
     description: >-
       Maximum Mac runner job instances per resolved workflow run, including
-      matrices and reusable calls. inner_measure_reason: one run can occupy
+      matrices and reusable calls. The brief explicitly requests separate
+      jobs/run and runs/change bounds, approved by the manager. inner_measure_reason: one run can occupy
       several shared Mac slots even when the lifecycle run count stays within
       its bound. Telemetry covers 12 event classes, three diff classes, both PR
       ownership classes, release architectures and optional-publish combinations.
@@ -18,6 +19,8 @@ budgets:
       version-only release PR and merge, tag, release and downstream smoke.
       Explicitly opted-in manual diagnostics are excluded. Recorded telemetry
       identifies event/workflow/target jobs and the measured source digest.
+      The brief explicitly requests this lifecycle bound separately from the
+      jobs/run bound, approved by the manager.
     measure: reported
     direction: max
     threshold: 2

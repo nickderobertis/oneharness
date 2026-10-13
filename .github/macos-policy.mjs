@@ -89,12 +89,8 @@ export function classify(event, base, head, cwd = process.cwd()) {
   if (
     event.repository?.full_name !== repository ||
     pr.head?.repo?.full_name !== repository ||
-    pr.user?.login !== "nickderobertis" ||
     typeof pr.head?.ref !== "string" ||
-    !pr.head.ref.startsWith(RELEASE_BRANCH_PREFIX) ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$/.test(
-      pr.head.ref.slice(RELEASE_BRANCH_PREFIX.length),
-    )
+    !pr.head.ref.startsWith(RELEASE_BRANCH_PREFIX)
   )
     return ordinary("not repository release automation");
   try {

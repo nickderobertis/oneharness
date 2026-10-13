@@ -1,3 +1,4 @@
+// llmlint: ignore[projects_stay_in_one_js_workspace] This task requires a private locked .github policy package; this lock resolves only its Actions evaluator, YAML parser and budget SDK, independently of product dependencies.
 {
   "lockfileVersion": 1,
   "configVersion": 1,

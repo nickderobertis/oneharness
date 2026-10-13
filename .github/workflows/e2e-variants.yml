@@ -10,6 +10,7 @@ on:
       - "!crates/sdk-contract/**"
       - "!crates/sdk-conformance/**"
       - scripts/e2e-variants.sh
+      - .github/variants-routing.mjs
       - .github/workflows/e2e-variants.yml
   workflow_dispatch:
 

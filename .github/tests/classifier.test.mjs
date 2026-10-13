@@ -94,12 +94,12 @@ test("real git histories classify automation versions and fail closed on forged/
       true,
       "malformed branch must require Mac",
     );
-    for (const login of ["github-actions[bot]", "attacker"])
+    for (const login of ["github-actions[bot]", "attacker", "ordinary-contributor"])
       assert.equal(
         run({
           ...event,
           pull_request: { ...event.pull_request, user: { login } },
-        }).macosRequired,
+        }).isReleaseOnly,
         true,
       );
     assert.equal(
@@ -107,9 +107,9 @@ test("real git histories classify automation versions and fail closed on forged/
         ...event,
         pull_request: {
           ...event.pull_request,
-          head: { ...event.pull_request.head, ref: "release-plz-forged" },
+          head: { ...event.pull_request.head, ref: "release-plz-custom" },
         },
-      }).macosRequired,
+      }).isReleaseOnly,
       true,
     );
     assert.equal(

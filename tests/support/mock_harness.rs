@@ -317,14 +317,14 @@ fn scripted_attempt() -> Option<u32> {
     })
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex's precedence can only be read from an installed Codex, which the deterministic gate does not have; this task places that reconciliation in the live codex suite (`oh_codex_plugins_flag_order` in scripts/e2e-lib.sh asks real codex every row of tests/fixtures/codex-plugins-flag-order.json), and in the gate this model is held to that same one-source matrix by its unit test below.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex's precedence can only be read from an installed Codex, which the deterministic gate does not have; this task places that reconciliation in the live codex suite (`oh_codex_feature_flag_order` in scripts/e2e-lib.sh asks real codex every row of tests/fixtures/codex-feature-flag-order.json), and in the gate this model is held to that same one-source matrix by its unit test below.
 /// Codex's `plugins` feature as an argv resolves it, by the precedence real
 /// codex applies: on when nothing names it; every `-c features.plugins=<bool>`
 /// in argv order, the last one winning; then any `--enable plugins`; then any
 /// `--disable plugins` — both toggles land after every `-c`, wherever they sit,
 /// and `--disable` beats `--enable`. Only those three spellings are modelled;
-/// `tests/fixtures/codex-plugins-flag-order.json` holds the measured rows this
-/// is tested against and `oh_codex_plugins_flag_order` (`scripts/e2e-lib.sh`)
+/// `tests/fixtures/codex-feature-flag-order.json` holds the measured rows this
+/// is tested against and `oh_codex_feature_flag_order` (`scripts/e2e-lib.sh`)
 /// asks real codex.
 fn codex_plugins_enabled(argv: &[String]) -> bool {
     codex_feature_enabled(argv, "plugins")
@@ -2202,10 +2202,10 @@ mod tests {
 
     #[test]
     fn codex_plugins_resolve_by_codexs_measured_precedence() {
-        // The rows `oh_codex_plugins_flag_order` asks real codex, from the one
+        // The rows `oh_codex_feature_flag_order` asks real codex, from the one
         // matrix both read.
         let matrix: serde_json::Value =
-            serde_json::from_str(include_str!("../fixtures/codex-plugins-flag-order.json"))
+            serde_json::from_str(include_str!("../fixtures/codex-feature-flag-order.json"))
                 .expect("the codex plugins matrix is JSON");
         let rows = matrix["rows"].as_array().expect("rows");
         assert!(rows.len() >= 12, "{rows:?}");
@@ -2242,7 +2242,7 @@ mod tests {
         // feature name swapped (measured on codex-cli 0.159.2), and neither
         // feature's toggles move the other.
         let matrix: serde_json::Value =
-            serde_json::from_str(include_str!("../fixtures/codex-plugins-flag-order.json"))
+            serde_json::from_str(include_str!("../fixtures/codex-feature-flag-order.json"))
                 .expect("the codex plugins matrix is JSON");
         for row in matrix["rows"].as_array().expect("rows") {
             let mut args = argv(&["exec"]);

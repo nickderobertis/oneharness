@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 # llmlint: ignore-file[e2e_not_mocked] Only `codex` is a scripted double, because the gate has no codex and these cases need one that answers wrongly or crashes on demand; real codex runs the phase in scripts/e2e-codex.sh.
-# Hermetic coverage for oh_codex_plugins_flag_order against the rows of
-# tests/fixtures/codex-plugins-flag-order.json.
+# Hermetic coverage for oh_codex_feature_flag_order against the rows of
+# tests/fixtures/codex-feature-flag-order.json.
 set -euo pipefail
 
 fail() {
-  echo "check-codex-plugins-flag-order: $1" >&2
-  echo "  rerun with 'bash -x scripts/check-codex-plugins-flag-order.sh' to inspect the failing case" >&2
+  echo "check-codex-feature-flag-order: $1" >&2
+  echo "  rerun with 'bash -x scripts/check-codex-feature-flag-order.sh' to inspect the failing case" >&2
   exit 1
 }
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || fail "could not resolve the repository root from ${BASH_SOURCE[0]}"
-matrix="$root/tests/fixtures/codex-plugins-flag-order.json"
+matrix="$root/tests/fixtures/codex-feature-flag-order.json"
 
 tmp="$(mktemp -d)" || fail "could not create a scratch dir — check that the host temp dir is writable (df -h \"${TMPDIR:-/tmp}\")"
-trap 'rm -rf "$tmp" || echo "check-codex-plugins-flag-order: could not remove $tmp; delete it by hand" >&2' EXIT
+trap 'rm -rf "$tmp" || echo "check-codex-feature-flag-order: could not remove $tmp; delete it by hand" >&2' EXIT
 
 # A `codex` whose `features list` reports `plugins` as `$model` resolves it
 # from its args, appending each call's CODEX_HOME and args to $tmp/calls:
@@ -62,7 +62,7 @@ FAKE
 # child so its own `fail` cannot end this script.
 run_phase() {
   set +e
-  out="$(PATH="$tmp/bin:$PATH" bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_codex_plugins_flag_order' _ "$root" 2>&1)"
+  out="$(PATH="$tmp/bin:$PATH" bash -c 'set -euo pipefail; source "$1/scripts/e2e-lib.sh"; oh_codex_feature_flag_order' _ "$root" 2>&1)"
   status=$?
   set -e
 }

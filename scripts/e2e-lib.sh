@@ -1907,36 +1907,39 @@ oh_codex_config_override_order() {
 
 # llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This phase is the drift gate between the measured matrix and real Codex, which the deterministic gate cannot run; it belongs in the live codex suite.
 # Model-free: asks real codex every row of
-# tests/fixtures/codex-plugins-flag-order.json for its effective `plugins`
+# tests/fixtures/codex-feature-flag-order.json for its effective `plugins`
 # feature, and the same row with `plugins` spelled `apps` for its effective
 # `apps` feature: oneharness turns both off the same way. Under an empty
 # CODEX_HOME, so a config.toml of the host's cannot decide the unnamed default.
-oh_codex_plugins_flag_order() {
+oh_codex_feature_flag_order() {
   command -v codex >/dev/null 2>&1 ||
     skip "codex is not installed; install it (npm install -g @openai/codex) or put it on PATH, then rerun"
   command -v jq >/dev/null 2>&1 ||
-    skip "jq is not installed; cannot read the plugins flag matrix — install jq (https://jqlang.org/download/) or put it on PATH, then rerun"
-  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-plugins-flag-order.json" rows
+    skip "jq is not installed; cannot read the feature flag matrix — install jq (https://jqlang.org/download/) or put it on PATH, then rerun"
+  local matrix="$OH_REPO_ROOT/tests/fixtures/codex-feature-flag-order.json" rows
   # Tab-joined so an argument is one field; jq on Windows ends lines CRLF.
   rows="$(jq -er '.rows[] | [(.plugins | tostring)] + .args | join("\t")' "$matrix" | tr -d '\r')" ||
     fail "could not read the rows of $matrix — restore it from git"
   # A subshell, so its EXIT trap removes the scratch CODEX_HOME however the rows
   # end — a fail() from this phase or from a helper included.
   (
-    local home native_home want line feature
-    local -a args feature_args
+    local home native_home want line feature i
+    local -a args call_args
     home="$(mktemp -d)" || fail "could not create a scratch CODEX_HOME — check that the host temp dir is writable"
     trap 'rm -rf "$home" || fail "could not remove the scratch CODEX_HOME $home — check its permissions with ls -la, then delete it by hand"' EXIT
     native_home="$(oh_native_path "$home")" || fail "could not convert the scratch CODEX_HOME $home to a native path — check that cygpath works on this host"
     while IFS= read -r line; do
       IFS=$'\t' read -r -a args <<<"$line"
       want="${args[0]}"
-      args=("${args[@]:1}")
       for feature in plugins apps; do
-        feature_args=(${args[@]+"${args[@]//plugins/$feature}"})
-        CODEX_HOME="$native_home" _oh_codex_feature_value "$feature" ${feature_args[@]+"${feature_args[@]}"}
+        # The feature leads, so the array is never empty under bash 3.2's set -u.
+        call_args=("$feature")
+        for ((i = 1; i < ${#args[@]}; i++)); do
+          call_args+=("${args[i]//plugins/$feature}")
+        done
+        CODEX_HOME="$native_home" _oh_codex_feature_value "${call_args[@]}"
         [ "$_OH_FEATURE_VAL" = "$want" ] ||
-          fail "codex: \`codex features list ${feature_args[*]-}\` left $feature=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.$feature=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` / \`CODEX_APPS_OFF\` (domain/harness.rs) so a caller can still re-enable $feature, and \`codex_feature_enabled\` (tests/support/mock_harness.rs)"
+          fail "codex: \`codex features list ${call_args[*]:1}\` left $feature=${_OH_FEATURE_VAL:-<unreadable>}, expected $want (codex stderr: ${_OH_FEATURE_ERR:-<empty>}) — codex's precedence among -c features.$feature=, --enable and --disable moved; re-measure it into $matrix, then update \`codex_plugins_off\` / \`CODEX_APPS_OFF\` (domain/harness.rs) so a caller can still re-enable $feature, and \`codex_feature_enabled\` (tests/support/mock_harness.rs)"
       done
     done <<<"$rows"
   )

@@ -1919,7 +1919,7 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
     a
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks this spelling's precedence against it.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_feature_flag_order` (scripts/e2e-lib.sh) checks this spelling's precedence against it.
 /// `-c features.plugins=false` unless the run opted into plugins. Codex
 /// otherwise downloads its whole remote plugin catalog (~29 MB) on every
 /// process start, uncached.
@@ -1930,7 +1930,7 @@ fn argv_codex(c: &BuildCtx) -> Vec<String> {
 /// `--disable` beating `--enable` — so after a leading `--disable plugins`
 /// nothing a caller adds re-enables them, while after this override a later
 /// `-c features.plugins=true` or an `--enable plugins` anywhere does. Real
-/// codex's precedence is pinned by `oh_codex_plugins_flag_order`
+/// codex's precedence is pinned by `oh_codex_feature_flag_order`
 /// (`scripts/e2e-lib.sh`).
 fn codex_plugins_off(plugins: bool) -> Vec<String> {
     if plugins {
@@ -1941,7 +1941,7 @@ fn codex_plugins_off(plugins: bool) -> Vec<String> {
 }
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These are real Codex's config keys, which only an installed Codex can confirm and the deterministic gate does not have; the live codex suite holds them to it: `oh_codex_plugins_flag_order` asks real codex every precedence row for `apps` as for `plugins`, and `oh_usage_enforce codex` starts real Codex with `analytics.enabled=false` and `model_catalog_json=` from a cold catalog and fails if the probe or the catalog refresh does (both in scripts/e2e-lib.sh). What each setting saves on the wire is re-measured by scripts/codex-network-breakdown.py and budgeted by the live tier's `codex-launch-network-bytes`, which the `oneharness-live-network-budget` plan node registers.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] These are real Codex's config keys, which only an installed Codex can confirm and the deterministic gate does not have; the live codex suite holds them to it: `oh_codex_feature_flag_order` asks real codex every precedence row for `apps` as for `plugins`, and `oh_usage_enforce codex` starts real Codex with `analytics.enabled=false` and `model_catalog_json=` from a cold catalog and fails if the probe or the catalog refresh does (both in scripts/e2e-lib.sh). What each setting saves on the wire is re-measured by scripts/codex-network-breakdown.py and budgeted by the live tier's `codex-launch-network-bytes`, which the `oneharness-live-network-budget` plan node registers.
 /// The `-c` settings every Codex launch carries right after its subcommand,
 /// ahead of the caller's args so a caller's own later `-c` of the same key wins
 /// (Codex applies `-c` overrides last-wins): plugins off unless opted in, apps

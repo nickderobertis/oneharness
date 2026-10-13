@@ -944,7 +944,7 @@ one. One caveat: the restore runs on the normal exit path, so a hard kill
 mock/sync in that workspace, or `git checkout`, puts it back; prefer throwaway
 workspaces for suites.
 
-<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The user-facing statement of the precedence the task requires here; its source is tests/fixtures/codex-plugins-flag-order.json, and the live phase `oh_codex_plugins_flag_order` checks it against real Codex. -->
+<!-- llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The user-facing statement of the precedence the task requires here; its source is tests/fixtures/codex-feature-flag-order.json, and the live phase `oh_codex_feature_flag_order` checks it against real Codex. -->
 **Codex plugins are off by default.** Codex downloads its whole remote plugin
 catalog (about 29 MB from chatgpt.com) on every process start, uncached between
 processes, so a host launching Codex hundreds of times a day spends gigabytes
@@ -957,7 +957,7 @@ That spelling, not `--disable plugins`, is deliberate: Codex applies
 `--disable plugins` (both toggles after every `-c`, wherever they sit), so a
 caller's own later `-c features.plugins=true` or an `--enable plugins` still
 turns plugins on, where nothing could override a `--disable plugins`. The live
-codex suite pins that precedence model-free (`oh_codex_plugins_flag_order`).
+codex suite pins that precedence model-free (`oh_codex_feature_flag_order`).
 To turn plugins back on from config, set
 `plugins = true` under `[harness.codex]` or one `[harness.codex.variant.<name>]`
 (the variant's value beats the harness's; a later config layer or `extends`

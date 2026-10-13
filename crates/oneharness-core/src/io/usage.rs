@@ -578,7 +578,7 @@ fn probe_claude(request: &UsageProbeRequest) -> ProbedIdentity {
     ProbedIdentity { selector, parsed }
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_plugins_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phase `oh_codex_feature_flag_order` (scripts/e2e-lib.sh) checks `--disable plugins` against it.
 /// `codex app-server --disable plugins --disable apps -c analytics.enabled=false
 /// [-c model_catalog_json=<catalog>] --stdio`. Plugins, apps and analytics are
 /// off whatever the config says: a rate-limits read loads no plugin, calls no

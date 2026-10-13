@@ -560,6 +560,50 @@ class Unstarted(unittest.TestCase):
             "the supervisor left its scratch",
         )
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"), "the recorder's namespace path is Linux's"
+    )
+    def test_a_pasta_that_cannot_be_spawned_falls_back_to_running_the_launch_once(self) -> None:
+        tmp = scratch(self)
+        unspawnable = tmp / "unspawnable-pasta"
+        unspawnable.mkdir()
+        (unspawnable / "pasta").write_text("#!/nonexistent/interpreter\n")
+        (unspawnable / "pasta").chmod(0o755)
+        ran = tmp / "ran"
+        real = tmp / "counting-double"
+        real.write_text(f'#!/usr/bin/env bash\necho run >>"{ran}"\n')
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        env = {"PATH": f"{unspawnable}{os.pathsep}{os.environ['PATH']}", "TMPDIR": str(tmp)}
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(ran.read_text().splitlines(), ["run"], "the launch ran other than once")
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("cannot start pasta", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
+    def test_a_harness_that_cannot_start_inside_the_namespace_is_recorded_unmeasured(self) -> None:
+        # The namespace is up and has begun the launch when the harness turns
+        # out not to start: no measurement exists, and the line says so.
+        need_recorder(self)
+        tmp = scratch(self)
+        real = tmp / "broken-interpreter"
+        real.write_text("#!/nonexistent/interpreter\n")
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"TMPDIR": str(tmp)})
+        self.assertEqual(run.returncode, 137, run.stderr)
+        self.assertIn(b"interpreter", run.stderr)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("the measuring namespace ended without a measurement", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")))
+        self.assertEqual(list(tmp.glob("oh-netmeasure-*")), [])
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without pasta")
     def test_a_direct_launch_that_cannot_start_is_recorded_as_127(self) -> None:
         tmp = scratch(self)

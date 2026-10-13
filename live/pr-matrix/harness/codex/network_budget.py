@@ -404,8 +404,9 @@ def evidence_report(launches: list[Launch]) -> EvidenceReport:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group()
+    # llmlint: ignore[names_match_behavior] The task registering these budgets names this command `network_budget.py --kind usage-probe` (budgets.yaml carries it verbatim); it selects the usage-probe launch kind the budget is about — `oneharness usage`'s app-server launches — which the record tells apart by phase.
     mode.add_argument(
-        "--kind", choices=["usage-probe"], help="the largest launch of this phase alone"
+        "--kind", choices=["usage-probe"], help="the largest usage-probe launch alone"
     )
     mode.add_argument("--total", action="store_true", help="the pass's total received bytes")
     mode.add_argument(

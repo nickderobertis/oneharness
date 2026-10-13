@@ -23,8 +23,13 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - scripts/e2e-lib.sh
+      - scripts/e2e-netshim.sh
+      - scripts/e2e-netmeasure.py
       - scripts/install-e2e.sh
       - scripts/e2e-codex.sh
+      - scripts/e2e-network-budget.sh
+      - live/pr-matrix/harness/codex/**
+      - python/uv.lock
       - .github/workflows/e2e-codex.yml
   workflow_dispatch:
     inputs:
@@ -92,6 +97,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      # `just live-codex` checks the network budgets with the uv workspace's
+      # onebudgetspec after the suite (scripts/e2e-network-budget.sh).
+      - uses: astral-sh/setup-uv@v6
+      # The suite's recorder measures each codex launch in an unprivileged
+      # user+network namespace behind pasta (live/AGENTS.md); Ubuntu 24.04's
+      # AppArmor refuses those namespaces except to a binary whose profile
+      # permits them, which installing passt provides. Other legs record no
+      # bytes and check no budget.
+      - name: Permit pasta's unprivileged namespaces (network recorder)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q passt
       - name: Install Codex CLI
         run: |
           npm install -g @openai/codex

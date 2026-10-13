@@ -76,6 +76,15 @@ jobs:
       - name: Install kcov's build dependencies
         if: runner.os == 'Linux' && steps.shell-tools.outputs.cache-hit != 'true'
         run: sudo apt-get update -q && sudo apt-get install -y -q binutils-dev libcurl4-openssl-dev libdw-dev libiberty-dev libssl-dev zlib1g-dev
+      # The network recorder's gate-tier tests (tools/network-telemetry, and
+      # the live-variants journey) build unprivileged user+network namespaces
+      # behind pasta; Ubuntu 24.04's AppArmor permits them only to a binary
+      # whose profile allows it, which installing passt provides. Below,
+      # OH_NET_NO_SKIP turns a recorder that cannot measure here into a
+      # failure rather than a skip.
+      - name: Permit pasta's unprivileged namespaces (network recorder)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -q && sudo apt-get install -y -q passt
       - name: Bootstrap
         run: just bootstrap
       - name: Select the gate tier
@@ -95,9 +104,12 @@ jobs:
         if: steps.tier.outputs.tier == 'affected'
         env:
           NX_BASE: ${{ steps.tier.outputs.base }}
+          OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: just check
       - name: Full sweep (just check all)
         if: steps.tier.outputs.tier == 'all'
+        env:
+          OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: just check all
 
   # Package both crates exactly as Cargo will verify them at publish time. On its

@@ -23,6 +23,8 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - scripts/e2e-lib.sh
+      - scripts/e2e-netshim.sh
+      - scripts/e2e-netmeasure.py
       - scripts/install-e2e.sh
       - scripts/e2e-claude.sh
       - .github/workflows/e2e-claude.yml

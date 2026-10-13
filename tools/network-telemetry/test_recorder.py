@@ -453,6 +453,35 @@ class SupervisorLoss(unittest.TestCase):
         self.assertFalse(list((tmp / ".pending").glob("*")))
 
 
+class LostResult(unittest.TestCase):
+    def test_a_namespace_that_ran_the_launch_but_left_no_result_records_it_unmeasured(self) -> None:
+        # The launch plants a directory where the namespace's init writes its
+        # result (the scratch path is in the init's argv), so the init cannot
+        # write it: the launch ran, and the supervisor records that it went
+        # unmeasured. (A chmod would not do: the launch is root in its user
+        # namespace.)
+        need_recorder(self)
+        tmp = scratch(self)
+        own_tmp = tmp / "own-tmp"
+        own_tmp.mkdir()
+        real = tmp / "result-blocking-double"
+        real.write_text(
+            "#!/usr/bin/env bash\n"
+            "scratch=\"$(tr '\\0' '\\n' </proc/1/cmdline | sed -n '/^--_init$/{n;p;q}')\"\n"
+            'mkdir "$scratch/result.json.partial"\n'
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        run = run_shim(tmp, [str(real)], ["exec", "x"], file=file, env={"TMPDIR": str(own_tmp)})
+        self.assertEqual(run.returncode, 137, run.stderr)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual(line["method"], "unavailable")
+        self.assertIn("the measuring namespace ended without a measurement", line["reason"])
+        self.assertFalse(list((tmp / ".pending").glob("*")), "the pending marker outlived the line")
+        self.assertEqual(list(own_tmp.iterdir()), [], "the supervisor left its scratch behind")
+
+
 class Fallback(unittest.TestCase):
     """Where the method cannot run, the launch still runs, unmeasured and said so."""
 
@@ -517,6 +546,58 @@ class Fallback(unittest.TestCase):
             tmp, [str(self.echo(tmp))], ["exec", "-"], stdin=blob, env={"PATH": str(bare)}
         )
         self.assert_unavailable(tmp, run, blob, "no pasta on PATH")
+
+    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    def test_a_signal_to_the_fallbacks_process_group_ends_the_launch_and_is_recorded(self) -> None:
+        # The macOS/Windows fallback runs the launch in the shim's own process
+        # group; oneharness's SIGTERM to that group ends it, and the shim
+        # still records it.
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\nexec "
+            + " ".join(transfer_argv(0, 0, 0, "--linger", "60", "--heartbeat", str(heartbeat)))
+            + "\n"
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "OH_E2E_OS": "Darwin"},
+            start_new_session=True,
+        )
+        for _ in range(100):
+            if heartbeat.exists():
+                break
+            time.sleep(0.1)
+        os.killpg(shim.pid, signal.SIGTERM)
+        self.assertEqual(shim.wait(timeout=30), 128 + signal.SIGTERM)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + signal.SIGTERM))
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the signal")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without pasta")
     def test_a_signal_to_an_unmeasured_launch_reaches_it_and_is_recorded(self) -> None:

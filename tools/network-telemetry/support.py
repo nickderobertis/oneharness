@@ -21,7 +21,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from typing import Any, Literal, NamedTuple
+from typing import Any, Literal, NamedTuple, NewType
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -67,7 +67,11 @@ def starts(records: list[Record]) -> list[Record]:
     return [r for r in records if "argv" in r]
 
 
-def measurements(records: list[Record], launch_id: str) -> list[Record]:
+# The id the shim gave a launch, as its telemetry lines carry it.
+LaunchId = NewType("LaunchId", str)
+
+
+def measurements(records: list[Record], launch_id: LaunchId) -> list[Record]:
     return [r for r in records if r.get("launch_id") == launch_id and "argv" not in r]
 
 

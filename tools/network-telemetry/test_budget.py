@@ -27,6 +27,7 @@ from support import (
     NETSHIM,
     ROOT,
     WINDOWS,
+    LaunchId,
     Record,
     budget,
     check_step,
@@ -171,7 +172,7 @@ def adjust_total(records: list[Record], total: int) -> list[Record]:
     return out
 
 
-def set_rx(records: list[Record], launch_id: str, rx: int) -> list[Record]:
+def set_rx(records: list[Record], launch_id: LaunchId, rx: int) -> list[Record]:
     out = copy.deepcopy(records)
     for line in out:
         if line.get("launch_id") == launch_id and "argv" not in line:
@@ -375,7 +376,7 @@ class Detail(BudgetCase):
         base = self.figures()
         first = starts(base)[0]["launch_id"]
 
-        def measurement_of(records: list[Record], launch_id: str) -> Record:
+        def measurement_of(records: list[Record], launch_id: LaunchId) -> Record:
             return next(r for r in records if r.get("launch_id") == launch_id and "argv" not in r)
 
         def mutate(change) -> list[Record]:

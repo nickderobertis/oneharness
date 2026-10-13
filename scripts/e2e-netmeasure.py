@@ -58,7 +58,7 @@ import traceback
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple, NewType, Optional
 
 METHOD = "netns-pasta"
 # Ethernet 14 + IPv4 20 + TCP 20: what one TAP frame carries beyond its payload.
@@ -75,6 +75,10 @@ NAMESPACE_ADVICE = (
     "namespaces) or allow unprivileged user namespaces "
     "(`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`)"
 )
+
+
+# The id the shim gave the launch, joining its measurement line to its `start`.
+LaunchId = NewType("LaunchId", str)
 
 
 class Counters(NamedTuple):
@@ -103,7 +107,7 @@ class Snapshot(NamedTuple):
 class Measured:
     """The line of a launch the namespace measured."""
 
-    launch_id: str
+    launch_id: LaunchId
     rx_bytes: int
     tx_bytes: int
     payload_rx_estimate: int
@@ -118,7 +122,7 @@ class Measured:
 class Unavailable:
     """The line of a launch that ran without the namespace, and why."""
 
-    launch_id: str
+    launch_id: LaunchId
     reason: str
     seconds: float
     exit: Optional[int]
@@ -237,7 +241,7 @@ class NamespaceResult:
             raise ValueError("the last counter read began before the first one ended")
         return NamespaceResult(Counters(*moved), retrans, float(seconds), code, start, end)
 
-    def line(self, launch_id: str) -> Measured:
+    def line(self, launch_id: LaunchId) -> Measured:
         return Measured(
             launch_id,
             self.moved.rx_bytes,
@@ -322,9 +326,9 @@ def remove_pending(path: Optional[str]) -> None:
 def remove_scratch(scratch: Path) -> None:
     """Remove the supervisor's scratch directory, naming any part left behind."""
 
-    def report(_function: object, path: str, error: object) -> None:
+    def report(_function: object, path: str, error: tuple[object, BaseException, object]) -> None:
         print(
-            f"e2e-netmeasure: could not remove {path} ({error}); delete {scratch} by hand (rm -rf '{scratch}')",
+            f"e2e-netmeasure: could not remove {path} ({error[1]}); delete {scratch} by hand (rm -rf '{scratch}')",
             file=sys.stderr,
         )
 

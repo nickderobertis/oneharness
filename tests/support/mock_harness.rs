@@ -2341,6 +2341,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_HOLD_UNTIL (end the turn once
 /// this file exists, so a test holds two turns live at once),
 /// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
+/// MOCK_CODEX_TICK_MS (with MOCK_CODEX_HOLD_UNTIL, an agent message this often
+/// while the held turn is live),
 /// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection as its
 /// approval request goes out),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
@@ -2475,9 +2477,7 @@ mod listen_server {
         let _footprint: Vec<u8> = vec![
             1u8;
             std::env::var("CODEX_MOCK_SERVER_BYTES")
-                .ok()
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0)
+                .map_or(0, |n| whole("CODEX_MOCK_SERVER_BYTES", &n))
         ];
         if std::env::var_os("CODEX_MOCK_HELPER").is_some() {
             if let Ok(exe) = std::env::current_exe() {
@@ -2506,9 +2506,7 @@ mod listen_server {
             broadcast: std::env::var_os("CODEX_MOCK_BROADCAST").is_some(),
             ignore_unsubscribe: std::env::var_os("CODEX_MOCK_IGNORE_UNSUBSCRIBE").is_some(),
             thread_bytes: std::env::var("CODEX_MOCK_THREAD_BYTES")
-                .ok()
-                .and_then(|n| n.parse().ok())
-                .unwrap_or(0),
+                .map_or(0, |n| whole("CODEX_MOCK_THREAD_BYTES", &n)),
             fault: std::env::var("CODEX_MOCK_FAULT").unwrap_or_default(),
             conns: HashMap::new(),
             next_conn: 1,
@@ -2546,6 +2544,14 @@ mod listen_server {
             std::thread::spawn(move || serve(&server, stream));
         }
         std::process::exit(0);
+    }
+
+    /// The knob `name`'s whole-number value `raw`; anything else is a fixture
+    /// error, refused rather than read as some default.
+    fn whole<T: std::str::FromStr>(name: &str, raw: &str) -> T {
+        raw.trim().parse().unwrap_or_else(|_| {
+            super::refuse(&format!("{name} must be a whole number, got `{raw}`"))
+        })
     }
 
     fn lock(server: &Shared) -> std::sync::MutexGuard<'_, Server> {
@@ -3008,7 +3014,7 @@ mod listen_server {
                             delays
                                 .split(',')
                                 .nth(nth)
-                                .and_then(|ms| ms.trim().parse::<u64>().ok())
+                                .map(|ms| whole::<u64>("CODEX_MOCK_OPEN_DELAYS_MS", ms))
                         })
                 {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -3029,7 +3035,7 @@ mod listen_server {
                     .threads
                     .get(thread)
                     .and_then(|t| t.knob("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS"))
-                    .and_then(|ms| ms.parse::<u64>().ok());
+                    .map(|ms| whole::<u64>("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS", ms));
                 if let Some(ms) = delay {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
                 }
@@ -3215,9 +3221,7 @@ mod listen_server {
                 // CODEX_MOCK_EARLY_FRAMES: how many of the new thread's (1).
                 if s.fault == "early-frames" {
                     let own = std::env::var("CODEX_MOCK_EARLY_FRAMES")
-                        .ok()
-                        .and_then(|n| n.parse::<usize>().ok())
-                        .unwrap_or(1);
+                        .map_or(1, |n| whole::<usize>("CODEX_MOCK_EARLY_FRAMES", &n));
                     let early = std::iter::repeat_n((thread.as_str(), "own"), own)
                         .chain([("mock-thread-foreign", "foreign")]);
                     for (index, (named, tag)) in early.enumerate() {
@@ -3351,16 +3355,19 @@ mod listen_server {
                 // naming the next by its index.
                 let mut data: Vec<String> = s.threads.keys().cloned().collect();
                 data.sort();
-                let page = std::env::var("CODEX_MOCK_LOADED_PAGE")
-                    .ok()
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .filter(|n| *n > 0)
-                    .unwrap_or(usize::MAX);
-                let from = params
-                    .get("cursor")
-                    .and_then(Value::as_str)
-                    .and_then(|c| c.parse::<usize>().ok())
-                    .unwrap_or(0);
+                let page = std::env::var("CODEX_MOCK_LOADED_PAGE").map_or(usize::MAX, |n| {
+                    match whole::<usize>("CODEX_MOCK_LOADED_PAGE", &n) {
+                        0 => super::refuse("CODEX_MOCK_LOADED_PAGE must be at least 1"),
+                        page => page,
+                    }
+                });
+                let from = match params.get("cursor") {
+                    None | Some(Value::Null) => 0,
+                    Some(cursor) => match cursor.as_str().and_then(|c| c.parse::<usize>().ok()) {
+                        Some(from) => from,
+                        None => return refuse(&mut s, format!("no such cursor: {cursor}")),
+                    },
+                };
                 let to = from.saturating_add(page).min(data.len());
                 // CODEX_MOCK_FAULT=loaded-cycle: every page names the first
                 // page as the next, so a reader that never checks progress
@@ -3534,12 +3541,10 @@ mod listen_server {
             knob("MOCK_ATTEMPT_FILE"),
         ) {
             let attempt = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| text.trim().parse::<u32>().ok())
-                .unwrap_or(0)
+                .map_or(0, |text| whole::<u32>("MOCK_ATTEMPT_FILE's count", &text))
                 + 1;
             let _ = std::fs::write(&path, attempt.to_string());
-            if attempt <= limit.parse::<u32>().unwrap_or(0) {
+            if attempt <= whole::<u32>("MOCK_CODEX_OVERLOAD_ATTEMPTS", &limit) {
                 let error = json!({"message": "The server is overloaded", "codexErrorInfo": "serverOverloaded"});
                 s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "error",
                     "params": {"threadId": thread_id, "turnId": turn, "error": error, "willRetry": false}}));
@@ -3578,6 +3583,12 @@ mod listen_server {
         if let Some(path) = knob("MOCK_CODEX_HOLD_UNTIL") {
             let server = Arc::clone(server);
             let (thread_id, turn) = (thread_id.clone(), turn.clone());
+            // MOCK_CODEX_TICK_MS: while the held turn is live, an agent
+            // message this often, so a streaming run always has more to write.
+            let tick =
+                knob("MOCK_CODEX_TICK_MS").map(|ms| whole::<u128>("MOCK_CODEX_TICK_MS", &ms));
+            let held_since = std::time::Instant::now();
+            let mut ticks = 0u128;
             std::thread::spawn(move || loop {
                 std::thread::sleep(std::time::Duration::from_millis(20));
                 let mut s = lock(&server);
@@ -3587,6 +3598,15 @@ mod listen_server {
                     .is_some_and(|t| t.active_turn.as_deref() == Some(turn.as_str()));
                 if !live {
                     return;
+                }
+                if let Some(every) = tick.filter(|every| *every > 0) {
+                    while held_since.elapsed().as_millis() / every > ticks {
+                        ticks += 1;
+                        let item = format!("{turn}-tick-{ticks}");
+                        s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "item/completed",
+                            "params": {"threadId": thread_id, "turnId": turn,
+                                "item": {"type": "agentMessage", "id": item, "text": format!("tick {ticks}")}}}));
+                    }
                 }
                 if Path::new(&path).exists() {
                     s.maybe_complete(&thread_id);

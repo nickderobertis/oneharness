@@ -894,8 +894,10 @@ impl Write for FrameSink {
 
 /// How a pooled turn ended.
 enum End {
-    /// The turn ended (or the consumer stopped reading).
+    /// The turn ended.
     Done,
+    /// The consumer stopped reading while the turn may still be live.
+    Stopped,
     TimedOut,
     Cancelled,
     /// The server went away under the live turn.
@@ -1067,7 +1069,7 @@ pub(crate) fn run_pooled_turn(
 
     // A turn still live past the run's own end is interrupted rather than left
     // billing on a server nobody is reading.
-    if matches!(end, End::TimedOut | End::Cancelled) {
+    if matches!(end, End::TimedOut | End::Cancelled | End::Stopped) {
         if let Some((thread, turn)) = handle.active_turn() {
             let _ = connection.request(
                 "turn/interrupt",
@@ -1087,7 +1089,8 @@ pub(crate) fn run_pooled_turn(
     drop(lease);
 
     let (status, error) = match end {
-        End::Done => (Status::Ok, None),
+        // A consumer-driven stop is not a harness failure, as for a child.
+        End::Done | End::Stopped => (Status::Ok, None),
         End::TimedOut => (Status::Timeout, Some(crate::io::runner::timeout_error(job))),
         End::Cancelled => (
             Status::Cancelled,
@@ -1147,7 +1150,7 @@ fn deliver(
 ) -> Option<End> {
     lines.push(text, arrived);
     if on_line(text) == StreamStep::Stop {
-        return Some(End::Done);
+        return Some(End::Stopped);
     }
     if handle.advance(text) {
         // A dialogue that still holds its turn ended because a write failed:
@@ -1311,7 +1314,7 @@ impl PooledSession {
     /// The threads the server holds loaded now (`thread/loaded/list`), every
     /// page of them, read before `until`: a listing still paging then is an
     /// error, so the caller's bound holds across a whole listing.
-    pub fn loaded_threads(&mut self, until: Instant) -> Result<Vec<String>, String> {
+    pub fn loaded_threads(&mut self, until: Instant) -> Result<Vec<ThreadId>, String> {
         let mut threads = Vec::new();
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::HashSet::new();
@@ -1357,7 +1360,7 @@ impl PooledSession {
                 let thread = id.as_str().and_then(ThreadId::new).ok_or_else(|| {
                     format!("thread/loaded/list named a thread {id} that is no id")
                 })?;
-                threads.push(String::from(thread));
+                threads.push(thread);
             }
             cursor = match response.pointer("/result/nextCursor") {
                 None | Some(Value::Null) => None,

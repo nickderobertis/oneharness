@@ -181,16 +181,16 @@ const LISTING_GRACE: Duration = Duration::from_secs(10);
 /// at most `bound`. Answers the released threads still loaded at the bound.
 fn settle(
     dispatch: PooledDispatch,
-    released: &[String],
+    released: &[ThreadId],
     bound: Duration,
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<ThreadId>, String> {
     let mut observer = PooledSession::open(dispatch)?;
     let until = std::time::Instant::now() + bound;
     let still = loop {
         // The last poll starts at the bound at the latest, and its listing
         // must finish within LISTING_GRACE of it.
         let loaded = observer.loaded_threads(until + LISTING_GRACE)?;
-        let still: Vec<String> = released
+        let still: Vec<ThreadId> = released
             .iter()
             .filter(|t| loaded.contains(t))
             .cloned()
@@ -222,8 +222,8 @@ fn run(args: &Args) -> Result<Value, String> {
     let mut leases = Vec::new();
     let mut after_first = Value::Null;
     let mut after_last = Value::Null;
-    let mut released: Vec<String> = Vec::new();
-    let mut retained: Vec<String> = Vec::new();
+    let mut released: Vec<ThreadId> = Vec::new();
+    let mut retained: Vec<ThreadId> = Vec::new();
     let keeper = PooledSession::open(
         PooledDispatch::plan(&argv, &[], &[], &args.cwd, false)
             .ok_or("the launch is not a codex app-server launch")?,
@@ -237,11 +237,10 @@ fn run(args: &Args) -> Result<Value, String> {
         let thread = started
             .pointer("/result/thread/id")
             .and_then(Value::as_str)
-            .ok_or("thread/start named no thread")?
-            .to_string();
+            .and_then(ThreadId::new)
+            .ok_or("thread/start named no usable thread id")?;
         session.shell_turn("true")?;
-        let resume = ThreadId::new(thread.as_str()).ok_or("thread/start named an unusable id")?;
-        session.open_thread(&args.cwd, Some(&resume))?;
+        session.open_thread(&args.cwd, Some(&thread))?;
         std::thread::sleep(args.hold);
         session.release();
         released.push(thread.clone());

@@ -3390,6 +3390,47 @@ fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
     left_nothing_behind(&pool, reported_server(&report), &report);
 }
 
+/// A streaming consumer that stops reading — its end of `run --stream`'s
+/// stdout closed — ends a pooled run as it ends one on a dispatch's own child,
+/// and the live turn it leaves is interrupted on the shared server and its
+/// thread released, rather than left billing on a server nobody reads.
+#[test]
+fn a_streaming_consumer_that_stops_reading_leaves_no_live_pooled_turn() {
+    use std::io::BufRead;
+    let pool = Pool::new("pool-stream-stop");
+    let never = pool.file("never");
+    let mut child = pool.spawn(pool.command(
+        "streamed",
+        &["--stream"],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+            ("MOCK_CODEX_TICK_MS", "100"),
+        ],
+    ));
+    let server = pool.await_live_turns(1);
+    {
+        let mut reader = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut first = String::new();
+        reader.read_line(&mut first).unwrap();
+        assert!(!first.is_empty(), "the run streamed nothing");
+    }
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        assert!(
+            Instant::now() < deadline,
+            "the run kept going after its consumer left"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let turns = pool.state(server)["turns"].as_array().unwrap().clone();
+    assert_eq!(turns.len(), 1, "{turns:?}");
+    assert_eq!(turns[0]["status"], "interrupted", "{turns:?}");
+    let thread = turns[0]["thread"].as_str().unwrap().to_string();
+    wait_for("the thread to be released", Duration::from_secs(10), || {
+        !holds_thread(&pool, server, &thread)
+    });
+}
+
 /// A server that exits before it accepts a connection is started once more;
 /// the dispatch runs on the second.
 #[test]

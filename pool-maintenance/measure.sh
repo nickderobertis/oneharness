@@ -29,7 +29,7 @@ set -euo pipefail
 regular_file() {
   local name="$1" path="$2"
   if [ ! -f "$path" ] || [ ! -w "$path" ]; then
-    echo "measure: $name='$path' is not an existing, writable regular file" >&2
+    echo "measure: $name='$path' is not an existing, writable regular file; create it (touch) or point $name at a writable file, then re-run" >&2
     exit 2
   fi
   printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd)" "$(basename "$path")"
@@ -41,7 +41,7 @@ regular_file() {
 }
 result="$(regular_file ONEBUDGETSPEC_RESULT "$ONEBUDGETSPEC_RESULT")"
 [ ! -s "$result" ] || {
-  echo "measure: ONEBUDGETSPEC_RESULT='$result' is not the fresh, empty file onebudgetspec hands a measurement" >&2
+  echo "measure: ONEBUDGETSPEC_RESULT='$result' is not the fresh, empty file onebudgetspec hands a measurement; run me through 'just budgets' rather than reusing a result file" >&2
   exit 2
 }
 evidence=/dev/null
@@ -100,7 +100,7 @@ node -e '
   fs.writeFileSync(out + "/selections-ordinary", ordinary.join("\n") + "\n");
   fs.writeFileSync(out + "/selections-alternative", alternative.join("\n") + "\n");
 ' "$work/metadata.json" "$work" || {
-  echo "measure: could not read the gate's Rust test selections from the project.json files (above)" >&2
+  echo "measure: could not read the gate's Rust test selections from the project.json files (above); make each Rust project's test target call 'bash scripts/cargo-test.sh <selection>' (optionally via scripts/with-symlinked-tmp.sh), or teach this parser its new shape" >&2
   exit 1
 }
 ordinary="$(cat "$work/selections-ordinary")"
@@ -126,7 +126,7 @@ build() {
     read -ra args <<<"$selection"
     bash scripts/cargo-test.sh "${args[@]}" --build-only >"$work/build.log" 2>&1 || {
       cat "$work/build.log" >&2
-      echo "measure: building 'scripts/cargo-test.sh $selection --build-only' failed (above)" >&2
+      echo "measure: building 'scripts/cargo-test.sh $selection --build-only' failed (above); fix the error it names, check 'just test' passes, then re-run" >&2
       exit 1
     }
   done <<<"$1"
@@ -135,7 +135,7 @@ build() {
 prune() {
   ONEBUDGETSPEC_RESULT="$1" just pool-maintenance >"$1.log" 2>&1 || {
     cat "$1.log" >&2
-    echo "measure: the declared pool maintenance failed (above)" >&2
+    echo "measure: the declared pool maintenance failed (above); run 'just bootstrap' to install the pinned pruner, check 'just pool-maintenance' passes alone, then re-run" >&2
     exit 1
   }
   grep '^cargo-prune-superseded: ' "$1.log" >>"$evidence" || true
@@ -151,7 +151,7 @@ build "$alternative"
 entries >"$work/after-alternative"
 comm -13 "$work/before-alternative" "$work/after-alternative" >"$work/alternative"
 [ -s "$work/alternative" ] || {
-  echo "measure: the alternative build created no build entry, so there is nothing superseded to time" >&2
+  echo "measure: the alternative build created no build entry, so there is nothing superseded to time; check the selections in POOL_MAINTENANCE_EVIDENCE still reach oneharness-core's sdk-schema feature, then re-run" >&2
   exit 1
 }
 # Older than any real build, so the ordinary build stays each unit's newest
@@ -170,12 +170,12 @@ comm -23 "$work/before-pass" "$work/after-pass" >"$work/removed"
 comm -23 "$work/removed" "$work/alternative" >"$work/foreign"
 if [ -s "$work/foreign" ]; then
   cat "$work/foreign" >&2
-  echo "measure: the timed pass removed the entries above, which the alternative build did not create; the steady state was not established" >&2
+  echo "measure: the timed pass removed the entries above, which the alternative build did not create; the steady state was not established; stop any other cargo build writing to target/ in this checkout, then re-run" >&2
   exit 1
 fi
 removed="$(wc -l <"$work/removed" | tr -d ' ')"
 [ "$removed" -gt 0 ] || {
-  echo "measure: the timed pass removed none of the alternative build's $(wc -l <"$work/alternative" | tr -d ' ') entries" >&2
+  echo "measure: the timed pass removed none of the alternative build's $(wc -l <"$work/alternative" | tr -d ' ') entries; check 'cargo-prune-superseded --version' names the release the justfile pins (else run 'just bootstrap'), then re-run" >&2
   exit 1
 }
 kept="$(comm -23 "$work/before-pass" "$work/alternative" | wc -l | tr -d ' ')"
@@ -192,7 +192,7 @@ own "$work/alternative" >"$work/own-alternative"
 own "$work/after-pass" >"$work/own-survivors"
 if ! cmp -s "$work/own-before" "$work/own-after"; then
   diff "$work/own-before" "$work/own-after" >&2 || true
-  echo "measure: this repository's ordinary build hashes changed across the timed pass (above)" >&2
+  echo "measure: this repository's ordinary build hashes changed across the timed pass (above); stop any other cargo build writing to target/ in this checkout, then re-run" >&2
   exit 1
 fi
 count() { awk -v p="$1" '$1 == p' "$2" | wc -l | tr -d ' '; }
@@ -225,6 +225,6 @@ node -e '
   const detail = timed.detail + "; untimed backlog pass beforehand (not counted): " + untimed.value.toFixed(3) + " s";
   fs.writeFileSync(out, JSON.stringify({ value: timed.value, detail }));
 ' "$work/pass.json" "$work/backlog.json" "$result" || {
-  echo "measure: the pruner did not report through onebudgetspec as cargo-prune-superseded $(cargo-prune-superseded --version 2>/dev/null || echo '(absent)') should (above)" >&2
+  echo "measure: the pruner did not report through onebudgetspec as cargo-prune-superseded $(cargo-prune-superseded --version 2>/dev/null || echo '(absent)') should (above); run 'just bootstrap' to install the pinned release, then re-run" >&2
   exit 1
 }

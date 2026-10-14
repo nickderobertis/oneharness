@@ -1379,6 +1379,46 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
     let _ = silent.wait_with_output();
 }
 
+/// Spawn a dispatch of the fallback chain `config` names — its own
+/// candidates, so the default `--harness` is dropped — under `envs`.
+fn chain_dispatch(
+    pool: &Pool,
+    session: &str,
+    config: &str,
+    args: &[&str],
+    envs: &[(&str, &str)],
+) -> Child {
+    let cmd = pool.command_with_config(session, config, args, envs);
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let mut fresh = Command::new(cmd.get_program());
+    for (key, value) in cmd.get_envs() {
+        match value {
+            Some(value) => fresh.env(key, value),
+            None => fresh.env_remove(key),
+        };
+    }
+    let mut skip = false;
+    for arg in args {
+        if skip {
+            skip = false;
+            continue;
+        }
+        if arg == "--harness" {
+            skip = true;
+            continue;
+        }
+        fresh.arg(arg);
+    }
+    fresh
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    pool.spawn(fresh)
+}
+
 /// Killing the shared server under two live turns makes both runs report
 /// `app_server_lost` — retryable, so a fallback chain moves to its next
 /// candidate (here a variant on its own app-server child) — never a turn
@@ -1396,41 +1436,13 @@ fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_thro
     );
     let history = pool.file("history");
     let spawn = |session: &str| {
-        let cmd = pool.command_with_config(
+        chain_dispatch(
+            &pool,
             session,
             &config,
             &["--history", "--history-dir", &history],
             &[("MOCK_CODEX_HOLD_UNTIL", &never)],
-        );
-        // The chain names its own candidates; drop the default `--harness`.
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        let mut fresh = Command::new(cmd.get_program());
-        for (key, value) in cmd.get_envs() {
-            match value {
-                Some(value) => fresh.env(key, value),
-                None => fresh.env_remove(key),
-            };
-        }
-        let mut skip = false;
-        for arg in args {
-            if skip {
-                skip = false;
-                continue;
-            }
-            if arg == "--harness" {
-                skip = true;
-                continue;
-            }
-            fresh.arg(arg);
-        }
-        fresh
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        pool.spawn(fresh)
+        )
     };
     let first = spawn("lost-a");
     let server = pool.await_live_turns(1);
@@ -1460,6 +1472,57 @@ fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_thro
             .unwrap_or_else(|| panic!("no app_server_lost record in {file}"));
         assert_eq!(record["schema_version"], "1.10", "{record}");
     }
+}
+
+/// A shared server lost after its turn already ran a tool is still
+/// `app_server_lost`, but the chain stops there: the tool event the run saw is
+/// kept in its report and the next candidate never runs, since re-running the
+/// task elsewhere would repeat work that happened.
+#[test]
+fn a_shared_server_lost_after_its_turn_ran_a_tool_keeps_the_work_and_stops_the_chain() {
+    let pool = Pool::new("pool-lost-work");
+    let never = pool.file("never");
+    let alt_log = pool.file("alt.log");
+    let config = format!(
+        "harnesses = [\"codex\", \"codex:alt\"]\n\
+         [harness.codex.variant.alt]\n\
+         app_server = \"per-dispatch\"\n\
+         env = {{ MOCK_CODEX_APP_SERVER_LOG = \"{alt_log}\", MOCK_CODEX_COMPLETE_TURN = \"1\" }}\n"
+    );
+    let child = chain_dispatch(
+        &pool,
+        "lost-work",
+        &config,
+        &["--events"],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+            ("MOCK_CODEX_TOOL_EVENTS", "1"),
+        ],
+    );
+    let server = pool.await_live_turns(1);
+    sigkill(server);
+    let (_, report) = Pool::finish(child);
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results.len(), 1, "the chain moved on after work: {report}");
+    let lost = &results[0];
+    assert_eq!(lost["harness_id"], "codex", "{lost}");
+    assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
+    assert!(
+        lost["events"]
+            .as_array()
+            .is_some_and(|events| events.iter().any(|e| e["kind"] == "tool_call")),
+        "the tool event the turn ran was not kept: {lost}"
+    );
+    assert!(
+        report["fallback"]["fell_through"]
+            .as_array()
+            .is_none_or(Vec::is_empty),
+        "{report}"
+    );
+    assert!(
+        !Path::new(&alt_log).exists(),
+        "the next candidate ran after the lost turn's work"
+    );
 }
 
 /// One dispatch's thread-level settings.

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -287,6 +287,59 @@ test("Cargo.lock references to same-named registry packages are dependency chang
       const result = classify("base", head);
       assert.deepEqual([result.isReleaseOnly, result.macosRequired], [false, true], `${head}: ${result.reason}`);
     }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+// Cargo.toml's `oneharness-core` dependency loses its version only when it is
+// proved to be this repository's own crate by its workspace path; a same-named
+// dependency resolved from a registry is someone else's release.
+test("a same-named registry oneharness-core dependency bump in Cargo.toml requires Mac; the workspace-path bump does not", () => {
+  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "macos-manifest-dep-"));
+  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  const root = (own, engine) =>
+    `[workspace]\nmembers = [".", "crates/oneharness-core"]\n\n[package]\nname = "oneharness"\nversion = "${own}"\nedition = "2021"\n\n[dependencies]\noneharness-core = ${engine}\n`;
+  const core = (own) => `[package]\nname = "oneharness-core"\nversion = "${own}"\nedition = "2021"\n`;
+  const event = {
+    event_name: "pull_request",
+    repository: { full_name: "nickderobertis/oneharness" },
+    pull_request: { head: { ref: "release-plz-2026-10-14T00-00-00Z", repo: { full_name: "nickderobertis/oneharness" } } },
+  };
+  writeFileSync(join(cwd, "event.json"), JSON.stringify(event));
+  const commit = (own, engine, tag) => {
+    writeFileSync(join(cwd, "Cargo.toml"), root(own, engine));
+    mkdirSync(join(cwd, "crates/oneharness-core"), { recursive: true });
+    writeFileSync(join(cwd, "crates/oneharness-core/Cargo.toml"), core(own));
+    git("add", "-A");
+    git("commit", "-qm", tag);
+    git("tag", tag);
+  };
+  const classify = (base, head) =>
+    JSON.parse(execFileSync(process.execPath, [cli, "classify", "--event", join(cwd, "event.json"), "--base", base, "--head", head], { cwd, encoding: "utf8" }));
+  try {
+    git("init", "-q");
+    git("config", "user.email", "test@example.invalid");
+    git("config", "user.name", "Test");
+    const workspace = (v) => `{ path = "crates/oneharness-core", version = "${v}" }`;
+    const registry = (v) => `{ version = "${v}" }`;
+    commit("1.0.0", workspace("1.0.0"), "path-base");
+    commit("1.0.1", workspace("1.0.1"), "path-bump");
+    const genuine = classify("path-base", "path-bump");
+    assert.deepEqual([genuine.isReleaseOnly, genuine.macosRequired], [true, false], `workspace-path bump: ${genuine.reason}`);
+
+    git("checkout", "-q", "--orphan", "registry");
+    commit("1.0.0", registry("0.9.0"), "registry-base");
+    // The release bump of this repository's packages, plus the registry crate
+    // of the same name moving 0.9.0 -> 0.9.1.
+    commit("1.0.1", registry("0.9.1"), "registry-bump");
+    const twin = classify("registry-base", "registry-bump");
+    assert.deepEqual([twin.isReleaseOnly, twin.macosRequired], [false, true], `registry dependency bump: ${twin.reason}`);
+    // A path that is not this repository's crate proves nothing either.
+    git("checkout", "-q", "--orphan", "elsewhere");
+    const vendored = (v) => `{ path = "vendor/oneharness-core", version = "${v}" }`;
+    commit("1.0.0", vendored("0.9.0"), "vendored-base");
+    commit("1.0.1", vendored("0.9.1"), "vendored-bump");
+    assert.equal(classify("vendored-base", "vendored-bump").macosRequired, true, "a foreign path dependency bump requires Mac");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
   }

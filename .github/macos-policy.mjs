@@ -9,6 +9,7 @@ const RELEASE_BRANCH_PREFIX = "release-plz-";
 const repository = "nickderobertis/oneharness";
 const manifests = new Set(["Cargo.toml", "crates/oneharness-core/Cargo.toml"]);
 const ownPackages = ["oneharness", "oneharness-core"];
+const OWN_ENGINE_PATH = "crates/oneharness-core";
 function git(args, cwd) {
   return execFileSync("git", args, {
     cwd,
@@ -36,8 +37,18 @@ function normalize(path, text) {
       throw Error(`Invalid package version: ${path}`);
     delete data.package.version;
     if (path === "Cargo.toml") {
+      // Only this repository's own engine loses its version, and the proof is
+      // its source: the workspace path to the crate, never git. A same-named
+      // dependency without that path resolves from a registry, so a change to
+      // its version is a dependency change like any other.
       const dep = data.dependencies?.["oneharness-core"];
-      if (dep?.version) {
+      if (
+        dep !== null &&
+        typeof dep === "object" &&
+        dep.path === OWN_ENGINE_PATH &&
+        dep.git === undefined &&
+        dep.version !== undefined
+      ) {
         if (!validVersion(dep.version)) throw Error("Invalid engine version");
         delete dep.version;
       }

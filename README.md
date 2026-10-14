@@ -2025,7 +2025,7 @@ on codex-cli 0.159.2 (Linux):
   ([`scripts/measure-app-server-sharing.sh`](scripts/measure-app-server-sharing.sh),
   one run in [`live/control/evidence/app-server-sharing.json`](live/control/evidence/app-server-sharing.json)).
   Under reuse the server's memory is budgeted: after five sequential leases it
-  held 0.940x what it held after the first
+  held 1.083x what it held after the first
   ([`live/control/evidence/app-server-reuse.md`](live/control/evidence/app-server-reuse.md);
   `codex-shared-server-rss-growth`, at most 1.5x).
 

@@ -285,9 +285,51 @@ impl InterruptReply {
     }
 }
 
+/// The `result` object of a JSON-RPC response to `method`, or why there is
+/// none: the server's own error, verbatim, or an answer carrying neither.
+///
+/// # Errors
+///
+/// The refusal or the malformed answer, worded for a diagnostic.
+pub fn reply_result<'a>(method: &str, response: &'a Value) -> Result<&'a Value, String> {
+    if let Some(error) = response.get("error") {
+        return Err(format!("it refused {method}: {error}"));
+    }
+    match response.get("result") {
+        Some(result) if result.is_object() => Ok(result),
+        Some(other) => Err(format!(
+            "it answered {method} with a result that is not an object: {other}"
+        )),
+        None => Err(format!(
+            "it answered {method} with neither a result nor an error"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_yields_its_result_object_and_names_anything_else() {
+        let ok = json!({"id": 1, "result": {"status": "unsubscribed"}});
+        assert_eq!(
+            reply_result("thread/unsubscribe", &ok),
+            Ok(&json!({"status": "unsubscribed"}))
+        );
+        let refused = json!({"id": 1, "error": {"message": "no such thread"}});
+        assert!(reply_result("thread/unsubscribe", &refused)
+            .unwrap_err()
+            .contains("refused thread/unsubscribe: {\"message\":\"no such thread\"}"));
+        let empty = json!({"id": 1});
+        assert!(reply_result("initialize", &empty)
+            .unwrap_err()
+            .contains("neither a result nor an error"));
+        let scalar = json!({"id": 1, "result": true});
+        assert!(reply_result("initialize", &scalar)
+            .unwrap_err()
+            .contains("not an object: true"));
+    }
 
     fn env(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
         pairs

@@ -2323,7 +2323,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
 /// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection as its
 /// approval request goes out),
-/// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_ECHO_PROMPT,
+/// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
+/// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
 /// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
@@ -3170,6 +3171,15 @@ mod listen_server {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string();
+                // MOCK_CODEX_UNSUBSCRIBE_REFUSE: refuse the release; the
+                // thread stays loaded and subscribed.
+                if s.threads
+                    .get(&thread)
+                    .and_then(|t| t.knob("MOCK_CODEX_UNSUBSCRIBE_REFUSE"))
+                    .is_some()
+                {
+                    return refuse(&mut s, format!("the mock refuses to release {thread}"));
+                }
                 let ignore = s.ignore_unsubscribe;
                 let outcome = match s.threads.get_mut(&thread) {
                     None => "notLoaded",

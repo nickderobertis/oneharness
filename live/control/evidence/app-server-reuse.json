@@ -4,45 +4,45 @@
   "leases": [
     {
       "lease": 1,
-      "server_pid": 1153399,
-      "thread": "01a13838-b79f-7aa2-b2c8-ae7716030a94"
+      "server_pid": 892467,
+      "thread": "01a138c5-10f5-7771-b242-7abe4051cb49"
     },
     {
       "lease": 2,
-      "server_pid": 1153399,
-      "thread": "01a13839-aa99-7d72-b35f-2cf7559a0294"
+      "server_pid": 892467,
+      "thread": "01a138c6-1147-7810-9a22-14cc801e9440"
     },
     {
       "lease": 3,
-      "server_pid": 1153399,
-      "thread": "01a13839-b176-7791-869f-b792871370ac"
+      "server_pid": 892467,
+      "thread": "01a138c6-1f7e-7ab0-896b-e7e8c49dc959"
     },
     {
       "lease": 4,
-      "server_pid": 1153399,
-      "thread": "01a13839-bad0-7f00-84bd-cb0175069acb"
+      "server_pid": 892467,
+      "thread": "01a138c6-2c62-7812-95fc-3f0b9a406c95"
     },
     {
       "lease": 5,
-      "server_pid": 1153399,
-      "thread": "01a13839-c49d-7333-a264-1be5917a12e6"
+      "server_pid": 892467,
+      "thread": "01a138c6-3b1d-7aa2-9810-337dc799b406"
     }
   ],
   "platform": "linux",
   "readings": {
     "after_first": {
       "pids": [
-        1153399,
-        1153533
+        892467,
+        892510
       ],
-      "rss_bytes": 298479616
+      "rss_bytes": 280821760
     },
     "after_last": {
       "pids": [
-        1153399,
-        1153533
+        892467,
+        892510
       ],
-      "rss_bytes": 280604672
+      "rss_bytes": 304070656
     }
   },
   "retained": []

@@ -1050,6 +1050,69 @@ fn a_finished_dispatch_leaves_no_marked_process_and_its_released_thread_resumes(
     );
 }
 
+/// The lease files every pool entry in `pool` still holds.
+fn lease_files(pool: &Pool) -> Vec<PathBuf> {
+    std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .flat_map(|entry| {
+            std::fs::read_dir(entry.path().join("leases"))
+                .into_iter()
+                .flatten()
+        })
+        .flatten()
+        .map(|lease| lease.path())
+        .collect()
+}
+
+/// A release the server refuses, or leaves unanswered past its reply deadline
+/// (5 s), is said on stderr naming the thread and why, and bounded: the
+/// dispatch still succeeds, returns within the deadline, and leaves no lease —
+/// while a refused thread stays loaded on the server, as the warning says.
+#[test]
+fn a_refused_or_unanswered_release_is_said_bounded_and_leaves_no_lease() {
+    let pool = Pool::new("pool-release-fail");
+    for (session, knob, value, said) in [
+        (
+            "refused",
+            "MOCK_CODEX_UNSUBSCRIBE_REFUSE",
+            "1",
+            "it refused thread/unsubscribe: ",
+        ),
+        (
+            "silent",
+            "MOCK_CODEX_UNSUBSCRIBE_DELAY_MS",
+            "30000",
+            "no answer to thread/unsubscribe within 5s",
+        ),
+    ] {
+        let started = Instant::now();
+        let (output, report) = pool.run(pool.command(session, &[], &[(knob, value)]));
+        let took = started.elapsed();
+        succeeded(&output, &report);
+        let thread = thread_of(&report);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(&format!(
+                "the shared codex app-server did not release thread {thread}: {said}"
+            )),
+            "{session}: {stderr}"
+        );
+        assert!(
+            took < Duration::from_secs(5 + 10),
+            "{session}: the dispatch took {took:?} past the 5 s release deadline"
+        );
+        assert_eq!(lease_files(&pool), Vec::<PathBuf>::new(), "{session}");
+        if session == "refused" {
+            assert!(
+                holds_thread(&pool, reported_server(&report), &thread),
+                "the refused release unloaded the thread anyway"
+            );
+        }
+    }
+}
+
 /// Codex's Node launcher runs the native server as its child, and a SIGKILLed
 /// launcher leaves that child serving. Stopping such a server — at its linger,
 /// or once the pool finds its launcher dead — leaves neither process behind.

@@ -251,10 +251,19 @@ impl AppServerLease {
 
 /// The linger this process's servers are started under.
 fn linger() -> Duration {
-    std::env::var(LINGER_ENV)
-        .ok()
-        .and_then(|ms| ms.parse::<u64>().ok())
-        .map_or(DEFAULT_LINGER, Duration::from_millis)
+    let Ok(raw) = std::env::var(LINGER_ENV) else {
+        return DEFAULT_LINGER;
+    };
+    raw.parse::<u64>().map_or_else(
+        |_| {
+            eprintln!(
+                "oneharness: warning: ignoring {LINGER_ENV}={raw:?}: not whole milliseconds; the server lingers the default {}s",
+                DEFAULT_LINGER.as_secs()
+            );
+            DEFAULT_LINGER
+        },
+        Duration::from_millis,
+    )
 }
 
 /// Lease the shared server `dispatch` keys to under `root`, starting one if
@@ -544,8 +553,8 @@ fn release_thread(connection: &mut Connection, thread: &str) {
         RELEASE_REPLY_DEADLINE,
     ) {
         Ok(Some(response)) => {
-            if let Some(error) = response.get("error") {
-                warn(format!("it refused {RELEASE_THREAD_METHOD}: {error}"));
+            if let Err(why) = rules::reply_result(RELEASE_THREAD_METHOD, &response) {
+                warn(why);
             }
         }
         Ok(None) => warn(format!(
@@ -630,9 +639,7 @@ fn connect_to(record: &ServerRecord) -> Option<Connection> {
     let initialized = connection
         .request("initialize", initialize_params(), Duration::from_secs(2))
         .ok()??;
-    if initialized.get("error").is_some() {
-        return None;
-    }
+    rules::reply_result("initialize", &initialized).ok()?;
     connection
         .send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
         .ok()?;
@@ -1144,9 +1151,8 @@ impl PooledSession {
             .request("initialize", initialize_params(), Duration::from_secs(10))
             .map_err(|err| format!("initialize: {err}"))?
             .ok_or("the app-server did not answer initialize")?;
-        if let Some(error) = initialized.get("error") {
-            return Err(format!("initialize was refused: {error}"));
-        }
+        rules::reply_result("initialize", &initialized)
+            .map_err(|why| format!("the app-server's initialize failed: {why}"))?;
         connection
             .send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
             .map_err(|err| format!("initialized: {err}"))?;

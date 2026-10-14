@@ -206,4 +206,82 @@ test("real git histories classify automation versions and fail closed on forged/
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+// Cargo.lock dependency references are resolved against package identities:
+// only one proven to name this repository's source-less package is a version
+// edit. A same-named registry package is someone else's release.
+test("Cargo.lock references to same-named registry packages are dependency changes, not release versions", () => {
+  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "macos-lockrefs-"));
+  const git = (...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  const registry = 'source = "registry+https://github.com/rust-lang/crates.io-index"';
+  const lock = ({ local, consumerRef, ownRef = `oneharness-core ${local}` }) => [
+    "version = 4",
+    "",
+    "[[package]]",
+    'name = "consumer"',
+    'version = "2.0.0"',
+    registry,
+    `dependencies = [${JSON.stringify(consumerRef)}]`,
+    "",
+    "[[package]]",
+    'name = "oneharness"',
+    `version = "${local}"`,
+    `dependencies = ["consumer", ${JSON.stringify(ownRef)}]`,
+    "",
+    "[[package]]",
+    'name = "oneharness-core"',
+    `version = "${local}"`,
+    "",
+    // Unchanged on both sides: the registry's own oneharness-core at two versions.
+    "[[package]]",
+    'name = "oneharness-core"',
+    'version = "0.9.0"',
+    registry,
+    "",
+    "[[package]]",
+    'name = "oneharness-core"',
+    'version = "0.9.1"',
+    registry,
+    "",
+  ].join("\n");
+  const event = {
+    event_name: "pull_request",
+    repository: { full_name: "nickderobertis/oneharness" },
+    pull_request: { head: { ref: "release-plz-2026-10-14T00-00-00Z", repo: { full_name: "nickderobertis/oneharness" } } },
+  };
+  writeFileSync(join(cwd, "event.json"), JSON.stringify(event));
+  const commit = (text, tag) => {
+    writeFileSync(join(cwd, "Cargo.lock"), text);
+    git("add", "Cargo.lock");
+    git("commit", "-qm", tag);
+    git("tag", tag);
+  };
+  const classify = (base, head) =>
+    JSON.parse(execFileSync(process.execPath, [cli, "classify", "--event", join(cwd, "event.json"), "--base", base, "--head", head], { cwd, encoding: "utf8" }));
+  try {
+    git("init", "-q");
+    git("config", "user.email", "test@example.invalid");
+    git("config", "user.name", "Test");
+    commit(lock({ local: "1.0.0", consumerRef: "oneharness-core 0.9.0" }), "base");
+    // The release bump alone: this repository's packages and its own references.
+    commit(lock({ local: "1.0.1", consumerRef: "oneharness-core 0.9.0" }), "release");
+    // The same bump plus the consumer moving between the registry versions.
+    git("checkout", "-q", "base");
+    commit(lock({ local: "1.0.1", consumerRef: "oneharness-core 0.9.1" }), "registry-move");
+    // A reference that resolves to no package cannot be proven ours.
+    git("checkout", "-q", "base");
+    commit(lock({ local: "1.0.1", consumerRef: "oneharness-core 0.9.2" }), "dangling");
+    // A bare name matching the local and both registry packages: ambiguous.
+    git("checkout", "-q", "base");
+    commit(lock({ local: "1.0.1", consumerRef: "oneharness-core 0.9.0", ownRef: "oneharness-core" }), "ambiguous");
+
+    const release = classify("base", "release");
+    assert.deepEqual([release.isReleaseOnly, release.macosRequired], [true, false], `workspace version bump stays release-only: ${release.reason}`);
+    for (const head of ["registry-move", "dangling", "ambiguous"]) {
+      const result = classify("base", head);
+      assert.deepEqual([result.isReleaseOnly, result.macosRequired], [false, true], `${head}: ${result.reason}`);
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 // llmlint: ignore-end[shell_test_tiers_stay_split]

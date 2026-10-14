@@ -8,6 +8,7 @@ import { pathToFileURL } from "node:url";
 const RELEASE_BRANCH_PREFIX = "release-plz-";
 const repository = "nickderobertis/oneharness";
 const manifests = new Set(["Cargo.toml", "crates/oneharness-core/Cargo.toml"]);
+const ownPackages = ["oneharness", "oneharness-core"];
 function git(args, cwd) {
   return execFileSync("git", args, {
     cwd,
@@ -45,16 +46,38 @@ function normalize(path, text) {
   }
   if (path === "Cargo.lock") {
     const data = parseToml(text);
-    for (const pkg of data.package ?? []) {
-      if (["oneharness", "oneharness-core"].includes(pkg.name) && !pkg.source) {
+    const packages = data.package ?? [];
+    if (!Array.isArray(packages) || packages.some((pkg) =>
+      pkg === null || typeof pkg !== "object" || typeof pkg.name !== "string" ||
+      typeof pkg.version !== "string" || (pkg.source !== undefined && typeof pkg.source !== "string") ||
+      (pkg.dependencies !== undefined && (!Array.isArray(pkg.dependencies) || pkg.dependencies.some((d) => typeof d !== "string")))))
+      throw Error("Invalid lockfile package table");
+    // This repository's own packages are the source-less ones under its names;
+    // a registry package of the same name is a dependency like any other.
+    const own = (pkg) => ownPackages.includes(pkg.name) && pkg.source === undefined;
+    // Resolve a `name [version] [(source)]` reference to the one package it
+    // names. Only a reference proven to target an own package loses its
+    // version; one that resolves to nothing or to several fails closed.
+    const resolveReference = (reference) => {
+      const match = /^(\S+)(?: (\S+))?(?: \((.+)\))?$/.exec(reference);
+      if (!match) throw Error(`Unparsed lockfile reference ${JSON.stringify(reference)}`);
+      const [, name, version, source] = match;
+      if (!ownPackages.includes(name)) return reference;
+      const candidates = packages.filter((pkg) =>
+        pkg.name === name && (version === undefined || pkg.version === version) &&
+        (source === undefined || pkg.source === source));
+      if (candidates.length !== 1)
+        throw Error(`Lockfile reference ${JSON.stringify(reference)} resolves to ${candidates.length} packages`);
+      return own(candidates[0]) ? name : reference;
+    };
+    const dependencies = packages.map((pkg) => pkg.dependencies?.map(resolveReference));
+    packages.forEach((pkg, index) => {
+      if (own(pkg)) {
         if (!validVersion(pkg.version)) throw Error("Invalid lockfile version");
         delete pkg.version;
       }
-      if (pkg.dependencies)
-        pkg.dependencies = pkg.dependencies.map((d) =>
-          d.replace(/^(oneharness(?:-core)?) \d+\.\d+\.\d+$/, "$1"),
-        );
-    }
+      if (pkg.dependencies) pkg.dependencies = dependencies[index];
+    });
     return data;
   }
   throw Error(`Not release metadata: ${path}`);

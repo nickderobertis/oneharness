@@ -30,7 +30,7 @@ command -v python3 >/dev/null 2>&1 || {
   exit 1
 }
 exec python3 -I - "$codex" <<'PY'
-import base64, hashlib, json, os, shutil, socket, struct, subprocess, sys, tempfile, time
+import base64, hashlib, json, os, shutil, signal, socket, struct, subprocess, sys, tempfile, time
 
 codex = sys.argv[1]
 # Every socket operation's bound: a server that stops answering fails the
@@ -41,9 +41,9 @@ try:
     SOCKET_TIMEOUT = int(RAW_TIMEOUT)
 except ValueError:
     SOCKET_TIMEOUT = 0
-if SOCKET_TIMEOUT <= 0:
+if not 0 < SOCKET_TIMEOUT <= 3600:
     # A configuration error, not a failed measurement: exit 2.
-    print(f"measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT is {RAW_TIMEOUT!r}; set it to a positive whole number of seconds, or unset it for 120", file=sys.stderr)
+    print(f"measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT is {RAW_TIMEOUT!r}; set it to a whole number of seconds from 1 to 3600, or unset it for 120", file=sys.stderr)
     sys.exit(2)
 # The most a WebSocket upgrade answer may be before it is refused.
 HANDSHAKE_LIMIT = 16 * 1024
@@ -257,6 +257,9 @@ def measure(work, errors):
             [codex, "app-server", "-c", "features.plugins=false", "-c", "features.apps=false",
              "-c", "analytics.enabled=false", "--listen", f"unix://{path}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, cwd=work,
+            # Its own process group, so the stop reaches a launcher's native
+            # child too, as real codex's npm launcher has one.
+            start_new_session=True,
         )
     except OSError as error:
         stop(f"cannot start `{codex} app-server`: {error}; check the executable")
@@ -288,12 +291,19 @@ def measure(work, errors):
         return server.pid, threads
     finally:
         try:
-            server.terminate()
+            try:
+                os.killpg(server.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 server.wait(10)
             except subprocess.TimeoutExpired:
-                server.kill()
-                server.wait()
+                pass
+            try:
+                os.killpg(server.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            server.wait()
         except OSError as error:
             print(f"measure-app-server-sharing: could not stop the server (pid {server.pid}): {error}; stop it by hand", file=sys.stderr)
             LEFT_BEHIND.append(f"server pid {server.pid}")

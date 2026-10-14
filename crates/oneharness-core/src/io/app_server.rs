@@ -241,9 +241,19 @@ fn dispatch_environment(
         EnvPlatform::Unix => a == b,
         EnvPlatform::Windows => a.eq_ignore_ascii_case(b),
     };
-    let mut out: Vec<(String, String)> = std::env::vars_os()
-        .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
-        .collect();
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, value) in std::env::vars_os() {
+        match (name.into_string(), value.into_string()) {
+            (Ok(name), Ok(value)) => out.push((name, value)),
+            (name, _) => eprintln!(
+                "oneharness: warning: the variable {} is not UTF-8, so it cannot travel to a shared codex app-server's thread; that thread's commands run without it",
+                match &name {
+                    Ok(name) => name.clone(),
+                    Err(raw) => raw.to_string_lossy().into_owned(),
+                }
+            ),
+        }
+    }
     let mut set = |name: &str, value: &str| {
         out.retain(|(existing, _)| !same(existing, name));
         out.push((name.to_string(), value.to_string()));

@@ -513,6 +513,22 @@ fn interrupt(pool: &Pool, session: &str) -> (Value, Duration) {
     (answer, started.elapsed())
 }
 
+/// `ask` (an interrupt against a turn the server already holds live), asked
+/// again while its answer is `no_active_turn`: the server marks a turn live a
+/// moment before the dispatch has read the reply naming it, and until then
+/// that answer is the true one. Answers the first other answer, or the last
+/// at a 20 s bound.
+fn once_the_turn_is_known<T>(mut ask: impl FnMut() -> T, answer: impl Fn(&T) -> &Value) -> T {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let asked = ask();
+        if answer(&asked)["reason"] != "no_active_turn" || Instant::now() >= deadline {
+            return asked;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// `oneharness interrupt --input <message>` against `session`: the answer frame
 /// and whether the process exited 0.
 fn redirect(pool: &Pool, session: &str, message: &str) -> (Value, bool) {
@@ -1247,11 +1263,16 @@ fn an_interrupt_reaches_only_its_own_dispatch_s_turn_over_its_own_connection() {
         pool.await_live_turns(2);
         let other_thread = live_thread(&pool, server, std::slice::from_ref(&target_thread));
 
-        let answer = if through_the_socket {
-            control_request(&pool.socket("target"), INTERRUPT_LINE)
-        } else {
-            interrupt(&pool, "target").0
-        };
+        let answer = once_the_turn_is_known(
+            || {
+                if through_the_socket {
+                    control_request(&pool.socket("target"), INTERRUPT_LINE)
+                } else {
+                    interrupt(&pool, "target").0
+                }
+            },
+            |answer| answer,
+        );
         assert_eq!(answer["ok"], true, "{answer}");
         assert_eq!(answer["mechanism"], "codex-app-server", "{answer}");
         let (output, report) = Pool::finish(target);
@@ -1339,7 +1360,7 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
             .iter()
             .any(|pid| pool.live_turns(*pid) == 1)
     });
-    let not_found = interrupt(&pool, "lost-thread").0;
+    let not_found = once_the_turn_is_known(|| interrupt(&pool, "lost-thread").0, |a| a);
     assert_eq!(not_found["reason"], "not_running", "{not_found}");
     assert!(
         not_found["error"]
@@ -1376,7 +1397,7 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
         control_request(&pool.socket("own-child"), r#"{"v":99,"verb":"interrupt"}"#);
     assert_eq!(own_unparsable["reason"], unparsable["reason"]);
     assert_eq!(own_unparsable["error"], unparsable["error"]);
-    let stopped = interrupt(&pool, "own-child").0;
+    let stopped = once_the_turn_is_known(|| interrupt(&pool, "own-child").0, |a| a);
     assert_eq!(stopped["ok"], true, "{stopped}");
     let _ = own.wait_with_output();
 
@@ -1406,7 +1427,7 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
                 .iter()
                 .any(|pid| alive(*pid) && pool.live_turns(*pid) >= 1)
     });
-    let (answer, took) = interrupt(&pool, "silent");
+    let (answer, took) = once_the_turn_is_known(|| interrupt(&pool, "silent"), |(a, _)| a);
     assert_eq!(answer["reason"], "not_running", "{answer}");
     assert!(
         took >= INTERRUPT_REPLY_DEADLINE - Duration::from_millis(500)
@@ -1533,7 +1554,8 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
                 .any(|pid| pool.live_turns(*pid) == 1)
         });
         let message = format!("stop and do the right thing for {session}");
-        let (answer, served) = redirect(&pool, session, &message);
+        let (answer, served) =
+            once_the_turn_is_known(|| redirect(&pool, session, &message), |(a, _)| a);
         std::fs::write(&release, "").unwrap();
         let (output, report) = Pool::finish(child);
         succeeded(&output, &report);
@@ -2238,6 +2260,39 @@ fn frames_with_a_malformed_thread_field_reach_no_dispatch() {
     assert_eq!(ran["text"], "work for guarded", "{ran}");
 }
 
+/// A variable whose value is not UTF-8 cannot travel in a thread's JSON
+/// policy: the pooled dispatch says so, naming it, and runs without it.
+#[test]
+fn a_variable_that_is_not_utf8_is_named_and_left_out_of_a_pooled_thread() {
+    use std::os::unix::ffi::OsStringExt;
+    let pool = Pool::new("pool-not-utf8");
+    let mut cmd = pool.command(
+        "bytes",
+        &["--mode", "bypass", "--events"],
+        &[("MOCK_CODEX_RUN_COMMAND", "env")],
+    );
+    cmd.env(
+        "OH_NOT_UTF8",
+        std::ffi::OsString::from_vec(vec![0x66, 0xff, 0x6f]),
+    );
+    let (output, report) = pool.run(cmd);
+    succeeded(&output, &report);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("the variable OH_NOT_UTF8 is not UTF-8, so it cannot travel to a shared codex app-server's thread"),
+        "{stderr}"
+    );
+    let env = command_output(&report);
+    assert!(
+        env.lines().any(|line| line.starts_with("PATH=")),
+        "the command ran no env: {env}"
+    );
+    assert!(
+        !env.lines().any(|line| line.starts_with("OH_NOT_UTF8=")),
+        "{env}"
+    );
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the
@@ -2705,7 +2760,7 @@ fn a_broadcasting_server_s_other_thread_frames_are_never_a_dispatch_s_own() {
     std::thread::sleep(Duration::from_millis(300));
     assert!(!pool.state(server)["loaded"][&live_thread]["active_turn"].is_null());
 
-    let live_answer = interrupt(&pool, "live").0;
+    let live_answer = once_the_turn_is_known(|| interrupt(&pool, "live").0, |a| a);
     assert_eq!(live_answer["ok"], true, "{live_answer}");
     let (out, live_report) = Pool::finish(live);
     assert!(out.status.success(), "{live_report}");
@@ -2994,6 +3049,40 @@ fn os_process_tree(root: u32) -> Vec<u64> {
 /// each thread's resident memory against the server's own reading of itself,
 /// and each time to a ready thread against the delay the mock was told to
 /// answer that thread's `thread/start` after.
+/// A measured codex behind a launcher — the native server its child — leaves
+/// neither process behind once the measurement ends.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sharing_measurement_stops_a_launcher_and_its_child() {
+    let pool = Pool::new("pool-measure-shim");
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
+        .env("OH_MEASURE_CODEX", mock_bin())
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_SHIM", "1")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let measured: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let launcher = measured["server_pid"].as_u64().unwrap() as u32;
+    let child = pool.the_server();
+    assert_ne!(
+        child, launcher,
+        "the measured server was not behind a launcher"
+    );
+    for pid in [launcher, child] {
+        wait_for(
+            "the measured processes to stop",
+            Duration::from_secs(5),
+            || !alive(pid),
+        );
+    }
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
@@ -3392,7 +3481,13 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
             &measure,
             "OH_MEASURE_SOCKET_TIMEOUT",
             "0",
-            "OH_MEASURE_SOCKET_TIMEOUT is '0'; set it to a positive whole number",
+            "OH_MEASURE_SOCKET_TIMEOUT is '0'; set it to a whole number of seconds from 1 to 3600",
+        ),
+        (
+            &measure,
+            "OH_MEASURE_SOCKET_TIMEOUT",
+            "99999999999999999999",
+            "OH_MEASURE_SOCKET_TIMEOUT is '99999999999999999999'",
         ),
         (
             &measure,

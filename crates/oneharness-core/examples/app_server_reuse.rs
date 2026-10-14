@@ -300,7 +300,6 @@ fn write(path: &Path, value: &Value) -> Result<(), String> {
 
 fn main() {
     serve_sweeper_if_requested();
-    // A usage error exits 2; a workload that ran and failed exits 1.
     let args = args().unwrap_or_else(|error| {
         eprintln!("app_server_reuse: {error}");
         std::process::exit(2);

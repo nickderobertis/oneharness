@@ -2889,6 +2889,108 @@ fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
     );
 }
 
+/// A stand-in `codex` for the sharing measurement's own WebSocket client: it
+/// answers `--version`, and as `app-server --listen` it misbehaves as
+/// `FAKE_MODE` says — in the upgrade, or with one bad frame once the client
+/// has sent its first message.
+const MISBEHAVING_CODEX: &str = r#"#!/usr/bin/env python3
+import base64, hashlib, os, socket, struct, sys, time
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex-cli 0.0.0-fake")
+    sys.exit(0)
+path = args[args.index("--listen") + 1][len("unix://"):]
+mode = os.environ["FAKE_MODE"]
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(path)
+server.listen(4)
+conn, _ = server.accept()
+request = b""
+while not request.endswith(b"\r\n\r\n"):
+    request += conn.recv(1)
+key = [l.split(b":", 1)[1].strip() for l in request.split(b"\r\n") if l.lower().startswith(b"sec-websocket-key")][0]
+accept = base64.b64encode(hashlib.sha1(key + b"258EAFA5-E914-47DA-95CA-C5AB0DC85B11").digest())
+if mode == "close-upgrade":
+    conn.close()
+    sys.exit(0)
+if mode == "bad-accept":
+    accept = b"wrong"
+padding = b"X-Padding: " + b"p" * 20000 + b"\r\n" if mode == "huge-upgrade" else b""
+conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + b"\r\n" + padding + b"\r\n")
+if mode not in ("bad-accept", "huge-upgrade"):
+    conn.recv(65536)
+    bad = {
+        "reserved-bits": b"\xc1\x01x",
+        "masked": b"\x81\x81\x00\x00\x00\x00x",
+        "bad-opcode": b"\x83\x01x",
+        "nonminimal": b"\x81\x7e\x00\x05hello",
+        "fragmented-control": b"\x09\x00",
+        "oversized": b"\x81\x7f" + struct.pack(">Q", 65 * 1024 * 1024),
+        "bad-close": b"\x88\x02\x03\xed",
+        "interleaved": b"\x01\x01{\x81\x01}",
+        "not-json": b"\x81\x03abc",
+        "utf16": b"\x81" + bytes([len("{}".encode("utf-16"))]) + "{}".encode("utf-16"),
+    }[mode]
+    conn.sendall(bad)
+conn.settimeout(30)
+try:
+    while conn.recv(65536):
+        pass
+except OSError:
+    pass
+"#;
+
+/// The sharing measurement's own WebSocket client refuses each way a server can
+/// break the protocol — in the upgrade or in a frame — naming it, printing no
+/// figure, and leaving no scratch behind.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sharing_measurement_refuses_each_protocol_violation_naming_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Pool::new("pool-measure-protocol");
+    let fake = pool.path("codex");
+    std::fs::write(&fake, MISBEHAVING_CODEX).unwrap();
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let frame = "a frame a WebSocket server may not";
+    let limit = "past 64 MiB or a fragmented control frame";
+    for (mode, said) in [
+        (
+            "bad-accept",
+            "refused or mis-answered the WebSocket upgrade",
+        ),
+        ("huge-upgrade", "upgrade answer passed 16384 bytes"),
+        ("close-upgrade", "closed the WebSocket handshake"),
+        ("reserved-bits", frame),
+        ("masked", frame),
+        ("bad-opcode", frame),
+        ("nonminimal", "not in its shortest encoding"),
+        ("fragmented-control", limit),
+        ("oversized", limit),
+        ("bad-close", "malformed close frame"),
+        ("interleaved", "interleaved two messages' frames"),
+        ("not-json", "not UTF-8 JSON"),
+        ("utf16", "not UTF-8 JSON"),
+    ] {
+        let tmp = pool.path(&format!("{mode}-tmp"));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let output = Command::new("bash")
+            .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
+            .env("OH_MEASURE_CODEX", &fake)
+            .env("OH_MEASURE_SOCKET_TIMEOUT", "5")
+            .env("TMPDIR", &tmp)
+            .env("FAKE_MODE", mode)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{mode}: {stderr}");
+        assert!(output.stdout.is_empty(), "{mode}: a figure was printed");
+        assert!(stderr.contains(said), "{mode}: no `{said}` in: {stderr}");
+        let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{mode}: scratch left behind: {left:?}");
+    }
+}
+
 /// A server that pings the measurement and handles nothing until it hears a
 /// pong is answered, so the measurement still completes.
 #[cfg(target_os = "linux")]

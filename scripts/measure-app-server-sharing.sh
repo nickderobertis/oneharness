@@ -36,12 +36,13 @@ codex = sys.argv[1]
 # Every socket operation's bound: a server that stops answering fails the
 # measurement naming the step instead of hanging it. OH_MEASURE_SOCKET_TIMEOUT
 # (whole seconds) overrides it.
+RAW_TIMEOUT = os.environ.get("OH_MEASURE_SOCKET_TIMEOUT", "120")
 try:
-    SOCKET_TIMEOUT = int(os.environ.get("OH_MEASURE_SOCKET_TIMEOUT", "120"))
+    SOCKET_TIMEOUT = int(RAW_TIMEOUT)
 except ValueError:
-    raise SystemExit("measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT must be whole seconds")
+    SOCKET_TIMEOUT = 0
 if SOCKET_TIMEOUT <= 0:
-    raise SystemExit("measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT must be positive")
+    raise SystemExit(f"measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT is {RAW_TIMEOUT!r}; set it to a positive whole number of seconds, or unset it for 120")
 # The most a WebSocket upgrade answer may be before it is refused.
 HANDSHAKE_LIMIT = 16 * 1024
 RERUN = "rerun, and check the server still starts (`codex app-server --help`)"
@@ -222,9 +223,9 @@ class Connection:
             data += body
             if first & 0x80:
                 try:
-                    return json.loads(data)
+                    return json.loads(data.decode("utf-8"))
                 except ValueError as error:
-                    stop(f"the server sent a message that is not JSON ({error}); rerun, and report it if it recurs")
+                    stop(f"the server sent a message that is not UTF-8 JSON ({error}); rerun, and report it if it recurs")
 
     def request(self, method, params):
         ident = self.next_id
@@ -284,12 +285,15 @@ def measure(work, errors):
         threads.append({"thread": 2, "ready_ms": round((time.monotonic() - started) * 1000), **reading(server.pid)})
         return server.pid, threads
     finally:
-        server.terminate()
         try:
-            server.wait(10)
-        except subprocess.TimeoutExpired:
-            server.kill()
-            server.wait()
+            server.terminate()
+            try:
+                server.wait(10)
+            except subprocess.TimeoutExpired:
+                server.kill()
+                server.wait()
+        except OSError as error:
+            print(f"measure-app-server-sharing: could not stop the server (pid {server.pid}): {error}; stop it by hand", file=sys.stderr)
 
 
 def main():

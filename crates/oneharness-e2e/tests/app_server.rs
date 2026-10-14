@@ -513,10 +513,6 @@ fn interrupt(pool: &Pool, session: &str) -> (Value, Duration) {
     (answer, started.elapsed())
 }
 
-// ---------------------------------------------------------------------------
-// One server per pool key, its lifetime the leases'
-// ---------------------------------------------------------------------------
-
 /// Two concurrent dispatches with one pool key run their turns on ONE
 /// app-server, which starts with the first lease and exits once the last has
 /// ended and the linger has passed.
@@ -593,10 +589,6 @@ fn two_concurrent_dispatches_with_one_key_share_one_server_for_the_life_of_their
     );
     assert!(started.elapsed() > lived);
 }
-
-// ---------------------------------------------------------------------------
-// The pool key: what separates servers, and what does not
-// ---------------------------------------------------------------------------
 
 /// Run two dispatches one after the other — the second while the first's
 /// server is still lingering — and answer the servers each ran on.
@@ -711,10 +703,6 @@ fn the_pool_key_separates_what_the_server_fixes_at_start_and_nothing_else() {
     );
     assert_eq!(a, b, "two XDG_RUNTIME_DIR values started two servers");
 }
-
-// ---------------------------------------------------------------------------
-// Each dispatch's environment reaches only its own commands
-// ---------------------------------------------------------------------------
 
 /// The variables a shared server may be launched with.
 fn server_may_hold(name: &str) -> bool {
@@ -841,10 +829,6 @@ fn each_pooled_dispatch_s_commands_see_exactly_its_own_environment() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// A lease's end: its commands stopped, its thread released
-// ---------------------------------------------------------------------------
 
 /// A command appending a line to `file` every 100 ms, forever.
 fn heartbeat(file: &str) -> String {
@@ -1086,10 +1070,6 @@ fn a_server_behind_a_launcher_shim_is_stopped_whole() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Interrupts over a shared connection
-// ---------------------------------------------------------------------------
-
 const INTERRUPT_LINE: &str = r#"{"v":2,"verb":"interrupt"}"#;
 
 /// The interrupts server `pid` received, as `(connection, thread)`.
@@ -1310,10 +1290,6 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
     let _ = silent.wait_with_output();
 }
 
-// ---------------------------------------------------------------------------
-// The shared server lost under live turns
-// ---------------------------------------------------------------------------
-
 /// Killing the shared server under two live turns makes both runs report
 /// `app_server_lost` — retryable, so a fallback chain moves to its next
 /// candidate (here a variant on its own app-server child) — never a turn
@@ -1396,10 +1372,6 @@ fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_thro
         assert_eq!(record["schema_version"], "1.10", "{record}");
     }
 }
-
-// ---------------------------------------------------------------------------
-// Thread-level isolation: every setting on the dispatch's own connection
-// ---------------------------------------------------------------------------
 
 /// One dispatch's thread-level settings.
 struct Settings<'a> {
@@ -1620,9 +1592,21 @@ fn every_thread_level_setting_travels_on_its_own_dispatch_s_connection() {
 fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
     let pool = Pool::new("pool-resume");
     let (wt_a, wt_b) = (pool.worktree("wt-a"), pool.worktree("wt-b"));
+    // Each session works through a path of its own — a `current` link, as a
+    // deployment repoints one — which names the store its handle lives in.
+    // Pointed at the other worktree while the thread is created and at its
+    // own when the session continues, so the thread starts in one directory
+    // and its resumed turn runs in another, through the public interface.
+    let (link_a, link_b) = (pool.path("current-a"), pool.path("current-b"));
+    let point = |link: &Path, at: &Path| {
+        let _ = std::fs::remove_file(link);
+        std::os::unix::fs::symlink(at, link).unwrap();
+    };
+    point(&link_a, &wt_b);
+    point(&link_b, &wt_a);
     let a = |session| Settings {
         session,
-        cwd: &wt_a,
+        cwd: if session == "res-a" { &link_a } else { &link_b },
         model: "model-alpha",
         mode: "bypass",
         sandbox: "dangerFullAccess",
@@ -1631,7 +1615,7 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
     };
     let b = |session| Settings {
         session,
-        cwd: &wt_b,
+        cwd: if session == "res-a" { &link_a } else { &link_b },
         model: "model-beta",
         mode: "auto",
         sandbox: "workspaceWrite",
@@ -1658,20 +1642,6 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
         ],
     ));
     succeeded(&out, &made_b);
-    // The handles move to the worktree that resumes them: the store is kept
-    // per project, and a handle carries no settings, only its thread.
-    for (name, from, to) in [("res-a", &wt_b, &wt_a), ("res-b", &wt_a, &wt_b)] {
-        use oneharness_core::io::session::session_path;
-        let sess = pool.path("sess");
-        let mut record: Value = serde_json::from_str(
-            &std::fs::read_to_string(session_path(&sess, from, name)).unwrap(),
-        )
-        .unwrap();
-        record["project"] = Value::String(to.display().to_string());
-        let target = session_path(&sess, to, name);
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(target, record.to_string()).unwrap();
-    }
     let created_on = reported_server(&made_a);
     let created_marker = |report: &Value| {
         pool.turn_of(created_on, &thread_of(report))["marker"]
@@ -1680,6 +1650,13 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
             .to_string()
     };
     let (creator_marker_a, creator_marker_b) = (created_marker(&made_a), created_marker(&made_b));
+    assert_eq!(
+        pool.turn_of(created_on, &thread_of(&made_a))["cwd"],
+        wt_b.display().to_string().as_str(),
+        "res-a's thread was not created in the other dispatch's worktree"
+    );
+    point(&link_a, &wt_a);
+    point(&link_b, &wt_b);
 
     let release = pool.file("release");
     let first = spawn_with(
@@ -1726,7 +1703,10 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
             value
         );
         let effective = pool.turn_of(server, &thread);
-        let cwd = settings.cwd.display().to_string();
+        let cwd = std::fs::canonicalize(settings.cwd)
+            .unwrap()
+            .display()
+            .to_string();
         assert_eq!(effective["cwd"], cwd.as_str(), "{effective}");
         assert_eq!(effective["model"], settings.model, "{effective}");
         assert_eq!(effective["sandbox"], settings.sandbox, "{effective}");
@@ -1832,10 +1812,6 @@ fn a_broadcasting_server_s_other_thread_frames_are_never_a_dispatch_s_own() {
     assert_eq!(answers.len(), 1, "another dispatch answered: {answers:?}");
     assert_eq!(answers[0]["conn"], live_conn);
 }
-
-// ---------------------------------------------------------------------------
-// The startup-fetch settings survive pooling
-// ---------------------------------------------------------------------------
 
 /// Every launch the mock codex recorded about its model catalog, in order.
 fn catalog_records(pool: &Pool) -> Vec<Value> {
@@ -2057,10 +2033,6 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// The live tier's scripts, driven against the mock
-// ---------------------------------------------------------------------------
-
 fn repo_root() -> PathBuf {
     std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap()
 }
@@ -2163,7 +2135,7 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
     let output = Command::new("bash")
         .arg(repo_root().join("live/control/app-server-reuse.sh"))
         .env("OH_REUSE_CODEX", mock_bin())
-        .env("OH_REUSE_SETTLE_MS", "200")
+        .env("OH_REUSE_SETTLE_MS", "2000")
         .env("OH_E2E_REUSE_FILE", &out)
         .env("XDG_STATE_HOME", pool.path("state"))
         .env("CODEX_MOCK_DIR", pool.path("mock"))
@@ -2273,11 +2245,14 @@ impl ControlSuite {
             .env("CODEX_HOME", pool.path("codex-home"))
             .env("CODEX_MOCK_DIR", pool.path("mock"))
             .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "1000")
-            .env("OH_REUSE_SETTLE_MS", "200")
+            .env("OH_REUSE_SETTLE_MS", "2000")
             .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
             .env("OH_E2E_TELEMETRY_DIR", pool.path("telemetry"))
             .env("MOCK_CODEX_RUN_COMMAND", "eval \"$OH_POOLED_COMMAND\"")
-            .env("MOCK_CODEX_COMPLETE_TURN", "1");
+            .env("MOCK_CODEX_COMPLETE_TURN", "1")
+            // A resident footprint the size of a real server's, so the memory
+            // ratio reads retention rather than a small process's noise.
+            .env("CODEX_MOCK_SERVER_BYTES", (200 * 1024 * 1024).to_string());
         for var in [
             "OH_E2E_NO_SKIP",
             "OH_E2E_PHASE",
@@ -2351,6 +2326,8 @@ fn the_control_suite_s_reuse_phase_fails_naming_both_readings_when_threads_are_r
     let retained = suite.run(&[
         ("CODEX_MOCK_THREAD_BYTES", &bytes),
         ("CODEX_MOCK_IGNORE_UNSUBSCRIBE", "1"),
+        // Pages of two: a retained thread past the first page is named too.
+        ("CODEX_MOCK_LOADED_PAGE", "2"),
     ]);
     let said =
         String::from_utf8_lossy(&retained.stderr) + String::from_utf8_lossy(&retained.stdout);
@@ -2360,8 +2337,144 @@ fn the_control_suite_s_reuse_phase_fails_naming_both_readings_when_threads_are_r
         said.contains("still loaded"),
         "the retained threads went unnamed: {said}"
     );
+    let reuse: Value =
+        serde_json::from_str(&std::fs::read_to_string(suite.pool.path("reuse.json")).unwrap())
+            .unwrap();
+    let retained = reuse["retained"].as_array().unwrap();
+    assert_eq!(
+        retained.len(),
+        5,
+        "every retained thread is named, over every page: {retained:?}"
+    );
     assert!(
         said.contains("after the last of 5 leases: ") && said.contains("after the first: "),
         "{said}"
+    );
+}
+
+/// What a pooled dispatch cut short leaves behind: its live turn interrupted
+/// on the server, no process carrying its marker, and its thread released.
+fn left_nothing_behind(pool: &Pool, server: u32, report: &Value) {
+    let thread = thread_of(report);
+    assert_eq!(
+        pool.turn_of(server, &thread)["status"],
+        "interrupted",
+        "{}",
+        pool.state(server)
+    );
+    let marker = pool.turn_of(server, &thread)["marker"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let marked = find_marked(&ProcessMarker {
+        name: "ONEHARNESS_DISPATCH_MARKER".to_string(),
+        value: marker,
+    })
+    .unwrap();
+    assert!(
+        marked.is_empty(),
+        "{marked:?} still carry the dispatch's marker"
+    );
+    assert!(
+        !holds_thread(pool, server, &thread),
+        "{}",
+        pool.state(server)
+    );
+}
+
+/// A pooled turn past its `--timeout` is `timeout`, and one whose run is
+/// cancelled (SIGTERM to oneharness) is `cancelled`; either way its live turn
+/// is interrupted on the server, its commands stopped and its thread released,
+/// rather than left running on a server nobody reads.
+#[test]
+fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
+    let pool = Pool::new("pool-cut");
+    let never = pool.file("never");
+    let beat = pool.file("timeout-beat");
+    let (output, report) = pool.run(pool.command(
+        "timed",
+        &["--mode", "bypass", "--timeout", "2"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    assert_eq!(
+        result(&report)["status"],
+        "timeout",
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    left_nothing_behind(&pool, reported_server(&report), &report);
+
+    let beat = pool.file("cancel-beat");
+    let child = pool.spawn(pool.command(
+        "cancelled",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    wait_for("the heartbeat to start", Duration::from_secs(20), || {
+        lines(&beat) >= 3
+    });
+    // SAFETY: plain integers; the pid is the run this journey started.
+    unsafe {
+        libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
+    }
+    let (_, report) = Pool::finish(child);
+    assert_eq!(result(&report)["status"], "cancelled", "{report}");
+    left_nothing_behind(&pool, reported_server(&report), &report);
+}
+
+/// A server that exits before it accepts a connection is started once more;
+/// the dispatch runs on the second.
+#[test]
+fn a_server_that_dies_at_start_is_started_once_more() {
+    let pool = Pool::new("pool-restart");
+    let first = pool.file("first-launch");
+    let pool = pool.with_env("CODEX_MOCK_EXIT_FIRST", &first);
+    let (output, report) = pool.run(pool.command("restart", &[], &[]));
+    succeeded(&output, &report);
+    assert!(Path::new(&first).exists(), "the first launch never ran");
+    assert_eq!(
+        reported_server(&report),
+        pool.the_server(),
+        "the dispatch did not run on the relaunch"
+    );
+}
+
+/// A connection that refuses the dispatch's write while its turn runs — here,
+/// the answer to an approval request onto a connection the server stopped
+/// reading — is the shared server lost under the turn: `app_server_lost`.
+#[test]
+fn a_write_refused_under_a_live_turn_is_app_server_lost() {
+    let pool = Pool::new("pool-write-lost");
+    let never = pool.file("never");
+    let (output, report) = pool.run(pool.command(
+        "write-lost",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", "true"),
+            ("MOCK_CODEX_REQUEST_APPROVAL", "1"),
+            ("MOCK_CODEX_SHUT_READ_ON_APPROVAL", "1"),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let lost = result(&report);
+    assert_eq!(
+        lost["status"],
+        "nonzero",
+        "{lost}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
+    assert!(
+        lost["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("refused a write"),
+        "the loss was not read off the refused write: {lost}"
     );
 }

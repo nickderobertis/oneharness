@@ -44,7 +44,7 @@ use crate::io::marked_processes::{stop_marked, ProcessMarker};
 use crate::io::process::{Finish, Process};
 use crate::io::runner::{Job, StreamStep};
 use crate::io::server_pool::{
-    self, EntryLock, LaunchPlan, LeaseHolder, LeaseNote, ServerLease, ServerRecord,
+    self, EntryLock, LaunchPlan, LeaseHolder, LeaseNote, LeasedThread, ServerLease, ServerRecord,
     DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL, DEFAULT_LINGER, SERVER_STOP_DEADLINE,
 };
 use crate::io::websocket::{handshake, Incoming, LocalStream, WsReader, WsWriter};
@@ -82,6 +82,7 @@ const PRE_THREAD_BUFFER: usize = 4096;
 const SOCKET_DIR: &str = "sock";
 const SOCKET_FILE: &str = "app-server.sock";
 const SWEEPER_FILE: &str = "sweeper.json";
+const SWEEPER_LOG: &str = "sweeper.log";
 
 static SWEEPER_HOSTED: AtomicBool = AtomicBool::new(false);
 
@@ -235,8 +236,9 @@ impl AppServerLease {
     #[must_use]
     pub fn report(&self) -> AppServerReport {
         AppServerReport {
-            pid: self.record().pid.get(),
-            pool_key: self.key.to_string(),
+            pid: std::num::NonZeroU32::new(self.record().pid.get())
+                .expect("a recorded pid is never 0 by construction"),
+            pool_key: self.key.clone(),
         }
     }
 
@@ -524,13 +526,33 @@ fn initialize_params() -> Value {
 fn release_dispatch(connection: &mut Connection, marker: &ProcessMarker, thread: Option<&str>) {
     stop_dispatch_commands(marker, DEAD_LEASE_STOP_DEADLINE);
     if let Some(thread) = thread {
-        if let Err(err) = connection.request(
-            RELEASE_THREAD_METHOD,
-            json!({"threadId": thread}),
-            RELEASE_REPLY_DEADLINE,
-        ) {
-            eprintln!("oneharness: warning: could not release app-server thread {thread}: {err}");
+        release_thread(connection, thread);
+    }
+}
+
+/// Ask the server to release `thread`, saying so when it does not answer or
+/// refuses: the thread then stays loaded until the server stops.
+fn release_thread(connection: &mut Connection, thread: &str) {
+    let warn = |why: String| {
+        eprintln!(
+            "oneharness: warning: the shared codex app-server did not release thread {thread}: {why}"
+        );
+    };
+    match connection.request(
+        RELEASE_THREAD_METHOD,
+        json!({"threadId": thread}),
+        RELEASE_REPLY_DEADLINE,
+    ) {
+        Ok(Some(response)) => {
+            if let Some(error) = response.get("error") {
+                warn(format!("it refused {RELEASE_THREAD_METHOD}: {error}"));
+            }
         }
+        Ok(None) => warn(format!(
+            "no answer to {RELEASE_THREAD_METHOD} within {}s",
+            RELEASE_REPLY_DEADLINE.as_secs()
+        )),
+        Err(err) => warn(err.to_string()),
     }
 }
 
@@ -552,20 +574,18 @@ fn stop_dispatch_commands(marker: &ProcessMarker, deadline: Duration) {
 /// release its thread. Called by the pool's reconciliation under the entry's
 /// lock, so it runs once per dead lease whichever process finds it.
 pub(crate) fn retire_dead_lease(record: &ServerRecord, note: &LeaseNote) {
-    let Some(value) = note.marker.clone() else {
-        return;
-    };
     let started = Instant::now();
     let marker = ProcessMarker {
         name: rules::DISPATCH_MARKER_VAR.to_string(),
-        value,
+        value: note.marker.clone(),
     };
     let mut connection = connect_to(record);
-    if let (Some(connection), Some(thread), Some(turn)) = (
-        connection.as_mut(),
-        note.thread.as_deref(),
-        note.turn.as_deref(),
-    ) {
+    let thread = note.thread.as_ref().map(|thread| thread.id.as_str());
+    let turn = note
+        .thread
+        .as_ref()
+        .and_then(|thread| thread.turn.as_deref());
+    if let (Some(connection), Some(thread), Some(turn)) = (connection.as_mut(), thread, turn) {
         let _ = connection.request(
             "turn/interrupt",
             json!({"threadId": thread, "turnId": turn}),
@@ -579,19 +599,17 @@ pub(crate) fn retire_dead_lease(record: &ServerRecord, note: &LeaseNote) {
         .saturating_sub(Duration::from_millis(1200))
         .max(Duration::from_millis(300));
     stop_dispatch_commands(&marker, left);
-    if let (Some(connection), Some(thread)) = (connection.as_mut(), note.thread.as_deref()) {
+    if let (Some(connection), Some(thread)) = (connection.as_mut(), thread) {
         // Subscribe to the thread first: an unsubscribe from a connection that
-        // never subscribed leaves it loaded.
+        // never subscribed leaves it loaded. Codex refuses to resume a thread
+        // that never had a turn, and releases a closed connection's threads by
+        // itself, so a refused resume is no failure of the release.
         let _ = connection.request(
             "thread/resume",
             json!({"threadId": thread}),
             RELEASE_REPLY_DEADLINE,
         );
-        let _ = connection.request(
-            RELEASE_THREAD_METHOD,
-            json!({"threadId": thread}),
-            RELEASE_REPLY_DEADLINE,
-        );
+        release_thread(connection, thread);
     }
     if let Some(connection) = connection {
         connection.close();
@@ -609,9 +627,12 @@ fn connect_to(record: &ServerRecord) -> Option<Connection> {
     }
     let stream = LocalStream::connect(Path::new(&path.to_string())).ok()?;
     let mut connection = Connection::open(stream).ok()?;
-    connection
+    let initialized = connection
         .request("initialize", initialize_params(), Duration::from_secs(2))
         .ok()??;
+    if initialized.get("error").is_some() {
+        return None;
+    }
     connection
         .send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
         .ok()?;
@@ -627,8 +648,9 @@ pub(crate) fn stop_server(entry: &Path, record: &ServerRecord) {
         for lease in leases.flatten() {
             let note = std::fs::read_to_string(lease.path())
                 .ok()
-                .and_then(|text| serde_json::from_str::<LeaseNote>(&text).ok());
-            if let Some(value) = note.and_then(|note| note.marker) {
+                .and_then(|text| serde_json::from_str::<server_pool::LeaseFile>(&text).ok())
+                .and_then(|file| file.note);
+            if let Some(value) = note.map(|note| note.marker) {
                 stop_dispatch_commands(
                     &ProcessMarker {
                         name: rules::DISPATCH_MARKER_VAR.to_string(),
@@ -677,13 +699,20 @@ fn ensure_sweeper(entry: &Path) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
+    // Its warnings — a stop that left survivors, a release that failed — go
+    // to a log in the entry: nobody is reading a detached process's stderr.
+    let log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(entry.join(SWEEPER_LOG))
+        .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from);
     let mut command = std::process::Command::new(exe);
     command
         .env(SWEEPER_ENV, entry)
         .current_dir(entry)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(log);
     detach(&mut command);
     match command.spawn() {
         Ok(child) => {
@@ -740,11 +769,10 @@ fn detach(_command: &mut std::process::Command) {}
 
 /// The sweeper's whole life: every [`DEAD_LEASE_SWEEP_INTERVAL`], reconcile the
 /// entry — retiring the leases of dead holders, and stopping the server once no
-/// lease is live and its linger has passed — until the entry names no server,
-/// or a server other than the one it was started beside.
+/// lease is live and its linger has passed — until the entry names no server.
 fn run_sweeper(entry: &Path) {
     let me = LeaseHolder::current();
-    let watching = {
+    let mut watching = {
         let Ok(_guard) = EntryLock::acquire(entry) else {
             return;
         };
@@ -765,14 +793,17 @@ fn run_sweeper(entry: &Path) {
         }
         match server_pool::read_record(entry).and_then(|record| record.marker) {
             Some(marker) => marker,
-            None => return,
+            None => {
+                let _ = std::fs::remove_file(entry.join(SWEEPER_FILE));
+                return;
+            }
         }
     };
     loop {
         std::thread::sleep(DEAD_LEASE_SWEEP_INTERVAL);
         // An entry removed from under a live server leaves nothing to
         // reconcile, and nobody else who knows the server: stop it by the
-        // marker this sweeper still holds.
+        // marker this sweeper last saw.
         if !entry.join("leases").is_dir() {
             stop_by_marker(&watching);
             return;
@@ -780,19 +811,20 @@ fn run_sweeper(entry: &Path) {
         let Ok(_guard) = EntryLock::acquire(entry) else {
             return;
         };
-        let same_server = || {
-            server_pool::read_record(entry)
-                .is_some_and(|record| record.marker.as_deref() == Some(&watching))
-        };
-        if !same_server() {
-            break;
-        }
+        // One sweeper per entry, for whatever server it holds: a dispatch that
+        // replaced the server this one was started beside finds this sweeper
+        // live and starts none of its own, so this one adopts the new server.
         let _ = server_pool::reconcile(entry, DEFAULT_LINGER);
-        if !same_server() {
-            break;
+        match server_pool::read_record(entry).and_then(|record| record.marker) {
+            Some(marker) => watching = marker,
+            None => {
+                // Gone under the lock, so no dispatch can find this sweeper
+                // live after the entry stopped needing it.
+                let _ = std::fs::remove_file(entry.join(SWEEPER_FILE));
+                return;
+            }
         }
     }
-    let _ = std::fs::remove_file(entry.join(SWEEPER_FILE));
 }
 
 /// One message per written line, for the control handle's line sink: a frame
@@ -876,9 +908,8 @@ pub(crate) fn run_pooled_turn(
     };
     let marker = pooled.process_marker();
     let mut note = LeaseNote {
-        marker: Some(pooled.marker.clone()),
+        marker: pooled.marker.clone(),
         thread: None,
-        turn: None,
     };
     lease.annotate(&note);
     let mut connection = match Connection::open(stream) {
@@ -982,11 +1013,12 @@ pub(crate) fn run_pooled_turn(
                     }
                 }
             }
-            let live = handle.active_turn();
-            let (thread, turn) = (handle.session_id(), live.map(|(_, turn)| turn));
-            if note.thread != thread || note.turn != turn {
+            let thread = handle.session_id().map(|id| LeasedThread {
+                id,
+                turn: handle.active_turn().map(|(_, turn)| turn),
+            });
+            if note.thread != thread {
                 note.thread = thread;
-                note.turn = turn;
                 lease.annotate(&note);
             }
         },
@@ -1099,15 +1131,17 @@ impl PooledSession {
             .ok_or_else(|| "no state directory to keep the app-server pool in".to_string())?;
         let (lease, stream) = lease_server(&root, &dispatch, READY_WINDOW)?;
         lease.annotate(&LeaseNote {
-            marker: Some(dispatch.marker.clone()),
+            marker: dispatch.marker.clone(),
             thread: None,
-            turn: None,
         });
         let mut connection = Connection::open(stream).map_err(|err| format!("{err}"))?;
-        connection
+        let initialized = connection
             .request("initialize", initialize_params(), Duration::from_secs(10))
             .map_err(|err| format!("initialize: {err}"))?
             .ok_or("the app-server did not answer initialize")?;
+        if let Some(error) = initialized.get("error") {
+            return Err(format!("initialize was refused: {error}"));
+        }
         connection
             .send(&json!({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
             .map_err(|err| format!("initialized: {err}"))?;
@@ -1162,13 +1196,16 @@ impl PooledSession {
             .to_string();
         self.thread = Some(thread.clone());
         self.lease.annotate(&LeaseNote {
-            marker: Some(self.dispatch.marker.clone()),
-            thread: Some(thread),
-            turn: None,
+            marker: self.dispatch.marker.clone(),
+            thread: Some(LeasedThread {
+                id: thread,
+                turn: None,
+            }),
         });
         Ok(response)
     }
 
+    // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phases scripts/e2e-control.sh runs on every live-control leg drive these requests against it — pooled-reuse sends thread/start, thread/shellCommand, thread/resume, thread/unsubscribe and thread/loaded/list and fails naming a released thread still loaded, and pooled-env and pooled-kill drive the thread lifecycle and its environment — which is this contract's drift alarm.
     /// Run `command` as a shell turn on the session's thread (`thread/shellCommand`,
     /// which makes no model call) and wait for that turn to complete.
     ///
@@ -1223,23 +1260,35 @@ impl PooledSession {
             if let Some(error) = response.get("error") {
                 return Err(format!("thread/loaded/list was refused: {error}"));
             }
-            threads.extend(
-                response
-                    .pointer("/result/data")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|id| id.as_str().map(str::to_string)),
-            );
-            cursor = response
-                .pointer("/result/nextCursor")
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let page = response
+                .pointer("/result/data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("thread/loaded/list answered no data: {response}"))?;
+            for id in page {
+                threads.push(
+                    id.as_str()
+                        .ok_or_else(|| {
+                            format!("thread/loaded/list named a thread {id} that is no id")
+                        })?
+                        .to_string(),
+                );
+            }
+            cursor = match response.pointer("/result/nextCursor") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(next)) => Some(next.clone()),
+                Some(other) => {
+                    return Err(format!(
+                        "thread/loaded/list answered a cursor {other} that is no string"
+                    ))
+                }
+            };
             if cursor.is_none() {
                 return Ok(threads);
             }
         }
     }
+
+    // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
     /// End the session's lease: stop its marked commands, release its thread,
     /// close the connection and give the lease back.

@@ -2262,6 +2262,7 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
     })
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; each behaviour it imitates is one spike-shared-app-server observed of codex-cli 0.159.2 (or this node's own no-turn probes: the 60 s unload grace, the refused resume of a never-turned thread), and the live phases scripts/e2e-control.sh runs against real Codex (pooled-env, pooled-kill, pooled-reuse) are the drift alarm that fails when the two part.
 /// Act like `codex app-server --listen unix://PATH`: the shared,
 /// multi-client app-server a pooled dispatch's turn runs on, imitating real
 /// Codex as `spike-shared-app-server-report` observed it. Unix only, like the
@@ -2295,12 +2296,17 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   CODEX_MOCK_BROADCAST  send every thread's frames to every connection.
 ///   CODEX_MOCK_IGNORE_UNSUBSCRIBE  answer `thread/unsubscribe` but keep the
 ///                         thread loaded.
+///   CODEX_MOCK_SERVER_BYTES  allocate and touch this many bytes for the
+///                         server's life, its own resident footprint.
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
 ///                         thread, freed when it unloads.
 ///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
 ///                         thread's environment; `rollout-env` writes thread
 ///                         environments into rollout files; `escape-marker`
 ///                         drops the dispatch marker from commands.
+///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
+///                         listening.
+///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
 ///   CODEX_MOCK_OPEN_DELAYS_MS  comma-separated: the n-th `thread/start` is
 ///                         answered after the n-th delay.
 ///   CODEX_MOCK_STARTUP_FETCH  `PORT BYTES`: download that many bytes from the
@@ -2310,6 +2316,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_HOLD_UNTIL (end the turn once
 /// this file exists, so a test holds two turns live at once),
 /// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
+/// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection once its
+/// approval request is out),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
@@ -2335,6 +2343,9 @@ mod listen_server {
         /// the frames received before it did.
         log: Option<std::fs::File>,
         unlogged: Vec<String>,
+        /// Kept open after its reads stopped, so a client's write onto it is
+        /// refused rather than its read seeing the end first.
+        held: bool,
     }
 
     #[derive(Clone, Default)]
@@ -2411,7 +2422,29 @@ mod listen_server {
             .and_then(|pair| pair[1].strip_prefix("unix://"))
             .map(PathBuf::from)
             .unwrap_or_else(|| super::refuse("--listen must name a unix:// path"));
+        // CODEX_MOCK_EXIT_FIRST: the first launch to find this file absent
+        // creates it and exits before listening, as a server that dies at
+        // start does; every later launch serves.
+        if let Ok(first) = std::env::var("CODEX_MOCK_EXIT_FIRST") {
+            if std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&first)
+                .is_ok()
+            {
+                std::process::exit(1);
+            }
+        }
         let listener = bind(&path);
+        // CODEX_MOCK_SERVER_BYTES: a resident footprint of the server's own,
+        // touched and held for its life, as a real server has one.
+        let _footprint: Vec<u8> = vec![
+            1u8;
+            std::env::var("CODEX_MOCK_SERVER_BYTES")
+                .ok()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(0)
+        ];
         if std::env::var_os("CODEX_MOCK_HELPER").is_some() {
             if let Ok(exe) = std::env::current_exe() {
                 let helper = std::process::Command::new(exe)
@@ -2762,6 +2795,7 @@ mod listen_server {
             return;
         };
         let mut reader = std::io::BufReader::new(stream);
+        let mut key = String::new();
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line).unwrap_or(0) == 0 {
@@ -2770,14 +2804,20 @@ mod listen_server {
             if line == "\r\n" {
                 break;
             }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.trim().eq_ignore_ascii_case("sec-websocket-key") {
+                    key = value.trim().to_string();
+                }
+            }
         }
         let writer = Arc::new(Mutex::new(writer));
         {
             let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
-            if w
-                .write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
-                .is_err()
-            {
+            let answer = format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                oneharness_core::io::websocket::accept_key(&key)
+            );
+            if w.write_all(answer.as_bytes()).is_err() {
                 return;
             }
         }
@@ -2799,6 +2839,7 @@ mod listen_server {
                     record,
                     log: None,
                     unlogged: Vec::new(),
+                    held: false,
                 },
             );
             s.save();
@@ -2811,6 +2852,11 @@ mod listen_server {
             };
             hold(server, &frame);
             handle(server, conn, &text, &frame);
+        }
+        if lock(server).conns.get(&conn).is_some_and(|c| c.held) {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
         }
         // The client is gone. Like Codex, its threads stay loaded and their
         // turns and commands keep running; only its subscriptions go.
@@ -3135,8 +3181,26 @@ mod listen_server {
                 );
             }
             "thread/loaded/list" => {
-                let data: Vec<String> = s.threads.keys().cloned().collect();
-                reply(&mut s, json!({"data": data}));
+                // CODEX_MOCK_LOADED_PAGE: answer in pages of this many, each
+                // naming the next by its index.
+                let mut data: Vec<String> = s.threads.keys().cloned().collect();
+                data.sort();
+                let page = std::env::var("CODEX_MOCK_LOADED_PAGE")
+                    .ok()
+                    .and_then(|n| n.parse::<usize>().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(usize::MAX);
+                let from = params
+                    .get("cursor")
+                    .and_then(Value::as_str)
+                    .and_then(|c| c.parse::<usize>().ok())
+                    .unwrap_or(0);
+                let to = from.saturating_add(page).min(data.len());
+                let next = (to < data.len()).then(|| to.to_string());
+                reply(
+                    &mut s,
+                    json!({"data": data.get(from..to).unwrap_or_default(), "nextCursor": next}),
+                );
             }
             "thread/read" => {
                 let thread = params
@@ -3320,9 +3384,23 @@ mod listen_server {
                 s.approvals.push(
                     json!({"request": request, "thread": thread_id, "owner": conn, "answers": []}),
                 );
+                let shut = knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some();
                 s.emit(&thread_id, &json!({"jsonrpc": "2.0", "id": request,
                     "method": "item/commandExecution/requestApproval",
                     "params": {"threadId": thread_id, "turnId": turn, "itemId": format!("{turn}-command"), "command": command}}));
+                // MOCK_CODEX_SHUT_READ_ON_APPROVAL: stop reading this
+                // connection once the request is out, so the client's answer is
+                // a write onto a connection that is gone.
+                if shut {
+                    if let Some(c) = s.conns.get_mut(&conn) {
+                        c.held = true;
+                        let _ = c
+                            .writer
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .shutdown(std::net::Shutdown::Read);
+                    }
+                }
                 s.save();
                 return;
             }
@@ -3494,6 +3572,8 @@ mod listen_server {
         });
     }
 }
+
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// The path a client connects to for a server told to listen on `path`: the
 /// symlink's target when Codex left one.

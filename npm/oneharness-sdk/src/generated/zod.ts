@@ -134,9 +134,14 @@ export const AppServerModeSchema: z.ZodType<AppServerMode> = z.union([z.literal(
 export const AppServerReportSchema: z.ZodType<AppServerReport> = z.looseObject({
   pid: z
     .int()
-    .gte(0)
+    .gte(1)
     .refine((value) => value !== undefined, { message: "Required" }),
-  pool_key: z.string().refine((value) => value !== undefined, { message: "Required" }),
+  pool_key: z
+    .string()
+    .min(1)
+    .regex(new RegExp("^[A-Za-z0-9_-]+$", "u"))
+    .refine((value) => [...value].length <= 128, { message: "Too long: expected at most 128 characters" })
+    .refine((value) => value !== undefined, { message: "Required" }),
 });
 
 export const AuthModeSchema: z.ZodType<AuthMode> = z.union([

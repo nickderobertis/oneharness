@@ -44,15 +44,21 @@ command -v "$codex" >/dev/null 2>&1 || {
   exit 1
 }
 (cd "$root" && cargo build --quiet --locked -p oneharness-core --example app_server_reuse) || {
-  echo "app-server-reuse: could not build the app_server_reuse example; cargo's error is above" >&2
+  echo "app-server-reuse: could not build the app_server_reuse example; fix cargo's error above (run 'just bootstrap' if the toolchain is missing), then rerun" >&2
   exit 1
 }
 # The server must outlive each settle: the pool's own linger (60 s) is shorter
 # than Codex's unload grace, so the workload's server lingers longer.
 export ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="${ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS:-$((settle + 60000))}"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
-rm -f "$out"
+work="$(mktemp -d)" || {
+  echo "app-server-reuse: cannot create a scratch directory; check that the host temp dir is writable" >&2
+  exit 1
+}
+trap 'rm -rf "$work" || echo "app-server-reuse: could not remove $work; delete it by hand" >&2' EXIT
+rm -f "$out" || {
+  echo "app-server-reuse: cannot remove the previous telemetry $out; check its permissions" >&2
+  exit 1
+}
 "$root/target/debug/examples/app_server_reuse" --codex "$codex" --leases "$leases" \
   --hold-ms 1000 --settle-ms "$settle" --cwd "$work" --out "$out"
 echo "app-server reuse: wrote $out"

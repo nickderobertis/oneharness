@@ -35,12 +35,14 @@ pub const DISPATCH_MARKER_VAR: &str = "ONEHARNESS_DISPATCH_MARKER";
 /// entry's `server.json`.
 pub const SERVER_MARKER_VAR: &str = "ONEHARNESS_APP_SERVER_MARKER";
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Real Codex cannot be read in the deterministic gate; the live phases scripts/e2e-control.sh runs on every live-control leg drive these requests against it — pooled-reuse sends thread/start, thread/shellCommand, thread/resume, thread/unsubscribe and thread/loaded/list and fails naming a released thread still loaded, and pooled-env and pooled-kill drive the thread lifecycle and its environment — which is this contract's drift alarm.
 /// The JSON-RPC request that releases a dispatch's thread from the server once
 /// its lease ends. Codex keeps a finished thread loaded until its last
 /// subscriber unsubscribes (`thread/unsubscribe` in codex-rs's app-server v2
 /// protocol, `ThreadUnsubscribeParams { threadId }`), then unloads it and emits
 /// `thread/closed`.
 pub const RELEASE_THREAD_METHOD: &str = "thread/unsubscribe";
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// Which platform's environment rules apply: the base variable set, and whether
 /// names compare case-insensitively.
@@ -261,7 +263,14 @@ impl InterruptReply {
     #[must_use]
     pub fn of(response: &Value) -> Self {
         let Some(error) = response.get("error") else {
-            return InterruptReply::Accepted;
+            return if response.get("result").is_some() {
+                InterruptReply::Accepted
+            } else {
+                InterruptReply::Refused(
+                    "the app-server answered the interrupt with neither a result nor an error"
+                        .to_string(),
+                )
+            };
         };
         let message = error
             .get("message")
@@ -451,6 +460,10 @@ mod tests {
             InterruptReply::of(&json!({"id": 1, "result": {}})),
             InterruptReply::Accepted
         );
+        assert!(matches!(
+            InterruptReply::of(&json!({"id": 1})),
+            InterruptReply::Refused(_)
+        ));
         assert!(matches!(
             InterruptReply::of(
                 &json!({"id": 1, "error": {"code": -32600, "message": "thread not found: t"}})

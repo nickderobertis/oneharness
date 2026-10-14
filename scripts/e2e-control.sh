@@ -100,8 +100,6 @@ have_env() {
   return 1
 }
 
-# --- the shared Codex app-server ------------------------------------------
-#
 # A controlled codex turn runs on the pooled app-server by default. Three
 # phases prove what pooling must never cost, each failing the suite naming its
 # phase and assertion:
@@ -131,6 +129,7 @@ _oh_pooled_start() {
 }
 
 oh_pooled_env() {
+  _oh_phase pooled-env
   local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
   value_a="pooled-a-${RANDOM}${RANDOM}${RANDOM}"
   value_b="pooled-b-${RANDOM}${RANDOM}${RANDOM}"
@@ -144,33 +143,47 @@ oh_pooled_env() {
   local probe='printf "probe=%s\n" "$(printf %s "$OH_POOLED_PROBE" | cksum | cut -d" " -f1)"'
   report_a="$POOLED_DIR/env-a.json"
   report_b="$POOLED_DIR/env-b.json"
-  mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb"
+  mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb" ||
+    fail "pooled-env: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
   OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$probe"
   a=$POOLED_PID
   OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$probe"
   b=$POOLED_PID
   wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
   wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"
-  out_a="$(jq -r '[.results[0].events[]? | select(.kind == "tool_call") | .output // empty] | join("\n")' "$report_a")"
-  out_b="$(jq -r '[.results[0].events[]? | select(.kind == "tool_call") | .output // empty] | join("\n")' "$report_b")"
+  local tool_output='[.results[0].events[]? | select(.kind == "tool_call") | .output // empty] | join("\n")'
+  out_a="$(jq -r "$tool_output" "$report_a")" ||
+    fail "pooled-env: dispatch A's report is not JSON (see $report_a and $report_a.err)"
+  out_b="$(jq -r "$tool_output" "$report_b")" ||
+    fail "pooled-env: dispatch B's report is not JSON (see $report_b and $report_b.err)"
   case "$out_a" in *"probe=$digest_b"*) fail "pooled-env: dispatch A's command saw dispatch B's OH_POOLED_PROBE" ;; esac
   case "$out_b" in *"probe=$digest_a"*) fail "pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE" ;; esac
   case "$out_a" in *"probe=$digest_a"*) ;; *) fail "pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: ${out_a:-none})" ;; esac
   case "$out_b" in *"probe=$digest_b"*) ;; *) fail "pooled-env: dispatch B's command did not see its own OH_POOLED_PROBE (output: ${out_b:-none})" ;; esac
-  pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")"
-  pid_b="$(jq -r '.control.app_server.pid // empty' "$report_b")"
+  pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")" ||
+    fail "pooled-env: cannot read the server pid from dispatch A's report $report_a"
+  pid_b="$(jq -r '.control.app_server.pid // empty' "$report_b")" ||
+    fail "pooled-env: cannot read the server pid from dispatch B's report $report_b"
   [ -n "$pid_a" ] && [ "$pid_a" = "$pid_b" ] ||
     fail "pooled-env: the two dispatches ran on two servers (${pid_a:-none} and ${pid_b:-none}), not one"
   home="${CODEX_HOME:-$HOME/.codex}"
-  if [ -d "$home/sessions" ] && grep -rlF -e "$value_a" -e "$value_b" "$home/sessions" >/dev/null 2>&1; then
-    fail "pooled-env: a per-dispatch value reached a thread rollout under $home/sessions: $(grep -rlF -e "$value_a" -e "$value_b" "$home/sessions" | head -3 | tr '\n' ' ')"
+  if [ -d "$home/sessions" ]; then
+    local leaked status=0
+    leaked="$(grep -rlF -e "$value_a" -e "$value_b" "$home/sessions")" || status=$?
+    case "$status" in
+      0) fail "pooled-env: a per-dispatch value reached a thread rollout under $home/sessions: $(printf '%s' "$leaked" | head -3 | tr '\n' ' ')" ;;
+      1) ;;
+      *) fail "pooled-env: cannot scan the rollouts under $home/sessions (grep exit $status); check their permissions, then rerun" ;;
+    esac
   fi
   note "  ok: each pooled dispatch saw only its own variable, both on server $pid_a, none in a rollout"
 }
 
 oh_pooled_kill() {
+  _oh_phase pooled-kill
   local beat="$POOLED_DIR/heartbeat" pid lines last before bound=$((2 + 5)) waited=0 grown=0 quiet=0
-  mkdir -p "$POOLED_DIR/wk"
+  mkdir -p "$POOLED_DIR/wk" ||
+    fail "pooled-kill: cannot create the dispatch's working directory under $POOLED_DIR; check that it is writable"
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
   OH_POOLED_BEAT="$beat" _oh_pooled_start pooled-kill "$POOLED_DIR/kill.json" "$POOLED_DIR/wk" \
     'while :; do date +%s >> "$OH_POOLED_BEAT"; sleep 0.1; done'
@@ -210,6 +223,7 @@ oh_pooled_kill() {
 }
 
 oh_pooled_reuse() {
+  _oh_phase pooled-reuse
   case "$(uname -s)" in
     Linux*) ;;
     *)
@@ -219,6 +233,7 @@ oh_pooled_reuse() {
   esac
   OH_REUSE_CODEX=codex bash "$OH_REPO_ROOT/live/control/app-server-reuse.sh" ||
     fail "pooled-reuse: the sustained-reuse workload failed; its error is above"
+  # llmlint: ignore[work_goes_through_command_surface] The same frozen sync scripts/e2e-network-budget.sh runs before its onebudgetspec check, for the same reason: the live-control CI leg reaches this phase without `just bootstrap`, so it syncs the one locked workspace itself rather than through a recipe.
   uv sync --project "$OH_REPO_ROOT/python" --frozen --no-install-workspace --quiet ||
     fail "pooled-reuse: could not install onebudgetspec (uv sync); run 'just bootstrap', then rerun"
   (cd "$OH_REPO_ROOT/live/control" &&
@@ -228,7 +243,8 @@ oh_pooled_reuse() {
 
 if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
   if have_env "Codex auth (shared app-server phases)" CODEX_E2E_AUTH OPENAI_API_KEY; then
-    POOLED_DIR="$(mktemp -d)"
+    POOLED_DIR="$(mktemp -d)" || fail "cannot create a scratch directory for the shared app-server phases; check that the host temp dir is writable"
+    trap 'rm -rf "$POOLED_DIR" || note "  could not remove $POOLED_DIR; delete it by hand"' EXIT
     export OH_MODEL="${CODEX_E2E_MODEL:-}"
     note "» codex: pooled-env — two pooled dispatches each see only their own environment, on one server"
     oh_pooled_env
@@ -236,7 +252,6 @@ if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
     oh_pooled_kill
     note "» codex: pooled-reuse — a shared server serving sequential leases keeps no per-dispatch memory"
     oh_pooled_reuse
-    rm -rf "$POOLED_DIR"
   fi
 fi
 if [ "${OH_CONTROL_ONLY:-}" = pooled ]; then

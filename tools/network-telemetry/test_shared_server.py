@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import time
 import unittest
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -56,15 +57,38 @@ def shim_for(tmp: Path, real: Path, file: Path) -> Path:
     return shim
 
 
-def live_turns(mock_dir: Path) -> int:
-    count = 0
-    for state in mock_dir.glob("state-*.json"):
+@dataclass(frozen=True)
+class MockState:
+    """What one mock app-server's state file says, as far as these tests read it."""
+
+    live_turns: int
+
+    @staticmethod
+    def read(path: Path) -> MockState | None:
+        """The state at `path`, or None while it is mid-write or unreadable."""
         try:
-            loaded = json.loads(state.read_text())["loaded"]
-        except (ValueError, KeyError):
-            continue
-        count += sum(1 for t in loaded.values() if t.get("active_turn"))
-    return count
+            loaded = json.loads(path.read_text())["loaded"]
+        except (OSError, ValueError, KeyError):
+            return None
+        if not isinstance(loaded, dict):
+            return None
+        return MockState(sum(1 for t in loaded.values() if t.get("active_turn")))
+
+
+@dataclass(frozen=True)
+class DispatchReport:
+    """One pooled dispatch's run report, as far as these tests read it."""
+
+    server_pid: int
+
+    @staticmethod
+    def parse(stdout: bytes) -> DispatchReport:
+        return DispatchReport(int(json.loads(stdout)["control"]["app_server"]["pid"]))
+
+
+def live_turns(mock_dir: Path) -> int:
+    states = [MockState.read(path) for path in mock_dir.glob("state-*.json")]
+    return sum(state.live_turns for state in states if state is not None)
 
 
 def wait_for(label: str, limit: float, condition: Callable[[], bool]) -> None:
@@ -130,12 +154,12 @@ class OneLaunchOverItsLife(unittest.TestCase):
         second = dispatch("two")
         wait_for("both turns live on the server", 60, lambda: live_turns(tmp / "mock") == 2)
         release.touch()
-        reports = []
+        reports: list[DispatchReport] = []
         for child in (first, second):
             out, err = child.communicate(timeout=120)
             self.assertEqual(child.returncode, 0, err.decode())
-            reports.append(json.loads(out))
-        pids = {r["control"]["app_server"]["pid"] for r in reports}
+            reports.append(DispatchReport.parse(out))
+        pids = {report.server_pid for report in reports}
         self.assertEqual(len(pids), 1, "the two dispatches did not share one server")
 
         def server_starts() -> list[Record]:

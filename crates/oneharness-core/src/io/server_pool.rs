@@ -258,31 +258,34 @@ impl LeaseHolder {
     }
 }
 
-/// What a lease file says beyond its holder: the dispatch's marker, and the
-/// thread and turn it is serving — everything the pool needs to stop a dead
-/// holder's work on a shared Codex app-server without that holder's help.
-/// Every field is optional, and a reader that knows only [`LeaseHolder`]
-/// ignores them.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// What a lease on a shared Codex app-server says beyond its holder: the
+/// dispatch's marker, and the thread it holds with the turn running on it —
+/// everything the pool needs to stop a dead holder's work without that
+/// holder's help. A reader that knows only [`LeaseHolder`] ignores it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseNote {
     /// The dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
+    pub marker: String,
+    /// The app-server thread the dispatch holds, once it holds one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marker: Option<String>,
-    /// The app-server thread the dispatch holds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thread: Option<String>,
-    /// The turn running on it, while one is.
+    pub thread: Option<LeasedThread>,
+}
+
+/// A thread a lease holds, and the turn running on it while one is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeasedThread {
+    pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn: Option<String>,
 }
 
-/// One lease file: the holder, and its note.
+/// One lease file: the holder, and its note on a shared Codex app-server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseFile {
     #[serde(flatten)]
     pub holder: LeaseHolder,
-    #[serde(flatten)]
-    pub note: LeaseNote,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<LeaseNote>,
 }
 
 /// A lease on a pooled server, released when dropped.
@@ -319,7 +322,7 @@ impl ServerLease {
     pub fn annotate(&self, note: &LeaseNote) -> io::Result<()> {
         let text = serde_json::to_string(&LeaseFile {
             holder: self.holder.clone(),
-            note: note.clone(),
+            note: Some(note.clone()),
         })
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let tmp = self.lease_file.with_extension("lease.tmp");
@@ -612,9 +615,11 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
                     if let Some(record) = recorded.as_ref().filter(|r| r.marker.is_some()) {
                         let note = text
                             .as_deref()
-                            .and_then(|text| serde_json::from_str::<LeaseNote>(text).ok())
-                            .unwrap_or_default();
-                        crate::io::app_server::retire_dead_lease(record, &note);
+                            .and_then(|text| serde_json::from_str::<LeaseFile>(text).ok())
+                            .and_then(|file| file.note);
+                        if let Some(note) = note {
+                            crate::io::app_server::retire_dead_lease(record, &note);
+                        }
                     }
                     let _ = fs::remove_file(&path);
                 }

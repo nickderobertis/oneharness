@@ -28,8 +28,8 @@ import json
 import math
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 LEASES = 5
@@ -39,6 +39,22 @@ class Incomplete(Exception):
     """The record cannot yield a figure; the message names every fault."""
 
 
+@dataclass(frozen=True)
+class Reading:
+    """One whole-tree resident memory reading of the server."""
+
+    rss_bytes: int
+    pids: list[int]
+
+
+@dataclass(frozen=True)
+class Figure:
+    """What the budget reports: the ratio, and the detail onebudgetspec shows."""
+
+    value: float
+    detail: str
+
+
 def telemetry_file() -> Path:
     override = os.environ.get("OH_E2E_REUSE_FILE", "")
     if override != "":
@@ -46,23 +62,60 @@ def telemetry_file() -> Path:
     return ROOT / "target" / "e2e-telemetry" / "app-server-reuse" / "reuse.json"
 
 
-def reading(readings: Any, name: str, faults: list[str]) -> tuple[int, list[int]] | None:
+def positive_int(value: object) -> int | None:
+    """`value` as a positive integer, or None (a bool is no count)."""
+    if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+        return value
+    return None
+
+
+def reading(readings: object, name: str, server: int | None, faults: list[str]) -> Reading | None:
     entry = readings.get(name) if isinstance(readings, dict) else None
     if not isinstance(entry, dict):
         faults.append(f"the {name} reading is missing")
         return None
-    rss = entry.get("rss_bytes")
-    if not isinstance(rss, int) or isinstance(rss, bool) or rss <= 0:
-        faults.append(f"the {name} reading's rss_bytes is {rss!r}, not a positive byte count")
+    rss = positive_int(entry.get("rss_bytes"))
+    if rss is None:
+        faults.append(
+            f"the {name} reading's rss_bytes is {entry.get('rss_bytes')!r}, not a positive byte count"
+        )
         return None
-    pids = entry.get("pids")
-    if not isinstance(pids, list) or not pids or not all(isinstance(p, int) for p in pids):
-        faults.append(f"the {name} reading names no pids it summed")
+    raw = entry.get("pids")
+    pids = [positive_int(pid) for pid in raw] if isinstance(raw, list) else []
+    if not pids or any(pid is None for pid in pids):
+        faults.append(f"the {name} reading's pids {raw!r} are not the positive pids it summed")
         return None
-    return rss, [int(pid) for pid in pids]
+    summed = [pid for pid in pids if pid is not None]
+    if server is not None and server not in summed:
+        faults.append(f"the {name} reading's pids {summed} leave out the server pid {server}")
+        return None
+    return Reading(rss, summed)
 
 
-def figure(path: Path) -> tuple[float, str]:
+def server_pid(record: dict[str, object], faults: list[str]) -> int | None:
+    """The one server pid every lease ran on, or None with the faults named."""
+    leases = record.get("leases")
+    leases = leases if isinstance(leases, list) else []
+    released = record.get("lease_count")
+    if not isinstance(released, int) or released < LEASES or released != len(leases):
+        faults.append(
+            f"{released!r} leases were released ({len(leases)} recorded); the workload is {LEASES}"
+        )
+    pids: set[int] = set()
+    for index, lease in enumerate(leases, start=1):
+        pid = positive_int(lease.get("server_pid")) if isinstance(lease, dict) else None
+        if pid is None:
+            faults.append(f"lease {index} names no positive server pid: {lease!r}")
+        else:
+            pids.add(pid)
+    if len(pids) > 1:
+        faults.append(
+            f"the leases used {len(pids)} server pids {sorted(pids)}; the workload is one server"
+        )
+    return next(iter(pids)) if len(pids) == 1 else None
+
+
+def figure(path: Path) -> Figure:
     if not path.is_file():
         raise Incomplete(
             f"no reuse telemetry at {path}; run live/control/app-server-reuse.sh first"
@@ -77,30 +130,26 @@ def figure(path: Path) -> tuple[float, str]:
     platform = record.get("platform")
     if platform != "linux":
         faults.append(f"the workload ran on {platform!r}; the budget is measured on linux only")
-    leases = record.get("leases")
-    leases = leases if isinstance(leases, list) else []
-    released = record.get("lease_count")
-    if not isinstance(released, int) or released < LEASES or len(leases) < LEASES:
-        faults.append(
-            f"{released!r} leases were released ({len(leases)} recorded); the workload is {LEASES}"
-        )
-    pids = sorted({lease.get("server_pid") for lease in leases if isinstance(lease, dict)}, key=str)
-    if len(pids) > 1:
-        faults.append(f"the leases used {len(pids)} server pids {pids}; the workload is one server")
+    retained = record.get("retained", [])
+    if not isinstance(retained, list):
+        faults.append(f"the retained-thread list is {retained!r}, not a list")
+    elif retained:
+        faults.append(f"released threads {retained} were still loaded when the readings were taken")
+    server = server_pid(record, faults)
     readings = record.get("readings")
-    first = reading(readings, "after_first", faults)
-    last = reading(readings, "after_last", faults)
+    first = reading(readings, "after_first", server, faults)
+    last = reading(readings, "after_last", server, faults)
     if faults or first is None or last is None:
         raise Incomplete("; ".join(faults))
-    ratio = last[0] / first[0]
+    ratio = last.rss_bytes / first.rss_bytes
     if not math.isfinite(ratio):
-        raise Incomplete(f"the ratio {last[0]} / {first[0]} is not finite")
+        raise Incomplete(f"the ratio {last.rss_bytes} / {first.rss_bytes} is not finite")
     detail = (
-        f"after the last of {released} leases: {last[0]} B over pids {last[1]}; "
-        f"after the first: {first[0]} B over pids {first[1]}; "
-        f"server pid {pids[0] if pids else None}; {record.get('codex_version')}"
+        f"after the last of {record['lease_count']} leases: {last.rss_bytes} B over pids {last.pids}; "
+        f"after the first: {first.rss_bytes} B over pids {first.pids}; "
+        f"server pid {server}; {record.get('codex_version')}"
     )
-    return ratio, detail
+    return Figure(ratio, detail)
 
 
 def main(argv: list[str]) -> int:
@@ -108,15 +157,17 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--file", type=Path, help="read this telemetry file instead")
     args = parser.parse_args(argv)
     try:
-        value, detail = figure(args.file or telemetry_file())
+        measured = figure(args.file or telemetry_file())
     except Incomplete as error:
         print(f"app_server_rss_budget: {error}", file=sys.stderr)
         return 1
     result = os.environ.get("ONEBUDGETSPEC_RESULT", "")
     if result != "":
-        Path(result).write_text(json.dumps({"value": value, "detail": detail}), encoding="utf-8")
+        Path(result).write_text(
+            json.dumps({"value": measured.value, "detail": measured.detail}), encoding="utf-8"
+        )
     else:
-        print(f"{value:.6f}\n{detail}")
+        print(f"{measured.value:.6f}\n{measured.detail}")
     return 0
 
 

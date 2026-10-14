@@ -488,6 +488,25 @@ impl std::fmt::Display for PoolKey {
     }
 }
 
+impl JsonSchema for PoolKey {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PoolKey")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$",
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for PoolKey {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
@@ -1442,10 +1461,10 @@ pub struct ControlReport {
 pub struct AppServerReport {
     /// The pid the pool recorded for the server (its `server.json`): the
     /// process it launched, which is the launcher shim when Codex is one.
-    pub pid: u32,
+    pub pid: std::num::NonZeroU32,
     /// The pool entry the server belongs to — equal for every dispatch that
     /// shared it.
-    pub pool_key: String,
+    pub pool_key: PoolKey,
 }
 
 #[cfg(test)]

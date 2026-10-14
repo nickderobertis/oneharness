@@ -69,6 +69,7 @@ class RssGrowthBudget(unittest.TestCase):
             (FIXTURES / "reuse-two-servers.json", "2 server pids"),
             (FIXTURES / "reuse-missing-reading.json", "the after_first reading is missing"),
             (FIXTURES / "reuse-zero-reading.json", "after_last reading's rss_bytes is 0"),
+            (FIXTURES / "reuse-retained.json", "were still loaded when the readings were taken"),
         ):
             with self.subTest(fixture=fixture.name):
                 run = check(fixture)

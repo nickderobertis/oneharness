@@ -146,19 +146,22 @@ impl ReplyBoard {
     }
 }
 
-/// What a candidate's turn on a shared app-server left for its result and the
-/// run's report.
+/// Where the serving candidate's turn on a shared app-server is, and what it
+/// leaves for the candidate's result. `command` is the server's launch argv,
+/// which the result records as what oneharness ran.
 #[derive(Default)]
-struct PooledState {
-    /// Where an interrupt's answer arrives while the turn is live.
-    board: Option<std::sync::Arc<ReplyBoard>>,
-    /// The server the turn ran on, kept past the turn for the report.
-    server: Option<AppServerReport>,
-    /// The server's launch argv, which the candidate's result records as what
-    /// oneharness ran.
-    command: Option<Vec<String>>,
-    /// Whether the server went away under the live turn.
-    lost: bool,
+enum PooledState {
+    /// No turn on a shared app-server: the candidate drives its own child, or
+    /// has not opened its turn yet.
+    #[default]
+    None,
+    /// The turn is live; an interrupt's answer arrives on `board`.
+    Live {
+        board: std::sync::Arc<ReplyBoard>,
+        command: Vec<String>,
+    },
+    /// The turn is over — `lost` when the server went away under it.
+    Ended { command: Vec<String>, lost: bool },
 }
 
 /// What drives — and therefore what interrupts — the turn a candidate is
@@ -605,13 +608,7 @@ impl ControlHandle {
         server: AppServerReport,
         command: Vec<String>,
     ) {
-        {
-            let mut pooled = self.pooled();
-            pooled.board = Some(board);
-            pooled.server = Some(server.clone());
-            pooled.command = Some(command);
-            pooled.lost = false;
-        }
+        *self.pooled() = PooledState::Live { board, command };
         *self
             .app_server
             .lock()
@@ -624,21 +621,34 @@ impl ControlHandle {
 
     /// The shared app-server went away under the live turn.
     pub fn mark_app_server_lost(&self) {
-        self.pooled().lost = true;
+        let mut pooled = self.pooled();
+        let command = match std::mem::take(&mut *pooled) {
+            PooledState::Live { command, .. } | PooledState::Ended { command, .. } => command,
+            PooledState::None => return,
+        };
+        *pooled = PooledState::Ended {
+            command,
+            lost: true,
+        };
     }
 
     /// Whether the serving candidate's shared app-server went away under its
     /// live turn.
     #[must_use]
     pub fn app_server_lost(&self) -> bool {
-        self.pooled().lost
+        matches!(*self.pooled(), PooledState::Ended { lost: true, .. })
     }
 
     /// The serving candidate's shared app-server launch argv, when its turn
     /// ran on one.
     #[must_use]
     pub fn app_server_command(&self) -> Option<Vec<String>> {
-        self.pooled().command.clone()
+        match &*self.pooled() {
+            PooledState::Live { command, .. } | PooledState::Ended { command, .. } => {
+                Some(command.clone())
+            }
+            PooledState::None => None,
+        }
     }
 
     /// The last shared app-server a candidate of this run ran on.
@@ -681,7 +691,13 @@ impl ControlHandle {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
-        self.pooled().board = None;
+        let mut pooled = self.pooled();
+        if let PooledState::Live { command, .. } = std::mem::take(&mut *pooled) {
+            *pooled = PooledState::Ended {
+                command,
+                lost: false,
+            };
+        }
     }
 
     /// Write one raw line into the live turn's stdin, e.g. the prompt frame.
@@ -837,7 +853,10 @@ impl ControlHandle {
         // On a shared app-server the answer is awaited, bounded: the server
         // answers an interrupt for a turn that already ended with nothing at
         // all, and its answer is what says whether the thread still exists.
-        let board = self.pooled().board.clone();
+        let board = match &*self.pooled() {
+            PooledState::Live { board, .. } => Some(std::sync::Arc::clone(board)),
+            PooledState::None | PooledState::Ended { .. } => None,
+        };
         let awaited: Option<u64> = board.as_ref().and_then(|board| {
             let id = frames
                 .first()

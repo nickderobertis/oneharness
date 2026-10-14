@@ -203,9 +203,18 @@ impl WsReader {
         let payload = self.buffer[frame.payload_start..frame.payload_start + frame.len].to_vec();
         self.buffer.drain(..frame.payload_start + frame.len);
         match frame.opcode {
-            // Text, binary, or a continuation of either.
-            0x0..=0x2 => {
-                if frame.opcode != 0x0 {
+            // A JSON-RPC server sends text; a binary message is not one.
+            0x2 => Err(protocol_error(
+                "a binary message where JSON-RPC text was expected",
+            )),
+            // Text, or a continuation of it.
+            0x0 | 0x1 => {
+                if frame.opcode == 0x1 {
+                    if self.in_message {
+                        return Err(protocol_error(
+                            "a new message before the fragmented one ended",
+                        ));
+                    }
                     self.message.clear();
                     self.in_message = true;
                 }
@@ -231,7 +240,7 @@ impl WsReader {
                 }
                 Ok(None)
             }
-            // A pong, or a reserved control opcode: nothing to do.
+            // A pong: nothing to do. `parse_frame` refused every other opcode.
             _ => Ok(None),
         }
     }
@@ -254,15 +263,30 @@ fn parse_frame(buffer: &[u8]) -> io::Result<Option<FrameHeader>> {
     }
     let fin = buffer[0] & 0x80 != 0;
     let opcode = buffer[0] & 0x0f;
+    if buffer[0] & 0x70 != 0 {
+        return Err(protocol_error(
+            "reserved bits set with no extension negotiated",
+        ));
+    }
+    if !matches!(opcode, 0x0..=0x2 | 0x8..=0xA) {
+        return Err(protocol_error("a reserved opcode"));
+    }
     if buffer[1] & 0x80 != 0 {
         return Err(protocol_error("a masked frame from the server"));
+    }
+    if opcode >= 0x8 && (!fin || buffer[1] & 0x7f > 125) {
+        return Err(protocol_error("a fragmented or oversized control frame"));
     }
     let (len, header) = match buffer[1] & 0x7f {
         126 => {
             if buffer.len() < 4 {
                 return Ok(None);
             }
-            (u64::from(u16::from_be_bytes([buffer[2], buffer[3]])), 4)
+            let len = u64::from(u16::from_be_bytes([buffer[2], buffer[3]]));
+            if len < 126 {
+                return Err(protocol_error("a length not in its shortest encoding"));
+            }
+            (len, 4)
         }
         127 => {
             if buffer.len() < 10 {
@@ -270,7 +294,11 @@ fn parse_frame(buffer: &[u8]) -> io::Result<Option<FrameHeader>> {
             }
             let mut bytes = [0u8; 8];
             bytes.copy_from_slice(&buffer[2..10]);
-            (u64::from_be_bytes(bytes), 10)
+            let len = u64::from_be_bytes(bytes);
+            if len <= u64::from(u16::MAX) {
+                return Err(protocol_error("a length not in its shortest encoding"));
+            }
+            (len, 10)
         }
         short => (u64::from(short), 2),
     };
@@ -317,17 +345,29 @@ pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsW
     }
     let text = String::from_utf8_lossy(&response);
     let status = text.lines().next().unwrap_or_default().to_string();
+    let header = |wanted: &str| {
+        text.lines().skip(1).find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.trim()
+                .eq_ignore_ascii_case(wanted)
+                .then(|| value.trim().to_string())
+        })
+    };
     let upgraded = status.split_whitespace().nth(1) == Some("101")
-        && text.lines().any(|line| {
-            line.split_once(':').is_some_and(|(name, value)| {
-                name.trim().eq_ignore_ascii_case("upgrade")
-                    && value.trim().eq_ignore_ascii_case("websocket")
-            })
+        && header("upgrade").is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
+        && header("connection").is_some_and(|v| {
+            v.split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
         });
     if !upgraded {
         return Err(protocol_error(&format!(
             "the server refused the WebSocket upgrade: `{status}`"
         )));
+    }
+    if header("sec-websocket-accept").as_deref() != Some(accept_key(&key).as_str()) {
+        return Err(protocol_error(
+            "the server's Sec-WebSocket-Accept does not answer this handshake's key",
+        ));
     }
     let writer = Arc::new(Mutex::new(WsWriter {
         stream: stream.try_clone()?,
@@ -368,6 +408,71 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 
 fn mask_key() -> [u8; 4] {
     random_bytes::<4>()
+}
+
+/// The `Sec-WebSocket-Accept` a server answers the handshake key `key` with
+/// (RFC 6455 §4.2.2): base64 of the SHA-1 of the key and the protocol's GUID.
+#[must_use]
+pub fn accept_key(key: &str) -> String {
+    base64(&sha1(
+        format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes(),
+    ))
+}
+
+/// SHA-1 (FIPS 180-4), for the handshake's accept key alone: the protocol
+/// names this digest, and nothing here relies on it for security.
+fn sha1(message: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let mut data = message.to_vec();
+    let bits = (message.len() as u64).wrapping_mul(8);
+    data.push(0x80);
+    while data.len() % 64 != 56 {
+        data.push(0);
+    }
+    data.extend_from_slice(&bits.to_be_bytes());
+    for block in data.chunks(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in block.chunks(4).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let [mut a, mut b, mut c, mut d, mut e] = h;
+        for (i, word) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*word);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        for (slot, value) in h.iter_mut().zip([a, b, c, d, e]) {
+            *slot = slot.wrapping_add(value);
+        }
+    }
+    let mut out = [0u8; 20];
+    for (chunk, word) in out.chunks_mut(4).zip(h) {
+        chunk.copy_from_slice(&word.to_be_bytes());
+    }
+    out
 }
 
 /// Standard base64 with padding, for the handshake key.
@@ -657,6 +762,33 @@ mod tests {
     use crate::io::scratch::ScratchDir;
     use std::io::BufRead;
 
+    /// A server's `101` answer to `request`, with the accept key it owes.
+    fn switching(request: &str) -> String {
+        let key = request
+            .lines()
+            .find_map(|line| line.strip_prefix("Sec-WebSocket-Key: "))
+            .expect("the upgrade carries a key");
+        format!(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+            accept_key(key.trim())
+        )
+    }
+
+    #[test]
+    fn the_accept_key_matches_rfc_6455_s_worked_example() {
+        assert_eq!(
+            accept_key("dGhlIHNhbXBsZSBub25jZQ=="),
+            "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+        );
+        assert_eq!(
+            sha1(b"abc")
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            "a9993e364706816aba3e25717850c26c9cd0d89d"
+        );
+    }
+
     #[test]
     fn base64_matches_the_rfc_4648_vectors() {
         for (input, encoded) in [
@@ -737,9 +869,7 @@ mod tests {
             }
             assert!(request.starts_with("GET / HTTP/1.1\r\n"), "{request}");
             assert!(request.contains("Upgrade: websocket\r\n"), "{request}");
-            writer
-                .write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
-                .unwrap();
+            writer.write_all(switching(&request).as_bytes()).unwrap();
             let (opcode, payload) = read_client_frame(&mut reader);
             assert_eq!(
                 (opcode, payload.as_slice()),
@@ -804,8 +934,41 @@ mod tests {
     }
 
     #[test]
+    fn an_upgrade_answering_another_key_is_refused() {
+        let dir = ScratchDir::new("ws-wrong-accept").unwrap();
+        let path = dir.join("s.sock");
+        let listener = listener::LocalListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut seen = [0u8; 512];
+            let _ = stream.read(&mut seen);
+            stream
+                .write_all(switching("Sec-WebSocket-Key: some-other-key\r\n").as_bytes())
+                .unwrap();
+        });
+        let err = handshake(LocalStream::connect(&path).unwrap())
+            .err()
+            .unwrap();
+        server.join().unwrap();
+        assert!(err.to_string().contains("Sec-WebSocket-Accept"), "{err}");
+    }
+
+    #[test]
     fn a_masked_or_oversized_server_frame_is_refused() {
         assert!(parse_frame(&[0x81, 0x81, 0, 0, 0, 0, b'x']).is_err());
+        assert!(parse_frame(&[0xC1, 0x01, b'x']).is_err(), "a reserved bit");
+        assert!(
+            parse_frame(&[0x83, 0x01, b'x']).is_err(),
+            "a reserved opcode"
+        );
+        assert!(
+            parse_frame(&[0x09, 0x00]).is_err(),
+            "a fragmented control frame"
+        );
+        assert!(
+            parse_frame(&[0x81, 126, 0, 5, 1, 2, 3, 4, 5]).is_err(),
+            "a long encoding of 5"
+        );
         let mut huge = vec![0x81, 127];
         huge.extend_from_slice(&(MAX_MESSAGE_BYTES + 1).to_be_bytes());
         assert!(parse_frame(&huge).is_err());

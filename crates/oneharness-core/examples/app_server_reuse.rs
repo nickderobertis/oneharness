@@ -44,6 +44,20 @@ struct Args {
     cwd: PathBuf,
 }
 
+/// The longest `--hold-ms` or `--settle-ms`, as app-server-reuse.sh bounds
+/// its own setting: under 1 000 000 ms.
+const MAX_MS: u64 = 999_999;
+
+/// `raw` as a duration in whole milliseconds, at most [`MAX_MS`].
+fn millis(flag: &str, raw: &str) -> Result<Duration, String> {
+    match raw.parse::<u64>() {
+        Ok(ms) if ms <= MAX_MS => Ok(Duration::from_millis(ms)),
+        _ => Err(format!(
+            "{flag} must be whole milliseconds from 0 to {MAX_MS}, got `{raw}`"
+        )),
+    }
+}
+
 fn args() -> Result<Args, String> {
     let mut codex = None;
     let mut out = None;
@@ -58,15 +72,8 @@ fn args() -> Result<Args, String> {
             "--codex" => codex = Some(value()?),
             "--out" => out = Some(PathBuf::from(value()?)),
             "--leases" => leases = value()?.parse().map_err(|e| format!("--leases: {e}"))?,
-            "--hold-ms" => {
-                hold =
-                    Duration::from_millis(value()?.parse().map_err(|e| format!("--hold-ms: {e}"))?)
-            }
-            "--settle-ms" => {
-                settle = Duration::from_millis(
-                    value()?.parse().map_err(|e| format!("--settle-ms: {e}"))?,
-                )
-            }
+            "--hold-ms" => hold = millis("--hold-ms", &value()?)?,
+            "--settle-ms" => settle = millis("--settle-ms", &value()?)?,
             "--cwd" => cwd = PathBuf::from(value()?),
             other => return Err(format!("unknown argument `{other}`")),
         }
@@ -194,7 +201,9 @@ fn settle(
     bound: Duration,
 ) -> Result<Vec<ThreadId>, String> {
     let mut observer = PooledSession::open(dispatch)?;
-    let until = std::time::Instant::now() + bound;
+    let until = std::time::Instant::now()
+        .checked_add(bound)
+        .ok_or("the settle bound is past what the clock can count")?;
     let still = loop {
         // The last poll starts at the bound at the latest, and its listing
         // must finish within LISTING_GRACE of it.

@@ -14428,11 +14428,14 @@
           "pid": {
             "description": "The pid the pool recorded for the server (its `server.json`): the\nprocess it launched, which is the launcher shim when Codex is one.",
             "format": "uint32",
-            "minimum": 0,
+            "minimum": 1,
             "type": "integer"
           },
           "pool_key": {
             "description": "The pool entry the server belongs to \u2014 equal for every dispatch that\nshared it.",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "type": "string"
           }
         },
@@ -15675,11 +15678,14 @@
           "pid": {
             "description": "The pid the pool recorded for the server (its `server.json`): the\nprocess it launched, which is the launcher shim when Codex is one.",
             "format": "uint32",
-            "minimum": 0,
+            "minimum": 1,
             "type": "integer"
           },
           "pool_key": {
             "description": "The pool entry the server belongs to \u2014 equal for every dispatch that\nshared it.",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$",
             "type": "string"
           }
         },

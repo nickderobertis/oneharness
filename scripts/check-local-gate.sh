@@ -489,6 +489,11 @@ for tool in rustup cargo bun uv; do
   cat >"$bootstrap_bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
+# A case makes every call whose arguments contain STUB_FAIL_ON fail.
+if [ -n "${STUB_FAIL_ON:-}" ] && [[ "$*" == *"$STUB_FAIL_ON"* ]]; then
+  echo "$(basename "$0") stub: failing '$*' on purpose" >&2
+  exit 1
+fi
 STUB
   chmod +x "$bootstrap_bin/$tool"
 done
@@ -545,6 +550,21 @@ if grep -q 'cargo-prune-superseded' "$prune_log"; then
   echo "  fix: keep the version guard in the justfile's _prune-superseded-install recipe" >&2
   exit 1
 fi
+# A failed install, or a failed setup of the toolchain it builds on, fails
+# bootstrap and never prints the success line.
+for fail_on in "install --locked" "stable"; do
+  : >"$prune_log"
+  status=0
+  CALL_LOG="$prune_log" STUB_FAIL_ON="$fail_on" PRUNE_STUB_VERSION=0.0.0 PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+    just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >"$tmp/prune-out" 2>&1 || status=$?
+  if [ "$status" -eq 0 ] || grep -q 'bootstrap: installed cargo-prune-superseded' "$tmp/prune-out" ||
+    ! grep -q 'bootstrap: could not install cargo-prune-superseded' "$tmp/prune-out"; then
+    echo "check-local-gate: with every call containing '$fail_on' failing, bootstrap exited $status and printed:" >&2
+    cat "$tmp/prune-out" >&2
+    echo "  fix: make the justfile's _prune-superseded-install recipe fail, saying it could not install, before its success line" >&2
+    exit 1
+  fi
+done
 
 # The llmlint installer runs from the SessionStart hook, so under its `set -e`
 # every failure it guards must still end in exit 0. Each case drives the real

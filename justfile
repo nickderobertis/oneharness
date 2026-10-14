@@ -42,8 +42,9 @@ PRUNE_SUPERSEDED_VERSION := "0.1.1"
 # on the `stable` toolchain (installed minimal when absent).
 _prune-superseded-install:
     @if [ "$(cargo-prune-superseded --version 2>/dev/null || true)" != "cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}" ]; then \
-        cargo +stable --version >/dev/null 2>&1 || rustup toolchain install stable --profile minimal --no-self-update; \
-        cargo +stable install --locked --quiet cargo-prune-superseded --version "{{PRUNE_SUPERSEDED_VERSION}}"; \
+        { cargo +stable --version >/dev/null 2>&1 || rustup toolchain install stable --profile minimal --no-self-update; } && \
+        cargo +stable install --locked --quiet cargo-prune-superseded --version "{{PRUNE_SUPERSEDED_VERSION}}" || \
+        { echo "bootstrap: could not install cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}} on the stable toolchain (above); fix the error it names, then re-run 'just bootstrap'" >&2; exit 1; }; \
         echo "bootstrap: installed cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}"; \
     fi
 

@@ -1832,3 +1832,227 @@ fn a_broadcasting_server_s_other_thread_frames_are_never_a_dispatch_s_own() {
     assert_eq!(answers.len(), 1, "another dispatch answered: {answers:?}");
     assert_eq!(answers[0]["conn"], live_conn);
 }
+
+// ---------------------------------------------------------------------------
+// The startup-fetch settings survive pooling
+// ---------------------------------------------------------------------------
+
+/// Every launch the mock codex recorded about its model catalog, in order.
+fn catalog_records(pool: &Pool) -> Vec<Value> {
+    std::fs::read_to_string(pool.path("catalog.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+fn is_refresh(record: &Value) -> bool {
+    record["argv"]
+        .as_array()
+        .is_some_and(|argv| argv.iter().any(|a| a == "--stdio"))
+}
+
+fn server_launches(pool: &Pool) -> Vec<Value> {
+    catalog_records(pool)
+        .into_iter()
+        .filter(|r| {
+            r["argv"]
+                .as_array()
+                .is_some_and(|argv| argv.iter().any(|a| a == "--listen"))
+        })
+        .collect()
+}
+
+/// A world whose mock codex reports a release and keeps a catalog log, both
+/// under the `CODEX_MOCK_*` spellings a scrubbed server environment keeps.
+fn catalog_pool(tag: &str) -> Pool {
+    let pool = Pool::new(tag).with_env("CODEX_MOCK_VERSION", "1.2.3");
+    let log = pool.file("catalog.jsonl");
+    pool.with_env("CODEX_MOCK_CATALOG_LOG", &log)
+}
+
+/// Pooling keeps the startup-fetch settings: a catalog missing when the first
+/// dispatch arrives is refreshed exactly once, before the server starts, and
+/// the server starts with `-c analytics.enabled=false` and `-c
+/// model_catalog_json=<that file>` right after its plugins and apps settings;
+/// it fetches no catalog over its whole life across both dispatches' turns.
+#[test]
+fn a_pooled_server_starts_with_analytics_off_and_the_shared_catalog_and_fetches_none() {
+    let pool = catalog_pool("pool-catalog");
+    let release = pool.file("release");
+    let first = pool.spawn(pool.command("cat-a", &[], &[("MOCK_CODEX_HOLD_UNTIL", &release)]));
+    let server = pool.await_live_turns(1);
+    let second = pool.spawn(pool.command("cat-b", &[], &[("MOCK_CODEX_HOLD_UNTIL", &release)]));
+    pool.await_live_turns(2);
+    std::fs::write(&release, b"").unwrap();
+    for child in [first, second] {
+        let (output, report) = Pool::finish(child);
+        succeeded(&output, &report);
+        assert_eq!(reported_server(&report), server);
+    }
+    let records = catalog_records(&pool);
+    let refreshes: Vec<&Value> = records.iter().filter(|r| is_refresh(r)).collect();
+    assert_eq!(
+        refreshes.len(),
+        1,
+        "one refresh for the missing catalog: {records:?}"
+    );
+    let launches = server_launches(&pool);
+    assert_eq!(launches.len(), 1, "{launches:?}");
+    let launch = &launches[0];
+    assert!(
+        launch["started_ms"].as_u64() > refreshes[0]["started_ms"].as_u64(),
+        "the server started before its catalog was refreshed"
+    );
+    let argv: Vec<&str> = launch["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        argv[..8],
+        [
+            "app-server",
+            "-c",
+            "features.plugins=false",
+            "-c",
+            "features.apps=false",
+            "-c",
+            "analytics.enabled=false",
+            "-c"
+        ],
+        "{argv:?}"
+    );
+    assert!(argv[8].starts_with("model_catalog_json="), "{argv:?}");
+    let catalog_dir = pool.path("state/oneharness/codex-model-catalog");
+    let catalog = std::fs::read_dir(&catalog_dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension().is_some_and(|e| e == "json")
+                && !p.to_string_lossy().ends_with(".failure.json")
+        })
+        .unwrap();
+    assert_eq!(
+        std::fs::canonicalize(launch["catalog"].as_str().unwrap()).unwrap(),
+        std::fs::canonicalize(&catalog).unwrap()
+    );
+    let fetches = records
+        .iter()
+        .filter(|r| !is_refresh(r) && !r["fetch"].is_null())
+        .count();
+    assert_eq!(fetches, 0, "a server launch fetched a catalog: {records:?}");
+    wait_for("the server to stop", Duration::from_secs(10), || {
+        !alive(server)
+    });
+    assert_eq!(
+        catalog_records(&pool)
+            .iter()
+            .filter(|r| !is_refresh(r) && !r["fetch"].is_null())
+            .count(),
+        0,
+        "the server fetched a catalog over its life"
+    );
+}
+
+/// A catalog refreshed while a server lives leaves that server's argv as it
+/// was — the dispatch that refreshed it joins the running server — and the
+/// next server the pool starts reads the refreshed file.
+#[test]
+fn a_catalog_refreshed_under_a_live_server_reaches_the_next_server_not_the_running_one() {
+    let pool = catalog_pool("pool-catalog-stale");
+    let config = "[harness.codex]\nmodel_catalog_refresh_seconds = 1\n";
+    let release = pool.file("release");
+    let first = pool.spawn(pool.command_with_config(
+        "stale-a",
+        config,
+        &[],
+        &[("MOCK_CODEX_HOLD_UNTIL", &release)],
+    ));
+    let server = pool.await_live_turns(1);
+    let catalog = server_launches(&pool)[0]["catalog"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let written = std::fs::metadata(&catalog).unwrap().modified().unwrap();
+    std::thread::sleep(Duration::from_millis(1300));
+    let (output, joined) = pool.run(pool.command_with_config("stale-b", config, &[], &[]));
+    succeeded(&output, &joined);
+    assert_eq!(
+        reported_server(&joined),
+        server,
+        "the refreshing dispatch did not join the live server"
+    );
+    assert!(
+        std::fs::metadata(&catalog).unwrap().modified().unwrap() > written,
+        "the stale catalog was not refreshed"
+    );
+    assert_eq!(
+        server_launches(&pool).len(),
+        1,
+        "the running server was restarted"
+    );
+    std::fs::write(&release, b"").unwrap();
+    let (output, report) = Pool::finish(first);
+    succeeded(&output, &report);
+    wait_for("the server to stop", Duration::from_secs(10), || {
+        !alive(server)
+    });
+    let refreshed = std::fs::metadata(&catalog).unwrap().modified().unwrap();
+    let (output, next) = pool.run(pool.command_with_config("stale-c", config, &[], &[]));
+    succeeded(&output, &next);
+    assert_ne!(reported_server(&next), server);
+    let launches = server_launches(&pool);
+    assert_eq!(launches.len(), 2, "{launches:?}");
+    assert_eq!(launches[1]["catalog"], catalog.as_str());
+    assert_eq!(
+        launches[0]["argv"], launches[1]["argv"],
+        "the catalog path moved"
+    );
+    let read_at = launches[1]["started_ms"].as_u64().unwrap();
+    let refreshed_ms = refreshed
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    assert!(
+        read_at >= refreshed_ms,
+        "the next server started before the refreshed file"
+    );
+}
+
+/// A dispatch resolving `shared_model_catalog = false` or `analytics = true`
+/// runs on a server of its own, whose argv lacks that flag.
+#[test]
+fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
+    for (config, missing) in [
+        (
+            "[harness.codex]\nshared_model_catalog = false\n",
+            "model_catalog_json=",
+        ),
+        (
+            "[harness.codex]\nanalytics = true\n",
+            "analytics.enabled=false",
+        ),
+    ] {
+        let pool = catalog_pool("pool-catalog-own");
+        let release = pool.file("release");
+        let defaults =
+            pool.spawn(pool.command("own-a", &[], &[("MOCK_CODEX_HOLD_UNTIL", &release)]));
+        let shared = pool.await_live_turns(1);
+        let (output, own) = pool.run(pool.command_with_config("own-b", config, &[], &[]));
+        succeeded(&output, &own);
+        assert_ne!(reported_server(&own), shared, "{config}");
+        let argv = result(&own)["command"].as_array().unwrap().clone();
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a.as_str().is_some_and(|a| a.starts_with(missing))),
+            "{config}: {argv:?}"
+        );
+        std::fs::write(&release, b"").unwrap();
+        let (output, report) = Pool::finish(defaults);
+        succeeded(&output, &report);
+    }
+}

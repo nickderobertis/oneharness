@@ -97,13 +97,14 @@ export type FallThroughReason =
   | "model-mismatch"
   | "model-not-found"
   | "rate-limit"
-  | "server-overloaded";
+  | "server-overloaded"
+  | "app-server-lost";
 /**
  * The normalized, closed set of failure reasons oneharness can classify from a
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
  * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
- * `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
+ * `tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum
  * keeps a misspelled or invalid kind unrepresentable and gives every
  * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
  * the report, history) one definition to share instead of scattered string
@@ -119,7 +120,8 @@ export type FailureKind =
   | "untrusted_directory"
   | "input_too_large"
   | "model_mismatch"
-  | "server_overloaded";
+  | "server_overloaded"
+  | "app_server_lost";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *

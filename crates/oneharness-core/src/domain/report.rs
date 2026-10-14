@@ -50,6 +50,11 @@ use crate::domain::usage::UtcInstant;
 /// bump matters, since a consumer that exhaustively matches `failure_kind` learns
 /// from the version that two more now exist.
 ///
+/// `0.12` adds [`FailureKind::AppServerLost`] and its `"app-server-lost"`
+/// fallback reason: a pooled Codex dispatch whose shared app-server went away
+/// under its live turn. A new enum value, so exhaustive consumers learn of it
+/// from the version.
+///
 /// `0.11` adds [`FailureKind::ServerOverloaded`] and its
 /// `"server-overloaded"` fallback reason. The enum values require the bump so
 /// exhaustive consumers can reject rather than misread the new classification.
@@ -78,7 +83,7 @@ use crate::domain::usage::UtcInstant;
 ///
 /// `0.4` added the `config` report's `stream` field (the layered `--stream`
 /// value, with its provenance).
-pub const SCHEMA_VERSION: &str = "0.11";
+pub const SCHEMA_VERSION: &str = "0.12";
 
 /// How a harness emits its result, which decides how `text` is extracted.
 ///

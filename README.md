@@ -1962,6 +1962,7 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Ran, exited zero or non-zero, classified `quota` (no credit), no work done | ✅ fall through — `quota` |
 | Ran, exited zero or non-zero, classified `rate_limit`, no work done | ✅ fall through — `rate-limit` |
 | Codex reported `server_overloaded`, no work done, and same-identity retries were exhausted | ✅ fall through — `server-overloaded` |
+| A pooled Codex dispatch's shared app-server went away under its live turn, classified `app_server_lost`, no work done | ✅ fall through — `app-server-lost` |
 | Refused a resume it cannot resolve, classified `session_not_found`, no work done | ✅ fall through — `session-not-found` |
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
 | Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |

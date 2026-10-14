@@ -332,7 +332,13 @@ fn lease_server(
     ready_within: Duration,
 ) -> Result<(AppServerLease, LocalStream), String> {
     let executable = resolve_executable(&dispatch.executable)?;
-    let version = probe_version(&executable, &dispatch.server_env)?;
+    std::fs::create_dir_all(root).map_err(|err| {
+        format!(
+            "could not prepare the app-server pool at {}: {err}",
+            root.display()
+        )
+    })?;
+    let version = probe_version(&executable, &dispatch.server_env, root)?;
     let key = rules::pool_key(
         &executable,
         &version,
@@ -435,11 +441,18 @@ fn resolve_executable(configured: &str) -> Result<String, String> {
 }
 
 /// `<executable> --version`'s output, asked under the server's own scrubbed
-/// environment so it answers for the release the server will be.
-fn probe_version(executable: &str, server_env: &[(String, String)]) -> Result<String, String> {
+/// environment, and in the pool's `root` rather than the dispatch's directory,
+/// so it answers for the release the server will be: two dispatches in two
+/// directories key one server.
+fn probe_version(
+    executable: &str,
+    server_env: &[(String, String)],
+    root: &Path,
+) -> Result<String, String> {
     let mut command = std::process::Command::new(executable);
     command
         .arg("--version")
+        .current_dir(root)
         .env_clear()
         .envs(server_env.iter().map(|(k, v)| (k, v)))
         .stdin(std::process::Stdio::null())

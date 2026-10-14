@@ -407,8 +407,16 @@ oh_wait_pooled_servers() {
       | [.launch_id, ((.argv | index("--listen")) as $i | if $i == null then "" else .argv[$i + 1] end)] | @tsv' "$file" |
       while IFS=$'\t' read -r launch socket; do
         socket="${socket#unix://}"
-        entry="$(dirname "$(dirname "$socket")")"
-        pending="$(dirname "$file")/.pending/$launch"
+        # A path that cannot be resolved fails the wait (the caller's `||`)
+        # rather than reading as a server gone.
+        entry="$(dirname "$(dirname "$socket")")" || {
+          echo "cannot resolve the pool entry of launch $launch's socket '$socket'" >&2
+          return 1
+        }
+        pending="$(dirname "$file")/.pending/$launch" || {
+          echo "cannot resolve the pending-measurement path beside $file" >&2
+          return 1
+        }
         if [ -f "$entry/server.json" ] || [ -e "$pending" ]; then
           printf '%s ' "$launch"
         fi

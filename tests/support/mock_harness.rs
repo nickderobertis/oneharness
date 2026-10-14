@@ -2322,7 +2322,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         answer it with no completion, or drop the
 ///                         connection under it; `thread-start-no-thread` /
 ///                         `thread-start-bad-id` answer `thread/start` with no
-///                         thread or an empty id;
+///                         thread or an empty id; `unsubscribe-odd-status`
+///                         answers `thread/unsubscribe` with status `pending`;
 ///                         `ping-pong` pings each connection and handles
 ///                         nothing on it until it answers with a pong;
 ///                         `shell-completes-first` ends a shell turn before
@@ -3306,6 +3307,13 @@ mod listen_server {
                     .threads
                     .get(&thread)
                     .is_some_and(|t| t.subscribers.is_empty());
+                // CODEX_MOCK_FAULT=unsubscribe-odd-status: answer a status no
+                // release has.
+                let outcome = if s.fault == "unsubscribe-odd-status" {
+                    "pending"
+                } else {
+                    outcome
+                };
                 s.releases
                     .push(json!({"thread": thread, "conn": conn, "status": outcome}));
                 reply(&mut s, json!({"status": outcome}));

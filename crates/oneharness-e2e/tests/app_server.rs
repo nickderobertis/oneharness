@@ -1097,8 +1097,9 @@ fn lease_files(pool: &Pool) -> Vec<PathBuf> {
         .collect()
 }
 
-/// A release the server refuses, or leaves unanswered past its reply deadline
-/// (5 s), is said on stderr naming the thread and why, and bounded: the
+/// A release the server refuses, answers with a status that is no release, or
+/// leaves unanswered past its reply deadline (5 s), is said on stderr naming
+/// the thread and why, and bounded: the
 /// dispatch still succeeds, returns within the deadline, and leaves no lease —
 /// while a refused thread stays loaded on the server, as the warning says.
 #[test]
@@ -1116,6 +1117,12 @@ fn a_refused_or_unanswered_release_is_said_bounded_and_leaves_no_lease() {
             "MOCK_CODEX_UNSUBSCRIBE_DELAY_MS",
             "30000",
             "no answer to thread/unsubscribe within 5s",
+        ),
+        (
+            "odd-status",
+            "CODEX_MOCK_FAULT",
+            "unsubscribe-odd-status",
+            "it answered thread/unsubscribe with status \"pending\", not unsubscribed",
         ),
     ] {
         let started = Instant::now();

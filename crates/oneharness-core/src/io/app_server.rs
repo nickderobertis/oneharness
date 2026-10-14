@@ -576,11 +576,19 @@ fn release_thread(connection: &mut Connection, thread: &str) {
         json!({"threadId": thread}),
         RELEASE_REPLY_DEADLINE,
     ) {
-        Ok(Some(response)) => {
-            if let Err(why) = rules::reply_result(RELEASE_THREAD_METHOD, &response) {
-                warn(why);
-            }
-        }
+        Ok(Some(response)) => match rules::reply_result(RELEASE_THREAD_METHOD, &response) {
+            Err(why) => warn(why),
+            // Released, or already gone from the server.
+            Ok(result)
+                if matches!(
+                    result["status"].as_str(),
+                    Some("unsubscribed" | "notLoaded")
+                ) => {}
+            Ok(result) => warn(format!(
+                "it answered {RELEASE_THREAD_METHOD} with status {}, not unsubscribed",
+                result["status"]
+            )),
+        },
         Ok(None) => warn(format!(
             "no answer to {RELEASE_THREAD_METHOD} within {}s",
             RELEASE_REPLY_DEADLINE.as_secs()
@@ -612,20 +620,37 @@ pub(crate) fn retire_dead_lease(record: &ServerRecord, note: &LeaseNote) {
         name: rules::DISPATCH_MARKER_VAR.to_string(),
         value: note.marker.as_str().to_string(),
     };
-    let mut connection = connect_to(record);
+    let mut connection = connect_to(record, Duration::from_secs(2));
     let thread = note.thread.as_ref().map(|thread| thread.id.as_str());
     let turn = note
         .thread
         .as_ref()
         .and_then(|thread| thread.turn.as_ref())
         .map(TurnId::as_str);
-    if let (Some(connection), Some(thread), Some(turn)) = (connection.as_mut(), thread, turn) {
-        let _ = connection.request(
-            "turn/interrupt",
-            json!({"threadId": thread, "turnId": turn}),
-            Duration::from_millis(1500),
-        );
-    }
+    let interrupt = |connection: &mut Connection, thread: &str, turn: &str, within: Duration| {
+        connection
+            .request(
+                "turn/interrupt",
+                json!({"threadId": thread, "turnId": turn}),
+                within,
+            )
+            .ok()
+            .flatten()
+            .is_some_and(|reply| {
+                matches!(
+                    rules::InterruptReply::of(&reply),
+                    rules::InterruptReply::Accepted | rules::InterruptReply::ThreadGone(_)
+                )
+            })
+    };
+    // First within the stop deadline's budget, so the turn starts no more
+    // commands while they are stopped …
+    let mut interrupted = match (connection.as_mut(), thread, turn) {
+        (Some(connection), Some(thread), Some(turn)) => {
+            interrupt(connection, thread, turn, Duration::from_millis(1500))
+        }
+        _ => turn.is_none(),
+    };
     // What is left of the deadline, short of the settle window the forced kill
     // needs, so the commands are gone within the deadline from the finding.
     let left = DEAD_LEASE_STOP_DEADLINE
@@ -633,6 +658,22 @@ pub(crate) fn retire_dead_lease(record: &ServerRecord, note: &LeaseNote) {
         .saturating_sub(Duration::from_millis(1200))
         .max(Duration::from_millis(300));
     stop_dispatch_commands(&marker, left);
+    // … then, if that did not land (a server slow to answer), once more with
+    // the release's own bound, so the turn is not left running.
+    if !interrupted {
+        if connection.is_none() {
+            connection = connect_to(record, RELEASE_REPLY_DEADLINE);
+        }
+        if let (Some(connection), Some(thread), Some(turn)) = (connection.as_mut(), thread, turn) {
+            interrupted = interrupt(connection, thread, turn, RELEASE_REPLY_DEADLINE);
+        }
+        if !interrupted {
+            eprintln!(
+                "oneharness: warning: could not interrupt the dead dispatch's turn on the shared codex app-server (pid {})",
+                record.pid.get()
+            );
+        }
+    }
     if let (Some(connection), Some(thread)) = (connection.as_mut(), thread) {
         // Subscribe to the thread first: an unsubscribe from a connection that
         // never subscribed leaves it loaded. Codex refuses to resume a thread
@@ -652,7 +693,7 @@ pub(crate) fn retire_dead_lease(record: &ServerRecord, note: &LeaseNote) {
 
 /// A fresh, initialized connection to the server `record` names, or `None` if
 /// it cannot be reached.
-fn connect_to(record: &ServerRecord) -> Option<Connection> {
+fn connect_to(record: &ServerRecord, initialize_within: Duration) -> Option<Connection> {
     let ServerAddress::UnixSocket { path } = &record.address else {
         return None;
     };
@@ -662,7 +703,7 @@ fn connect_to(record: &ServerRecord) -> Option<Connection> {
     let stream = LocalStream::connect(Path::new(&path.to_string())).ok()?;
     let mut connection = Connection::open(stream).ok()?;
     let initialized = connection
-        .request("initialize", initialize_params(), Duration::from_secs(2))
+        .request("initialize", initialize_params(), initialize_within)
         .ok()??;
     rules::reply_result("initialize", &initialized).ok()?;
     connection

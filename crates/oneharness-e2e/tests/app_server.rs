@@ -1396,3 +1396,439 @@ fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_thro
         assert_eq!(record["schema_version"], "1.10", "{record}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// Thread-level isolation: every setting on the dispatch's own connection
+// ---------------------------------------------------------------------------
+
+/// One dispatch's thread-level settings.
+struct Settings<'a> {
+    session: &'a str,
+    cwd: &'a Path,
+    model: &'a str,
+    mode: &'a str,
+    sandbox: &'a str,
+    prompt: &'a str,
+    system: &'a str,
+}
+
+impl Settings<'_> {
+    fn args(&self) -> Vec<String> {
+        [
+            "--cwd",
+            &self.cwd.display().to_string(),
+            "--model",
+            self.model,
+            "--mode",
+            self.mode,
+            "--prompt",
+            self.prompt,
+            "--system",
+            self.system,
+        ]
+        .iter()
+        .map(|a| (*a).to_string())
+        .collect()
+    }
+}
+
+fn spawn_with(pool: &Pool, settings: &Settings, envs: &[(&str, &str)]) -> Child {
+    let args = settings.args();
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    pool.spawn(pool.command(settings.session, &args, envs))
+}
+
+/// The first frame of `method` connection `conn` of server `pid` received.
+fn first_received(pool: &Pool, pid: u32, conn: u64, method: &str) -> Value {
+    pool.received(pid, conn)
+        .into_iter()
+        .find(|frame| frame["method"] == method)
+        .unwrap_or_else(|| panic!("connection {conn} sent no {method}"))
+}
+
+/// Every frame of `method` connection `conn` of server `pid` received.
+fn all_received(pool: &Pool, pid: u32, conn: u64, method: &str) -> Vec<Value> {
+    pool.received(pid, conn)
+        .into_iter()
+        .filter(|frame| frame["method"] == method)
+        .collect()
+}
+
+/// Hold a run's output to its own thread: every frame names its thread or no
+/// thread at all, and its answer is its own prompt's echo.
+fn output_is_its_own(report: &Value, prompt: &str, other_prompt: &str) {
+    let thread = thread_of(report);
+    for frame in stdout_frames(report) {
+        let named = frame["params"]["threadId"]
+            .as_str()
+            .or_else(|| frame["params"]["thread"]["id"].as_str());
+        assert!(
+            named.is_none() || named == Some(thread.as_str()),
+            "a frame of {named:?} reached the run of {thread}: {frame}"
+        );
+    }
+    let text = result(report)["text"].as_str().unwrap_or_default();
+    assert!(
+        text.contains(prompt) && !text.contains(other_prompt),
+        "{text}"
+    );
+}
+
+/// Two concurrent dispatches on one server, both turns live, with different
+/// values for every thread-level setting: each sends `thread/start` and every
+/// `turn/start` on its own connection with its own values; each command runs
+/// in its own worktree under its own sandbox; a server-initiated approval
+/// request for one thread arrives only on, and is answered only over, the
+/// connection of the dispatch that owns it; and each run's output holds only
+/// its own agent text and items.
+#[test]
+fn every_thread_level_setting_travels_on_its_own_dispatch_s_connection() {
+    let pool = Pool::new("pool-thread");
+    let (wt_a, wt_b) = (pool.worktree("wt-a"), pool.worktree("wt-b"));
+    let release = pool.file("release");
+    let a = Settings {
+        session: "thread-a",
+        cwd: &wt_a,
+        model: "model-alpha",
+        mode: "bypass",
+        sandbox: "dangerFullAccess",
+        prompt: "task alpha",
+        system: "instruction alpha",
+    };
+    let b = Settings {
+        session: "thread-b",
+        cwd: &wt_b,
+        model: "model-beta",
+        mode: "default",
+        sandbox: "readOnly",
+        prompt: "task beta",
+        system: "instruction beta",
+    };
+    let first = spawn_with(
+        &pool,
+        &a,
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", "touch landed-alpha && pwd"),
+            ("MOCK_CODEX_REQUEST_APPROVAL", "1"),
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+        ],
+    );
+    let server = pool.await_live_turns(1);
+    let second = spawn_with(
+        &pool,
+        &b,
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", "touch landed-beta && pwd"),
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+        ],
+    );
+    pool.await_live_turns(2);
+    std::fs::write(&release, b"").unwrap();
+    let (out_a, report_a) = Pool::finish(first);
+    let (out_b, report_b) = Pool::finish(second);
+    succeeded(&out_a, &report_a);
+    succeeded(&out_b, &report_b);
+    assert_eq!(reported_server(&report_a), server);
+    assert_eq!(reported_server(&report_b), server);
+
+    for (settings, report, other) in [(&a, &report_a, &b), (&b, &report_b, &a)] {
+        let thread = thread_of(report);
+        let conn = pool.conn_of(server, &thread);
+        let cwd = settings.cwd.display().to_string();
+        let start = first_received(&pool, server, conn, "thread/start");
+        assert_eq!(start["params"]["cwd"], cwd.as_str(), "{start}");
+        assert_eq!(start["params"]["model"], settings.model, "{start}");
+        assert_eq!(start["params"]["approvalPolicy"], "never", "{start}");
+        let turns = all_received(&pool, server, conn, "turn/start");
+        assert!(!turns.is_empty());
+        for turn in &turns {
+            assert_eq!(turn["params"]["threadId"], thread.as_str(), "{turn}");
+            assert_eq!(turn["params"]["cwd"], cwd.as_str(), "{turn}");
+            assert_eq!(turn["params"]["model"], settings.model, "{turn}");
+            assert_eq!(turn["params"]["approvalPolicy"], "never", "{turn}");
+            assert_eq!(
+                turn["params"]["sandboxPolicy"]["type"], settings.sandbox,
+                "{turn}"
+            );
+        }
+        // The turn's effective context, as the server ran it.
+        let effective = pool.turn_of(server, &thread);
+        assert_eq!(effective["cwd"], cwd.as_str());
+        assert_eq!(effective["model"], settings.model);
+        assert_eq!(effective["sandbox"], settings.sandbox);
+        let input = effective["input"].as_str().unwrap();
+        assert!(
+            input.contains(settings.prompt) && input.contains(settings.system),
+            "{input}"
+        );
+        assert!(
+            !input.contains(other.prompt) && !input.contains(other.system),
+            "{input}"
+        );
+        output_is_its_own(report, settings.prompt, other.prompt);
+    }
+
+    // Each command ran in its own worktree, under its own sandbox.
+    assert!(
+        wt_a.join("landed-alpha").exists(),
+        "the full-access write did not land"
+    );
+    assert!(
+        !wt_b.join("landed-alpha").exists(),
+        "a command ran in the other worktree"
+    );
+    assert!(!wt_b.join("landed-beta").exists() && !wt_a.join("landed-beta").exists());
+    let thread_b = thread_of(&report_b);
+    let refused = pool.state(server)["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["thread"] == thread_b.as_str())
+        .cloned()
+        .unwrap();
+    assert_eq!(refused["refused"], "read-only sandbox", "{refused}");
+    assert_eq!(refused["cwd"], wt_b.display().to_string().as_str());
+
+    // The approval request: on its owner's connection only, answered by it alone.
+    let thread_a = thread_of(&report_a);
+    let (conn_a, conn_b) = (
+        pool.conn_of(server, &thread_a),
+        pool.conn_of(server, &thread_b),
+    );
+    let approvals = pool.state(server)["approvals"].as_array().unwrap().clone();
+    assert_eq!(approvals.len(), 1, "{approvals:?}");
+    assert_eq!(approvals[0]["thread"], thread_a.as_str());
+    let answers = approvals[0]["answers"].as_array().unwrap();
+    assert_eq!(answers.len(), 1, "{answers:?}");
+    assert_eq!(answers[0]["conn"], conn_a);
+    assert_eq!(answers[0]["decision"], "approved");
+    assert!(
+        !pool
+            .sent(server, conn_b)
+            .iter()
+            .any(|frame| frame["method"] == "item/commandExecution/requestApproval"),
+        "the other dispatch was asked to approve"
+    );
+}
+
+/// Each dispatch resumes its own earlier thread — each created under the
+/// OTHER dispatch's settings, so any value left to the thread would be wrong —
+/// and each resumed thread and its turn run under the resuming dispatch's
+/// directory, model, sandbox, environment and marker: the turn's own values in
+/// force over the ones its thread was started with.
+#[test]
+fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
+    let pool = Pool::new("pool-resume");
+    let (wt_a, wt_b) = (pool.worktree("wt-a"), pool.worktree("wt-b"));
+    let a = |session| Settings {
+        session,
+        cwd: &wt_a,
+        model: "model-alpha",
+        mode: "bypass",
+        sandbox: "dangerFullAccess",
+        prompt: "task alpha",
+        system: "instruction alpha",
+    };
+    let b = |session| Settings {
+        session,
+        cwd: &wt_b,
+        model: "model-beta",
+        mode: "auto",
+        sandbox: "workspaceWrite",
+        prompt: "task beta",
+        system: "instruction beta",
+    };
+    // Each thread is created under the other dispatch's settings.
+    let command = "env; pwd";
+    let (out, made_a) = Pool::finish(spawn_with(
+        &pool,
+        &b("res-a"),
+        &[
+            ("PER_DISPATCH", "creator-of-a"),
+            ("MOCK_CODEX_RUN_COMMAND", command),
+        ],
+    ));
+    succeeded(&out, &made_a);
+    let (out, made_b) = Pool::finish(spawn_with(
+        &pool,
+        &a("res-b"),
+        &[
+            ("PER_DISPATCH", "creator-of-b"),
+            ("MOCK_CODEX_RUN_COMMAND", command),
+        ],
+    ));
+    succeeded(&out, &made_b);
+    // The handles move to the worktree that resumes them: the store is kept
+    // per project, and a handle carries no settings, only its thread.
+    for (name, from, to) in [("res-a", &wt_b, &wt_a), ("res-b", &wt_a, &wt_b)] {
+        use oneharness_core::io::session::session_path;
+        let sess = pool.path("sess");
+        let mut record: Value = serde_json::from_str(
+            &std::fs::read_to_string(session_path(&sess, from, name)).unwrap(),
+        )
+        .unwrap();
+        record["project"] = Value::String(to.display().to_string());
+        let target = session_path(&sess, to, name);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(target, record.to_string()).unwrap();
+    }
+    let created_on = reported_server(&made_a);
+    let created_marker = |report: &Value| {
+        pool.turn_of(created_on, &thread_of(report))["marker"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let (creator_marker_a, creator_marker_b) = (created_marker(&made_a), created_marker(&made_b));
+
+    let release = pool.file("release");
+    let first = spawn_with(
+        &pool,
+        &a("res-a"),
+        &[
+            ("PER_DISPATCH", "alpha"),
+            ("MOCK_CODEX_RUN_COMMAND", command),
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+        ],
+    );
+    let server = pool.await_live_turns(1);
+    let second = spawn_with(
+        &pool,
+        &b("res-b"),
+        &[
+            ("PER_DISPATCH", "beta"),
+            ("MOCK_CODEX_RUN_COMMAND", command),
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+        ],
+    );
+    pool.await_live_turns(2);
+    std::fs::write(&release, b"").unwrap();
+    let (out_a, report_a) = Pool::finish(first);
+    let (out_b, report_b) = Pool::finish(second);
+    succeeded(&out_a, &report_a);
+    succeeded(&out_b, &report_b);
+
+    for (settings, report, made, value, creator_marker) in [
+        (a("res-a"), &report_a, &made_a, "alpha", &creator_marker_a),
+        (b("res-b"), &report_b, &made_b, "beta", &creator_marker_b),
+    ] {
+        let thread = thread_of(report);
+        assert_eq!(
+            thread,
+            thread_of(made),
+            "the session did not continue its thread"
+        );
+        let conn = pool.conn_of(server, &thread);
+        let resume = first_received(&pool, server, conn, "thread/resume");
+        assert_eq!(resume["params"]["threadId"], thread.as_str());
+        assert_eq!(
+            resume["params"]["config"]["shell_environment_policy"]["set"]["PER_DISPATCH"],
+            value
+        );
+        let effective = pool.turn_of(server, &thread);
+        let cwd = settings.cwd.display().to_string();
+        assert_eq!(effective["cwd"], cwd.as_str(), "{effective}");
+        assert_eq!(effective["model"], settings.model, "{effective}");
+        assert_eq!(effective["sandbox"], settings.sandbox, "{effective}");
+        let marker = effective["marker"].as_str().unwrap();
+        assert_ne!(
+            marker,
+            creator_marker.as_str(),
+            "the resumed thread kept its creator's marker"
+        );
+        let out = command_output(report);
+        assert!(
+            out.lines().any(|l| l == format!("PER_DISPATCH={value}")),
+            "{out}"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l == format!("ONEHARNESS_DISPATCH_MARKER={marker}")),
+            "{out}"
+        );
+        assert!(
+            out.lines().any(|l| l == cwd),
+            "the command did not run in {cwd}: {out}"
+        );
+    }
+}
+
+/// With the server broadcasting every thread's frames to every connection —
+/// status changes, turn starts and ends, deltas and approval requests — each
+/// dispatch prints only its own thread's events and text; the other's
+/// `turn/completed` ends neither turn; the other's `turn/started` does not
+/// make an interrupt against an idle dispatch send anything; an interrupt
+/// against a live dispatch still reaches its own turn after the other's
+/// completed; and neither answers the other's approval request.
+#[test]
+fn a_broadcasting_server_s_other_thread_frames_are_never_a_dispatch_s_own() {
+    let pool = Pool::new("pool-broadcast").with_env("CODEX_MOCK_BROADCAST", "1");
+    let never = pool.file("never");
+    let release = pool.file("release");
+    let opened = pool.file("open-idle");
+    let live = pool.spawn(pool.command(
+        "live",
+        &["--mode", "bypass", "--prompt", "live prompt"],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+            ("MOCK_CODEX_REQUEST_APPROVAL", "1"),
+            ("MOCK_CODEX_RUN_COMMAND", "echo live-ran"),
+        ],
+    ));
+    let server = pool.await_live_turns(1);
+    let live_thread = live_thread(&pool, server, &[]);
+    // A dispatch held idle before its turn, connected through everything below.
+    let idle = pool.spawn(pool.command(
+        "idle",
+        &["--prompt", "idle prompt"],
+        &[("MOCK_CODEX_HOLD_OPEN_UNTIL", &opened)],
+    ));
+    wait_for(
+        "the idle dispatch to connect",
+        Duration::from_secs(20),
+        || {
+            pool.socket("idle").exists()
+                && pool.state(server)["connections"].as_array().unwrap().len() == 2
+        },
+    );
+    let finishing = pool.spawn(pool.command(
+        "finishing",
+        &["--prompt", "finishing prompt"],
+        &[("MOCK_CODEX_HOLD_UNTIL", &release)],
+    ));
+    pool.await_live_turns(2);
+    // The other dispatch's `turn/started` has reached the idle one.
+    let idle_answer = interrupt(&pool, "idle").0;
+    assert_eq!(idle_answer["reason"], "no_active_turn", "{idle_answer}");
+
+    std::fs::write(&release, b"").unwrap();
+    let (out, finished) = Pool::finish(finishing);
+    succeeded(&out, &finished);
+    output_is_its_own(&finished, "finishing prompt", "live prompt");
+    // Its `turn/completed` went everywhere and ended nothing else.
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!pool.state(server)["loaded"][&live_thread]["active_turn"].is_null());
+
+    let live_answer = interrupt(&pool, "live").0;
+    assert_eq!(live_answer["ok"], true, "{live_answer}");
+    let (out, live_report) = Pool::finish(live);
+    assert!(out.status.success(), "{live_report}");
+    output_is_its_own(&live_report, "live prompt", "finishing prompt");
+    let live_conn = pool.conn_of(server, &live_thread);
+    assert_eq!(
+        interrupts_received(&pool, server),
+        [(live_conn, live_thread.clone())]
+    );
+
+    std::fs::write(&opened, b"").unwrap();
+    let (out, idle_report) = Pool::finish(idle);
+    succeeded(&out, &idle_report);
+    output_is_its_own(&idle_report, "idle prompt", "live prompt");
+
+    // The approval request went to every connection; only its owner answered.
+    let approvals = pool.state(server)["approvals"].as_array().unwrap().clone();
+    assert_eq!(approvals.len(), 1, "{approvals:?}");
+    let answers = approvals[0]["answers"].as_array().unwrap();
+    assert_eq!(answers.len(), 1, "another dispatch answered: {answers:?}");
+    assert_eq!(answers[0]["conn"], live_conn);
+}

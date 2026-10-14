@@ -3196,6 +3196,26 @@ mod listen_server {
                 s.emit(&thread_id, &frame);
             }
         }
+        if let Some(path) = knob("MOCK_CODEX_HOLD_UNTIL") {
+            let server = Arc::clone(server);
+            let (thread_id, turn) = (thread_id.clone(), turn.clone());
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let mut s = lock(&server);
+                let live = s
+                    .threads
+                    .get(&thread_id)
+                    .is_some_and(|t| t.active_turn.as_deref() == Some(turn.as_str()));
+                if !live {
+                    return;
+                }
+                if Path::new(&path).exists() {
+                    s.maybe_complete(&thread_id);
+                    s.save();
+                    return;
+                }
+            });
+        }
         let command = knob("MOCK_CODEX_RUN_COMMAND");
         if let Some(command) = command.clone() {
             if knob("MOCK_CODEX_REQUEST_APPROVAL").is_some() {
@@ -3222,26 +3242,6 @@ mod listen_server {
                 &cwd,
                 sandbox.as_deref(),
             );
-        }
-        if let Some(path) = knob("MOCK_CODEX_HOLD_UNTIL") {
-            let server = Arc::clone(server);
-            let (thread_id, turn) = (thread_id.clone(), turn.clone());
-            std::thread::spawn(move || loop {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                let mut s = lock(&server);
-                let live = s
-                    .threads
-                    .get(&thread_id)
-                    .is_some_and(|t| t.active_turn.as_deref() == Some(turn.as_str()));
-                if !live {
-                    return;
-                }
-                if Path::new(&path).exists() {
-                    s.maybe_complete(&thread_id);
-                    s.save();
-                    return;
-                }
-            });
         }
         s.maybe_complete(&thread_id);
         s.save();

@@ -22,6 +22,7 @@ import type {
 } from "./config-report.js";
 import type {
   ActionEvent,
+  AppServerReport,
   BatchReport,
   ControlEvent,
   ControlReason,
@@ -130,6 +131,14 @@ export const ActionEventSchema: z.ZodType<ActionEvent> = z.looseObject({
 
 export const AppServerModeSchema: z.ZodType<AppServerMode> = z.union([z.literal("shared"), z.literal("per-dispatch")]);
 
+export const AppServerReportSchema: z.ZodType<AppServerReport> = z.looseObject({
+  pid: z
+    .int()
+    .gte(0)
+    .refine((value) => value !== undefined, { message: "Required" }),
+  pool_key: z.string().refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const AuthModeSchema: z.ZodType<AuthMode> = z.union([
   z.literal("subscription"),
   z.literal("api_key"),
@@ -224,6 +233,7 @@ export const ControlReasonSchema: z.ZodType<ControlReason> = z.union([
 ]);
 
 export const ControlReportSchema: z.ZodType<ControlReport> = z.looseObject({
+  app_server: z.union([z.lazy(() => AppServerReportSchema), z.null()]).optional(),
   interrupts: z.array(z.lazy(() => ControlEventSchema)).refine((value) => value !== undefined, { message: "Required" }),
   mechanism: z.lazy(() => ControlShapeSchema).refine((value) => value !== undefined, { message: "Required" }),
   socket: z.lazy(() => AbsolutePathSchema).refine((value) => value !== undefined, { message: "Required" }),

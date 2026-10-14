@@ -1661,6 +1661,26 @@
           "status"
         ]
       },
+      "AppServerReport": {
+        "description": "Which shared Codex app-server a pooled dispatch's turn ran on.",
+        "type": "object",
+        "properties": {
+          "pid": {
+            "description": "The pid the pool recorded for the server (its `server.json`): the\nprocess it launched, which is the launcher shim when Codex is one.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "pool_key": {
+            "description": "The pool entry the server belongs to — equal for every dispatch that\nshared it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pid",
+          "pool_key"
+        ]
+      },
       "BatchReport": {
         "description": "Metadata for a same-prefix batch run (one harness, N prompts sharing a\ncacheable prefix). Present on [`RunReport::batch`] only in that mode.",
         "type": "object",
@@ -1782,6 +1802,17 @@
         "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
         "type": "object",
         "properties": {
+          "app_server": {
+            "description": "The shared Codex app-server the run's turn ran on, when it ran on one\n(`app_server = \"shared\"`). Absent for every other mechanism and for a\ndispatch's own `codex app-server` child.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AppServerReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interrupts": {
             "description": "Every control request served, in order.",
             "type": "array",
@@ -2752,6 +2783,26 @@
           "status"
         ]
       },
+      "AppServerReport": {
+        "description": "Which shared Codex app-server a pooled dispatch's turn ran on.",
+        "type": "object",
+        "properties": {
+          "pid": {
+            "description": "The pid the pool recorded for the server (its `server.json`): the\nprocess it launched, which is the launcher shim when Codex is one.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "pool_key": {
+            "description": "The pool entry the server belongs to — equal for every dispatch that\nshared it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "pid",
+          "pool_key"
+        ]
+      },
       "BatchReport": {
         "description": "Metadata for a same-prefix batch run (one harness, N prompts sharing a\ncacheable prefix). Present on [`RunReport::batch`] only in that mode.",
         "type": "object",
@@ -2873,6 +2924,17 @@
         "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
         "type": "object",
         "properties": {
+          "app_server": {
+            "description": "The shared Codex app-server the run's turn ran on, when it ran on one\n(`app_server = \"shared\"`). Absent for every other mechanism and for a\ndispatch's own `codex app-server` child.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AppServerReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interrupts": {
             "description": "Every control request served, in order.",
             "type": "array",

@@ -316,6 +316,12 @@ export interface BatchReport {
  */
 export interface ControlReport {
   /**
+   * The shared Codex app-server the run's turn ran on, when it ran on one
+   * (`app_server = "shared"`). Absent for every other mechanism and for a
+   * dispatch's own `codex app-server` child.
+   */
+  app_server?: AppServerReport | null | undefined;
+  /**
    * Every control request served, in order.
    */
   interrupts: ControlEvent[];
@@ -327,6 +333,22 @@ export interface ControlReport {
    * Absolute path of the socket this run listened on.
    */
   socket: string;
+  [k: string]: unknown;
+}
+/**
+ * Which shared Codex app-server a pooled dispatch's turn ran on.
+ */
+export interface AppServerReport {
+  /**
+   * The pid the pool recorded for the server (its `server.json`): the
+   * process it launched, which is the launcher shim when Codex is one.
+   */
+  pid: number;
+  /**
+   * The pool entry the server belongs to — equal for every dispatch that
+   * shared it.
+   */
+  pool_key: string;
   [k: string]: unknown;
 }
 /**

@@ -116,6 +116,8 @@ have_env() {
 # the mock harness standing for codex).
 
 # Start one pooled codex dispatch in the background; its pid is in POOLED_PID.
+# Its session store is "$POOLED_DIR/s", one letter so the control socket's path
+# stays under macOS's 104-byte sun_path limit beneath its long temp dir.
 #   $1 session, $2 its report file, $3 its working directory, $4 the command
 #   the prompt asks it to run (also exported as OH_POOLED_COMMAND)
 _oh_pooled_start() {
@@ -124,7 +126,7 @@ _oh_pooled_start() {
     fail "$session: cannot create its report files $report and $report.err; check that $POOLED_DIR is writable"
   fi
   OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" run --harness codex --control \
-    --session "$session" --session-dir "$POOLED_DIR/sessions" --cwd "$cwd" --mode bypass \
+    --session "$session" --session-dir "$POOLED_DIR/s" --cwd "$cwd" --mode bypass \
     --timeout "${OH_TIMEOUT:-180}" --compact \
     --prompt "Run this shell command exactly once, as written, then reply with the single word done: $command" \
     >"$report" 2>"$report.err" &

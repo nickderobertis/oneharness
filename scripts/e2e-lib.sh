@@ -548,14 +548,16 @@ oh_controlled_turn() {
   marker="$(oh_marker)"
   sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   # --control needs a handle an `oneharness interrupt` could address; this
-  # turn is never interrupted, so a throwaway one in the sandbox serves. The
+  # turn is never interrupted, so a throwaway one in the sandbox serves. Its
+  # store is a one-letter directory: macOS's long per-user temp dir otherwise
+  # pushes the control socket's path past the 104-byte sun_path limit. The
   # turn and its assertion run in a subshell, so the sandbox goes however the
   # phase ends — a skip or a failure exits that subshell, and its status this
   # helper. It runs as a job whose `wait` is tested, not the subshell itself,
   # so errexit stays in force inside it.
   (
     oh_run "$id" "$(oh_prompt "$marker")" --control --session "ohnet${RANDOM}" \
-      --session-dir "$(oh_native_path "$sandbox")/sessions" --cwd "$(oh_native_path "$sandbox")"
+      --session-dir "$(oh_native_path "$sandbox")/s" --cwd "$(oh_native_path "$sandbox")"
     oh_assert_echoed "$id" "$marker"
   ) </dev/null &
   turn=$!

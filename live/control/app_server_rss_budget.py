@@ -150,6 +150,10 @@ def decode_leases(record: dict[str, object], faults: list[str]) -> list[Lease]:
             faults.append(f"lease {index} names no thread: {entry!r}")
         if pid is not None and number == index and isinstance(thread, str) and thread != "":
             leases.append(Lease(number, Pid(pid), ThreadId(thread)))
+    threads = [lease.thread for lease in leases]
+    repeated = sorted({thread for thread in threads if threads.count(thread) > 1})
+    if repeated:
+        faults.append(f"threads {repeated} were leased more than once; each lease opens its own")
     return leases
 
 

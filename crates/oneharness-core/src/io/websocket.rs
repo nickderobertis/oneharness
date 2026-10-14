@@ -233,7 +233,10 @@ impl WsReader {
                 }
                 Ok(None)
             }
-            0x8 => Ok(Some(Incoming::Closed)),
+            0x8 => {
+                close_payload_valid(&payload)?;
+                Ok(Some(Incoming::Closed))
+            }
             0x9 => {
                 if let Ok(mut writer) = self.writer.lock() {
                     let _ = writer.send_frame(0xA, &payload);
@@ -242,6 +245,27 @@ impl WsReader {
             }
             // A pong: nothing to do. `parse_frame` refused every other opcode.
             _ => Ok(None),
+        }
+    }
+}
+
+/// A close frame's payload as RFC 6455 §5.5.1 and §7.4 allow it: empty, or a
+/// status code a peer may send followed by a UTF-8 reason.
+fn close_payload_valid(payload: &[u8]) -> io::Result<()> {
+    match payload {
+        [] => Ok(()),
+        [_] => Err(protocol_error("a close frame with a one-byte payload")),
+        [high, low, reason @ ..] => {
+            let code = u16::from_be_bytes([*high, *low]);
+            let sendable = matches!(code, 1000..=1003 | 1007..=1011 | 3000..=4999);
+            if !sendable {
+                return Err(protocol_error(
+                    "a close frame with a status no peer may send",
+                ));
+            }
+            std::str::from_utf8(reason)
+                .map(|_| ())
+                .map_err(|_| protocol_error("a close frame whose reason is not UTF-8"))
         }
     }
 }
@@ -1050,6 +1074,18 @@ mod tests {
                 "a text message that is not UTF-8",
                 server_frame(0x1, true, &[0xff, 0xfe]),
             ),
+            (
+                "a close frame with a one-byte payload",
+                server_frame(0x8, true, &[3]),
+            ),
+            (
+                "a close frame with a status no peer may send",
+                server_frame(0x8, true, &[0x03, 0xED]),
+            ),
+            (
+                "a close frame whose reason is not UTF-8",
+                server_frame(0x8, true, &[0x03, 0xE8, 0xff]),
+            ),
             ("a message larger than 64 MiB", {
                 let mut both = long_server_frame(0x1, false, &half);
                 both.extend(long_server_frame(0x0, true, &half));
@@ -1099,6 +1135,33 @@ mod tests {
             );
             assert!(refused.to_string().contains(named), "{named}: {refused}");
         }
+    }
+
+    #[test]
+    fn an_upgrade_answer_past_16_kib_is_refused_on_a_live_connection() {
+        let dir = ScratchDir::new("ws-huge-upgrade").unwrap();
+        let path = dir.join("s.sock");
+        let listener = listener::LocalListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let mut seen = [0u8; 512];
+            let _ = stream.read(&mut seen);
+            let padding = format!("X-Padding: {}\r\n", "p".repeat(20 * 1024));
+            let _ = stream
+                .write_all(format!("HTTP/1.1 101 Switching Protocols\r\n{padding}\r\n").as_bytes());
+        });
+        let err = handshake(LocalStream::connect(&path).unwrap())
+            .err()
+            .unwrap();
+        server.join().unwrap();
+        assert!(err.to_string().contains("larger than 16 KiB"), "{err}");
+    }
+
+    #[test]
+    fn a_close_with_a_sendable_status_and_reason_is_a_close() {
+        assert!(close_payload_valid(&[]).is_ok());
+        assert!(close_payload_valid(&[0x03, 0xE8]).is_ok());
+        assert!(close_payload_valid(&[0x0B, 0xB8, b'o', b'k']).is_ok());
     }
 
     #[cfg(unix)]

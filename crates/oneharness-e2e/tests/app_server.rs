@@ -1897,6 +1897,75 @@ fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_ope
     assert!(!entry.join("server.json").exists());
 }
 
+/// Frames for a dispatch's thread that arrive before the reply naming the
+/// thread are held and replayed once the dispatch knows it, so they reach its
+/// report; a frame for another thread held the same way never does.
+#[test]
+fn frames_before_the_thread_is_named_are_replayed_only_for_the_dispatch_s_own_thread() {
+    let pool = Pool::new("pool-early").with_env("CODEX_MOCK_FAULT", "early-frames");
+    let (output, report) = pool.run(pool.command("early", &[], &[]));
+    succeeded(&output, &report);
+    let thread = thread_of(&report);
+    let stdout = result(&report)["stdout"].as_str().unwrap().to_string();
+    let early: Vec<Value> = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|frame| frame["params"]["early"].is_string())
+        .collect();
+    assert_eq!(early.len(), 1, "{stdout}");
+    assert_eq!(early[0]["params"]["early"], "own", "{stdout}");
+    assert_eq!(early[0]["params"]["threadId"], thread.as_str(), "{stdout}");
+    assert!(!stdout.contains("mock-thread-foreign"), "{stdout}");
+}
+
+/// Each way a pooled session's shell turn or loaded-thread listing can fail
+/// fails the reuse workload naming it: a refused shell command, a shell turn
+/// that ends failed, a refused listing, a listing naming a thread that is no
+/// id, and one naming a cursor that is no string.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_reuse_workload_names_each_shell_turn_and_listing_failure() {
+    for (fault, said) in [
+        (
+            "refuse-shell",
+            "the app-server's thread/shellCommand failed: it refused thread/shellCommand: ",
+        ),
+        ("fail-shell", "the shell turn ended failed, not completed"),
+        ("refuse-loaded", "thread/loaded/list was refused: "),
+        (
+            "loaded-bad-id",
+            "thread/loaded/list named a thread 7 that is no id",
+        ),
+        (
+            "loaded-cursor-number",
+            "thread/loaded/list answered a cursor 2 that is no string",
+        ),
+    ] {
+        let pool = Pool::new(&format!("pool-reuse-{fault}"));
+        let output = Command::new("bash")
+            .arg(repo_root().join("live/control/app-server-reuse.sh"))
+            .env("OH_REUSE_CODEX", mock_bin())
+            .env("OH_REUSE_SETTLE_MS", "1000")
+            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+            .env("XDG_STATE_HOME", pool.path("state"))
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .env("CODEX_MOCK_FAULT", fault)
+            .env(
+                "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+                LINGER_MS.to_string(),
+            )
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{fault}: {stderr}");
+        assert!(stderr.contains(said), "{fault}: no `{said}` in: {stderr}");
+        assert!(
+            !pool.path("reuse.json").exists(),
+            "{fault}: telemetry was written"
+        );
+    }
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the

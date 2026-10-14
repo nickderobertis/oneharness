@@ -2312,7 +2312,14 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         answers every `thread/loaded/list` page with the
 ///                         first page's cursor as the next; `loaded-endless`
 ///                         names a fresh cursor on every page; `refuse-thread-start`
-///                         refuses `thread/start`; `refuse-initialize` refuses
+///                         refuses `thread/start`; `early-frames` sends the
+///                         new thread's (and another thread's) notice before
+///                         `thread/start`'s reply; `refuse-shell` / `fail-shell`
+///                         refuse a shell turn or end it failed;
+///                         `refuse-loaded` / `loaded-bad-id` /
+///                         `loaded-cursor-number` refuse `thread/loaded/list` or
+///                         answer it with a non-string id or cursor;
+///                         `refuse-initialize` refuses
 ///                         `initialize`; `never-listen` stays alive and never
 ///                         binds; `stall-upgrade`
 ///                         reads a connection's upgrade request and never
@@ -3172,6 +3179,19 @@ mod listen_server {
                 let rss = own_rss();
                 s.open_rss.push(rss);
                 s.save();
+                // CODEX_MOCK_FAULT=early-frames: notices for the new thread,
+                // and for another thread, before the reply that names it.
+                if s.fault == "early-frames" {
+                    for (named, tag) in
+                        [(thread.as_str(), "own"), ("mock-thread-foreign", "foreign")]
+                    {
+                        s.send(
+                            conn,
+                            &json!({"jsonrpc": "2.0", "method": "thread/status/changed",
+                                "params": {"threadId": named, "status": {"type": "idle"}, "early": tag}}),
+                        );
+                    }
+                }
                 reply(&mut s, json!({"thread": {"id": thread}, "model": model}));
                 s.emit(
                     &thread,
@@ -3255,8 +3275,17 @@ mod listen_server {
                 if !s.threads.contains_key(&thread) {
                     return refuse(&mut s, format!("thread not found: {thread}"));
                 }
+                if s.fault == "refuse-shell" {
+                    return refuse(&mut s, "the mock refuses thread/shellCommand".to_string());
+                }
                 reply(&mut s, json!({}));
                 let turn = format!("{thread}-shell");
+                // CODEX_MOCK_FAULT=fail-shell: the shell turn ends failed.
+                let ended = if s.fault == "fail-shell" {
+                    "failed"
+                } else {
+                    "completed"
+                };
                 s.emit(
                     &thread,
                     &json!({"jsonrpc": "2.0", "method": "turn/started",
@@ -3265,7 +3294,7 @@ mod listen_server {
                 s.emit(
                     &thread,
                     &json!({"jsonrpc": "2.0", "method": "turn/completed",
-                        "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}}),
+                        "params": {"threadId": thread, "turn": {"id": turn, "status": ended}}}),
                 );
             }
             "thread/loaded/list" => {
@@ -3287,6 +3316,21 @@ mod listen_server {
                 // CODEX_MOCK_FAULT=loaded-cycle: every page names the first
                 // page as the next, so a reader that never checks progress
                 // pages forever.
+                // CODEX_MOCK_FAULT=refuse-loaded / loaded-bad-id /
+                // loaded-cursor-number: the listing refused, naming a thread
+                // that is no id, or a cursor that is no string.
+                match s.fault.as_str() {
+                    "refuse-loaded" => {
+                        return refuse(&mut s, "the mock refuses thread/loaded/list".to_string())
+                    }
+                    "loaded-bad-id" => {
+                        return reply(&mut s, json!({"data": [7], "nextCursor": null}))
+                    }
+                    "loaded-cursor-number" => {
+                        return reply(&mut s, json!({"data": [], "nextCursor": 2}))
+                    }
+                    _ => {}
+                }
                 let next = if s.fault == "loaded-cycle" {
                     Some("0".to_string())
                 } else if s.fault == "loaded-endless" {

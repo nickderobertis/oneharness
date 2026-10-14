@@ -41,13 +41,11 @@ PRUNE_SUPERSEDED_VERSION := "0.1.1"
 # one on PATH. It needs a newer rustc than rust-toolchain.toml pins, so it builds
 # on the `stable` toolchain (installed minimal when absent).
 _prune-superseded-install:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    want="cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}"
-    [ "$(cargo-prune-superseded --version 2>/dev/null || true)" != "$want" ] || exit 0
-    cargo +stable --version >/dev/null 2>&1 || rustup toolchain install stable --profile minimal --no-self-update
-    cargo +stable install --locked --quiet cargo-prune-superseded --version "{{PRUNE_SUPERSEDED_VERSION}}"
-    echo "bootstrap: installed $want"
+    @if [ "$(cargo-prune-superseded --version 2>/dev/null || true)" != "cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}" ]; then \
+        cargo +stable --version >/dev/null 2>&1 || rustup toolchain install stable --profile minimal --no-self-update; \
+        cargo +stable install --locked --quiet cargo-prune-superseded --version "{{PRUNE_SUPERSEDED_VERSION}}"; \
+        echo "bootstrap: installed cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}"; \
+    fi
 
 # onevcs's pool maintenance for this repository (onevcs.toml): remove each
 # compiled unit's superseded builds older than 2 days, keeping its newest build

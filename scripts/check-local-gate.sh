@@ -493,6 +493,13 @@ STUB
   chmod +x "$bootstrap_bin/$tool"
 done
 ln -s "$(command -v just)" "$bootstrap_bin/just"
+# The pinned pruner pool maintenance runs, reporting whichever release a case
+# names, so no case reaches the host's own install.
+cat >"$bootstrap_bin/cargo-prune-superseded" <<'STUB'
+#!/usr/bin/env bash
+echo "cargo-prune-superseded ${PRUNE_STUB_VERSION:-0.0.0}"
+STUB
+chmod +x "$bootstrap_bin/cargo-prune-superseded"
 for expected_hooks_path in retained-hooks 'retained hooks [*]?'; do
   git -C "$bootstrap_repo" config core.hooksPath "$expected_hooks_path" || {
     echo "check-local-gate: could not configure the bootstrap fixture's hooksPath; check that $bootstrap_repo/.git/config is writable, then re-run" >&2
@@ -515,6 +522,29 @@ for expected_hooks_path in retained-hooks 'retained hooks [*]?'; do
     exit 1
   }
 done
+
+# Bootstrap installs the justfile's one pinned cargo-prune-superseded, on the
+# `stable` toolchain, over any other release on PATH, and leaves the pinned
+# release alone once it is the one installed.
+prune_pin=$(sed -n 's/^PRUNE_SUPERSEDED_VERSION := "\(.*\)"$/\1/p' "$root/justfile")
+[ -n "$prune_pin" ] || {
+  echo "check-local-gate: could not read PRUNE_SUPERSEDED_VERSION from $root/justfile; restore its 'PRUNE_SUPERSEDED_VERSION := \"x.y.z\"' pin" >&2
+  exit 1
+}
+prune_log="$tmp/prune-calls"
+CALL_LOG="$prune_log" PRUNE_STUB_VERSION=0.0.0 PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
+assert_file_contains "cargo +stable install --locked --quiet cargo-prune-superseded --version $prune_pin" "$prune_log" \
+  "bootstrap did not install the pinned cargo-prune-superseded over another release"
+: >"$prune_log"
+CALL_LOG="$prune_log" PRUNE_STUB_VERSION="$prune_pin" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
+if grep -q 'cargo-prune-superseded' "$prune_log"; then
+  echo "check-local-gate: bootstrap reinstalled cargo-prune-superseded $prune_pin, already the release on PATH; it ran:" >&2
+  cat "$prune_log" >&2
+  echo "  fix: keep the version guard in the justfile's _prune-superseded-install recipe" >&2
+  exit 1
+fi
 
 # The llmlint installer runs from the SessionStart hook, so under its `set -e`
 # every failure it guards must still end in exit 0. Each case drives the real

@@ -49,3 +49,6 @@ pub mod server_pool;
 pub mod session;
 pub mod sync;
 pub mod usage;
+// The WebSocket client a shared `codex app-server --listen unix://` is spoken
+// to over, on an AF_UNIX socket on every platform.
+pub mod websocket;

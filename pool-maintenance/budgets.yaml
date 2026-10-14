@@ -1,0 +1,25 @@
+schema_version: 1
+# How long this repository's declared pool maintenance (onevcs.toml, the
+# justfile's `pool-maintenance` recipe) holds one warm slot out of service.
+# Labelled `host`: the figure is wall clock on this host. Only the
+# `pool-maintenance:budgets-host` target runs it (`just budgets`, on the release
+# pull request after its full sweep); no gate tier does, because measuring
+# builds this repository twice (pool-maintenance/AGENTS.md).
+budgets:
+  - id: oneharness-pool-maintenance-seconds
+    description: >-
+      Wall-clock seconds one steady-state run of this repository's declared pool
+      maintenance takes: the pass after one ordinary run's worth of new
+      superseded builds, as cargo-prune-superseded reports it through the
+      onebudgetspec SDK. It is how long a regular post-run pass holds one of this
+      repository's warm slots out of service. The detail reports entries walked,
+      profile directories, builds removed, bytes freed, seconds walking versus
+      removing, and, as separate evidence never counted in the figure, the
+      untimed backlog pass's seconds.
+    measure: reported
+    command: ["./measure.sh"]
+    unit: seconds
+    direction: max
+    threshold: 20
+    labels: [host]
+    timeout_seconds: 3600

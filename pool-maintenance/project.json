@@ -1,0 +1,52 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "pool-maintenance",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:bash"
+  ],
+  "//": "The pool maintenance budget (budgets.yaml) and its measurement (measure.sh), which exists only for it. Its gate targets lint and format-check measure.sh alone; the measurement builds the repository twice, so it runs only in `budgets-host`, which no gate tier names: `just budgets`, run by ci.yml's release pull request leg after its full sweep (AGENTS.md here).",
+  "targets": {
+    "format": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh format pool-maintenance"
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/shell-check.sh",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
+      ]
+    },
+    "format-write": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh format-write pool-maintenance"
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "bash scripts/shell-check.sh lint pool-maintenance"
+      },
+      "inputs": [
+        "default",
+        "{workspaceRoot}/scripts/shell-check.sh",
+        "{workspaceRoot}/scripts/shell-tools.sh",
+        "{workspaceRoot}/.shell-tool-versions"
+      ]
+    },
+    "budgets-host": {
+      "executor": "nx:run-commands",
+      "options": {
+        "commands": [
+          "uv sync --project python --frozen --no-install-workspace --quiet",
+          "uv run --project python --frozen --no-sync onebudgetspec check pool-maintenance/budgets.yaml --label host"
+        ],
+        "parallel": false
+      }
+    }
+  }
+}

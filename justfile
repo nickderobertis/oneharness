@@ -66,6 +66,24 @@ pool-maintenance:
     fi
     cargo-prune-superseded --keep-within 2d target
 
+# The onebudgetspec budgets of the Nx projects (each one's `budgets` and
+# uncached host-reading `budgets-host` targets) at the tier, then the root
+# budgets.yaml where one exists. Not part of `check`: the one project budget,
+# pool-maintenance's, builds the repository twice, so ci.yml's release pull
+# request leg runs `just budgets` after its full sweep (pool-maintenance/AGENTS.md).
+budgets tier="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{ quote(tier) }} in
+        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t budgets,budgets-host ;;
+        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t budgets,budgets-host ;;
+        *) printf "budgets: unknown tier '%s' — use 'all' (the default) or 'affected'\n" {{ quote(tier) }} >&2; exit 2 ;;
+    esac
+    if [ -f budgets.yaml ]; then
+        uv sync --project python --frozen --no-install-workspace --quiet
+        uv run --project python --frozen --no-sync onebudgetspec check budgets.yaml
+    fi
+
 # The quality gate, through the Nx project graph. `just check` is the AFFECTED
 # tier: every gate target of each project the diff since the base can reach
 # (scripts/nx-base.sh: NX_BASE when set — a plain ref name or a commit SHA, and

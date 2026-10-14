@@ -2619,7 +2619,7 @@ mod listen_server {
     /// a short target under `/tmp/codex-daemon-<uid>/` and a symlink at the
     /// path. A path a live server answers on is refused; a stale one replaced.
     fn bind(path: &Path) -> UnixListener {
-        if UnixStream::connect(super::super_dial(path)).is_ok() {
+        if UnixStream::connect(super::dial_target(path)).is_ok() {
             let _ = writeln!(
                 std::io::stderr(),
                 "app-server control socket is already in use"
@@ -3882,7 +3882,7 @@ mod listen_server {
 /// The path a client connects to for a server told to listen on `path`: the
 /// symlink's target when Codex left one.
 #[cfg(unix)]
-fn super_dial(path: &std::path::Path) -> std::path::PathBuf {
+fn dial_target(path: &std::path::Path) -> std::path::PathBuf {
     match std::fs::read_link(path) {
         Ok(target) => target,
         Err(_) => path.to_path_buf(),

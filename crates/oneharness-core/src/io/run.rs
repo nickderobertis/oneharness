@@ -922,10 +922,10 @@ pub fn run_supervised(
     // different text from the same `--prompt`. `None` for an entry that never
     // built one (a skipped candidate, or any entry at all when control is off).
     let mut control_prompts: Vec<Option<String>> = Vec::with_capacity(units.len());
-    // Per plan entry beside it: `Some(plugins)` for a codex candidate whose turn
-    // runs on the shared app-server (`app_server = "shared"`, the default), so
-    // the driver leases the pooled server instead of spawning its own.
-    let mut control_app_servers: Vec<Option<bool>> = Vec::with_capacity(units.len());
+    // Per plan entry beside it: `Some` for a codex candidate whose turn runs on
+    // the shared app-server (`app_server = "shared"`, the default), so the
+    // driver leases the pooled server instead of spawning its own.
+    let mut control_app_servers: Vec<Option<SharedAppServer>> = Vec::with_capacity(units.len());
     // Temp files backing off-argv system prompts, cleaned up on drop (covers every
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
@@ -942,7 +942,9 @@ pub fn run_supervised(
         let mut unit_control_prompt: Option<String> = None;
         let unit_app_server = (unit_control == Some(control::ControlShape::CodexAppServer)
             && cfg.app_server_for(selected_id) == crate::domain::config::AppServerMode::Shared)
-            .then(|| cfg.plugins_for(selected_id));
+            .then(|| SharedAppServer {
+                plugins: cfg.plugins_for(selected_id),
+            });
         // On a batch run each result records the prompt it ran (they differ);
         // on an ordinary run the single top-level `prompt` covers them all.
         let result_prompt = batch_run.then(|| unit_prompt.to_string());
@@ -2607,6 +2609,13 @@ fn record_begun_history(
     }
 }
 
+/// A codex candidate whose controlled turn runs on the shared app-server.
+#[derive(Clone, Copy)]
+struct SharedAppServer {
+    /// The candidate's resolved `plugins`, part of the key of the server it leases.
+    plugins: bool,
+}
+
 /// Everything a controlled run's driver needs to bind the mechanism of the
 /// candidate that is about to serve: the run-wide per-turn settings plus every
 /// candidate's assembled prompt. The rest — mechanism, conversation, approval
@@ -2618,9 +2627,9 @@ struct ControlledRun<'a> {
     /// One entry per plan entry: the prompt that candidate opens its turn with,
     /// or `None` for an entry that never assembled one (a skipped candidate).
     prompts: &'a [Option<String>],
-    /// One entry per plan entry: `Some(plugins)` for a candidate whose turn
-    /// runs on the shared Codex app-server.
-    app_servers: &'a [Option<bool>],
+    /// One entry per plan entry: `Some` for a candidate whose turn runs on the
+    /// shared Codex app-server.
+    app_servers: &'a [Option<SharedAppServer>],
     cwd: control::AbsolutePath,
     mode: PermissionMode,
     /// The stored conversation this run continues, and the identity that minted
@@ -2675,13 +2684,13 @@ impl ControlledRun<'_> {
             .copied()
             .flatten()
             .filter(|_| shape == ControlShape::CodexAppServer)
-            .and_then(|plugins| {
+            .and_then(|shared| {
                 crate::io::app_server::PooledDispatch::plan(
                     &job.argv,
                     &job.env,
                     &job.env_remove,
                     self.cwd.as_path(),
-                    plugins,
+                    shared.plugins,
                 )
             });
         let dialogue = Dialogue::new(

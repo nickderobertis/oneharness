@@ -184,18 +184,30 @@ note_identity!(
 );
 
 /// What one dispatch's thread carries so its commands see exactly its own
-/// environment on a server launched with another's.
+/// environment on a server launched with another's. Built only by
+/// [`Self::for_dispatch`], so its marker is the dispatch's own and the server's
+/// is always excluded.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShellEnvironmentPolicy {
-    /// Every variable of the dispatch's environment absent from or differing
-    /// from the server's, plus its [`DISPATCH_MARKER_VAR`].
-    pub set: BTreeMap<String, String>,
-    /// Every server variable the dispatch lacks (or removed through
-    /// `unset_env`), the server marker among them.
-    pub exclude: Vec<String>,
+    set: BTreeMap<String, String>,
+    exclude: Vec<String>,
 }
 
 impl ShellEnvironmentPolicy {
+    /// Every variable of the dispatch's environment absent from or differing
+    /// from the server's, plus its [`DISPATCH_MARKER_VAR`].
+    #[must_use]
+    pub fn set(&self) -> &BTreeMap<String, String> {
+        &self.set
+    }
+
+    /// Every server variable the dispatch lacks (or removed through
+    /// `unset_env`), the server marker among them.
+    #[must_use]
+    pub fn exclude(&self) -> &[String] {
+        &self.exclude
+    }
+
     /// The policy for a dispatch whose environment is `dispatch_env`, on a
     /// server whose environment is `server_env` (the marker included), with
     /// `marker` as the dispatch's own marker value.
@@ -297,15 +309,47 @@ pub fn frame_thread(frame: &Value) -> Option<&str> {
     })
 }
 
+/// Whom a server frame is addressed to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameScope<'a> {
+    /// The connection or the server: no thread named.
+    Connection,
+    /// The thread it names.
+    Thread(&'a str),
+    /// A thread field that is present but not a string id: owned by no one.
+    Malformed,
+}
+
+/// The scope of a server frame, read off `params.threadId` or
+/// `params.thread.id`.
+#[must_use]
+pub fn frame_scope(frame: &Value) -> FrameScope<'_> {
+    let Some(params) = frame.get("params") else {
+        return FrameScope::Connection;
+    };
+    let named = params.get("threadId").or_else(|| {
+        params
+            .get("thread")
+            .map(|thread| thread.get("id").unwrap_or(&Value::Null))
+    });
+    match named {
+        None => FrameScope::Connection,
+        Some(Value::String(id)) if !id.is_empty() => FrameScope::Thread(id),
+        Some(_) => FrameScope::Malformed,
+    }
+}
+
 /// Whether a frame a dispatch received on its shared connection is its own:
 /// one scoped to no thread (a response to its own request, or a connection- or
 /// server-wide notice), or one naming its thread. Before the dispatch knows its
-/// thread, a frame naming any thread is not yet known to be its own.
+/// thread, a frame naming any thread is not yet known to be its own, and a
+/// frame whose thread field is malformed is no one's.
 #[must_use]
 pub fn is_own_frame(frame: &Value, own_thread: Option<&str>) -> bool {
-    match frame_thread(frame) {
-        None => true,
-        Some(thread) => own_thread == Some(thread),
+    match frame_scope(frame) {
+        FrameScope::Connection => true,
+        FrameScope::Thread(thread) => own_thread == Some(thread),
+        FrameScope::Malformed => false,
     }
 }
 
@@ -371,6 +415,24 @@ pub fn reply_result<'a>(method: &str, response: &'a Value) -> Result<&'a Value, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_with_a_malformed_thread_field_is_no_one_s() {
+        for frame in [
+            json!({"method": "item/completed", "params": {"threadId": 7}}),
+            json!({"method": "item/completed", "params": {"threadId": ""}}),
+            json!({"method": "thread/started", "params": {"thread": {"id": null}}}),
+            json!({"method": "thread/started", "params": {"thread": "t"}}),
+        ] {
+            assert_eq!(frame_scope(&frame), FrameScope::Malformed, "{frame}");
+            assert!(!is_own_frame(&frame, Some("t")), "{frame}");
+            assert!(!is_own_frame(&frame, None), "{frame}");
+        }
+        let own = json!({"method": "turn/started", "params": {"threadId": "t"}});
+        assert!(is_own_frame(&own, Some("t")));
+        let wide = json!({"method": "account/updated", "params": {}});
+        assert!(is_own_frame(&wide, Some("t")));
+    }
 
     #[test]
     fn a_reply_yields_its_result_object_and_names_anything_else() {

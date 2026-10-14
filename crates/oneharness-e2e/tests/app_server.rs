@@ -1732,6 +1732,171 @@ fn a_server_that_never_answers_the_upgrade_fails_the_dispatch_at_the_handshake_d
     );
 }
 
+/// Each way a pooled dispatch can fail before its turn is named on its result,
+/// within its bound: a `--version` probe that fails or never answers (the
+/// probe's 15 s), and a server that stays alive but never listens (the
+/// dispatch's own `--timeout`). A linger override that is not whole
+/// milliseconds is warned about and the default linger used instead.
+#[test]
+fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
+    let pool = Pool::new("pool-before-turn");
+    /// A session, the knob and value that stage its failure, its extra
+    /// arguments, what its error says, and the bound it returns within.
+    type Case<'a> = (&'a str, &'a str, &'a str, &'a [&'a str], &'a str, Duration);
+    let cases: [Case; 3] = [
+        (
+            "version-fails",
+            "CODEX_MOCK_VERSION_EXIT",
+            "3",
+            &[],
+            "--version` failed (exit status: 3)",
+            Duration::from_secs(10),
+        ),
+        (
+            "version-hangs",
+            "CODEX_MOCK_VERSION_DELAY_MS",
+            "30000",
+            &[],
+            "--version` did not answer within 15s",
+            Duration::from_secs(30),
+        ),
+        (
+            "never-listens",
+            "CODEX_MOCK_FAULT",
+            "never-listen",
+            &["--timeout", "3"],
+            "did not accept a connection on ",
+            Duration::from_secs(15),
+        ),
+    ];
+    for (session, knob, value, args, said, bound) in cases {
+        let started = Instant::now();
+        let (_, report) = pool.run(pool.command(session, args, &[(knob, value)]));
+        let took = started.elapsed();
+        let ran = result(&report);
+        assert_eq!(ran["status"], "spawn-error", "{session}: {ran}");
+        assert!(
+            ran["error"].as_str().is_some_and(|e| e.contains(said)),
+            "{session}: {ran}"
+        );
+        assert!(
+            took < bound,
+            "{session}: returned after {took:?}, past {bound:?}"
+        );
+    }
+
+    let (output, report) = pool.run(pool.command(
+        "bad-linger",
+        &[],
+        &[("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "soon")],
+    ));
+    succeeded(&output, &report);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "oneharness: warning: ignoring ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS=\"soon\": not whole milliseconds; the server lingers the default 60s"
+        ),
+        "{stderr}"
+    );
+    let records: Vec<Value> = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| std::fs::read_to_string(entry.path().join("server.json")).ok())
+        .filter_map(|text| serde_json::from_str(&text).ok())
+        .collect();
+    assert!(
+        records.iter().any(|record| record["linger_ms"] == 60_000),
+        "no server started under the default linger: {records:?}"
+    );
+}
+
+/// A server that refuses `initialize` fails a pooled session's open naming the
+/// refusal — here through the reuse workload, which opens its leases that way.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_initialize_fails_the_pooled_session_naming_it() {
+    let pool = Pool::new("pool-refused-init");
+    let output = Command::new("bash")
+        .arg(repo_root().join("live/control/app-server-reuse.sh"))
+        .env("OH_REUSE_CODEX", mock_bin())
+        .env("OH_REUSE_SETTLE_MS", "1000")
+        .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+        .env("XDG_STATE_HOME", pool.path("state"))
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_FAULT", "refuse-initialize")
+        .env(
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+            LINGER_MS.to_string(),
+        )
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{said}");
+    assert!(
+        said.contains("the app-server's initialize failed: it refused initialize: ")
+            && said.contains("the mock refuses initialize"),
+        "{said}"
+    );
+}
+
+/// A process that never hosts the sweeper — a library caller of
+/// oneharness-core, as this test process is — starts no sweeper: its released
+/// server outlives the linger and the sweep interval, and is reclaimed by the
+/// next pool operation instead — a later lease, which replaces it, and a sweep.
+#[test]
+fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_operation() {
+    use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
+    use oneharness_core::io::server_pool;
+    let pool = Pool::new("pool-unhosted");
+    let linger = Duration::from_millis(300);
+    // Each nextest test is its own process, so this environment is this
+    // journey's alone.
+    std::env::set_var("XDG_STATE_HOME", pool.path("state"));
+    std::env::set_var("CODEX_HOME", pool.path("codex-home"));
+    std::env::set_var("CODEX_MOCK_DIR", pool.path("mock"));
+    std::env::set_var(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        linger.as_millis().to_string(),
+    );
+    let cwd = pool.worktree("work");
+    let argv = vec![mock_bin().display().to_string(), "app-server".to_string()];
+    let plan = || PooledDispatch::plan(&argv, &[], &[], &cwd, false).unwrap();
+
+    let first = PooledSession::open(plan()).unwrap();
+    let first_pid = first.record().pid.get();
+    let entry = first.entry().to_path_buf();
+    first.release();
+    std::thread::sleep(linger + DEAD_LEASE_SWEEP_INTERVAL * 2 + Duration::from_millis(500));
+    assert!(
+        alive(first_pid),
+        "something stopped the server with no sweeper hosted"
+    );
+    assert!(
+        !entry.join("sweeper.json").exists(),
+        "a sweeper was recorded for a process that hosts none"
+    );
+
+    let second = PooledSession::open(plan()).unwrap();
+    let second_pid = second.record().pid.get();
+    assert_ne!(
+        second_pid, first_pid,
+        "the lingered-out server was leased again"
+    );
+    wait_for(
+        "the lingered-out server to stop",
+        Duration::from_secs(15),
+        || !alive(first_pid),
+    );
+    second.release();
+    std::thread::sleep(linger + Duration::from_millis(200));
+    let root = server_pool::resolve_root(None).unwrap();
+    server_pool::sweep(&root, linger).unwrap();
+    wait_for("the swept server to stop", Duration::from_secs(15), || {
+        !alive(second_pid)
+    });
+    assert!(!entry.join("server.json").exists());
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the
@@ -2825,8 +2990,10 @@ fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
     let output = child.wait_with_output().unwrap();
     let said = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success(), "{said}");
+    // Stopped before a page's request or after its answer, as the clock falls.
     assert!(
-        said.contains("thread/loaded/list was still paging at the deadline"),
+        said.contains("thread/loaded/list was still paging at the deadline")
+            || said.contains("thread/loaded/list answered past the deadline"),
         "{said}"
     );
 }

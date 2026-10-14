@@ -465,15 +465,19 @@ impl LaunchPlan {
 
     /// The plan for a server whose whole argv the caller assembled, with every
     /// `{address}` placeholder still in it, started from an empty environment
-    /// holding only `env`, and marked with `marker` (a variable `env` already
-    /// carries). This is the shared Codex app-server's plan: its argv is the
+    /// holding only `env` and the server-marker variable set to `marker` —
+    /// added here, so the marker the entry records is the one the server
+    /// carries. This is the shared Codex app-server's plan: its argv is the
     /// dispatch's own launch plus the listen arguments, not a declared spec.
     pub fn scrubbed(
         template: Vec<String>,
         address: ServerAddress,
-        env: Vec<(String, String)>,
+        mut env: Vec<(String, String)>,
         marker: ServerMarker,
     ) -> io::Result<Self> {
+        let marker_var = crate::domain::app_server::SERVER_MARKER_VAR;
+        env.retain(|(name, _)| name != marker_var);
+        env.push((marker_var.to_string(), marker.as_str().to_string()));
         let argv = LaunchArgv::new(render(&template, &address))
             .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
         Ok(LaunchPlan {

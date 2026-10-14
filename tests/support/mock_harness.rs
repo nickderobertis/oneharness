@@ -2312,7 +2312,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         answers every `thread/loaded/list` page with the
 ///                         first page's cursor as the next; `loaded-endless`
 ///                         names a fresh cursor on every page; `refuse-thread-start`
-///                         refuses `thread/start`; `stall-upgrade`
+///                         refuses `thread/start`; `refuse-initialize` refuses
+///                         `initialize`; `never-listen` stays alive and never
+///                         binds; `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
@@ -2447,6 +2449,12 @@ mod listen_server {
                 .is_ok()
             {
                 std::process::exit(1);
+            }
+        }
+        // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
         }
         let listener = bind(&path);
@@ -3148,6 +3156,9 @@ mod listen_server {
             return;
         };
         match method {
+            "initialize" if s.fault == "refuse-initialize" => {
+                refuse(&mut s, "the mock refuses initialize".to_string());
+            }
             "initialize" => reply(&mut s, json!({"userAgent": "oneharness-mock-app-server"})),
             "thread/start" => {
                 if s.fault == "refuse-thread-start" {

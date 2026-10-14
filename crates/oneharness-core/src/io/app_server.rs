@@ -217,7 +217,7 @@ fn dispatch_environment(
 }
 
 /// A lease on a running shared server, with the socket it answers on.
-pub struct AppServerLease {
+pub(crate) struct AppServerLease {
     lease: ServerLease,
     key: PoolKey,
 }
@@ -225,19 +225,19 @@ pub struct AppServerLease {
 impl AppServerLease {
     /// The server this lease holds.
     #[must_use]
-    pub fn record(&self) -> &ServerRecord {
+    pub(crate) fn record(&self) -> &ServerRecord {
         self.lease.record()
     }
 
     /// The pool entry directory.
     #[must_use]
-    pub fn entry(&self) -> &Path {
+    pub(crate) fn entry(&self) -> &Path {
         self.lease.entry()
     }
 
     /// The server as the run's report names it.
     #[must_use]
-    pub fn report(&self) -> AppServerReport {
+    pub(crate) fn report(&self) -> AppServerReport {
         AppServerReport {
             pid: std::num::NonZeroU32::new(self.record().pid.get())
                 .expect("a recorded pid is never 0 by construction"),
@@ -303,10 +303,13 @@ fn lease_server(
     loop {
         attempts -= 1;
         let marker = ServerMarker::fresh();
-        let mut env = dispatch.server_env.clone();
-        env.push((SERVER_MARKER_VAR.to_string(), marker.as_str().to_string()));
-        let plan = LaunchPlan::scrubbed(template.clone(), address.clone(), env, marker)
-            .map_err(|err| format!("could not plan the app-server launch: {err}"))?;
+        let plan = LaunchPlan::scrubbed(
+            template.clone(),
+            address.clone(),
+            dispatch.server_env.clone(),
+            marker,
+        )
+        .map_err(|err| format!("could not plan the app-server launch: {err}"))?;
         let lease = server_pool::acquire(root, &key, &plan, linger())
             .map_err(|err| format!("could not start the shared codex app-server: {err}"))?;
         ensure_sweeper(lease.entry());
@@ -414,7 +417,7 @@ fn probe_version(executable: &str, server_env: &[(String, String)]) -> Result<St
 }
 
 /// A JSON-RPC connection to a shared server.
-pub struct Connection {
+pub(crate) struct Connection {
     reader: WsReader,
     writer: Arc<Mutex<WsWriter>>,
     next_id: u64,
@@ -440,7 +443,7 @@ impl Connection {
     /// Send `method` and wait up to `deadline` for its answer, skipping every
     /// other frame. `Ok(None)` when none came in time; an error once the
     /// connection is gone.
-    pub fn request(
+    pub(crate) fn request(
         &mut self,
         method: &str,
         params: Value,
@@ -1295,7 +1298,8 @@ impl PooledSession {
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::HashSet::new();
         loop {
-            if Instant::now() >= until {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
                 return Err(format!(
                     "thread/loaded/list was still paging at the deadline, {} thread(s) in",
                     threads.len()
@@ -1305,9 +1309,14 @@ impl PooledSession {
                 Some(cursor) => json!({"cursor": cursor}),
                 None => json!({}),
             };
+            // Each page within what is left of the whole listing's deadline.
             let response = self
                 .connection
-                .request("thread/loaded/list", params, Duration::from_secs(10))
+                .request(
+                    "thread/loaded/list",
+                    params,
+                    left.min(Duration::from_secs(10)),
+                )
                 .map_err(|err| format!("thread/loaded/list: {err}"))?
                 .ok_or("the app-server did not answer thread/loaded/list")?;
             if let Some(error) = response.get("error") {
@@ -1332,6 +1341,12 @@ impl PooledSession {
                     ))
                 }
             };
+            if Instant::now() > until {
+                return Err(format!(
+                    "thread/loaded/list answered past the deadline, {} thread(s) in",
+                    threads.len()
+                ));
+            }
             match &cursor {
                 None => return Ok(threads),
                 // A cursor answered twice would page forever: refused, so the

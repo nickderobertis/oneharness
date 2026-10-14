@@ -90,7 +90,7 @@ enum TurnState {
 /// the answer is the turn's own loop, on another thread, so it hands the answer
 /// over here.
 #[derive(Default)]
-pub struct ReplyBoard {
+pub(crate) struct ReplyBoard {
     pending: Mutex<std::collections::HashMap<u64, Option<serde_json::Value>>>,
     arrived: std::sync::Condvar,
 }
@@ -98,7 +98,7 @@ pub struct ReplyBoard {
 impl ReplyBoard {
     /// Expect an answer to `id`. Called before the request is written, so an
     /// answer arriving at once is never missed.
-    pub fn expect(&self, id: u64) {
+    pub(crate) fn expect(&self, id: u64) {
         self.pending
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -106,7 +106,7 @@ impl ReplyBoard {
     }
 
     /// Hand over a response; `true` when someone was waiting for it.
-    pub fn deliver(&self, id: u64, response: serde_json::Value) -> bool {
+    pub(crate) fn deliver(&self, id: u64, response: serde_json::Value) -> bool {
         let mut pending = self
             .pending
             .lock()
@@ -122,7 +122,7 @@ impl ReplyBoard {
     }
 
     /// Wait for the answer to `id` until `deadline`; `None` if none came.
-    pub fn wait(&self, id: u64, deadline: std::time::Duration) -> Option<serde_json::Value> {
+    pub(crate) fn wait(&self, id: u64, deadline: std::time::Duration) -> Option<serde_json::Value> {
         let until = std::time::Instant::now() + deadline;
         let mut pending = self
             .pending
@@ -613,7 +613,7 @@ impl ControlHandle {
     /// Mark a turn in flight on a shared app-server connection: `sink` sends
     /// each written line as one message, and `board` is where the turn's own
     /// reader hands over the answers to requests this handle sends.
-    pub fn begin_pooled_turn(
+    pub(crate) fn begin_pooled_turn(
         &self,
         sink: Box<dyn io::Write + Send>,
         board: std::sync::Arc<ReplyBoard>,
@@ -632,7 +632,7 @@ impl ControlHandle {
     }
 
     /// The shared app-server went away under the live turn.
-    pub fn mark_app_server_lost(&self) {
+    pub(crate) fn mark_app_server_lost(&self) {
         let mut pooled = self.pooled();
         let command = match std::mem::take(&mut *pooled) {
             PooledState::Live { command, .. } | PooledState::Ended { command, .. } => command,
@@ -647,7 +647,7 @@ impl ControlHandle {
     /// Whether the serving candidate's shared app-server went away under its
     /// live turn.
     #[must_use]
-    pub fn app_server_lost(&self) -> bool {
+    pub(crate) fn app_server_lost(&self) -> bool {
         matches!(
             *self.pooled(),
             PooledState::Ended {
@@ -660,7 +660,7 @@ impl ControlHandle {
     /// The serving candidate's shared app-server launch argv, when its turn
     /// ran on one.
     #[must_use]
-    pub fn app_server_command(&self) -> Option<Vec<String>> {
+    pub(crate) fn app_server_command(&self) -> Option<Vec<String>> {
         match &*self.pooled() {
             PooledState::Live { command, .. } | PooledState::Ended { command, .. } => {
                 Some(command.clone())
@@ -671,7 +671,7 @@ impl ControlHandle {
 
     /// The last shared app-server a candidate of this run ran on.
     #[must_use]
-    pub fn app_server(&self) -> Option<AppServerReport> {
+    pub(crate) fn app_server(&self) -> Option<AppServerReport> {
         self.app_server
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -680,7 +680,7 @@ impl ControlHandle {
 
     /// The thread and turn the dialogue would address an interrupt to now.
     #[must_use]
-    pub fn active_turn(&self) -> Option<(String, String)> {
+    pub(crate) fn active_turn(&self) -> Option<(String, String)> {
         match self.mechanism().as_ref() {
             Some(Backend::Dialogue(dialogue)) => dialogue
                 .active_turn()
@@ -691,7 +691,7 @@ impl ControlHandle {
 
     /// Whether the dialogue's prompt is out and its turn has not ended.
     #[must_use]
-    pub fn in_turn(&self) -> bool {
+    pub(crate) fn in_turn(&self) -> bool {
         matches!(self.mechanism().as_ref(), Some(Backend::Dialogue(dialogue)) if dialogue.in_turn())
     }
 

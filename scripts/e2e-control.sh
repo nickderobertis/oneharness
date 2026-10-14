@@ -211,12 +211,17 @@ oh_pooled_kill() {
     sleep 0.2
     waited=$((waited + 1))
     [ "$waited" -lt 900 ] || {
-      kill -9 "$pid" 2>/dev/null
+      # Already ended or not, the phase fails here naming why.
+      kill -9 "$pid" 2>/dev/null || note "  the dispatch (pid $pid) had already ended"
       fail "pooled-kill: the heartbeat never started (see $POOLED_DIR/kill.json.err)"
     }
     kill -0 "$pid" 2>/dev/null || fail "pooled-kill: the dispatch ended before its heartbeat started: $(cat "$POOLED_DIR/kill.json.err")"
   done
-  kill -9 "$pid"
+  if ! kill -9 "$pid" 2>/dev/null; then
+    kill -0 "$pid" 2>/dev/null &&
+      fail "pooled-kill: cannot SIGKILL the dispatch (pid $pid), which is still running; check that this shell owns it"
+    fail "pooled-kill: the dispatch (pid $pid) ended before it could be killed: $(cat "$POOLED_DIR/kill.json.err")"
+  fi
   wait "$pid" 2>/dev/null || true
   # Sample the heartbeat every 0.2 s until it has been still for 1 s; the last
   # sample that grew it is when it stopped.

@@ -1066,12 +1066,20 @@ mod tests {
     /// `turn/completed`.
     #[test]
     fn codex_carries_the_thread_config_on_thread_start_and_resume_only() {
-        let policy = crate::domain::app_server::ShellEnvironmentPolicy {
-            set: [("A".to_string(), "1".to_string())].into_iter().collect(),
-            exclude: vec!["B".to_string()],
+        use crate::domain::app_server::{
+            DispatchMarker, EnvPlatform, ShellEnvironmentPolicy, DISPATCH_MARKER_VAR,
+            SERVER_MARKER_VAR,
         };
-        let thread_config =
-            json!({"shell_environment_policy": {"set": {"A": "1"}, "exclude": ["B"]}});
+        let policy = ShellEnvironmentPolicy::for_dispatch(
+            &[("A".to_string(), "1".to_string())],
+            &[(SERVER_MARKER_VAR.to_string(), "s".to_string())],
+            &DispatchMarker::new("m").unwrap(),
+            EnvPlatform::Unix,
+        );
+        let thread_config = json!({"shell_environment_policy": {
+            "set": {"A": "1", DISPATCH_MARKER_VAR: "m"},
+            "exclude": [SERVER_MARKER_VAR],
+        }});
         for resume in [
             None,
             DialogueResume::new(ControlShape::CodexAppServer, "th-old".to_string()),

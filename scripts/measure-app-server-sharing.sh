@@ -237,8 +237,11 @@ def measure(work, errors):
                 first = Connection(path)
             except OSError as error:
                 if server.poll() is not None or time.monotonic() > deadline:
-                    errors.seek(0)
-                    said = errors.read().strip() or "(nothing on stderr)"
+                    try:
+                        errors.seek(0)
+                        said = errors.read().strip() or "(nothing on stderr)"
+                    except OSError as unread:
+                        said = f"(its stderr file {errors.name} could not be read: {unread})"
                     stop(f"the server never accepted a connection on {path} (last attempt: {error}; exit {server.poll()}); its stderr:\n{said}\ncheck `codex login status` and that this codex supports `app-server --listen`")
                 time.sleep(0.02)
         threads = []

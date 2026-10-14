@@ -201,7 +201,12 @@ def figure(path: Path) -> Figure:
         raise Incomplete(f"{path} holds no JSON object")
     record = decode(raw)
     first, last = record.after_first, record.after_last
-    ratio = last.rss_bytes / first.rss_bytes
+    try:
+        ratio = last.rss_bytes / first.rss_bytes
+    except OverflowError as error:
+        raise Incomplete(
+            f"the ratio {last.rss_bytes} / {first.rss_bytes} is not representable: {error}"
+        ) from error
     if not math.isfinite(ratio):
         raise Incomplete(f"the ratio {last.rss_bytes} / {first.rss_bytes} is not finite")
     detail = (

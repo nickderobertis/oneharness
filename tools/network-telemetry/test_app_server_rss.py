@@ -77,6 +77,7 @@ class RssGrowthBudget(unittest.TestCase):
             ),
             (FIXTURES / "reuse-bad-pids.json", "are not the positive pids it summed"),
             (FIXTURES / "reuse-reading-without-server.json", "leave out the server pid 4242"),
+            (FIXTURES / "reuse-overflowing-ratio.json", "is not representable"),
         ):
             with self.subTest(fixture=fixture.name):
                 run = check(fixture)

@@ -2671,6 +2671,7 @@ impl ControlledRun<'_> {
                 posture: spec
                     .mode(self.mode)
                     .map_or(ApprovalPosture::of(self.mode), |declared| declared.posture),
+                thread_config: None,
             },
         );
         // One arm per mechanism family, chosen from the shape right here: a

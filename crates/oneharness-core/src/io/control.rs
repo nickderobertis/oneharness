@@ -1622,6 +1622,7 @@ mod tests {
                 mode: PermissionMode::Bypass,
                 resume: None,
                 posture: ApprovalPosture::Unattended,
+                thread_config: None,
             },
         );
         assert!(dialogue.is_some(), "codex control is a dialogue shape");

@@ -1331,7 +1331,7 @@ fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_thro
     );
     let history = pool.file("history");
     let spawn = |session: &str| {
-        let mut cmd = pool.command_with_config(
+        let cmd = pool.command_with_config(
             session,
             &config,
             &["--history", "--history-dir", &history],

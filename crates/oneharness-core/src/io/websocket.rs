@@ -816,6 +816,19 @@ mod tests {
     use crate::io::scratch::ScratchDir;
     use std::io::BufRead;
 
+    /// Read a client's whole upgrade request, so a server that answers and
+    /// drops the stream leaves nothing unread — on Windows, closing a socket
+    /// with unread bytes resets it, and the client then reads `10054`
+    /// instead of the answer.
+    fn read_upgrade(stream: &mut impl Read) -> String {
+        let mut request = Vec::new();
+        let mut byte = [0u8; 1];
+        while !request.ends_with(b"\r\n\r\n") && stream.read(&mut byte).unwrap() == 1 {
+            request.push(byte[0]);
+        }
+        String::from_utf8(request).unwrap()
+    }
+
     /// A server's `101` answer to `request`, with the accept key it owes.
     fn switching(request: &str) -> String {
         let key = request
@@ -971,8 +984,7 @@ mod tests {
         let listener = listener::LocalListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
-            let mut seen = [0u8; 64];
-            let _ = stream.read(&mut seen);
+            read_upgrade(&mut stream);
             stream
                 .write_all(b"HTTP/1.1 400 Bad Request\r\n\r\n")
                 .unwrap();
@@ -994,8 +1006,7 @@ mod tests {
         let listener = listener::LocalListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
-            let mut seen = [0u8; 512];
-            let _ = stream.read(&mut seen);
+            read_upgrade(&mut stream);
             stream
                 .write_all(switching("Sec-WebSocket-Key: some-other-key\r\n").as_bytes())
                 .unwrap();
@@ -1203,8 +1214,7 @@ mod tests {
         let listener = listener::LocalListener::bind(&path).unwrap();
         let server = std::thread::spawn(move || {
             let mut stream = listener.accept().unwrap();
-            let mut seen = [0u8; 512];
-            let _ = stream.read(&mut seen);
+            read_upgrade(&mut stream);
             let padding = format!("X-Padding: {}\r\n", "p".repeat(20 * 1024));
             let _ = stream
                 .write_all(format!("HTTP/1.1 101 Switching Protocols\r\n{padding}\r\n").as_bytes());

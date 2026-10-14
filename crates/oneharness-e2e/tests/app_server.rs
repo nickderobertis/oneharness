@@ -2185,11 +2185,14 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
     }
 }
 
+/// The repository root, for the Linux-only journeys that run its scripts.
+#[cfg(target_os = "linux")]
 fn repo_root() -> PathBuf {
     std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap()
 }
 
-/// `pid` and every descendant of it, as the OS lists them now.
+/// `pid` and every descendant of it, as the OS lists them now (`/proc`).
+#[cfg(target_os = "linux")]
 fn os_process_tree(root: u32) -> Vec<u64> {
     let parents: Vec<(u64, u64)> = std::fs::read_dir("/proc")
         .unwrap()
@@ -2397,10 +2400,13 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
 }
 
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
+/// Linux-only, as its journeys are: the reuse phase reads `/proc`.
+#[cfg(target_os = "linux")]
 struct ControlSuite {
     pool: Pool,
 }
 
+#[cfg(target_os = "linux")]
 impl ControlSuite {
     fn new(tag: &str) -> Self {
         let pool = Pool::new(tag);

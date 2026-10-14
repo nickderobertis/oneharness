@@ -435,7 +435,9 @@ impl ConfigFixture {
     }
 
     /// [`Self::new`], with codex's controlled turns on their own app-server
-    /// child ([`codex_per_dispatch`] in the user-level config).
+    /// child ([`codex_per_dispatch`] in the user-level config). Unix-only, as
+    /// every caller is: `--control` is refused on Windows.
+    #[cfg(unix)]
     fn per_dispatch(tag: &str, project_toml: &str, user_toml: &str) -> Self {
         Self::new(tag, project_toml, &codex_per_dispatch(user_toml))
     }

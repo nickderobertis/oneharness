@@ -922,6 +922,10 @@ pub fn run_supervised(
     // different text from the same `--prompt`. `None` for an entry that never
     // built one (a skipped candidate, or any entry at all when control is off).
     let mut control_prompts: Vec<Option<String>> = Vec::with_capacity(units.len());
+    // Per plan entry beside it: `Some(plugins)` for a codex candidate whose turn
+    // runs on the shared app-server (`app_server = "shared"`, the default), so
+    // the driver leases the pooled server instead of spawning its own.
+    let mut control_app_servers: Vec<Option<bool>> = Vec::with_capacity(units.len());
     // Temp files backing off-argv system prompts, cleaned up on drop (covers every
     // return path below). Never populated under --print-command (nothing spawns).
     let mut temp_files = TempPromptFiles::default();
@@ -936,6 +940,9 @@ pub fn run_supervised(
         // The prompt this candidate would open its turn with, kept only when it
         // is planned for the control delivery (so it never appears on the argv).
         let mut unit_control_prompt: Option<String> = None;
+        let unit_app_server = (unit_control == Some(control::ControlShape::CodexAppServer)
+            && cfg.app_server_for(selected_id) == crate::domain::config::AppServerMode::Shared)
+            .then(|| cfg.plugins_for(selected_id));
         // On a batch run each result records the prompt it ran (they differ);
         // on an ordinary run the single top-level `prompt` covers them all.
         let result_prompt = batch_run.then(|| unit_prompt.to_string());
@@ -1196,6 +1203,7 @@ pub fn run_supervised(
             job_plans.push(harness_plan);
         }
         control_prompts.push(unit_control_prompt);
+        control_app_servers.push(unit_app_server);
     }
     debug_assert_eq!(control_prompts.len(), plan.len());
 
@@ -1267,6 +1275,7 @@ pub fn run_supervised(
         Some(listener) => Some(ControlledRun {
             handle: listener.handle_ref(),
             prompts: &control_prompts,
+            app_servers: &control_app_servers,
             cwd: control_cwd(args)?,
             mode,
             // The same token the argv path puts on the anchor's `--resume`, on
@@ -1361,21 +1370,24 @@ pub fn run_supervised(
             Plan::Pending { model, .. } => model.clone(),
             Plan::Ready(_) => None,
         };
-        let input = runner::ControlledInput {
-            handle: chain.handle,
-            prompt,
-        };
         let begun = begin_each_plan_entry(history_writer.as_ref(), plan.len(), &unit_identities);
         let mut attempts = 0;
         let results = loop {
             attempts += 1;
-            chain.bind(
+            let pooled = chain.bind(
                 shape,
                 specs[0],
                 &selected_ids[0],
                 candidate_model.as_deref(),
-                &input.prompt,
+                &prompt,
+                0,
+                &jobs[0],
             );
+            let input = runner::ControlledInput {
+                handle: chain.handle,
+                prompt: prompt.clone(),
+                app_server: pooled.as_ref(),
+            };
             let capture =
                 runner::run_job_streaming_supervised(&jobs[0], Some(&input), spawn, |_| {
                     runner::StreamStep::Continue
@@ -1600,6 +1612,7 @@ pub fn run_supervised(
             })?,
             mechanism: listener.handle_ref().shape(),
             interrupts: listener.finish(),
+            app_server: listener.handle_ref().app_server(),
         }),
         None => None,
     };
@@ -2605,6 +2618,9 @@ struct ControlledRun<'a> {
     /// One entry per plan entry: the prompt that candidate opens its turn with,
     /// or `None` for an entry that never assembled one (a skipped candidate).
     prompts: &'a [Option<String>],
+    /// One entry per plan entry: `Some(plugins)` for a candidate whose turn
+    /// runs on the shared Codex app-server.
+    app_servers: &'a [Option<bool>],
     cwd: control::AbsolutePath,
     mode: PermissionMode,
     /// The stored conversation this run continues, and the identity that minted
@@ -2637,6 +2653,12 @@ impl ControlledRun<'_> {
     /// value the result's and the record's `model` report), never the
     /// run-level one.
     // llmlint: ignore[comments_earn_their_place] The measured mechanism behind issue #1283 is stated here by that issue's own resolution: the issue's diagnosis was wrong, and this is the one place a reader of the binding finds the corrected one. Until this change `bind` took the run-level model (`--model`, else top-level `model`), which no other path used, so a per-harness `[harness.codex].model` never reached `thread/start` — the frame went out as `{"approvalPolicy":"never","cwd":…}` — and codex ran its own default, which moved from `gpt-5.6-sol` to `gpt-6-astra` at codex 0.153; the top-level `model` workaround did reach the wire, which is what made the defect read as a version regression.
+    ///
+    /// Answers the shared app-server plan when the candidate's turn runs on
+    /// one: its `job` is the launch its own child would have had, which keys
+    /// the pooled server, and the plan's per-thread `config` rides the
+    /// conversation built here.
+    #[allow(clippy::too_many_arguments)] // llmlint: ignore[suppressions_justified] Each parameter is one fact about the candidate taking the turn — its mechanism, registry entry, selector, model, prompt, plan position and launch — read at the one call site per execution model; a struct would only move the list.
     fn bind(
         &self,
         shape: ControlShape,
@@ -2644,7 +2666,24 @@ impl ControlledRun<'_> {
         harness_id: &str,
         model: Option<&str>,
         prompt: &str,
-    ) {
+        index: usize,
+        job: &Job,
+    ) -> Option<crate::io::app_server::PooledDispatch> {
+        let pooled = self
+            .app_servers
+            .get(index)
+            .copied()
+            .flatten()
+            .filter(|_| shape == ControlShape::CodexAppServer)
+            .and_then(|plugins| {
+                crate::io::app_server::PooledDispatch::plan(
+                    &job.argv,
+                    &job.env,
+                    &job.env_remove,
+                    self.cwd.as_path(),
+                    plugins,
+                )
+            });
         let dialogue = Dialogue::new(
             shape,
             DialogueConfig {
@@ -2671,7 +2710,9 @@ impl ControlledRun<'_> {
                 posture: spec
                     .mode(self.mode)
                     .map_or(ApprovalPosture::of(self.mode), |declared| declared.posture),
-                thread_config: None,
+                thread_config: pooled
+                    .as_ref()
+                    .map(crate::io::app_server::PooledDispatch::thread_config),
             },
         );
         // One arm per mechanism family, chosen from the shape right here: a
@@ -2684,6 +2725,7 @@ impl ControlledRun<'_> {
                 None => control_io::Binding::Stdin,
             },
         });
+        pooled
     }
 
     fn prompt(&self, index: usize) -> String {
@@ -2867,13 +2909,22 @@ fn drive_controlled_candidate(
             persisted_event_indexes: BTreeSet::new(),
         };
     }
-    chain.bind(shape, spec, unit.harness_id, unit.model.as_deref(), &prompt);
+    let pooled = chain.bind(
+        shape,
+        spec,
+        unit.harness_id,
+        unit.model.as_deref(),
+        &prompt,
+        index,
+        unit.job,
+    );
     let mut streamed = stream_one_harness(
         unit,
         history,
         Some(&runner::ControlledInput {
             handle: chain.handle,
             prompt,
+            app_server: pooled.as_ref(),
         }),
         sink,
         spawn,
@@ -3516,6 +3567,20 @@ fn apply_dialogue_signals(result: &mut RunResult, handle: &crate::io::control::C
     if let Some((text, source)) = handle.text() {
         result.text = Some(text);
         result.text_source = Some(source.to_string());
+    }
+    // A turn on the shared app-server records the server's launch — what
+    // oneharness actually ran — and, when the server went away under the live
+    // turn, the retryable kind that says so rather than a turn failure.
+    if let Some(command) = handle.app_server_command() {
+        result.command = command;
+    }
+    if handle.app_server_lost() {
+        result.status = Status::Nonzero;
+        result.exit_code = None;
+        result.failure_kind = Some(signals::FailureKind::AppServerLost);
+        result.failure_kind_source = Some("pool:codex-app-server".to_string());
+        result.work = None;
+        return;
     }
     if let Some((refusal, source)) = handle.refusal() {
         // Matched exhaustively on purpose: a new refusal kind is a deliberate

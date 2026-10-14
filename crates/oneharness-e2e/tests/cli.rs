@@ -335,6 +335,91 @@ fn oneharness_without_env_overrides() -> Command {
     cmd
 }
 
+/// `toml` with `app_server = "per-dispatch"` in its `[harness.codex]` table
+/// (added when it has none): a controlled codex turn then runs on its own
+/// `codex app-server` stdio child, exactly as before pooling. The journeys that
+/// script that child with the stdio mock's `MOCK_CODEX_*` knobs run under it,
+/// which is what proves the opt-out unchanged.
+fn codex_per_dispatch(toml: &str) -> String {
+    const SETTING: &str = "app_server = \"per-dispatch\"";
+    match toml.find("[harness.codex]\n") {
+        Some(at) => {
+            let end = at + "[harness.codex]\n".len();
+            format!("{}{SETTING}\n{}", &toml[..end], &toml[end..])
+        }
+        None => format!("{toml}\n[harness.codex]\n{SETTING}\n"),
+    }
+}
+
+/// [`run`], with the codex harness on its own app-server child: an explicit
+/// `--config` holding only [`codex_per_dispatch`], so no file is discovered
+/// and — with the ambient `ONEHARNESS_*` overrides stripped — nothing else of
+/// the host reaches the run. A verb other than `run` is [`run`] itself.
+fn run_per_dispatch(args: &[&str], envs: &[(&str, &str)]) -> Output {
+    if args.first() != Some(&"run") {
+        return run(args, envs);
+    }
+    let dir = ScratchDir::new("per-dispatch").unwrap();
+    let config = dir.join("per-dispatch.toml");
+    std::fs::write(&config, codex_per_dispatch("")).unwrap();
+    let config = config.display().to_string();
+    let mut with_config = vec!["run", "--config", config.as_str()];
+    with_config.extend_from_slice(&args[1..]);
+    let json_args = with_format_json(&with_config);
+    let redirect = mock_profile_redirect();
+    let mut cmd = Command::new(oneharness_bin());
+    for var in ENV_OVERRIDE_VARS {
+        cmd.env_remove(var);
+    }
+    cmd.env_remove("ONEHARNESS_NO_CONFIG");
+    cmd.args(with_mock_profile_redirect(&json_args, &redirect));
+    for (key, value) in envs {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("failed to run oneharness")
+}
+
+/// The internal knob that shortens the shared app-server's linger, so a
+/// journey watches a server stop without waiting a minute.
+const APP_SERVER_LINGER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS";
+/// The linger every pooled journey runs under.
+const POOLED_LINGER_MS: &str = "1000";
+
+/// Wait for every shared app-server the pool under `state` still records to
+/// stop (its linger, a sweep, and the stop), then stop by pid whatever a failed
+/// journey left behind — a test owns the servers its dispatches started.
+fn stop_pooled_servers(state: &Path) {
+    let servers = state.join("oneharness").join("servers");
+    let records = || -> Vec<PathBuf> {
+        std::fs::read_dir(&servers)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .map(|entry| entry.path().join("server.json"))
+                    .filter(|record| record.is_file())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !records().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    #[cfg(unix)]
+    for record in records() {
+        let pid = std::fs::read_to_string(&record)
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+            .and_then(|value| value["pid"].as_i64());
+        if let Some(pid) = pid.filter(|pid| *pid > 0) {
+            // SAFETY: plain integers; the pid is a server this test started.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGKILL);
+            }
+        }
+    }
+}
+
 /// A unique temp dir holding a project `oneharness.toml` plus an (empty unless
 /// stated) user-level config to pin ONEHARNESS_CONFIG to.
 struct ConfigFixture {
@@ -347,6 +432,12 @@ impl ConfigFixture {
         std::fs::write(dir.join("oneharness.toml"), project_toml).unwrap();
         std::fs::write(dir.join("user-config.toml"), user_toml).unwrap();
         Self { dir }
+    }
+
+    /// [`Self::new`], with codex's controlled turns on their own app-server
+    /// child ([`codex_per_dispatch`] in the user-level config).
+    fn per_dispatch(tag: &str, project_toml: &str, user_toml: &str) -> Self {
+        Self::new(tag, project_toml, &codex_per_dispatch(user_toml))
     }
 
     fn cwd(&self) -> String {
@@ -6177,7 +6268,7 @@ fn events_flag_is_a_safe_noop_for_a_text_only_harness() {
 fn controlled_codex_reports_the_text_an_echoing_app_server_answered() {
     let session_dir = control_store_dir("ep");
     let app_server_log = session_dir.join("app-server.log");
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -6257,7 +6348,7 @@ fn assert_controlled_codex_normalizes_captured_app_server_tool_events() {
     let session_dir = control_store_dir("ce");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -6345,7 +6436,7 @@ fn assert_controlled_codex_reports_a_started_tool_when_completion_never_arrives(
     let session_dir = control_store_dir("cs");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -6418,7 +6509,7 @@ fn assert_controlled_codex_without_tools_reports_only_its_message_from_the_app_s
     let session_dir = control_store_dir("cn");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -6497,7 +6588,7 @@ fn assert_controlled_codex_does_not_expose_a_non_string_command_argument() {
     let session_dir = control_store_dir("cb");
     let app_server_log = session_dir.join("app-server.log");
     let app_server_log = app_server_log.to_str().unwrap();
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -22589,7 +22680,7 @@ fn controlled_codex_server_overloaded_recovers_on_the_same_app_server_candidate(
         "#,
         log = log.display(),
     );
-    let fx = ConfigFixture::new("server-overloaded-controlled-recovers", &project, "");
+    let fx = ConfigFixture::per_dispatch("server-overloaded-controlled-recovers", &project, "");
     let output = run_with_config(
         &[
             "run",
@@ -22637,7 +22728,7 @@ fn controlled_codex_server_overloaded_recovers_under_the_parallel_opt_in() {
         "#,
         log = log.display(),
     );
-    let fx = ConfigFixture::new("server-overloaded-controlled-parallel", &project, "");
+    let fx = ConfigFixture::per_dispatch("server-overloaded-controlled-parallel", &project, "");
     let output = run_with_config(
         &[
             "run",
@@ -22687,7 +22778,7 @@ fn controlled_codex_server_overloaded_exhaustion_falls_through_to_the_alternate(
         "#,
         log = log.display(),
     );
-    let fx = ConfigFixture::new("server-overloaded-controlled-exhausted", &project, "");
+    let fx = ConfigFixture::per_dispatch("server-overloaded-controlled-exhausted", &project, "");
     let output = run_with_config(
         &[
             "run",
@@ -22923,7 +23014,7 @@ fn controlled_codex_overload_after_a_tool_event_is_not_retried_or_fallen_through
         "#,
         log = log.display(),
     );
-    let fx = ConfigFixture::new("controlled-server-overloaded-answer-work", &project, "");
+    let fx = ConfigFixture::per_dispatch("controlled-server-overloaded-answer-work", &project, "");
     let output = run_with_config(
         &[
             "run",
@@ -28764,7 +28855,7 @@ fn control_over_several_harnesses_with_no_run_mode_is_a_fallback_chain() {
     // the candidate that serves.
     let store = control_store_dir("multi");
     let store_arg = store.display().to_string();
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -29896,11 +29987,19 @@ fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
     let cwd_arg = cwd.display().to_string();
     let log = store.join("app-server.log");
 
-    let child = Command::new(oneharness_bin())
-        .env("ONEHARNESS_NO_CONFIG", "1")
+    let per_dispatch = store.join("per-dispatch.toml");
+    std::fs::write(&per_dispatch, codex_per_dispatch("")).unwrap();
+    let mut command = Command::new(oneharness_bin());
+    for var in ENV_OVERRIDE_VARS {
+        command.env_remove(var);
+    }
+    let child = command
+        .env_remove("ONEHARNESS_NO_CONFIG")
         .env("MOCK_CODEX_APP_SERVER_LOG", log.display().to_string())
         .args([
             "run",
+            "--config",
+            &per_dispatch.display().to_string(),
             "--harness",
             "codex",
             "--control",
@@ -29936,7 +30035,7 @@ fn a_codex_controlled_run_drives_its_thread_and_interrupts_the_live_turn() {
             .unwrap_or(false)
     });
 
-    let interrupt = run(
+    let interrupt = run_per_dispatch(
         &[
             "interrupt",
             "--session",
@@ -30005,7 +30104,7 @@ fn a_controlled_codex_session_continues_one_conversation_across_turns() {
     let bin = bin_override("codex");
 
     let dispatch = |log: &std::path::Path| {
-        run(
+        run_per_dispatch(
             &[
                 "run",
                 "--harness",
@@ -30124,7 +30223,7 @@ fn a_controlled_candidate_is_never_handed_another_identitys_session_token() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{codex_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
     "#
     );
-    let fx = ConfigFixture::new("control-cross-identity", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-cross-identity", &project, "");
     let cwd_arg = fx.cwd();
     let dispatch = |args: &[&str]| {
         let mut all = vec![
@@ -30233,7 +30332,7 @@ fn a_controlled_codex_turn_opens_under_the_candidates_own_model() {
             env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
         "#
         );
-        let fx = ConfigFixture::new(&format!("control-{tag}"), &project, "");
+        let fx = ConfigFixture::per_dispatch(&format!("control-{tag}"), &project, "");
         let cwd_arg = fx.cwd();
         let dispatch = || {
             run_with_config(
@@ -30343,7 +30442,7 @@ fn a_controlled_codex_turn_proceeds_when_the_server_names_no_model() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_OMIT_MODEL = "1" }}
     "#
     );
-    let fx = ConfigFixture::new("control-model-unstated", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-model-unstated", &project, "");
     let cwd_arg = fx.cwd();
     let output = run_with_config(
         &[
@@ -30417,7 +30516,7 @@ fn a_controlled_codex_turn_is_refused_when_the_server_would_run_another_model() 
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_COMPLETE_TURN = "1", MOCK_CODEX_MODEL = "gpt-6-astra" }}
     "#
     );
-    let fx = ConfigFixture::new("control-model-mismatch", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-model-mismatch", &project, "");
     let cwd_arg = fx.cwd();
     let output = run_with_config(
         &[
@@ -30517,7 +30616,7 @@ fn a_controlled_fallback_chain_falls_through_a_model_mismatch() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{honest_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
     "#
     );
-    let fx = ConfigFixture::new("control-mismatch-chain", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-mismatch-chain", &project, "");
     let cwd_arg = fx.cwd();
     let output = run_with_config(
         &[
@@ -30598,7 +30697,7 @@ fn a_control_run_refuses_a_session_its_mechanism_cannot_continue() {
     let cwd_arg = cwd.display().to_string();
     let bin = bin_override("opencode");
     let plain = |name: &str| {
-        run(
+        run_per_dispatch(
             &[
                 "run",
                 "--harness",
@@ -30634,7 +30733,7 @@ fn a_control_run_refuses_a_session_its_mechanism_cannot_continue() {
 
     // The same handle under `--control` is a conversation the mechanism cannot
     // reopen, so it is refused before anything spawns.
-    let refused = run(
+    let refused = run_per_dispatch(
         &[
             "run",
             "--harness",
@@ -33509,7 +33608,7 @@ fn control_accepts_a_fallback_chain_whose_candidates_control_differently() {
     // can be two links of one chain, and each candidate is planned for its own
     // control delivery.
     let store = control_store_dir("mixed-plan");
-    let output = run(
+    let output = run_per_dispatch(
         &[
             "run",
             "--control",
@@ -33564,7 +33663,7 @@ fn control_accepts_a_fallback_chain_whose_candidates_control_differently() {
     // The narrower rule that remains: a candidate with NO mechanism is still
     // refused, because it could serve the turn and then there would be no lever
     // at all. That is a property of the request, true whichever candidate runs.
-    let none = run(
+    let none = run_per_dispatch(
         &[
             "run",
             "--control",
@@ -33962,7 +34061,7 @@ fn a_resumed_sessions_output_format_is_judged_by_its_anchors_own_mechanism() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{codex_log_arg}', MOCK_CODEX_COMPLETE_TURN = "1" }}
     "#
     );
-    let fx = ConfigFixture::new("control-anchor-format", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-anchor-format", &project, "");
     let cwd_arg = fx.cwd();
 
     // First, bind the handle: the turn's id comes off the wire, not out of a
@@ -34065,7 +34164,7 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{codex_log_arg}' }}
     "#
     );
-    let fx = ConfigFixture::new("control-per-candidate-prompt", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-per-candidate-prompt", &project, "");
     let cwd_arg = fx.cwd();
     let child = oneharness_without_env_overrides()
         .env("ONEHARNESS_CONFIG", fx.user_config())
@@ -34101,7 +34200,7 @@ fn each_candidate_in_a_chain_opens_its_turn_with_its_own_assembled_prompt() {
     });
     // That conversation holds its turn open until it is aborted, so this is how
     // the run finishes; the prompts are already on disk by now.
-    let interrupt = run(
+    let interrupt = run_per_dispatch(
         &[
             "interrupt",
             "--session",
@@ -34175,7 +34274,7 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}', MOCK_CODEX_DIE_ON_INTERRUPT = "1" }}
     "#
     );
-    let fx = ConfigFixture::new("control-dialogue-drop", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-dialogue-drop", &project, "");
     let cwd_arg = fx.cwd();
 
     let child = oneharness_without_env_overrides()
@@ -34213,7 +34312,7 @@ fn a_redirection_a_dead_conversation_still_held_is_reported_rather_than_lost() {
             .unwrap_or(false)
     });
 
-    let interrupt = run(
+    let interrupt = run_per_dispatch(
         &[
             "interrupt",
             "--session",
@@ -34515,7 +34614,7 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
         env = {{ MOCK_CODEX_APP_SERVER_LOG = '{log_arg}' }}
     "#
     );
-    let fx = ConfigFixture::new("control-mixed-chain", &project, "");
+    let fx = ConfigFixture::per_dispatch("control-mixed-chain", &project, "");
     let cwd_arg = fx.cwd();
 
     let child = oneharness_without_env_overrides()
@@ -34554,7 +34653,7 @@ fn an_interrupt_after_a_fall_through_reaches_the_mechanism_that_served() {
             .unwrap_or(false)
     });
 
-    let interrupt = run(
+    let interrupt = run_per_dispatch(
         &[
             "interrupt",
             "--session",
@@ -36687,7 +36786,7 @@ fn run_text_view_shows_the_model_a_server_said_it_would_run() {
         "--format",
         "text",
     ];
-    let output = run(
+    let output = run_per_dispatch(
         &args,
         &[
             ("MOCK_CODEX_APP_SERVER_LOG", &log_arg),
@@ -37728,7 +37827,15 @@ fn launch_codex_in(
         args.push("--");
         args.extend_from_slice(passthrough);
     }
-    let output = run_with_config(&args, &envs, &fx.user_config());
+    // A controlled launch is scripted through the stdio mock app-server's
+    // knobs, so it runs on its own child (`app_server = "per-dispatch"`).
+    let user_config = fx.dir.join("user-config-per-dispatch.toml");
+    std::fs::write(
+        &user_config,
+        codex_per_dispatch(&std::fs::read_to_string(fx.user_config()).unwrap_or_default()),
+    )
+    .unwrap();
+    let output = run_with_config(&args, &envs, &user_config);
     assert!(output.status.success(), "{path:?} {harness}: {output:?}");
     let records: Vec<Value> = std::fs::read_to_string(&plugins_log)
         .unwrap_or_else(|err| panic!("codex never started ({path:?} {harness}): {err}"))
@@ -38519,6 +38626,12 @@ struct CatalogWorld {
     sessions: ScratchDir,
 }
 
+impl Drop for CatalogWorld {
+    fn drop(&mut self) {
+        stop_pooled_servers(&self.fx.dir.join("state"));
+    }
+}
+
 /// One finished oneharness process of a catalog journey.
 struct CatalogRun {
     output: Output,
@@ -38646,11 +38759,17 @@ impl CatalogWorld {
             cmd.env_remove(var);
         }
         let state = self.fx.dir.join("state");
+        // The `CODEX_MOCK_*` spellings too: a controlled launch runs on the
+        // shared app-server, which starts from a scrubbed environment keeping
+        // `CODEX_*` variables, and that server's launch is the one recorded.
         cmd.env("XDG_STATE_HOME", &state)
             .env("LOCALAPPDATA", &state)
             .env("CODEX_HOME", self.home())
             .env("MOCK_CODEX_VERSION", CATALOG_CODEX_VERSION)
-            .env("MOCK_CODEX_CATALOG_LOG", self.log());
+            .env("CODEX_MOCK_VERSION", CATALOG_CODEX_VERSION)
+            .env("MOCK_CODEX_CATALOG_LOG", self.log())
+            .env("CODEX_MOCK_CATALOG_LOG", self.log())
+            .env(APP_SERVER_LINGER_ENV, POOLED_LINGER_MS);
         let cwd = self.fx.cwd();
         let bin = bin_override("codex");
         let mut args: Vec<String> = match path {
@@ -38747,6 +38866,10 @@ impl CatalogWorld {
         let mut cmd = self.command(CodexLaunchPath::Exec, harness, &[], envs);
         for name in removed {
             cmd.env_remove(name);
+            // A knob removed is removed under both of the mock's spellings.
+            if let Some(rest) = name.strip_prefix("MOCK_CODEX_") {
+                cmd.env_remove(format!("CODEX_MOCK_{rest}"));
+            }
         }
         let started = std::time::Instant::now();
         let output = cmd.output().expect("run oneharness");

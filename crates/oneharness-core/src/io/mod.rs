@@ -2,6 +2,8 @@
 //! Everything that touches the process, filesystem, env, or clock lives here or
 //! in `commands`, never in `domain`.
 
+// The shared Codex app-server: its pool lease, sweeper, and pooled turns.
+pub mod app_server;
 pub mod cancel;
 pub mod config;
 pub mod control;

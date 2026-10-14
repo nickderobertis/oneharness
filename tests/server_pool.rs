@@ -87,6 +87,8 @@ fn a_record_with_a_recycled_live_pid_is_not_reused_even_when_argv_matches() {
             argv: LaunchArgv::new(vec!["sleep".to_string(), "120".to_string()]).unwrap(),
             address: ServerAddress::Stdio,
             idle_since: None,
+            marker: None,
+            linger_ms: None,
         })
         .unwrap(),
     )

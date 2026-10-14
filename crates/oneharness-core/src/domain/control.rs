@@ -1430,6 +1430,22 @@ pub struct ControlReport {
     pub mechanism: ControlShape,
     /// Every control request served, in order.
     pub interrupts: Vec<ControlEvent>,
+    /// The shared Codex app-server the run's turn ran on, when it ran on one
+    /// (`app_server = "shared"`). Absent for every other mechanism and for a
+    /// dispatch's own `codex app-server` child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_server: Option<AppServerReport>,
+}
+
+/// Which shared Codex app-server a pooled dispatch's turn ran on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AppServerReport {
+    /// The pid the pool recorded for the server (its `server.json`): the
+    /// process it launched, which is the launcher shim when Codex is one.
+    pub pid: u32,
+    /// The pool entry the server belongs to — equal for every dispatch that
+    /// shared it.
+    pub pool_key: String,
 }
 
 #[cfg(test)]

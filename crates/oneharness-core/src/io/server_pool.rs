@@ -7,10 +7,14 @@
 //! costing ~137MB is started once and shared by every dispatch with the same key
 //! instead of once per turn.
 //!
-//! The stdio protocols (`codex app-server`, `copilot --acp`, `goose acp`) are
-//! deliberately NOT pooled: oneharness spawns them as the dispatch's own child,
-//! so the interrupt rides the same stdin the turn does and the process dies with
-//! the run — there is nothing to share and nothing to leak.
+//! The ACP stdio protocols (`copilot --acp`, `goose acp`) are deliberately NOT
+//! pooled: oneharness spawns them as the dispatch's own child, so the interrupt
+//! rides the same stdin the turn does and the process dies with the run.
+//! `codex app-server` is pooled too, by default: one `--listen unix://` server
+//! per configuration, shared by every concurrent dispatch with its key
+//! ([`crate::io::app_server`]). Its entries are the ones whose record names a
+//! server marker ([`ServerRecord::marker`]), and they are stopped by that marker
+//! rather than by pid, so a launcher shim's native child goes with it.
 //!
 //! **Membership is a lease held by a live process, never a counter.** A counter
 //! leaks a permanently-live server the first time a dispatch is `SIGKILL`ed
@@ -42,6 +46,26 @@ use crate::domain::control::{PoolKey, ServerAddress, ServerSpec};
 /// How long an idle server (no live lease) is kept before reclamation, so a
 /// burst of short dispatches does not thrash a heavyweight process up and down.
 pub const DEFAULT_LINGER: Duration = Duration::from_secs(60);
+
+/// How often a shared Codex app-server's pool-owned sweeper looks for a lease
+/// whose holder died, so a dead holder is found within this long of its death
+/// even with no other dispatch alive.
+pub const DEAD_LEASE_SWEEP_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long the pool takes, from finding a dead holder, to stop the commands it
+/// left running: its turn interrupted, then every process carrying its marker
+/// stopped, forcibly at the deadline.
+pub const DEAD_LEASE_STOP_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long stopping a shared Codex app-server lets the processes carrying its
+/// marker drain before they are killed. A `--listen` server's own SIGTERM waits
+/// for every in-flight command with no deadline of its own.
+pub const SERVER_STOP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long a `turn/interrupt` sent over a shared connection waits for the
+/// server's answer. The server answers an interrupt naming a turn that already
+/// ended with nothing at all, so no interrupt is ever sent unbounded.
+pub const INTERRUPT_REPLY_DEADLINE: Duration = Duration::from_secs(5);
 
 const LEASE_DIR: &str = "leases";
 const SERVER_FILE: &str = "server.json";
@@ -134,6 +158,18 @@ pub struct ServerRecord {
     pub address: ServerAddress,
     /// Epoch seconds the entry last had no live lease; `None` while leased.
     pub idle_since: Option<u64>,
+    /// The value of the server-marker variable the server was launched with
+    /// (`ONEHARNESS_APP_SERVER_MARKER`, fresh per server), on a shared Codex
+    /// app-server's entry. Such an entry is stopped by that marker — every
+    /// process carrying it, the launcher shim and its native child alike —
+    /// and its dead leases are retired through the app-server protocol.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    /// The linger, in milliseconds, the dispatch that started the server asked
+    /// for, so the pool-owned sweeper enforces the one this server was started
+    /// under. `None` on the entries started before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub linger_ms: Option<u64>,
 }
 
 impl ServerRecord {
@@ -217,6 +253,33 @@ impl LeaseHolder {
     }
 }
 
+/// What a lease file says beyond its holder: the dispatch's marker, and the
+/// thread and turn it is serving — everything the pool needs to stop a dead
+/// holder's work on a shared Codex app-server without that holder's help.
+/// Every field is optional, and a reader that knows only [`LeaseHolder`]
+/// ignores them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseNote {
+    /// The dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub marker: Option<String>,
+    /// The app-server thread the dispatch holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<String>,
+    /// The turn running on it, while one is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+}
+
+/// One lease file: the holder, and its note.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeaseFile {
+    #[serde(flatten)]
+    pub holder: LeaseHolder,
+    #[serde(flatten)]
+    pub note: LeaseNote,
+}
+
 /// A lease on a pooled server, released when dropped.
 ///
 /// The drop is a courtesy, not the correctness mechanism: reclamation verifies
@@ -227,8 +290,10 @@ impl LeaseHolder {
 pub struct ServerLease {
     entry: PathBuf,
     lease_file: PathBuf,
+    holder: LeaseHolder,
     record: ServerRecord,
     linger: Duration,
+    started: bool,
 }
 
 impl ServerLease {
@@ -236,6 +301,25 @@ impl ServerLease {
     #[must_use]
     pub fn record(&self) -> &ServerRecord {
         &self.record
+    }
+
+    /// Whether this acquire started the server, rather than finding it running.
+    #[must_use]
+    pub fn started(&self) -> bool {
+        self.started
+    }
+
+    /// Rewrite this lease's file with `note` beside its holder — atomically, so
+    /// a sweeper never reads half of one.
+    pub fn annotate(&self, note: &LeaseNote) -> io::Result<()> {
+        let text = serde_json::to_string(&LeaseFile {
+            holder: self.holder.clone(),
+            note: note.clone(),
+        })
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let tmp = self.lease_file.with_extension("lease.tmp");
+        fs::write(&tmp, text)?;
+        fs::rename(tmp, &self.lease_file)
     }
 
     /// The pool entry directory backing it.
@@ -298,6 +382,11 @@ pub struct LaunchPlan {
     template: Vec<String>,
     /// Environment applied to the server process.
     env: Vec<(String, String)>,
+    /// Whether the server starts from an empty environment holding only
+    /// [`Self::env`], rather than inheriting the starting dispatch's.
+    env_clear: bool,
+    /// The server marker the server is launched with, recorded in its entry.
+    marker: Option<String>,
     /// The address the server will be reachable at.
     address: ServerAddress,
 }
@@ -340,6 +429,31 @@ impl LaunchPlan {
             argv,
             template,
             env,
+            env_clear: false,
+            marker: None,
+            address,
+        })
+    }
+
+    /// The plan for a server whose whole argv the caller assembled, with every
+    /// `{address}` placeholder still in it, started from an empty environment
+    /// holding only `env`, and marked with `marker` (a variable `env` already
+    /// carries). This is the shared Codex app-server's plan: its argv is the
+    /// dispatch's own launch plus the listen arguments, not a declared spec.
+    pub fn scrubbed(
+        template: Vec<String>,
+        address: ServerAddress,
+        env: Vec<(String, String)>,
+        marker: String,
+    ) -> io::Result<Self> {
+        let argv = LaunchArgv::new(render(&template, &address))
+            .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+        Ok(LaunchPlan {
+            argv,
+            template,
+            env,
+            env_clear: true,
+            marker: Some(marker),
             address,
         })
     }
@@ -412,10 +526,12 @@ pub fn acquire(
         )
     })?;
 
+    let mut started = true;
     let record = match reconcile(&entry, linger)? {
         Some(live)
             if plan.backs(&live) && process_identity(live.pid).as_ref() == Some(&live.identity) =>
         {
+            started = false;
             live
         }
         // A live record this plan does not describe is not this plan's server:
@@ -429,9 +545,9 @@ pub fn acquire(
         // say what it is, is the whole reason it is not being reused.
         Some(_) => {
             let _ = fs::remove_file(entry.join(SERVER_FILE));
-            start(&entry, plan)?
+            start(&entry, plan, linger)?
         }
-        None => start(&entry, plan)?,
+        None => start(&entry, plan, linger)?,
     };
 
     let lease_file = entry.join(LEASE_DIR).join(lease_id());
@@ -451,8 +567,10 @@ pub fn acquire(
     Ok(ServerLease {
         entry,
         lease_file,
+        holder,
         record: cleared,
         linger,
+        started,
     })
 }
 
@@ -460,34 +578,54 @@ pub fn acquire(
 /// reclaim one whose idle linger has expired. Returns the still-usable server,
 /// if any. This is the single reclamation path — every pool operation runs it,
 /// which is why a `SIGKILL`ed holder cannot leak a server.
-fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<ServerRecord>> {
+pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<ServerRecord>> {
     reap_finished();
+    let recorded = read_record(entry);
     let leases = entry.join(LEASE_DIR);
     let mut live_leases = 0usize;
     if let Ok(entries) = fs::read_dir(&leases) {
         for lease in entries.flatten() {
             let path = lease.path();
-            let holder = fs::read_to_string(&path)
-                .ok()
-                .and_then(|text| serde_json::from_str::<LeaseHolder>(&text).ok());
+            if path.extension().is_some_and(|ext| ext == "tmp") {
+                continue;
+            }
+            let text = fs::read_to_string(&path).ok();
+            let holder = text
+                .as_deref()
+                .and_then(|text| serde_json::from_str::<LeaseHolder>(text).ok());
             match holder {
                 Some(holder) if holder.is_live() => live_leases += 1,
                 // No readable holder, or one whose process is gone — including
                 // a pid the OS still knows but has since handed to something
                 // else, which is a stranger and not this lease's owner. The
-                // holder is gone, however it went.
+                // holder is gone, however it went. On a shared Codex
+                // app-server the work it left running is stopped first: the
+                // server does not notice a dead client, and keeps its turn and
+                // its commands running.
                 _ => {
+                    if let Some(record) = recorded.as_ref().filter(|r| r.marker.is_some()) {
+                        let note = text
+                            .as_deref()
+                            .and_then(|text| serde_json::from_str::<LeaseNote>(text).ok())
+                            .unwrap_or_default();
+                        crate::io::app_server::retire_dead_lease(record, &note);
+                    }
                     let _ = fs::remove_file(&path);
                 }
             }
         }
     }
 
-    let Some(mut record) = read_record(entry) else {
+    let Some(mut record) = recorded else {
         return Ok(None);
     };
     if !pid_alive(record.pid) {
         // The server died on its own; forget it so the next acquire restarts.
+        // A marked server's launcher can die and leave its native child
+        // serving, so whatever still carries the marker is stopped too.
+        if record.marker.is_some() {
+            crate::io::app_server::stop_server(entry, &record);
+        }
         let _ = fs::remove_file(entry.join(SERVER_FILE));
         return Ok(None);
     }
@@ -502,8 +640,14 @@ fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<ServerRecord>>
     // zero linger reclaims immediately while a real one keeps the process warm.
     let now = epoch_secs();
     let since = record.idle_since.unwrap_or(now);
+    let linger = record.linger_ms.map_or(linger, Duration::from_millis);
     if now.saturating_sub(since) >= linger.as_secs() {
-        kill(record.pid);
+        if record.marker.is_some() {
+            crate::io::app_server::stop_server(entry, &record);
+            reap_spawned(record.pid.get());
+        } else {
+            kill(record.pid);
+        }
         let _ = fs::remove_file(entry.join(SERVER_FILE));
         return Ok(None);
     }
@@ -550,7 +694,7 @@ pub fn sweep(root: &Path, linger: Duration) -> io::Result<usize> {
 /// per-turn directory, a log, a scratch file) lands in that project's tree. It
 /// did: a live control run from this repository's root left the agent's
 /// `step-*.txt` files in the checkout.
-fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
+fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<ServerRecord> {
     let (program, args) = plan.argv.split();
     let mut command = std::process::Command::new(program);
     command
@@ -559,6 +703,9 @@ fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
+    if plan.env_clear {
+        command.env_clear();
+    }
     for (key, value) in &plan.env {
         command.env(key, value);
     }
@@ -582,6 +729,11 @@ fn start(entry: &Path, plan: &LaunchPlan) -> io::Result<ServerRecord> {
         argv: plan.argv.clone(),
         address: plan.address.clone(),
         idle_since: None,
+        marker: plan.marker.clone(),
+        linger_ms: plan
+            .marker
+            .is_some()
+            .then(|| u64::try_from(linger.as_millis()).unwrap_or(u64::MAX)),
     };
     write_record(entry, &record)?;
     Ok(record)
@@ -826,7 +978,7 @@ fn kill(pid: Pid) {
     reap_spawned(pid);
 }
 
-fn read_record(entry: &Path) -> Option<ServerRecord> {
+pub(crate) fn read_record(entry: &Path) -> Option<ServerRecord> {
     let text = fs::read_to_string(entry.join(SERVER_FILE)).ok()?;
     serde_json::from_str(&text).ok()
 }
@@ -858,12 +1010,12 @@ fn epoch_secs() -> u64 {
 /// A whole-entry mutex around start/stop decisions, so two dispatches racing to
 /// first-acquire the same key cannot both spawn a server. Uses the same
 /// cross-platform advisory locking as the history index.
-struct EntryLock {
+pub(crate) struct EntryLock {
     _file: fs::File,
 }
 
 impl EntryLock {
-    fn acquire(entry: &Path) -> io::Result<Self> {
+    pub(crate) fn acquire(entry: &Path) -> io::Result<Self> {
         use fs2::FileExt;
         fs::create_dir_all(entry)?;
         let file = fs::OpenOptions::new()

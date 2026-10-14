@@ -22,7 +22,7 @@ use crate::io::process::{resolve_program, Finish, PipeEvent, Process};
 /// in the pipe read until its own deadline, and a cancelled harness keeps
 /// running (and billing). Short enough to feel immediate, long enough that the
 /// wakeups cost nothing next to a model call.
-const CANCEL_POLL_SLICE: Duration = Duration::from_millis(50);
+pub(crate) const CANCEL_POLL_SLICE: Duration = Duration::from_millis(50);
 
 /// A fully-specified subprocess to run.
 #[derive(Clone)]
@@ -223,7 +223,7 @@ fn unstarted_capture(job: &Job) -> Capture {
 /// The `error` text for a run oneharness terminated on a cancellation request.
 /// Distinct from the timeout message on purpose: nothing was exceeded, so
 /// pointing at `--timeout` would send the reader down the wrong path.
-fn cancelled_error(program: &str) -> String {
+pub(crate) fn cancelled_error(program: &str) -> String {
     format!(
         "`{program}` was cancelled: oneharness terminated it and its descendants before it finished. Suggestion: re-run when the work should complete"
     )
@@ -608,6 +608,9 @@ pub struct ControlledInput<'a> {
     /// run it becomes the first stdin frame; for a server-backed one the
     /// dialogue sends it after its handshake.
     pub prompt: String,
+    /// The shared Codex app-server this turn runs on instead of a child of its
+    /// own (`app_server = "shared"`), or `None` to spawn the job as before.
+    pub app_server: Option<&'a crate::io::app_server::PooledDispatch>,
 }
 
 /// [`run_job_streaming`], with the child's stdin held open for turn control when
@@ -679,6 +682,20 @@ where
     F: FnMut(&str) -> StreamStep,
 {
     let cancel = controls.cancel;
+    // A turn on a shared app-server spawns nothing of its own: it leases the
+    // pooled server and speaks to it over a socket.
+    if let Some((control, pooled)) =
+        control.and_then(|control| control.app_server.map(|pooled| (control, pooled)))
+    {
+        return crate::io::app_server::run_pooled_turn(
+            job,
+            control.handle,
+            &control.prompt,
+            pooled,
+            cancel,
+            &mut on_line,
+        );
+    }
     let start = Instant::now();
     let start_epoch_ms = epoch_millis();
     let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
@@ -851,7 +868,7 @@ where
     }
 }
 
-fn utc_now() -> String {
+pub(crate) fn utc_now() -> String {
     crate::domain::history::format_rfc3339_millis(epoch_millis())
 }
 
@@ -921,7 +938,7 @@ fn wait_or_cancel(process: &mut Process, deadline: Option<Instant>, cancel: &Can
 }
 
 /// The `error` text for a run killed at its own deadline.
-fn timeout_error(job: &Job) -> String {
+pub(crate) fn timeout_error(job: &Job) -> String {
     format!(
         "`{}` exceeded the {}s timeout and was killed. Suggestion: raise --timeout or simplify the prompt",
         job.argv[0],

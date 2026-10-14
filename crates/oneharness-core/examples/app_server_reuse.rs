@@ -83,6 +83,13 @@ fn args() -> Result<Args, String> {
 }
 
 // llmlint: ignore-block[changed_behavior_has_e2e] A /proc that cannot be listed, a stat or status file this user cannot read, or a malformed VmRSS cannot be staged by an unprivileged test on a live kernel; each such path now fails the reading with the file and the OS error rather than undercounting, and the readable path — every descendant summed, an exited one skipped — is proven end to end by the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree, whose pids must equal the OS's own process tree.
+/// Whether a `/proc/<pid>` read failed because the process has gone: its
+/// directory removed (`ENOENT`), or the process exiting under the read
+/// (`ESRCH`, 3 on Linux, the only platform this reads).
+fn vanished(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
+}
+
 /// `pid` and every descendant of it, as the OS lists them now. A process that
 /// exits between the listing and its read is skipped; any other failure to
 /// read `/proc` could hide a live descendant, so it fails the reading.
@@ -100,7 +107,7 @@ fn process_tree(root: u32) -> Result<Vec<u32>, String> {
         };
         let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
             Ok(stat) => stat,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) if vanished(&e) => continue,
             Err(e) => return Err(format!("cannot read /proc/{pid}/stat: {e}")),
         };
         let ppid = stat
@@ -132,7 +139,7 @@ fn process_tree(root: u32) -> Result<Vec<u32>, String> {
 fn rss(pid: u32) -> Result<u64, String> {
     let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
         Ok(status) => status,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) if vanished(&e) => return Ok(0),
         Err(e) => return Err(format!("cannot read /proc/{pid}/status: {e}")),
     };
     let Some(kb) = status.lines().find_map(|line| line.strip_prefix("VmRSS:")) else {

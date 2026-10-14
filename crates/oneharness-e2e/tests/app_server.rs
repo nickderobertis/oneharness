@@ -2159,6 +2159,68 @@ fn a_variant_s_app_server_setting_beats_its_harness_s() {
     );
 }
 
+/// The sweeper hook refuses an entry that is not a pool entry under the pool's
+/// root — it reconciles and stops servers — exiting 2 and naming why, and
+/// touches nothing there.
+#[test]
+fn the_sweeper_refuses_a_path_that_is_no_pool_entry() {
+    let pool = Pool::new("pool-sweeper-path");
+    let stranger = pool.path("not-a-pool/codex-app-server-0123");
+    std::fs::create_dir_all(&stranger).unwrap();
+    std::fs::write(stranger.join("keep"), "x").unwrap();
+    std::fs::create_dir_all(pool.path("state/oneharness/servers")).unwrap();
+    for (entry, why) in [
+        (stranger.clone(), "it is not a directory under "),
+        (
+            pool.path("state/oneharness/servers/../.."),
+            "its name is no pool key",
+        ),
+    ] {
+        let output = Command::new(oneharness_bin())
+            .env("ONEHARNESS_INTERNAL_APP_SERVER_SWEEPER", &entry)
+            .env("XDG_STATE_HOME", pool.path("state"))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{stderr}");
+        assert!(
+            stderr.contains("is not a shared app-server pool entry: ") && stderr.contains(why),
+            "{stderr}"
+        );
+    }
+    assert!(stranger.join("keep").exists());
+}
+
+/// Under the parallel opt-in, a zero-work overload on a pooled turn repeats it
+/// on the shared server too — the one controlled candidate drives itself — and
+/// recovers within `server_overloaded_max_retries`.
+#[test]
+fn a_pooled_overload_retries_on_the_shared_server_under_the_parallel_opt_in() {
+    let pool = Pool::new("pool-overload-parallel");
+    let count = pool.file("attempts");
+    let (output, report) = pool.run(pool.command_with_config(
+        "parallel",
+        "run_mode = \"parallel\"\nserver_overloaded_max_retries = 1\n",
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "1"),
+            ("MOCK_ATTEMPT_FILE", &count),
+        ],
+    ));
+    succeeded(&output, &report);
+    assert!(report["fallback"].is_null(), "{report}");
+    let ran = result(&report);
+    assert!(ran["failure_kind"].is_null(), "{ran}");
+    assert_eq!(std::fs::read_to_string(&count).unwrap(), "2");
+    let statuses: Vec<Value> = pool.state(reported_server(&report))["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["status"].clone())
+        .collect();
+    assert_eq!(statuses, vec![json!("failed"), json!("completed")]);
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the

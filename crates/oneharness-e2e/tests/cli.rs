@@ -638,6 +638,48 @@ fn every_report_carries_the_shared_schema_version() {
     assert_eq!(json_stdout(&config)["schema_version"], version);
 }
 
+/// `oneharness config` reports each codex identity's resolved `app_server`
+/// and the file that set it: the harness's override, its variant's own
+/// override beating it, and the default for an identity that sets none.
+#[test]
+fn config_reports_each_codex_identity_s_app_server_and_its_source() {
+    let fx = ConfigFixture::new(
+        "config-app-server",
+        "[harness.codex]\napp_server = \"per-dispatch\"\n\
+         [harness.codex.variant.pooled]\napp_server = \"shared\"\n\
+         [harness.codex.variant.plain]\nmodel = \"m\"\n",
+        "",
+    );
+    let output = run_with_config(
+        &["config", "--cwd", &fx.cwd(), "--compact"],
+        &[],
+        &fx.user_config(),
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report = json_stdout(&output);
+    let codex = &report["harness"]["codex"];
+    let project = std::path::Path::new(&fx.cwd()).join("oneharness.toml");
+    let from_project = |field: &Value| {
+        field["source"]
+            .as_str()
+            .is_some_and(|source| std::path::Path::new(source) == project)
+    };
+    assert_eq!(codex["app_server"]["value"], "per-dispatch", "{report}");
+    assert!(from_project(&codex["app_server"]), "{report}");
+    let pooled = &codex["variant"]["pooled"]["app_server"];
+    assert_eq!(pooled["value"], "shared", "{report}");
+    assert!(from_project(pooled), "{report}");
+    let plain = &codex["variant"]["plain"]["app_server"];
+    assert_eq!(
+        plain["value"], "per-dispatch",
+        "a variant inherits its harness's: {report}"
+    );
+}
+
 #[test]
 fn list_describes_every_harness() {
     let output = run(&["list"], &[]);

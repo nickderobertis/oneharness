@@ -100,9 +100,39 @@ static SWEEPER_HOSTED: AtomicBool = AtomicBool::new(false);
 pub fn serve_sweeper_if_requested() {
     SWEEPER_HOSTED.store(true, Ordering::SeqCst);
     if let Some(entry) = std::env::var_os(SWEEPER_ENV) {
-        run_sweeper(Path::new(&entry));
+        let entry = Path::new(&entry);
+        if let Err(why) = sweepable_entry(entry) {
+            eprintln!(
+                "oneharness: {SWEEPER_ENV}={} is not a shared app-server pool entry: {why}",
+                entry.display()
+            );
+            std::process::exit(2);
+        }
+        run_sweeper(entry);
         std::process::exit(0);
     }
+}
+
+/// Whether `entry` is a pool entry this process's pool keeps: an existing
+/// directory named by a pool key, directly under the pool's root. A sweeper
+/// reconciles and stops servers, so it is never pointed anywhere else.
+fn sweepable_entry(entry: &Path) -> Result<(), String> {
+    let root = server_pool::resolve_root(None).ok_or("no state directory holds a pool")?;
+    let named = entry
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| PoolKey::parse(name).is_ok());
+    if !named {
+        return Err("its name is no pool key".to_string());
+    }
+    let parent = entry
+        .parent()
+        .and_then(|parent| std::fs::canonicalize(parent).ok());
+    let root = std::fs::canonicalize(&root).map_err(|err| format!("{}: {err}", root.display()))?;
+    if parent.as_deref() != Some(root.as_path()) || !entry.is_dir() {
+        return Err(format!("it is not a directory under {}", root.display()));
+    }
+    Ok(())
 }
 
 /// One dispatch's plan for a turn on a shared server, decided before anything
@@ -126,7 +156,9 @@ impl PooledDispatch {
     /// The plan for a dispatch whose own launch would be `argv` (`<codex>
     /// app-server <args…>`) under the ambient environment with `env` applied
     /// and `env_remove` removed, working in `cwd`. `None` when `argv` is not an
-    /// app-server launch.
+    /// app-server launch, or when an `env`/`env_remove` entry is one no process
+    /// environment can hold (an empty name, `=` or NUL in a name, NUL in a
+    /// value) — the dispatch then runs its own launch, which reports it.
     #[must_use]
     pub fn plan(
         argv: &[String],
@@ -135,6 +167,14 @@ impl PooledDispatch {
         cwd: &Path,
         plugins: bool,
     ) -> Option<Self> {
+        let holdable = |name: &str| !name.is_empty() && !name.contains(['=', '\0']);
+        if !env
+            .iter()
+            .all(|(name, value)| holdable(name) && !value.contains('\0'))
+            || !env_remove.iter().all(|name| holdable(name))
+        {
+            return None;
+        }
         let (executable, rest) = argv.split_first()?;
         let (subcommand, process_args) = rest.split_first()?;
         if subcommand != "app-server" {
@@ -1450,6 +1490,31 @@ impl PooledSession {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_environment_no_process_can_hold_is_not_pooled() {
+        let argv = vec!["codex".to_string(), "app-server".to_string()];
+        let cwd = std::env::temp_dir();
+        let pair = |name: &str, value: &str| vec![(name.to_string(), value.to_string())];
+        assert!(PooledDispatch::plan(&argv, &pair("GOOD", "v"), &[], &cwd, false).is_some());
+        for env in [
+            pair("", "v"),
+            pair("A=B", "v"),
+            pair("A\0B", "v"),
+            pair("A", "v\0w"),
+        ] {
+            assert!(
+                PooledDispatch::plan(&argv, &env, &[], &cwd, false).is_none(),
+                "{env:?}"
+            );
+        }
+        for removed in ["", "A=B", "A\0B"] {
+            assert!(
+                PooledDispatch::plan(&argv, &[], &[removed.to_string()], &cwd, false).is_none(),
+                "{removed:?}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

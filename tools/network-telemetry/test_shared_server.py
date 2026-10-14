@@ -279,5 +279,79 @@ echo "waited $(( ($(date +%s%N) - started) / 1000000 ))"
         self.assertIn("shared-app-server: 2 launches,", counted.stdout)
 
 
+class TheWaitFailsLoudly(unittest.TestCase):
+    """oh_wait_pooled_servers refuses what it cannot trust, and gives up past
+    its bound, naming why each time."""
+
+    def wait(
+        self, tmp: Path, records: list[Record], limit: str
+    ) -> subprocess.CompletedProcess[str]:
+        file = tmp / "telemetry.jsonl"
+        write_lines(file, records)
+        env = {
+            **suite_env(tmp),
+            "OH_TEST_TELEMETRY": str(file),
+            "OH_E2E_POOL_WAIT": limit,
+        }
+        return subprocess.run(
+            [
+                BASH,
+                "-c",
+                'set -euo pipefail; source "$1"; OH_E2E_TELEMETRY_FILE="$OH_TEST_TELEMETRY"; oh_wait_pooled_servers',
+                "_",
+                str(ROOT / "scripts" / "e2e-lib.sh"),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=tmp,
+            env=env,
+            timeout=60,
+            check=False,
+        )
+
+    def test_a_bad_bound_damaged_record_or_lingering_server_fails_the_wait(self) -> None:
+        tmp = scratch(self)
+        entry = tmp / "state" / "oneharness" / "servers" / "codex-app-server-0123"
+        (entry / "sock").mkdir(parents=True)
+        (entry / "server.json").write_text("{}")
+        socket = f"unix://{entry / 'sock' / 'app-server.sock'}"
+
+        def launch(launch_id: str, address: str) -> Record:
+            return {
+                "kind": "shared-app-server",
+                "launch_id": launch_id,
+                "argv": ["codex", "app-server", "--listen", address],
+            }
+
+        for name, records, limit, said in (
+            (
+                "bad bound",
+                [],
+                "soon",
+                "OH_E2E_POOL_WAIT must be a whole number of seconds, got 'soon'",
+            ),
+            ("escaping id", [launch("../escape", socket)], "5", "launch id '../escape'"),
+            (
+                "relative socket",
+                [launch("codex-1-ab", "unix://sock/app.sock")],
+                "5",
+                "is not an absolute unix:// path",
+            ),
+            (
+                "lingering",
+                [launch("codex-1-ab", socket)],
+                "1",
+                "still running or unmeasured after 1s",
+            ),
+        ):
+            with self.subTest(name):
+                started = time.monotonic()
+                run = self.wait(tmp, records, limit)
+                self.assertNotEqual(run.returncode, 0, run.stdout + run.stderr)
+                self.assertIn(said, run.stderr)
+                if name == "lingering":
+                    self.assertGreaterEqual(time.monotonic() - started, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

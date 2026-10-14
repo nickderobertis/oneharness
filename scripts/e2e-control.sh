@@ -241,7 +241,7 @@ oh_pooled_kill() {
     [ "$waited" -lt 150 ] || break
   done
   before=$((grown * 2))
-  [ "$quiet" -ge 5 ] && [ "$before" -le $(((bound * 10) + 15)) ] ||
+  [ "$quiet" -ge 5 ] && [ "$before" -le "$(((bound * 10) + 15))" ] ||
     fail "pooled-kill: the killed dispatch's heartbeat kept beating $((before / 10)).$((before % 10)) s after the kill, past DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE (${bound} s)"
   note "  ok: the killed dispatch's heartbeat stopped $((before / 10)).$((before % 10)) s after the kill (bound ${bound} s)"
 }

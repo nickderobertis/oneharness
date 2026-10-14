@@ -7,9 +7,9 @@
 #   1. the ordinary gate build, then one untimed declared pass, which clears
 #      any backlog while every unit's newest build is the ordinary one;
 #   2. the same test targets built under an alternative feature selection
-#      (adding `sdk-schema`, which gives this repository's own crates new
-#      metadata hashes), each entry that build created backdated past the
-#      2-day window so it stands in for a superseded run's builds;
+#      (each selection plus `sdk-schema`, which gives this repository's own
+#      crates new metadata hashes), each entry that build created backdated
+#      past the 2-day window so it stands in for a superseded run's builds;
 #   3. the ordinary gate build again, so each unit's newest build is ordinary;
 #   4. one timed declared pass, which removes the alternative build.
 #
@@ -32,8 +32,27 @@ result="${ONEBUDGETSPEC_RESULT:-}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-ordinary=(oneharness --with oneharness-mock-harness --features oneharness/mock-harness --build-only)
-alternative=(oneharness --with oneharness-mock-harness --features "oneharness/mock-harness,oneharness/sdk-schema" --build-only)
+# Every instrumented Rust test selection the gate builds (each Rust project's
+# `test` runs `scripts/cargo-test.sh` with these arguments), one per line; the
+# alternative adds `sdk-schema` to each, directly or through the crate it
+# depends on, so every one of this repository's crates gets a new hash. The
+# uninstrumented e2e leg (target/debug) is the same selection uninstrumented.
+ordinary='oneharness --features oneharness/mock-harness
+oneharness --with oneharness-mock-harness --features oneharness/mock-harness
+oneharness-core --features oneharness-core/mock-harness
+oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness
+oneharness-history-compat --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness
+oneharness-mock-harness
+oneharness-sdk-conformance
+oneharness-sdk-contract'
+alternative='oneharness --features oneharness/mock-harness,oneharness/sdk-schema
+oneharness --with oneharness-mock-harness --features oneharness/mock-harness,oneharness/sdk-schema
+oneharness-core --features oneharness-core/mock-harness,oneharness-core/sdk-schema
+oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness,oneharness/sdk-schema
+oneharness-history-compat --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness,oneharness/sdk-schema
+oneharness-mock-harness --features oneharness/sdk-schema
+oneharness-sdk-conformance --features oneharness-core/sdk-schema
+oneharness-sdk-contract --features oneharness-sdk-contract/sdk-schema'
 
 # Every top-level build entry of every profile directory under target/, the
 # entries the pruner selects among, one path per line.
@@ -46,8 +65,16 @@ entries() {
   done | sort
 }
 
+# Build each selection of $1 (one per line) the way the gate's test does.
 build() {
-  bash scripts/cargo-test.sh "$@" >/dev/null
+  local selection args
+  while IFS= read -r selection; do
+    read -ra args <<<"$selection"
+    bash scripts/cargo-test.sh "${args[@]}" --build-only >/dev/null || {
+      echo "measure: building 'scripts/cargo-test.sh $selection --build-only' failed (above)" >&2
+      exit 1
+    }
+  done <<<"$1"
 }
 
 prune() {
@@ -60,12 +87,12 @@ prune() {
 }
 
 echo "measure: ordinary gate build, then the untimed backlog pass" >&2
-build "${ordinary[@]}"
+build "$ordinary"
 prune "$work/backlog.json"
 
 echo "measure: alternative-configuration build, backdated past the window" >&2
 entries >"$work/before-alternative"
-build "${alternative[@]}"
+build "$alternative"
 entries >"$work/after-alternative"
 comm -13 "$work/before-alternative" "$work/after-alternative" >"$work/alternative"
 [ -s "$work/alternative" ] || {
@@ -79,7 +106,7 @@ while IFS= read -r entry; do
 done <"$work/alternative"
 
 echo "measure: ordinary gate build, then the timed pass" >&2
-build "${ordinary[@]}"
+build "$ordinary"
 entries >"$work/before-pass"
 prune "$work/pass.json"
 entries >"$work/after-pass"
@@ -98,9 +125,19 @@ removed="$(wc -l <"$work/removed" | tr -d ' ')"
 }
 kept="$(comm -23 "$work/before-pass" "$work/alternative" | wc -l | tr -d ' ')"
 echo "measure: removed $removed entries, every one the alternative build's; all $kept other entries remain" >&2
-own() { grep -E '/deps/(lib)?oneharness[a-z_]*-[0-9a-f]{16}\.rlib$' "$1" | sed 's#.*/##' | tr '\n' ' '; }
-echo "measure: own crates' ordinary rlibs before the pass: $(comm -23 "$work/before-pass" "$work/alternative" >"$work/ordinary" && own "$work/ordinary")" >&2
-echo "measure: own crates' rlibs after the pass: $(own "$work/after-pass")" >&2
+# This repository's crates' entries, by unit name and metadata hash.
+own() { grep -E '/(deps|\.fingerprint|build|incremental)/(lib)?oneharness[a-z0-9_-]*-[0-9a-f]{16}(\.rlib)?$' "$1" | sed 's#.*/##; s#^lib##; s#\.rlib$##' | sort -u; }
+comm -23 "$work/before-pass" "$work/alternative" >"$work/ordinary"
+own "$work/ordinary" >"$work/own-before"
+own "$work/after-pass" >"$work/own-after"
+own "$work/alternative" >"$work/own-alternative"
+if ! cmp -s "$work/own-before" "$work/own-after"; then
+  diff "$work/own-before" "$work/own-after" >&2 || true
+  echo "measure: this repository's ordinary build hashes changed across the timed pass (above)" >&2
+  exit 1
+fi
+echo "measure: this repository's crates, ordinary build: $(wc -l <"$work/own-before" | tr -d ' ') unit/hash entries before the pass, the same $(wc -l <"$work/own-after" | tr -d ' ') after; alternative build: $(wc -l <"$work/own-alternative" | tr -d ' '), of which $(comm -12 "$work/own-alternative" "$work/own-after" | wc -l | tr -d ' ') remain as their unit's only build" >&2
+sed 's/^/measure:   ordinary kept: /' "$work/own-before" >&2
 
 node -e '
   const fs = require("node:fs");

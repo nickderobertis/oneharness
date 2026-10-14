@@ -304,5 +304,9 @@ for declaration in "${CONTROLLABLE[@]}"; do
   fi
 done
 
+# Every shared app-server a controlled codex turn started is measured over its
+# whole life; wait for each to linger out before reporting.
+oh_wait_pooled_servers
+
 oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)" \
   "${failed[*]-}" "${refused[*]-}" "${gaps[*]-}"

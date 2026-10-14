@@ -156,13 +156,24 @@ if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
   die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
 fi
 
+# A shared Codex app-server is started with a server marker
+# (ONEHARNESS_APP_SERVER_MARKER), and stopping it stops every process carrying
+# that marker. The recorder's own processes must not carry it — its supervisor
+# writes the server's line only after the server's whole tree has exited — so
+# the marker is taken off this process and given to the launch alone.
+launch=("$real")
+if [ -n "${ONEHARNESS_APP_SERVER_MARKER:-}" ]; then
+  launch=(env "ONEHARNESS_APP_SERVER_MARKER=$ONEHARNESS_APP_SERVER_MARKER" "$real")
+  unset ONEHARNESS_APP_SERVER_MARKER
+fi
+
 os="${OH_E2E_OS:-$(uname -s)}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 case "$os" in
   Linux*)
     if command -v python3 >/dev/null 2>&1; then
       exec python3 "$here/e2e-netmeasure.py" --line-file "$file" --launch-id "$launch_id" \
-        --pending "$pending" -- "$real" "$@"
+        --pending "$pending" -- "${launch[@]}" "$@"
     fi
     reason="no python3 on PATH to run scripts/e2e-netmeasure.py"
     ;;
@@ -175,7 +186,7 @@ esac
 trap ':' TERM INT HUP
 t0="$(date +%s)"
 rc=0
-"$real" "$@" || rc=$?
+"${launch[@]}" "$@" || rc=$?
 unrecorded() {
   printf 'e2e-netshim: %s exited %s, but its measurement line could not be written to %s (%s); check that the directory is writable, then rerun the suite\n' \
     "$real" "$rc" "$file" "$1" >&2

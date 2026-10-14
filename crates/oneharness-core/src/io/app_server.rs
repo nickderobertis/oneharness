@@ -494,12 +494,12 @@ impl Connection {
         method: &str,
         thread: &str,
         deadline: Duration,
-    ) -> io::Result<bool> {
+    ) -> io::Result<Option<Value>> {
         let until = Instant::now() + deadline;
         loop {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Ok(false);
+                return Ok(None);
             }
             self.reader
                 .set_read_timeout(Some(left.min(Duration::from_millis(100))))?;
@@ -509,7 +509,7 @@ impl Connection {
                         continue;
                     };
                     if frame["method"] == method && rules::frame_thread(&frame) == Some(thread) {
-                        return Ok(true);
+                        return Ok(Some(frame));
                     }
                 }
                 Incoming::Idle => {}
@@ -1272,27 +1272,39 @@ impl PooledSession {
             )
             .map_err(|err| format!("thread/shellCommand: {err}"))?
             .ok_or("the app-server did not answer thread/shellCommand")?;
-        if let Some(error) = response.get("error") {
-            return Err(format!("thread/shellCommand was refused: {error}"));
-        }
+        rules::reply_result("thread/shellCommand", &response)
+            .map_err(|why| format!("the app-server's thread/shellCommand failed: {why}"))?;
         match self.connection.await_notification(
             "turn/completed",
             thread.as_str(),
             Duration::from_secs(30),
         ) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("the shell turn did not complete within 30s".to_string()),
+            Ok(Some(frame)) => match frame.pointer("/params/turn/status").and_then(Value::as_str) {
+                Some("completed") => Ok(()),
+                status => Err(format!(
+                    "the shell turn ended {}, not completed: {frame}",
+                    status.unwrap_or("with no status")
+                )),
+            },
+            Ok(None) => Err("the shell turn did not complete within 30s".to_string()),
             Err(err) => Err(format!("the shell turn: {err}")),
         }
     }
 
     /// The threads the server holds loaded now (`thread/loaded/list`), every
-    /// page of them.
-    pub fn loaded_threads(&mut self) -> Result<Vec<String>, String> {
+    /// page of them, read before `until`: a listing still paging then is an
+    /// error, so the caller's bound holds across a whole listing.
+    pub fn loaded_threads(&mut self, until: Instant) -> Result<Vec<String>, String> {
         let mut threads = Vec::new();
         let mut cursor: Option<String> = None;
         let mut seen = std::collections::HashSet::new();
         loop {
+            if Instant::now() >= until {
+                return Err(format!(
+                    "thread/loaded/list was still paging at the deadline, {} thread(s) in",
+                    threads.len()
+                ));
+            }
             let params = match &cursor {
                 Some(cursor) => json!({"cursor": cursor}),
                 None => json!({}),

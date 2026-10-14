@@ -81,25 +81,34 @@ fn args() -> Result<Args, String> {
     })
 }
 
-/// `pid` and every descendant of it, as the OS lists them now.
-fn process_tree(root: u32) -> Vec<u32> {
-    let parents: Vec<(u32, u32)> = std::fs::read_dir("/proc")
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
-        .filter_map(|pid| {
-            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-            let ppid = stat
-                .rsplit_once(')')?
-                .1
-                .split_whitespace()
-                .nth(1)?
-                .parse()
-                .ok()?;
-            Some((pid, ppid))
-        })
-        .collect();
+// llmlint: ignore-block[changed_behavior_has_e2e] A /proc that cannot be listed, a stat or status file this user cannot read, or a malformed VmRSS cannot be staged by an unprivileged test on a live kernel; each such path now fails the reading with the file and the OS error rather than undercounting, and the readable path — every descendant summed, an exited one skipped — is proven end to end by the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree, whose pids must equal the OS's own process tree.
+/// `pid` and every descendant of it, as the OS lists them now. A process that
+/// exits between the listing and its read is skipped; any other failure to
+/// read `/proc` could hide a live descendant, so it fails the reading.
+fn process_tree(root: u32) -> Result<Vec<u32>, String> {
+    let listing = std::fs::read_dir("/proc").map_err(|e| format!("cannot list /proc: {e}"))?;
+    let mut parents: Vec<(u32, u32)> = Vec::new();
+    for entry in listing {
+        let entry = entry.map_err(|e| format!("cannot list /proc: {e}"))?;
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|n| n.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let stat = match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => stat,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(format!("cannot read /proc/{pid}/stat: {e}")),
+        };
+        let ppid = stat
+            .rsplit_once(')')
+            .and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|ppid| ppid.parse().ok())
+            .ok_or_else(|| format!("/proc/{pid}/stat names no parent: {stat:?}"))?;
+        parents.push((pid, ppid));
+    }
     let mut tree = vec![root];
     let mut index = 0;
     while index < tree.len() {
@@ -113,37 +122,58 @@ fn process_tree(root: u32) -> Vec<u32> {
         index += 1;
     }
     tree.sort_unstable();
-    tree
+    Ok(tree)
 }
 
-/// The resident memory `pid` holds, in bytes; 0 when it cannot be read.
-fn rss(pid: u32) -> u64 {
-    std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .ok()
-        .and_then(|status| {
-            status
-                .lines()
-                .find_map(|line| line.strip_prefix("VmRSS:"))
-                .and_then(|kb| kb.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
-        })
-        .map_or(0, |kb| kb * 1024)
+/// The resident memory `pid` holds, in bytes: 0 once it has exited, or for a
+/// zombie (which reports no `VmRSS` and holds none); any other failure would
+/// undercount the server, so it fails the reading.
+fn rss(pid: u32) -> Result<u64, String> {
+    let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
+        Ok(status) => status,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(format!("cannot read /proc/{pid}/status: {e}")),
+    };
+    let Some(kb) = status.lines().find_map(|line| line.strip_prefix("VmRSS:")) else {
+        return Ok(0);
+    };
+    kb.trim()
+        .trim_end_matches("kB")
+        .trim()
+        .parse::<u64>()
+        .map(|kb| kb * 1024)
+        .map_err(|e| format!("/proc/{pid}/status has an unreadable VmRSS {kb:?}: {e}"))
 }
+
+// llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// The whole-tree reading of the server `pid`.
-fn reading(pid: u32) -> Value {
-    let pids = process_tree(pid);
-    let bytes: u64 = pids.iter().map(|pid| rss(*pid)).sum();
-    json!({"rss_bytes": bytes, "pids": pids})
+fn reading(pid: u32) -> Result<Value, String> {
+    let pids = process_tree(pid)?;
+    let mut bytes = 0u64;
+    for pid in &pids {
+        bytes += rss(*pid)?;
+    }
+    Ok(json!({"rss_bytes": bytes, "pids": pids}))
 }
 
-fn version(codex: &str) -> String {
-    std::process::Command::new(codex)
+fn version(codex: &str) -> Result<String, String> {
+    let out = std::process::Command::new(codex)
         .arg("--version")
         .output()
-        .ok()
-        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
-        .unwrap_or_default()
+        .map_err(|e| format!("cannot run `{codex} --version`: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`{codex} --version` failed ({}): {}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
+
+/// How far past the settle bound a listing begun before it may run.
+const LISTING_GRACE: Duration = Duration::from_secs(10);
 
 /// Wait until the server holds none of `released` loaded, polling through a
 /// short-lived lease of its own (released again before the caller reads), for
@@ -156,7 +186,9 @@ fn settle(
     let mut observer = PooledSession::open(dispatch)?;
     let until = std::time::Instant::now() + bound;
     let still = loop {
-        let loaded = observer.loaded_threads()?;
+        // The last poll starts at the bound at the latest, and its listing
+        // must finish within LISTING_GRACE of it.
+        let loaded = observer.loaded_threads(until + LISTING_GRACE)?;
         let still: Vec<String> = released
             .iter()
             .filter(|t| loaded.contains(t))
@@ -223,7 +255,7 @@ fn run(args: &Args) -> Result<Value, String> {
                     retained.push(still);
                 }
             }
-            let taken = reading(pid);
+            let taken = reading(pid)?;
             if lease == 1 {
                 after_first = taken.clone();
             }
@@ -235,7 +267,7 @@ fn run(args: &Args) -> Result<Value, String> {
     keeper.release();
     Ok(json!({
         "retained": retained,
-        "codex_version": version(&args.codex),
+        "codex_version": version(&args.codex)?,
         "platform": std::env::consts::OS,
         "lease_count": leases.len(),
         "leases": leases,

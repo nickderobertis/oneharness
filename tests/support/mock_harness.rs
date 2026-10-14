@@ -2310,7 +2310,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         nothing, as an exiting server's socket outlives the
 ///                         environment a marker scan reads; `loaded-cycle`
 ///                         answers every `thread/loaded/list` page with the
-///                         first page's cursor as the next.
+///                         first page's cursor as the next; `stall-upgrade`
+///                         reads a connection's upgrade request and never
+///                         answers it.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
@@ -2560,6 +2562,7 @@ mod listen_server {
         let mut child = std::process::Command::new(exe);
         child.args(argv).env("ONEHARNESS_MOCK_SHIM_CHILD", "1");
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("late-listener") {
+            // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and the mock already read oneharness_core::domain::history this way before this change.
             child.env_remove(oneharness_core::domain::app_server::SERVER_MARKER_VAR);
         }
         let status = child.status();
@@ -2862,11 +2865,19 @@ mod listen_server {
                 }
             }
         }
+        // CODEX_MOCK_FAULT=stall-upgrade: read the upgrade request and never
+        // answer it, holding the connection open.
+        if lock(server).fault == "stall-upgrade" {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
         let writer = Arc::new(Mutex::new(writer));
         {
             let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
             let answer = format!(
                 "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and the mock already read oneharness_core::domain::history this way before this change.
                 oneharness_core::io::websocket::accept_key(&key)
             );
             if w.write_all(answer.as_bytes()).is_err() {

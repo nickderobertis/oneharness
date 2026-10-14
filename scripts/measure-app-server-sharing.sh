@@ -228,11 +228,11 @@ def measure(work, errors):
         while first is None:
             try:
                 first = Connection(path)
-            except OSError:
+            except OSError as error:
                 if server.poll() is not None or time.monotonic() > deadline:
                     errors.seek(0)
                     said = errors.read().strip() or "(nothing on stderr)"
-                    stop(f"the server never accepted a connection (exit {server.poll()}); its stderr:\n{said}\ncheck `codex login status` and that this codex supports `app-server --listen`")
+                    stop(f"the server never accepted a connection on {path} (last attempt: {error}; exit {server.poll()}); its stderr:\n{said}\ncheck `codex login status` and that this codex supports `app-server --listen`")
                 time.sleep(0.02)
         threads = []
         first.ready_thread(work)

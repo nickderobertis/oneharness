@@ -38,6 +38,9 @@ LEASES = 5
 Pid = NewType("Pid", int)
 """A process id the workload recorded: always positive."""
 
+ThreadId = NewType("ThreadId", str)
+"""An app-server thread id the workload recorded: never empty."""
+
 
 class Incomplete(Exception):
     """The record cannot yield a figure; the message names every fault."""
@@ -57,7 +60,7 @@ class Lease:
 
     lease: int
     server_pid: Pid
-    thread: str
+    thread: ThreadId
 
 
 @dataclass(frozen=True)
@@ -143,7 +146,7 @@ def decode_leases(record: dict[str, object], faults: list[str]) -> list[Lease]:
         if not isinstance(thread, str) or thread == "":
             faults.append(f"lease {index} names no thread: {entry!r}")
         if pid is not None and number == index and isinstance(thread, str) and thread != "":
-            leases.append(Lease(number, Pid(pid), thread))
+            leases.append(Lease(number, Pid(pid), ThreadId(thread)))
     return leases
 
 

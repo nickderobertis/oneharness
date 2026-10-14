@@ -263,13 +263,12 @@ impl InterruptReply {
     #[must_use]
     pub fn of(response: &Value) -> Self {
         let Some(error) = response.get("error") else {
-            return if response.get("result").is_some() {
-                InterruptReply::Accepted
-            } else {
-                InterruptReply::Refused(
-                    "the app-server answered the interrupt with neither a result nor an error"
-                        .to_string(),
-                )
+            return match reply_result("turn/interrupt", response) {
+                Ok(_) => InterruptReply::Accepted,
+                Err(why) => InterruptReply::Refused(
+                    why.strip_prefix("it ")
+                        .map_or(why.clone(), |rest| format!("the app-server {rest}")),
+                ),
             };
         };
         let message = error
@@ -506,6 +505,13 @@ mod tests {
             InterruptReply::of(&json!({"id": 1})),
             InterruptReply::Refused(_)
         ));
+        assert_eq!(
+            InterruptReply::of(&json!({"id": 1, "result": null})),
+            InterruptReply::Refused(
+                "the app-server answered turn/interrupt with a result that is not an object: null"
+                    .to_string()
+            )
+        );
         assert!(matches!(
             InterruptReply::of(
                 &json!({"id": 1, "error": {"code": -32600, "message": "thread not found: t"}})

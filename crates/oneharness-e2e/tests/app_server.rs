@@ -1705,6 +1705,30 @@ fn a_pooled_turn_s_tool_reads_as_it_does_on_the_dispatch_s_own_child() {
     );
 }
 
+/// A shared server that accepts the connection and never answers the
+/// WebSocket upgrade fails the dispatch within the handshake's deadline,
+/// naming it, rather than holding the run past its own bounds.
+#[test]
+fn a_server_that_never_answers_the_upgrade_fails_the_dispatch_at_the_handshake_deadline() {
+    use oneharness_core::io::websocket::HANDSHAKE_DEADLINE;
+    let pool = Pool::new("pool-stall").with_env("CODEX_MOCK_FAULT", "stall-upgrade");
+    let started = Instant::now();
+    let (_, report) = pool.run(pool.command("stalled", &[], &[]));
+    let took = started.elapsed();
+    let ran = result(&report);
+    assert_ne!(ran["status"], "ok", "{ran}");
+    assert!(
+        ran["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("did not answer the WebSocket upgrade within 10s")),
+        "{ran}"
+    );
+    assert!(
+        took >= HANDSHAKE_DEADLINE && took < HANDSHAKE_DEADLINE + Duration::from_secs(15),
+        "the dispatch returned after {took:?}, not at the {HANDSHAKE_DEADLINE:?} handshake deadline"
+    );
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the
@@ -2529,7 +2553,10 @@ fn the_sharing_measurement_names_a_server_that_never_listened_and_leaves_no_scra
     assert!(!output.status.success(), "{said}");
     assert!(output.stdout.is_empty(), "a figure was printed: {said}");
     assert!(
-        said.contains("measure-app-server-sharing: the server never accepted a connection (exit 1); its stderr:")
+        said.contains("measure-app-server-sharing: the server never accepted a connection on ")
+            && said.contains(
+                "(last attempt: [Errno 2] No such file or directory; exit 1); its stderr:"
+            )
             && said.contains("check `codex login status`"),
         "{said}"
     );

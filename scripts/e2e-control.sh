@@ -194,7 +194,7 @@ oh_pooled_kill() {
     fail "pooled-kill: cannot create the dispatch's working directory under $POOLED_DIR; check that it is writable"
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
   OH_POOLED_BEAT="$beat" _oh_pooled_start pooled-kill "$POOLED_DIR/kill.json" "$POOLED_DIR/wk" \
-    'while :; do date +%s >> "$OH_POOLED_BEAT"; sleep 0.1; done'
+    'while date +%s >>"$OH_POOLED_BEAT"; do sleep 0.1; done; echo "heartbeat: cannot append to $OH_POOLED_BEAT" >&2; exit 1'
   pid=$POOLED_PID
   # The heartbeat's line count: 0 until the command first writes it, and a
   # file that exists but cannot be read fails the phase naming it.

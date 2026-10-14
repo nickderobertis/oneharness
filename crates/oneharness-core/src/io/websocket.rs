@@ -317,9 +317,16 @@ fn parse_frame(buffer: &[u8]) -> io::Result<Option<FrameHeader>> {
     }))
 }
 
+/// The longest a server may take to answer the WebSocket upgrade.
+pub const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+
 /// Open a WebSocket on a connected stream: send the upgrade request and read
 /// the `101 Switching Protocols` answer. Anything else is refused, naming the
 /// status line the server sent.
+///
+/// The answer must arrive within [`HANDSHAKE_DEADLINE`]: a peer that accepts
+/// the connection and never answers fails the handshake rather than holding
+/// the caller past its own bounds.
 pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
     let key = base64(&random_bytes::<16>());
     let request = format!(
@@ -327,13 +334,36 @@ pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsW
          Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
     );
     stream.write_all(request.as_bytes())?;
+    let deadline = std::time::Instant::now() + HANDSHAKE_DEADLINE;
     let mut response = Vec::new();
     let mut byte = [0u8; 1];
     while !response.ends_with(b"\r\n\r\n") {
         if response.len() > MAX_HANDSHAKE_BYTES {
             return Err(protocol_error("a handshake response larger than 16 KiB"));
         }
-        match stream.read(&mut byte)? {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the server did not answer the WebSocket upgrade within {}s",
+                    HANDSHAKE_DEADLINE.as_secs()
+                ),
+            ));
+        }
+        stream.set_read_timeout(Some(left))?;
+        let read = match stream.read(&mut byte) {
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
+            other => other?,
+        };
+        match read {
             0 => {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
@@ -343,6 +373,9 @@ pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsW
             _ => response.push(byte[0]),
         }
     }
+    // The handshake's bound is its own: the reader sets whatever its caller
+    // asks for from here on.
+    stream.set_read_timeout(None)?;
     let text = String::from_utf8_lossy(&response);
     let status = text.lines().next().unwrap_or_default().to_string();
     let header = |wanted: &str| {

@@ -56,7 +56,8 @@ class RssGrowthBudget(unittest.TestCase):
     def test_one_byte_more_is_over_and_names_both_readings(self) -> None:
         run = check(FIXTURES / "reuse-one-byte-over.json")
         self.assertNotEqual(run.returncode, 0, run.stdout)
-        self.assertIn("— over", run.stdout)
+        # ASCII only: Windows decodes the child's em dash by its own code page.
+        self.assertRegex(run.stdout, r" over; ")
         self.assertIn("300000001 B", run.stdout)
         self.assertIn("200000000 B", run.stdout)
 

@@ -405,8 +405,12 @@ oh_wait_pooled_servers() {
     local launch socket sockdir entry pending
     jq -r 'select(.kind == "shared-app-server" and .argv != null)
       | [.launch_id, ((.argv | index("--listen")) as $i | if $i == null then "" else .argv[$i + 1] end)] | @tsv' "$file" |
+      tr -d '\r' |
       while IFS=$'\t' read -r launch socket; do
+        # Git Bash's jq ends lines with CRLF (stripped above), and a Windows
+        # path is a drive path that dirname and test read with either slash.
         socket="${socket#unix://}"
+        socket="${socket//\\//}"
         # The recorder writes both; anything else is a damaged record, which
         # fails the wait rather than naming a path outside the pool.
         case "$launch" in
@@ -416,7 +420,7 @@ oh_wait_pooled_servers() {
             ;;
         esac
         case "$socket" in
-          /*) ;;
+          /* | [A-Za-z]:/*) ;;
           *)
             echo "launch $launch's --listen address '$socket' in $file is not an absolute unix:// path" >&2
             return 1

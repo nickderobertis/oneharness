@@ -53,7 +53,9 @@ use crate::domain::usage::UtcInstant;
 /// `0.12` adds [`FailureKind::AppServerLost`] and its `"app-server-lost"`
 /// fallback reason: a pooled Codex dispatch whose shared app-server went away
 /// under its live turn. A new enum value, so exhaustive consumers learn of it
-/// from the version.
+/// from the version. The `config` report's codex harness and variant entries
+/// gain the resolved `app_server` (`"shared"` or `"per-dispatch"`) beside it,
+/// additively.
 ///
 /// `0.11` adds [`FailureKind::ServerOverloaded`] and its
 /// `"server-overloaded"` fallback reason. The enum values require the bump so

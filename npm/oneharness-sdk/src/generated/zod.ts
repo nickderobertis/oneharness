@@ -3,9 +3,11 @@
 import { z } from "zod";
 import type { ConfigOptions } from "./config-options.js";
 import type {
+  AppServerMode,
   ConfigReport,
   Field,
   Field10,
+  Field11,
   Field2,
   Field3,
   Field4,
@@ -125,6 +127,8 @@ export const ActionEventSchema: z.ZodType<ActionEvent> = z.looseObject({
   timing_source: z.union([z.lazy(() => TimingSourceSchema), z.null()]).optional(),
   tool_call_id: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
 });
+
+export const AppServerModeSchema: z.ZodType<AppServerMode> = z.union([z.literal("shared"), z.literal("per-dispatch")]);
 
 export const AuthModeSchema: z.ZodType<AuthMode> = z.union([
   z.literal("subscription"),
@@ -361,6 +365,13 @@ export const Field10Schema: z.ZodType<Field10> = z.looseObject({
     .refine((value) => value !== undefined, { message: "Required" }),
 });
 
+export const Field11Schema: z.ZodType<Field11> = z.looseObject({
+  source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
+  value: z
+    .union([z.lazy(() => AppServerModeSchema), z.null()])
+    .refine((value) => value !== undefined, { message: "Required" }),
+});
+
 export const Field2Schema: z.ZodType<Field2> = z.looseObject({
   source: z.union([z.string(), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
   value: z.union([z.array(z.string()), z.null()]).refine((value) => value !== undefined, { message: "Required" }),
@@ -454,6 +465,7 @@ export const HarnessInfoSchema: z.ZodType<HarnessInfo> = z.looseObject({
 export const HarnessReportSchema: z.ZodType<HarnessReport> = z.looseObject({
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   analytics: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
+  app_server: z.union([z.lazy(() => Field11Schema), z.null()]).optional(),
   apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),
@@ -3395,6 +3407,7 @@ export const VariantInfoSchema: z.ZodType<VariantInfo> = z.looseObject({
 export const VariantReportSchema: z.ZodType<VariantReport> = z.looseObject({
   allowed_tools: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   analytics: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
+  app_server: z.union([z.lazy(() => Field11Schema), z.null()]).optional(),
   apps: z.union([z.lazy(() => FieldSchema), z.null()]).optional(),
   args: z.lazy(() => Field2Schema).refine((value) => value !== undefined, { message: "Required" }),
   bin: z.lazy(() => Field3Schema).refine((value) => value !== undefined, { message: "Required" }),

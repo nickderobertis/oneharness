@@ -24,6 +24,21 @@
   },
   "config_report": {
     "$defs": {
+      "AppServerMode": {
+        "description": "Where a controlled (`--control`) Codex dispatch's turn runs: the\n`app_server` key of `[harness.codex]` and `[harness.codex.variant.<name>]`.\n\nResolved variant, then harness, then [`AppServerMode::Shared`] on every\nplatform, apart from `args` exactly as `plugins` is\n([`FileConfig::app_server_for`]). Accepted only for `codex`.",
+        "oneOf": [
+          {
+            "const": "shared",
+            "description": "One `codex app-server --listen unix://\u2026` per pool key, shared by every\nconcurrent dispatch with that key and managed by oneharness's server\npool. The default.",
+            "type": "string"
+          },
+          {
+            "const": "per-dispatch",
+            "description": "The dispatch's own `codex app-server` stdio child, started for it and\ntorn down with it \u2014 the behavior before pooling.",
+            "type": "string"
+          }
+        ]
+      },
       "Field": {
         "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
         "properties": {
@@ -62,6 +77,32 @@
             "type": [
               "array",
               "null"
+            ]
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Field11": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AppServerMode"
+              },
+              {
+                "type": "null"
+              }
             ]
           }
         },
@@ -284,6 +325,17 @@
               }
             ],
             "description": "The resolved `analytics` (`false` by default), present only for `codex`."
+          },
+          "app_server": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field11"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The resolved `app_server` (`\"shared\"` by default), present only for\n`codex`."
           },
           "apps": {
             "anyOf": [
@@ -515,6 +567,17 @@
               }
             ],
             "description": "The `analytics` a launch of this variant resolves to: the variant's own,\nelse its harness's, else `false`. Present only for `codex`."
+          },
+          "app_server": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field11"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The `app_server` a launch of this variant resolves to: the variant's\nown, else its harness's, else `\"shared\"`. Present only for `codex`."
           },
           "apps": {
             "anyOf": [

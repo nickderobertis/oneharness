@@ -2024,8 +2024,12 @@ on codex-cli 0.159.2 (Linux):
   41,000,960 B, where a second server would cost the whole first figure again
   ([`scripts/measure-app-server-sharing.sh`](scripts/measure-app-server-sharing.sh),
   one run in [`live/control/evidence/app-server-sharing.json`](live/control/evidence/app-server-sharing.json)).
-  Under reuse the server's memory is budgeted: after five sequential leases it
-  held 1.083x what it held after the first
+  Under reuse the server's memory is budgeted: after five sequential leases —
+  each a thread started, given one `thread/shellCommand` of `true`, resumed once,
+  held 1 s and released, with no model call and no `turn/start` (the shell
+  command is there because codex-cli writes a thread's rollout only after a
+  turn and refuses to resume a thread without one; a dispatch itself never sends
+  `thread/shellCommand`) — it held 1.083x what it held after the first
   ([`live/control/evidence/app-server-reuse.md`](live/control/evidence/app-server-reuse.md);
   `codex-shared-server-rss-growth`, at most 1.5x).
 

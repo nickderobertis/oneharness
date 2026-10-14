@@ -11,7 +11,10 @@ budgets:
       after the 5th of 5 sequential leases is released, over the same reading
       after the 1st, both with no lease live on one server pid. Workload: one
       pooled app-server on Linux serving 5 sequential leases, each a thread
-      started, resumed once, held 1 s and released, with no model turn. The
+      started, given one thread/shellCommand of `true`, resumed once, held 1 s
+      and released, with no model call and no turn/start. The shell command is
+      there because codex-cli writes a thread's rollout only after a turn and
+      refuses to resume a thread without one. The
       threshold is 1.5: a server that releases a finished dispatch's state
       returns to its one-dispatch footprint, so sustained growth past 1.5x is
       retained per-dispatch state (5 leases detect a retention above about an

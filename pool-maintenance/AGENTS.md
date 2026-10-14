@@ -14,14 +14,13 @@ exists only to measure it.
   format-check `measure.sh`.
 - **The figure is a steady-state pass**, never a first pass over accumulated
   history: `measure.sh` clears the backlog untimed, builds every instrumented
-  Rust test selection the gate's `test` targets build (`scripts/cargo-test.sh
-  … --build-only`) under an alternative feature selection (`+sdk-schema`, new
-  metadata hashes for every crate here), backdates what that build created past
-  the window, rebuilds the ordinary selections, and times one declared pass. It
-  refuses a pass that removed nothing, one that removed an entry the
-  alternative build did not create, or one that changed this repository's
-  ordinary unit/hash entries. A new Rust project's `test` selection belongs in
-  its two lists.
+  Rust test selection the gate's `test` targets build — read from each
+  `project.json`'s `bash scripts/cargo-test.sh …` command, never restated — under
+  an alternative feature selection (`+sdk-schema`, new metadata hashes for every
+  crate here), backdates what that build created past the window, rebuilds the
+  ordinary selections, and times one declared pass. It refuses a pass that
+  removed nothing, one that removed an entry the alternative build did not
+  create, or one that changed this repository's ordinary unit/hash entries.
 - **It really prunes** the checkout it runs in, as the maintenance does: run it
   only in your own worktree.
 - **One pin.** The pruner's version is the justfile's

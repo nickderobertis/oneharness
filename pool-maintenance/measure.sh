@@ -32,27 +32,53 @@ result="${ONEBUDGETSPEC_RESULT:-}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# Every instrumented Rust test selection the gate builds (each Rust project's
-# `test` runs `scripts/cargo-test.sh` with these arguments), one per line; the
-# alternative adds `sdk-schema` to each, directly or through the crate it
-# depends on, so every one of this repository's crates gets a new hash. The
-# uninstrumented e2e leg (target/debug) is the same selection uninstrumented.
-ordinary='oneharness --features oneharness/mock-harness
-oneharness --with oneharness-mock-harness --features oneharness/mock-harness
-oneharness-core --features oneharness-core/mock-harness
-oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness
-oneharness-history-compat --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness
-oneharness-mock-harness
-oneharness-sdk-conformance
-oneharness-sdk-contract'
-alternative='oneharness --features oneharness/mock-harness,oneharness/sdk-schema
-oneharness --with oneharness-mock-harness --features oneharness/mock-harness,oneharness/sdk-schema
-oneharness-core --features oneharness-core/mock-harness,oneharness-core/sdk-schema
-oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness,oneharness/sdk-schema
-oneharness-history-compat --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness,oneharness/sdk-schema
-oneharness-mock-harness --features oneharness/sdk-schema
-oneharness-sdk-conformance --features oneharness-core/sdk-schema
-oneharness-sdk-contract --features oneharness-sdk-contract/sdk-schema'
+# Every instrumented Rust test selection the gate builds, read from each
+# project's `test` target (`bash scripts/cargo-test.sh <selection>`) so the
+# measurement cannot drift from the gate (the e2e project's uninstrumented leg,
+# run through with-symlinked-tmp.sh into target/debug, is not one of them). The alternative adds `sdk-schema` through
+# oneharness-core (or, where a selection does not depend on it directly, the
+# binary crate that enables it), and every crate here depends on that, so every
+# one of them gets a new metadata hash. One selection per line in each.
+cargo metadata --no-deps --format-version 1 --offline --locked >"$work/metadata.json" || {
+  echo "measure: cargo metadata failed (above); run 'cargo fetch --locked', then re-run" >&2
+  exit 1
+}
+node -e '
+  const fs = require("node:fs");
+  const [metadata, out] = process.argv.slice(1);
+  const files = require("node:child_process").execFileSync("git", ["ls-files", "-z", "--", "*project.json"], { encoding: "utf8" }).split("\0").filter(Boolean);
+  const packages = JSON.parse(fs.readFileSync(metadata, "utf8")).packages;
+  const deps = new Map(packages.map((p) => [p.name, new Set(p.dependencies.map((d) => d.name))]));
+  const ordinary = [];
+  const alternative = [];
+  for (const file of files.sort()) {
+    const test = JSON.parse(fs.readFileSync(file, "utf8")).targets?.test?.options ?? {};
+    for (const command of test.commands ?? [test.command ?? ""]) {
+      const match = /^bash scripts\/cargo-test\.sh (.*)$/u.exec(command);
+      if (!match) continue;
+      const args = match[1].replace(/ --filter "[^"]*"/gu, "").replace(/ --record \S+/gu, "").trim().split(/\s+/u);
+      const selected = [args[0], ...args.flatMap((a, i) => (args[i - 1] === "--with" ? [a] : []))];
+      const via = ["oneharness-core", "oneharness"].find((c) => selected.some((p) => p === c || deps.get(p)?.has(c)));
+      if (via === undefined) throw new Error(file + ": " + command + " selects nothing that reaches oneharness-core");
+      const at = args.indexOf("--features");
+      const alt = [...args];
+      if (at < 0) alt.push("--features", via + "/sdk-schema");
+      else alt[at + 1] += "," + via + "/sdk-schema";
+      ordinary.push(args.join(" "));
+      alternative.push(alt.join(" "));
+    }
+  }
+  if (ordinary.length === 0) throw new Error("no project test target runs scripts/cargo-test.sh");
+  fs.writeFileSync(out + "/selections-ordinary", ordinary.join("\n") + "\n");
+  fs.writeFileSync(out + "/selections-alternative", alternative.join("\n") + "\n");
+' "$work/metadata.json" "$work" || {
+  echo "measure: could not read the gate's Rust test selections from the project.json files (above)" >&2
+  exit 1
+}
+ordinary="$(cat "$work/selections-ordinary")"
+alternative="$(cat "$work/selections-alternative")"
+echo "measure: $(wc -l <"$work/selections-ordinary" | tr -d ' ') gate Rust test selections:" >&2
+paste -d '|' "$work/selections-ordinary" "$work/selections-alternative" | sed 's/^/measure:   ordinary | alternative: /' >&2
 
 # Every top-level build entry of every profile directory under target/, the
 # entries the pruner selects among, one path per line.

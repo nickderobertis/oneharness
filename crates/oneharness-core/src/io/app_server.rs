@@ -421,7 +421,14 @@ pub(crate) struct Connection {
     reader: WsReader,
     writer: Arc<Mutex<WsWriter>>,
     next_id: u64,
+    /// Notifications read while the last request awaited its reply — at most
+    /// [`SEEN_WHILE_AWAITING`] — so one that arrives before the reply it
+    /// follows (a shell turn's `turn/completed`) is not lost.
+    seen: std::collections::VecDeque<Value>,
 }
+
+/// The most notifications a connection keeps from one request's wait.
+const SEEN_WHILE_AWAITING: usize = 1024;
 
 impl Connection {
     fn open(stream: LocalStream) -> io::Result<Self> {
@@ -430,6 +437,7 @@ impl Connection {
             reader,
             writer,
             next_id: OWN_REQUEST_IDS,
+            seen: std::collections::VecDeque::new(),
         })
     }
 
@@ -451,6 +459,7 @@ impl Connection {
     ) -> io::Result<Option<Value>> {
         let id = self.next_id;
         self.next_id += 1;
+        self.seen.clear();
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))?;
         self.await_reply(id, deadline)
     }
@@ -474,6 +483,9 @@ impl Connection {
                     {
                         return Ok(Some(frame));
                     }
+                    if frame.get("method").is_some() && self.seen.len() < SEEN_WHILE_AWAITING {
+                        self.seen.push_back(frame);
+                    }
                 }
                 Incoming::Idle => {}
                 Incoming::Closed => {
@@ -486,7 +498,8 @@ impl Connection {
         }
     }
 
-    /// Wait up to `deadline` for a notification of `method` naming `thread`,
+    /// Wait up to `deadline` for a notification of `method` naming `thread` —
+    /// one already read while the last request awaited its reply included —
     /// skipping every other frame.
     fn await_notification(
         &mut self,
@@ -494,6 +507,11 @@ impl Connection {
         thread: &str,
         deadline: Duration,
     ) -> io::Result<Option<Value>> {
+        let matches =
+            |frame: &Value| frame["method"] == method && rules::frame_thread(frame) == Some(thread);
+        if let Some(at) = self.seen.iter().position(matches) {
+            return Ok(self.seen.remove(at));
+        }
         let until = Instant::now() + deadline;
         loop {
             let left = until.saturating_duration_since(Instant::now());
@@ -507,7 +525,7 @@ impl Connection {
                     let Ok(frame) = serde_json::from_str::<Value>(&text) else {
                         continue;
                     };
-                    if frame["method"] == method && rules::frame_thread(&frame) == Some(thread) {
+                    if matches(&frame) {
                         return Ok(Some(frame));
                     }
                 }

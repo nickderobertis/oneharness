@@ -101,6 +101,21 @@ def stop(why):
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
+def close_valid(body):
+    """A non-empty close payload as RFC 6455 allows it: a status a peer may
+    send, then a UTF-8 reason."""
+    if len(body) < 2:
+        return False
+    code = struct.unpack(">H", body[:2])[0]
+    if not (1000 <= code <= 1003 or 1007 <= code <= 1011 or 3000 <= code <= 4999):
+        return False
+    try:
+        body[2:].decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 class Connection:
     """One WebSocket connection to the server at `path`. Constructing it raises
     OSError only while the socket cannot be connected (the caller retries);
@@ -144,10 +159,12 @@ class Connection:
             stop(f"the server refused or mis-answered the WebSocket upgrade ({lines[0]!r}); check that the executable is a codex that supports `app-server --listen`")
 
     def send(self, value):
-        payload = json.dumps(value).encode()
+        self.frame(0x1, json.dumps(value).encode(), value.get("method", "a frame"))
+
+    def frame(self, opcode, payload, what):
         mask = os.urandom(4)
         n = len(payload)
-        header = bytes([0x81]) + (
+        header = bytes([0x80 | opcode]) + (
             bytes([0x80 | n]) if n < 126
             else bytes([0x80 | 126]) + struct.pack(">H", n) if n < 65536
             else bytes([0x80 | 127]) + struct.pack(">Q", n)
@@ -155,7 +172,7 @@ class Connection:
         try:
             self.sock.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
         except OSError as error:
-            stop(f"sending {value.get('method', 'a frame')} to the server failed: {error}; {RERUN}")
+            stop(f"sending {what} to the server failed: {error}; {RERUN}")
 
     def exact(self, n):
         data = b""
@@ -179,14 +196,25 @@ class Connection:
             n = second & 0x7F
             if n == 126:
                 n = struct.unpack(">H", self.exact(2))[0]
+                shortest = n >= 126
             elif n == 127:
                 n = struct.unpack(">Q", self.exact(8))[0]
+                shortest = n >= 65536
+            else:
+                shortest = True
+            if not shortest:
+                stop("the server sent a frame length not in its shortest encoding; rerun, and report it if it recurs")
             if len(data) + n > 64 * 1024 * 1024 or (opcode >= 0x8 and (n > 125 or not first & 0x80)):
                 stop("the server sent a message past 64 MiB or a fragmented control frame; rerun, and report it if it recurs")
             body = self.exact(n)
             if opcode == 0x8:
+                if body and not close_valid(body):
+                    stop("the server sent a malformed close frame (its status or reason); rerun, and report it if it recurs")
                 stop(f"the server closed the connection mid-measurement; {RERUN}")
-            if opcode in (0x9, 0xA):
+            if opcode == 0x9:
+                self.frame(0xA, body, "a pong")
+                continue
+            if opcode == 0xA:
                 continue
             if (opcode == 0x1) == started:
                 stop("the server interleaved two messages' frames; rerun, and report it if it recurs")

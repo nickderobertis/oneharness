@@ -2007,6 +2007,36 @@ fn a_sweeper_adopts_the_server_that_replaced_its_own_and_reclaims_it() {
     wait_for("the sweeper to end", bound, || !alive(sweeper));
 }
 
+/// A shell turn that completes before the server replies to the request that
+/// ran it still completes: the reuse workload runs to its end.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_shell_turn_completed_before_its_reply_still_completes() {
+    let pool = Pool::new("pool-shell-first");
+    let output = Command::new("bash")
+        .arg(repo_root().join("live/control/app-server-reuse.sh"))
+        .env("OH_REUSE_CODEX", mock_bin())
+        .env("OH_REUSE_SETTLE_MS", "2000")
+        .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+        .env("XDG_STATE_HOME", pool.path("state"))
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_FAULT", "shell-completes-first")
+        .env(
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+            LINGER_MS.to_string(),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reuse: Value =
+        serde_json::from_str(&std::fs::read_to_string(pool.path("reuse.json")).unwrap()).unwrap();
+    assert_eq!(reuse["lease_count"], 5);
+}
+
 /// Each way a pooled session's shell turn or loaded-thread listing can fail
 /// fails the reuse workload naming it: a refused shell command, a shell turn
 /// that ends failed, a refused listing, a listing naming a thread that is no
@@ -2858,6 +2888,29 @@ fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
     );
 }
 
+/// A server that pings the measurement and handles nothing until it hears a
+/// pong is answered, so the measurement still completes.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sharing_measurement_answers_a_ping_and_completes() {
+    let pool = Pool::new("pool-measure-ping");
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
+        .env("OH_MEASURE_CODEX", mock_bin())
+        .env("OH_MEASURE_SOCKET_TIMEOUT", "10")
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_FAULT", "ping-pong")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let measured: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(measured["threads"].as_array().unwrap().len(), 2);
+}
+
 /// Each way the sharing measurement can fail is named with its next step, no
 /// figure is printed, and the measurement's scratch directory is gone all the
 /// same: a server that exits before it listens (its exit, the last connection
@@ -2973,8 +3026,8 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
     assert!(tree.contains(&u64::from(native)));
     for lease in leases {
         let thread = lease["thread"].as_str().unwrap();
-        let conn = pool.state(native)["turns"].as_array().unwrap().is_empty();
-        assert!(conn, "a lease ran a model turn");
+        let no_model_turns = pool.state(native)["turns"].as_array().unwrap().is_empty();
+        assert!(no_model_turns, "a lease ran a model turn");
         let opened = (1..=10u64)
             .find(|conn| {
                 pool.sent(native, *conn).iter().any(|frame| {

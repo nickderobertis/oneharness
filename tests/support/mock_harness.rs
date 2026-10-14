@@ -2317,6 +2317,10 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         default) and another thread's notice before
 ///                         `thread/start`'s reply; `refuse-shell` / `fail-shell`
 ///                         refuse a shell turn or end it failed;
+///                         `ping-pong` pings each connection and handles
+///                         nothing on it until it answers with a pong;
+///                         `shell-completes-first` ends a shell turn before
+///                         replying to the request that ran it;
 ///                         `refuse-loaded` / `loaded-bad-id` /
 ///                         `loaded-cursor-number` refuse `thread/loaded/list` or
 ///                         answer it with a non-string id or cursor;
@@ -2822,7 +2826,9 @@ mod listen_server {
     /// the connection rather than growing the mock's memory on a peer's word.
     const MESSAGE_LIMIT: u64 = 64 * 1024 * 1024;
 
-    fn read_message(stream: &mut impl Read) -> Option<Vec<u8>> {
+    /// The next whole message from the client — `Some(None)` for a pong, which
+    /// the `ping-pong` fault waits on — or `None` once the connection ends.
+    fn read_message(stream: &mut impl Read) -> Option<Option<Vec<u8>>> {
         let mut message = Vec::new();
         loop {
             let mut head = [0u8; 2];
@@ -2854,11 +2860,12 @@ mod listen_server {
             }
             match head[0] & 0x0f {
                 0x8 => return None,
-                0x9 | 0xA => continue,
+                0x9 => continue,
+                0xA => return Some(None),
                 _ => message.extend_from_slice(&payload),
             }
             if head[0] & 0x80 != 0 {
-                return Some(message);
+                return Some(Some(message));
             }
         }
     }
@@ -2926,13 +2933,36 @@ mod listen_server {
             s.save();
             id
         };
-        while let Some(bytes) = read_message(&mut reader) {
-            let text = String::from_utf8_lossy(&bytes).to_string();
-            let Ok(frame) = serde_json::from_str::<Value>(&text) else {
-                continue;
+        // CODEX_MOCK_FAULT=ping-pong: ping the client once connected, and
+        // handle nothing it sends until it answers with a pong.
+        let mut awaiting_pong = lock(server).fault == "ping-pong";
+        if awaiting_pong {
+            let _ = writer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .write_all(&[0x89, 0x01, b'p']);
+        }
+        let mut held: Vec<Vec<u8>> = Vec::new();
+        while let Some(message) = read_message(&mut reader) {
+            let ready = match message {
+                None => {
+                    awaiting_pong = false;
+                    std::mem::take(&mut held)
+                }
+                Some(bytes) if awaiting_pong => {
+                    held.push(bytes);
+                    Vec::new()
+                }
+                Some(bytes) => vec![bytes],
             };
-            hold(server, &frame);
-            handle(server, conn, &text, &frame);
+            for bytes in ready {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                hold(server, &frame);
+                handle(server, conn, &text, &frame);
+            }
         }
         if lock(server).conns.get(&conn).is_some_and(|c| c.held) {
             loop {
@@ -3284,7 +3314,6 @@ mod listen_server {
                 if s.fault == "refuse-shell" {
                     return refuse(&mut s, "the mock refuses thread/shellCommand".to_string());
                 }
-                reply(&mut s, json!({}));
                 let turn = format!("{thread}-shell");
                 // CODEX_MOCK_FAULT=fail-shell: the shell turn ends failed.
                 let ended = if s.fault == "fail-shell" {
@@ -3292,6 +3321,20 @@ mod listen_server {
                 } else {
                     "completed"
                 };
+                // CODEX_MOCK_FAULT=shell-completes-first: the turn starts and
+                // ends before the reply to the request that ran it.
+                if s.fault == "shell-completes-first" {
+                    for frame in [
+                        json!({"jsonrpc": "2.0", "method": "turn/started",
+                            "params": {"threadId": thread, "turn": {"id": turn}}}),
+                        json!({"jsonrpc": "2.0", "method": "turn/completed",
+                            "params": {"threadId": thread, "turn": {"id": turn, "status": ended}}}),
+                    ] {
+                        s.emit(&thread, &frame);
+                    }
+                    return reply(&mut s, json!({}));
+                }
+                reply(&mut s, json!({}));
                 s.emit(
                     &thread,
                     &json!({"jsonrpc": "2.0", "method": "turn/started",

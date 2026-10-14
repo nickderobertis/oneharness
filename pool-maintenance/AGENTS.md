@@ -22,6 +22,11 @@ exists only to measure it.
   ordinary selections, and times one declared pass. It refuses a pass that
   removed nothing, one that removed an entry the alternative build did not
   create, or one that changed this repository's ordinary unit/hash entries.
+  It is silent on success; set `POOL_MAINTENANCE_EVIDENCE` to an existing
+  file to get the selections, both passes' pruner lines and the unit/hash
+  entries kept (`ONEBUDGETSPEC_RESULT` must be the fresh empty file
+  onebudgetspec names, and both pruner reports must parse as onebudgetspec's
+  `{value, detail}`, or it refuses).
 - **It really prunes** the checkout it runs in, as the maintenance does: run it
   only in your own worktree.
 - **One pin.** The pruner's version is the justfile's

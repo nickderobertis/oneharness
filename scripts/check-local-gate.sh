@@ -476,7 +476,7 @@ resolved_base=$(cd "$tmp/repo" && "$root/scripts/comparison-base.sh" origin)
 # boundary. Existing hooksPath settings must survive setup unchanged.
 bootstrap_repo="$tmp/bootstrap-repo"
 bootstrap_bin="$tmp/bootstrap-bin"
-mkdir -p "$bootstrap_repo/scripts" "$bootstrap_repo/npm/oneharness-sdk" "$bootstrap_bin"
+mkdir -p "$bootstrap_repo/scripts" "$bootstrap_repo/npm/oneharness-sdk" "$bootstrap_repo/.just-tmp" "$bootstrap_bin"
 cp "$root/justfile" "$bootstrap_repo/justfile"
 cp "$root/scripts/setup-llmlint.sh" "$bootstrap_repo/scripts/setup-llmlint.sh"
 # The pinned shell toolchain's installer downloads, so it is stubbed like the
@@ -499,10 +499,16 @@ STUB
 done
 ln -s "$(command -v just)" "$bootstrap_bin/just"
 # The pinned pruner pool maintenance runs, reporting whichever release a case
-# names, so no case reaches the host's own install.
+# names, so no case reaches the host's own install. A pass records its argv and
+# directory and prints a per-target line, as the real one does.
 cat >"$bootstrap_bin/cargo-prune-superseded" <<'STUB'
 #!/usr/bin/env bash
-echo "cargo-prune-superseded ${PRUNE_STUB_VERSION:-0.0.0}"
+if [ "${1:-}" = --version ]; then
+  echo "cargo-prune-superseded ${PRUNE_STUB_VERSION:-0.0.0}"
+  exit 0
+fi
+printf 'cargo-prune-superseded %s in %s\n' "$*" "$PWD" >>"$CALL_LOG"
+echo "cargo-prune-superseded: ${*: -1}: stub pass"
 STUB
 chmod +x "$bootstrap_bin/cargo-prune-superseded"
 for expected_hooks_path in retained-hooks 'retained hooks [*]?'; do
@@ -565,6 +571,59 @@ for fail_on in "install --locked" "stable"; do
     exit 1
   fi
 done
+
+# onevcs runs onevcs.toml's [pool.maintain] command in an idle slot's worktree:
+# that argv, run in the fixture checkout, runs the pinned pruner with a 2-day
+# window over the target dir .cargo/config.toml sets (resolved against the
+# checkout root, as cargo resolves it), and refuses any other pruner release.
+cp "$root/onevcs.toml" "$bootstrap_repo/onevcs.toml"
+maintain_argv="$tmp/maintain-argv"
+node -e '
+  const fs = require("node:fs");
+  const [file, out] = process.argv.slice(1);
+  let table = "";
+  let command;
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/u)) {
+    const header = /^\s*\[([^\]]+)\]\s*$/u.exec(line);
+    if (header) table = header[1].trim();
+    const match = /^\s*command\s*=\s*(\[.*\])\s*$/u.exec(line);
+    if (table === "pool.maintain" && match) command = JSON.parse(match[1]);
+  }
+  if (!Array.isArray(command) || command.length === 0 || !command.every((a) => typeof a === "string" && a !== "")) {
+    throw new Error(file + ": no [pool.maintain] command of non-empty strings");
+  }
+  fs.writeFileSync(out, command.join("\0") + "\0");
+' "$bootstrap_repo/onevcs.toml" "$maintain_argv" || {
+  echo "check-local-gate: could not read [pool.maintain] command from $root/onevcs.toml (above); keep it one line of quoted strings" >&2
+  exit 1
+}
+maintain=()
+while IFS= read -r -d '' arg; do maintain+=("$arg"); done <"$maintain_argv"
+maintain_target=$(sed -n 's/^target-dir = "\(.*\)"$/\1/p' "$root/.cargo/config.toml")
+maintain_target=${maintain_target:-target}
+: >"$prune_log"
+status=0
+(cd "$bootstrap_repo" && CALL_LOG="$prune_log" PRUNE_STUB_VERSION="$prune_pin" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  "${maintain[@]}") >"$tmp/maintain-out" 2>&1 || status=$?
+if [ "$status" -ne 0 ] || ! grep -qxF "cargo-prune-superseded --keep-within 2d $maintain_target in $bootstrap_repo" "$prune_log" ||
+  ! grep -qxF "cargo-prune-superseded: $maintain_target: stub pass" "$tmp/maintain-out"; then
+  echo "check-local-gate: onevcs.toml's maintenance command '${maintain[*]}' exited $status, printed:" >&2
+  cat "$tmp/maintain-out" >&2
+  echo "  and ran the pruner as:" >&2
+  cat "$prune_log" >&2
+  echo "  fix: make it run 'cargo-prune-superseded --keep-within 2d $maintain_target' from the checkout root and pass its output through" >&2
+  exit 1
+fi
+: >"$prune_log"
+status=0
+(cd "$bootstrap_repo" && CALL_LOG="$prune_log" PRUNE_STUB_VERSION=0.0.0 PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  "${maintain[@]}") >"$tmp/maintain-out" 2>&1 || status=$?
+if [ "$status" -eq 0 ] || [ -s "$prune_log" ] || ! grep -qF "run 'just bootstrap'" "$tmp/maintain-out"; then
+  echo "check-local-gate: with cargo-prune-superseded 0.0.0 on PATH, onevcs.toml's maintenance command exited $status, printed:" >&2
+  cat "$tmp/maintain-out" >&2
+  echo "  fix: make the justfile's pool-maintenance recipe refuse a release other than $prune_pin, naming 'just bootstrap', before it prunes" >&2
+  exit 1
+fi
 
 # The llmlint installer runs from the SessionStart hook, so under its `set -e`
 # every failure it guards must still end in exit 0. Each case drives the real

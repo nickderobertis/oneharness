@@ -18,16 +18,42 @@
 # detail as separate evidence. The script refuses a state it did not establish:
 # a timed pass that removed nothing, or one that removed any entry the
 # alternative build did not create.
+#
+# Silent on success. POOL_MAINTENANCE_EVIDENCE, when set, names a file this run
+# writes its evidence to: the selections it built, each pass's pruner lines,
+# and this repository's unit/hash entries before and after the timed pass.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$root"
+# A path onebudgetspec (or the caller) hands in: an existing, writable regular
+# file, made absolute before the cd below. $1 names it in messages.
+regular_file() {
+  local name="$1" path="$2"
+  if [ ! -f "$path" ] || [ ! -w "$path" ]; then
+    echo "measure: $name='$path' is not an existing, writable regular file" >&2
+    exit 2
+  fi
+  printf '%s/%s\n' "$(cd "$(dirname "$path")" && pwd)" "$(basename "$path")"
+}
 
-result="${ONEBUDGETSPEC_RESULT:-}"
-[ -n "$result" ] || {
+[ -n "${ONEBUDGETSPEC_RESULT:-}" ] || {
   echo "measure: run me through 'onebudgetspec check pool-maintenance/budgets.yaml' (just budgets), which names ONEBUDGETSPEC_RESULT" >&2
   exit 2
 }
+result="$(regular_file ONEBUDGETSPEC_RESULT "$ONEBUDGETSPEC_RESULT")"
+[ ! -s "$result" ] || {
+  echo "measure: ONEBUDGETSPEC_RESULT='$result' is not the fresh, empty file onebudgetspec hands a measurement" >&2
+  exit 2
+}
+evidence=/dev/null
+if [ -n "${POOL_MAINTENANCE_EVIDENCE:-}" ]; then
+  evidence="$(regular_file POOL_MAINTENANCE_EVIDENCE "$POOL_MAINTENANCE_EVIDENCE")"
+  : >"$evidence"
+fi
+# One evidence line; nothing reaches the terminal on success.
+note() { printf 'measure: %s\n' "$*" >>"$evidence"; }
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -79,8 +105,8 @@ node -e '
 }
 ordinary="$(cat "$work/selections-ordinary")"
 alternative="$(cat "$work/selections-alternative")"
-echo "measure: $(wc -l <"$work/selections-ordinary" | tr -d ' ') gate Rust test selections:" >&2
-paste -d '|' "$work/selections-ordinary" "$work/selections-alternative" | sed 's/^/measure:   ordinary | alternative: /' >&2
+note "$(wc -l <"$work/selections-ordinary" | tr -d ' ') gate Rust test selections:"
+paste -d '|' "$work/selections-ordinary" "$work/selections-alternative" | sed 's/^/measure:   ordinary | alternative: /' >>"$evidence"
 
 # Every top-level build entry of every profile directory under target/, the
 # entries the pruner selects among, one path per line.
@@ -98,7 +124,8 @@ build() {
   local selection args
   while IFS= read -r selection; do
     read -ra args <<<"$selection"
-    bash scripts/cargo-test.sh "${args[@]}" --build-only >/dev/null || {
+    bash scripts/cargo-test.sh "${args[@]}" --build-only >"$work/build.log" 2>&1 || {
+      cat "$work/build.log" >&2
       echo "measure: building 'scripts/cargo-test.sh $selection --build-only' failed (above)" >&2
       exit 1
     }
@@ -111,14 +138,14 @@ prune() {
     echo "measure: the declared pool maintenance failed (above)" >&2
     exit 1
   }
-  grep '^cargo-prune-superseded: ' "$1.log" >&2
+  grep '^cargo-prune-superseded: ' "$1.log" >>"$evidence" || true
 }
 
-echo "measure: ordinary gate build, then the untimed backlog pass" >&2
+note "ordinary gate build, then the untimed backlog pass"
 build "$ordinary"
 prune "$work/backlog.json"
 
-echo "measure: alternative-configuration build, backdated past the window" >&2
+note "alternative-configuration build, backdated past the window"
 entries >"$work/before-alternative"
 build "$alternative"
 entries >"$work/after-alternative"
@@ -133,7 +160,7 @@ while IFS= read -r entry; do
   find "$entry" -exec touch -h -t 200101010000 {} +
 done <"$work/alternative"
 
-echo "measure: ordinary gate build, then the timed pass" >&2
+note "ordinary gate build, then the timed pass"
 build "$ordinary"
 entries >"$work/before-pass"
 prune "$work/pass.json"
@@ -152,7 +179,7 @@ removed="$(wc -l <"$work/removed" | tr -d ' ')"
   exit 1
 }
 kept="$(comm -23 "$work/before-pass" "$work/alternative" | wc -l | tr -d ' ')"
-echo "measure: removed $removed entries, every one the alternative build's; all $kept other entries remain" >&2
+note "removed $removed entries, every one the alternative build's; all $kept other entries remain"
 # This repository's crates' entries, as "<profile> <unit>-<metadata hash>".
 own() {
   grep -E '/(deps|\.fingerprint|build|incremental)/(lib)?oneharness[a-z0-9_-]*-[0-9a-f]{16}(\.rlib)?$' "$1" |
@@ -172,15 +199,32 @@ count() { awk -v p="$1" '$1 == p' "$2" | wc -l | tr -d ' '; }
 cut -d' ' -f1 "$work/own-before" "$work/own-alternative" | sort -u >"$work/profiles"
 while IFS= read -r profile; do
   left="$(awk -v p="$profile" '$1 == p' "$work/own-alternative" | comm -12 - "$work/own-survivors" | wc -l | tr -d ' ')"
-  echo "measure: $profile, this repository's crates: ordinary $(count "$profile" "$work/own-before") unit/hash entries before the pass, $(count "$profile" "$work/own-after") after (identical); alternative $(count "$profile" "$work/own-alternative"), $left left" >&2
+  note "$profile, this repository's crates: ordinary $(count "$profile" "$work/own-before") unit/hash entries before the pass, $(count "$profile" "$work/own-after") after (identical); alternative $(count "$profile" "$work/own-alternative"), $left left"
 done <"$work/profiles"
-sed 's/^/measure:   ordinary kept: /' "$work/own-before" >&2
+sed 's/^/measure:   ordinary kept: /' "$work/own-before" >>"$evidence"
 
+# The pruner's two reports are subprocess output: each must be the
+# onebudgetspec shape, a finite non-negative `value` and a string `detail`.
 node -e '
   const fs = require("node:fs");
   const [pass, backlog, out] = process.argv.slice(1);
-  const timed = JSON.parse(fs.readFileSync(pass, "utf8"));
-  const untimed = JSON.parse(fs.readFileSync(backlog, "utf8"));
+  const read = (file, name) => {
+    let report;
+    try {
+      report = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (error) {
+      throw new Error(name + " pass report " + file + " is not JSON: " + error.message);
+    }
+    if (report === null || typeof report !== "object" || !Number.isFinite(report.value) || report.value < 0 || typeof report.detail !== "string") {
+      throw new Error(name + " pass report " + file + " lacks a finite, non-negative value and a string detail: " + JSON.stringify(report));
+    }
+    return report;
+  };
+  const timed = read(pass, "timed");
+  const untimed = read(backlog, "untimed backlog");
   const detail = timed.detail + "; untimed backlog pass beforehand (not counted): " + untimed.value.toFixed(3) + " s";
   fs.writeFileSync(out, JSON.stringify({ value: timed.value, detail }));
-' "$work/pass.json" "$work/backlog.json" "$result"
+' "$work/pass.json" "$work/backlog.json" "$result" || {
+  echo "measure: the pruner did not report through onebudgetspec as cargo-prune-superseded $(cargo-prune-superseded --version 2>/dev/null || echo '(absent)') should (above)" >&2
+  exit 1
+}

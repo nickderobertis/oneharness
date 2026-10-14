@@ -147,7 +147,6 @@ impl Pool {
         }
     }
 
-    /// The same world with every dispatch run by the `oneharness` at `bin`.
     #[cfg(target_os = "linux")]
     fn with_bin(mut self, bin: PathBuf) -> Self {
         self.bin = Some(bin);

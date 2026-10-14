@@ -149,6 +149,13 @@ test("real git histories classify automation versions and fail closed on forged/
       true,
     );
     assert.equal(run(event, "missing-ref").macosRequired, true);
+    // Each expression names the release-only commit HEAD does, so only the
+    // ref/SHA boundary itself can route these to Mac.
+    for (const expression of ["HEAD~0", "HEAD^{commit}", "HEAD@{0}", "base..HEAD"]) {
+      const refused = run(event, expression);
+      assert.equal(refused.macosRequired, true, `${expression}: revision expression fails closed`);
+      assert.match(refused.reason, /revision expression/, `${expression}: reason says why`);
+    }
     assert.equal(run("{").macosRequired, true);
     assert.equal(run({ event_name: "push" }).macosRequired, false);
     for (const event_name of ["pull_requset", "not-an-event", ""]) {

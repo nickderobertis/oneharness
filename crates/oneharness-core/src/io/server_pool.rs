@@ -258,6 +258,71 @@ impl LeaseHolder {
     }
 }
 
+/// An identity a lease note persists, read back by whichever process retires
+/// the lease: never empty and never carrying a control character, so a note
+/// read back can only name something a process scan or a server could.
+macro_rules! note_identity {
+    ($(#[$doc:meta])* $name:ident, $what:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
+
+        impl $name {
+            #[doc = concat!("`value` as a ", $what, ", or `None` when it is empty or carries a control character.")]
+            #[must_use]
+            pub fn new(value: impl Into<String>) -> Option<Self> {
+                let value = value.into();
+                (!value.is_empty() && !value.chars().any(char::is_control)).then_some(Self(value))
+            }
+
+            /// The identity as written.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> Result<Self, String> {
+                Self::new(value.clone()).ok_or_else(|| format!("{value:?} is not a {}", $what))
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(identity: $name) -> String {
+                identity.0
+            }
+        }
+    };
+}
+
+note_identity!(
+    /// A dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
+    DispatchMarker,
+    "dispatch marker"
+);
+note_identity!(
+    /// An app-server thread's id.
+    ThreadId,
+    "thread id"
+);
+note_identity!(
+    /// An app-server turn's id.
+    TurnId,
+    "turn id"
+);
+
+impl DispatchMarker {
+    /// A marker no other dispatch carries.
+    #[must_use]
+    pub fn fresh() -> Self {
+        DispatchMarker(uuid::Uuid::now_v7().hyphenated().to_string())
+    }
+}
+
 /// What a lease on a shared Codex app-server says beyond its holder: the
 /// dispatch's marker, and the thread it holds with the turn running on it —
 /// everything the pool needs to stop a dead holder's work without that
@@ -265,7 +330,7 @@ impl LeaseHolder {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseNote {
     /// The dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
-    pub marker: String,
+    pub marker: DispatchMarker,
     /// The app-server thread the dispatch holds, once it holds one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thread: Option<LeasedThread>,
@@ -274,9 +339,9 @@ pub struct LeaseNote {
 /// A thread a lease holds, and the turn running on it while one is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeasedThread {
-    pub id: String,
+    pub id: ThreadId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn: Option<String>,
+    pub turn: Option<TurnId>,
 }
 
 /// One lease file: the holder, and its note on a shared Codex app-server.
@@ -1064,6 +1129,35 @@ mod tests {
     use super::*;
     use crate::domain::control::ServerTransport;
     use crate::io::scratch::ScratchDir;
+
+    #[test]
+    fn a_lease_note_names_only_usable_identities_and_refuses_the_rest_when_read() {
+        assert_eq!(ThreadId::new("th-1").unwrap().as_str(), "th-1");
+        assert_eq!(ThreadId::new(""), None);
+        assert_eq!(TurnId::new("tu\n1"), None);
+        assert_ne!(DispatchMarker::fresh(), DispatchMarker::fresh());
+        let note = LeaseNote {
+            marker: DispatchMarker::new("m-1").unwrap(),
+            thread: Some(LeasedThread {
+                id: ThreadId::new("th-1").unwrap(),
+                turn: TurnId::new("tu-1"),
+            }),
+        };
+        let text = serde_json::to_string(&note).unwrap();
+        assert_eq!(
+            text,
+            r#"{"marker":"m-1","thread":{"id":"th-1","turn":"tu-1"}}"#
+        );
+        assert_eq!(serde_json::from_str::<LeaseNote>(&text).unwrap(), note);
+        for bad in [
+            r#"{"marker":""}"#,
+            r#"{"marker":"m-1","thread":{"id":""}}"#,
+            r#"{"marker":"m-1","thread":{"id":"th-1","turn":"\u0007"}}"#,
+        ] {
+            let refused = serde_json::from_str::<LeaseNote>(bad).unwrap_err();
+            assert!(refused.to_string().contains("is not a"), "{bad}: {refused}");
+        }
+    }
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test
     /// drives a real long-lived child through [`sleeper_plan`], so this key has

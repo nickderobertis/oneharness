@@ -68,15 +68,13 @@ pub struct DialogueConfig {
     /// and only the harness's own registry entry knows it — the two ACP
     /// harnesses share one [`ControlShape`] and do not share a mapping.
     pub posture: ApprovalPosture,
-    /// The thread-level `config` map codex's `thread/start` and
-    /// `thread/resume` carry, when the turn runs on a shared app-server: the
-    /// dispatch's own `shell_environment_policy`
-    /// ([`crate::domain::app_server::ShellEnvironmentPolicy`]), so its
-    /// thread's commands see its environment rather than the server's.
-    /// `None` on a dispatch's own child, whose process environment already is
-    /// the dispatch's. `turn/start` has no `config` map, so it never rides
-    /// there.
-    pub thread_config: Option<Value>,
+    /// The dispatch's own `shell_environment_policy`, carried as the
+    /// thread-level `config` map codex's `thread/start` and `thread/resume`
+    /// send when the turn runs on a shared app-server, so its thread's
+    /// commands see its environment rather than the server's. `None` on a
+    /// dispatch's own child, whose process environment already is the
+    /// dispatch's. `turn/start` has no `config` map, so it never rides there.
+    pub shell_environment_policy: Option<crate::domain::app_server::ShellEnvironmentPolicy>,
 }
 
 /// The conversation a driven turn reopens, carrying the request that reopens it.
@@ -724,8 +722,8 @@ impl Dialogue {
         if let Some(model) = &self.config.model {
             params["model"] = json!(model);
         }
-        if let Some(config) = &self.config.thread_config {
-            params["config"] = config.clone();
+        if let Some(policy) = &self.config.shell_environment_policy {
+            params["config"] = policy.thread_config();
         }
         params
     }
@@ -919,7 +917,7 @@ mod tests {
             mode: PermissionMode::Bypass,
             resume: None,
             posture: ApprovalPosture::Unattended,
-            thread_config: None,
+            shell_environment_policy: None,
         }
     }
 
@@ -1068,6 +1066,10 @@ mod tests {
     /// `turn/completed`.
     #[test]
     fn codex_carries_the_thread_config_on_thread_start_and_resume_only() {
+        let policy = crate::domain::app_server::ShellEnvironmentPolicy {
+            set: [("A".to_string(), "1".to_string())].into_iter().collect(),
+            exclude: vec!["B".to_string()],
+        };
         let thread_config =
             json!({"shell_environment_policy": {"set": {"A": "1"}, "exclude": ["B"]}});
         for resume in [
@@ -1077,7 +1079,7 @@ mod tests {
             let mut d = Dialogue::new(
                 ControlShape::CodexAppServer,
                 DialogueConfig {
-                    thread_config: Some(thread_config.clone()),
+                    shell_environment_policy: Some(policy.clone()),
                     resume: resume.clone(),
                     ..config()
                 },

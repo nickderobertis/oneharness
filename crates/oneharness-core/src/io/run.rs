@@ -2710,9 +2710,7 @@ impl ControlledRun<'_> {
                 posture: spec
                     .mode(self.mode)
                     .map_or(ApprovalPosture::of(self.mode), |declared| declared.posture),
-                thread_config: pooled
-                    .as_ref()
-                    .map(crate::io::app_server::PooledDispatch::thread_config),
+                shell_environment_policy: pooled.as_ref().map(|pooled| pooled.policy().clone()),
             },
         );
         // One arm per mechanism family, chosen from the shape right here: a

@@ -44,8 +44,9 @@ use crate::io::marked_processes::{stop_marked, ProcessMarker};
 use crate::io::process::{Finish, Process};
 use crate::io::runner::{Job, StreamStep};
 use crate::io::server_pool::{
-    self, EntryLock, LaunchPlan, LeaseHolder, LeaseNote, LeasedThread, ServerLease, ServerRecord,
-    DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL, DEFAULT_LINGER, SERVER_STOP_DEADLINE,
+    self, DispatchMarker, EntryLock, LaunchPlan, LeaseHolder, LeaseNote, LeasedThread, ServerLease,
+    ServerRecord, ThreadId, TurnId, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
+    DEFAULT_LINGER, SERVER_STOP_DEADLINE,
 };
 use crate::io::websocket::{handshake, Incoming, LocalStream, WsReader, WsWriter};
 
@@ -117,7 +118,7 @@ pub struct PooledDispatch {
     /// The environment the server is launched with, before its marker.
     server_env: Vec<(String, String)>,
     /// The dispatch marker's value.
-    marker: String,
+    marker: DispatchMarker,
     policy: ShellEnvironmentPolicy,
 }
 
@@ -142,11 +143,15 @@ impl PooledDispatch {
         let platform = EnvPlatform::current();
         let dispatch_env = dispatch_environment(env, env_remove, cwd);
         let server_env = rules::server_env(&dispatch_env, platform);
-        let marker = fresh_marker();
+        let marker = DispatchMarker::fresh();
         let mut with_marker = server_env.clone();
         with_marker.push((SERVER_MARKER_VAR.to_string(), String::new()));
-        let policy =
-            ShellEnvironmentPolicy::for_dispatch(&dispatch_env, &with_marker, &marker, platform);
+        let policy = ShellEnvironmentPolicy::for_dispatch(
+            &dispatch_env,
+            &with_marker,
+            marker.as_str(),
+            platform,
+        );
         Some(PooledDispatch {
             executable: executable.clone(),
             process_args: process_args.to_vec(),
@@ -163,16 +168,22 @@ impl PooledDispatch {
         self.policy.thread_config()
     }
 
+    /// The dispatch's own `shell_environment_policy`, typed.
+    #[must_use]
+    pub fn policy(&self) -> &ShellEnvironmentPolicy {
+        &self.policy
+    }
+
     /// The dispatch marker's value.
     #[must_use]
     pub fn marker(&self) -> &str {
-        &self.marker
+        self.marker.as_str()
     }
 
     fn process_marker(&self) -> ProcessMarker {
         ProcessMarker {
             name: rules::DISPATCH_MARKER_VAR.to_string(),
-            value: self.marker.clone(),
+            value: self.marker.as_str().to_string(),
         }
     }
 }
@@ -586,14 +597,15 @@ pub(crate) fn retire_dead_lease(record: &ServerRecord, note: &LeaseNote) {
     let started = Instant::now();
     let marker = ProcessMarker {
         name: rules::DISPATCH_MARKER_VAR.to_string(),
-        value: note.marker.clone(),
+        value: note.marker.as_str().to_string(),
     };
     let mut connection = connect_to(record);
     let thread = note.thread.as_ref().map(|thread| thread.id.as_str());
     let turn = note
         .thread
         .as_ref()
-        .and_then(|thread| thread.turn.as_deref());
+        .and_then(|thread| thread.turn.as_ref())
+        .map(TurnId::as_str);
     if let (Some(connection), Some(thread), Some(turn)) = (connection.as_mut(), thread, turn) {
         let _ = connection.request(
             "turn/interrupt",
@@ -657,7 +669,7 @@ pub(crate) fn stop_server(entry: &Path, record: &ServerRecord) {
                 .ok()
                 .and_then(|text| serde_json::from_str::<server_pool::LeaseFile>(&text).ok())
                 .and_then(|file| file.note);
-            if let Some(value) = note.map(|note| note.marker) {
+            if let Some(value) = note.map(|note| String::from(note.marker)) {
                 stop_dispatch_commands(
                     &ProcessMarker {
                         name: rules::DISPATCH_MARKER_VAR.to_string(),
@@ -1025,10 +1037,13 @@ pub(crate) fn run_pooled_turn(
                     }
                 }
             }
-            let thread = handle.session_id().map(|id| LeasedThread {
-                id,
-                turn: handle.active_turn().map(|(_, turn)| turn),
-            });
+            let thread = handle
+                .session_id()
+                .and_then(ThreadId::new)
+                .map(|id| LeasedThread {
+                    id,
+                    turn: handle.active_turn().and_then(|(_, turn)| TurnId::new(turn)),
+                });
             if note.thread != thread {
                 note.thread = thread;
                 lease.annotate(&note);
@@ -1205,13 +1220,12 @@ impl PooledSession {
             .and_then(Value::as_str)
             .ok_or_else(|| format!("{method} named no thread: {response}"))?
             .to_string();
-        self.thread = Some(thread.clone());
+        let id = ThreadId::new(thread.as_str())
+            .ok_or_else(|| format!("{method} named an unusable thread id {thread:?}"))?;
+        self.thread = Some(thread);
         self.lease.annotate(&LeaseNote {
             marker: self.dispatch.marker.clone(),
-            thread: Some(LeasedThread {
-                id: thread,
-                turn: None,
-            }),
+            thread: Some(LeasedThread { id, turn: None }),
         });
         Ok(response)
     }

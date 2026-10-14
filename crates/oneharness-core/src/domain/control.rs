@@ -1569,7 +1569,7 @@ mod control_mode_parity {
                 mode,
                 resume: None,
                 posture: posture_of(harness::by_id("codex").unwrap(), mode),
-                thread_config: None,
+                shell_environment_policy: None,
             },
         )
         .expect("codex drives its turn over the app-server")
@@ -1606,7 +1606,7 @@ mod control_mode_parity {
                         mode,
                         resume: None,
                         posture: posture_of(spec, mode),
-                        thread_config: None,
+                        shell_environment_policy: None,
                     },
                 )
                 .expect("ACP drives its turn");

@@ -988,7 +988,9 @@ describe("OneHarness", () => {
 				future_output_field: true,
 			}),
 		).toMatchObject({ type: "record", future_output_field: true });
-		const incompleteRecord: Partial<HistoryRecord> = { ...records[0] };
+		// A plain record: `Partial<HistoryRecord>` over the generated union exceeds
+		// tsc's comparison budget (TS2859).
+		const incompleteRecord: Record<string, unknown> = { ...records[0] };
 		delete incompleteRecord.text;
 		expect(HistoryRecordSchema.safeParse(incompleteRecord).success).toBe(false);
 		const sessions = await client.historyList({

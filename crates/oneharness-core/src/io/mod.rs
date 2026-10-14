@@ -2,6 +2,8 @@
 //! Everything that touches the process, filesystem, env, or clock lives here or
 //! in `commands`, never in `domain`.
 
+// The shared Codex app-server: its pool lease, sweeper, and pooled turns.
+pub mod app_server;
 pub mod cancel;
 pub mod config;
 pub mod control;
@@ -49,3 +51,6 @@ pub mod server_pool;
 pub mod session;
 pub mod sync;
 pub mod usage;
+// The WebSocket client a shared `codex app-server --listen unix://` is spoken
+// to over, on an AF_UNIX socket on every platform.
+pub mod websocket;

@@ -1,0 +1,25 @@
+{
+  "codex_version": "codex-cli 0.159.2",
+  "platform": "linux",
+  "server_pid": 3819010,
+  "threads": [
+    {
+      "thread": 1,
+      "ready_ms": 1391,
+      "rss_bytes": 347783168,
+      "pids": [
+        3819010,
+        3819054
+      ]
+    },
+    {
+      "thread": 2,
+      "ready_ms": 824,
+      "rss_bytes": 388784128,
+      "pids": [
+        3819010,
+        3819054
+      ]
+    }
+  ]
+}

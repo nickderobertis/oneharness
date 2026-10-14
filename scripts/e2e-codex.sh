@@ -115,3 +115,7 @@ oh_stream_assert codex --events
 # rejected (honoring evidence).
 note "» reasoning: --reasoning must be accepted (and a bogus effort rejected)"
 oh_reasoning_enforce codex high
+
+# The controlled turn's shared app-server is measured over its whole life, so
+# its line lands once its linger has passed: wait for it before the budgets.
+oh_wait_pooled_servers

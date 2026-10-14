@@ -100,6 +100,192 @@ have_env() {
   return 1
 }
 
+# A controlled codex turn runs on the pooled app-server by default. Three
+# phases prove what pooling must never cost, each failing the suite naming its
+# phase and assertion:
+#   pooled-env    two concurrent pooled dispatches each run one command printing
+#                 a digest of its own per-dispatch variable: each sees its own
+#                 and not the other's, both ran on one server, and no
+#                 per-dispatch value reached any thread rollout under the home;
+#   pooled-kill   a pooled dispatch killed while its turn runs a heartbeat: the
+#                 heartbeat stops within DEAD_LEASE_SWEEP_INTERVAL (2 s) plus
+#                 DEAD_LEASE_STOP_DEADLINE (5 s);
+#   pooled-reuse  (Linux) the sustained-reuse workload, then onebudgetspec's
+#                 check over live/control/budgets.yaml.
+# OH_CONTROL_ONLY=pooled runs these alone (the gate's journeys drive them with
+# the mock harness standing for codex).
+
+# Start one pooled codex dispatch in the background; its pid is in POOLED_PID.
+# Its session store is "$POOLED_DIR/s", one letter so the control socket's path
+# stays under macOS's 104-byte sun_path limit beneath its long temp dir.
+#   $1 session, $2 its report file, $3 its working directory, $4 the command
+#   the prompt asks it to run (also exported as OH_POOLED_COMMAND)
+_oh_pooled_start() {
+  local session="$1" report="$2" cwd="$3" command="$4"
+  if ! { : >"$report" && : >"$report.err"; }; then
+    fail "$session: cannot create its report files $report and $report.err; check that $POOLED_DIR is writable"
+  fi
+  OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" run --harness codex --control \
+    --session "$session" --session-dir "$POOLED_DIR/s" --cwd "$cwd" --mode bypass \
+    --timeout "${OH_TIMEOUT:-180}" --compact \
+    --prompt "Run this shell command exactly once, as written, then reply with the single word done: $command" \
+    >"$report" 2>"$report.err" &
+  POOLED_PID=$!
+}
+
+oh_pooled_env() {
+  _oh_phase pooled-env
+  local a b report_a report_b value_a value_b digest_a digest_b out_a out_b pid_a pid_b home
+  value_a="pooled-a-${RANDOM}${RANDOM}${RANDOM}"
+  value_b="pooled-b-${RANDOM}${RANDOM}${RANDOM}"
+  digest() { printf %s "$1" | cksum | cut -d' ' -f1; }
+  digest_a="$(digest "$value_a")"
+  digest_b="$(digest "$value_b")"
+  # The command prints a digest of the variable, never the value, so the
+  # command's own output — which Codex keeps in its rollout — cannot stand in
+  # for a leak of the environment itself.
+  # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
+  local probe='printf "probe=%s\n" "$(printf %s "$OH_POOLED_PROBE" | cksum | cut -d" " -f1)"'
+  report_a="$POOLED_DIR/env-a.json"
+  report_b="$POOLED_DIR/env-b.json"
+  mkdir -p "$POOLED_DIR/wa" "$POOLED_DIR/wb" ||
+    fail "pooled-env: cannot create the dispatches' working directories under $POOLED_DIR; check that it is writable"
+  OH_POOLED_PROBE="$value_a" _oh_pooled_start pooled-env-a "$report_a" "$POOLED_DIR/wa" "$probe"
+  a=$POOLED_PID
+  OH_POOLED_PROBE="$value_b" _oh_pooled_start pooled-env-b "$report_b" "$POOLED_DIR/wb" "$probe"
+  b=$POOLED_PID
+  wait "$a" || fail "pooled-env: dispatch A failed: $(cat "$report_a.err")"
+  wait "$b" || fail "pooled-env: dispatch B failed: $(cat "$report_b.err")"
+  local tool_output='[.results[0].events[]? | select(.kind == "tool_call") | .output // empty] | join("\n")'
+  out_a="$(jq -r "$tool_output" "$report_a")" ||
+    fail "pooled-env: dispatch A's report is not JSON (see $report_a and $report_a.err)"
+  out_b="$(jq -r "$tool_output" "$report_b")" ||
+    fail "pooled-env: dispatch B's report is not JSON (see $report_b and $report_b.err)"
+  case "$out_a" in *"probe=$digest_b"*) fail "pooled-env: dispatch A's command saw dispatch B's OH_POOLED_PROBE" ;; esac
+  case "$out_b" in *"probe=$digest_a"*) fail "pooled-env: dispatch B's command saw dispatch A's OH_POOLED_PROBE" ;; esac
+  case "$out_a" in *"probe=$digest_a"*) ;; *) fail "pooled-env: dispatch A's command did not see its own OH_POOLED_PROBE (output: ${out_a:-none})" ;; esac
+  case "$out_b" in *"probe=$digest_b"*) ;; *) fail "pooled-env: dispatch B's command did not see its own OH_POOLED_PROBE (output: ${out_b:-none})" ;; esac
+  pid_a="$(jq -r '.control.app_server.pid // empty' "$report_a")" ||
+    fail "pooled-env: cannot read the server pid from dispatch A's report $report_a"
+  pid_b="$(jq -r '.control.app_server.pid // empty' "$report_b")" ||
+    fail "pooled-env: cannot read the server pid from dispatch B's report $report_b"
+  [ -n "$pid_a" ] && [ "$pid_a" = "$pid_b" ] ||
+    fail "pooled-env: the two dispatches ran on two servers (${pid_a:-none} and ${pid_b:-none}), not one"
+  home="${CODEX_HOME:-$HOME/.codex}"
+  if [ -d "$home/sessions" ]; then
+    local leaked status=0
+    leaked="$(grep -rlF -e "$value_a" -e "$value_b" "$home/sessions")" || status=$?
+    case "$status" in
+      0) fail "pooled-env: a per-dispatch value reached a thread rollout under $home/sessions: $(printf '%s' "$leaked" | head -3 | tr '\n' ' ')" ;;
+      1) ;;
+      *) fail "pooled-env: cannot scan the rollouts under $home/sessions (grep exit $status); check their permissions, then rerun" ;;
+    esac
+  fi
+  note "  ok: each pooled dispatch saw only its own variable, both on server $pid_a, none in a rollout"
+}
+
+oh_pooled_kill() {
+  _oh_phase pooled-kill
+  # The bound is DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE, in
+  # seconds (io/server_pool.rs); the journey
+  # the_control_suite_s_kill_bound_is_the_pool_s_own_deadlines fails when the two
+  # drift apart.
+  local sweep_s=2 stop_s=5
+  local beat="$POOLED_DIR/heartbeat" pid lines last before bound=$((sweep_s + stop_s)) waited=0 grown=0 quiet=0
+  mkdir -p "$POOLED_DIR/wk" ||
+    fail "pooled-kill: cannot create the dispatch's working directory under $POOLED_DIR; check that it is writable"
+  # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment
+  OH_POOLED_BEAT="$beat" _oh_pooled_start pooled-kill "$POOLED_DIR/kill.json" "$POOLED_DIR/wk" \
+    'while date +%s >>"$OH_POOLED_BEAT"; do sleep 0.1; done; echo "heartbeat: cannot append to $OH_POOLED_BEAT" >&2; exit 1'
+  pid=$POOLED_PID
+  # The heartbeat's line count: 0 until the command first writes it, and a
+  # file that exists but cannot be read fails the phase naming it.
+  beats() {
+    [ -e "$beat" ] || {
+      echo 0
+      return 0
+    }
+    wc -l <"$beat" || fail "pooled-kill: cannot read the heartbeat file $beat"
+  }
+  while :; do
+    lines="$(beats)" || exit 1
+    [ "$lines" -lt 3 ] || break
+    sleep 0.2
+    waited=$((waited + 1))
+    [ "$waited" -lt 900 ] || {
+      # Already ended or not, the phase fails here naming why.
+      kill -9 "$pid" 2>/dev/null || note "  the dispatch (pid $pid) had already ended"
+      fail "pooled-kill: the heartbeat never started (see $POOLED_DIR/kill.json.err)"
+    }
+    kill -0 "$pid" 2>/dev/null || fail "pooled-kill: the dispatch ended before its heartbeat started: $(cat "$POOLED_DIR/kill.json.err")"
+  done
+  if ! kill -9 "$pid" 2>/dev/null; then
+    kill -0 "$pid" 2>/dev/null &&
+      fail "pooled-kill: cannot SIGKILL the dispatch (pid $pid), which is still running; check that this shell owns it"
+    fail "pooled-kill: the dispatch (pid $pid) ended before it could be killed: $(cat "$POOLED_DIR/kill.json.err")"
+  fi
+  wait "$pid" 2>/dev/null || true
+  # Sample the heartbeat every 0.2 s until it has been still for 1 s; the last
+  # sample that grew it is when it stopped.
+  last="$(beats)"
+  waited=0
+  while [ "$quiet" -lt 5 ]; do
+    sleep 0.2
+    waited=$((waited + 1))
+    lines="$(beats)"
+    if [ "$lines" != "$last" ]; then
+      grown=$waited
+      quiet=0
+      last="$lines"
+    else
+      quiet=$((quiet + 1))
+    fi
+    [ "$waited" -lt 150 ] || break
+  done
+  before=$((grown * 2))
+  [ "$quiet" -ge 5 ] && [ "$before" -le "$(((bound * 10) + 15))" ] ||
+    fail "pooled-kill: the killed dispatch's heartbeat kept beating $((before / 10)).$((before % 10)) s after the kill, past DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE (${bound} s)"
+  note "  ok: the killed dispatch's heartbeat stopped $((before / 10)).$((before % 10)) s after the kill (bound ${bound} s)"
+}
+
+oh_pooled_reuse() {
+  _oh_phase pooled-reuse
+  case "$(uname -s)" in
+    Linux*) ;;
+    *)
+      note "  SKIP pooled-reuse: the memory budget reads /proc and is measured on Linux only; not run on $(uname -s)"
+      return 0
+      ;;
+  esac
+  OH_REUSE_CODEX=codex bash "$OH_REPO_ROOT/live/control/app-server-reuse.sh" ||
+    fail "pooled-reuse: the sustained-reuse workload failed; its error is above"
+  # llmlint: ignore[work_goes_through_command_surface] The same frozen sync scripts/e2e-network-budget.sh runs before its onebudgetspec check, for the same reason: the live-control CI leg reaches this phase without `just bootstrap`, so it syncs the one locked workspace itself rather than through a recipe.
+  uv sync --project "$OH_REPO_ROOT/python" --frozen --no-install-workspace --quiet ||
+    fail "pooled-reuse: could not install onebudgetspec (uv sync); run 'just bootstrap', then rerun"
+  (cd "$OH_REPO_ROOT/live/control" &&
+    uv run --project "$OH_REPO_ROOT/python" --frozen --no-sync onebudgetspec check budgets.yaml) ||
+    fail "pooled-reuse: the shared app-server memory budget (live/control/budgets.yaml) failed; its readings are above"
+}
+
+if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
+  if have_env "Codex auth (shared app-server phases)" CODEX_E2E_AUTH OPENAI_API_KEY; then
+    POOLED_DIR="$(mktemp -d)" || fail "cannot create a scratch directory for the shared app-server phases; check that the host temp dir is writable"
+    trap 'rm -rf "$POOLED_DIR" || note "  could not remove $POOLED_DIR; delete it by hand"' EXIT
+    export OH_MODEL="${CODEX_E2E_MODEL:-}"
+    note "» codex: pooled-env — two pooled dispatches each see only their own environment, on one server"
+    oh_pooled_env
+    note "» codex: pooled-kill — a killed pooled dispatch's commands stop within the sweep plus the stop deadline"
+    oh_pooled_kill
+    note "» codex: pooled-reuse — a shared server serving sequential leases keeps no per-dispatch memory"
+    oh_pooled_reuse
+  fi
+fi
+if [ "${OH_CONTROL_ONLY:-}" = pooled ]; then
+  oh_wait_pooled_servers
+  note "OH_CONTROL_ONLY=pooled: the shared app-server phases ran; no per-harness phase was run"
+  exit 0
+fi
+
 proven=()
 skipped=()
 failed=()
@@ -303,6 +489,10 @@ for declaration in "${CONTROLLABLE[@]}"; do
     note "  FAILED: $id after $(elapsed $((SECONDS - phase_started))) — see its evidence above; continuing so this run reports every harness"
   fi
 done
+
+# Every shared app-server a controlled codex turn started is measured over its
+# whole life; wait for each to linger out before reporting.
+oh_wait_pooled_servers
 
 oh_control_report_outcome "${proven[*]-}" "${skipped[*]-}" "$(elapsed $SECONDS)" \
   "${failed[*]-}" "${refused[*]-}" "${gaps[*]-}"

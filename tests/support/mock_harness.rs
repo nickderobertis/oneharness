@@ -120,6 +120,9 @@
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   (`app-server --listen unix://PATH`)  act like the shared, multi-client
+//!                   app-server a pooled dispatch runs on, whatever else is set;
+//!                   its knobs are listed on `listen_server` below.
 //!   MOCK_CODEX_PLUGINS_LOG     if set to a path, a launch as `exec` or
 //!                              `app-server` resolves Codex's `plugins` feature
 //!                              from its argv the way Codex does (on unless
@@ -403,7 +406,7 @@ fn installed_codex_plugins() -> Vec<String> {
         std::fs::read_dir(std::path::Path::new(&home).join("plugins")).and_then(|entries| {
             // MOCK_CODEX_PLUGINS_LIST_FAULT: one entry after the real ones fails to
             // read, the fault no real directory can be made to raise on demand.
-            let fault = std::env::var_os("MOCK_CODEX_PLUGINS_LIST_FAULT")
+            let fault = mock_var_os("MOCK_CODEX_PLUGINS_LIST_FAULT")
                 .map(|_| Err(std::io::Error::other("injected listing fault")));
             entries.chain(fault).collect::<std::io::Result<Vec<_>>>()
         });
@@ -449,14 +452,30 @@ fn answer_version(argv: &[String]) -> ! {
     if let Ok(path) = std::env::var("MOCK_ARGV_FILE") {
         let _ = std::fs::write(path, argv.join("\n"));
     }
-    let answer = std::env::var("MOCK_CODEX_VERSION").map_or_else(
+    let answer = mock_var("MOCK_CODEX_VERSION").map_or_else(
         |_| std::env::var("MOCK_STDOUT").unwrap_or_else(|_| "{\"result\":\"mock ok\"}".into()),
         |version| format!("codex-cli {version}\n"),
     );
+    // CODEX_MOCK_FAULT=vary-version: a different release on every ask, so no
+    // two dispatches can share a server. Not the pid alone: under the live
+    // tier's measuring shim each launch runs in a fresh PID namespace, where
+    // every probe's pid is the same.
+    let answer = if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("vary-version") {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        format!(
+            "{} build-{}-{nanos}\n",
+            answer.trim_end(),
+            std::process::id()
+        )
+    } else {
+        answer
+    };
     let mut out = std::io::stdout();
     let _ = out.write_all(answer.as_bytes());
     let _ = out.flush();
-    let code = std::env::var("MOCK_CODEX_VERSION_EXIT").or_else(|_| std::env::var("MOCK_EXIT"));
+    let code = mock_var("MOCK_CODEX_VERSION_EXIT").or_else(|_| std::env::var("MOCK_EXIT"));
     std::process::exit(match code {
         Err(_) => 0,
         Ok(code) => code.parse().unwrap_or_else(|_| {
@@ -470,7 +489,7 @@ fn answer_version(argv: &[String]) -> ! {
 /// A milliseconds knob: unset is `None`, and anything but a whole number stops
 /// the mock, so a mistyped knob cannot quietly drive a different scenario.
 fn millis_knob(name: &str) -> Option<u64> {
-    let text = std::env::var(name).ok()?;
+    let text = mock_var(name).ok()?;
     match text.parse() {
         Ok(ms) => Some(ms),
         Err(_) => refuse(&format!("{name} must be whole milliseconds, got `{text}`")),
@@ -542,7 +561,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         "apps": codex_feature_enabled(argv, "apps"),
         "argv": argv,
     });
-    let fault = std::env::var("MOCK_CODEX_CATALOG_FAULT").unwrap_or_default();
+    let fault = mock_var("MOCK_CODEX_CATALOG_FAULT").unwrap_or_default();
     if !matches!(fault.as_str(), "" | "fail" | "hang" | "exit") {
         refuse(&format!(
             "MOCK_CODEX_CATALOG_FAULT must be `fail`, `hang` or `exit`, got `{fault}`"
@@ -581,8 +600,8 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                     .trim_end_matches('Z'),
                     now.subsec_nanos()
                 );
-                let version = std::env::var("MOCK_CODEX_CACHE_VERSION")
-                    .or_else(|_| std::env::var("MOCK_CODEX_VERSION"))
+                let version = mock_var("MOCK_CODEX_CACHE_VERSION")
+                    .or_else(|_| mock_var("MOCK_CODEX_VERSION"))
                     .unwrap_or_else(|_| "0.0.0".into());
                 let mut cache = serde_json::json!({
                     "fetched_at": fetched_at,
@@ -593,7 +612,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
                         {"slug": "mock-model-b", "display_name": "Mock B"},
                     ],
                 });
-                let corrupt = std::env::var("MOCK_CODEX_CACHE_CORRUPT").unwrap_or_default();
+                let corrupt = mock_var("MOCK_CODEX_CACHE_CORRUPT").unwrap_or_default();
                 match corrupt.as_str() {
                     "" | "json" => {}
                     "time" => cache["fetched_at"] = "not a time".into(),
@@ -632,7 +651,7 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
     if fault == "exit" && catalog.is_none() && subcommand == "app-server" {
         std::process::exit(1);
     }
-    if std::env::var_os("MOCK_CODEX_CATALOG_THEN_EXIT").is_some()
+    if mock_var_os("MOCK_CODEX_CATALOG_THEN_EXIT").is_some()
         && catalog.is_none()
         && subcommand == "app-server"
     {
@@ -1430,7 +1449,7 @@ fn exit_shortly() {
 fn run_codex_app_server(log_path: &str) -> ! {
     use serde_json::{json, Value};
     let attempt = scripted_attempt();
-    let overload_attempts = std::env::var("MOCK_CODEX_OVERLOAD_ATTEMPTS")
+    let overload_attempts = mock_var("MOCK_CODEX_OVERLOAD_ATTEMPTS")
         .ok()
         .map(|text| {
             text.parse::<u32>()
@@ -1510,7 +1529,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "result": {"turn": {"id": "mock-codex-turn", "status": "inProgress"}},
                 }));
                 if attempt.is_some_and(|attempt| attempt <= overload_attempts) {
-                    if std::env::var_os("MOCK_CODEX_OVERLOAD_AFTER_TOOL").is_some() {
+                    if mock_var_os("MOCK_CODEX_OVERLOAD_AFTER_TOOL").is_some() {
                         for frame in
                             include_str!("../fixtures/codex-app-server-command-execution.jsonl")
                                 .lines()
@@ -1551,7 +1570,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 // The reply: a fixed "still working", or the turn's own input
                 // text when MOCK_CODEX_ECHO_PROMPT asks for a turn that
                 // answers what it was sent, as a model echoing a marker does.
-                let reply = if std::env::var_os("MOCK_CODEX_ECHO_PROMPT").is_some() {
+                let reply = if mock_var_os("MOCK_CODEX_ECHO_PROMPT").is_some() {
                     message
                         .pointer("/params/input")
                         .and_then(Value::as_array)
@@ -1575,8 +1594,8 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     "method": "item/completed",
                     "params": {"item": {"type": "agentMessage", "id": "item_1", "text": reply}},
                 }));
-                if std::env::var_os("MOCK_CODEX_TOOL_EVENTS").is_some() {
-                    let started_only = std::env::var_os("MOCK_CODEX_TOOL_STARTED_ONLY").is_some();
+                if mock_var_os("MOCK_CODEX_TOOL_EVENTS").is_some() {
+                    let started_only = mock_var_os("MOCK_CODEX_TOOL_STARTED_ONLY").is_some();
                     for (index, frame) in
                         include_str!("../fixtures/codex-app-server-command-execution.jsonl")
                             .lines()
@@ -1587,7 +1606,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                         }
                         let mut frame: Value =
                             serde_json::from_str(frame).expect("captured app-server frame is JSON");
-                        if std::env::var_os("MOCK_CODEX_NON_STRING_COMMAND").is_some() {
+                        if mock_var_os("MOCK_CODEX_NON_STRING_COMMAND").is_some() {
                             frame["params"]["item"]["command"] = json!({"unexpected": "shape"});
                         }
                         send(&frame);
@@ -1597,7 +1616,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 // what the client SENT rather than about interrupting it. The
                 // default fixture holds the turn open until an interrupt
                 // arrives, which a run nobody interrupts would wait out.
-                if std::env::var_os("MOCK_CODEX_COMPLETE_TURN").is_some() {
+                if mock_var_os("MOCK_CODEX_COMPLETE_TURN").is_some() {
                     send(&json!({
                         "jsonrpc": "2.0",
                         "method": "turn/completed",
@@ -1628,7 +1647,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 // the turn ended. The client is left holding a redirection it
                 // committed to a conversation that will never open its next
                 // turn, which is the loss the run has to report.
-                if std::env::var_os("MOCK_CODEX_DIE_ON_INTERRUPT").is_some() {
+                if mock_var_os("MOCK_CODEX_DIE_ON_INTERRUPT").is_some() {
                     append("DIED_AFTER_INTERRUPT");
                     std::process::exit(0);
                 }
@@ -1649,7 +1668,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
 /// `MOCK_CODEX_OMIT_MODEL` withholds the claim altogether.
 fn open_response(thread_id: &str, open_request: &serde_json::Value) -> serde_json::Value {
     let mut result = serde_json::json!({"thread": {"id": thread_id}});
-    if std::env::var_os("MOCK_CODEX_OMIT_MODEL").is_none() {
+    if mock_var_os("MOCK_CODEX_OMIT_MODEL").is_none() {
         result["model"] = serde_json::Value::String(served_model(open_request));
     }
     result
@@ -1661,7 +1680,7 @@ fn open_response(thread_id: &str, open_request: &serde_json::Value) -> serde_jso
 /// always carries one, and a fixture that omitted it would pass a client that
 /// never read it.
 fn served_model(open_request: &serde_json::Value) -> String {
-    std::env::var("MOCK_CODEX_MODEL").ok().unwrap_or_else(|| {
+    mock_var("MOCK_CODEX_MODEL").ok().unwrap_or_else(|| {
         open_request
             .get("params")
             .and_then(|params| params.get("model"))
@@ -1917,6 +1936,14 @@ pub fn run() -> ! {
         run_native_descendant();
     }
 
+    // The long-lived helper a shared app-server starts (CODEX_MOCK_HELPER):
+    // it only lives, until something stops it.
+    if std::env::var_os("ONEHARNESS_MOCK_APP_SERVER_HELPER").is_some() {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    }
+
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv == ["--version"] {
         answer_version(&argv);
@@ -1930,12 +1957,21 @@ pub fn run() -> ! {
         let _ = std::fs::write(path, argv.join("\n"));
     }
 
-    if let Ok(path) = std::env::var("MOCK_CODEX_PLUGINS_LOG") {
+    if let Ok(path) = mock_var("MOCK_CODEX_PLUGINS_LOG") {
         record_codex_plugins(&path, &argv);
     }
 
-    if let Ok(path) = std::env::var("MOCK_CODEX_CATALOG_LOG") {
+    if let Ok(path) = mock_var("MOCK_CODEX_CATALOG_LOG") {
         codex_model_catalog(&path, &argv);
+    }
+
+    // `codex app-server --listen unix://PATH`: the shared server a pooled
+    // dispatch's turn runs on.
+    #[cfg(unix)]
+    if argv.first().is_some_and(|first| first == "app-server")
+        && argv.iter().any(|arg| arg == "--listen")
+    {
+        listen_server::run(&argv);
     }
 
     // Append one line to the run log (when configured), opening fresh each time so
@@ -2024,7 +2060,7 @@ pub fn run() -> ! {
         run_controlled_turn(&path);
     }
 
-    if let Ok(path) = std::env::var("MOCK_CODEX_APP_SERVER_LOG") {
+    if let Ok(path) = mock_var("MOCK_CODEX_APP_SERVER_LOG") {
         run_codex_app_server(&path);
     }
     if let Ok(path) = std::env::var("MOCK_ACP_LOG") {
@@ -2214,6 +2250,1643 @@ pub fn run() -> ! {
         })
         .unwrap_or(0);
     std::process::exit(code);
+}
+
+/// `MOCK_CODEX_*` knobs also answer to a `CODEX_MOCK_*` spelling (the
+/// `MOCK_CODEX_` prefix replaced): a shared app-server is launched with a
+/// scrubbed environment that keeps `CODEX_*` variables and drops the rest, so a
+/// knob a pooled server must see at launch travels under that spelling.
+fn mock_var(name: &str) -> Result<String, std::env::VarError> {
+    std::env::var(name).or_else(|err| match name.strip_prefix("MOCK_CODEX_") {
+        Some(rest) => std::env::var(format!("CODEX_MOCK_{rest}")),
+        None => Err(err),
+    })
+}
+
+/// [`mock_var`] for a presence knob.
+fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
+    std::env::var_os(name).or_else(|| {
+        name.strip_prefix("MOCK_CODEX_")
+            .and_then(|rest| std::env::var_os(format!("CODEX_MOCK_{rest}")))
+    })
+}
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; each behaviour it imitates is one spike-shared-app-server observed of codex-cli 0.159.2 (or this node's own no-turn probes: the 60 s unload grace, the refused resume of a never-turned thread), and the live phases scripts/e2e-control.sh runs against real Codex (pooled-env, pooled-kill, pooled-reuse) are the drift alarm that fails when the two part.
+/// Act like `codex app-server --listen unix://PATH`: the shared,
+/// multi-client app-server a pooled dispatch's turn runs on, imitating real
+/// Codex as `spike-shared-app-server-report` observed it. Unix only, like the
+/// controlled-run journeys that drive it.
+///
+/// What it imitates:
+/// - a WebSocket endpoint on the socket; a path too long for `sun_path` bound
+///   as a short target under `/tmp/codex-daemon-<uid>/` with a symlink left at
+///   the path; a second server on a live path exits 1;
+/// - per-thread settings, and commands run under the thread's
+///   `shell_environment_policy` (`set` over the server's own environment, minus
+///   `exclude`) in their own process group, outliving `turn/interrupt`;
+/// - `thread/status/changed` broadcast to every connection;
+/// - a finished thread kept loaded until its last subscriber sends
+///   `thread/unsubscribe`, then unloaded with `thread/closed`;
+/// - no answer to an interrupt naming a turn that already ended.
+///
+/// Its per-thread knobs are the dispatch's own `MOCK_*` variables, read off
+/// the thread's `shell_environment_policy.set`; its server-wide knobs are
+/// `CODEX_MOCK_*` variables of its own environment:
+///
+///   CODEX_MOCK_DIR        records: `server-<pid>.json` (pid, argv, env),
+///                         `conn-<pid>-<n>.jsonl` (every frame in and out per
+///                         connection) and `state-<pid>.json` (loaded threads,
+///                         turns with their effective context, commands,
+///                         approvals, interrupts, catalog fetches).
+///   CODEX_MOCK_SHIM       act like Codex's Node launcher: run the server as a
+///                         child and wait for it (a SIGKILLed launcher leaves the
+///                         child serving).
+///   CODEX_MOCK_HELPER     the server starts a long-lived helper child.
+///   CODEX_MOCK_BROADCAST  send every thread's frames to every connection.
+///   CODEX_MOCK_IGNORE_UNSUBSCRIBE  answer `thread/unsubscribe` but keep the
+///                         thread loaded.
+///   CODEX_MOCK_SERVER_BYTES  allocate and touch this many bytes for the
+///                         server's life, its own resident footprint.
+///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
+///                         thread, freed when it unloads.
+///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
+///                         thread's environment; `rollout-env` writes thread
+///                         environments into rollout files; `escape-marker`
+///                         drops the dispatch marker from commands;
+///                         `late-listener` (with CODEX_MOCK_SHIM) has the serving
+///                         child drop the server marker and, once its launcher
+///                         is gone, keep its listener open for 3 s accepting
+///                         nothing, as an exiting server's socket outlives the
+///                         environment a marker scan reads; `loaded-cycle`
+///                         answers every `thread/loaded/list` page with the
+///                         first page's cursor as the next; `loaded-endless`
+///                         names a fresh cursor on every page; `refuse-thread-start`
+///                         refuses `thread/start`; `early-frames` sends the
+///                         new thread's (CODEX_MOCK_EARLY_FRAMES of them, 1 by
+///                         default) and another thread's notice before
+///                         `thread/start`'s reply; `refuse-shell` / `fail-shell`
+///                         refuse a shell turn or end it failed;
+///                         `silent-shell` / `shell-no-completion` /
+///                         `shell-hangup` leave a shell command unanswered,
+///                         answer it with no completion, or drop the
+///                         connection under it; `thread-start-no-thread` /
+///                         `thread-start-bad-id` answer `thread/start` with no
+///                         thread or an empty id; `unsubscribe-odd-status`
+///                         answers `thread/unsubscribe` with status `pending`;
+///                         `malformed-thread-frames` sends agent messages whose
+///                         thread field is no id during a turn;
+///                         `ping-pong` pings each connection and handles
+///                         nothing on it until it answers with a pong;
+///                         `shell-completes-first` ends a shell turn before
+///                         replying to the request that ran it;
+///                         `refuse-loaded` / `loaded-bad-id` /
+///                         `loaded-cursor-number` refuse `thread/loaded/list` or
+///                         answer it with a non-string id or cursor;
+///                         `refuse-initialize` refuses
+///                         `initialize`; `never-listen` stays alive and never
+///                         binds; `stall-upgrade`
+///                         reads a connection's upgrade request and never
+///                         answers it.
+///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
+///                         listening.
+///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
+///   CODEX_MOCK_OPEN_DELAYS_MS  comma-separated: the n-th `thread/start` is
+///                         answered after the n-th delay.
+///   CODEX_MOCK_STARTUP_FETCH  `PORT BYTES`: download that many bytes from the
+///                         network tests' loopback server once at startup.
+///
+/// Per-thread knobs: MOCK_CODEX_APP_SERVER_LOG (raw frames this connection
+/// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_HOLD_UNTIL (end the turn once
+/// this file exists, so a test holds two turns live at once),
+/// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
+/// MOCK_CODEX_TICK_MS (with MOCK_CODEX_HOLD_UNTIL, an agent message this often
+/// while the held turn is live),
+/// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection as its
+/// approval request goes out),
+/// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
+/// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
+/// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
+/// counted in that file, fail as an overload),
+/// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
+/// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
+/// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
+/// `turn/interrupt`), MOCK_CODEX_INTERRUPT_THREAD_NOT_FOUND (answer it with
+/// `thread not found`).
+#[cfg(unix)]
+mod listen_server {
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
+    use std::io::{BufRead, Read, Write};
+    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use serde_json::{json, Value};
+
+    type Shared = Arc<Mutex<Server>>;
+
+    struct Conn {
+        writer: Arc<Mutex<UnixStream>>,
+        record: Option<std::fs::File>,
+        /// The dispatch's own raw frame log, once its thread names one, and
+        /// the frames received before it did.
+        log: Option<std::fs::File>,
+        unlogged: Vec<String>,
+        /// Kept open after its reads stopped, so a client's write onto it is
+        /// refused rather than its read seeing the end first.
+        held: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct Settings {
+        cwd: String,
+        model: Option<String>,
+        approval: Option<String>,
+        sandbox: Option<String>,
+        set: BTreeMap<String, String>,
+        exclude: Vec<String>,
+    }
+
+    struct Thread {
+        settings: Settings,
+        subscribers: BTreeSet<u64>,
+        active_turn: Option<String>,
+        turns: u64,
+        commands_running: usize,
+        memory: Vec<u8>,
+        approval_pending: Option<u64>,
+    }
+
+    impl Thread {
+        fn knob(&self, name: &str) -> Option<&str> {
+            self.settings.set.get(name).map(String::as_str)
+        }
+    }
+
+    struct Server {
+        pid: u32,
+        dir: Option<PathBuf>,
+        broadcast: bool,
+        ignore_unsubscribe: bool,
+        thread_bytes: usize,
+        fault: String,
+        conns: HashMap<u64, Conn>,
+        next_conn: u64,
+        threads: HashMap<String, Thread>,
+        known: HashMap<String, Settings>,
+        next_thread: u64,
+        next_request: u64,
+        first_opened: Option<String>,
+        turns: Vec<Value>,
+        commands: Vec<Value>,
+        approvals: Vec<Value>,
+        interrupts: Vec<Value>,
+        releases: Vec<Value>,
+        /// The server's own resident memory after each thread it opened.
+        open_rss: Vec<u64>,
+    }
+
+    /// This process's resident memory, in bytes, as /proc says.
+    fn own_rss() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("VmRSS:"))
+                    .and_then(|kb| kb.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            })
+            .map_or(0, |kb| kb * 1024)
+    }
+
+    pub fn run(argv: &[String]) -> ! {
+        if std::env::var_os("CODEX_MOCK_SHIM").is_some()
+            && std::env::var_os("ONEHARNESS_MOCK_SHIM_CHILD").is_none()
+        {
+            run_shim(argv);
+        }
+        let path = argv
+            .windows(2)
+            .find(|pair| pair[0] == "--listen")
+            .and_then(|pair| pair[1].strip_prefix("unix://"))
+            .map(PathBuf::from)
+            .unwrap_or_else(|| super::refuse("--listen must name a unix:// path"));
+        // CODEX_MOCK_EXIT_FIRST: the first launch to find this file absent
+        // creates it and exits before listening, as a server that dies at
+        // start does; every later launch serves.
+        if let Ok(first) = std::env::var("CODEX_MOCK_EXIT_FIRST") {
+            if std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&first)
+                .is_ok()
+            {
+                std::process::exit(1);
+            }
+        }
+        // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        let listener = bind(&path);
+        // CODEX_MOCK_SERVER_BYTES: a resident footprint of the server's own,
+        // touched and held for its life, as a real server has one.
+        let _footprint: Vec<u8> = vec![
+            1u8;
+            std::env::var("CODEX_MOCK_SERVER_BYTES")
+                .map_or(0, |n| whole("CODEX_MOCK_SERVER_BYTES", &n))
+        ];
+        if std::env::var_os("CODEX_MOCK_HELPER").is_some() {
+            if let Ok(exe) = std::env::current_exe() {
+                let helper = std::process::Command::new(exe)
+                    .env("ONEHARNESS_MOCK_APP_SERVER_HELPER", "1")
+                    .stdin(std::process::Stdio::null())
+                    .spawn();
+                if let Ok(mut helper) = helper {
+                    std::thread::spawn(move || {
+                        let _ = helper.wait();
+                    });
+                }
+            }
+        }
+        if let Ok(url) = std::env::var("CODEX_MOCK_STARTUP_FETCH") {
+            startup_fetch(&url);
+        }
+        let dir = std::env::var_os("CODEX_MOCK_DIR").map(PathBuf::from);
+        let pid = std::process::id();
+        if let Some(dir) = &dir {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let server: Shared = Arc::new(Mutex::new(Server {
+            pid,
+            dir: dir.clone(),
+            broadcast: std::env::var_os("CODEX_MOCK_BROADCAST").is_some(),
+            ignore_unsubscribe: std::env::var_os("CODEX_MOCK_IGNORE_UNSUBSCRIBE").is_some(),
+            thread_bytes: std::env::var("CODEX_MOCK_THREAD_BYTES")
+                .map_or(0, |n| whole("CODEX_MOCK_THREAD_BYTES", &n)),
+            fault: std::env::var("CODEX_MOCK_FAULT").unwrap_or_default(),
+            conns: HashMap::new(),
+            next_conn: 1,
+            threads: HashMap::new(),
+            known: HashMap::new(),
+            next_thread: 1,
+            next_request: 1 << 50,
+            first_opened: None,
+            turns: Vec::new(),
+            commands: Vec::new(),
+            approvals: Vec::new(),
+            interrupts: Vec::new(),
+            releases: Vec::new(),
+            open_rss: Vec::new(),
+        }));
+        lock(&server).save();
+        // The server's record after its first state: a reader that finds the
+        // server always finds its state too.
+        if let Some(dir) = &dir {
+            let env: BTreeMap<String, String> = std::env::vars().collect();
+            let _ = std::fs::write(
+                dir.join(format!("server-{pid}.json")),
+                json!({"pid": pid, "argv": argv, "env": env}).to_string(),
+            );
+        }
+        let orphaned = late_listener();
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            if orphaned.load(std::sync::atomic::Ordering::SeqCst) {
+                held.push(stream);
+                continue;
+            }
+            let server = Arc::clone(&server);
+            std::thread::spawn(move || serve(&server, stream));
+        }
+        std::process::exit(0);
+    }
+
+    /// The knob `name`'s whole-number value `raw`; anything else is a fixture
+    /// error, refused rather than read as some default.
+    fn whole<T: std::str::FromStr>(name: &str, raw: &str) -> T {
+        raw.trim().parse().unwrap_or_else(|_| {
+            super::refuse(&format!("{name} must be a whole number, got `{raw}`"))
+        })
+    }
+
+    fn lock(server: &Shared) -> std::sync::MutexGuard<'_, Server> {
+        server
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// CODEX_MOCK_FAULT=late-listener, in the launcher's serving child: a flag
+    /// raised once the launcher is gone, after which the process exits 3 s
+    /// later; until then its listener stays open and accepts into nothing.
+    fn late_listener() -> Arc<std::sync::atomic::AtomicBool> {
+        let orphaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if std::env::var_os("ONEHARNESS_MOCK_SHIM_CHILD").is_none()
+            || std::env::var("CODEX_MOCK_FAULT").as_deref() != Ok("late-listener")
+        {
+            return orphaned;
+        }
+        let launcher = std::os::unix::process::parent_id();
+        let flag = Arc::clone(&orphaned);
+        std::thread::spawn(move || loop {
+            if std::os::unix::process::parent_id() != launcher {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        });
+        orphaned
+    }
+
+    /// The launcher: the server as a child, waited on. Nothing forwards a
+    /// SIGKILL, so a killed launcher leaves the child serving.
+    fn run_shim(argv: &[String]) -> ! {
+        let exe = std::env::current_exe().unwrap_or_else(|_| super::refuse("no executable"));
+        let mut child = std::process::Command::new(exe);
+        child.args(argv).env("ONEHARNESS_MOCK_SHIM_CHILD", "1");
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("late-listener") {
+            // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and the mock already read oneharness_core::domain::history this way before this change.
+            child.env_remove(oneharness_core::domain::app_server::SERVER_MARKER_VAR);
+        }
+        let status = child.status();
+        std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
+    }
+
+    /// Bind the socket the way Codex does: a path too long for `sun_path` gets
+    /// a short target under `/tmp/codex-daemon-<uid>/` and a symlink at the
+    /// path. A path a live server answers on is refused; a stale one replaced.
+    fn bind(path: &Path) -> UnixListener {
+        if UnixStream::connect(super::dial_target(path)).is_ok() {
+            let _ = writeln!(
+                std::io::stderr(),
+                "app-server control socket is already in use"
+            );
+            std::process::exit(1);
+        }
+        let too_long = path.as_os_str().len() >= 100;
+        let target = if too_long {
+            use std::os::unix::fs::MetadataExt;
+            let uid = std::fs::metadata(path.parent().unwrap_or(Path::new("/")))
+                .map(|meta| meta.uid())
+                .unwrap_or(0);
+            let dir = PathBuf::from(format!("/tmp/codex-daemon-{uid}"));
+            let _ = std::fs::create_dir_all(&dir);
+            let digest = path
+                .as_os_str()
+                .as_encoded_bytes()
+                .iter()
+                .fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+                    (hash ^ u64::from(*byte)).wrapping_mul(0x1000_0000_01b3)
+                });
+            dir.join(format!("{digest:016x}"))
+        } else {
+            path.to_path_buf()
+        };
+        let _ = std::fs::remove_file(&target);
+        if too_long {
+            let _ = std::fs::remove_file(path);
+        }
+        let listener = UnixListener::bind(&target).unwrap_or_else(|err| {
+            super::refuse(&format!("cannot bind {}: {err}", target.display()))
+        });
+        if too_long {
+            if let Err(err) = std::os::unix::fs::symlink(&target, path) {
+                super::refuse(&format!("cannot link {}: {err}", path.display()));
+            }
+        }
+        listener
+    }
+
+    /// Download `BYTES` generated bytes from the network tests' loopback
+    /// server on `PORT` (`GET <BYTES>`), as a server's startup fetch: reached
+    /// at the default route's gateway, which inside the recorder's namespace
+    /// stands for the host's loopback, else at 127.0.0.1.
+    fn startup_fetch(spec: &str) {
+        let mut words = spec.split_whitespace();
+        let (Some(port), Some(bytes)) = (words.next(), words.next()) else {
+            super::refuse("CODEX_MOCK_STARTUP_FETCH must be `PORT BYTES`");
+        };
+        let host = std::fs::read_to_string("/proc/net/route")
+            .ok()
+            .and_then(|routes| {
+                routes.lines().skip(1).find_map(|line| {
+                    let fields: Vec<&str> = line.split_whitespace().collect();
+                    (fields.get(1) == Some(&"00000000"))
+                        .then(|| u32::from_str_radix(fields.get(2)?, 16).ok())
+                        .flatten()
+                })
+            })
+            .map_or_else(
+                || "127.0.0.1".to_string(),
+                |gateway| std::net::Ipv4Addr::from(gateway.to_le_bytes()).to_string(),
+            );
+        let Ok(mut stream) = std::net::TcpStream::connect(format!("{host}:{port}")) else {
+            super::refuse(&format!(
+                "CODEX_MOCK_STARTUP_FETCH could not reach {host}:{port}"
+            ));
+        };
+        let _ = writeln!(stream, "GET {bytes}");
+        let mut sink = Vec::new();
+        let _ = stream.read_to_end(&mut sink);
+    }
+
+    impl Server {
+        fn save(&self) {
+            let Some(dir) = &self.dir else { return };
+            let threads: BTreeMap<&String, Value> = self
+                .threads
+                .iter()
+                .map(|(id, thread)| {
+                    (
+                        id,
+                        json!({
+                            "subscribers": thread.subscribers,
+                            "active_turn": thread.active_turn,
+                            "memory_bytes": thread.memory.len(),
+                            "commands_running": thread.commands_running,
+                        }),
+                    )
+                })
+                .collect();
+            let state = json!({
+                "pid": self.pid,
+                "connections": self.conns.keys().collect::<Vec<_>>(),
+                "loaded": threads,
+                "known": self.known.keys().collect::<Vec<_>>(),
+                "turns": self.turns,
+                "commands": self.commands,
+                "approvals": self.approvals,
+                "interrupts": self.interrupts,
+                "releases": self.releases,
+                "open_rss": self.open_rss,
+            });
+            let tmp = dir.join(format!("state-{}.json.tmp", self.pid));
+            if std::fs::write(&tmp, state.to_string()).is_ok() {
+                let _ = std::fs::rename(tmp, dir.join(format!("state-{}.json", self.pid)));
+            }
+        }
+
+        fn record(&mut self, conn: u64, direction: &str, frame: &Value) {
+            if let Some(file) = self.conns.get_mut(&conn).and_then(|c| c.record.as_mut()) {
+                let _ = writeln!(file, "{}", json!({direction: frame}));
+            }
+        }
+
+        fn send(&mut self, conn: u64, frame: &Value) {
+            self.record(conn, "out", frame);
+            if let Some(c) = self.conns.get(&conn) {
+                let mut writer = c.writer.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = write_frame(&mut writer, frame.to_string().as_bytes());
+            }
+        }
+
+        /// Send a thread's frame to its subscribers, or to every connection
+        /// when broadcasting.
+        fn emit(&mut self, thread: &str, frame: &Value) {
+            let targets: Vec<u64> = if self.broadcast {
+                self.conns.keys().copied().collect()
+            } else {
+                self.threads
+                    .get(thread)
+                    .map(|t| t.subscribers.iter().copied().collect())
+                    .unwrap_or_default()
+            };
+            for conn in targets {
+                self.send(conn, frame);
+            }
+        }
+
+        /// `thread/status/changed`, which real Codex sends every connection.
+        fn status(&mut self, thread: &str, status: &str) {
+            let frame = json!({"jsonrpc": "2.0", "method": "thread/status/changed",
+                "params": {"threadId": thread, "status": {"type": status}}});
+            let conns: Vec<u64> = self.conns.keys().copied().collect();
+            for conn in conns {
+                self.send(conn, &frame);
+            }
+        }
+
+        fn complete_turn(&mut self, thread_id: &str, status: &str) {
+            let Some(thread) = self.threads.get_mut(thread_id) else {
+                return;
+            };
+            let Some(turn) = thread.active_turn.take() else {
+                return;
+            };
+            if let Some(record) = self
+                .turns
+                .iter_mut()
+                .rev()
+                .find(|t| t["turn"] == json!(turn))
+            {
+                record["status"] = json!(status);
+            }
+            self.emit(
+                thread_id,
+                &json!({"jsonrpc": "2.0", "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": turn, "status": status}}}),
+            );
+            self.status(thread_id, "idle");
+            self.save();
+        }
+
+        /// End the thread's turn once nothing holds it: no command running, no
+        /// approval waiting, and either MOCK_CODEX_COMPLETE_TURN or the file
+        /// MOCK_CODEX_HOLD_UNTIL names present.
+        fn maybe_complete(&mut self, thread_id: &str) {
+            let Some(thread) = self.threads.get(thread_id) else {
+                return;
+            };
+            let released = thread.knob("MOCK_CODEX_COMPLETE_TURN").is_some()
+                || thread
+                    .knob("MOCK_CODEX_HOLD_UNTIL")
+                    .is_some_and(|path| Path::new(path).exists());
+            if thread.active_turn.is_some()
+                && thread.commands_running == 0
+                && thread.approval_pending.is_none()
+                && released
+            {
+                self.complete_turn(thread_id, "completed");
+            }
+        }
+
+        fn rollout(&self, thread: &str, line: &Value) {
+            let Ok(home) = std::env::var("CODEX_HOME") else {
+                return;
+            };
+            let dir = Path::new(&home).join("sessions");
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(dir.join(format!("rollout-{thread}.jsonl")))
+            {
+                let _ = writeln!(file, "{line}");
+            }
+        }
+    }
+
+    fn write_frame(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
+        let mut frame = vec![0x81u8];
+        let len = payload.len();
+        if len < 126 {
+            frame.push(len as u8);
+        } else if len <= usize::from(u16::MAX) {
+            frame.push(126);
+            frame.extend_from_slice(&(len as u16).to_be_bytes());
+        } else {
+            frame.push(127);
+            frame.extend_from_slice(&(len as u64).to_be_bytes());
+        }
+        frame.extend_from_slice(payload);
+        stream.write_all(&frame)
+    }
+
+    /// One client message, unmasked; `None` once the client is gone.
+    /// The most one client message may hold; a frame or message past it ends
+    /// the connection rather than growing the mock's memory on a peer's word.
+    const MESSAGE_LIMIT: u64 = 64 * 1024 * 1024;
+
+    /// The next whole message from the client — `Some(None)` for a pong, which
+    /// the `ping-pong` fault waits on — or `None` once the connection ends.
+    fn read_message(stream: &mut impl Read) -> Option<Option<Vec<u8>>> {
+        let mut message = Vec::new();
+        loop {
+            let mut head = [0u8; 2];
+            stream.read_exact(&mut head).ok()?;
+            let len = match head[1] & 0x7f {
+                126 => {
+                    let mut ext = [0u8; 2];
+                    stream.read_exact(&mut ext).ok()?;
+                    u64::from(u16::from_be_bytes(ext))
+                }
+                127 => {
+                    let mut ext = [0u8; 8];
+                    stream.read_exact(&mut ext).ok()?;
+                    u64::from_be_bytes(ext)
+                }
+                short => u64::from(short),
+            };
+            if len.saturating_add(message.len() as u64) > MESSAGE_LIMIT {
+                return None;
+            }
+            let mut mask = [0u8; 4];
+            if head[1] & 0x80 != 0 {
+                stream.read_exact(&mut mask).ok()?;
+            }
+            let mut payload = vec![0u8; usize::try_from(len).ok()?];
+            stream.read_exact(&mut payload).ok()?;
+            for (index, byte) in payload.iter_mut().enumerate() {
+                *byte ^= mask[index % 4];
+            }
+            match head[0] & 0x0f {
+                0x8 => return None,
+                0x9 => continue,
+                0xA => return Some(None),
+                _ => message.extend_from_slice(&payload),
+            }
+            if head[0] & 0x80 != 0 {
+                return Some(Some(message));
+            }
+        }
+    }
+
+    fn serve(server: &Shared, stream: UnixStream) {
+        let Ok(writer) = stream.try_clone() else {
+            return;
+        };
+        let mut reader = std::io::BufReader::new(stream);
+        let mut key = String::new();
+        loop {
+            let mut line = String::new();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                return;
+            }
+            if line == "\r\n" {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.trim().eq_ignore_ascii_case("sec-websocket-key") {
+                    key = value.trim().to_string();
+                }
+            }
+        }
+        // CODEX_MOCK_FAULT=stall-upgrade: read the upgrade request and never
+        // answer it, holding the connection open.
+        if lock(server).fault == "stall-upgrade" {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        let writer = Arc::new(Mutex::new(writer));
+        {
+            let mut w = writer.lock().unwrap_or_else(|p| p.into_inner());
+            let answer = format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {}\r\n\r\n",
+                // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and the mock already read oneharness_core::domain::history this way before this change.
+                oneharness_core::io::websocket::accept_key(&key)
+            );
+            if w.write_all(answer.as_bytes()).is_err() {
+                return;
+            }
+        }
+        let conn = {
+            let mut s = lock(server);
+            let id = s.next_conn;
+            s.next_conn += 1;
+            let record = s.dir.as_ref().and_then(|dir| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(dir.join(format!("conn-{}-{id}.jsonl", s.pid)))
+                    .ok()
+            });
+            s.conns.insert(
+                id,
+                Conn {
+                    writer: Arc::clone(&writer),
+                    record,
+                    log: None,
+                    unlogged: Vec::new(),
+                    held: false,
+                },
+            );
+            s.save();
+            id
+        };
+        // CODEX_MOCK_FAULT=ping-pong: ping the client once connected, and
+        // handle nothing it sends until it answers with a pong.
+        let mut awaiting_pong = lock(server).fault == "ping-pong";
+        if awaiting_pong {
+            let _ = writer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .write_all(&[0x89, 0x01, b'p']);
+        }
+        let mut held: Vec<Vec<u8>> = Vec::new();
+        while let Some(message) = read_message(&mut reader) {
+            let ready = match message {
+                None => {
+                    awaiting_pong = false;
+                    std::mem::take(&mut held)
+                }
+                Some(bytes) if awaiting_pong => {
+                    held.push(bytes);
+                    Vec::new()
+                }
+                Some(bytes) => vec![bytes],
+            };
+            for bytes in ready {
+                let text = String::from_utf8_lossy(&bytes).to_string();
+                let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                hold(server, &frame);
+                handle(server, conn, &text, &frame);
+            }
+        }
+        if lock(server).conns.get(&conn).is_some_and(|c| c.held) {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3600));
+            }
+        }
+        // The client is gone. Like Codex, its threads stay loaded and their
+        // turns and commands keep running; only its subscriptions go.
+        let mut s = lock(server);
+        s.conns.remove(&conn);
+        for thread in s.threads.values_mut() {
+            thread.subscribers.remove(&conn);
+        }
+        s.save();
+    }
+
+    /// Keep a request waiting, outside the server's lock, where a knob says
+    /// to: `thread/start` until MOCK_CODEX_HOLD_OPEN_UNTIL's file exists (a
+    /// dispatch held idle, before its turn), `thread/unsubscribe` for
+    /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS (a dispatch whose turn has ended still
+    /// releasing its thread).
+    fn hold(server: &Shared, frame: &Value) {
+        let set_knob = |name: &str| {
+            frame
+                .pointer(&format!(
+                    "/params/config/shell_environment_policy/set/{name}"
+                ))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        match frame.get("method").and_then(Value::as_str) {
+            Some("thread/start") => {
+                // CODEX_MOCK_OPEN_DELAYS_MS: the n-th thread/start this server
+                // answers waits the n-th delay, so a measurement's time to a
+                // ready thread has a known floor.
+                static OPENS: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                let nth = OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(ms) =
+                    std::env::var("CODEX_MOCK_OPEN_DELAYS_MS")
+                        .ok()
+                        .and_then(|delays| {
+                            delays
+                                .split(',')
+                                .nth(nth)
+                                .map(|ms| whole::<u64>("CODEX_MOCK_OPEN_DELAYS_MS", ms))
+                        })
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+                if let Some(path) = set_knob("MOCK_CODEX_HOLD_OPEN_UNTIL") {
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                    while !Path::new(&path).exists() && std::time::Instant::now() < until {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            }
+            Some("thread/unsubscribe") => {
+                let thread = frame
+                    .pointer("/params/threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let delay = lock(server)
+                    .threads
+                    .get(thread)
+                    .and_then(|t| t.knob("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS"))
+                    .map(|ms| whole::<u64>("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS", ms));
+                if let Some(ms) = delay {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn settings_from(params: &Value, base: Option<&Settings>) -> Settings {
+        let mut settings = base.cloned().unwrap_or_default();
+        if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
+            settings.cwd = cwd.to_string();
+        }
+        if let Some(model) = params.get("model").and_then(Value::as_str) {
+            settings.model = Some(model.to_string());
+        }
+        if let Some(approval) = params.get("approvalPolicy").and_then(Value::as_str) {
+            settings.approval = Some(approval.to_string());
+        }
+        if let Some(sandbox) = params.get("sandbox").and_then(Value::as_str) {
+            settings.sandbox = Some(sandbox.to_string());
+        }
+        if let Some(policy) = params.pointer("/config/shell_environment_policy") {
+            settings.set = policy
+                .get("set")
+                .and_then(Value::as_object)
+                .map(|set| {
+                    set.iter()
+                        .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
+            settings.exclude = policy
+                .get("exclude")
+                .and_then(Value::as_array)
+                .map(|names| {
+                    names
+                        .iter()
+                        .filter_map(|n| n.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        settings
+    }
+
+    fn open_thread(s: &mut Server, conn: u64, id: &str, mut settings: Settings, resumed: bool) {
+        // A `MOCK_CODEX_*` knob the server itself was launched with (a wrapper
+        // exporting it, as the network tests' harness double does) is every
+        // thread's default; the thread's own value wins.
+        for (name, value) in std::env::vars() {
+            if name.starts_with("MOCK_CODEX_") && name != "MOCK_CODEX_APP_SERVER_LOG" {
+                settings.set.entry(name).or_insert(value);
+            }
+        }
+        let memory = vec![1u8; s.thread_bytes];
+        let thread = s.threads.entry(id.to_string()).or_insert(Thread {
+            settings: settings.clone(),
+            subscribers: BTreeSet::new(),
+            active_turn: None,
+            turns: 0,
+            commands_running: 0,
+            memory,
+            approval_pending: None,
+        });
+        thread.settings = settings.clone();
+        thread.subscribers.insert(conn);
+        s.known.insert(id.to_string(), settings.clone());
+        if s.first_opened.is_none() {
+            s.first_opened = Some(id.to_string());
+        }
+        if let Some(dir) = &s.dir {
+            let _ = std::fs::create_dir_all(dir.join("threads"));
+            let _ = std::fs::write(
+                dir.join("threads").join(id),
+                json!({"cwd": settings.cwd, "model": settings.model}).to_string(),
+            );
+        }
+        let mut meta = json!({"type": "session_meta", "id": id, "cwd": settings.cwd,
+            "model": settings.model, "resumed": resumed});
+        if s.fault == "rollout-env" {
+            meta["env"] = json!(settings.set);
+        }
+        s.rollout(id, &meta);
+        if let Some(path) = settings.set.get("MOCK_CODEX_APP_SERVER_LOG") {
+            if let Some(c) = s.conns.get_mut(&conn) {
+                if c.log.is_none() {
+                    c.log = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(path)
+                        .ok();
+                    if let Some(log) = c.log.as_mut() {
+                        for line in c.unlogged.drain(..) {
+                            let _ = writeln!(log, "{line}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The thread's id as a stored conversation would know it: across server
+    /// restarts, a thread the pool started earlier is resumable.
+    fn stored(s: &Server, id: &str) -> Option<Settings> {
+        if let Some(settings) = s.known.get(id) {
+            return Some(settings.clone());
+        }
+        let text = std::fs::read_to_string(s.dir.as_ref()?.join("threads").join(id)).ok()?;
+        let value: Value = serde_json::from_str(&text).ok()?;
+        Some(Settings {
+            cwd: value.get("cwd")?.as_str()?.to_string(),
+            model: value
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            ..Settings::default()
+        })
+    }
+
+    fn served_model(params: &Value, settings: &Settings) -> String {
+        settings
+            .set
+            .get("MOCK_CODEX_MODEL")
+            .cloned()
+            .or_else(|| {
+                params
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "mock-codex-default".to_string())
+    }
+
+    fn handle(server: &Shared, conn: u64, text: &str, frame: &Value) {
+        let mut s = lock(server);
+        s.record(conn, "in", frame);
+        if let Some(c) = s.conns.get_mut(&conn) {
+            match c.log.as_mut() {
+                Some(log) => {
+                    let _ = writeln!(log, "{text}");
+                }
+                None => c.unlogged.push(text.to_string()),
+            }
+        }
+        let id = frame.get("id").cloned().unwrap_or(Value::Null);
+        let params = frame.get("params").cloned().unwrap_or(Value::Null);
+        let reply = |s: &mut Server, result: Value| {
+            s.send(conn, &json!({"jsonrpc": "2.0", "id": id, "result": result}));
+        };
+        let refuse = |s: &mut Server, message: String| {
+            s.send(
+                conn,
+                &json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32600, "message": message}}),
+            );
+        };
+        let Some(method) = frame.get("method").and_then(Value::as_str) else {
+            // A client's answer to a request of ours: an approval decision.
+            if let Some(answered) = frame.get("id").and_then(Value::as_u64) {
+                answer_approval(server, &mut s, conn, answered, frame);
+            }
+            return;
+        };
+        match method {
+            "initialize" if s.fault == "refuse-initialize" => {
+                refuse(&mut s, "the mock refuses initialize".to_string());
+            }
+            "initialize" => reply(&mut s, json!({"userAgent": "oneharness-mock-app-server"})),
+            "thread/start" => {
+                match s.fault.as_str() {
+                    "refuse-thread-start" => {
+                        return refuse(&mut s, "the mock refuses thread/start".to_string())
+                    }
+                    "thread-start-no-thread" => return reply(&mut s, json!({"model": "m"})),
+                    "thread-start-bad-id" => {
+                        return reply(&mut s, json!({"thread": {"id": ""}, "model": "m"}))
+                    }
+                    _ => {}
+                }
+                let thread = format!("mock-thread-{}-{}", s.pid, s.next_thread);
+                s.next_thread += 1;
+                let settings = settings_from(&params, None);
+                let model = served_model(&params, &settings);
+                open_thread(&mut s, conn, &thread, settings, false);
+                let rss = own_rss();
+                s.open_rss.push(rss);
+                s.save();
+                // CODEX_MOCK_FAULT=early-frames: notices for the new thread,
+                // and for another thread, before the reply that names it.
+                // CODEX_MOCK_EARLY_FRAMES: how many of the new thread's (1).
+                if s.fault == "early-frames" {
+                    let own = std::env::var("CODEX_MOCK_EARLY_FRAMES")
+                        .map_or(1, |n| whole::<usize>("CODEX_MOCK_EARLY_FRAMES", &n));
+                    let early = std::iter::repeat_n((thread.as_str(), "own"), own)
+                        .chain([("mock-thread-foreign", "foreign")]);
+                    for (index, (named, tag)) in early.enumerate() {
+                        s.send(
+                            conn,
+                            &json!({"jsonrpc": "2.0", "method": "thread/status/changed",
+                                "params": {"threadId": named, "status": {"type": "idle"}, "early": tag, "n": index}}),
+                        );
+                    }
+                }
+                reply(&mut s, json!({"thread": {"id": thread}, "model": model}));
+                s.emit(
+                    &thread,
+                    &json!({"jsonrpc": "2.0", "method": "thread/started", "params": {"thread": {"id": thread}}}),
+                );
+                s.status(&thread, "idle");
+                s.save();
+            }
+            "thread/resume" => {
+                let Some(thread) = params.get("threadId").and_then(Value::as_str) else {
+                    return refuse(&mut s, "thread/resume requires a threadId".to_string());
+                };
+                let base = match s.threads.get(thread) {
+                    Some(loaded) => Some(loaded.settings.clone()),
+                    None => stored(&s, thread),
+                };
+                let Some(base) = base else {
+                    return refuse(&mut s, format!("thread not found: {thread}"));
+                };
+                // A resume carries the dispatch's environment; the thread keeps
+                // the directory, model, sandbox and approval policy it was
+                // started under, so a turn's own values are what is in force.
+                let mut settings = base.clone();
+                let resumed = settings_from(&params, Some(&base));
+                let model = served_model(&params, &resumed);
+                settings.set = resumed.set;
+                settings.exclude = resumed.exclude;
+                open_thread(&mut s, conn, thread, settings, true);
+                reply(&mut s, json!({"thread": {"id": thread}, "model": model}));
+                s.save();
+            }
+            "thread/unsubscribe" => {
+                let thread = params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                // MOCK_CODEX_UNSUBSCRIBE_REFUSE: refuse the release; the
+                // thread stays loaded and subscribed.
+                if s.threads
+                    .get(&thread)
+                    .and_then(|t| t.knob("MOCK_CODEX_UNSUBSCRIBE_REFUSE"))
+                    .is_some()
+                {
+                    return refuse(&mut s, format!("the mock refuses to release {thread}"));
+                }
+                let ignore = s.ignore_unsubscribe;
+                let outcome = match s.threads.get_mut(&thread) {
+                    None => "notLoaded",
+                    Some(loaded) => {
+                        if loaded.subscribers.remove(&conn) {
+                            "unsubscribed"
+                        } else {
+                            "notSubscribed"
+                        }
+                    }
+                };
+                let empty = s
+                    .threads
+                    .get(&thread)
+                    .is_some_and(|t| t.subscribers.is_empty());
+                // CODEX_MOCK_FAULT=unsubscribe-odd-status: answer a status no
+                // release has.
+                let outcome = if s.fault == "unsubscribe-odd-status" {
+                    "pending"
+                } else {
+                    outcome
+                };
+                s.releases
+                    .push(json!({"thread": thread, "conn": conn, "status": outcome}));
+                reply(&mut s, json!({"status": outcome}));
+                if outcome == "unsubscribed" && empty && !ignore {
+                    s.threads.remove(&thread);
+                    s.send(
+                        conn,
+                        &json!({"jsonrpc": "2.0", "method": "thread/closed", "params": {"threadId": thread}}),
+                    );
+                }
+                s.save();
+            }
+            // A shell turn: no model call, ended as soon as it starts.
+            "thread/shellCommand" => {
+                let thread = params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !s.threads.contains_key(&thread) {
+                    return refuse(&mut s, format!("thread not found: {thread}"));
+                }
+                match s.fault.as_str() {
+                    "refuse-shell" => {
+                        return refuse(&mut s, "the mock refuses thread/shellCommand".to_string())
+                    }
+                    // Never answered, never run.
+                    "silent-shell" => return,
+                    // The connection dropped under the request.
+                    "shell-hangup" => {
+                        if let Some(c) = s.conns.get(&conn) {
+                            let _ = c
+                                .writer
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .shutdown(std::net::Shutdown::Both);
+                        }
+                        return;
+                    }
+                    // Answered, and the turn never completes.
+                    "shell-no-completion" => return reply(&mut s, json!({})),
+                    _ => {}
+                }
+                let turn = format!("{thread}-shell");
+                // CODEX_MOCK_FAULT=fail-shell: the shell turn ends failed.
+                let ended = if s.fault == "fail-shell" {
+                    "failed"
+                } else {
+                    "completed"
+                };
+                // CODEX_MOCK_FAULT=shell-completes-first: the turn starts and
+                // ends before the reply to the request that ran it.
+                if s.fault == "shell-completes-first" {
+                    for frame in [
+                        json!({"jsonrpc": "2.0", "method": "turn/started",
+                            "params": {"threadId": thread, "turn": {"id": turn}}}),
+                        json!({"jsonrpc": "2.0", "method": "turn/completed",
+                            "params": {"threadId": thread, "turn": {"id": turn, "status": ended}}}),
+                    ] {
+                        s.emit(&thread, &frame);
+                    }
+                    return reply(&mut s, json!({}));
+                }
+                reply(&mut s, json!({}));
+                s.emit(
+                    &thread,
+                    &json!({"jsonrpc": "2.0", "method": "turn/started",
+                        "params": {"threadId": thread, "turn": {"id": turn}}}),
+                );
+                s.emit(
+                    &thread,
+                    &json!({"jsonrpc": "2.0", "method": "turn/completed",
+                        "params": {"threadId": thread, "turn": {"id": turn, "status": ended}}}),
+                );
+            }
+            "thread/loaded/list" => {
+                // CODEX_MOCK_LOADED_PAGE: answer in pages of this many, each
+                // naming the next by its index.
+                let mut data: Vec<String> = s.threads.keys().cloned().collect();
+                data.sort();
+                let page = std::env::var("CODEX_MOCK_LOADED_PAGE").map_or(usize::MAX, |n| {
+                    match whole::<usize>("CODEX_MOCK_LOADED_PAGE", &n) {
+                        0 => super::refuse("CODEX_MOCK_LOADED_PAGE must be at least 1"),
+                        page => page,
+                    }
+                });
+                let from = match params.get("cursor") {
+                    None | Some(Value::Null) => 0,
+                    Some(cursor) => match cursor.as_str().and_then(|c| c.parse::<usize>().ok()) {
+                        Some(from) => from,
+                        None => return refuse(&mut s, format!("no such cursor: {cursor}")),
+                    },
+                };
+                let to = from.saturating_add(page).min(data.len());
+                // CODEX_MOCK_FAULT=loaded-cycle: every page names the first
+                // page as the next, so a reader that never checks progress
+                // pages forever.
+                // CODEX_MOCK_FAULT=refuse-loaded / loaded-bad-id /
+                // loaded-cursor-number: the listing refused, naming a thread
+                // that is no id, or a cursor that is no string.
+                match s.fault.as_str() {
+                    "refuse-loaded" => {
+                        return refuse(&mut s, "the mock refuses thread/loaded/list".to_string())
+                    }
+                    "loaded-bad-id" => {
+                        return reply(&mut s, json!({"data": [7], "nextCursor": null}))
+                    }
+                    "loaded-cursor-number" => {
+                        return reply(&mut s, json!({"data": [], "nextCursor": 2}))
+                    }
+                    _ => {}
+                }
+                let next = if s.fault == "loaded-cycle" {
+                    Some("0".to_string())
+                } else if s.fault == "loaded-endless" {
+                    // A fresh cursor every page, so no page is ever the last.
+                    Some(from.saturating_add(1).to_string())
+                } else {
+                    (to < data.len()).then(|| to.to_string())
+                };
+                reply(
+                    &mut s,
+                    json!({"data": data.get(from..to).unwrap_or_default(), "nextCursor": next}),
+                );
+            }
+            "thread/read" => {
+                let thread = params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if s.threads.contains_key(thread) {
+                    reply(&mut s, json!({"thread": {"id": thread}}));
+                } else {
+                    refuse(&mut s, format!("thread not loaded: {thread}"));
+                }
+            }
+            "turn/start" => start_turn(server, &mut s, conn, &id, &params),
+            "turn/interrupt" => {
+                let thread = params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let turn = params
+                    .get("turnId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                s.interrupts
+                    .push(json!({"conn": conn, "thread": thread, "turn": turn}));
+                s.save();
+                let Some(loaded) = s.threads.get(&thread) else {
+                    return refuse(&mut s, format!("thread not found: {thread}"));
+                };
+                if loaded.knob("MOCK_CODEX_INTERRUPT_SILENT").is_some() {
+                    return;
+                }
+                if loaded
+                    .knob("MOCK_CODEX_INTERRUPT_THREAD_NOT_FOUND")
+                    .is_some()
+                {
+                    return refuse(&mut s, format!("thread not found: {thread}"));
+                }
+                match loaded.active_turn.clone() {
+                    None if loaded.turns == 0 => {
+                        refuse(&mut s, "no active turn to interrupt".to_string())
+                    }
+                    // Real Codex answers an interrupt naming the turn that
+                    // already ended with nothing at all.
+                    None => {}
+                    Some(active) if active != turn => refuse(
+                        &mut s,
+                        format!("expected active turn id {turn} but found {active}"),
+                    ),
+                    Some(_) => {
+                        reply(&mut s, json!({}));
+                        // The turn ends; the commands it started do not.
+                        s.complete_turn(&thread, "interrupted");
+                    }
+                }
+            }
+            _ => {
+                if !id.is_null() {
+                    reply(&mut s, json!({}));
+                }
+            }
+        }
+    }
+
+    fn start_turn(server: &Shared, s: &mut Server, conn: u64, id: &Value, params: &Value) {
+        let thread_id = params
+            .get("threadId")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(thread) = s.threads.get_mut(&thread_id) else {
+            s.send(
+                conn,
+                &json!({"jsonrpc": "2.0", "id": id,
+                "error": {"code": -32600, "message": format!("thread not found: {thread_id}")}}),
+            );
+            return;
+        };
+        thread.turns += 1;
+        let turn = format!("{thread_id}-turn-{}", thread.turns);
+        thread.active_turn = Some(turn.clone());
+        let settings = thread.settings.clone();
+        let cwd = params
+            .get("cwd")
+            .and_then(Value::as_str)
+            .map_or(settings.cwd.clone(), str::to_string);
+        let model = params
+            .get("model")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(settings.model.clone());
+        let approval = params
+            .get("approvalPolicy")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(settings.approval.clone());
+        let sandbox = params
+            .pointer("/sandboxPolicy/type")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(settings.sandbox.clone());
+        let input: String = params
+            .get("input")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i.get("text").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default();
+        let marker = settings.set.get("ONEHARNESS_DISPATCH_MARKER").cloned();
+        s.turns.push(
+            json!({"conn": conn, "thread": thread_id, "turn": turn, "cwd": cwd,
+            "model": model, "approval": approval, "sandbox": sandbox, "input": input,
+            "marker": marker}),
+        );
+        s.send(conn, &json!({"jsonrpc": "2.0", "id": id, "result": {"turn": {"id": turn, "status": "inProgress"}}}));
+        s.emit(
+            &thread_id,
+            &json!({"jsonrpc": "2.0", "method": "turn/started",
+            "params": {"threadId": thread_id, "turn": {"id": turn}}}),
+        );
+        s.status(&thread_id, "active");
+        // CODEX_MOCK_FAULT=malformed-thread-frames: agent messages on this
+        // connection whose thread field is no thread id.
+        if s.fault == "malformed-thread-frames" {
+            for params in [
+                json!({"threadId": 7, "item": {"type": "agentMessage", "id": "m1", "text": "SMUGGLED-1"}}),
+                json!({"thread": {"id": null}, "item": {"type": "agentMessage", "id": "m2", "text": "SMUGGLED-2"}}),
+            ] {
+                s.send(
+                    conn,
+                    &json!({"jsonrpc": "2.0", "method": "item/completed", "params": params}),
+                );
+            }
+        }
+        let mut context =
+            json!({"type": "turn_context", "cwd": cwd, "model": model, "sandbox": sandbox});
+        if s.fault == "rollout-env" {
+            context["env"] = json!(settings.set);
+        }
+        s.rollout(&thread_id, &context);
+        let knob = |name: &str| settings.set.get(name).cloned();
+        // MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE: the first N
+        // turns, counted in that file, fail as Codex's overload does — an
+        // `error` notification, then the turn completed as failed — before
+        // any answer.
+        if let (Some(limit), Some(path)) = (
+            knob("MOCK_CODEX_OVERLOAD_ATTEMPTS"),
+            knob("MOCK_ATTEMPT_FILE"),
+        ) {
+            let attempt = std::fs::read_to_string(&path)
+                .map_or(0, |text| whole::<u32>("MOCK_ATTEMPT_FILE's count", &text))
+                + 1;
+            let _ = std::fs::write(&path, attempt.to_string());
+            if attempt <= whole::<u32>("MOCK_CODEX_OVERLOAD_ATTEMPTS", &limit) {
+                let error = json!({"message": "The server is overloaded", "codexErrorInfo": "serverOverloaded"});
+                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "error",
+                    "params": {"threadId": thread_id, "turnId": turn, "error": error, "willRetry": false}}));
+                if let Some(thread) = s.threads.get_mut(&thread_id) {
+                    thread.active_turn = None;
+                }
+                if let Some(record) = s.turns.iter_mut().rev().find(|t| t["turn"] == json!(turn)) {
+                    record["status"] = json!("failed");
+                }
+                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": turn, "status": "failed", "error": error}}}));
+                s.status(&thread_id, "idle");
+                s.save();
+                return;
+            }
+        }
+        let reply_text = if knob("MOCK_CODEX_ECHO_PROMPT").is_some() {
+            input.clone()
+        } else {
+            "still working".to_string()
+        };
+        let item = format!("{turn}-message");
+        s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "item/agentMessage/delta",
+            "params": {"threadId": thread_id, "turnId": turn, "itemId": item, "delta": reply_text}}));
+        s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "item/completed",
+            "params": {"threadId": thread_id, "turnId": turn, "item": {"type": "agentMessage", "id": item, "text": reply_text}}}));
+        if knob("MOCK_CODEX_TOOL_EVENTS").is_some() {
+            for line in include_str!("../fixtures/codex-app-server-command-execution.jsonl").lines()
+            {
+                let mut frame: Value =
+                    serde_json::from_str(line).expect("captured app-server frame is JSON");
+                frame["params"]["threadId"] = json!(thread_id);
+                s.emit(&thread_id, &frame);
+            }
+        }
+        if let Some(path) = knob("MOCK_CODEX_HOLD_UNTIL") {
+            let server = Arc::clone(server);
+            let (thread_id, turn) = (thread_id.clone(), turn.clone());
+            // MOCK_CODEX_TICK_MS: while the held turn is live, an agent
+            // message this often, so a streaming run always has more to write.
+            let tick =
+                knob("MOCK_CODEX_TICK_MS").map(|ms| whole::<u128>("MOCK_CODEX_TICK_MS", &ms));
+            let held_since = std::time::Instant::now();
+            let mut ticks = 0u128;
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                let mut s = lock(&server);
+                let live = s
+                    .threads
+                    .get(&thread_id)
+                    .is_some_and(|t| t.active_turn.as_deref() == Some(turn.as_str()));
+                if !live {
+                    return;
+                }
+                if let Some(every) = tick.filter(|every| *every > 0) {
+                    while held_since.elapsed().as_millis() / every > ticks {
+                        ticks += 1;
+                        let item = format!("{turn}-tick-{ticks}");
+                        s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "item/completed",
+                            "params": {"threadId": thread_id, "turnId": turn,
+                                "item": {"type": "agentMessage", "id": item, "text": format!("tick {ticks}")}}}));
+                    }
+                }
+                if Path::new(&path).exists() {
+                    s.maybe_complete(&thread_id);
+                    s.save();
+                    return;
+                }
+            });
+        }
+        let command = knob("MOCK_CODEX_RUN_COMMAND");
+        if let Some(command) = command.clone() {
+            if knob("MOCK_CODEX_REQUEST_APPROVAL").is_some() {
+                let request = s.next_request;
+                s.next_request += 1;
+                if let Some(thread) = s.threads.get_mut(&thread_id) {
+                    thread.approval_pending = Some(request);
+                }
+                s.approvals.push(
+                    json!({"request": request, "thread": thread_id, "owner": conn, "answers": []}),
+                );
+                // MOCK_CODEX_SHUT_READ_ON_APPROVAL: stop reading this
+                // connection before the request goes out, so the client's
+                // answer is always a write onto a connection that is gone.
+                if knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some() {
+                    if let Some(c) = s.conns.get_mut(&conn) {
+                        c.held = true;
+                        let _ = c
+                            .writer
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .shutdown(std::net::Shutdown::Read);
+                    }
+                }
+                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "id": request,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {"threadId": thread_id, "turnId": turn, "itemId": format!("{turn}-command"), "command": command}}));
+                s.save();
+                return;
+            }
+            run_command(
+                server,
+                s,
+                &thread_id,
+                &turn,
+                &command,
+                &cwd,
+                sandbox.as_deref(),
+            );
+        }
+        s.maybe_complete(&thread_id);
+        s.save();
+    }
+
+    fn answer_approval(server: &Shared, s: &mut Server, conn: u64, request: u64, frame: &Value) {
+        let decision = frame
+            .pointer("/result/decision")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let Some(index) = s
+            .approvals
+            .iter()
+            .position(|a| a["request"] == json!(request))
+        else {
+            return;
+        };
+        if let Some(answers) = s.approvals[index]["answers"].as_array_mut() {
+            answers.push(json!({"conn": conn, "decision": decision}));
+        }
+        let thread_id = s.approvals[index]["thread"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        let owner_answered = s.approvals[index]["owner"] == json!(conn);
+        let pending = s.threads.get(&thread_id).and_then(|t| t.approval_pending);
+        if owner_answered && pending == Some(request) {
+            if let Some(thread) = s.threads.get_mut(&thread_id) {
+                thread.approval_pending = None;
+            }
+            let (turn, settings) = match s.threads.get(&thread_id) {
+                Some(t) => (t.active_turn.clone(), t.settings.clone()),
+                None => (None, Settings::default()),
+            };
+            let approved = decision == json!("approved");
+            if let (Some(turn), Some(command), true) = (
+                turn,
+                settings.set.get("MOCK_CODEX_RUN_COMMAND").cloned(),
+                approved,
+            ) {
+                let cwd = s
+                    .turns
+                    .iter()
+                    .rev()
+                    .find(|t| t["turn"] == json!(turn))
+                    .and_then(|t| t["cwd"].as_str().map(str::to_string))
+                    .unwrap_or(settings.cwd.clone());
+                let sandbox = settings.sandbox.clone();
+                run_command(
+                    server,
+                    s,
+                    &thread_id,
+                    &turn,
+                    &command,
+                    &cwd,
+                    sandbox.as_deref(),
+                );
+            }
+            s.maybe_complete(&thread_id);
+        }
+        s.save();
+    }
+
+    /// Run a turn's command as Codex's unified exec does: a child of the
+    /// server in its own process group, under the thread's environment, in
+    /// the turn's directory. Under a read-only sandbox it is refused instead.
+    fn run_command(
+        server: &Shared,
+        s: &mut Server,
+        thread_id: &str,
+        turn: &str,
+        command: &str,
+        cwd: &str,
+        sandbox: Option<&str>,
+    ) {
+        let item = format!("{turn}-command");
+        s.emit(thread_id, &json!({"jsonrpc": "2.0", "method": "item/started",
+            "params": {"threadId": thread_id, "turnId": turn,
+                "item": {"type": "commandExecution", "id": item, "command": command, "cwd": cwd, "status": "inProgress"}}}));
+        if sandbox == Some("readOnly") {
+            s.commands.push(json!({"thread": thread_id, "turn": turn, "command": command, "cwd": cwd, "refused": "read-only sandbox"}));
+            s.emit(
+                thread_id,
+                &json!({"jsonrpc": "2.0", "method": "item/completed",
+                "params": {"threadId": thread_id, "turnId": turn,
+                    "item": {"type": "commandExecution", "id": item, "command": command, "cwd": cwd,
+                        "status": "failed", "exitCode": 1,
+                        "aggregatedOutput": "sh: cannot write: Read-only file system\n"}}}),
+            );
+            return;
+        }
+        // leak-env: every command under the first thread this server opened,
+        // whichever dispatch's thread it is running for.
+        let settings = match (s.fault.as_str(), s.first_opened.clone()) {
+            ("leak-env", Some(first)) => s.known.get(&first).cloned().unwrap_or_default(),
+            _ => s
+                .threads
+                .get(thread_id)
+                .map(|t| t.settings.clone())
+                .unwrap_or_default(),
+        };
+        let mut env: BTreeMap<String, String> = std::env::vars().collect();
+        env.retain(|name, _| !settings.exclude.iter().any(|excluded| excluded == name));
+        env.extend(settings.set.clone());
+        if s.fault == "escape-marker" {
+            env.remove("ONEHARNESS_DISPATCH_MARKER");
+        }
+        use std::os::unix::process::CommandExt;
+        let child = std::process::Command::new("sh")
+            .args(["-c", command])
+            .env_clear()
+            .envs(&env)
+            .current_dir(cwd)
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(err) => {
+                s.commands.push(json!({"thread": thread_id, "turn": turn, "command": command, "cwd": cwd, "error": err.to_string()}));
+                return;
+            }
+        };
+        s.commands.push(json!({"thread": thread_id, "turn": turn, "command": command, "cwd": cwd, "pid": child.id()}));
+        if let Some(thread) = s.threads.get_mut(thread_id) {
+            thread.commands_running += 1;
+        }
+        let server = Arc::clone(server);
+        let (thread_id, turn, command, cwd) = (
+            thread_id.to_string(),
+            turn.to_string(),
+            command.to_string(),
+            cwd.to_string(),
+        );
+        std::thread::spawn(move || {
+            let mut output = String::new();
+            if let Some(mut out) = child.stdout.take() {
+                let _ = out.read_to_string(&mut output);
+            }
+            if let Some(mut err) = child.stderr.take() {
+                let _ = err.read_to_string(&mut output);
+            }
+            let code = child.wait().ok().and_then(|status| status.code());
+            let mut s = lock(&server);
+            if let Some(thread) = s.threads.get_mut(&thread_id) {
+                thread.commands_running = thread.commands_running.saturating_sub(1);
+            }
+            s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "item/completed",
+                "params": {"threadId": thread_id, "turnId": turn,
+                    "item": {"type": "commandExecution", "id": format!("{turn}-command"), "command": command, "cwd": cwd,
+                        "status": if code == Some(0) { "completed" } else { "failed" },
+                        "exitCode": code, "aggregatedOutput": output}}}));
+            s.maybe_complete(&thread_id);
+            s.save();
+        });
+    }
+}
+
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
+/// The path a client connects to for a server told to listen on `path`: the
+/// symlink's target when Codex left one.
+#[cfg(unix)]
+fn dial_target(path: &std::path::Path) -> std::path::PathBuf {
+    match std::fs::read_link(path) {
+        Ok(target) => target,
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 #[cfg(test)]

@@ -18,9 +18,10 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::domain::app_server::InterruptReply;
 use crate::domain::control::{
-    interrupt_frame, prompt_frame, ControlEvent, ControlReason, ControlRequest, ControlResponse,
-    ControlShape, ControlVerb, RedirectInput,
+    interrupt_frame, prompt_frame, AppServerReport, ControlEvent, ControlReason, ControlRequest,
+    ControlResponse, ControlShape, ControlVerb, RedirectInput,
 };
 use crate::domain::dialogue::Dialogue;
 use crate::domain::http::HttpShape;
@@ -75,8 +76,104 @@ fn now() -> UtcInstant {
 enum TurnState {
     /// No turn in flight (before the prompt, or after the turn ended).
     Idle,
-    /// A turn is running; the child's stdin is held open for control frames.
-    Active(std::process::ChildStdin),
+    /// A turn is running; the line sink frames go to is held open for control
+    /// frames — the child's stdin, or a shared app-server connection.
+    Active(Box<dyn io::Write + Send>),
+}
+
+/// The answers a pooled turn's connection delivers for requests the control
+/// thread sent, keyed by JSON-RPC id.
+///
+/// On a dispatch's own child an interrupt is a write and nothing more. On a
+/// shared app-server the interrupt waits for the server's answer, bounded by
+/// [`crate::io::server_pool::INTERRUPT_REPLY_DEADLINE`]: the reader that sees
+/// the answer is the turn's own loop, on another thread, so it hands the answer
+/// over here.
+#[derive(Default)]
+pub(crate) struct ReplyBoard {
+    pending: Mutex<std::collections::HashMap<u64, Option<serde_json::Value>>>,
+    arrived: std::sync::Condvar,
+}
+
+impl ReplyBoard {
+    /// Expect an answer to `id`. Called before the request is written, so an
+    /// answer arriving at once is never missed.
+    pub(crate) fn expect(&self, id: u64) {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(id, None);
+    }
+
+    /// Hand over a response; `true` when someone was waiting for it.
+    pub(crate) fn deliver(&self, id: u64, response: serde_json::Value) -> bool {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match pending.get_mut(&id) {
+            Some(slot) => {
+                *slot = Some(response);
+                self.arrived.notify_all();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Wait for the answer to `id` until `deadline`; `None` if none came.
+    pub(crate) fn wait(&self, id: u64, deadline: std::time::Duration) -> Option<serde_json::Value> {
+        let until = std::time::Instant::now() + deadline;
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        loop {
+            if let Some(Some(_)) = pending.get(&id) {
+                return pending.remove(&id).flatten();
+            }
+            let now = std::time::Instant::now();
+            if now >= until {
+                pending.remove(&id);
+                return None;
+            }
+            pending = self
+                .arrived
+                .wait_timeout(pending, until - now)
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .0;
+        }
+    }
+}
+
+/// Where the serving candidate's turn on a shared app-server is, and what it
+/// leaves for the candidate's result. `command` is the server's launch argv,
+/// which the result records as what oneharness ran.
+#[derive(Default)]
+enum PooledState {
+    /// No turn on a shared app-server: the candidate drives its own child, or
+    /// has not opened its turn yet.
+    #[default]
+    None,
+    /// The turn is live; an interrupt's answer arrives on `board`.
+    Live {
+        board: std::sync::Arc<ReplyBoard>,
+        command: Vec<String>,
+    },
+    /// The turn is over, and how it ended.
+    Ended {
+        command: Vec<String>,
+        end: PooledEnd,
+    },
+}
+
+/// How a turn on a shared app-server ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PooledEnd {
+    /// The turn reached its own end, whatever that end said.
+    Finished,
+    /// The server went away under the live turn.
+    ServerLost,
 }
 
 /// What drives — and therefore what interrupts — the turn a candidate is
@@ -171,6 +268,11 @@ pub struct ControlHandle {
     /// use it — a dialogue holds its own, because opening the replacement turn
     /// is a protocol decision rather than a write.
     redirect: Mutex<Redirect>,
+    /// The serving candidate's shared app-server state, when its turn runs on
+    /// one.
+    pooled: Mutex<PooledState>,
+    /// The last shared app-server any candidate ran on, for the report.
+    app_server: Mutex<Option<AppServerReport>>,
 }
 
 /// Where a redirection is between being accepted and becoming the next turn.
@@ -207,6 +309,8 @@ impl ControlHandle {
             requests: Mutex::new(0),
             mechanism: Mutex::new(None),
             redirect: Mutex::new(Redirect::None),
+            pooled: Mutex::new(PooledState::default()),
+            app_server: Mutex::new(None),
         }
     }
 
@@ -223,6 +327,7 @@ impl ControlHandle {
         // speaks — so the shape a supervisor is told is the one answering them.
         let bound = backend.shape();
         *self.mechanism() = Some(backend);
+        *self.pooled() = PooledState::default();
         *self
             .reported
             .lock()
@@ -502,7 +607,98 @@ impl ControlHandle {
         *self
             .state
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(stdin);
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(Box::new(stdin));
+    }
+
+    /// Mark a turn in flight on a shared app-server connection: `sink` sends
+    /// each written line as one message, and `board` is where the turn's own
+    /// reader hands over the answers to requests this handle sends.
+    pub(crate) fn begin_pooled_turn(
+        &self,
+        sink: Box<dyn io::Write + Send>,
+        board: std::sync::Arc<ReplyBoard>,
+        server: AppServerReport,
+        command: Vec<String>,
+    ) {
+        *self.pooled() = PooledState::Live { board, command };
+        *self
+            .app_server
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(server);
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Active(sink);
+    }
+
+    /// The shared app-server went away under the live turn.
+    pub(crate) fn mark_app_server_lost(&self) {
+        let mut pooled = self.pooled();
+        let command = match std::mem::take(&mut *pooled) {
+            PooledState::Live { command, .. } | PooledState::Ended { command, .. } => command,
+            PooledState::None => return,
+        };
+        *pooled = PooledState::Ended {
+            command,
+            end: PooledEnd::ServerLost,
+        };
+    }
+
+    /// Whether the serving candidate's shared app-server went away under its
+    /// live turn.
+    #[must_use]
+    pub(crate) fn app_server_lost(&self) -> bool {
+        matches!(
+            *self.pooled(),
+            PooledState::Ended {
+                end: PooledEnd::ServerLost,
+                ..
+            }
+        )
+    }
+
+    /// The serving candidate's shared app-server launch argv, when its turn
+    /// ran on one.
+    #[must_use]
+    pub(crate) fn app_server_command(&self) -> Option<Vec<String>> {
+        match &*self.pooled() {
+            PooledState::Live { command, .. } | PooledState::Ended { command, .. } => {
+                Some(command.clone())
+            }
+            PooledState::None => None,
+        }
+    }
+
+    /// The last shared app-server a candidate of this run ran on.
+    #[must_use]
+    pub(crate) fn app_server(&self) -> Option<AppServerReport> {
+        self.app_server
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// The thread and turn the dialogue would address an interrupt to now.
+    #[must_use]
+    pub(crate) fn active_turn(&self) -> Option<(String, String)> {
+        match self.mechanism().as_ref() {
+            Some(Backend::Dialogue(dialogue)) => dialogue
+                .active_turn()
+                .map(|(thread, turn)| (thread.to_string(), turn.to_string())),
+            _ => None,
+        }
+    }
+
+    /// Whether the dialogue's prompt is out and its turn has not ended.
+    #[must_use]
+    pub(crate) fn in_turn(&self) -> bool {
+        matches!(self.mechanism().as_ref(), Some(Backend::Dialogue(dialogue)) if dialogue.in_turn())
+    }
+
+    fn pooled(&self) -> std::sync::MutexGuard<'_, PooledState> {
+        self.pooled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// End the turn and close the child's stdin (dropping it signals EOF, which
@@ -513,6 +709,13 @@ impl ControlHandle {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
+        let mut pooled = self.pooled();
+        if let PooledState::Live { command, .. } = std::mem::take(&mut *pooled) {
+            *pooled = PooledState::Ended {
+                command,
+                end: PooledEnd::Finished,
+            };
+        }
     }
 
     /// Write one raw line into the live turn's stdin, e.g. the prompt frame.
@@ -523,10 +726,9 @@ impl ControlHandle {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         match &mut *state {
-            TurnState::Active(stdin) => {
-                use std::io::Write;
-                stdin.write_all(line.as_bytes())?;
-                stdin.flush()
+            TurnState::Active(sink) => {
+                sink.write_all(line.as_bytes())?;
+                sink.flush()
             }
             TurnState::Idle => Err(io::Error::new(
                 io::ErrorKind::NotConnected,
@@ -666,6 +868,21 @@ impl ControlHandle {
             }
             Delivery::Frames(frames) => frames,
         };
+        // On a shared app-server the answer is awaited, bounded: the server
+        // answers an interrupt for a turn that already ended with nothing at
+        // all, and its answer is what says whether the thread still exists.
+        let board = match &*self.pooled() {
+            PooledState::Live { board, .. } => Some(std::sync::Arc::clone(board)),
+            PooledState::None | PooledState::Ended { .. } => None,
+        };
+        let awaited: Option<u64> = board.as_ref().and_then(|board| {
+            let id = frames
+                .first()
+                .and_then(|frame| serde_json::from_str::<serde_json::Value>(frame.trim()).ok())
+                .and_then(|value| value.get("id").and_then(serde_json::Value::as_u64))?;
+            board.expect(id);
+            Some(id)
+        });
         for frame in &frames {
             match self.write_line(frame) {
                 Ok(()) => {}
@@ -677,6 +894,29 @@ impl ControlHandle {
                     self.abandon_redirect();
                     return ControlResponse::refused(
                         format!("could not deliver the interrupt to the harness: {err}"),
+                        ControlReason::NotRunning,
+                    );
+                }
+            }
+        }
+        if let (Some(board), Some(id)) = (board, awaited) {
+            let deadline = crate::io::server_pool::INTERRUPT_REPLY_DEADLINE;
+            match board.wait(id, deadline).as_ref().map(InterruptReply::of) {
+                Some(InterruptReply::Accepted) => {}
+                Some(InterruptReply::ThreadGone(message) | InterruptReply::Refused(message)) => {
+                    self.abandon_redirect();
+                    return ControlResponse::refused(
+                        format!("the shared codex app-server refused the interrupt: {message}"),
+                        ControlReason::NotRunning,
+                    );
+                }
+                None => {
+                    self.abandon_redirect();
+                    return ControlResponse::refused(
+                        format!(
+                            "the shared codex app-server did not answer the interrupt within {}s",
+                            deadline.as_secs()
+                        ),
                         ControlReason::NotRunning,
                     );
                 }
@@ -1622,6 +1862,7 @@ mod tests {
                 mode: PermissionMode::Bypass,
                 resume: None,
                 posture: ApprovalPosture::Unattended,
+                shell_environment_policy: None,
             },
         );
         assert!(dialogue.is_some(), "codex control is a dialogue shape");

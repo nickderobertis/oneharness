@@ -1,6 +1,15 @@
 /* Generated from oneharness-core. Do not edit. */
 
 /**
+ * Where a controlled (`--control`) Codex dispatch's turn runs: the
+ * `app_server` key of `[harness.codex]` and `[harness.codex.variant.<name>]`.
+ *
+ * Resolved variant, then harness, then [`AppServerMode::Shared`] on every
+ * platform, apart from `args` exactly as `plugins` is
+ * ([`FileConfig::app_server_for`]). Accepted only for `codex`.
+ */
+export type AppServerMode = "shared" | "per-dispatch";
+/**
  * The unified approval mode, from least to most autonomy. A harness may not
  * support every value (see [`crate::domain::harness::HarnessSpec::mode`]); the
  * command layer refuses an unsupported one before spawning, never silently
@@ -118,6 +127,11 @@ export interface HarnessReport {
    */
   analytics?: Field | null | undefined;
   /**
+   * The resolved `app_server` (`"shared"` by default), present only for
+   * `codex`.
+   */
+  app_server?: Field11 | null | undefined;
+  /**
    * The resolved `apps` opt-in (`false` by default), present only for
    * `codex`.
    */
@@ -161,6 +175,16 @@ export interface HarnessReport {
  * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
  * are `null` when the field is unset everywhere and has no built-in default.
  */
+export interface Field11 {
+  source: string | null;
+  value: AppServerMode | null;
+  [k: string]: unknown;
+}
+/**
+ * One resolved field in the `oneharness config` report: the effective value
+ * plus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both
+ * are `null` when the field is unset everywhere and has no built-in default.
+ */
 export interface Field5 {
   source: string | null;
   value: number | null;
@@ -173,6 +197,11 @@ export interface VariantReport {
    * else its harness's, else `false`. Present only for `codex`.
    */
   analytics?: Field | null | undefined;
+  /**
+   * The `app_server` a launch of this variant resolves to: the variant's
+   * own, else its harness's, else `"shared"`. Present only for `codex`.
+   */
+  app_server?: Field11 | null | undefined;
   /**
    * The apps opt-in a launch of this variant resolves to: the variant's
    * own, else its harness's, else `false`. Present only for `codex`.

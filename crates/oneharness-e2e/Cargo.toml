@@ -28,3 +28,8 @@ fs2 = { workspace = true }
 # Keys a shared model catalog's files as the engine does, so a journey can
 # seed a lock, record or catalog before any launch writes one.
 uuid = { workspace = true, features = ["v5"] }
+
+# Signals the pooled app-server journeys send by pid: SIGKILL a dispatch, or a
+# shared server, the journey itself started.
+[target.'cfg(unix)'.dev-dependencies]
+libc = { workspace = true }

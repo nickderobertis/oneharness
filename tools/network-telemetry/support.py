@@ -303,7 +303,12 @@ def double_bin(tmp: Path, *tools: str) -> Path:
     directory.mkdir(exist_ok=True)
     for tool in tools:
         path = directory / tool
-        path.write_text(f'#!/usr/bin/env bash\nexec bash "{DOUBLE}" --double-tool={tool} "$@"\n')
+        # The mock is named in the script too: a shared app-server starts from
+        # a scrubbed environment that keeps no OH_TEST_MOCK.
+        path.write_text(
+            "#!/usr/bin/env bash\n"
+            f'OH_TEST_MOCK="${{OH_TEST_MOCK:-{MOCK}}}" exec bash "{DOUBLE}" --double-tool={tool} "$@"\n'
+        )
         path.chmod(0o755)
     return directory
 
@@ -329,6 +334,9 @@ def suite_env(tmp: Path, *tools: str, **extra: str) -> dict[str, str]:
         "OH_TIMEOUT": "60",
         "XDG_STATE_HOME": str(tmp / "state"),
         "XDG_CONFIG_HOME": str(tmp / "config"),
+        # A controlled codex turn's shared app-server is measured over its
+        # whole life; a one-second linger lets a suite wait it out quickly.
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS": "1000",
     }
     for name in (
         "OH_E2E_NO_SKIP",

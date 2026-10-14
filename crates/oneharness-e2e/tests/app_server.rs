@@ -1390,12 +1390,14 @@ fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
     use oneharness_core::io::server_pool::INTERRUPT_REPLY_DEADLINE;
     let pool = Pool::new("pool-int-edges");
 
-    // Ended, still releasing: nothing is sent.
+    // Ended, still releasing: nothing is sent. The release is held long enough
+    // that both asks reach the run on a loaded host; the 2 s bound below is
+    // what proves they did not wait on the server.
     let ending = pool.spawn(pool.command(
         "ending",
         &[],
         &[
-            ("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS", "4000"),
+            ("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS", "10000"),
             ("MOCK_CODEX_INTERRUPT_SILENT", "1"),
         ],
     ));

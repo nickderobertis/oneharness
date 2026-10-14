@@ -1916,6 +1916,95 @@ fn frames_before_the_thread_is_named_are_replayed_only_for_the_dispatch_s_own_th
     assert_eq!(early[0]["params"]["early"], "own", "{stdout}");
     assert_eq!(early[0]["params"]["threadId"], thread.as_str(), "{stdout}");
     assert!(!stdout.contains("mock-thread-foreign"), "{stdout}");
+
+    // Past the buffer's bound, the earliest frames are kept and the rest
+    // dropped — the dispatch neither grows without bound nor fails.
+    use oneharness_core::io::app_server::PRE_THREAD_BUFFER;
+    let flood = (PRE_THREAD_BUFFER + 5).to_string();
+    let (output, report) = pool.run(pool.command(
+        "flooded",
+        &[],
+        &[("CODEX_MOCK_EARLY_FRAMES", flood.as_str())],
+    ));
+    succeeded(&output, &report);
+    let kept: Vec<u64> = result(&report)["stdout"]
+        .as_str()
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|frame| frame["params"]["early"] == "own")
+        .map(|frame| frame["params"]["n"].as_u64().unwrap())
+        .collect();
+    assert_eq!(kept, (0..PRE_THREAD_BUFFER as u64).collect::<Vec<_>>());
+}
+
+/// The one pool entry `pool` holds, and the pid its sweeper recorded.
+fn entry_and_sweeper(pool: &Pool) -> (PathBuf, u32) {
+    let entries: Vec<PathBuf> = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    let sweeper: Value = serde_json::from_str(
+        &std::fs::read_to_string(entries[0].join("sweeper.json")).expect("a recorded sweeper"),
+    )
+    .unwrap();
+    (entries[0].clone(), sweeper["pid"].as_u64().unwrap() as u32)
+}
+
+/// A pool entry removed from under a live server leaves its sweeper the only
+/// one who knows the server: it stops it, by the marker it last saw, and ends.
+#[test]
+fn a_server_whose_pool_entry_is_removed_is_stopped_by_its_sweeper() {
+    let pool = Pool::new("pool-entry-gone");
+    let (output, report) = pool.run(pool.command(
+        "orphaned",
+        &[],
+        &[("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "60000")],
+    ));
+    succeeded(&output, &report);
+    let server = reported_server(&report);
+    let (entry, sweeper) = entry_and_sweeper(&pool);
+    assert!(alive(server) && alive(sweeper));
+    std::fs::remove_dir_all(&entry).unwrap();
+    use oneharness_core::io::server_pool::SERVER_STOP_DEADLINE;
+    let bound = DEAD_LEASE_SWEEP_INTERVAL * 2 + SERVER_STOP_DEADLINE + Duration::from_secs(5);
+    wait_for("the orphaned server to stop", bound, || !alive(server));
+    wait_for("its sweeper to end", bound, || !alive(sweeper));
+}
+
+/// A server replaced under a live sweeper — its predecessor died and the next
+/// dispatch started another — is adopted by that sweeper rather than given a
+/// second one, and reclaimed by it once its linger passes.
+#[test]
+fn a_sweeper_adopts_the_server_that_replaced_its_own_and_reclaims_it() {
+    let pool = Pool::new("pool-adopt");
+    let linger = [("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "3000")];
+    let (output, report) = pool.run(pool.command("first", &[], &linger));
+    succeeded(&output, &report);
+    let first = reported_server(&report);
+    let (entry, sweeper) = entry_and_sweeper(&pool);
+    sigkill(first);
+    wait_for("the first server to die", Duration::from_secs(10), || {
+        !alive(first)
+    });
+    let (output, report) = pool.run(pool.command("second", &[], &linger));
+    succeeded(&output, &report);
+    let second = reported_server(&report);
+    assert_ne!(second, first);
+    assert_eq!(
+        entry_and_sweeper(&pool),
+        (entry, sweeper),
+        "the replacement got a sweeper of its own"
+    );
+    assert!(alive(sweeper));
+    let bound = Duration::from_secs(3) + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(10);
+    wait_for("the adopted server to be reclaimed", bound, || {
+        !alive(second)
+    });
+    wait_for("the sweeper to end", bound, || !alive(sweeper));
 }
 
 /// Each way a pooled session's shell turn or loaded-thread listing can fail

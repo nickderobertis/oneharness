@@ -2313,7 +2313,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         first page's cursor as the next; `loaded-endless`
 ///                         names a fresh cursor on every page; `refuse-thread-start`
 ///                         refuses `thread/start`; `early-frames` sends the
-///                         new thread's (and another thread's) notice before
+///                         new thread's (CODEX_MOCK_EARLY_FRAMES of them, 1 by
+///                         default) and another thread's notice before
 ///                         `thread/start`'s reply; `refuse-shell` / `fail-shell`
 ///                         refuse a shell turn or end it failed;
 ///                         `refuse-loaded` / `loaded-bad-id` /
@@ -3181,14 +3182,19 @@ mod listen_server {
                 s.save();
                 // CODEX_MOCK_FAULT=early-frames: notices for the new thread,
                 // and for another thread, before the reply that names it.
+                // CODEX_MOCK_EARLY_FRAMES: how many of the new thread's (1).
                 if s.fault == "early-frames" {
-                    for (named, tag) in
-                        [(thread.as_str(), "own"), ("mock-thread-foreign", "foreign")]
-                    {
+                    let own = std::env::var("CODEX_MOCK_EARLY_FRAMES")
+                        .ok()
+                        .and_then(|n| n.parse::<usize>().ok())
+                        .unwrap_or(1);
+                    let early = std::iter::repeat_n((thread.as_str(), "own"), own)
+                        .chain([("mock-thread-foreign", "foreign")]);
+                    for (index, (named, tag)) in early.enumerate() {
                         s.send(
                             conn,
                             &json!({"jsonrpc": "2.0", "method": "thread/status/changed",
-                                "params": {"threadId": named, "status": {"type": "idle"}, "early": tag}}),
+                                "params": {"threadId": named, "status": {"type": "idle"}, "early": tag, "n": index}}),
                         );
                     }
                 }

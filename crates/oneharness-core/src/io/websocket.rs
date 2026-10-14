@@ -148,8 +148,8 @@ impl WsWriter {
 pub struct WsReader {
     stream: LocalStream,
     buffer: Vec<u8>,
-    message: Vec<u8>,
-    in_message: bool,
+    /// The fragmented message being assembled, while one is.
+    message: Option<Vec<u8>>,
     writer: Arc<Mutex<WsWriter>>,
 }
 
@@ -195,7 +195,6 @@ impl WsReader {
         self.stream.set_read_timeout(timeout)
     }
 
-    /// Parse one frame off the buffer, if a whole one is there.
     fn take_frame(&mut self) -> io::Result<Option<Incoming>> {
         let Some(frame) = parse_frame(&self.buffer)? else {
             return Ok(None);
@@ -207,31 +206,30 @@ impl WsReader {
             0x2 => Err(protocol_error(
                 "a binary message where JSON-RPC text was expected",
             )),
-            // Text, or a continuation of it.
             0x0 | 0x1 => {
-                if frame.opcode == 0x1 {
-                    if self.in_message {
+                let mut message = match (frame.opcode, self.message.take()) {
+                    (0x1, Some(_)) => {
                         return Err(protocol_error(
                             "a new message before the fragmented one ended",
-                        ));
+                        ))
                     }
-                    self.message.clear();
-                    self.in_message = true;
-                }
-                if !self.in_message {
-                    return Err(protocol_error("a continuation frame with no message"));
-                }
-                if (self.message.len() + payload.len()) as u64 > MAX_MESSAGE_BYTES {
+                    (0x1, None) => Vec::new(),
+                    (_, Some(started)) => started,
+                    (_, None) => {
+                        return Err(protocol_error("a continuation frame with no message"))
+                    }
+                };
+                if (message.len() + payload.len()) as u64 > MAX_MESSAGE_BYTES {
                     return Err(protocol_error("a message larger than 64 MiB"));
                 }
-                self.message.extend_from_slice(&payload);
-                if frame.fin {
-                    self.in_message = false;
-                    let text = String::from_utf8(std::mem::take(&mut self.message))
-                        .map_err(|_| protocol_error("a text message that is not UTF-8"))?;
-                    return Ok(Some(Incoming::Text(text)));
+                message.extend_from_slice(&payload);
+                if !frame.fin {
+                    self.message = Some(message);
+                    return Ok(None);
                 }
-                Ok(None)
+                let text = String::from_utf8(message)
+                    .map_err(|_| protocol_error("a text message that is not UTF-8"))?;
+                Ok(Some(Incoming::Text(text)))
             }
             0x8 => {
                 close_payload_valid(&payload)?;
@@ -433,8 +431,7 @@ pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsW
         WsReader {
             stream,
             buffer: Vec::new(),
-            message: Vec::new(),
-            in_message: false,
+            message: None,
             writer: Arc::clone(&writer),
         },
         writer,

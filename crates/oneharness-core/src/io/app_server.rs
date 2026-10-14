@@ -78,7 +78,7 @@ const OWN_REQUEST_IDS: u64 = 1 << 40;
 /// The longest a frame naming some thread is held before its dispatch knows
 /// its own thread. Bounded so a server broadcasting other threads' frames
 /// before answering `thread/start` cannot grow this process.
-const PRE_THREAD_BUFFER: usize = 4096;
+pub const PRE_THREAD_BUFFER: usize = 4096;
 
 const SOCKET_DIR: &str = "sock";
 const SOCKET_FILE: &str = "app-server.sock";
@@ -1211,7 +1211,7 @@ impl PooledSession {
     /// Open (`thread/start`) or reopen (`thread/resume`, naming `resume`) the
     /// session's thread in `cwd`, carrying the dispatch's
     /// `shell_environment_policy`, and answer the server's response.
-    pub fn open_thread(&mut self, cwd: &Path, resume: Option<&str>) -> Result<Value, String> {
+    pub fn open_thread(&mut self, cwd: &Path, resume: Option<&ThreadId>) -> Result<Value, String> {
         let mut params = json!({
             "cwd": cwd.to_string_lossy(),
             "approvalPolicy": "never",
@@ -1219,7 +1219,7 @@ impl PooledSession {
         });
         let method = match resume {
             Some(thread) => {
-                params["threadId"] = json!(thread);
+                params["threadId"] = json!(thread.as_str());
                 "thread/resume"
             }
             None => "thread/start",
@@ -1318,7 +1318,16 @@ impl PooledSession {
                     left.min(Duration::from_secs(10)),
                 )
                 .map_err(|err| format!("thread/loaded/list: {err}"))?
-                .ok_or("the app-server did not answer thread/loaded/list")?;
+                .ok_or_else(|| {
+                    if Instant::now() >= until {
+                        format!(
+                            "thread/loaded/list was still paging at the deadline, {} thread(s) in",
+                            threads.len()
+                        )
+                    } else {
+                        "the app-server did not answer thread/loaded/list".to_string()
+                    }
+                })?;
             if let Some(error) = response.get("error") {
                 return Err(format!("thread/loaded/list was refused: {error}"));
             }

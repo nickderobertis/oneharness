@@ -30,6 +30,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use oneharness_core::io::app_server::{serve_sweeper_if_requested, PooledDispatch, PooledSession};
+use oneharness_core::io::server_pool::ThreadId;
 use serde_json::{json, Value};
 
 struct Args {
@@ -238,11 +239,9 @@ fn run(args: &Args) -> Result<Value, String> {
             .and_then(Value::as_str)
             .ok_or("thread/start named no thread")?
             .to_string();
-        // codex-cli 0.159.2 writes a thread's rollout only after a turn and
-        // refuses to resume a thread without one; a shell turn running `true`
-        // makes no model call and gives the thread its rollout.
         session.shell_turn("true")?;
-        session.open_thread(&args.cwd, Some(&thread))?;
+        let resume = ThreadId::new(thread.as_str()).ok_or("thread/start named an unusable id")?;
+        session.open_thread(&args.cwd, Some(&resume))?;
         std::thread::sleep(args.hold);
         session.release();
         released.push(thread.clone());

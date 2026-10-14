@@ -213,7 +213,7 @@ class Connection:
         self.request("initialize", {"clientInfo": {"name": "oneharness-measure", "version": "1"}})
         self.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
         thread = self.request("thread/start", {"cwd": cwd, "approvalPolicy": "never"}).get("thread")
-        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str) or not thread["id"]:
             stop(f"thread/start named no thread: {thread!r}; check the codex version")
         return thread["id"]
 

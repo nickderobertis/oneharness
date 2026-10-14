@@ -457,9 +457,18 @@ fn answer_version(argv: &[String]) -> ! {
         |version| format!("codex-cli {version}\n"),
     );
     // CODEX_MOCK_FAULT=vary-version: a different release on every ask, so no
-    // two dispatches can share a server.
+    // two dispatches can share a server. Not the pid alone: under the live
+    // tier's measuring shim each launch runs in a fresh PID namespace, where
+    // every probe's pid is the same.
     let answer = if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("vary-version") {
-        format!("{} build-{}\n", answer.trim_end(), std::process::id())
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        format!(
+            "{} build-{}-{nanos}\n",
+            answer.trim_end(),
+            std::process::id()
+        )
     } else {
         answer
     };

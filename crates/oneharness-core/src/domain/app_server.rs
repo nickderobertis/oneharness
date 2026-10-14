@@ -120,6 +120,69 @@ pub fn server_env(
     kept
 }
 
+/// An identity the pool persists and reads back to select processes or name
+/// a thread — a server or dispatch marker, a thread or turn id: never empty
+/// and never carrying a control character, so a record read back can only
+/// name something a process scan or a server could.
+macro_rules! note_identity {
+    ($(#[$doc:meta])* $name:ident, $what:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
+
+        impl $name {
+            #[doc = concat!("`value` as a ", $what, ", or `None` when it is empty or carries a control character.")]
+            #[must_use]
+            pub fn new(value: impl Into<String>) -> Option<Self> {
+                let value = value.into();
+                (!value.is_empty() && !value.chars().any(char::is_control)).then_some(Self(value))
+            }
+
+            /// The identity as written.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> Result<Self, String> {
+                Self::new(value.clone()).ok_or_else(|| format!("{value:?} is not a {}", $what))
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(identity: $name) -> String {
+                identity.0
+            }
+        }
+    };
+}
+
+note_identity!(
+    /// A server marker's value (`ONEHARNESS_APP_SERVER_MARKER`).
+    ServerMarker,
+    "server marker"
+);
+note_identity!(
+    /// A dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
+    DispatchMarker,
+    "dispatch marker"
+);
+note_identity!(
+    /// An app-server thread's id.
+    ThreadId,
+    "thread id"
+);
+note_identity!(
+    /// An app-server turn's id.
+    TurnId,
+    "turn id"
+);
+
 /// What one dispatch's thread carries so its commands see exactly its own
 /// environment on a server launched with another's.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,7 +203,7 @@ impl ShellEnvironmentPolicy {
     pub fn for_dispatch(
         dispatch_env: &[(String, String)],
         server_env: &[(String, String)],
-        marker: &str,
+        marker: &DispatchMarker,
         platform: EnvPlatform,
     ) -> Self {
         let server_value = |name: &str| {
@@ -158,7 +221,7 @@ impl ShellEnvironmentPolicy {
                 set.insert(name.clone(), value.clone());
             }
         }
-        set.insert(DISPATCH_MARKER_VAR.to_string(), marker.to_string());
+        set.insert(DISPATCH_MARKER_VAR.to_string(), marker.as_str().to_string());
         let mut exclude: Vec<String> = server_env
             .iter()
             .filter(|(name, _)| {
@@ -400,7 +463,7 @@ mod tests {
         let policy = ShellEnvironmentPolicy::for_dispatch(
             &dispatch,
             &server,
-            "lease-uuid",
+            &DispatchMarker::new("lease-uuid").unwrap(),
             EnvPlatform::Unix,
         );
         assert_eq!(
@@ -429,7 +492,7 @@ mod tests {
                 (SERVER_MARKER_VAR, "forged"),
             ]),
             &env(&[(SERVER_MARKER_VAR, "real")]),
-            "mine",
+            &DispatchMarker::new("mine").unwrap(),
             EnvPlatform::Unix,
         );
         assert_eq!(policy.set[DISPATCH_MARKER_VAR], "mine");

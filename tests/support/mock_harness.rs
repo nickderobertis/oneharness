@@ -2310,7 +2310,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         nothing, as an exiting server's socket outlives the
 ///                         environment a marker scan reads; `loaded-cycle`
 ///                         answers every `thread/loaded/list` page with the
-///                         first page's cursor as the next; `stall-upgrade`
+///                         first page's cursor as the next; `loaded-endless`
+///                         names a fresh cursor on every page; `refuse-thread-start`
+///                         refuses `thread/start`; `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
@@ -3148,6 +3150,9 @@ mod listen_server {
         match method {
             "initialize" => reply(&mut s, json!({"userAgent": "oneharness-mock-app-server"})),
             "thread/start" => {
+                if s.fault == "refuse-thread-start" {
+                    return refuse(&mut s, "the mock refuses thread/start".to_string());
+                }
                 let thread = format!("mock-thread-{}-{}", s.pid, s.next_thread);
                 s.next_thread += 1;
                 let settings = settings_from(&params, None);
@@ -3273,6 +3278,9 @@ mod listen_server {
                 // pages forever.
                 let next = if s.fault == "loaded-cycle" {
                     Some("0".to_string())
+                } else if s.fault == "loaded-endless" {
+                    // A fresh cursor every page, so no page is ever the last.
+                    Some(from.saturating_add(1).to_string())
                 } else {
                     (to < data.len()).then(|| to.to_string())
                 };

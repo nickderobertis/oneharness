@@ -146,12 +146,8 @@ impl PooledDispatch {
         let marker = DispatchMarker::fresh();
         let mut with_marker = server_env.clone();
         with_marker.push((SERVER_MARKER_VAR.to_string(), String::new()));
-        let policy = ShellEnvironmentPolicy::for_dispatch(
-            &dispatch_env,
-            &with_marker,
-            marker.as_str(),
-            platform,
-        );
+        let policy =
+            ShellEnvironmentPolicy::for_dispatch(&dispatch_env, &with_marker, &marker, platform);
         Some(PooledDispatch {
             executable: executable.clone(),
             process_args: process_args.to_vec(),
@@ -1322,13 +1318,10 @@ impl PooledSession {
                 .and_then(Value::as_array)
                 .ok_or_else(|| format!("thread/loaded/list answered no data: {response}"))?;
             for id in page {
-                threads.push(
-                    id.as_str()
-                        .ok_or_else(|| {
-                            format!("thread/loaded/list named a thread {id} that is no id")
-                        })?
-                        .to_string(),
-                );
+                let thread = id.as_str().and_then(ThreadId::new).ok_or_else(|| {
+                    format!("thread/loaded/list named a thread {id} that is no id")
+                })?;
+                threads.push(String::from(thread));
             }
             cursor = match response.pointer("/result/nextCursor") {
                 None | Some(Value::Null) => None,

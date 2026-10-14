@@ -9,7 +9,8 @@
 #
 #   scripts/measure-app-server-sharing.sh
 #
-# OH_MEASURE_CODEX names the Codex executable (default: `codex` on PATH). The
+# OH_MEASURE_CODEX names the Codex executable (default: `codex` on PATH), and
+# OH_MEASURE_SOCKET_TIMEOUT bounds each socket operation (default 120 s). The
 # server is launched as a default pooled dispatch keys it (plugins, apps and
 # analytics off) and stopped before this exits. Linux only: the reading is
 # /proc's. The README's pooling section quotes a run of this.
@@ -33,8 +34,14 @@ import base64, hashlib, json, os, shutil, socket, struct, subprocess, sys, tempf
 
 codex = sys.argv[1]
 # Every socket operation's bound: a server that stops answering fails the
-# measurement naming the step instead of hanging it.
-SOCKET_TIMEOUT = 120
+# measurement naming the step instead of hanging it. OH_MEASURE_SOCKET_TIMEOUT
+# (whole seconds) overrides it.
+try:
+    SOCKET_TIMEOUT = int(os.environ.get("OH_MEASURE_SOCKET_TIMEOUT", "120"))
+except ValueError:
+    raise SystemExit("measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT must be whole seconds")
+if SOCKET_TIMEOUT <= 0:
+    raise SystemExit("measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT must be positive")
 # The most a WebSocket upgrade answer may be before it is refused.
 HANDSHAKE_LIMIT = 16 * 1024
 RERUN = "rerun, and check the server still starts (`codex app-server --help`)"
@@ -174,8 +181,8 @@ class Connection:
                 n = struct.unpack(">H", self.exact(2))[0]
             elif n == 127:
                 n = struct.unpack(">Q", self.exact(8))[0]
-            if n > 64 * 1024 * 1024 or (opcode >= 0x8 and (n > 125 or not first & 0x80)):
-                stop("the server sent an oversized or fragmented frame; rerun, and report it if it recurs")
+            if len(data) + n > 64 * 1024 * 1024 or (opcode >= 0x8 and (n > 125 or not first & 0x80)):
+                stop("the server sent a message past 64 MiB or a fragmented control frame; rerun, and report it if it recurs")
             body = self.exact(n)
             if opcode == 0x8:
                 stop(f"the server closed the connection mid-measurement; {RERUN}")

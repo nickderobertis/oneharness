@@ -769,6 +769,9 @@ fn server_may_hold(name: &str) -> bool {
         || CODEX_SERVER_ENV.contains(&name)
         || name.starts_with(CODEX_SERVER_ENV_PREFIX)
         || name == "ONEHARNESS_APP_SERVER_MARKER"
+        // Set by an instrumented mock's own profiling runtime inside its
+        // process (the coverage run), never passed in by oneharness.
+        || name.starts_with("__LLVM_PROFILE_")
 }
 
 /// Two concurrent pooled dispatches with different values of one variable
@@ -2532,36 +2535,64 @@ fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
     );
 }
 
-/// A server that exits before it listens fails the sharing measurement naming
-/// that, its exit and its stderr, with the next step — and the measurement's
-/// scratch directory is gone all the same.
+/// Each way the sharing measurement can fail is named with its next step, no
+/// figure is printed, and the measurement's scratch directory is gone all the
+/// same: a server that exits before it listens (its exit, the last connection
+/// error and its stderr), one that never answers the WebSocket upgrade (within
+/// the socket bound), and one that refuses `thread/start` (its error).
 #[cfg(target_os = "linux")]
 #[test]
-fn the_sharing_measurement_names_a_server_that_never_listened_and_leaves_no_scratch() {
+fn the_sharing_measurement_names_each_failure_and_leaves_no_scratch() {
     let pool = Pool::new("pool-measure-fail");
-    let tmp = pool.path("tmp");
-    std::fs::create_dir_all(&tmp).unwrap();
-    let output = Command::new("bash")
-        .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
-        .env("OH_MEASURE_CODEX", mock_bin())
-        .env("TMPDIR", &tmp)
-        .env("CODEX_MOCK_DIR", pool.path("mock"))
-        .env("CODEX_MOCK_EXIT_FIRST", pool.path("exited"))
-        .output()
-        .unwrap();
-    let said = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{said}");
-    assert!(output.stdout.is_empty(), "a figure was printed: {said}");
-    assert!(
-        said.contains("measure-app-server-sharing: the server never accepted a connection on ")
-            && said.contains(
-                "(last attempt: [Errno 2] No such file or directory; exit 1); its stderr:"
-            )
-            && said.contains("check `codex login status`"),
-        "{said}"
-    );
-    let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().collect();
-    assert!(left.is_empty(), "scratch left behind: {left:?}");
+    let cases: [(&str, (&str, String), &[&str]); 3] = [
+        (
+            "never-listened",
+            ("CODEX_MOCK_EXIT_FIRST", pool.file("exited")),
+            &[
+                "measure-app-server-sharing: the server never accepted a connection on ",
+                "(last attempt: [Errno 2] No such file or directory; exit 1); its stderr:",
+                "check `codex login status`",
+            ],
+        ),
+        (
+            "stalled-upgrade",
+            ("CODEX_MOCK_FAULT", "stall-upgrade".to_string()),
+            &["measure-app-server-sharing: the WebSocket upgrade failed: timed out; rerun"],
+        ),
+        (
+            "refused-thread",
+            ("CODEX_MOCK_FAULT", "refuse-thread-start".to_string()),
+            &[
+                "measure-app-server-sharing: thread/start was refused: ",
+                "the mock refuses thread/start",
+                "check `codex login status`",
+            ],
+        ),
+    ];
+    for (name, (knob, value), said_all) in cases {
+        let tmp = pool.path(&format!("{name}-tmp"));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let output = Command::new("bash")
+            .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
+            .env("OH_MEASURE_CODEX", mock_bin())
+            .env("OH_MEASURE_SOCKET_TIMEOUT", "2")
+            .env("TMPDIR", &tmp)
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .env(knob, &value)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{name}: {said}");
+        assert!(
+            output.stdout.is_empty(),
+            "{name}: a figure was printed: {said}"
+        );
+        for part in said_all {
+            assert!(said.contains(part), "{name}: no `{part}` in: {said}");
+        }
+        let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().collect();
+        assert!(left.is_empty(), "{name}: scratch left behind: {left:?}");
+    }
 }
 
 /// live/control/app-server-reuse.sh runs its workload through the pool: each
@@ -2757,6 +2788,47 @@ impl ControlSuite {
         }
         cmd.output().unwrap()
     }
+}
+
+/// A server whose `thread/loaded/list` keeps naming fresh cursors fails the
+/// reuse workload once its listing runs past the settle bound (and its grace),
+/// naming that, instead of paging forever.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
+    let pool = Pool::new("pool-reuse-endless");
+    let mut child = Command::new("bash")
+        .arg(repo_root().join("live/control/app-server-reuse.sh"))
+        .env("OH_REUSE_CODEX", mock_bin())
+        .env("OH_REUSE_SETTLE_MS", "1000")
+        .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+        .env("XDG_STATE_HOME", pool.path("state"))
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_FAULT", "loaded-endless")
+        .env(
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+            LINGER_MS.to_string(),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the reuse workload was still paging thread/loaded/list after 300 s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let output = child.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{said}");
+    assert!(
+        said.contains("thread/loaded/list was still paging at the deadline"),
+        "{said}"
+    );
 }
 
 /// scripts/e2e-control.sh's pooled-kill bound restates the pool's own sweep

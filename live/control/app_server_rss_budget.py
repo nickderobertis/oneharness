@@ -101,8 +101,11 @@ def decode_reading(
     readings: object, name: str, server: Pid | None, faults: list[str]
 ) -> Reading | None:
     entry = readings.get(name) if isinstance(readings, dict) else None
-    if not isinstance(entry, dict):
+    if entry is None:
         faults.append(f"the {name} reading is missing")
+        return None
+    if not isinstance(entry, dict):
+        faults.append(f"the {name} reading is {entry!r}, not a reading object")
         return None
     rss = positive_int(entry.get("rss_bytes"))
     if rss is None:

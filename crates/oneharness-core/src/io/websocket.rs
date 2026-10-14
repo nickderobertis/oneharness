@@ -221,10 +221,10 @@ impl WsReader {
                 if !self.in_message {
                     return Err(protocol_error("a continuation frame with no message"));
                 }
-                self.message.extend_from_slice(&payload);
-                if self.message.len() as u64 > MAX_MESSAGE_BYTES {
+                if (self.message.len() + payload.len()) as u64 > MAX_MESSAGE_BYTES {
                     return Err(protocol_error("a message larger than 64 MiB"));
                 }
+                self.message.extend_from_slice(&payload);
                 if frame.fin {
                     self.in_message = false;
                     let text = String::from_utf8(std::mem::take(&mut self.message))
@@ -1006,6 +1006,99 @@ mod tests {
         huge.extend_from_slice(&(MAX_MESSAGE_BYTES + 1).to_be_bytes());
         assert!(parse_frame(&huge).is_err());
         assert!(parse_frame(&[0x81]).unwrap().is_none());
+    }
+
+    /// A server frame of any length, its 64-bit length encoding included.
+    fn long_server_frame(opcode: u8, fin: bool, payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![if fin { 0x80 } else { 0 } | opcode, 127];
+        frame.extend_from_slice(&(payload.len() as u64).to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Every violation a server can commit after a good upgrade, sent over a
+    /// real `AF_UNIX` connection: the client's next receive fails, naming it.
+    #[test]
+    fn every_protocol_violation_on_a_live_connection_fails_the_receive_naming_it() {
+        let half = vec![b'x'; 33 * 1024 * 1024];
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "a masked frame from the server",
+                vec![0x81, 0x81, 0, 0, 0, 0, b'x'],
+            ),
+            (
+                "reserved bits set with no extension negotiated",
+                vec![0xC1, 0x01, b'x'],
+            ),
+            ("a reserved opcode", vec![0x83, 0x01, b'x']),
+            ("a fragmented or oversized control frame", vec![0x09, 0x00]),
+            (
+                "a length not in its shortest encoding",
+                vec![0x81, 126, 0, 5, 1, 2, 3, 4, 5],
+            ),
+            ("a binary message", server_frame(0x2, true, b"{}")),
+            (
+                "a continuation frame with no message",
+                server_frame(0x0, true, b"{}"),
+            ),
+            ("a new message before the fragmented one ended", {
+                let mut both = server_frame(0x1, false, b"{");
+                both.extend(server_frame(0x1, true, b"}"));
+                both
+            }),
+            (
+                "a text message that is not UTF-8",
+                server_frame(0x1, true, &[0xff, 0xfe]),
+            ),
+            ("a message larger than 64 MiB", {
+                let mut both = long_server_frame(0x1, false, &half);
+                both.extend(long_server_frame(0x0, true, &half));
+                both
+            }),
+        ];
+        for (index, (named, bytes)) in cases.into_iter().enumerate() {
+            let dir = ScratchDir::new(&format!("ws-violation-{index}")).unwrap();
+            let path = dir.join("s.sock");
+            let listener = listener::LocalListener::bind(&path).unwrap();
+            let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+            let server = std::thread::spawn(move || {
+                let stream = listener.accept().unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut writer = stream;
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    request.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                writer.write_all(switching(&request).as_bytes()).unwrap();
+                // The client may refuse before reading everything.
+                let _ = writer.write_all(&bytes);
+                let _ = done_rx.recv_timeout(Duration::from_secs(30));
+            });
+            let (mut reader, _writer) = handshake(LocalStream::connect(&path).unwrap()).unwrap();
+            reader
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let refused = loop {
+                match reader.receive() {
+                    Err(err) => break err,
+                    Ok(Incoming::Idle) => continue,
+                    Ok(other) => panic!("{named}: received {other:?} instead of a refusal"),
+                }
+            };
+            let _ = done_tx.send(());
+            server.join().unwrap();
+            assert_eq!(
+                refused.kind(),
+                io::ErrorKind::InvalidData,
+                "{named}: {refused}"
+            );
+            assert!(refused.to_string().contains(named), "{named}: {refused}");
+        }
     }
 
     #[cfg(unix)]

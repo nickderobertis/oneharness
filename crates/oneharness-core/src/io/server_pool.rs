@@ -142,74 +142,14 @@ impl<'de> Deserialize<'de> for LaunchArgv {
     }
 }
 
-/// An identity the pool persists and reads back to select processes or name
-/// a thread — a server or dispatch marker, a thread or turn id: never empty
-/// and never carrying a control character, so a record read back can only
-/// name something a process scan or a server could.
-macro_rules! note_identity {
-    ($(#[$doc:meta])* $name:ident, $what:literal) => {
-        $(#[$doc])*
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(String);
-
-        impl $name {
-            #[doc = concat!("`value` as a ", $what, ", or `None` when it is empty or carries a control character.")]
-            #[must_use]
-            pub fn new(value: impl Into<String>) -> Option<Self> {
-                let value = value.into();
-                (!value.is_empty() && !value.chars().any(char::is_control)).then_some(Self(value))
-            }
-
-            /// The identity as written.
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = String;
-
-            fn try_from(value: String) -> Result<Self, String> {
-                Self::new(value.clone()).ok_or_else(|| format!("{value:?} is not a {}", $what))
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(identity: $name) -> String {
-                identity.0
-            }
-        }
-    };
-}
-
-note_identity!(
-    /// A server marker's value (`ONEHARNESS_APP_SERVER_MARKER`).
-    ServerMarker,
-    "server marker"
-);
-note_identity!(
-    /// A dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
-    DispatchMarker,
-    "dispatch marker"
-);
-note_identity!(
-    /// An app-server thread's id.
-    ThreadId,
-    "thread id"
-);
-note_identity!(
-    /// An app-server turn's id.
-    TurnId,
-    "turn id"
-);
+pub use crate::domain::app_server::{DispatchMarker, ServerMarker, ThreadId, TurnId};
 
 impl DispatchMarker {
     /// A marker no other dispatch carries.
     #[must_use]
     pub fn fresh() -> Self {
-        DispatchMarker(uuid::Uuid::now_v7().hyphenated().to_string())
+        DispatchMarker::new(uuid::Uuid::now_v7().hyphenated().to_string())
+            .expect("a hyphenated uuid is a usable marker")
     }
 }
 
@@ -217,7 +157,8 @@ impl ServerMarker {
     /// A marker no other server carries.
     #[must_use]
     pub fn fresh() -> Self {
-        ServerMarker(uuid::Uuid::now_v7().hyphenated().to_string())
+        ServerMarker::new(uuid::Uuid::now_v7().hyphenated().to_string())
+            .expect("a hyphenated uuid is a usable marker")
     }
 }
 

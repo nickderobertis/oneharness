@@ -71,6 +71,12 @@ class RssGrowthBudget(unittest.TestCase):
             (FIXTURES / "reuse-zero-reading.json", "after_last reading's rss_bytes is 0"),
             (FIXTURES / "reuse-retained.json", "were still loaded when the readings were taken"),
             (FIXTURES / "reuse-unnamed-lease.json", "lease 3 names no thread"),
+            (
+                FIXTURES / "reuse-malformed-reading.json",
+                "the after_first reading is 'large', not a reading object",
+            ),
+            (FIXTURES / "reuse-bad-pids.json", "are not the positive pids it summed"),
+            (FIXTURES / "reuse-reading-without-server.json", "leave out the server pid 4242"),
         ):
             with self.subTest(fixture=fixture.name):
                 run = check(fixture)

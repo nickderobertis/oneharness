@@ -158,6 +158,11 @@ pub struct ServerRecord {
     pub address: ServerAddress,
     /// Epoch seconds the entry last had no live lease; `None` while leased.
     pub idle_since: Option<u64>,
+    /// The same instant in epoch milliseconds, which the linger is measured in
+    /// when present: a one-second linger measured in whole seconds can end at
+    /// once.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_since_ms: Option<u64>,
     /// The value of the server-marker variable the server was launched with
     /// (`ONEHARNESS_APP_SERVER_MARKER`, fresh per server), on a shared Codex
     /// app-server's entry. Such an entry is stopped by that marker — every
@@ -560,6 +565,7 @@ pub fn acquire(
     // uninterrupted idleness.
     let cleared = ServerRecord {
         idle_since: None,
+        idle_since_ms: None,
         ..record.clone()
     };
     write_record(&entry, &cleared)?;
@@ -631,6 +637,7 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
     }
     if live_leases > 0 {
         record.idle_since = None;
+        record.idle_since_ms = None;
         write_record(entry, &record)?;
         return Ok(Some(record));
     }
@@ -639,9 +646,13 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
     // seen idle for the first time is stamped now, so `now - since` is 0 and a
     // zero linger reclaims immediately while a real one keeps the process warm.
     let now = epoch_secs();
-    let since = record.idle_since.unwrap_or(now);
+    let now_ms = epoch_millis();
+    let since_ms = record
+        .idle_since_ms
+        .or(record.idle_since.map(|secs| secs.saturating_mul(1000)))
+        .unwrap_or(now_ms);
     let linger = record.linger_ms.map_or(linger, Duration::from_millis);
-    if now.saturating_sub(since) >= linger.as_secs() {
+    if u128::from(now_ms.saturating_sub(since_ms)) >= linger.as_millis() {
         if record.marker.is_some() {
             crate::io::app_server::stop_server(entry, &record);
             reap_spawned(record.pid.get());
@@ -653,6 +664,7 @@ pub(crate) fn reconcile(entry: &Path, linger: Duration) -> io::Result<Option<Ser
     }
     if record.idle_since.is_none() {
         record.idle_since = Some(now);
+        record.idle_since_ms = Some(now_ms);
         write_record(entry, &record)?;
     }
     Ok(Some(record))
@@ -729,6 +741,7 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
         argv: plan.argv.clone(),
         address: plan.address.clone(),
         idle_since: None,
+        idle_since_ms: None,
         marker: plan.marker.clone(),
         linger_ms: plan
             .marker
@@ -998,6 +1011,13 @@ fn lease_id() -> String {
         std::process::id(),
         uuid::Uuid::now_v7().simple()
     )
+}
+
+fn epoch_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 fn epoch_secs() -> u64 {

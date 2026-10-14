@@ -2304,7 +2304,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// Per-thread knobs: MOCK_CODEX_APP_SERVER_LOG (raw frames this connection
 /// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_HOLD_UNTIL (end the turn once
 /// this file exists, so a test holds two turns live at once),
-/// MOCK_CODEX_ECHO_PROMPT,
+/// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
+/// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
 /// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
@@ -2609,6 +2610,14 @@ mod listen_server {
             let Some(turn) = thread.active_turn.take() else {
                 return;
             };
+            if let Some(record) = self
+                .turns
+                .iter_mut()
+                .rev()
+                .find(|t| t["turn"] == json!(turn))
+            {
+                record["status"] = json!(status);
+            }
             self.emit(
                 thread_id,
                 &json!({"jsonrpc": "2.0", "method": "turn/completed",
@@ -2761,6 +2770,7 @@ mod listen_server {
             let Ok(frame) = serde_json::from_str::<Value>(&text) else {
                 continue;
             };
+            hold(server, &frame);
             handle(server, conn, &text, &frame);
         }
         // The client is gone. Like Codex, its threads stay loaded and their
@@ -2771,6 +2781,47 @@ mod listen_server {
             thread.subscribers.remove(&conn);
         }
         s.save();
+    }
+
+    /// Keep a request waiting, outside the server's lock, where a knob says
+    /// to: `thread/start` until MOCK_CODEX_HOLD_OPEN_UNTIL's file exists (a
+    /// dispatch held idle, before its turn), `thread/unsubscribe` for
+    /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS (a dispatch whose turn has ended still
+    /// releasing its thread).
+    fn hold(server: &Shared, frame: &Value) {
+        let set_knob = |name: &str| {
+            frame
+                .pointer(&format!(
+                    "/params/config/shell_environment_policy/set/{name}"
+                ))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        };
+        match frame.get("method").and_then(Value::as_str) {
+            Some("thread/start") => {
+                if let Some(path) = set_knob("MOCK_CODEX_HOLD_OPEN_UNTIL") {
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+                    while !Path::new(&path).exists() && std::time::Instant::now() < until {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                }
+            }
+            Some("thread/unsubscribe") => {
+                let thread = frame
+                    .pointer("/params/threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let delay = lock(server)
+                    .threads
+                    .get(thread)
+                    .and_then(|t| t.knob("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS"))
+                    .and_then(|ms| ms.parse::<u64>().ok());
+                if let Some(ms) = delay {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn settings_from(params: &Value, base: Option<&Settings>) -> Settings {
@@ -2945,8 +2996,14 @@ mod listen_server {
                 let Some(base) = base else {
                     return refuse(&mut s, format!("thread not found: {thread}"));
                 };
-                let settings = settings_from(&params, Some(&base));
-                let model = served_model(&params, &settings);
+                // A resume carries the dispatch's environment; the thread keeps
+                // the directory, model, sandbox and approval policy it was
+                // started under, so a turn's own values are what is in force.
+                let mut settings = base.clone();
+                let resumed = settings_from(&params, Some(&base));
+                let model = served_model(&params, &resumed);
+                settings.set = resumed.set;
+                settings.exclude = resumed.exclude;
                 open_thread(&mut s, conn, thread, settings, true);
                 reply(&mut s, json!({"thread": {"id": thread}, "model": model}));
                 s.save();

@@ -5,10 +5,19 @@ import { parse } from "yaml";
 import { isDeepStrictEqual } from "node:util";
 import { workflows, validateWorkflow, triggered, resolveJobs, expand, render, evaluate } from "../workflow-graph.mjs";
 
-// This immutable pre-consolidation tree supplies actual workflow declarations,
+// The tree this change merges into supplies the actual workflow declarations,
 // rather than a hand-maintained inventory that could forget a retained lane.
-const baselineRef = "47be9fd11ac798f8aaa7f7e93dea30c0016ad00f";
+// A fixed commit would read every lane main gained since as a removal.
 // llmlint: ignore-block[shell_test_tiers_stay_split] Reading the required immutable workflow baseline uses local Git only; no fixture history, installation, provider process or network is involved.
+function baseRef() {
+  const override = process.env.OH_WORKFLOW_BASELINE?.trim();
+  try {
+    return execFileSync("git", ["merge-base", "HEAD", override || "origin/main"], { encoding: "utf8" }).trim();
+  } catch (error) {
+    throw Error(`Cannot find the merge base of HEAD and ${override || "origin/main"}. Next: fetch origin/main with full history, or set OH_WORKFLOW_BASELINE to the base ref.`, { cause: error });
+  }
+}
+const baselineRef = baseRef();
 function baseline() {
   try {
     const files = execFileSync("git", ["ls-tree", "--full-tree", "--name-only", `${baselineRef}:.github/workflows`], { encoding: "utf8" }).trim().split("\n");

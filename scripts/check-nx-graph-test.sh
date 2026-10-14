@@ -152,6 +152,42 @@ cp "$tmp/saved.json" "$ws/tools/ci-contracts/project.json"
 grep -qF "ci-contracts:test runs scripts/shell-test.sh but does not list the shellTestRunner" "$tmp/err" ||
   fail "the check failed but did not name the test target missing the runner's inputs"
 
+# The network budgets read live telemetry: a gate project's target that runs
+# their check, a gate that stops excluding the live projects, and a live-codex
+# recipe that drops its check are each refused.
+cp "$ws/tools/network-telemetry/project.json" "$tmp/saved.json"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const project = JSON.parse(fs.readFileSync(file, "utf8"));
+  project.targets.test.options.commands.push("bash scripts/e2e-network-budget.sh codex");
+  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+' "$ws/tools/network-telemetry/project.json"
+check
+cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
+[ "$status" -ne 0 ] || fail "a gate target running the network budget check should have failed the boundary check"
+grep -qF "network-telemetry:test runs the network budget check" "$tmp/err" ||
+  fail "the check failed but did not name the gate target that runs the network budget check"
+cp "$ws/justfile" "$tmp/saved.just"
+sed "s/--exclude='live-\*,explore-\*'/--exclude='explore-*'/" "$tmp/saved.just" >"$ws/justfile"
+check
+cp "$tmp/saved.just" "$ws/justfile"
+[ "$status" -ne 0 ] || fail "a check recipe that runs the live projects should have failed the boundary check"
+grep -qF "check recipe no longer excludes the live-* projects" "$tmp/err" ||
+  fail "the check failed but did not say the gate stopped excluding the live projects"
+grep -v '^    bash scripts/e2e-network-budget.sh codex$' "$tmp/saved.just" >"$ws/justfile"
+check
+cp "$tmp/saved.just" "$ws/justfile"
+[ "$status" -ne 0 ] || fail "a live-codex recipe without its budget check should have failed the boundary check"
+grep -qF "live-codex recipe is" "$tmp/err" ||
+  fail "the check failed but did not name the live-codex recipe that dropped its budget check"
+# A Windows checkout (core.autocrlf=true) ends the justfile's lines in CRLF;
+# the same recipes still pass.
+awk '{ printf "%s\r\n", $0 }' "$tmp/saved.just" >"$ws/justfile"
+check
+cp "$tmp/saved.just" "$ws/justfile"
+[ "$status" -eq 0 ] || fail "a CRLF justfile should pass the boundary check; it said: $(cat "$tmp/err")"
+
 # A graph Nx cannot compute (an nx.json plugin it cannot load): the check fails
 # naming that, and still gives back the scratch directory it made for the graph.
 mkdir -p "$tmp/check-tmp"

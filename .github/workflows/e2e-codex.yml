@@ -23,8 +23,13 @@ on:
       - Cargo.lock
       - rust-toolchain.toml
       - scripts/e2e-lib.sh
+      - scripts/e2e-netshim.sh
+      - scripts/e2e-netmeasure.py
       - scripts/install-e2e.sh
       - scripts/e2e-codex.sh
+      - scripts/e2e-network-budget.sh
+      - live/pr-matrix/harness/codex/**
+      - python/uv.lock
       - .github/workflows/e2e-codex.yml
   workflow_dispatch:
     inputs:
@@ -92,6 +97,23 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      # `just live-codex` checks the network budgets with the uv workspace's
+      # onebudgetspec after the suite (scripts/e2e-network-budget.sh).
+      - uses: astral-sh/setup-uv@v6
+      # The suite's recorder measures each codex launch in an unprivileged
+      # user+network namespace behind the pasta first on PATH (live/AGENTS.md).
+      # The ubuntu-24.04 image already carries passt, but its AppArmor profile
+      # does not admit pasta's namespace (`Couldn't write to /proc/self/uid_map`),
+      # so the step lifts the restriction and proves that same pasta can start
+      # one. Other legs record no bytes and check no budget.
+      # llmlint: ignore-block[least_privilege_grants, changed_behavior_has_e2e] An ephemeral single-tenant runner whose steps already hold passwordless root gains nothing from the restriction. The probe below is the step's own end-to-end proof; its hosted run is the only place it can run.
+      - name: Permit unprivileged namespaces for pasta (network recorder)
+        if: runner.os == 'Linux'
+        run: |
+          command -v pasta >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q passt; }
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          pasta --config-net --quiet -- true
+      # llmlint: ignore-end[least_privilege_grants, changed_behavior_has_e2e]
       - name: Install Codex CLI
         run: |
           npm install -g @openai/codex

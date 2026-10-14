@@ -20,6 +20,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: structured output (--schema) =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/schema.jsonl.
+oh_telemetry_setup schema
 need_env "Claude auth" CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY
 
 export OH_MODEL="${CLAUDE_E2E_MODEL:-haiku}"

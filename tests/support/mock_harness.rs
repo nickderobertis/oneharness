@@ -187,6 +187,9 @@
 //!                              fails it like `fail`, and an `app-server`
 //!                              launch then exits 1 at once, as a Codex
 //!                              server that cannot start does.
+//!   MOCK_CODEX_ECHO_PROMPT     with MOCK_CODEX_APP_SERVER_LOG, the turn's
+//!                              agent message is the text of the `turn/start`
+//!                              input instead of a fixed "still working".
 //!   MOCK_CODEX_COMPLETE_TURN   with MOCK_CODEX_APP_SERVER_LOG, end the turn on
 //!                              its own (`turn/completed`) instead of holding it
 //!                              open until an interrupt arrives.
@@ -1545,14 +1548,32 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     }));
                     continue;
                 }
+                // The reply: a fixed "still working", or the turn's own input
+                // text when MOCK_CODEX_ECHO_PROMPT asks for a turn that
+                // answers what it was sent, as a model echoing a marker does.
+                let reply = if std::env::var_os("MOCK_CODEX_ECHO_PROMPT").is_some() {
+                    message
+                        .pointer("/params/input")
+                        .and_then(Value::as_array)
+                        .map(|input| {
+                            input
+                                .iter()
+                                .filter_map(|item| item.get("text").and_then(Value::as_str))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default()
+                } else {
+                    "still working".to_string()
+                };
                 send(&json!({
                     "jsonrpc": "2.0",
                     "method": "item/agentMessage/delta",
-                    "params": {"itemId": "item_1", "delta": "still working"},
+                    "params": {"itemId": "item_1", "delta": reply},
                 }));
                 send(&json!({
                     "method": "item/completed",
-                    "params": {"item": {"type": "agentMessage", "id": "item_1", "text": "still working"}},
+                    "params": {"item": {"type": "agentMessage", "id": "item_1", "text": reply}},
                 }));
                 if std::env::var_os("MOCK_CODEX_TOOL_EVENTS").is_some() {
                     let started_only = std::env::var_os("MOCK_CODEX_TOOL_STARTED_ONLY").is_some();

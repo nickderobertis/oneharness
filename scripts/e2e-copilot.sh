@@ -9,6 +9,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: copilot =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/copilot.jsonl.
+oh_telemetry_setup copilot
 need_env "Copilot auth" COPILOT_GITHUB_TOKEN GH_TOKEN GITHUB_TOKEN
 
 export OH_MODEL="${COPILOT_E2E_MODEL:-}"

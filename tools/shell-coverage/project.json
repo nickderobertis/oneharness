@@ -30,6 +30,7 @@
             "ci-contracts",
             "e2e-support",
             "install-surface",
+            "network-telemetry",
             "npm-launcher",
             "oneharness-e2e",
             "oneharness-integration",

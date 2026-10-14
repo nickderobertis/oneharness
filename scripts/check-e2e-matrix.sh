@@ -49,7 +49,17 @@ Cargo.toml
 Cargo.lock
 rust-toolchain.toml
 scripts/e2e-lib.sh
+scripts/e2e-netshim.sh
+scripts/e2e-netmeasure.py
 scripts/install-e2e.sh'
+
+# What one suite reads beyond the shared list: codex's network budgets, which
+# `just live-codex` checks after its suite (scripts/e2e-network-budget.sh).
+extra_paths() {
+  case "$1" in
+    codex) printf '%s\n' scripts/e2e-network-budget.sh "live/pr-matrix/harness/codex/**" python/uv.lock ;;
+  esac
+}
 
 # harness id -> PR-default matrix (the `|| '<default>'` tail of the os expression)
 CROSS_PLATFORM="claude codex"
@@ -77,7 +87,9 @@ check_paths() {
   local f="$1" id="$2" actual expected
   expected="${SHARED_PATHS}
 scripts/e2e-${id}.sh
+$(extra_paths "$id")
 .github/workflows/e2e-${id}.yml"
+  expected="$(printf '%s\n' "$expected" | grep -v '^$')"
   actual="$(awk '
 		/^  pull_request:$/ { in_pr = 1; next }
 		in_pr && /^    paths:$/ { in_paths = 1; next }

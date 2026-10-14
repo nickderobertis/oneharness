@@ -8,6 +8,8 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/e2e-lib.sh"
 
 note "== oneharness live e2e: crush =="
 need jq
+# Every harness launch below is measured into target/e2e-telemetry/network/crush.jsonl.
+oh_telemetry_setup crush
 need_env "Crush provider key" ANTHROPIC_API_KEY OPENAI_API_KEY
 
 export OH_MODEL="${CRUSH_E2E_MODEL:-}"

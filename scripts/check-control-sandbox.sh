@@ -44,11 +44,13 @@ socket="$(socket_in "$darwin")"
 rm -rf "$darwin"
 made=""
 
+# Elsewhere the sandbox is exactly where this host's own `mktemp -d` puts one
+# (GNU mktemp honors TMPDIR; BSD mktemp, as on a macOS runner, need not).
+plain="$(TMPDIR="$long_tmp" mktemp -d)" || fail_check "this host's mktemp -d failed"
+rm -rf "$plain"
 linux="$(sandbox_for Linux)" || fail_check "oh_control_sandbox failed for Linux"
 made="$linux"
-case "$linux" in
-  "$long_tmp"/*) ;;
-  *) fail_check "on Linux the sandbox left the host temp dir: got '$linux', expected it under TMPDIR=$long_tmp" ;;
-esac
+[ "$(dirname "$linux")" = "$(dirname "$plain")" ] ||
+  fail_check "on Linux the sandbox left the host temp dir: got '$linux', expected it beside '$plain', where this host's mktemp -d puts one"
 
 echo "check-control-sandbox: ok"

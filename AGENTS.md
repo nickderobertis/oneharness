@@ -311,11 +311,13 @@ Use the `just` recipes; do not hand-roll equivalents.
   job swept. The full sweep (`just check all`, `scripts/ci-gate-tier.sh`)
   therefore runs on the release PR, and merge-to-main and every other PR run
   the affected tier. `release.yml` reuses that sweep's verdict rather than
-  sweeping the same tree again, and never ships past a failed check job;
-  `scripts/ci-verdict.sh` decides which run counts (the release PR's, else a
-  `workflow_dispatch` of `ci.yml` with `tier=all` on the tag), when an
-  authorized Mac omission stands in for a Mac sweep, and when the release
-  runner sweeps instead.
+  sweeping the same tree again; `scripts/ci-verdict.sh` decides which run
+  counts (the release PR's, else a `workflow_dispatch` of `ci.yml` with
+  `tier=all` on the tag): a failed check job refuses release; only a complete
+  check matrix whose jobs successfully swept or whose Mac carrier authorized
+  omission skips the release gate; once CI ends, a non-Ubuntu check job
+  without either verdict refuses release, and an Ubuntu one alone runs the
+  sweep on the Ubuntu release runner.
   The release publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the

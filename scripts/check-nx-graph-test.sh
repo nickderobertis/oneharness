@@ -168,6 +168,34 @@ cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
 [ "$status" -ne 0 ] || fail "a gate target running the network budget check should have failed the boundary check"
 grep -qF "network-telemetry:test runs the network budget check" "$tmp/err" ||
   fail "the check failed but did not name the gate target that runs the network budget check"
+# Calling onebudgetspec over the live budgets directly is the same check.
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const project = JSON.parse(fs.readFileSync(file, "utf8"));
+  project.targets.test.options.commands.push("uv run onebudgetspec check live/pr-matrix/harness/codex/budgets.yaml");
+  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+' "$ws/tools/network-telemetry/project.json"
+check
+cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
+[ "$status" -ne 0 ] || fail "a gate target running onebudgetspec over the live network budgets should have failed the boundary check"
+grep -qF "network-telemetry:test runs the network budget check" "$tmp/err" ||
+  fail "the check failed but did not name the gate target that runs onebudgetspec over the live network budgets"
+# A budget check over committed, deterministic telemetry reads nothing live, so
+# a gate target may run it (github-workflows:budgets is one).
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const project = JSON.parse(fs.readFileSync(file, "utf8"));
+  project.targets.test.options.commands.push("uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml");
+  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+' "$ws/tools/network-telemetry/project.json"
+check
+cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
+[ "$status" -eq 0 ] || {
+  cat "$tmp/err" >&2
+  fail "a gate target checking budgets over committed offline telemetry was refused (above); narrow scripts/check-nx-graph.mjs's runsBudgetCheck to the live network budgets' entry points"
+}
 cp "$ws/justfile" "$tmp/saved.just"
 sed "s/--exclude='live-\*,explore-\*'/--exclude='explore-*'/" "$tmp/saved.just" >"$ws/justfile"
 check

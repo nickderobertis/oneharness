@@ -230,8 +230,10 @@ for (const name of shellTests) {
 
 // The network budgets read real telemetry: only `live-codex:live` (whose
 // recipe runs the suite, then the check) may run their check, and the gate's
-// `check` recipe excludes every live project.
-const runsBudgetCheck = /e2e-network-budget|onebudgetspec check|just live-codex/u;
+// `check` recipe excludes every live project. A budget check over committed,
+// deterministic telemetry (github-workflows:budgets) reads none, so the match
+// is the network budgets' entry points, not every onebudgetspec check.
+const runsBudgetCheck = /e2e-network-budget|onebudgetspec check[^"]*live\/pr-matrix\/|just live-codex/u;
 for (const [name, node] of Object.entries(graph.nodes)) {
 	for (const [target, spec] of Object.entries(node.data.targets ?? {})) {
 		const commands = JSON.stringify(spec.options?.commands ?? spec.options?.command ?? "");

@@ -130,19 +130,20 @@ def decode_leases(record: dict[str, object], faults: list[str]) -> list[Lease]:
         )
     leases: list[Lease] = []
     for index, entry in enumerate(entries, start=1):
-        pid = positive_int(entry.get("server_pid")) if isinstance(entry, dict) else None
-        if pid is None or not isinstance(entry, dict):
-            faults.append(f"lease {index} names no positive server pid: {entry!r}")
+        if not isinstance(entry, dict):
+            faults.append(f"lease {index} is not a lease record: {entry!r}")
             continue
-        number = entry.get("lease")
+        pid = positive_int(entry.get("server_pid"))
+        number = positive_int(entry.get("lease"))
         thread = entry.get("thread")
-        leases.append(
-            Lease(
-                number if isinstance(number, int) else index,
-                Pid(pid),
-                thread if isinstance(thread, str) else "",
-            )
-        )
+        if pid is None:
+            faults.append(f"lease {index} names no positive server pid: {entry!r}")
+        if number != index:
+            faults.append(f"lease {index} is numbered {entry.get('lease')!r}, not {index}")
+        if not isinstance(thread, str) or thread == "":
+            faults.append(f"lease {index} names no thread: {entry!r}")
+        if pid is not None and number == index and isinstance(thread, str) and thread != "":
+            leases.append(Lease(number, Pid(pid), thread))
     return leases
 
 
@@ -163,6 +164,7 @@ def decode(record: dict[str, object]) -> ReuseRecord:
     if platform != "linux":
         faults.append(f"the workload ran on {platform!r}; the budget is measured on linux only")
     retained = record.get("retained", [])
+    # llmlint: ignore[structural_pattern_matching] This script shares the Python SDK's 3.9 floor (tools/network-telemetry/ruff.toml extends it), where `match` is a syntax error; the isinstance/elif chain is the 3.9 spelling of the same three cases.
     if not isinstance(retained, list):
         faults.append(f"the retained-thread list is {retained!r}, not a list")
     elif retained:
@@ -175,9 +177,9 @@ def decode(record: dict[str, object]) -> ReuseRecord:
     if faults or server is None or first is None or last is None:
         raise Incomplete("; ".join(faults))
     version = record.get("codex_version")
-    return ReuseRecord(
-        "linux", version if isinstance(version, str) else "", leases, server, first, last
-    )
+    if not isinstance(version, str) or version == "":
+        raise Incomplete(f"the record names no codex version: {version!r}")
+    return ReuseRecord("linux", version, leases, server, first, last)
 
 
 def figure(path: Path) -> Figure:

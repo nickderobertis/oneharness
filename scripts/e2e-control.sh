@@ -184,7 +184,12 @@ oh_pooled_env() {
 
 oh_pooled_kill() {
   _oh_phase pooled-kill
-  local beat="$POOLED_DIR/heartbeat" pid lines last before bound=$((2 + 5)) waited=0 grown=0 quiet=0
+  # The bound is DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE, in
+  # seconds (io/server_pool.rs); the journey
+  # the_control_suite_s_kill_bound_is_the_pool_s_own_deadlines fails when the two
+  # drift apart.
+  local sweep_s=2 stop_s=5
+  local beat="$POOLED_DIR/heartbeat" pid lines last before bound=$((sweep_s + stop_s)) waited=0 grown=0 quiet=0
   mkdir -p "$POOLED_DIR/wk" ||
     fail "pooled-kill: cannot create the dispatch's working directory under $POOLED_DIR; check that it is writable"
   # shellcheck disable=SC2016 # expanded by the dispatch's own shell, in its own environment

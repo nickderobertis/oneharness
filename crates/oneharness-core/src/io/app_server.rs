@@ -45,8 +45,8 @@ use crate::io::process::{Finish, Process};
 use crate::io::runner::{Job, StreamStep};
 use crate::io::server_pool::{
     self, DispatchMarker, EntryLock, LaunchPlan, LeaseHolder, LeaseNote, LeasedThread, ServerLease,
-    ServerRecord, ThreadId, TurnId, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
-    DEFAULT_LINGER, SERVER_STOP_DEADLINE,
+    ServerMarker, ServerRecord, ThreadId, TurnId, DEAD_LEASE_STOP_DEADLINE,
+    DEAD_LEASE_SWEEP_INTERVAL, DEFAULT_LINGER, SERVER_STOP_DEADLINE,
 };
 use crate::io::websocket::{handshake, Incoming, LocalStream, WsReader, WsWriter};
 
@@ -220,10 +220,6 @@ fn dispatch_environment(
     out
 }
 
-fn fresh_marker() -> String {
-    uuid::Uuid::now_v7().hyphenated().to_string()
-}
-
 /// A lease on a running shared server, with the socket it answers on.
 pub struct AppServerLease {
     lease: ServerLease,
@@ -310,9 +306,9 @@ fn lease_server(
     let mut attempts = 2;
     loop {
         attempts -= 1;
-        let marker = fresh_marker();
+        let marker = ServerMarker::fresh();
         let mut env = dispatch.server_env.clone();
-        env.push((SERVER_MARKER_VAR.to_string(), marker.clone()));
+        env.push((SERVER_MARKER_VAR.to_string(), marker.as_str().to_string()));
         let plan = LaunchPlan::scrubbed(template.clone(), address.clone(), env, marker)
             .map_err(|err| format!("could not plan the app-server launch: {err}"))?;
         let lease = server_pool::acquire(root, &key, &plan, linger())
@@ -680,8 +676,8 @@ pub(crate) fn stop_server(entry: &Path, record: &ServerRecord) {
             }
         }
     }
-    if let Some(value) = &record.marker {
-        stop_by_marker(value);
+    if let Some(marker) = &record.marker {
+        stop_by_marker(marker);
     }
     // A stopped server's listener can outlive the environment the marker scan
     // reads — the kernel drops an exiting process's memory before its sockets —
@@ -692,10 +688,10 @@ pub(crate) fn stop_server(entry: &Path, record: &ServerRecord) {
 
 /// Stop every process carrying the server marker `value`, within
 /// [`SERVER_STOP_DEADLINE`].
-fn stop_by_marker(value: &str) {
+fn stop_by_marker(server: &ServerMarker) {
     let marker = ProcessMarker {
         name: SERVER_MARKER_VAR.to_string(),
-        value: value.to_string(),
+        value: server.as_str().to_string(),
     };
     match stop_marked(&marker, SERVER_STOP_DEADLINE) {
         Ok(report) if !report.survivors.is_empty() => eprintln!(
@@ -903,7 +899,8 @@ pub(crate) fn run_pooled_turn(
     on_line: &mut dyn FnMut(&str) -> StreamStep,
 ) -> Capture {
     let start = Instant::now();
-    let started_at = crate::io::runner::utc_now();
+    let start_epoch_ms = crate::io::runner::epoch_millis();
+    let started_at = crate::domain::history::format_rfc3339_millis(start_epoch_ms);
     let failed = |status: Status, error: String| Capture {
         status,
         exit_code: None,
@@ -956,8 +953,8 @@ pub(crate) fn run_pooled_turn(
         lease.record().argv.as_slice().to_vec(),
     );
 
-    let mut lines: Vec<String> = Vec::new();
-    let mut held: Vec<(String, Value)> = Vec::new();
+    let mut lines = Captured::default();
+    let mut held: Vec<(Instant, String, Value)> = Vec::new();
     let mut end = None;
     for frame in handle.open_frames(prompt) {
         if let Err(err) = handle.write_line(&frame) {
@@ -1005,7 +1002,7 @@ pub(crate) fn run_pooled_turn(
             if frame.get("method").is_none() {
                 if let Some(id) = frame.get("id").and_then(Value::as_u64) {
                     if board.deliver(id, frame.clone()) {
-                        lines.push(text);
+                        lines.push(&text, Instant::now());
                         continue;
                     }
                 }
@@ -1013,11 +1010,11 @@ pub(crate) fn run_pooled_turn(
             let own_thread = handle.session_id();
             if !rules::is_own_frame(&frame, own_thread.as_deref()) {
                 if own_thread.is_none() && held.len() < PRE_THREAD_BUFFER {
-                    held.push((text, frame));
+                    held.push((Instant::now(), text, frame));
                 }
                 continue;
             }
-            if let Some(end) = deliver(handle, &text, &mut lines, on_line) {
+            if let Some(end) = deliver(handle, &text, Instant::now(), &mut lines, on_line) {
                 break end;
             }
             // The dialogue may just have learned its thread: replay what was
@@ -1025,11 +1022,11 @@ pub(crate) fn run_pooled_turn(
             if own_thread.is_none() {
                 if let Some(thread) = handle.session_id() {
                     let mut replayed = None;
-                    for (text, frame) in std::mem::take(&mut held) {
+                    for (arrived, text, frame) in std::mem::take(&mut held) {
                         if rules::frame_thread(&frame) == Some(thread.as_str())
                             && replayed.is_none()
                         {
-                            replayed = deliver(handle, &text, &mut lines, on_line);
+                            replayed = deliver(handle, &text, arrived, &mut lines, on_line);
                         }
                     }
                     if let Some(end) = replayed {
@@ -1085,10 +1082,12 @@ pub(crate) fn run_pooled_turn(
         }
         End::Failed(error) => (Status::Nonzero, Some(error)),
     };
-    let mut stdout = lines.join("\n");
+    let mut stdout = lines.lines.join("\n");
     if !stdout.is_empty() {
         stdout.push('\n');
     }
+    let stdout_observations =
+        crate::io::runner::observations_since(start, start_epoch_ms, lines.observed);
     Capture {
         status,
         exit_code: None,
@@ -1098,19 +1097,38 @@ pub(crate) fn run_pooled_turn(
         error,
         started_at,
         finished_at: Some(crate::io::runner::utc_now()),
-        stdout_observations: Vec::new(),
+        stdout_observations,
     }
 }
 
-/// Feed one of the dispatch's own frames through: record it, publish it, and
-/// advance the dialogue. `Some` when that ends the turn.
+/// The dispatch's own frames as its child's stdout would have carried them:
+/// each a line, and when it arrived — the observations a tool event's
+/// observed timing is read from.
+#[derive(Default)]
+struct Captured {
+    lines: Vec<String>,
+    observed: Vec<(Instant, Vec<u8>)>,
+}
+
+impl Captured {
+    fn push(&mut self, text: &str, arrived: Instant) {
+        self.lines.push(text.to_string());
+        self.observed
+            .push((arrived, format!("{text}\n").into_bytes()));
+    }
+}
+
+/// Feed one of the dispatch's own frames through: record it (as arriving at
+/// `arrived`), publish it, and advance the dialogue. `Some` when that ends the
+/// turn.
 fn deliver(
     handle: &ControlHandle,
     text: &str,
-    lines: &mut Vec<String>,
+    arrived: Instant,
+    lines: &mut Captured,
     on_line: &mut dyn FnMut(&str) -> StreamStep,
 ) -> Option<End> {
-    lines.push(text.to_string());
+    lines.push(text, arrived);
     if on_line(text) == StreamStep::Stop {
         return Some(End::Done);
     }
@@ -1147,7 +1165,7 @@ pub struct PooledSession {
     lease: AppServerLease,
     connection: Connection,
     dispatch: PooledDispatch,
-    thread: Option<String>,
+    thread: Option<ThreadId>,
 }
 
 impl PooledSession {
@@ -1222,7 +1240,7 @@ impl PooledSession {
             .to_string();
         let id = ThreadId::new(thread.as_str())
             .ok_or_else(|| format!("{method} named an unusable thread id {thread:?}"))?;
-        self.thread = Some(thread);
+        self.thread = Some(id.clone());
         self.lease.annotate(&LeaseNote {
             marker: self.dispatch.marker.clone(),
             thread: Some(LeasedThread { id, turn: None }),
@@ -1249,7 +1267,7 @@ impl PooledSession {
             .connection
             .request(
                 "thread/shellCommand",
-                json!({"threadId": thread, "command": command, "timeoutMs": 30_000}),
+                json!({"threadId": thread.as_str(), "command": command, "timeoutMs": 30_000}),
                 Duration::from_secs(30),
             )
             .map_err(|err| format!("thread/shellCommand: {err}"))?
@@ -1257,10 +1275,11 @@ impl PooledSession {
         if let Some(error) = response.get("error") {
             return Err(format!("thread/shellCommand was refused: {error}"));
         }
-        match self
-            .connection
-            .await_notification("turn/completed", &thread, Duration::from_secs(30))
-        {
+        match self.connection.await_notification(
+            "turn/completed",
+            thread.as_str(),
+            Duration::from_secs(30),
+        ) {
             Ok(true) => Ok(()),
             Ok(false) => Err("the shell turn did not complete within 30s".to_string()),
             Err(err) => Err(format!("the shell turn: {err}")),
@@ -1272,6 +1291,7 @@ impl PooledSession {
     pub fn loaded_threads(&mut self) -> Result<Vec<String>, String> {
         let mut threads = Vec::new();
         let mut cursor: Option<String> = None;
+        let mut seen = std::collections::HashSet::new();
         loop {
             let params = match &cursor {
                 Some(cursor) => json!({"cursor": cursor}),
@@ -1307,8 +1327,16 @@ impl PooledSession {
                     ))
                 }
             };
-            if cursor.is_none() {
-                return Ok(threads);
+            match &cursor {
+                None => return Ok(threads),
+                // A cursor answered twice would page forever: refused, so the
+                // caller's own bound still holds.
+                Some(next) if !seen.insert(next.clone()) => {
+                    return Err(format!(
+                        "thread/loaded/list answered the cursor {next:?} a second time"
+                    ))
+                }
+                Some(_) => {}
             }
         }
     }
@@ -1319,7 +1347,11 @@ impl PooledSession {
     /// close the connection and give the lease back.
     pub fn release(mut self) {
         let marker = self.dispatch.process_marker();
-        release_dispatch(&mut self.connection, &marker, self.thread.as_deref());
+        release_dispatch(
+            &mut self.connection,
+            &marker,
+            self.thread.as_ref().map(ThreadId::as_str),
+        );
         self.connection.close();
         drop(self.lease);
     }

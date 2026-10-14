@@ -2308,7 +2308,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         child drop the server marker and, once its launcher
 ///                         is gone, keep its listener open for 3 s accepting
 ///                         nothing, as an exiting server's socket outlives the
-///                         environment a marker scan reads.
+///                         environment a marker scan reads; `loaded-cycle`
+///                         answers every `thread/loaded/list` page with the
+///                         first page's cursor as the next.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
@@ -2325,6 +2327,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// approval request goes out),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
 /// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
+/// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
+/// counted in that file, fail as an overload),
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
 /// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
@@ -3253,7 +3257,14 @@ mod listen_server {
                     .and_then(|c| c.parse::<usize>().ok())
                     .unwrap_or(0);
                 let to = from.saturating_add(page).min(data.len());
-                let next = (to < data.len()).then(|| to.to_string());
+                // CODEX_MOCK_FAULT=loaded-cycle: every page names the first
+                // page as the next, so a reader that never checks progress
+                // pages forever.
+                let next = if s.fault == "loaded-cycle" {
+                    Some("0".to_string())
+                } else {
+                    (to < data.len()).then(|| to.to_string())
+                };
                 reply(
                     &mut s,
                     json!({"data": data.get(from..to).unwrap_or_default(), "nextCursor": next}),
@@ -3391,6 +3402,37 @@ mod listen_server {
         }
         s.rollout(&thread_id, &context);
         let knob = |name: &str| settings.set.get(name).cloned();
+        // MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE: the first N
+        // turns, counted in that file, fail as Codex's overload does — an
+        // `error` notification, then the turn completed as failed — before
+        // any answer.
+        if let (Some(limit), Some(path)) = (
+            knob("MOCK_CODEX_OVERLOAD_ATTEMPTS"),
+            knob("MOCK_ATTEMPT_FILE"),
+        ) {
+            let attempt = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| text.trim().parse::<u32>().ok())
+                .unwrap_or(0)
+                + 1;
+            let _ = std::fs::write(&path, attempt.to_string());
+            if attempt <= limit.parse::<u32>().unwrap_or(0) {
+                let error = json!({"message": "The server is overloaded", "codexErrorInfo": "serverOverloaded"});
+                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "error",
+                    "params": {"threadId": thread_id, "turnId": turn, "error": error, "willRetry": false}}));
+                if let Some(thread) = s.threads.get_mut(&thread_id) {
+                    thread.active_turn = None;
+                }
+                if let Some(record) = s.turns.iter_mut().rev().find(|t| t["turn"] == json!(turn)) {
+                    record["status"] = json!("failed");
+                }
+                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "method": "turn/completed",
+                    "params": {"threadId": thread_id, "turn": {"id": turn, "status": "failed", "error": error}}}));
+                s.status(&thread_id, "idle");
+                s.save();
+                return;
+            }
+        }
         let reply_text = if knob("MOCK_CODEX_ECHO_PROMPT").is_some() {
             input.clone()
         } else {

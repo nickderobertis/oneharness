@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
 use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::server_pool::{DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 /// The shared server's linger every journey runs under (milliseconds).
 const LINGER_MS: u64 = 1000;
@@ -511,6 +511,34 @@ fn interrupt(pool: &Pool, session: &str) -> (Value, Duration) {
         )
     });
     (answer, started.elapsed())
+}
+
+/// `oneharness interrupt --input <message>` against `session`: the answer frame
+/// and whether the process exited 0.
+fn redirect(pool: &Pool, session: &str, message: &str) -> (Value, bool) {
+    let output = Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "interrupt",
+            "--session",
+            session,
+            "--session-dir",
+            &pool.file("sess"),
+            "--input",
+            message,
+            "--format",
+            "json",
+        ])
+        .output()
+        .expect("run oneharness interrupt");
+    let answer = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "{err}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    (answer, output.status.success())
 }
 
 /// Two concurrent dispatches with one pool key run their turns on ONE
@@ -1474,6 +1502,209 @@ fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_thro
     }
 }
 
+/// An interrupt carrying a message on a pooled turn stops the turn and makes
+/// the message the thread's next turn, in one operation the answer vouches for
+/// (`redirected`); when the shared server refuses the interrupt, the run takes
+/// nothing — the answer is `not_running`, no second turn opens, and the turn
+/// it could not stop finishes as it would have.
+#[test]
+fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
+    let pool = Pool::new("pool-redirect");
+    for (session, refuse) in [("steered", false), ("unsteered", true)] {
+        let release = pool.file(&format!("{session}-release"));
+        let mut envs = vec![("MOCK_CODEX_HOLD_UNTIL", release.as_str())];
+        if refuse {
+            envs.push(("MOCK_CODEX_INTERRUPT_THREAD_NOT_FOUND", "1"));
+        }
+        let child = pool.spawn(pool.command(session, &[], &envs));
+        wait_for("the turn to start", Duration::from_secs(30), || {
+            pool.server_pids()
+                .iter()
+                .any(|pid| pool.live_turns(*pid) == 1)
+        });
+        let message = format!("stop and do the right thing for {session}");
+        let (answer, served) = redirect(&pool, session, &message);
+        std::fs::write(&release, "").unwrap();
+        let (output, report) = Pool::finish(child);
+        succeeded(&output, &report);
+        let server = reported_server(&report);
+        let thread = thread_of(&report);
+        let turns: Vec<Value> = pool.state(server)["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|t| t["thread"] == thread.as_str())
+            .cloned()
+            .collect();
+        let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        if refuse {
+            assert!(!served, "{answer}");
+            assert_eq!(answer["reason"], "not_running", "{answer}");
+            assert!(
+                answer["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("thread not found")),
+                "{answer}"
+            );
+            assert_eq!(
+                turns.len(),
+                1,
+                "a refused redirect opened a turn: {turns:?}"
+            );
+            assert_ne!(interrupts[0]["redirected"], true, "{report}");
+        } else {
+            assert!(served, "{answer}");
+            assert_eq!(answer["redirected"], true, "{answer}");
+            assert_eq!(interrupts[0]["outcome"], "served", "{report}");
+            assert_eq!(interrupts[0]["redirected"], true, "{report}");
+            assert_eq!(turns.len(), 2, "{turns:?}");
+            assert_eq!(pool.turn_of(server, &thread)["turn"], turns[1]["turn"]);
+            assert!(
+                turns[1]["input"].to_string().contains(&message),
+                "the replacement turn did not carry the message: {}",
+                turns[1]
+            );
+        }
+    }
+}
+
+/// A zero-work overload on a pooled turn repeats the turn on the shared
+/// server — a fresh lease, the same server — and recovers within
+/// `server_overloaded_max_retries`; past it the run is `server_overloaded`,
+/// and a chain falls through to its next candidate.
+#[test]
+fn a_pooled_overload_retries_on_the_shared_server_and_falls_through_once_exhausted() {
+    let pool = Pool::new("pool-overload");
+    let recovered_count = pool.file("recovered-attempts");
+    let (output, report) = pool.run(pool.command_with_config(
+        "recovered",
+        "server_overloaded_max_retries = 1\n",
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "1"),
+            ("MOCK_ATTEMPT_FILE", &recovered_count),
+        ],
+    ));
+    succeeded(&output, &report);
+    let ran = result(&report);
+    assert!(ran["failure_kind"].is_null(), "{ran}");
+    assert_eq!(ran["text"], "work for recovered", "{ran}");
+    assert_eq!(std::fs::read_to_string(&recovered_count).unwrap(), "2");
+    let server = reported_server(&report);
+    let statuses: Vec<Value> = pool.state(server)["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["status"].clone())
+        .collect();
+    assert_eq!(
+        statuses,
+        vec![json!("failed"), json!("completed")],
+        "both attempts ran on the one shared server"
+    );
+
+    let exhausted_count = pool.file("exhausted-attempts");
+    let alt_log = pool.file("alt.log");
+    let config = format!(
+        "harnesses = [\"codex\", \"codex:alt\"]\n\
+         server_overloaded_max_retries = 1\n\
+         [harness.codex.variant.alt]\n\
+         app_server = \"per-dispatch\"\n\
+         env = {{ MOCK_CODEX_APP_SERVER_LOG = \"{alt_log}\", MOCK_CODEX_COMPLETE_TURN = \"1\" }}\n"
+    );
+    let (_, report) = Pool::finish(chain_dispatch(
+        &pool,
+        "exhausted",
+        &config,
+        &[],
+        &[
+            ("MOCK_CODEX_OVERLOAD_ATTEMPTS", "2"),
+            ("MOCK_ATTEMPT_FILE", &exhausted_count),
+        ],
+    ));
+    let results = report["results"].as_array().unwrap();
+    assert_eq!(results[0]["harness_id"], "codex", "{report}");
+    assert_eq!(results[0]["failure_kind"], "server_overloaded", "{report}");
+    assert_eq!(report["fallback"]["ran"], "codex:alt", "{report}");
+    assert_eq!(results.last().unwrap()["status"], "ok", "{report}");
+}
+
+/// A pooled turn's frames are observed as they arrive, as a dispatch's own
+/// child's stdout is, so a tool the turn runs reads the same on a shared server
+/// as on the dispatch's own app-server child — in the report and in the
+/// history's event lines: the same tool call, with the same timing fields.
+#[test]
+fn a_pooled_turn_s_tool_reads_as_it_does_on_the_dispatch_s_own_child() {
+    let pool = Pool::new("pool-timing");
+    let timing = |event: &Value| -> Vec<Value> {
+        [
+            "name",
+            "tool_call_id",
+            "status",
+            "started_at",
+            "finished_at",
+            "duration_ms",
+            "timing_source",
+        ]
+        .iter()
+        .map(|field| event[*field].clone())
+        .collect()
+    };
+    let mut seen = Vec::new();
+    for per_dispatch in [false, true] {
+        let session = if per_dispatch { "own-child" } else { "pooled" };
+        let history = pool.file(&format!("{session}-history"));
+        let args = ["--events", "--history", "--history-dir", history.as_str()];
+        let log = pool.file(&format!("{session}-app-server.log"));
+        let envs = [
+            ("MOCK_CODEX_TOOL_EVENTS", "1"),
+            // The own child acts as an app-server only with a log to keep.
+            ("MOCK_CODEX_APP_SERVER_LOG", log.as_str()),
+        ];
+        let cmd = if per_dispatch {
+            pool.command_with_config(
+                session,
+                "[harness.codex]\napp_server = \"per-dispatch\"\n",
+                &args,
+                &envs,
+            )
+        } else {
+            pool.command(session, &args, &envs)
+        };
+        let (output, report) = pool.run(cmd);
+        succeeded(&output, &report);
+        assert_eq!(
+            report["control"]["app_server"].is_null(),
+            per_dispatch,
+            "{session}: {report}"
+        );
+        let call = result(&report)["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["kind"] == "tool_call")
+            .cloned()
+            .unwrap_or_else(|| panic!("{session}: no tool call in {report}"));
+        let file = report["history_file"].as_str().expect("a history file");
+        let written = std::fs::read_to_string(file).unwrap();
+        let in_history = written
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["type"] == "event" && line["event"]["kind"] == "tool_call")
+            .unwrap_or_else(|| panic!("{session}: no tool call event in {written}"));
+        assert_eq!(
+            timing(&in_history["event"]),
+            timing(&call),
+            "{session}: {written}"
+        );
+        seen.push(timing(&call));
+    }
+    assert_eq!(
+        seen[0], seen[1],
+        "the shared server and the own child disagree"
+    );
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the
@@ -2399,6 +2630,50 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
     }
 }
 
+/// A server whose `thread/loaded/list` pages never end — each naming a cursor
+/// already answered — fails the reuse workload, naming the repeated cursor,
+/// rather than paging forever (the settle bound is checked between polls, not
+/// within one).
+#[cfg(target_os = "linux")]
+#[test]
+fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
+    let pool = Pool::new("pool-reuse-cycle");
+    let mut child = Command::new("bash")
+        .arg(repo_root().join("live/control/app-server-reuse.sh"))
+        .env("OH_REUSE_CODEX", mock_bin())
+        .env("OH_REUSE_SETTLE_MS", "60000")
+        .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+        .env("XDG_STATE_HOME", pool.path("state"))
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_FAULT", "loaded-cycle")
+        .env(
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+            LINGER_MS.to_string(),
+        )
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Building the example is most of the run; a reader that never checks
+    // progress pages forever, so the deadline only has to outlast the build.
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while child.try_wait().unwrap().is_none() {
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the reuse workload was still paging thread/loaded/list after 300 s");
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let output = child.wait_with_output().unwrap();
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{said}");
+    assert!(
+        said.contains("thread/loaded/list answered the cursor \"0\" a second time"),
+        "{said}"
+    );
+}
+
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
 /// Linux-only, as its journeys are: the reuse phase reads `/proc`.
 #[cfg(target_os = "linux")]
@@ -2455,6 +2730,27 @@ impl ControlSuite {
         }
         cmd.output().unwrap()
     }
+}
+
+/// scripts/e2e-control.sh's pooled-kill bound restates the pool's own sweep
+/// interval and stop deadline, and is held to them here.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_control_suite_s_kill_bound_is_the_pool_s_own_deadlines() {
+    let script = std::fs::read_to_string(repo_root().join("scripts/e2e-control.sh")).unwrap();
+    let stated = |name: &str| -> u64 {
+        let line = script
+            .lines()
+            .find(|line| line.trim_start().starts_with("local sweep_s="))
+            .expect("the pooled-kill phase states its deadlines");
+        line.split_whitespace()
+            .find_map(|word| word.strip_prefix(&format!("{name}=")))
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_else(|| panic!("no numeric {name} in `{line}`"))
+    };
+    assert_eq!(stated("sweep_s"), DEAD_LEASE_SWEEP_INTERVAL.as_secs());
+    assert_eq!(stated("stop_s"), DEAD_LEASE_STOP_DEADLINE.as_secs());
+    assert!(script.contains("bound=$((sweep_s + stop_s))"));
 }
 
 /// The suite's pooled phases pass against a mock that keeps each dispatch's

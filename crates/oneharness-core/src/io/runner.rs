@@ -872,14 +872,14 @@ pub(crate) fn utc_now() -> String {
     crate::domain::history::format_rfc3339_millis(epoch_millis())
 }
 
-fn epoch_millis() -> u128 {
+pub(crate) fn epoch_millis() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis()
 }
 
-fn observations_since(
+pub(crate) fn observations_since(
     start: Instant,
     start_epoch_ms: u128,
     observations: Vec<(Instant, Vec<u8>)>,

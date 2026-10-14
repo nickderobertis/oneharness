@@ -62,5 +62,8 @@ rm -f "$out" || {
   exit 1
 }
 "$root/target/debug/examples/app_server_reuse" --codex "$codex" --leases "$leases" \
-  --hold-ms 1000 --settle-ms "$settle" --cwd "$work" --out "$out"
+  --hold-ms 1000 --settle-ms "$settle" --cwd "$work" --out "$out" || {
+  echo "app-server-reuse: the workload failed; its error is above. Threads still loaded at the bound: the server kept released threads past OH_REUSE_SETTLE_MS (${settle} ms) — raise it to wait longer, or report a retention. Anything else: check '$codex --version' and 'codex login status', then rerun" >&2
+  exit 1
+}
 echo "app-server reuse: wrote $out"

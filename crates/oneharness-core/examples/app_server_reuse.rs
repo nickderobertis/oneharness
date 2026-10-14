@@ -231,10 +231,6 @@ fn run(args: &Args) -> Result<Value, String> {
                 after_last = taken;
             }
         }
-        eprintln!(
-            "app_server_reuse: lease {lease} of {} on server {pid} released",
-            args.leases
-        );
     }
     keeper.release();
     Ok(json!({

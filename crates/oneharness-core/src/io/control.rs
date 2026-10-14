@@ -160,8 +160,20 @@ enum PooledState {
         board: std::sync::Arc<ReplyBoard>,
         command: Vec<String>,
     },
-    /// The turn is over — `lost` when the server went away under it.
-    Ended { command: Vec<String>, lost: bool },
+    /// The turn is over, and how it ended.
+    Ended {
+        command: Vec<String>,
+        end: PooledEnd,
+    },
+}
+
+/// How a turn on a shared app-server ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PooledEnd {
+    /// The turn reached its own end, whatever that end said.
+    Finished,
+    /// The server went away under the live turn.
+    ServerLost,
 }
 
 /// What drives — and therefore what interrupts — the turn a candidate is
@@ -628,7 +640,7 @@ impl ControlHandle {
         };
         *pooled = PooledState::Ended {
             command,
-            lost: true,
+            end: PooledEnd::ServerLost,
         };
     }
 
@@ -636,7 +648,13 @@ impl ControlHandle {
     /// live turn.
     #[must_use]
     pub fn app_server_lost(&self) -> bool {
-        matches!(*self.pooled(), PooledState::Ended { lost: true, .. })
+        matches!(
+            *self.pooled(),
+            PooledState::Ended {
+                end: PooledEnd::ServerLost,
+                ..
+            }
+        )
     }
 
     /// The serving candidate's shared app-server launch argv, when its turn
@@ -695,7 +713,7 @@ impl ControlHandle {
         if let PooledState::Live { command, .. } = std::mem::take(&mut *pooled) {
             *pooled = PooledState::Ended {
                 command,
-                lost: false,
+                end: PooledEnd::Finished,
             };
         }
     }

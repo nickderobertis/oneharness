@@ -41,15 +41,24 @@ RERUN = "rerun, and check the server still starts (`codex app-server --help`)"
 
 
 def tree(root):
+    """`root` and every descendant of it, from /proc. A process that exits
+    between the listing and its read is skipped; any other read failure
+    could hide a live descendant, so it stops the measurement."""
+    try:
+        names = os.listdir("/proc")
+    except OSError as error:
+        stop(f"cannot list /proc: {error}; run it on Linux with /proc mounted and readable")
     parents = {}
-    for name in os.listdir("/proc"):
+    for name in names:
         if not name.isdigit():
             continue
         try:
             with open(f"/proc/{name}/stat") as stat:
                 parents[int(name)] = int(stat.read().rsplit(")", 1)[1].split()[1])
-        except OSError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
+        except OSError as error:
+            stop(f"cannot read /proc/{name}/stat: {error}; run it as the user that owns the server")
     found, index = [root], 0
     while index < len(found):
         found += [pid for pid, ppid in parents.items() if ppid == found[index]]
@@ -58,13 +67,18 @@ def tree(root):
 
 
 def rss(pid):
+    """The resident bytes of `pid`: 0 once it has exited (or for a zombie, which
+    reports no VmRSS and holds none); any other read failure would undercount
+    the server, so it stops the measurement."""
     try:
         with open(f"/proc/{pid}/status") as status:
             for line in status:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1]) * 1024
-    except OSError:
-        pass
+    except (FileNotFoundError, ProcessLookupError):
+        return 0
+    except OSError as error:
+        stop(f"cannot read /proc/{pid}/status of a process in the server's tree: {error}; run it as the user that owns the server")
     return 0
 
 
@@ -241,7 +255,10 @@ def measure(work, errors):
 
 
 def main():
-    probe = subprocess.run([codex, "--version"], capture_output=True, text=True)
+    try:
+        probe = subprocess.run([codex, "--version"], capture_output=True, text=True)
+    except OSError as error:
+        stop(f"cannot run `{codex} --version`: {error}; check the executable")
     if probe.returncode != 0:
         stop(f"`{codex} --version` failed ({probe.returncode}): {probe.stderr.strip()}; check the executable")
     try:

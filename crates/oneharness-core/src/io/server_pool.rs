@@ -142,6 +142,85 @@ impl<'de> Deserialize<'de> for LaunchArgv {
     }
 }
 
+/// An identity the pool persists and reads back to select processes or name
+/// a thread — a server or dispatch marker, a thread or turn id: never empty
+/// and never carrying a control character, so a record read back can only
+/// name something a process scan or a server could.
+macro_rules! note_identity {
+    ($(#[$doc:meta])* $name:ident, $what:literal) => {
+        $(#[$doc])*
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+        #[serde(try_from = "String", into = "String")]
+        pub struct $name(String);
+
+        impl $name {
+            #[doc = concat!("`value` as a ", $what, ", or `None` when it is empty or carries a control character.")]
+            #[must_use]
+            pub fn new(value: impl Into<String>) -> Option<Self> {
+                let value = value.into();
+                (!value.is_empty() && !value.chars().any(char::is_control)).then_some(Self(value))
+            }
+
+            /// The identity as written.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = String;
+
+            fn try_from(value: String) -> Result<Self, String> {
+                Self::new(value.clone()).ok_or_else(|| format!("{value:?} is not a {}", $what))
+            }
+        }
+
+        impl From<$name> for String {
+            fn from(identity: $name) -> String {
+                identity.0
+            }
+        }
+    };
+}
+
+note_identity!(
+    /// A server marker's value (`ONEHARNESS_APP_SERVER_MARKER`).
+    ServerMarker,
+    "server marker"
+);
+note_identity!(
+    /// A dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
+    DispatchMarker,
+    "dispatch marker"
+);
+note_identity!(
+    /// An app-server thread's id.
+    ThreadId,
+    "thread id"
+);
+note_identity!(
+    /// An app-server turn's id.
+    TurnId,
+    "turn id"
+);
+
+impl DispatchMarker {
+    /// A marker no other dispatch carries.
+    #[must_use]
+    pub fn fresh() -> Self {
+        DispatchMarker(uuid::Uuid::now_v7().hyphenated().to_string())
+    }
+}
+
+impl ServerMarker {
+    /// A marker no other server carries.
+    #[must_use]
+    pub fn fresh() -> Self {
+        ServerMarker(uuid::Uuid::now_v7().hyphenated().to_string())
+    }
+}
+
 /// The record describing the server currently backing a pool entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerRecord {
@@ -169,7 +248,7 @@ pub struct ServerRecord {
     /// process carrying it, the launcher shim and its native child alike —
     /// and its dead leases are retired through the app-server protocol.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marker: Option<String>,
+    pub marker: Option<ServerMarker>,
     /// The linger, in milliseconds, the dispatch that started the server asked
     /// for, so the pool-owned sweeper enforces the one this server was started
     /// under. `None` on the entries started before it existed.
@@ -255,71 +334,6 @@ impl LeaseHolder {
     #[must_use]
     pub fn is_live(&self) -> bool {
         pid_alive(self.pid) && process_identity(self.pid).as_ref() == Some(&self.identity)
-    }
-}
-
-/// An identity a lease note persists, read back by whichever process retires
-/// the lease: never empty and never carrying a control character, so a note
-/// read back can only name something a process scan or a server could.
-macro_rules! note_identity {
-    ($(#[$doc:meta])* $name:ident, $what:literal) => {
-        $(#[$doc])*
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-        #[serde(try_from = "String", into = "String")]
-        pub struct $name(String);
-
-        impl $name {
-            #[doc = concat!("`value` as a ", $what, ", or `None` when it is empty or carries a control character.")]
-            #[must_use]
-            pub fn new(value: impl Into<String>) -> Option<Self> {
-                let value = value.into();
-                (!value.is_empty() && !value.chars().any(char::is_control)).then_some(Self(value))
-            }
-
-            /// The identity as written.
-            #[must_use]
-            pub fn as_str(&self) -> &str {
-                &self.0
-            }
-        }
-
-        impl TryFrom<String> for $name {
-            type Error = String;
-
-            fn try_from(value: String) -> Result<Self, String> {
-                Self::new(value.clone()).ok_or_else(|| format!("{value:?} is not a {}", $what))
-            }
-        }
-
-        impl From<$name> for String {
-            fn from(identity: $name) -> String {
-                identity.0
-            }
-        }
-    };
-}
-
-note_identity!(
-    /// A dispatch marker's value (`ONEHARNESS_DISPATCH_MARKER`).
-    DispatchMarker,
-    "dispatch marker"
-);
-note_identity!(
-    /// An app-server thread's id.
-    ThreadId,
-    "thread id"
-);
-note_identity!(
-    /// An app-server turn's id.
-    TurnId,
-    "turn id"
-);
-
-impl DispatchMarker {
-    /// A marker no other dispatch carries.
-    #[must_use]
-    pub fn fresh() -> Self {
-        DispatchMarker(uuid::Uuid::now_v7().hyphenated().to_string())
     }
 }
 
@@ -459,7 +473,7 @@ pub struct LaunchPlan {
     /// [`Self::env`], rather than inheriting the starting dispatch's.
     env_clear: bool,
     /// The server marker the server is launched with, recorded in its entry.
-    marker: Option<String>,
+    marker: Option<ServerMarker>,
     /// The address the server will be reachable at.
     address: ServerAddress,
 }
@@ -517,7 +531,7 @@ impl LaunchPlan {
         template: Vec<String>,
         address: ServerAddress,
         env: Vec<(String, String)>,
-        marker: String,
+        marker: ServerMarker,
     ) -> io::Result<Self> {
         let argv = LaunchArgv::new(render(&template, &address))
             .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;

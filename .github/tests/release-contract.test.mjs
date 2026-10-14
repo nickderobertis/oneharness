@@ -27,9 +27,11 @@ test("production release graph retains every declared architecture/artifact and 
   assert.deepEqual([archive.bin, ...archive.include.split(",")], [...archiveMembers]);
   const darwin = release.jobs["build-darwin"];
   assert.match(darwin["runs-on"], /^macos-/);
-  const build = darwin.steps.find(
+  const compile = darwin.steps.find(
     (s) => s.name === "Compile each Darwin target once and package its bytes",
-  ).run;
+  );
+  const build = compile.run;
+  assert.equal(compile.env?.RUSTFLAGS, "-D warnings", "the Darwin compile denies warnings");
   const targets = build.match(/for target in (.*); do/)[1].split(" ");
   assert.deepEqual(
     targets.sort(),
@@ -106,6 +108,17 @@ test("real release builder rejects target/tag mismatch before compiling or publi
       result.stderr,
       /Unsupported release target|Release tag differs/,
     );
+  }
+  // A blank output directory would otherwise resolve to the target's name
+  // under the current directory and compile into it.
+  for (const out of ["", "   "]) {
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/release-bundle.mjs", "--target", "aarch64-apple-darwin", "--out", out],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--out must name a directory/);
   }
 });
 

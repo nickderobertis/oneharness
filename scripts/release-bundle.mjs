@@ -27,6 +27,10 @@ try { ({ values } = parseArgs({
 }));
  } catch (error) { throw Error(`${error.message}. Next: node scripts/release-bundle.mjs --target <target> --out <directory>.`, {cause:error}); }
 function main() {
+if (values.out !== undefined && !values.out.trim())
+  throw Error(
+    `--out must name a directory, not ${JSON.stringify(values.out)}. Next: pass an output directory such as dist/release, or omit --out.`,
+  );
 const target = values.target;
 const platforms = readPlatforms();
 const facts = platforms.find(

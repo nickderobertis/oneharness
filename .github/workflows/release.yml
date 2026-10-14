@@ -159,6 +159,8 @@ jobs:
       # Apple Silicon only: Intel macOS artifacts are discontinued, so the one
       # Mac job builds, packs and proves the arm64 bytes natively.
       - name: Compile each Darwin target once and package its bytes
+        env:
+          RUSTFLAGS: -D warnings
         run: |
           for target in aarch64-apple-darwin; do
             just release-bundle "$target" dist/release "$GITHUB_REF_NAME"

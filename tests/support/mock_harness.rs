@@ -2317,6 +2317,12 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         default) and another thread's notice before
 ///                         `thread/start`'s reply; `refuse-shell` / `fail-shell`
 ///                         refuse a shell turn or end it failed;
+///                         `silent-shell` / `shell-no-completion` /
+///                         `shell-hangup` leave a shell command unanswered,
+///                         answer it with no completion, or drop the
+///                         connection under it; `thread-start-no-thread` /
+///                         `thread-start-bad-id` answer `thread/start` with no
+///                         thread or an empty id;
 ///                         `ping-pong` pings each connection and handles
 ///                         nothing on it until it answers with a pong;
 ///                         `shell-completes-first` ends a shell turn before
@@ -3205,8 +3211,15 @@ mod listen_server {
             }
             "initialize" => reply(&mut s, json!({"userAgent": "oneharness-mock-app-server"})),
             "thread/start" => {
-                if s.fault == "refuse-thread-start" {
-                    return refuse(&mut s, "the mock refuses thread/start".to_string());
+                match s.fault.as_str() {
+                    "refuse-thread-start" => {
+                        return refuse(&mut s, "the mock refuses thread/start".to_string())
+                    }
+                    "thread-start-no-thread" => return reply(&mut s, json!({"model": "m"})),
+                    "thread-start-bad-id" => {
+                        return reply(&mut s, json!({"thread": {"id": ""}, "model": "m"}))
+                    }
+                    _ => {}
                 }
                 let thread = format!("mock-thread-{}-{}", s.pid, s.next_thread);
                 s.next_thread += 1;
@@ -3315,8 +3328,26 @@ mod listen_server {
                 if !s.threads.contains_key(&thread) {
                     return refuse(&mut s, format!("thread not found: {thread}"));
                 }
-                if s.fault == "refuse-shell" {
-                    return refuse(&mut s, "the mock refuses thread/shellCommand".to_string());
+                match s.fault.as_str() {
+                    "refuse-shell" => {
+                        return refuse(&mut s, "the mock refuses thread/shellCommand".to_string())
+                    }
+                    // Never answered, never run.
+                    "silent-shell" => return,
+                    // The connection dropped under the request.
+                    "shell-hangup" => {
+                        if let Some(c) = s.conns.get(&conn) {
+                            let _ = c
+                                .writer
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .shutdown(std::net::Shutdown::Both);
+                        }
+                        return;
+                    }
+                    // Answered, and the turn never completes.
+                    "shell-no-completion" => return reply(&mut s, json!({})),
+                    _ => {}
                 }
                 let turn = format!("{thread}-shell");
                 // CODEX_MOCK_FAULT=fail-shell: the shell turn ends failed.

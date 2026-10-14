@@ -498,10 +498,11 @@ impl JsonSchema for PoolKey {
     }
 
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // Held to `is_pool_key` by `the_pool_key_schema_accepts_exactly_what_parse_does`.
         schemars::json_schema!({
             "type": "string",
             "minLength": 1,
-            "maxLength": 128,
+            "maxLength": POOL_KEY_MAX_LEN,
             "pattern": "^[A-Za-z0-9_-]+$",
         })
     }
@@ -564,9 +565,12 @@ pub fn pool_key(
 /// dispatch would then lease and reclaim wholesale. Excluding the character
 /// makes both `.` and `..` unrepresentable, so no separate traversal check is
 /// needed.
+/// The longest pool key, in its schema and at runtime alike.
+const POOL_KEY_MAX_LEN: usize = 128;
+
 fn is_pool_key(key: &str) -> bool {
     !key.is_empty()
-        && key.len() <= 128
+        && key.len() <= POOL_KEY_MAX_LEN
         && key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -1946,6 +1950,29 @@ mod control_mode_parity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pool_key_schema_accepts_exactly_what_parse_does() {
+        let schema = serde_json::to_value(schemars::schema_for!(PoolKey)).unwrap();
+        let pattern = regex::Regex::new(schema["pattern"].as_str().unwrap()).unwrap();
+        let min = schema["minLength"].as_u64().unwrap() as usize;
+        let max = schema["maxLength"].as_u64().unwrap() as usize;
+        let mut corpus: Vec<String> = (0u8..=127).map(|b| (b as char).to_string()).collect();
+        corpus.extend([0, 1, 127, 128, 129, 200].iter().map(|n| "k".repeat(*n)));
+        corpus.extend([
+            "é".to_string(),
+            "a b".to_string(),
+            "codex-app-server-1f".to_string(),
+        ]);
+        for key in corpus {
+            let by_schema = pattern.is_match(&key) && (min..=max).contains(&key.chars().count());
+            assert_eq!(
+                PoolKey::parse(&key).is_ok(),
+                by_schema,
+                "{key:?}: the runtime and the schema disagree"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

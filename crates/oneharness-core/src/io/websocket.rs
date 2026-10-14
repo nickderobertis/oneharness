@@ -1134,6 +1134,30 @@ mod tests {
         }
     }
 
+    /// A path no `AF_UNIX` address can hold — past `sun_path`, or holding NUL —
+    /// is refused before anything is dialled, on every platform (on Windows by
+    /// this module's own address builder).
+    #[test]
+    fn a_path_no_socket_address_can_hold_is_refused() {
+        let dir = ScratchDir::new("ws-bad-address").unwrap();
+        let long = dir.join("x".repeat(200));
+        let nul = dir.join("with\0nul.sock");
+        for path in [long, nul] {
+            let err = LocalStream::connect(&path).err().unwrap();
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::InvalidInput,
+                "{}: {err}",
+                path.display()
+            );
+            #[cfg(windows)]
+            assert!(
+                err.to_string().contains("cannot name an AF_UNIX socket"),
+                "{err}"
+            );
+        }
+    }
+
     /// A client message of every length encoding — 7-bit, 16-bit and 64-bit —
     /// reaches a server on a real `AF_UNIX` connection whole.
     #[test]

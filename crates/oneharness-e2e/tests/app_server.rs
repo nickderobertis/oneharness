@@ -2038,17 +2038,37 @@ fn a_shell_turn_completed_before_its_reply_still_completes() {
     assert_eq!(reuse["lease_count"], 5);
 }
 
-/// Each way a pooled session's shell turn or loaded-thread listing can fail
-/// fails the reuse workload naming it: a refused shell command, a shell turn
-/// that ends failed, a refused listing, a listing naming a thread that is no
-/// id, and one naming a cursor that is no string.
+/// Each way a pooled session's thread open, shell turn or loaded-thread
+/// listing can fail fails the reuse workload naming it, writing no telemetry:
+/// a refused, threadless or unusable `thread/start`; a refused, unanswered,
+/// never-completing, failed or hung-up shell turn; and a refused listing, one
+/// naming a thread that is no id, or a cursor that is no string. The cases run
+/// side by side, two of them waiting out a 30 s bound.
 #[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_names_each_shell_turn_and_listing_failure() {
-    for (fault, said) in [
+    let cases = [
+        ("refuse-thread-start", "thread/start was refused: "),
+        ("thread-start-no-thread", "thread/start named no thread: "),
+        (
+            "thread-start-bad-id",
+            "thread/start named an unusable thread id \"\"",
+        ),
         (
             "refuse-shell",
             "the app-server's thread/shellCommand failed: it refused thread/shellCommand: ",
+        ),
+        (
+            "silent-shell",
+            "the app-server did not answer thread/shellCommand",
+        ),
+        (
+            "shell-no-completion",
+            "the shell turn did not complete within 30s",
+        ),
+        (
+            "shell-hangup",
+            "thread/shellCommand: the shared codex app-server closed the connection",
         ),
         ("fail-shell", "the shell turn ended failed, not completed"),
         ("refuse-loaded", "thread/loaded/list was refused: "),
@@ -2060,29 +2080,37 @@ fn the_reuse_workload_names_each_shell_turn_and_listing_failure() {
             "loaded-cursor-number",
             "thread/loaded/list answered a cursor 2 that is no string",
         ),
-    ] {
-        let pool = Pool::new(&format!("pool-reuse-{fault}"));
-        let output = Command::new("bash")
-            .arg(repo_root().join("live/control/app-server-reuse.sh"))
-            .env("OH_REUSE_CODEX", mock_bin())
-            .env("OH_REUSE_SETTLE_MS", "1000")
-            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
-            .env("XDG_STATE_HOME", pool.path("state"))
-            .env("CODEX_MOCK_DIR", pool.path("mock"))
-            .env("CODEX_MOCK_FAULT", fault)
-            .env(
-                "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
-                LINGER_MS.to_string(),
-            )
-            .output()
-            .unwrap();
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!output.status.success(), "{fault}: {stderr}");
+    ];
+    let runs: Vec<_> = cases
+        .into_iter()
+        .map(|(fault, said)| {
+            std::thread::spawn(move || {
+                let pool = Pool::new(&format!("pool-reuse-{fault}"));
+                let output = Command::new("bash")
+                    .arg(repo_root().join("live/control/app-server-reuse.sh"))
+                    .env("OH_REUSE_CODEX", mock_bin())
+                    .env("OH_REUSE_SETTLE_MS", "1000")
+                    .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+                    .env("XDG_STATE_HOME", pool.path("state"))
+                    .env("CODEX_MOCK_DIR", pool.path("mock"))
+                    .env("CODEX_MOCK_FAULT", fault)
+                    .env(
+                        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+                        LINGER_MS.to_string(),
+                    )
+                    .output()
+                    .unwrap();
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                let wrote = pool.path("reuse.json").exists();
+                (fault, said, output.status.success(), stderr, wrote)
+            })
+        })
+        .collect();
+    for run in runs {
+        let (fault, said, ok, stderr, wrote) = run.join().unwrap();
+        assert!(!ok, "{fault}: {stderr}");
         assert!(stderr.contains(said), "{fault}: no `{said}` in: {stderr}");
-        assert!(
-            !pool.path("reuse.json").exists(),
-            "{fault}: telemetry was written"
-        );
+        assert!(!wrote, "{fault}: telemetry was written");
     }
 }
 
@@ -2893,6 +2921,7 @@ fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
 /// answers `--version`, and as `app-server --listen` it misbehaves as
 /// `FAKE_MODE` says — in the upgrade, or with one bad frame once the client
 /// has sent its first message.
+#[cfg(target_os = "linux")]
 const MISBEHAVING_CODEX: &str = r#"#!/usr/bin/env python3
 import base64, hashlib, os, socket, struct, sys, time
 

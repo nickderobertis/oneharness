@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { parse } from "yaml";
 import { isDeepStrictEqual } from "node:util";
+import { assertRevision } from "../git-input.mjs";
 import { workflows, validateWorkflow, triggered, resolveJobs, expand, render, evaluate } from "../workflow-graph.mjs";
 
 // The tree this change merges into supplies the actual workflow declarations,
@@ -10,11 +11,11 @@ import { workflows, validateWorkflow, triggered, resolveJobs, expand, render, ev
 // A fixed commit would read every lane main gained since as a removal.
 // llmlint: ignore-block[shell_test_tiers_stay_split] Reading the required immutable workflow baseline uses local Git only; no fixture history, installation, provider process or network is involved.
 function baseRef() {
-  const override = process.env.OH_WORKFLOW_BASELINE?.trim();
+  const base = assertRevision(process.env.OH_WORKFLOW_BASELINE ?? "origin/main", "OH_WORKFLOW_BASELINE");
   try {
-    return execFileSync("git", ["merge-base", "HEAD", override || "origin/main"], { encoding: "utf8" }).trim();
+    return execFileSync("git", ["merge-base", "HEAD", base], { encoding: "utf8" }).trim();
   } catch (error) {
-    throw Error(`Cannot find the merge base of HEAD and ${override || "origin/main"}. Next: fetch origin/main with full history, or set OH_WORKFLOW_BASELINE to the base ref.`, { cause: error });
+    throw Error(`Cannot find the merge base of HEAD and ${base}. Next: fetch origin/main with full history, or set OH_WORKFLOW_BASELINE to the base ref.`, { cause: error });
   }
 }
 const baselineRef = baseRef();

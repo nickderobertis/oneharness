@@ -53,3 +53,10 @@ test("malformed check job input is refused before any environment is derived", (
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("an unconditional gate step is the one every platform runs", () => {
+  const doubled = structuredClone(ci);
+  for (const step of gateSteps(doubled.check)) delete step.if;
+  doubled.check.steps.find((s) => s.run === "just check").env = { MARK: "unconditional" };
+  for (const os of ci.check.strategy.matrix.os) assert.equal(gateEnv(doubled, os, "affected").MARK, "unconditional");
+});

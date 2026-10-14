@@ -840,6 +840,14 @@ fn ensure_sweeper(entry: &Path) {
     if live_sweeper(entry) {
         return;
     }
+    // On Linux the running image itself, which `/proc/self/exe` opens even
+    // after its path was replaced (a rebuild of the same target under a running
+    // dispatch): the path `current_exe` reads then ends in ` (deleted)` and
+    // names no file, so no sweeper would start and a dead holder's commands
+    // would run on with no other dispatch alive to find them.
+    #[cfg(target_os = "linux")]
+    let exe = std::path::PathBuf::from("/proc/self/exe");
+    #[cfg(not(target_os = "linux"))]
     let Ok(exe) = std::env::current_exe() else {
         return;
     };

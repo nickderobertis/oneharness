@@ -91,6 +91,8 @@ fn sigkill(pid: u32) {
 struct Pool {
     dir: ScratchDir,
     extra: Vec<(String, String)>,
+    /// The `oneharness` every dispatch runs, when not the built one.
+    bin: Option<PathBuf>,
 }
 
 impl Drop for Pool {
@@ -141,7 +143,19 @@ impl Pool {
         Pool {
             dir,
             extra: Vec::new(),
+            bin: None,
         }
+    }
+
+    /// The same world with every dispatch run by the `oneharness` at `bin`.
+    #[cfg(target_os = "linux")]
+    fn with_bin(mut self, bin: PathBuf) -> Self {
+        self.bin = Some(bin);
+        self
+    }
+
+    fn oneharness(&self) -> PathBuf {
+        self.bin.clone().unwrap_or_else(oneharness_bin)
     }
 
     /// The same world with `name=value` in every dispatch's environment.
@@ -170,7 +184,7 @@ impl Pool {
     /// ready to spawn: no config file, this world's state, sessions and mock
     /// records, then `args`, then `envs` over everything.
     fn command(&self, session: &str, args: &[&str], envs: &[(&str, &str)]) -> Command {
-        let mut cmd = Command::new(oneharness_bin());
+        let mut cmd = Command::new(self.oneharness());
         cmd.env("ONEHARNESS_NO_CONFIG", "1");
         self.base(&mut cmd);
         Self::completes_unless_held(&mut cmd, envs);
@@ -192,7 +206,7 @@ impl Pool {
     ) -> Command {
         let config = self.path(&format!("{session}.toml"));
         std::fs::write(&config, toml).unwrap();
-        let mut cmd = Command::new(oneharness_bin());
+        let mut cmd = Command::new(self.oneharness());
         cmd.env_remove("ONEHARNESS_NO_CONFIG");
         for (key, _) in std::env::vars() {
             if key.starts_with("ONEHARNESS_") {
@@ -1039,6 +1053,75 @@ fn a_sigkilled_pooled_dispatch_is_stopped_and_released_beside_a_live_neighbour()
 #[test]
 fn a_sigkilled_pooled_dispatch_is_stopped_and_released_when_it_was_the_only_one() {
     a_killed_dispatch_is_stopped_and_released(&Pool::new("pool-kill-alone"), false);
+}
+
+/// A dispatch whose `oneharness` executable is replaced while it runs — as a
+/// build of the same target does under a running suite — still starts the
+/// pool's sweeper, so its death is found and its commands stopped with no other
+/// dispatch alive. On Linux the running image's path then reads
+/// `… (deleted)`, which names no file to start the sweeper from.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_sigkilled_pooled_dispatch_is_stopped_after_its_executable_was_replaced() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Pool::new("pool-kill-rebuilt");
+    let copy = pool.path("oneharness");
+    std::fs::copy(oneharness_bin(), &copy).unwrap();
+    // The version probe runs before the lease, so the copy is replaced (a new
+    // file renamed over it, as a linker's output replaces the old one) after
+    // the dispatch started and before it starts the sweeper.
+    let codex = pool.path("codex");
+    std::fs::write(
+        &codex,
+        format!(
+            "#!/bin/sh\ncase \"$1\" in --version) cp '{copy}' '{copy}.new' && mv -f '{copy}.new' '{copy}' || exit 1 ;; esac\nexec '{mock}' \"$@\"\n",
+            copy = copy.display(),
+            mock = mock_bin().display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let pool = pool.with_bin(copy);
+    let beat = pool.file("heartbeat");
+    let never = pool.file("never-released");
+    let mut victim = pool.spawn(pool.command(
+        "victim",
+        &[
+            "--mode",
+            "bypass",
+            "--bin",
+            &format!("codex={}", codex.display()),
+        ],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let server = pool.await_live_turns(1);
+    wait_for("the heartbeat to start", Duration::from_secs(10), || {
+        lines(&beat) >= 3
+    });
+    let command_pid = command_running(&pool, server, &beat)["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    sigkill(victim.id());
+    victim.wait().unwrap();
+    let killed = Instant::now();
+    let bound = DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE;
+    // A hang guard, well past the bound the assertion below holds it to.
+    wait_for("the dead dispatch's command to stop", bound * 3, || {
+        !alive(command_pid)
+    });
+    let stopped = killed.elapsed();
+    assert!(
+        stopped <= bound + Duration::from_millis(1500),
+        "the command outlived its dispatch by {stopped:?}, past the {bound:?} sweep + stop bound"
+    );
+    wait_for(
+        "the server to stop once no lease is live",
+        Duration::from_millis(LINGER_MS) + bound + Duration::from_secs(5),
+        || !alive(server),
+    );
 }
 
 /// A dispatch that ends normally while a command it started still runs leaves

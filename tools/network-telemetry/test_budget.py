@@ -684,9 +684,11 @@ class CodexSuite(BudgetCase):
         self.assertEqual(run.returncode, 0, run.stderr)
         self.assertIn("STOP: OH_E2E_PHASE_LIMIT=3 reached", run.stderr)
         records = lines(tmp / "telemetry" / "codex.jsonl")
+        # The controlled turn runs on the shared app-server, a launch of no
+        # one phase: the shim records it `unphased`.
         for phase, kind in (
             ("run", "exec"),
-            ("controlled-turn", "app-server"),
+            ("unphased", "shared-app-server"),
             ("usage-probe", "app-server"),
         ):
             with self.subTest(phase=phase):
@@ -731,15 +733,16 @@ class CodexSuite(BudgetCase):
     def test_a_phase_whose_launch_the_shim_could_not_measure_fails_the_check_step(self) -> None:
         need_recorder(self)
         tmp = scratch(self)
-        # A pasta that cannot build the namespace for the controlled turn only:
-        # that launch runs unmeasured, as on a host whose namespaces fail.
+        # A pasta that cannot build the namespace for the controlled turn's
+        # shared app-server only (its argv carries `--listen`): that launch
+        # runs unmeasured, as on a host whose namespaces fail.
         broken = tmp / "pasta-bin"
         broken.mkdir()
         real = subprocess.run(
             ["bash", "-c", "command -v pasta"], capture_output=True, text=True
         ).stdout.strip()
         (broken / "pasta").write_text(
-            '#!/usr/bin/env bash\n[ "${OH_E2E_PHASE:-}" != controlled-turn ] || { echo "pasta: refused" >&2; exit 1; }\n'
+            '#!/usr/bin/env bash\ncase " $* " in *" --listen "*) echo "pasta: refused" >&2; exit 1 ;; esac\n'
             f'exec "{real}" "$@"\n'
         )
         (broken / "pasta").chmod(0o755)
@@ -750,17 +753,13 @@ class CodexSuite(BudgetCase):
         run = run_suite("codex", env)
         self.assertEqual(run.returncode, 0, run.stderr)
         records = lines(tmp / "telemetry" / "codex.jsonl")
-        (turn,) = [
-            s
-            for s in starts(records)
-            if s["phase"] == "controlled-turn" and s["kind"] == "app-server"
-        ]
+        (turn,) = [s for s in starts(records) if s["kind"] == "shared-app-server"]
         (line,) = measurements(records, turn["launch_id"])
         self.assertEqual(line["method"], "unavailable")
         run = check_step(tmp / "telemetry")
         self.assertNotEqual(run.returncode, 0, run.stdout)
         self.assertIn(
-            f"launch {turn['launch_id']} (phase controlled-turn, kind app-server) was not measured",
+            f"launch {turn['launch_id']} (phase unphased, kind shared-app-server) was not measured",
             run.stdout,
         )
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.11",
+  "schema_version": "0.12",
   "config_files": [
     "<dir>/base.toml",
     "<dir>/single.toml",
@@ -188,6 +188,10 @@
         "value": false,
         "source": "default"
       },
+      "app_server": {
+        "value": "shared",
+        "source": "default"
+      },
       "allowed_tools": {
         "value": null,
         "source": null
@@ -241,6 +245,10 @@
           },
           "analytics": {
             "value": false,
+            "source": "default"
+          },
+          "app_server": {
+            "value": "shared",
             "source": "default"
           },
           "allowed_tools": {

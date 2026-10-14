@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.27.0...oneharness-core-v0.28.0) - 2026-10-14
+
+### Added
+
+- *(codex)* [**breaking**] share one pooled app-server across concurrent Codex dispatches ([#1467](https://github.com/nickderobertis/oneharness/pull/1467))
+
 ## [0.27.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.26.0...oneharness-core-v0.27.0) - 2026-10-13
 
 ### Added

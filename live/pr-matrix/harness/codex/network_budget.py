@@ -317,8 +317,12 @@ def suite_total(launches: list[Launch]) -> Figure:
 
 
 def model_turn(launch: Launch) -> bool:
-    return launch.kind == "exec" or (
-        launch.kind == "app-server" and launch.phase == "controlled-turn"
+    # A shared app-server serves the suite's controlled turn (its one pooled
+    # dispatch), measured over the server's life; a stdio one did before pooling.
+    return (
+        launch.kind == "exec"
+        or launch.kind == "shared-app-server"
+        or (launch.kind == "app-server" and launch.phase == "controlled-turn")
     )
 
 

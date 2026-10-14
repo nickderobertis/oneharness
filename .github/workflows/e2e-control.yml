@@ -137,6 +137,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: lts/*
+      # The shared app-server's pooled-reuse phase checks its memory budget
+      # with the uv workspace's onebudgetspec (live/control/budgets.yaml).
+      - uses: astral-sh/setup-uv@v6
 
       - name: Install the npm-distributed harness CLIs
         run: |

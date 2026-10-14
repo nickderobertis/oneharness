@@ -68,6 +68,13 @@ pub struct DialogueConfig {
     /// and only the harness's own registry entry knows it — the two ACP
     /// harnesses share one [`ControlShape`] and do not share a mapping.
     pub posture: ApprovalPosture,
+    /// The dispatch's own `shell_environment_policy`, carried as the
+    /// thread-level `config` map codex's `thread/start` and `thread/resume`
+    /// send when the turn runs on a shared app-server, so its thread's
+    /// commands see its environment rather than the server's. `None` on a
+    /// dispatch's own child, whose process environment already is the
+    /// dispatch's. `turn/start` has no `config` map, so it never rides there.
+    pub shell_environment_policy: Option<crate::domain::app_server::ShellEnvironmentPolicy>,
 }
 
 /// The conversation a driven turn reopens, carrying the request that reopens it.
@@ -360,6 +367,24 @@ impl Dialogue {
     #[must_use]
     pub fn shape(&self) -> ControlShape {
         self.shape
+    }
+
+    /// The thread and turn an interrupt would address right now — `Some` only
+    /// while a turn is in flight and the server has named it. This is
+    /// oneharness's own record of `turn/start`, `turn/started` and
+    /// `turn/completed`; the server cannot be asked whether a turn is active.
+    #[must_use]
+    pub fn active_turn(&self) -> Option<(&str, &str)> {
+        (self.phase == Phase::InTurn)
+            .then(|| self.session_id.as_deref().zip(self.turn_id.as_deref()))
+            .flatten()
+    }
+
+    /// Whether the prompt is out and its turn has not ended: the window in
+    /// which losing the server loses the turn.
+    #[must_use]
+    pub fn in_turn(&self) -> bool {
+        self.phase == Phase::InTurn
     }
 
     /// The harness's native session identifier, once the server minted one.
@@ -697,6 +722,9 @@ impl Dialogue {
         if let Some(model) = &self.config.model {
             params["model"] = json!(model);
         }
+        if let Some(policy) = &self.config.shell_environment_policy {
+            params["config"] = policy.thread_config();
+        }
         params
     }
 
@@ -889,6 +917,7 @@ mod tests {
             mode: PermissionMode::Bypass,
             resume: None,
             posture: ApprovalPosture::Unattended,
+            shell_environment_policy: None,
         }
     }
 
@@ -1029,6 +1058,62 @@ mod tests {
         d.open();
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
         parse(&step.frames()[1])
+    }
+
+    /// A pooled dispatch's environment rides the thread, on both frames that
+    /// open one, and never the turn: `turn/start` has no `config` map. Its
+    /// turn is recorded as active from the moment the server names it until
+    /// `turn/completed`.
+    #[test]
+    fn codex_carries_the_thread_config_on_thread_start_and_resume_only() {
+        use crate::domain::app_server::{
+            DispatchMarker, EnvPlatform, ShellEnvironmentPolicy, DISPATCH_MARKER_VAR,
+            SERVER_MARKER_VAR,
+        };
+        let policy = ShellEnvironmentPolicy::for_dispatch(
+            &[("A".to_string(), "1".to_string())],
+            &[(SERVER_MARKER_VAR.to_string(), "s".to_string())],
+            &DispatchMarker::new("m").unwrap(),
+            EnvPlatform::Unix,
+        );
+        let thread_config = json!({"shell_environment_policy": {
+            "set": {"A": "1", DISPATCH_MARKER_VAR: "m"},
+            "exclude": [SERVER_MARKER_VAR],
+        }});
+        for resume in [
+            None,
+            DialogueResume::new(ControlShape::CodexAppServer, "th-old".to_string()),
+        ] {
+            let mut d = Dialogue::new(
+                ControlShape::CodexAppServer,
+                DialogueConfig {
+                    shell_environment_policy: Some(policy.clone()),
+                    resume: resume.clone(),
+                    ..config()
+                },
+            )
+            .unwrap();
+            let opened = codex_opened(&mut d);
+            assert_eq!(opened["params"]["config"], thread_config, "{opened}");
+            assert_eq!(d.active_turn(), None);
+            assert!(!d.in_turn());
+            let step = d.on_line(
+                r#"{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"th-1"},"model":"gpt-5-codex"}}"#,
+            );
+            let turn = parse(&step.frames()[0]);
+            assert!(turn["params"].get("config").is_none(), "{turn}");
+            assert!(d.in_turn());
+            assert_eq!(d.active_turn(), None, "no turn id yet: nothing to address");
+            d.on_line(r#"{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"tu-1"}}}"#);
+            assert_eq!(d.active_turn(), Some(("th-1", "tu-1")));
+            d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"tu-1"}}}"#);
+            assert_eq!(d.active_turn(), None);
+            assert!(!d.in_turn());
+        }
+        let mut own_child = Dialogue::new(ControlShape::CodexAppServer, config()).unwrap();
+        assert!(codex_opened(&mut own_child)["params"]
+            .get("config")
+            .is_none());
     }
 
     /// The model rides every codex frame that takes one, and it is the

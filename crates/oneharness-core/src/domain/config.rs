@@ -24,6 +24,88 @@ use crate::domain::report::OutputFormat;
 /// Default of two same-candidate retries after a zero-work Codex overload refusal.
 pub const SERVER_OVERLOADED_MAX_RETRIES_DEFAULT: u32 = 2;
 
+/// Where a controlled (`--control`) Codex dispatch's turn runs: the
+/// `app_server` key of `[harness.codex]` and `[harness.codex.variant.<name>]`.
+///
+/// Resolved variant, then harness, then [`AppServerMode::Shared`] on every
+/// platform, apart from `args` exactly as `plugins` is
+/// ([`FileConfig::app_server_for`]). Accepted only for `codex`.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum AppServerMode {
+    /// One `codex app-server --listen unix://…` per pool key, shared by every
+    /// concurrent dispatch with that key and managed by oneharness's server
+    /// pool. The default.
+    #[default]
+    Shared,
+    /// The dispatch's own `codex app-server` stdio child, started for it and
+    /// torn down with it — the behavior before pooling.
+    PerDispatch,
+}
+
+impl AppServerMode {
+    /// The TOML/JSON token for this mode.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AppServerMode::Shared => "shared",
+            AppServerMode::PerDispatch => "per-dispatch",
+        }
+    }
+}
+
+/// The base variables a shared Codex app-server keeps from the launching
+/// environment on Unix: the ones a process needs to run at all. Everything
+/// else is scrubbed, because the server's own environment reaches every
+/// thread's commands, whichever dispatch they belong to.
+pub const APP_SERVER_BASE_ENV_UNIX: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "TMPDIR", "TERM",
+];
+
+/// The prefix of the locale variables ([`APP_SERVER_BASE_ENV_UNIX`]'s `LC_*`)
+/// a shared Codex app-server keeps on Unix.
+pub const APP_SERVER_BASE_ENV_UNIX_PREFIX: &str = "LC_";
+
+/// The base variables a shared Codex app-server keeps on Windows, matched
+/// case-insensitively as Windows matches environment names.
+pub const APP_SERVER_BASE_ENV_WINDOWS: &[&str] = &[
+    "SystemRoot",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "PATH",
+    "PATHEXT",
+    "ComSpec",
+];
+
+/// The variables Codex reads for itself, which a shared app-server is launched
+/// with as the launching dispatch's variant environment resolves them (`env`,
+/// `env_file`, `env_from`, `unset_env`) — and which, with the base variables,
+/// are the whole of what keys its pool entry. Any variable whose name starts
+/// with [`CODEX_SERVER_ENV_PREFIX`] belongs too.
+pub const CODEX_SERVER_ENV: &[&str] = &[
+    "CODEX_HOME",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "https_proxy",
+    "http_proxy",
+    "all_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
+/// Every variable named with this prefix is in [`CODEX_SERVER_ENV`]'s set.
+pub const CODEX_SERVER_ENV_PREFIX: &str = "CODEX_";
+
 /// One config file, as written by the user. Every field is optional: an absent
 /// field defers to the next layer down. Unknown fields are rejected so a typo
 /// fails loudly instead of being silently ignored.
@@ -214,6 +296,11 @@ pub struct HarnessConfig {
     /// starts Codex with `-c analytics.enabled=false`. Resolved apart from
     /// `args`, like `plugins`. See [`FileConfig::analytics_for`].
     pub analytics: Option<bool>,
+    /// Where a controlled dispatch's turn runs (`codex` only): a pooled shared
+    /// app-server (`"shared"`, the default) or its own stdio child
+    /// (`"per-dispatch"`). Resolved apart from `args`, like `plugins`. See
+    /// [`FileConfig::app_server_for`].
+    pub app_server: Option<AppServerMode>,
     /// Allow rules for this harness only; beats the top-level `allowed_tools`.
     /// Rejected at parse time when the harness's config file has no allow-list
     /// concept (`oneharness sync` could not deliver it), so a rule that cannot
@@ -362,6 +449,8 @@ pub struct VariantConfig {
     pub model_catalog_refresh_seconds: Option<NonZeroU64>,
     /// This variant's `analytics`, beating its harness's.
     pub analytics: Option<bool>,
+    /// This variant's `app_server`, beating its harness's.
+    pub app_server: Option<AppServerMode>,
     pub allowed_tools: Option<Vec<String>>,
     pub denied_tools: Option<Vec<String>>,
     pub hooks: Option<toml::Value>,
@@ -432,6 +521,7 @@ fn codex_launch_keys_set(
     shared_model_catalog: Option<bool>,
     model_catalog_refresh_seconds: Option<NonZeroU64>,
     analytics: Option<bool>,
+    app_server: Option<AppServerMode>,
 ) -> impl Iterator<Item = &'static str> {
     [
         ("plugins", plugins.is_some()),
@@ -442,6 +532,7 @@ fn codex_launch_keys_set(
             model_catalog_refresh_seconds.is_some(),
         ),
         ("analytics", analytics.is_some()),
+        ("app_server", app_server.is_some()),
     ]
     .into_iter()
     .filter_map(|(key, set)| set.then_some(key))
@@ -461,6 +552,7 @@ fn refuse_codex_launch_keys_elsewhere(id: &str, h: &HarnessConfig) -> Result<(),
             h.shared_model_catalog,
             h.model_catalog_refresh_seconds,
             h.analytics,
+            h.app_server,
         )
         .collect::<Vec<_>>(),
     ))
@@ -473,6 +565,7 @@ fn refuse_codex_launch_keys_elsewhere(id: &str, h: &HarnessConfig) -> Result<(),
                 v.shared_model_catalog,
                 v.model_catalog_refresh_seconds,
                 v.analytics,
+                v.app_server,
             )
             .collect(),
         )
@@ -868,6 +961,7 @@ pub fn merge(base: FileConfig, over: FileConfig) -> FileConfig {
                 .model_catalog_refresh_seconds
                 .or(entry.model_catalog_refresh_seconds.take()),
             analytics: o.analytics.or(entry.analytics.take()),
+            app_server: o.app_server.or(entry.app_server.take()),
             allowed_tools: o.allowed_tools.or(entry.allowed_tools.take()),
             denied_tools: o.denied_tools.or(entry.denied_tools.take()),
             hooks: o.hooks.or(entry.hooks.take()),
@@ -933,6 +1027,7 @@ fn merge_variant_maps(
                 .model_catalog_refresh_seconds
                 .or(e.model_catalog_refresh_seconds.take()),
             analytics: o.analytics.or(e.analytics.take()),
+            app_server: o.app_server.or(e.app_server.take()),
             allowed_tools: o.allowed_tools.or(e.allowed_tools.take()),
             denied_tools: o.denied_tools.or(e.denied_tools.take()),
             hooks: o.hooks.or(e.hooks.take()),
@@ -1069,6 +1164,18 @@ impl FileConfig {
             .and_then(|variant| variant.analytics)
             .or_else(|| self.harness.get(base).and_then(|h| h.analytics))
             .unwrap_or(false)
+    }
+
+    /// Where a controlled launch of `id` (`codex` or `codex:<variant>`) runs
+    /// its turn: the variant's `app_server`, else the harness's, else
+    /// [`AppServerMode::Shared`] on every platform. Read apart from
+    /// [`Self::args_for`], like [`Self::plugins_for`].
+    pub fn app_server_for(&self, id: &str) -> AppServerMode {
+        let (base, _) = self.split_harness_id(id);
+        self.variant_for(id)
+            .and_then(|variant| variant.app_server)
+            .or_else(|| self.harness.get(base).and_then(|h| h.app_server))
+            .unwrap_or_default()
     }
 
     /// Allow rules for one harness: its `[harness.<id>]` override, else the
@@ -1291,6 +1398,10 @@ pub struct HarnessReport {
     /// The resolved `analytics` (`false` by default), present only for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analytics: Option<Field<bool>>,
+    /// The resolved `app_server` (`"shared"` by default), present only for
+    /// `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_server: Option<Field<AppServerMode>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     // llmlint: ignore[invalid_states_unrepresentable] These two fields are deliberately raw passthrough TOML — the whole point is that oneharness does not interpret a harness's own settings table — so the schema says "an arbitrary object", which is the honest description of an uninterpreted value.
@@ -1330,6 +1441,10 @@ pub struct VariantReport {
     /// else its harness's, else `false`. Present only for `codex`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub analytics: Option<Field<bool>>,
+    /// The `app_server` a launch of this variant resolves to: the variant's
+    /// own, else its harness's, else `"shared"`. Present only for `codex`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_server: Option<Field<AppServerMode>>,
     pub allowed_tools: Field<Vec<String>>,
     pub denied_tools: Field<Vec<String>>,
     #[schemars(with = "serde_json::Map<String, serde_json::Value>")]
@@ -1438,6 +1553,7 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
             section(c).and_then(|h| h.model_catalog_refresh_seconds.map(NonZeroU64::get))
         });
         let harness_analytics = pick(layers, |c| section(c).and_then(|h| h.analytics));
+        let harness_app_server = pick(layers, |c| section(c).and_then(|h| h.app_server));
         let mut variants = BTreeMap::new();
         let names: std::collections::BTreeSet<&VariantName> = layers
             .iter()
@@ -1504,6 +1620,10 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                         pick(layers, |c| variant(c).and_then(|v| v.analytics))
                             .or_inherited(&harness_analytics, false)
                     }),
+                    app_server: takes_codex_launch_keys.then(|| {
+                        pick(layers, |c| variant(c).and_then(|v| v.app_server))
+                            .or_inherited(&harness_app_server, AppServerMode::default())
+                    }),
                     allowed_tools: pick(layers, |c| variant(c).and_then(|v| v.allowed_tools)),
                     denied_tools: pick(layers, |c| variant(c).and_then(|v| v.denied_tools)),
                     hooks: pick(layers, |c| variant(c).and_then(|v| v.hooks)),
@@ -1530,6 +1650,8 @@ pub fn explain(layers: &[(String, FileConfig)]) -> ConfigReport {
                     harness_refresh.or_default(DEFAULT_MODEL_CATALOG_REFRESH_SECONDS.get())
                 }),
                 analytics: takes_codex_launch_keys.then(|| harness_analytics.or_default(false)),
+                app_server: takes_codex_launch_keys
+                    .then(|| harness_app_server.or_default(AppServerMode::default())),
                 allowed_tools: pick(layers, |c| section(c).and_then(|h| h.allowed_tools)),
                 denied_tools: pick(layers, |c| section(c).and_then(|h| h.denied_tools)),
                 hooks: pick(layers, |c| section(c).and_then(|h| h.hooks)),
@@ -2337,7 +2459,7 @@ args = ["--variant-arg"]
     /// the key, its default, and two non-default spellings with what each
     /// resolves to (`model_catalog_refresh_seconds` is not a bool).
     type Resolver = fn(&FileConfig, &str) -> String;
-    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 4] = [
+    const CODEX_LAUNCH_KEYS: [(&str, &str, [&str; 2], Resolver); 5] = [
         ("apps", "false", ["true", "false"], |c, id| {
             c.apps_for(id).to_string()
         }),
@@ -2356,7 +2478,28 @@ args = ["--variant-arg"]
         ("analytics", "false", ["true", "false"], |c, id| {
             c.analytics_for(id).to_string()
         }),
+        (
+            "app_server",
+            "\"shared\"",
+            ["\"per-dispatch\"", "\"shared\""],
+            |c, id| format!("\"{}\"", c.app_server_for(id).as_str()),
+        ),
     ];
+
+    #[test]
+    fn an_app_server_value_outside_the_two_modes_is_refused() {
+        for text in [
+            "[harness.codex]\napp_server = \"daemon\"\n",
+            "[harness.codex.variant.w]\napp_server = true\n",
+        ] {
+            let err = parse(text).unwrap_err();
+            assert!(err.contains("app_server"), "{err}");
+        }
+        assert_eq!(
+            parsed("[harness.codex]\napp_server = \"per-dispatch\"\n").app_server_for("codex"),
+            AppServerMode::PerDispatch
+        );
+    }
 
     #[test]
     fn codex_launch_keys_merge_last_set_layer_wins_at_harness_and_variant_level() {
@@ -2481,9 +2624,10 @@ args = ["--variant-arg"]
     fn explain_reports_resolved_codex_launch_keys_for_codex_only() {
         let report = explain(&layers(
             "[harness.codex]\nshared_model_catalog = false\nmodel_catalog_refresh_seconds = 60\n\
-             analytics = true\napps = true\n[harness.claude-code]\nmodel = \"m\"\n",
+             analytics = true\napps = true\napp_server = \"per-dispatch\"\n\
+             [harness.claude-code]\nmodel = \"m\"\n",
             "[harness.codex.variant.own]\nshared_model_catalog = true\n\
-             model_catalog_refresh_seconds = 120\nanalytics = false\n\
+             model_catalog_refresh_seconds = 120\nanalytics = false\napp_server = \"shared\"\n\
              [harness.codex.variant.inherit]\nmodel = \"m\"\n",
         ));
         let from = |source: &str| Some(source.to_string());
@@ -2520,6 +2664,20 @@ args = ["--variant-arg"]
             field(&own.analytics),
             Some((Some(false), from("/project.toml")))
         );
+        let mode =
+            |f: &Option<Field<AppServerMode>>| f.as_ref().map(|f| (f.value, f.source.clone()));
+        assert_eq!(
+            mode(&codex.app_server),
+            Some((Some(AppServerMode::PerDispatch), from("/user.toml")))
+        );
+        assert_eq!(
+            mode(&own.app_server),
+            Some((Some(AppServerMode::Shared), from("/project.toml")))
+        );
+        assert_eq!(
+            mode(&codex.variant["inherit"].app_server),
+            Some((Some(AppServerMode::PerDispatch), from("/user.toml")))
+        );
         let inherit = &codex.variant["inherit"];
         assert_eq!(
             field(&inherit.shared_model_catalog),
@@ -2539,6 +2697,7 @@ args = ["--variant-arg"]
             "shared_model_catalog",
             "model_catalog_refresh_seconds",
             "analytics",
+            "app_server",
         ] {
             assert!(claude.get(key).is_none(), "{claude}");
         }
@@ -2555,6 +2714,8 @@ args = ["--variant-arg"]
             assert_eq!(codex["analytics"]["value"], false, "{codex}");
             assert_eq!(codex["analytics"]["source"], DEFAULT_SOURCE, "{codex}");
             assert_eq!(codex["apps"]["value"], false, "{codex}");
+            assert_eq!(codex["app_server"]["value"], "shared", "{codex}");
+            assert_eq!(codex["app_server"]["source"], DEFAULT_SOURCE, "{codex}");
         }
     }
 

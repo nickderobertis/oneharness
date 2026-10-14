@@ -383,6 +383,20 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   directly, as for claude-code whose bin is `bin/claude.exe`) — but the cmd.exe `%*`
   quote-mangling above is a *separate* limitation the bypass does not touch
   (a quote-heavy schema is single-line, so it never triggers the bypass).
+- **A controlled codex turn runs on the shared app-server** (`io::app_server`;
+  the pure env/key/frame rules in `domain::app_server`, the deadlines beside
+  `DEFAULT_LINGER` in `io::server_pool`) unless `app_server = "per-dispatch"`.
+  The pool starts each entry's sweeper by re-running the current executable
+  with `ONEHARNESS_INTERNAL_APP_SERVER_SWEEPER`, so a binary driving pooled
+  dispatches calls `io::app_server::serve_sweeper_if_requested()` first in
+  `main` (the CLI and the `app_server_reuse` example do); without it no
+  sweeper starts and dead leases wait for the next pool operation. The server's
+  environment is scrubbed, so the mock's server-wide knobs are `CODEX_MOCK_*`
+  (`MOCK_CODEX_*` knobs answer to that spelling too) and its per-thread knobs
+  are the dispatch's own `MOCK_*`, read off `shell_environment_policy.set`; a
+  journey scripting the stdio mock app-server runs under `per-dispatch`
+  (`codex_per_dispatch` in `tests/cli.rs`). Its journeys:
+  `crates/oneharness-e2e/tests/app_server.rs`.
 
 ## Adding or changing a harness
 

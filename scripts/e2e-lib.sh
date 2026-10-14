@@ -362,6 +362,8 @@ _oh_phase() {
       [0-9] | [1-9][0-9] | [1-9][0-9][0-9])
         if [ "$_OH_PHASE_COUNT" -gt "$OH_E2E_PHASE_LIMIT" ]; then
           note "STOP: OH_E2E_PHASE_LIMIT=$OH_E2E_PHASE_LIMIT reached; phase $name and every later one did not run"
+          # A stopped suite still leaves a complete record of what it ran.
+          oh_wait_pooled_servers
           exit 0
         fi
         ;;
@@ -382,6 +384,71 @@ _oh_expect() {
   jq -nc --arg suite "$OH_E2E_SUITE" --arg phase "${OH_E2E_PHASE:-unphased}" --arg kind "$kind" \
     '{suite: $suite, phase: $phase, kind: $kind, expected: true}' | tr -d '\r' >>"$OH_E2E_TELEMETRY_FILE" ||
     fail "cannot append to $OH_E2E_TELEMETRY_FILE; check that its directory is writable"
+}
+
+# Wait for every shared Codex app-server this suite's dispatches started to
+# exit, and for its measurement line to be in the telemetry file. A server is
+# measured over its whole life, startup to linger, so its line lands only
+# after the last dispatch on it returned and its linger passed; a budget check
+# run before then would find its launch without a line. The servers are read
+# from the pool's state: each `shared-app-server` start line names the socket
+# its server listens on, whose pool entry holds the server's record
+# (server.json). OH_E2E_POOL_WAIT bounds the wait (seconds, default 180).
+oh_wait_pooled_servers() {
+  local limit="${OH_E2E_POOL_WAIT:-180}" file="$OH_E2E_TELEMETRY_FILE" waited=0 left
+  case "$limit" in [0-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9]) ;; *)
+    fail "OH_E2E_POOL_WAIT must be a whole number of seconds, got '$limit'; unset it for the 180 s default"
+    ;;
+  esac
+  [ -n "$file" ] && [ -f "$file" ] || return 0
+  _oh_lingering() {
+    local launch socket sockdir entry pending
+    jq -r 'select(.kind == "shared-app-server" and .argv != null)
+      | [.launch_id, ((.argv | index("--listen")) as $i | if $i == null then "" else .argv[$i + 1] end)] | @tsv' "$file" |
+      tr -d '\r' |
+      while IFS=$'\t' read -r launch socket; do
+        # Git Bash's jq ends lines with CRLF (stripped above), and a Windows
+        # path is a drive path that dirname and test read with either slash.
+        socket="${socket#unix://}"
+        socket="${socket//\\//}"
+        # The recorder writes both; anything else is a damaged record, which
+        # fails the wait rather than naming a path outside the pool.
+        case "$launch" in
+          '' | *[!A-Za-z0-9._-]* | . | ..)
+            echo "launch id '$launch' in $file is not one the recorder writes" >&2
+            return 1
+            ;;
+        esac
+        case "$socket" in
+          /* | [A-Za-z]:/*) ;;
+          *)
+            echo "launch $launch's --listen address '$socket' in $file is not an absolute unix:// path" >&2
+            return 1
+            ;;
+        esac
+        # A path that cannot be resolved fails the wait (the caller's `||`)
+        # rather than reading as a server gone.
+        if ! sockdir="$(dirname "$socket")" || ! entry="$(dirname "$sockdir")"; then
+          echo "cannot resolve the pool entry of launch $launch's socket '$socket'" >&2
+          return 1
+        fi
+        pending="$(dirname "$file")/.pending/$launch" || {
+          echo "cannot resolve the pending-measurement path beside $file" >&2
+          return 1
+        }
+        if [ -f "$entry/server.json" ] || [ -e "$pending" ]; then
+          printf '%s ' "$launch"
+        fi
+      done
+  }
+  left="$(_oh_lingering)" || fail "cannot read $file to find this suite's shared app-servers; check jq and the file, then rerun"
+  [ -z "$left" ] || note "» waiting for this suite's shared app-servers to linger out and be measured: $left"
+  while [ -n "$left" ] && [ "$waited" -lt "$((limit * 5))" ]; do
+    sleep 0.2
+    waited=$((waited + 1))
+    left="$(_oh_lingering)" || fail "cannot read $file to find this suite's shared app-servers; check jq and the file, then rerun"
+  done
+  [ -z "$left" ] || fail "shared app-server launch(es) $left still running or unmeasured after ${limit}s; raise OH_E2E_POOL_WAIT, or find what keeps a lease on them in the pool's state (\$XDG_STATE_HOME/oneharness/servers)"
 }
 
 # --- driving a harness -----------------------------------------------------
@@ -440,13 +507,21 @@ oh_run() {
     esac
   done
 
-  # A Codex turn runs `codex exec`, or a stdio app-server under --control.
-  local kind=exec
+  # A Codex turn runs `codex exec`; under --control it runs on the shared
+  # app-server the pool starts (`app-server --listen`). That launch belongs to
+  # no one phase — it serves every dispatch with its key, and is started with a
+  # scrubbed environment that keeps no OH_E2E_PHASE — so the shim records it
+  # `unphased`, and that is the launch this phase expects to have been measured.
+  local kind=exec control=false
   for a in "$@"; do
-    [ "$a" = --control ] && kind=app-server
+    [ "$a" = --control ] && control=true
   done
   _oh_phase
-  _oh_expect "$id" "$kind"
+  if [ "$control" = true ]; then
+    OH_E2E_PHASE=unphased _oh_expect "$id" shared-app-server
+  else
+    _oh_expect "$id" "$kind"
+  fi
 
   local errf
   errf="$(mktemp)"
@@ -489,14 +564,16 @@ oh_controlled_turn() {
   marker="$(oh_marker)"
   sandbox="$(oh_control_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   # --control needs a handle an `oneharness interrupt` could address; this
-  # turn is never interrupted, so a throwaway one in the sandbox serves. The
+  # turn is never interrupted, so a throwaway one in the sandbox serves. Its
+  # store is a one-letter directory: macOS's long per-user temp dir otherwise
+  # pushes the control socket's path past the 104-byte sun_path limit. The
   # turn and its assertion run in a subshell, so the sandbox goes however the
   # phase ends — a skip or a failure exits that subshell, and its status this
   # helper. It runs as a job whose `wait` is tested, not the subshell itself,
   # so errexit stays in force inside it.
   (
     oh_run "$id" "$(oh_prompt "$marker")" --control --session "ohnet${RANDOM}" \
-      --session-dir "$(oh_native_path "$sandbox")/sessions" --cwd "$(oh_native_path "$sandbox")"
+      --session-dir "$(oh_native_path "$sandbox")/s" --cwd "$(oh_native_path "$sandbox")"
     oh_assert_echoed "$id" "$marker"
   ) </dev/null &
   turn=$!

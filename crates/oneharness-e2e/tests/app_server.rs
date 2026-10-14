@@ -2356,7 +2356,10 @@ fn the_control_suite_s_reuse_phase_fails_naming_both_readings_when_threads_are_r
         String::from_utf8_lossy(&retained.stderr) + String::from_utf8_lossy(&retained.stdout);
     assert!(!retained.status.success(), "{said}");
     assert!(said.contains("FAIL: pooled-reuse: "), "{said}");
-    assert!(said.contains("still loaded"), "the retained threads went unnamed: {said}");
+    assert!(
+        said.contains("still loaded"),
+        "the retained threads went unnamed: {said}"
+    );
     assert!(
         said.contains("after the last of 5 leases: ") && said.contains("after the first: "),
         "{said}"

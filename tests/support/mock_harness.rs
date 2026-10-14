@@ -2294,10 +2294,12 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         thread loaded.
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
 ///                         thread, freed when it unloads.
-///   CODEX_MOCK_FAULT      `leak-env` runs every command under the last opened
+///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
 ///                         thread's environment; `rollout-env` writes thread
 ///                         environments into rollout files; `escape-marker`
 ///                         drops the dispatch marker from commands.
+///   CODEX_MOCK_OPEN_DELAYS_MS  comma-separated: the n-th `thread/start` is
+///                         answered after the n-th delay.
 ///   CODEX_MOCK_STARTUP_FETCH  `PORT BYTES`: download that many bytes from the
 ///                         network tests' loopback server once at startup.
 ///
@@ -2371,12 +2373,27 @@ mod listen_server {
         known: HashMap<String, Settings>,
         next_thread: u64,
         next_request: u64,
-        last_opened: Option<String>,
+        first_opened: Option<String>,
         turns: Vec<Value>,
         commands: Vec<Value>,
         approvals: Vec<Value>,
         interrupts: Vec<Value>,
         releases: Vec<Value>,
+        /// The server's own resident memory after each thread it opened.
+        open_rss: Vec<u64>,
+    }
+
+    /// This process's resident memory, in bytes, as /proc says.
+    fn own_rss() -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|status| {
+                status
+                    .lines()
+                    .find_map(|line| line.strip_prefix("VmRSS:"))
+                    .and_then(|kb| kb.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+            })
+            .map_or(0, |kb| kb * 1024)
     }
 
     pub fn run(argv: &[String]) -> ! {
@@ -2434,12 +2451,13 @@ mod listen_server {
             known: HashMap::new(),
             next_thread: 1,
             next_request: 1 << 50,
-            last_opened: None,
+            first_opened: None,
             turns: Vec::new(),
             commands: Vec::new(),
             approvals: Vec::new(),
             interrupts: Vec::new(),
             releases: Vec::new(),
+            open_rss: Vec::new(),
         }));
         lock(&server).save();
         for stream in listener.incoming() {
@@ -2573,6 +2591,7 @@ mod listen_server {
                 "approvals": self.approvals,
                 "interrupts": self.interrupts,
                 "releases": self.releases,
+                "open_rss": self.open_rss,
             });
             let tmp = dir.join(format!("state-{}.json.tmp", self.pid));
             if std::fs::write(&tmp, state.to_string()).is_ok() {
@@ -2816,6 +2835,24 @@ mod listen_server {
         };
         match frame.get("method").and_then(Value::as_str) {
             Some("thread/start") => {
+                // CODEX_MOCK_OPEN_DELAYS_MS: the n-th thread/start this server
+                // answers waits the n-th delay, so a measurement's time to a
+                // ready thread has a known floor.
+                static OPENS: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                let nth = OPENS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(ms) =
+                    std::env::var("CODEX_MOCK_OPEN_DELAYS_MS")
+                        .ok()
+                        .and_then(|delays| {
+                            delays
+                                .split(',')
+                                .nth(nth)
+                                .and_then(|ms| ms.trim().parse::<u64>().ok())
+                        })
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
                 if let Some(path) = set_knob("MOCK_CODEX_HOLD_OPEN_UNTIL") {
                     let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
                     while !Path::new(&path).exists() && std::time::Instant::now() < until {
@@ -2901,7 +2938,9 @@ mod listen_server {
         thread.settings = settings.clone();
         thread.subscribers.insert(conn);
         s.known.insert(id.to_string(), settings.clone());
-        s.last_opened = Some(id.to_string());
+        if s.first_opened.is_none() {
+            s.first_opened = Some(id.to_string());
+        }
         if let Some(dir) = &s.dir {
             let _ = std::fs::create_dir_all(dir.join("threads"));
             let _ = std::fs::write(
@@ -3002,6 +3041,9 @@ mod listen_server {
                 let settings = settings_from(&params, None);
                 let model = served_model(&params, &settings);
                 open_thread(&mut s, conn, &thread, settings, false);
+                let rss = own_rss();
+                s.open_rss.push(rss);
+                s.save();
                 reply(&mut s, json!({"thread": {"id": thread}, "model": model}));
                 s.emit(
                     &thread,
@@ -3065,6 +3107,29 @@ mod listen_server {
                     );
                 }
                 s.save();
+            }
+            // A shell turn: no model call, ended as soon as it starts.
+            "thread/shellCommand" => {
+                let thread = params
+                    .get("threadId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !s.threads.contains_key(&thread) {
+                    return refuse(&mut s, format!("thread not found: {thread}"));
+                }
+                reply(&mut s, json!({}));
+                let turn = format!("{thread}-shell");
+                s.emit(
+                    &thread,
+                    &json!({"jsonrpc": "2.0", "method": "turn/started",
+                        "params": {"threadId": thread, "turn": {"id": turn}}}),
+                );
+                s.emit(
+                    &thread,
+                    &json!({"jsonrpc": "2.0", "method": "turn/completed",
+                        "params": {"threadId": thread, "turn": {"id": turn, "status": "completed"}}}),
+                );
             }
             "thread/loaded/list" => {
                 let data: Vec<String> = s.threads.keys().cloned().collect();
@@ -3358,18 +3423,16 @@ mod listen_server {
             );
             return;
         }
-        let source = if s.fault == "leak-env" {
-            s.last_opened
-                .clone()
-                .unwrap_or_else(|| thread_id.to_string())
-        } else {
-            thread_id.to_string()
+        // leak-env: every command under the first thread this server opened,
+        // whichever dispatch's thread it is running for.
+        let settings = match (s.fault.as_str(), s.first_opened.clone()) {
+            ("leak-env", Some(first)) => s.known.get(&first).cloned().unwrap_or_default(),
+            _ => s
+                .threads
+                .get(thread_id)
+                .map(|t| t.settings.clone())
+                .unwrap_or_default(),
         };
-        let settings = s
-            .threads
-            .get(&source)
-            .map(|t| t.settings.clone())
-            .unwrap_or_default();
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.retain(|name, _| !settings.exclude.iter().any(|excluded| excluded == name));
         env.extend(settings.set.clone());

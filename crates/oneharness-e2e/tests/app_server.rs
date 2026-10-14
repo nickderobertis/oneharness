@@ -2056,3 +2056,309 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
         succeeded(&output, &report);
     }
 }
+
+// ---------------------------------------------------------------------------
+// The live tier's scripts, driven against the mock
+// ---------------------------------------------------------------------------
+
+fn repo_root() -> PathBuf {
+    std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap()
+}
+
+/// `pid` and every descendant of it, as the OS lists them now.
+fn os_process_tree(root: u32) -> Vec<u64> {
+    let parents: Vec<(u64, u64)> = std::fs::read_dir("/proc")
+        .unwrap()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u64>().ok())
+        .filter_map(|pid| {
+            let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            let ppid = stat
+                .rsplit_once(')')?
+                .1
+                .split_whitespace()
+                .nth(1)?
+                .parse()
+                .ok()?;
+            Some((pid, ppid))
+        })
+        .collect();
+    let mut tree = vec![u64::from(root)];
+    let mut index = 0;
+    while index < tree.len() {
+        let parent = tree[index];
+        tree.extend(
+            parents
+                .iter()
+                .filter(|(_, p)| *p == parent)
+                .map(|(pid, _)| *pid),
+        );
+        index += 1;
+    }
+    tree.sort_unstable();
+    tree
+}
+
+/// scripts/measure-app-server-sharing.sh's figures measure what was exercised:
+/// each thread's resident memory against the server's own reading of itself,
+/// and each time to a ready thread against the delay the mock was told to
+/// answer that thread's `thread/start` after.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
+    let pool = Pool::new("pool-measure");
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
+        .env("OH_MEASURE_CODEX", mock_bin())
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_THREAD_BYTES", (64 * 1024 * 1024).to_string())
+        .env("CODEX_MOCK_OPEN_DELAYS_MS", "400,900")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let measured: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let server = measured["server_pid"].as_u64().unwrap() as u32;
+    let own = pool.state(server)["open_rss"].as_array().unwrap().clone();
+    let threads = measured["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 2);
+    assert_eq!(own.len(), 2, "{own:?}");
+    for (index, (thread, delay)) in threads.iter().zip([400u64, 900]).enumerate() {
+        let measured_rss = thread["rss_bytes"].as_f64().unwrap();
+        let server_rss = own[index].as_f64().unwrap();
+        assert!(
+            (measured_rss - server_rss).abs() <= server_rss * 0.05,
+            "thread {}: measured {measured_rss} B, the server read {server_rss} B of itself",
+            index + 1
+        );
+        assert_eq!(thread["pids"], serde_json::json!([server]));
+        let ready = thread["ready_ms"].as_u64().unwrap();
+        assert!(
+            ready >= delay && ready < delay + 3000,
+            "thread {}: ready after {ready} ms against a {delay} ms answer",
+            index + 1
+        );
+    }
+    let grown =
+        threads[1]["rss_bytes"].as_u64().unwrap() - threads[0]["rss_bytes"].as_u64().unwrap();
+    assert!(
+        grown >= 60 * 1024 * 1024,
+        "the second thread's 64 MiB did not show: {grown} B"
+    );
+}
+
+/// live/control/app-server-reuse.sh runs its workload through the pool: each
+/// of the leases ran `initialize`, `thread/start`, a `thread/shellCommand` and
+/// `thread/resume` of its own thread and no `turn/start`, all on one server;
+/// and each reading's pids are exactly the server's process tree — launcher,
+/// server and grandchild — as the OS lists it.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
+    let pool = Pool::new("pool-reuse");
+    let out = pool.path("reuse.json");
+    let output = Command::new("bash")
+        .arg(repo_root().join("live/control/app-server-reuse.sh"))
+        .env("OH_REUSE_CODEX", mock_bin())
+        .env("OH_REUSE_SETTLE_MS", "200")
+        .env("OH_E2E_REUSE_FILE", &out)
+        .env("XDG_STATE_HOME", pool.path("state"))
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_SHIM", "1")
+        .env("CODEX_MOCK_HELPER", "1")
+        .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "8000")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let reuse: Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    assert_eq!(reuse["lease_count"], 5);
+    let leases = reuse["leases"].as_array().unwrap();
+    let launcher = leases[0]["server_pid"].as_u64().unwrap() as u32;
+    assert!(
+        leases.iter().all(|l| l["server_pid"] == launcher),
+        "{leases:?}"
+    );
+    // The server is still lingering: its tree, as the OS lists it, is what
+    // both readings summed.
+    let tree = os_process_tree(launcher);
+    assert_eq!(tree.len(), 3, "launcher, server and its helper: {tree:?}");
+    for name in ["after_first", "after_last"] {
+        let pids: Vec<u64> = reuse["readings"][name]["pids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_u64().unwrap())
+            .collect();
+        assert_eq!(pids, tree, "{name} did not sum the server's whole tree");
+        assert!(reuse["readings"][name]["rss_bytes"].as_u64().unwrap() > 0);
+    }
+    let native = pool.the_server();
+    assert!(tree.contains(&u64::from(native)));
+    for lease in leases {
+        let thread = lease["thread"].as_str().unwrap();
+        let conn = pool.state(native)["turns"].as_array().unwrap().is_empty();
+        assert!(conn, "a lease ran a model turn");
+        let opened = (1..=10u64)
+            .find(|conn| {
+                pool.sent(native, *conn).iter().any(|frame| {
+                    frame["result"]["thread"]["id"] == thread && frame["id"].is_number()
+                })
+            })
+            .unwrap_or_else(|| panic!("no connection opened {thread}"));
+        let methods: Vec<String> = pool
+            .received(native, opened)
+            .iter()
+            .filter_map(|frame| frame["method"].as_str().map(str::to_string))
+            .collect();
+        for method in [
+            "initialize",
+            "thread/start",
+            "thread/shellCommand",
+            "thread/resume",
+        ] {
+            assert!(
+                methods.iter().any(|m| m == method),
+                "lease {lease}: no {method} in {methods:?}"
+            );
+        }
+        assert!(
+            !methods.iter().any(|m| m == "turn/start"),
+            "lease {lease} ran turn/start"
+        );
+        let resumed = pool
+            .received(native, opened)
+            .into_iter()
+            .find(|frame| frame["method"] == "thread/resume")
+            .unwrap();
+        assert_eq!(resumed["params"]["threadId"], thread);
+    }
+}
+
+/// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
+struct ControlSuite {
+    pool: Pool,
+}
+
+impl ControlSuite {
+    fn new(tag: &str) -> Self {
+        let pool = Pool::new(tag);
+        let bin = pool.path("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(mock_bin(), bin.join("codex")).unwrap();
+        ControlSuite { pool }
+    }
+
+    fn run(&self, envs: &[(&str, &str)]) -> Output {
+        let pool = &self.pool;
+        let path = format!(
+            "{}:{}",
+            pool.path("bin").display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let mut cmd = Command::new("bash");
+        cmd.arg(repo_root().join("scripts/e2e-control.sh"))
+            .env_remove("ONEHARNESS_NO_CONFIG")
+            .env("PATH", path)
+            .env("ONEHARNESS_BIN", oneharness_bin())
+            .env("CODEX_E2E_AUTH", "1")
+            .env("OH_CONTROL_ONLY", "pooled")
+            .env("XDG_STATE_HOME", pool.path("state"))
+            .env("CODEX_HOME", pool.path("codex-home"))
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "1000")
+            .env("OH_REUSE_SETTLE_MS", "200")
+            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+            .env("OH_E2E_TELEMETRY_DIR", pool.path("telemetry"))
+            .env("MOCK_CODEX_RUN_COMMAND", "eval \"$OH_POOLED_COMMAND\"")
+            .env("MOCK_CODEX_COMPLETE_TURN", "1");
+        for var in [
+            "OH_E2E_NO_SKIP",
+            "OH_E2E_PHASE",
+            "OH_E2E_PHASE_LIMIT",
+            "ONEHARNESS_CONFIG",
+        ] {
+            cmd.env_remove(var);
+        }
+        for (key, value) in envs {
+            cmd.env(key, value);
+        }
+        cmd.output().unwrap()
+    }
+}
+
+/// The suite's pooled phases pass against a mock that keeps each dispatch's
+/// environment to its own commands, on one server, out of its rollouts, and
+/// stops a killed dispatch's heartbeat; and each fails, naming its phase and
+/// assertion, when the mock leaks one dispatch's value into the other's
+/// command or into a rollout, runs the two on two servers, or leaves the
+/// heartbeat running.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
+    let suite = ControlSuite::new("pool-suite");
+    let passed = suite.run(&[]);
+    let said = String::from_utf8_lossy(&passed.stderr);
+    assert!(passed.status.success(), "{said}");
+    for line in [
+        "pooled-env",
+        "pooled-kill",
+        "pooled-reuse",
+        "each pooled dispatch saw only its own variable",
+    ] {
+        assert!(said.contains(line), "{line} missing from: {said}");
+    }
+    for (fault, phase, assertion) in [
+        ("leak-env", "pooled-env", "saw dispatch"),
+        ("rollout-env", "pooled-env", "reached a thread rollout"),
+        ("vary-version", "pooled-env", "ran on two servers"),
+        ("escape-marker", "pooled-kill", "kept beating"),
+    ] {
+        let suite = ControlSuite::new("pool-suite-fault");
+        let failed = suite.run(&[("CODEX_MOCK_FAULT", fault)]);
+        let said = String::from_utf8_lossy(&failed.stderr);
+        assert!(
+            !failed.status.success(),
+            "{fault}: the suite passed: {said}"
+        );
+        assert!(
+            said.contains(&format!("FAIL: {phase}: ")) && said.contains(assertion),
+            "{fault}: expected `FAIL: {phase}: … {assertion}` in: {said}"
+        );
+    }
+}
+
+/// The suite's reuse phase runs the workload and the memory budget's check:
+/// it passes when the pool releases each thread, and fails naming both
+/// readings — and the threads still loaded at the settle bound — when the mock
+/// ignores the release and keeps a large allocation per thread it keeps.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_control_suite_s_reuse_phase_fails_naming_both_readings_when_threads_are_retained() {
+    let suite = ControlSuite::new("pool-suite-rss");
+    let bytes = (100 * 1024 * 1024).to_string();
+    let kept = suite.run(&[("CODEX_MOCK_THREAD_BYTES", &bytes)]);
+    let said = String::from_utf8_lossy(&kept.stderr);
+    assert!(kept.status.success(), "{said}");
+    assert!(said.contains("within"), "{said}");
+    let suite = ControlSuite::new("pool-suite-rss-leak");
+    let retained = suite.run(&[
+        ("CODEX_MOCK_THREAD_BYTES", &bytes),
+        ("CODEX_MOCK_IGNORE_UNSUBSCRIBE", "1"),
+    ]);
+    let said =
+        String::from_utf8_lossy(&retained.stderr) + String::from_utf8_lossy(&retained.stdout);
+    assert!(!retained.status.success(), "{said}");
+    assert!(said.contains("FAIL: pooled-reuse: "), "{said}");
+    assert!(said.contains("still loaded"), "the retained threads went unnamed: {said}");
+    assert!(
+        said.contains("after the last of 5 leases: ") && said.contains("after the first: "),
+        "{said}"
+    );
+}

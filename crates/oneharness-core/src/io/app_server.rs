@@ -469,6 +469,42 @@ impl Connection {
         }
     }
 
+    /// Wait up to `deadline` for a notification of `method` naming `thread`,
+    /// skipping every other frame.
+    fn await_notification(
+        &mut self,
+        method: &str,
+        thread: &str,
+        deadline: Duration,
+    ) -> io::Result<bool> {
+        let until = Instant::now() + deadline;
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            self.reader
+                .set_read_timeout(Some(left.min(Duration::from_millis(100))))?;
+            match self.reader.receive()? {
+                Incoming::Text(text) => {
+                    let Ok(frame) = serde_json::from_str::<Value>(&text) else {
+                        continue;
+                    };
+                    if frame["method"] == method && rules::frame_thread(&frame) == Some(thread) {
+                        return Ok(true);
+                    }
+                }
+                Incoming::Idle => {}
+                Incoming::Closed => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "the shared codex app-server closed the connection",
+                    ))
+                }
+            }
+        }
+    }
+
     fn close(&self) {
         self.writer
             .lock()
@@ -1131,6 +1167,78 @@ impl PooledSession {
             turn: None,
         });
         Ok(response)
+    }
+
+    /// Run `command` as a shell turn on the session's thread (`thread/shellCommand`,
+    /// which makes no model call) and wait for that turn to complete.
+    ///
+    /// The sustained-reuse workload needs it: codex-cli 0.159.2 writes a
+    /// thread's rollout only after the thread has had a turn, and refuses to
+    /// resume a thread with none (`no rollout found for thread id …`), so a
+    /// no-model shell turn is what makes its thread resumable. Never used on a
+    /// dispatch's own thread, where a shell turn could be left as the thread's
+    /// active one.
+    pub fn shell_turn(&mut self, command: &str) -> Result<(), String> {
+        let thread = self
+            .thread
+            .clone()
+            .ok_or("the session has no thread to run a shell turn on")?;
+        let response = self
+            .connection
+            .request(
+                "thread/shellCommand",
+                json!({"threadId": thread, "command": command, "timeoutMs": 30_000}),
+                Duration::from_secs(30),
+            )
+            .map_err(|err| format!("thread/shellCommand: {err}"))?
+            .ok_or("the app-server did not answer thread/shellCommand")?;
+        if let Some(error) = response.get("error") {
+            return Err(format!("thread/shellCommand was refused: {error}"));
+        }
+        match self
+            .connection
+            .await_notification("turn/completed", &thread, Duration::from_secs(30))
+        {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("the shell turn did not complete within 30s".to_string()),
+            Err(err) => Err(format!("the shell turn: {err}")),
+        }
+    }
+
+    /// The threads the server holds loaded now (`thread/loaded/list`), every
+    /// page of them.
+    pub fn loaded_threads(&mut self) -> Result<Vec<String>, String> {
+        let mut threads = Vec::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let params = match &cursor {
+                Some(cursor) => json!({"cursor": cursor}),
+                None => json!({}),
+            };
+            let response = self
+                .connection
+                .request("thread/loaded/list", params, Duration::from_secs(10))
+                .map_err(|err| format!("thread/loaded/list: {err}"))?
+                .ok_or("the app-server did not answer thread/loaded/list")?;
+            if let Some(error) = response.get("error") {
+                return Err(format!("thread/loaded/list was refused: {error}"));
+            }
+            threads.extend(
+                response
+                    .pointer("/result/data")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|id| id.as_str().map(str::to_string)),
+            );
+            cursor = response
+                .pointer("/result/nextCursor")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            if cursor.is_none() {
+                return Ok(threads);
+            }
+        }
     }
 
     /// End the session's lease: stop its marked commands, release its thread,

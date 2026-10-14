@@ -2121,6 +2121,44 @@ fn the_reuse_workload_names_each_shell_turn_and_listing_failure() {
     }
 }
 
+/// A variant's `app_server` beats its harness's: under `[harness.codex]
+/// app_server = "per-dispatch"`, the variant that says `shared` runs its turn
+/// on the pool while the harness itself keeps its own child.
+#[test]
+fn a_variant_s_app_server_setting_beats_its_harness_s() {
+    let pool = Pool::new("pool-variant");
+    let config = "[harness.codex]\n\
+                  app_server = \"per-dispatch\"\n\
+                  [harness.codex.variant.pooled]\n\
+                  app_server = \"shared\"\n";
+    let log = pool.file("own-child.log");
+    let (output, own) = pool.run(pool.command_with_config(
+        "own",
+        config,
+        &[],
+        &[("MOCK_CODEX_APP_SERVER_LOG", &log)],
+    ));
+    succeeded(&output, &own);
+    assert!(own["control"]["app_server"].is_null(), "{own}");
+    assert!(
+        pool.server_pids().is_empty(),
+        "the harness's own run used the pool"
+    );
+    let (output, pooled) =
+        pool.run(pool.command_with_config("pooled", config, &["--harness", "codex:pooled"], &[]));
+    succeeded(&output, &pooled);
+    let server = reported_server(&pooled);
+    assert_eq!(pool.server_pids().len(), 1);
+    assert!(
+        pool.state(server)["turns"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|turn| turn["thread"] == thread_of(&pooled).as_str()),
+        "the variant's turn did not run on the shared server"
+    );
+}
+
 /// A shared server lost after its turn already ran a tool is still
 /// `app_server_lost`, but the chain stops there: the tool event the run saw is
 /// kept in its report and the next candidate never runs, since re-running the

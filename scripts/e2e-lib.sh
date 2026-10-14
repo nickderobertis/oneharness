@@ -407,6 +407,21 @@ oh_wait_pooled_servers() {
       | [.launch_id, ((.argv | index("--listen")) as $i | if $i == null then "" else .argv[$i + 1] end)] | @tsv' "$file" |
       while IFS=$'\t' read -r launch socket; do
         socket="${socket#unix://}"
+        # The recorder writes both; anything else is a damaged record, which
+        # fails the wait rather than naming a path outside the pool.
+        case "$launch" in
+          '' | *[!A-Za-z0-9._-]* | . | ..)
+            echo "launch id '$launch' in $file is not one the recorder writes" >&2
+            return 1
+            ;;
+        esac
+        case "$socket" in
+          /*) ;;
+          *)
+            echo "launch $launch's --listen address '$socket' in $file is not an absolute unix:// path" >&2
+            return 1
+            ;;
+        esac
         # A path that cannot be resolved fails the wait (the caller's `||`)
         # rather than reading as a server gone.
         entry="$(dirname "$(dirname "$socket")")" || {

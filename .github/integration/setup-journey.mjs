@@ -2,14 +2,16 @@
 // workspace install and the private tooling install start absent, and the
 // repository's own entry (scripts/nx) establishes each through just.
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, copyFileSync, rmSync, statSync, writeFileSync, utimesSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, copyFileSync, rmSync, statSync, writeFileSync, utimesSync, readFileSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { parse } from 'yaml';
-const work=mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR??tmpdir(),'workflow-setup-'));
+// The long, resolved path: Windows runners' temp dir is an 8.3 short name
+// (RUNNER~1), and the root workspace install must see the path a checkout has.
+const work=realpathSync.native(mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR??tmpdir(),'workflow-setup-')));
 try{
- for(const file of ['scripts/nx','justfile','package.json','bun.lock','nx.json','.github/package.json','.github/bun.lock','.github/project.json','.github/integration/project.json','tools/release-tooling/payload-contract/project.json','.github/variants-routing.mjs','.github/workflows/ci.yml','.github/workflows/e2e-variants.yml','npm/oneharness/package.json','npm/oneharness-sdk/package.json']){
+ for(const file of ['scripts/nx','justfile','package.json','bun.lock','nx.json','.github/package.json','.github/bun.lock','.github/project.json','.github/integration/project.json','tools/release-tooling/payload-contract/project.json','.github/variants-routing.mjs','.github/workflows/ci.yml','.github/workflows/e2e-variants.yml','npm/oneharness/package.json','npm/oneharness/bin/oneharness.js','npm/oneharness-sdk/package.json']){
   mkdirSync(dirname(join(work,file)),{recursive:true});copyFileSync(file,join(work,file));
   const source=statSync(file);utimesSync(join(work,file),source.atime,source.mtime);
  }

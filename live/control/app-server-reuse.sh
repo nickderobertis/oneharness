@@ -26,7 +26,10 @@
 # OH_REUSE_LEASES the lease count (default 5). Linux only: the reading is /proc's.
 set -euo pipefail
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || {
+  echo "app-server-reuse: cannot resolve the repository root from ${BASH_SOURCE[0]}; run it from a checkout" >&2
+  exit 1
+}
 out="${OH_E2E_REUSE_FILE:-$root/target/e2e-telemetry/app-server-reuse/reuse.json}"
 codex="${OH_REUSE_CODEX:-codex}"
 leases="${OH_REUSE_LEASES:-5}"

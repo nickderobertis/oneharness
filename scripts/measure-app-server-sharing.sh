@@ -29,11 +29,15 @@ command -v python3 >/dev/null 2>&1 || {
   exit 1
 }
 exec python3 -I - "$codex" <<'PY'
-import base64, hashlib, json, os, socket, struct, subprocess, sys, tempfile, time
+import base64, hashlib, json, os, shutil, socket, struct, subprocess, sys, tempfile, time
 
 codex = sys.argv[1]
-work = tempfile.mkdtemp(prefix="oh-measure-")
-path = os.path.join(work, "app-server.sock")
+# Every socket operation's bound: a server that stops answering fails the
+# measurement naming the step instead of hanging it.
+SOCKET_TIMEOUT = 120
+# The most a WebSocket upgrade answer may be before it is refused.
+HANDSHAKE_LIMIT = 16 * 1024
+RERUN = "rerun, and check the server still starts (`codex app-server --help`)"
 
 
 def tree(root):
@@ -42,10 +46,10 @@ def tree(root):
         if not name.isdigit():
             continue
         try:
-            stat = open(f"/proc/{name}/stat").read()
+            with open(f"/proc/{name}/stat") as stat:
+                parents[int(name)] = int(stat.read().rsplit(")", 1)[1].split()[1])
         except OSError:
             continue
-        parents[int(name)] = int(stat.rsplit(")", 1)[1].split()[1])
     found, index = [root], 0
     while index < len(found):
         found += [pid for pid, ppid in parents.items() if ppid == found[index]]
@@ -55,9 +59,10 @@ def tree(root):
 
 def rss(pid):
     try:
-        for line in open(f"/proc/{pid}/status"):
-            if line.startswith("VmRSS:"):
-                return int(line.split()[1]) * 1024
+        with open(f"/proc/{pid}/status") as status:
+            for line in status:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) * 1024
     except OSError:
         pass
     return 0
@@ -76,10 +81,26 @@ GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
 class Connection:
-    def __init__(self):
+    """One WebSocket connection to the server at `path`. Constructing it raises
+    OSError only while the socket cannot be connected (the caller retries);
+    every later failure stops the measurement naming its step."""
+
+    def __init__(self, path):
         target = os.readlink(path) if os.path.islink(path) else path
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.connect(target)
+        self.sock.settimeout(SOCKET_TIMEOUT)
+        try:
+            self.sock.connect(target)
+        except OSError:
+            self.sock.close()
+            raise
+        try:
+            self.handshake()
+        except OSError as error:
+            stop(f"the WebSocket upgrade failed: {error}; {RERUN}")
+        self.next_id = 1
+
+    def handshake(self):
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall(
             f"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
@@ -87,6 +108,8 @@ class Connection:
         )
         head = b""
         while not head.endswith(b"\r\n\r\n"):
+            if len(head) > HANDSHAKE_LIMIT:
+                stop(f"the server's WebSocket upgrade answer passed {HANDSHAKE_LIMIT} bytes; check that the executable is a codex that supports `app-server --listen`")
             byte = self.sock.recv(1)
             if not byte:
                 stop("the server closed the WebSocket handshake; check that the executable is a codex that supports `app-server --listen`")
@@ -98,7 +121,6 @@ class Connection:
                 or "upgrade" not in headers.get("connection", "").lower() \
                 or headers.get("sec-websocket-accept") != accept:
             stop(f"the server refused or mis-answered the WebSocket upgrade ({lines[0]!r}); check that the executable is a codex that supports `app-server --listen`")
-        self.next_id = 1
 
     def send(self, value):
         payload = json.dumps(value).encode()
@@ -109,14 +131,20 @@ class Connection:
             else bytes([0x80 | 126]) + struct.pack(">H", n) if n < 65536
             else bytes([0x80 | 127]) + struct.pack(">Q", n)
         )
-        self.sock.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+        try:
+            self.sock.sendall(header + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload)))
+        except OSError as error:
+            stop(f"sending {value.get('method', 'a frame')} to the server failed: {error}; {RERUN}")
 
     def exact(self, n):
         data = b""
         while len(data) < n:
-            chunk = self.sock.recv(n - len(data))
+            try:
+                chunk = self.sock.recv(n - len(data))
+            except OSError as error:
+                stop(f"reading from the server failed (no answer within {SOCKET_TIMEOUT} s, or the connection broke): {error}; {RERUN}")
             if not chunk:
-                stop("the server closed the connection mid-measurement; rerun, and check the server still starts (`codex app-server --help`)")
+                stop(f"the server closed the connection mid-measurement; {RERUN}")
             data += chunk
         return data
 
@@ -136,7 +164,7 @@ class Connection:
                 stop("the server sent an oversized or fragmented frame; rerun, and report it if it recurs")
             body = self.exact(n)
             if opcode == 0x8:
-                stop("the server closed the connection mid-measurement; rerun, and check the server still starts (`codex app-server --help`)")
+                stop(f"the server closed the connection mid-measurement; {RERUN}")
             if opcode in (0x9, 0xA):
                 continue
             if (opcode == 0x1) == started:
@@ -144,7 +172,10 @@ class Connection:
             started = True
             data += body
             if first & 0x80:
-                return json.loads(data)
+                try:
+                    return json.loads(data)
+                except ValueError as error:
+                    stop(f"the server sent a message that is not JSON ({error}); rerun, and report it if it recurs")
 
     def request(self, method, params):
         ident = self.next_id
@@ -152,60 +183,86 @@ class Connection:
         self.send({"jsonrpc": "2.0", "id": ident, "method": method, "params": params})
         while True:
             frame = self.message()
-            if frame.get("id") == ident and "method" not in frame:
-                if "error" in frame or "result" not in frame:
+            if isinstance(frame, dict) and frame.get("id") == ident and "method" not in frame:
+                if "error" in frame or not isinstance(frame.get("result"), dict):
                     stop(f"{method} was refused: {frame.get('error')}; check `codex login status` and the codex version")
                 return frame["result"]
 
-    def ready_thread(self):
+    def ready_thread(self, cwd):
         self.request("initialize", {"clientInfo": {"name": "oneharness-measure", "version": "1"}})
         self.send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
-        return self.request("thread/start", {"cwd": work, "approvalPolicy": "never"})["thread"]["id"]
+        thread = self.request("thread/start", {"cwd": cwd, "approvalPolicy": "never"}).get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
+            stop(f"thread/start named no thread: {thread!r}; check the codex version")
+        return thread["id"]
 
 
-probe = subprocess.run([codex, "--version"], capture_output=True, text=True)
-if probe.returncode != 0:
-    stop(f"`{codex} --version` failed ({probe.returncode}): {probe.stderr.strip()}; check the executable")
-version = probe.stdout.strip()
-errors = open(os.path.join(work, "server.err"), "w+")
-launched = time.monotonic()
-server = subprocess.Popen(
-    [codex, "app-server", "-c", "features.plugins=false", "-c", "features.apps=false",
-     "-c", "analytics.enabled=false", "--listen", f"unix://{path}"],
-    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, cwd=work,
-)
-try:
-    deadline = time.monotonic() + 60
-    first = None
-    while first is None:
-        try:
-            first = Connection()
-        except OSError:
-            if server.poll() is not None or time.monotonic() > deadline:
-                errors.seek(0)
-                stop(f"the server never accepted a connection (exit {server.poll()}): {errors.read()[-500:].strip()}; check `codex login status` and that this codex supports `app-server --listen`")
-            time.sleep(0.02)
-    threads = []
-    first.ready_thread()
-    threads.append({"thread": 1, "ready_ms": round((time.monotonic() - launched) * 1000), **reading(server.pid)})
-    started = time.monotonic()
-    second = Connection()
-    second.ready_thread()
-    threads.append({"thread": 2, "ready_ms": round((time.monotonic() - started) * 1000), **reading(server.pid)})
-    print(json.dumps({"codex_version": version, "platform": sys.platform, "server_pid": server.pid,
-                      "threads": threads}, separators=(",", ":")))
-finally:
-    server.terminate()
+def measure(work, errors):
+    path = os.path.join(work, "app-server.sock")
+    launched = time.monotonic()
     try:
-        server.wait(10)
-    except subprocess.TimeoutExpired:
-        server.kill()
-        server.wait()
-    errors.close()
-    for leftover in os.listdir(work):
+        server = subprocess.Popen(
+            [codex, "app-server", "-c", "features.plugins=false", "-c", "features.apps=false",
+             "-c", "analytics.enabled=false", "--listen", f"unix://{path}"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=errors, cwd=work,
+        )
+    except OSError as error:
+        stop(f"cannot start `{codex} app-server`: {error}; check the executable")
+    try:
+        deadline = time.monotonic() + 60
+        first = None
+        while first is None:
+            try:
+                first = Connection(path)
+            except OSError:
+                if server.poll() is not None or time.monotonic() > deadline:
+                    errors.seek(0)
+                    said = errors.read().strip() or "(nothing on stderr)"
+                    stop(f"the server never accepted a connection (exit {server.poll()}); its stderr:\n{said}\ncheck `codex login status` and that this codex supports `app-server --listen`")
+                time.sleep(0.02)
+        threads = []
+        first.ready_thread(work)
+        threads.append({"thread": 1, "ready_ms": round((time.monotonic() - launched) * 1000), **reading(server.pid)})
+        started = time.monotonic()
         try:
-            os.remove(os.path.join(work, leftover))
-        except OSError:
-            pass
-    os.rmdir(work)
+            second = Connection(path)
+        except OSError as error:
+            stop(f"the server accepted no second connection: {error}; {RERUN}")
+        second.ready_thread(work)
+        threads.append({"thread": 2, "ready_ms": round((time.monotonic() - started) * 1000), **reading(server.pid)})
+        return server.pid, threads
+    finally:
+        server.terminate()
+        try:
+            server.wait(10)
+        except subprocess.TimeoutExpired:
+            server.kill()
+            server.wait()
+
+
+def main():
+    probe = subprocess.run([codex, "--version"], capture_output=True, text=True)
+    if probe.returncode != 0:
+        stop(f"`{codex} --version` failed ({probe.returncode}): {probe.stderr.strip()}; check the executable")
+    try:
+        work = tempfile.mkdtemp(prefix="oh-measure-")
+    except OSError as error:
+        stop(f"cannot create a scratch directory under {tempfile.gettempdir()}: {error}; check that the host temp dir is writable")
+    try:
+        try:
+            errors = open(os.path.join(work, "server.err"), "w+")
+        except OSError as error:
+            stop(f"cannot create the server's stderr file in {work}: {error}; check that the host temp dir is writable")
+        with errors:
+            pid, threads = measure(work, errors)
+    finally:
+        failed = []
+        shutil.rmtree(work, onerror=lambda _f, p, info: failed.append(f"{p}: {info[1]}"))
+        if failed:
+            print(f"measure-app-server-sharing: could not remove its scratch directory {work} ({'; '.join(failed)}); delete it by hand", file=sys.stderr)
+    print(json.dumps({"codex_version": probe.stdout.strip(), "platform": sys.platform, "server_pid": pid,
+                      "threads": threads}, separators=(",", ":")))
+
+
+main()
 PY

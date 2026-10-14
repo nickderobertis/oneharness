@@ -2793,6 +2793,10 @@ mod listen_server {
     }
 
     /// One client message, unmasked; `None` once the client is gone.
+    /// The most one client message may hold; a frame or message past it ends
+    /// the connection rather than growing the mock's memory on a peer's word.
+    const MESSAGE_LIMIT: u64 = 64 * 1024 * 1024;
+
     fn read_message(stream: &mut impl Read) -> Option<Vec<u8>> {
         let mut message = Vec::new();
         loop {
@@ -2811,6 +2815,9 @@ mod listen_server {
                 }
                 short => u64::from(short),
             };
+            if len.saturating_add(message.len() as u64) > MESSAGE_LIMIT {
+                return None;
+            }
             let mut mask = [0u8; 4];
             if head[1] & 0x80 != 0 {
                 stream.read_exact(&mut mask).ok()?;

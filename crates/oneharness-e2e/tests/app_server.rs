@@ -2274,6 +2274,35 @@ fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
     );
 }
 
+/// A server that exits before it listens fails the sharing measurement naming
+/// that, its exit and its stderr, with the next step — and the measurement's
+/// scratch directory is gone all the same.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_sharing_measurement_names_a_server_that_never_listened_and_leaves_no_scratch() {
+    let pool = Pool::new("pool-measure-fail");
+    let tmp = pool.path("tmp");
+    std::fs::create_dir_all(&tmp).unwrap();
+    let output = Command::new("bash")
+        .arg(repo_root().join("scripts/measure-app-server-sharing.sh"))
+        .env("OH_MEASURE_CODEX", mock_bin())
+        .env("TMPDIR", &tmp)
+        .env("CODEX_MOCK_DIR", pool.path("mock"))
+        .env("CODEX_MOCK_EXIT_FIRST", pool.path("exited"))
+        .output()
+        .unwrap();
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{said}");
+    assert!(output.stdout.is_empty(), "a figure was printed: {said}");
+    assert!(
+        said.contains("measure-app-server-sharing: the server never accepted a connection (exit 1); its stderr:")
+            && said.contains("check `codex login status`"),
+        "{said}"
+    );
+    let left: Vec<_> = std::fs::read_dir(&tmp).unwrap().flatten().collect();
+    assert!(left.is_empty(), "scratch left behind: {left:?}");
+}
+
 /// live/control/app-server-reuse.sh runs its workload through the pool: each
 /// of the leases ran `initialize`, `thread/start`, a `thread/shellCommand` and
 /// `thread/resume` of its own thread and no `turn/start`, all on one server;

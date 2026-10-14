@@ -120,6 +120,9 @@ have_env() {
 #   the prompt asks it to run (also exported as OH_POOLED_COMMAND)
 _oh_pooled_start() {
   local session="$1" report="$2" cwd="$3" command="$4"
+  if ! { : >"$report" && : >"$report.err"; }; then
+    fail "$session: cannot create its report files $report and $report.err; check that $POOLED_DIR is writable"
+  fi
   OH_POOLED_COMMAND="$command" ONEHARNESS_NO_CONFIG=1 "$BIN" run --harness codex --control \
     --session "$session" --session-dir "$POOLED_DIR/sessions" --cwd "$cwd" --mode bypass \
     --timeout "${OH_TIMEOUT:-180}" --compact \
@@ -188,8 +191,18 @@ oh_pooled_kill() {
   OH_POOLED_BEAT="$beat" _oh_pooled_start pooled-kill "$POOLED_DIR/kill.json" "$POOLED_DIR/wk" \
     'while :; do date +%s >> "$OH_POOLED_BEAT"; sleep 0.1; done'
   pid=$POOLED_PID
-  beats() { if [ -f "$beat" ]; then wc -l <"$beat"; else echo 0; fi; }
-  while [ "$(beats)" -lt 3 ]; do
+  # The heartbeat's line count: 0 until the command first writes it, and a
+  # file that exists but cannot be read fails the phase naming it.
+  beats() {
+    [ -e "$beat" ] || {
+      echo 0
+      return 0
+    }
+    wc -l <"$beat" || fail "pooled-kill: cannot read the heartbeat file $beat"
+  }
+  while :; do
+    lines="$(beats)" || exit 1
+    [ "$lines" -lt 3 ] || break
     sleep 0.2
     waited=$((waited + 1))
     [ "$waited" -lt 900 ] || {
@@ -202,12 +215,12 @@ oh_pooled_kill() {
   wait "$pid" 2>/dev/null || true
   # Sample the heartbeat every 0.2 s until it has been still for 1 s; the last
   # sample that grew it is when it stopped.
-  last="$(wc -l <"$beat")"
+  last="$(beats)"
   waited=0
   while [ "$quiet" -lt 5 ]; do
     sleep 0.2
     waited=$((waited + 1))
-    lines="$(wc -l <"$beat")"
+    lines="$(beats)"
     if [ "$lines" != "$last" ]; then
       grown=$waited
       quiet=0

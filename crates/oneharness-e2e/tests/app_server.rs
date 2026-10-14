@@ -1085,3 +1085,314 @@ fn a_server_behind_a_launcher_shim_is_stopped_whole() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Interrupts over a shared connection
+// ---------------------------------------------------------------------------
+
+const INTERRUPT_LINE: &str = r#"{"v":2,"verb":"interrupt"}"#;
+
+/// The interrupts server `pid` received, as `(connection, thread)`.
+fn interrupts_received(pool: &Pool, pid: u32) -> Vec<(u64, String)> {
+    pool.state(pid)["interrupts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["conn"].as_u64().unwrap(),
+                i["thread"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect()
+}
+
+/// The thread a live session's dispatch opened, read off the server: the
+/// thread of the one live turn served over a connection no other session holds.
+fn live_thread(pool: &Pool, pid: u32, besides: &[String]) -> String {
+    pool.state(pid)["loaded"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(id, t)| !t["active_turn"].is_null() && !besides.contains(id))
+        .map(|(id, _)| id.clone())
+        .expect("a live turn")
+}
+
+/// With two pooled turns live, `oneharness interrupt` against one dispatch,
+/// and an interrupt through another's `--control` socket, each deliver
+/// `turn/interrupt` for that dispatch's thread over its own connection while
+/// the other turn runs on to completion.
+#[test]
+fn an_interrupt_reaches_only_its_own_dispatch_s_turn_over_its_own_connection() {
+    for through_the_socket in [false, true] {
+        let pool = Pool::new(if through_the_socket {
+            "pool-int-raw"
+        } else {
+            "pool-int-cli"
+        });
+        let never = pool.file("never");
+        let release = pool.file("release");
+        let target = pool.spawn(pool.command("target", &[], &[("MOCK_CODEX_HOLD_UNTIL", &never)]));
+        let server = pool.await_live_turns(1);
+        let target_thread = live_thread(&pool, server, &[]);
+        let other = pool.spawn(pool.command("other", &[], &[("MOCK_CODEX_HOLD_UNTIL", &release)]));
+        pool.await_live_turns(2);
+        let other_thread = live_thread(&pool, server, std::slice::from_ref(&target_thread));
+
+        let answer = if through_the_socket {
+            control_request(&pool.socket("target"), INTERRUPT_LINE)
+        } else {
+            interrupt(&pool, "target").0
+        };
+        assert_eq!(answer["ok"], true, "{answer}");
+        assert_eq!(answer["mechanism"], "codex-app-server", "{answer}");
+        let (output, report) = Pool::finish(target);
+        assert!(output.status.success(), "{report}");
+        assert_eq!(report["control"]["interrupts"][0]["outcome"], "served");
+        assert_eq!(
+            interrupts_received(&pool, server),
+            [(pool.conn_of(server, &target_thread), target_thread.clone())],
+            "the interrupt must address only its own dispatch's thread, over its own connection"
+        );
+        assert_eq!(
+            pool.turn_of(server, &target_thread)["status"],
+            "interrupted"
+        );
+        // The other turn is still running, and finishes on its own.
+        assert!(!pool.state(server)["loaded"][&other_thread]["active_turn"].is_null());
+        std::fs::write(&release, b"").unwrap();
+        let (output, report) = Pool::finish(other);
+        succeeded(&output, &report);
+        assert_eq!(pool.turn_of(server, &other_thread)["status"], "completed");
+    }
+}
+
+/// After its turn ended — the dispatch still alive, releasing its thread — an
+/// interrupt answers `no_active_turn` from oneharness's own record and sends
+/// nothing to a server that would never answer one; once the dispatch is gone
+/// it is `not_running`; a server that says `thread not found` is `not_running`
+/// too; a frame this build cannot parse is `unsupported`, exactly as for a
+/// dispatch's own child; and an interrupt the server never answers returns
+/// within `INTERRUPT_REPLY_DEADLINE`.
+#[test]
+fn a_pooled_interrupt_answers_from_its_own_record_and_never_waits_unbounded() {
+    use oneharness_core::io::server_pool::INTERRUPT_REPLY_DEADLINE;
+    let pool = Pool::new("pool-int-edges");
+
+    // Ended, still releasing: nothing is sent.
+    let ending = pool.spawn(pool.command(
+        "ending",
+        &[],
+        &[
+            ("MOCK_CODEX_UNSUBSCRIBE_DELAY_MS", "4000"),
+            ("MOCK_CODEX_INTERRUPT_SILENT", "1"),
+        ],
+    ));
+    wait_for("the turn to end", Duration::from_secs(20), || {
+        pool.server_pids().len() == 1
+            && pool.state(pool.server_pids()[0])["turns"]
+                .as_array()
+                .is_some_and(|turns| turns.iter().any(|t| t["status"] == "completed"))
+    });
+    let server = pool.the_server();
+    let started = Instant::now();
+    let by_cli = interrupt(&pool, "ending").0;
+    let by_socket = control_request(&pool.socket("ending"), INTERRUPT_LINE);
+    for answer in [&by_cli, &by_socket] {
+        assert_eq!(answer["reason"], "no_active_turn", "{answer}");
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "an answer waited on the server"
+    );
+    let (output, report) = Pool::finish(ending);
+    succeeded(&output, &report);
+    assert!(
+        interrupts_received(&pool, server).is_empty(),
+        "an interrupt reached the server"
+    );
+
+    // Gone.
+    let gone = interrupt(&pool, "ending").0;
+    assert_eq!(gone["reason"], "not_running", "{gone}");
+
+    // The server no longer has the thread.
+    let never = pool.file("never");
+    let lost = pool.spawn(pool.command(
+        "lost-thread",
+        &[],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+            ("MOCK_CODEX_INTERRUPT_THREAD_NOT_FOUND", "1"),
+        ],
+    ));
+    wait_for("the turn to start", Duration::from_secs(20), || {
+        pool.server_pids()
+            .iter()
+            .any(|pid| pool.live_turns(*pid) == 1)
+    });
+    let not_found = interrupt(&pool, "lost-thread").0;
+    assert_eq!(not_found["reason"], "not_running", "{not_found}");
+    assert!(
+        not_found["error"]
+            .as_str()
+            .unwrap()
+            .contains("thread not found"),
+        "{not_found}"
+    );
+
+    // A frame this build cannot parse.
+    let unparsable = control_request(
+        &pool.socket("lost-thread"),
+        r#"{"v":99,"verb":"interrupt"}"#,
+    );
+    assert_eq!(unparsable["reason"], "unsupported", "{unparsable}");
+    sigkill(lost.id());
+    let _ = lost.wait_with_output();
+
+    // The same frame against a dispatch's own child.
+    let log = pool.file("own-child.log");
+    let own = pool.spawn(pool.command_with_config(
+        "own-child",
+        "[harness.codex]\napp_server = \"per-dispatch\"\n",
+        &[],
+        &[
+            ("MOCK_CODEX_APP_SERVER_LOG", &log),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    wait_for("the own child's turn", Duration::from_secs(20), || {
+        std::fs::read_to_string(&log).is_ok_and(|text| text.contains("turn/start"))
+    });
+    let own_unparsable =
+        control_request(&pool.socket("own-child"), r#"{"v":99,"verb":"interrupt"}"#);
+    assert_eq!(own_unparsable["reason"], unparsable["reason"]);
+    assert_eq!(own_unparsable["error"], unparsable["error"]);
+    let stopped = interrupt(&pool, "own-child").0;
+    assert_eq!(stopped["ok"], true, "{stopped}");
+    let _ = own.wait_with_output();
+
+    // A server that never answers the interrupt. The killed dispatch's turn
+    // is retired first, so the live turn waited for below is this one's.
+    wait_for(
+        "the killed dispatch's turn to be retired",
+        Duration::from_secs(20),
+        || {
+            pool.server_pids()
+                .iter()
+                .all(|pid| !alive(*pid) || pool.live_turns(*pid) == 0)
+        },
+    );
+    let silent = pool.spawn(pool.command(
+        "silent",
+        &[],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+            ("MOCK_CODEX_INTERRUPT_SILENT", "1"),
+        ],
+    ));
+    wait_for("the silent turn", Duration::from_secs(20), || {
+        pool.socket("silent").exists()
+            && pool
+                .server_pids()
+                .iter()
+                .any(|pid| alive(*pid) && pool.live_turns(*pid) >= 1)
+    });
+    let (answer, took) = interrupt(&pool, "silent");
+    assert_eq!(answer["reason"], "not_running", "{answer}");
+    assert!(
+        took >= INTERRUPT_REPLY_DEADLINE - Duration::from_millis(500)
+            && took <= INTERRUPT_REPLY_DEADLINE + Duration::from_secs(2),
+        "the unanswered interrupt returned after {took:?}, not at the {INTERRUPT_REPLY_DEADLINE:?} deadline"
+    );
+    sigkill(silent.id());
+    let _ = silent.wait_with_output();
+}
+
+// ---------------------------------------------------------------------------
+// The shared server lost under live turns
+// ---------------------------------------------------------------------------
+
+/// Killing the shared server under two live turns makes both runs report
+/// `app_server_lost` — retryable, so a fallback chain moves to its next
+/// candidate (here a variant on its own app-server child) — never a turn
+/// failure; the history record carries the kind at its schema version.
+#[test]
+fn a_shared_server_killed_under_two_live_turns_is_app_server_lost_and_falls_through() {
+    let pool = Pool::new("pool-lost");
+    let never = pool.file("never");
+    let alt_log = pool.file("alt.log");
+    let config = format!(
+        "harnesses = [\"codex\", \"codex:alt\"]\n\
+         [harness.codex.variant.alt]\n\
+         app_server = \"per-dispatch\"\n\
+         env = {{ MOCK_CODEX_APP_SERVER_LOG = \"{alt_log}\", MOCK_CODEX_COMPLETE_TURN = \"1\" }}\n"
+    );
+    let history = pool.file("history");
+    let spawn = |session: &str| {
+        let mut cmd = pool.command_with_config(
+            session,
+            &config,
+            &["--history", "--history-dir", &history],
+            &[("MOCK_CODEX_HOLD_UNTIL", &never)],
+        );
+        // The chain names its own candidates; drop the default `--harness`.
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let mut fresh = Command::new(cmd.get_program());
+        for (key, value) in cmd.get_envs() {
+            match value {
+                Some(value) => fresh.env(key, value),
+                None => fresh.env_remove(key),
+            };
+        }
+        let mut skip = false;
+        for arg in args {
+            if skip {
+                skip = false;
+                continue;
+            }
+            if arg == "--harness" {
+                skip = true;
+                continue;
+            }
+            fresh.arg(arg);
+        }
+        fresh
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        pool.spawn(fresh)
+    };
+    let first = spawn("lost-a");
+    let server = pool.await_live_turns(1);
+    let second = spawn("lost-b");
+    pool.await_live_turns(2);
+    sigkill(server);
+    for child in [first, second] {
+        let (output, report) = Pool::finish(child);
+        assert!(output.status.success(), "{report}");
+        let lost = &report["results"][0];
+        assert_eq!(lost["harness_id"], "codex", "{report}");
+        assert_eq!(lost["status"], "nonzero", "{lost}");
+        assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
+        assert_eq!(
+            report["fallback"]["fell_through"][0]["reason"], "app-server-lost",
+            "{report}"
+        );
+        assert_eq!(report["fallback"]["ran"], "codex:alt", "{report}");
+        let ran = report["results"].as_array().unwrap().last().unwrap();
+        assert_eq!(ran["status"], "ok", "{ran}");
+        let file = report["history_file"].as_str().expect("a history file");
+        let record = std::fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|line| line["type"] == "run" && line["failure_kind"] == "app_server_lost")
+            .unwrap_or_else(|| panic!("no app_server_lost record in {file}"));
+        assert_eq!(record["schema_version"], "1.10", "{record}");
+    }
+}

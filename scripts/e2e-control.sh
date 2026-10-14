@@ -188,7 +188,8 @@ oh_pooled_kill() {
   OH_POOLED_BEAT="$beat" _oh_pooled_start pooled-kill "$POOLED_DIR/kill.json" "$POOLED_DIR/wk" \
     'while :; do date +%s >> "$OH_POOLED_BEAT"; sleep 0.1; done'
   pid=$POOLED_PID
-  while [ "$(wc -l <"$beat" 2>/dev/null || echo 0)" -lt 3 ]; do
+  beats() { if [ -f "$beat" ]; then wc -l <"$beat"; else echo 0; fi; }
+  while [ "$(beats)" -lt 3 ]; do
     sleep 0.2
     waited=$((waited + 1))
     [ "$waited" -lt 900 ] || {

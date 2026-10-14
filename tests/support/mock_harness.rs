@@ -2303,7 +2303,12 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
 ///                         thread's environment; `rollout-env` writes thread
 ///                         environments into rollout files; `escape-marker`
-///                         drops the dispatch marker from commands.
+///                         drops the dispatch marker from commands;
+///                         `late-listener` (with CODEX_MOCK_SHIM) has the serving
+///                         child drop the server marker and, once its launcher
+///                         is gone, keep its listener open for 3 s accepting
+///                         nothing, as an exiting server's socket outlives the
+///                         environment a marker scan reads.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
@@ -2316,8 +2321,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// sent), MOCK_CODEX_COMPLETE_TURN, MOCK_CODEX_HOLD_UNTIL (end the turn once
 /// this file exists, so a test holds two turns live at once),
 /// MOCK_CODEX_HOLD_OPEN_UNTIL (answer `thread/start` once this file exists),
-/// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection once its
-/// approval request is out),
+/// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection as its
+/// approval request goes out),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_CODEX_TOOL_EVENTS, MOCK_CODEX_MODEL, MOCK_CODEX_RUN_COMMAND (a `sh -c`
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
@@ -2465,15 +2470,10 @@ mod listen_server {
         let pid = std::process::id();
         if let Some(dir) = &dir {
             let _ = std::fs::create_dir_all(dir);
-            let env: BTreeMap<String, String> = std::env::vars().collect();
-            let _ = std::fs::write(
-                dir.join(format!("server-{pid}.json")),
-                json!({"pid": pid, "argv": argv, "env": env}).to_string(),
-            );
         }
         let server: Shared = Arc::new(Mutex::new(Server {
             pid,
-            dir,
+            dir: dir.clone(),
             broadcast: std::env::var_os("CODEX_MOCK_BROADCAST").is_some(),
             ignore_unsubscribe: std::env::var_os("CODEX_MOCK_IGNORE_UNSUBSCRIBE").is_some(),
             thread_bytes: std::env::var("CODEX_MOCK_THREAD_BYTES")
@@ -2496,8 +2496,23 @@ mod listen_server {
             open_rss: Vec::new(),
         }));
         lock(&server).save();
+        // The server's record after its first state: a reader that finds the
+        // server always finds its state too.
+        if let Some(dir) = &dir {
+            let env: BTreeMap<String, String> = std::env::vars().collect();
+            let _ = std::fs::write(
+                dir.join(format!("server-{pid}.json")),
+                json!({"pid": pid, "argv": argv, "env": env}).to_string(),
+            );
+        }
+        let orphaned = late_listener();
+        let mut held = Vec::new();
         for stream in listener.incoming() {
             let Ok(stream) = stream else { continue };
+            if orphaned.load(std::sync::atomic::Ordering::SeqCst) {
+                held.push(stream);
+                continue;
+            }
             let server = Arc::clone(&server);
             std::thread::spawn(move || serve(&server, stream));
         }
@@ -2510,14 +2525,39 @@ mod listen_server {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
+    /// CODEX_MOCK_FAULT=late-listener, in the launcher's serving child: a flag
+    /// raised once the launcher is gone, after which the process exits 3 s
+    /// later; until then its listener stays open and accepts into nothing.
+    fn late_listener() -> Arc<std::sync::atomic::AtomicBool> {
+        let orphaned = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        if std::env::var_os("ONEHARNESS_MOCK_SHIM_CHILD").is_none()
+            || std::env::var("CODEX_MOCK_FAULT").as_deref() != Ok("late-listener")
+        {
+            return orphaned;
+        }
+        let launcher = std::os::unix::process::parent_id();
+        let flag = Arc::clone(&orphaned);
+        std::thread::spawn(move || loop {
+            if std::os::unix::process::parent_id() != launcher {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                std::process::exit(0);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        });
+        orphaned
+    }
+
     /// The launcher: the server as a child, waited on. Nothing forwards a
     /// SIGKILL, so a killed launcher leaves the child serving.
     fn run_shim(argv: &[String]) -> ! {
         let exe = std::env::current_exe().unwrap_or_else(|_| super::refuse("no executable"));
-        let status = std::process::Command::new(exe)
-            .args(argv)
-            .env("ONEHARNESS_MOCK_SHIM_CHILD", "1")
-            .status();
+        let mut child = std::process::Command::new(exe);
+        child.args(argv).env("ONEHARNESS_MOCK_SHIM_CHILD", "1");
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("late-listener") {
+            child.env_remove(oneharness_core::domain::app_server::SERVER_MARKER_VAR);
+        }
+        let status = child.status();
         std::process::exit(status.ok().and_then(|s| s.code()).unwrap_or(1));
     }
 
@@ -3384,14 +3424,10 @@ mod listen_server {
                 s.approvals.push(
                     json!({"request": request, "thread": thread_id, "owner": conn, "answers": []}),
                 );
-                let shut = knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some();
-                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "id": request,
-                    "method": "item/commandExecution/requestApproval",
-                    "params": {"threadId": thread_id, "turnId": turn, "itemId": format!("{turn}-command"), "command": command}}));
                 // MOCK_CODEX_SHUT_READ_ON_APPROVAL: stop reading this
-                // connection once the request is out, so the client's answer is
-                // a write onto a connection that is gone.
-                if shut {
+                // connection before the request goes out, so the client's
+                // answer is always a write onto a connection that is gone.
+                if knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some() {
                     if let Some(c) = s.conns.get_mut(&conn) {
                         c.held = true;
                         let _ = c
@@ -3401,6 +3437,9 @@ mod listen_server {
                             .shutdown(std::net::Shutdown::Read);
                     }
                 }
+                s.emit(&thread_id, &json!({"jsonrpc": "2.0", "id": request,
+                    "method": "item/commandExecution/requestApproval",
+                    "params": {"threadId": thread_id, "turnId": turn, "itemId": format!("{turn}-command"), "command": command}}));
                 s.save();
                 return;
             }

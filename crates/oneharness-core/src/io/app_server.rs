@@ -664,6 +664,11 @@ pub(crate) fn stop_server(entry: &Path, record: &ServerRecord) {
     if let Some(value) = &record.marker {
         stop_by_marker(value);
     }
+    // A stopped server's listener can outlive the environment the marker scan
+    // reads — the kernel drops an exiting process's memory before its sockets —
+    // so the address is unlinked too: a successor's first dial then waits for
+    // its own bind instead of reaching the closing listener and being reset.
+    let _ = std::fs::remove_file(entry.join(SOCKET_DIR).join(SOCKET_FILE));
 }
 
 /// Stop every process carrying the server marker `value`, within

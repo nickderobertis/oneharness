@@ -590,6 +590,32 @@ fn two_concurrent_dispatches_with_one_key_share_one_server_for_the_life_of_their
     assert!(started.elapsed() > lived);
 }
 
+/// A server stopped after its linger leaves no address behind: a successor's
+/// first dial waits for the successor's own bind, even while the stopped
+/// server's listener is still closing — staged by a launcher whose serving
+/// child carries no marker and holds its listener open after the stop.
+#[test]
+fn a_successor_server_is_never_dialled_through_its_stopped_predecessor_s_socket() {
+    let pool = Pool::new("pool-late")
+        .with_env("CODEX_MOCK_SHIM", "1")
+        .with_env("CODEX_MOCK_FAULT", "late-listener");
+    let (out, report) = pool.run(pool.command("first", &[], &[]));
+    succeeded(&out, &report);
+    let first = reported_server(&report);
+    wait_for(
+        "the first server to stop after its linger",
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 2 + Duration::from_secs(5),
+        || !alive(first),
+    );
+    let (out, report) = pool.run(pool.command("second", &[], &[]));
+    succeeded(&out, &report);
+    assert_ne!(
+        reported_server(&report),
+        first,
+        "the stopped server served again"
+    );
+}
+
 /// Run two dispatches one after the other — the second while the first's
 /// server is still lingering — and answer the servers each ran on.
 fn servers_of(pool: &Pool, first: Command, second: Command) -> (u32, u32) {

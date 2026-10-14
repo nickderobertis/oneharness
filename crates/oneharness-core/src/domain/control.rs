@@ -555,6 +555,9 @@ pub fn pool_key(
     PoolKey(format!("{prefix}-{:016x}", fnv1a64(material.as_bytes())))
 }
 
+/// The longest pool key, in its schema and at runtime alike.
+const POOL_KEY_MAX_LEN: usize = 128;
+
 /// Whether `key` is shaped like a [`pool_key`] result — the single rule behind
 /// [`PoolKey`].
 ///
@@ -565,9 +568,6 @@ pub fn pool_key(
 /// dispatch would then lease and reclaim wholesale. Excluding the character
 /// makes both `.` and `..` unrepresentable, so no separate traversal check is
 /// needed.
-/// The longest pool key, in its schema and at runtime alike.
-const POOL_KEY_MAX_LEN: usize = 128;
-
 fn is_pool_key(key: &str) -> bool {
     !key.is_empty()
         && key.len() <= POOL_KEY_MAX_LEN

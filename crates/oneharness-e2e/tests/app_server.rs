@@ -841,3 +841,247 @@ fn each_pooled_dispatch_s_commands_see_exactly_its_own_environment() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// A lease's end: its commands stopped, its thread released
+// ---------------------------------------------------------------------------
+
+/// A command appending a line to `file` every 100 ms, forever.
+fn heartbeat(file: &str) -> String {
+    format!("while :; do echo beat >> '{file}'; sleep 0.1; done")
+}
+
+fn lines(path: &str) -> usize {
+    std::fs::read_to_string(path).map_or(0, |text| text.lines().count())
+}
+
+/// The command server `pid` ran whose text mentions `needle`.
+fn command_running(pool: &Pool, pid: u32, needle: &str) -> Value {
+    pool.state(pid)["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| {
+            c["command"]
+                .as_str()
+                .is_some_and(|text| text.contains(needle))
+        })
+        .cloned()
+        .unwrap_or_else(|| panic!("no command mentioning {needle}: {}", pool.state(pid)))
+}
+
+/// Whether server `pid` still holds anything for `thread`: loaded, a
+/// subscription, or per-thread state.
+fn holds_thread(pool: &Pool, pid: u32, thread: &str) -> bool {
+    !pool.state(pid)["loaded"][thread].is_null()
+}
+
+/// SIGKILL a pooled dispatch whose thread is running a heartbeat command (one
+/// the server keeps running after `turn/interrupt`, as real Codex does), and
+/// show the pool stopping it within the sweep interval plus the stop deadline:
+/// the turn ended as interrupted, the command's process gone, no further
+/// heartbeat, and the thread released — while `neighbour` (if any) keeps its
+/// thread and finishes. Then the server stops once no lease is live.
+fn a_killed_dispatch_is_stopped_and_released(pool: &Pool, with_neighbour: bool) {
+    let beat = pool.file("heartbeat");
+    let never = pool.file("never-released");
+    let release = pool.file("release");
+    let mut victim = pool.spawn(pool.command(
+        "victim",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let server = pool.await_live_turns(1);
+    wait_for("the heartbeat to start", Duration::from_secs(10), || {
+        lines(&beat) >= 3
+    });
+    let neighbour = with_neighbour.then(|| {
+        let child =
+            pool.spawn(pool.command("neighbour", &[], &[("MOCK_CODEX_HOLD_UNTIL", &release)]));
+        pool.await_live_turns(2);
+        child
+    });
+    let command = command_running(pool, server, &beat);
+    let command_pid = command["pid"].as_u64().unwrap() as u32;
+    let thread = command["thread"].as_str().unwrap().to_string();
+    assert!(alive(command_pid));
+
+    sigkill(victim.id());
+    victim.wait().unwrap();
+    let killed = Instant::now();
+    let bound = DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE;
+    // A hang guard, well past the bound the assertion below holds it to.
+    wait_for("the dead dispatch's command to stop", bound * 3, || {
+        !alive(command_pid)
+    });
+    let stopped = killed.elapsed();
+    assert!(
+        stopped <= bound + Duration::from_millis(1500),
+        "the command outlived its dispatch by {stopped:?}, past the {bound:?} sweep + stop bound"
+    );
+    assert_eq!(
+        pool.turn_of(server, &thread)["status"],
+        "interrupted",
+        "the dead dispatch's turn was not interrupted"
+    );
+    let beats = lines(&beat);
+    std::thread::sleep(Duration::from_secs(1));
+    assert_eq!(
+        lines(&beat),
+        beats,
+        "the heartbeat kept beating after the stop"
+    );
+    wait_for(
+        "the dead dispatch's thread to be released",
+        Duration::from_secs(10),
+        || !holds_thread(pool, server, &thread),
+    );
+    assert!(
+        pool.state(server)["releases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["thread"] == thread.as_str() && r["status"] == "unsubscribed"),
+        "{}",
+        pool.state(server)
+    );
+
+    if let Some(neighbour) = neighbour {
+        let live: Vec<String> = pool.state(server)["loaded"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        assert_eq!(
+            live.len(),
+            1,
+            "the neighbour's thread must stay loaded: {live:?}"
+        );
+        std::fs::write(&release, b"").unwrap();
+        let (output, report) = Pool::finish(neighbour);
+        succeeded(&output, &report);
+        assert_eq!(reported_server(&report), server);
+        assert_eq!(thread_of(&report), live[0]);
+    }
+    wait_for(
+        "the server to stop once no lease is live",
+        Duration::from_millis(LINGER_MS) + bound + Duration::from_secs(5),
+        || !alive(server),
+    );
+}
+
+#[test]
+fn a_sigkilled_pooled_dispatch_is_stopped_and_released_beside_a_live_neighbour() {
+    a_killed_dispatch_is_stopped_and_released(&Pool::new("pool-kill"), true);
+}
+
+#[test]
+fn a_sigkilled_pooled_dispatch_is_stopped_and_released_when_it_was_the_only_one() {
+    a_killed_dispatch_is_stopped_and_released(&Pool::new("pool-kill-alone"), false);
+}
+
+/// A dispatch that ends normally while a command it started still runs leaves
+/// no process carrying its marker once its run returns; its thread is
+/// released, and a later dispatch resuming that thread runs its turn on it.
+#[test]
+fn a_finished_dispatch_leaves_no_marked_process_and_its_released_thread_resumes() {
+    let pool = Pool::new("pool-end");
+    let beat = pool.file("background");
+    let (output, report) = pool.run(pool.command(
+        "ended",
+        &["--mode", "bypass"],
+        &[(
+            "MOCK_CODEX_RUN_COMMAND",
+            &format!("({}) >/dev/null 2>&1 & echo started", heartbeat(&beat)),
+        )],
+    ));
+    succeeded(&output, &report);
+    let server = reported_server(&report);
+    let thread = thread_of(&report);
+    let marker = pool.turn_of(server, &thread)["marker"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let marked = find_marked(&ProcessMarker {
+        name: "ONEHARNESS_DISPATCH_MARKER".to_string(),
+        value: marker,
+    })
+    .unwrap();
+    assert!(
+        marked.is_empty(),
+        "the run returned with {marked:?} still carrying its marker"
+    );
+    assert!(
+        !holds_thread(&pool, server, &thread),
+        "{}",
+        pool.state(server)
+    );
+
+    // The same session continues that thread: reloaded, and its turn run.
+    let (output, resumed) = pool.run(pool.command("ended", &[], &[]));
+    succeeded(&output, &resumed);
+    assert_eq!(thread_of(&resumed), thread);
+    let resumed_on = reported_server(&resumed);
+    let opened: Vec<Value> = pool.state(resumed_on)["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["thread"] == thread.as_str())
+        .cloned()
+        .collect();
+    assert!(
+        !opened.is_empty(),
+        "the resumed thread ran no turn: {}",
+        pool.state(resumed_on)
+    );
+}
+
+/// Codex's Node launcher runs the native server as its child, and a SIGKILLed
+/// launcher leaves that child serving. Stopping such a server — at its linger,
+/// or once the pool finds its launcher dead — leaves neither process behind.
+#[test]
+fn a_server_behind_a_launcher_shim_is_stopped_whole() {
+    for kill_the_launcher in [false, true] {
+        let pool = Pool::new(if kill_the_launcher {
+            "pool-shim-kill"
+        } else {
+            "pool-shim"
+        })
+        .with_env("CODEX_MOCK_SHIM", "1");
+        let release = pool.file("release");
+        let child = pool.spawn(pool.command("shim", &[], &[("MOCK_CODEX_HOLD_UNTIL", &release)]));
+        let native = pool.await_live_turns(1);
+        let entries = pool.path("state/oneharness/servers");
+        let record: Value = std::fs::read_dir(&entries)
+            .unwrap()
+            .flatten()
+            .find_map(|e| std::fs::read_to_string(e.path().join("server.json")).ok())
+            .map(|text| serde_json::from_str(&text).unwrap())
+            .unwrap();
+        let launcher = record["pid"].as_u64().unwrap() as u32;
+        assert_ne!(
+            launcher, native,
+            "the shim did not run the server as its child"
+        );
+        std::fs::write(&release, b"").unwrap();
+        let (output, report) = Pool::finish(child);
+        succeeded(&output, &report);
+        assert_eq!(reported_server(&report), launcher);
+        if kill_the_launcher {
+            sigkill(launcher);
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(alive(native), "the native server died with its launcher");
+        }
+        wait_for(
+            "both the launcher and the native server to stop",
+            Duration::from_millis(LINGER_MS)
+                + DEAD_LEASE_SWEEP_INTERVAL * 2
+                + Duration::from_secs(12),
+            || !alive(launcher) && !alive(native),
+        );
+    }
+}

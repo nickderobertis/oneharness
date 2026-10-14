@@ -1134,6 +1134,44 @@ mod tests {
         }
     }
 
+    /// A client message of every length encoding — 7-bit, 16-bit and 64-bit —
+    /// reaches a server on a real `AF_UNIX` connection whole.
+    #[test]
+    fn a_client_message_of_every_length_encoding_arrives_whole() {
+        let dir = ScratchDir::new("ws-long-send").unwrap();
+        let path = dir.join("s.sock");
+        let listener = listener::LocalListener::bind(&path).unwrap();
+        let sizes = [10usize, 300, 70_000];
+        let server = std::thread::spawn(move || {
+            let stream = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut writer = stream;
+            let mut request = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                request.push_str(&line);
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            writer.write_all(switching(&request).as_bytes()).unwrap();
+            sizes
+                .iter()
+                .map(|_| read_client_frame(&mut reader))
+                .collect::<Vec<_>>()
+        });
+        let (_reader, writer) = handshake(LocalStream::connect(&path).unwrap()).unwrap();
+        for size in sizes {
+            writer.lock().unwrap().send_text(&"y".repeat(size)).unwrap();
+        }
+        let received = server.join().unwrap();
+        for ((opcode, payload), size) in received.into_iter().zip(sizes) {
+            assert_eq!(opcode, 0x1);
+            assert_eq!(payload, "y".repeat(size).into_bytes(), "{size} bytes");
+        }
+    }
+
     #[test]
     fn an_upgrade_answer_past_16_kib_is_refused_on_a_live_connection() {
         let dir = ScratchDir::new("ws-huge-upgrade").unwrap();

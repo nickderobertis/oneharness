@@ -1968,6 +1968,7 @@ fn a_server_whose_pool_entry_is_removed_is_stopped_by_its_sweeper() {
     let server = reported_server(&report);
     let (entry, sweeper) = entry_and_sweeper(&pool);
     assert!(alive(server) && alive(sweeper));
+    // llmlint: ignore[tests_mirror_real_usage] No oneharness interface removes a pool entry: the condition this path handles is an outside actor deleting the state directory under a live server — a user clearing ~/.local/state, a tmp reaper — so the journey stages exactly that act, and asserts only through what a user sees (the processes).
     std::fs::remove_dir_all(&entry).unwrap();
     use oneharness_core::io::server_pool::SERVER_STOP_DEADLINE;
     let bound = DEAD_LEASE_SWEEP_INTERVAL * 2 + SERVER_STOP_DEADLINE + Duration::from_secs(5);

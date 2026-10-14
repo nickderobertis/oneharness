@@ -6,7 +6,7 @@
 #
 #   scripts/cargo-test.sh <package> [--with <package>]... [--features <list>]
 #                         [--filter <nextest filterset>] [--record <name>]
-#                         [--uninstrumented | --build-only]
+#                         [--uninstrumented] [--build-only]
 #
 # `--with` names a crate whose BINARIES the suite spawns (`oneharness`,
 # `oneharness-mock-harness`). They are selected beside the package so cargo
@@ -31,7 +31,8 @@
 # measured). `--build-only` builds that same instrumented selection and runs
 # nothing, printing the path of each executable that selection is:
 # scripts/rust-coverage.sh uses it so the objects a report reads are this tree's,
-# whichever profiles the cache replayed.
+# whichever profiles the cache replayed. With `--uninstrumented` it builds the
+# plain run's selection instead (pool-maintenance/measure.sh builds both).
 #
 # Quiet on success apart from nextest's summary; a failure prints in full.
 set -euo pipefail
@@ -41,7 +42,7 @@ cd "$root"
 
 usage() {
   echo "cargo-test: $1" >&2
-  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--filter <filterset>] [--record <name>] [--uninstrumented | --build-only]" >&2
+  echo "  usage: scripts/cargo-test.sh <package> [--with <package>]... [--features <list>] [--filter <filterset>] [--record <name>] [--uninstrumented] [--build-only]" >&2
   exit 2
 }
 
@@ -99,16 +100,10 @@ nextest_flags=(--locked --status-level fail --final-status-level fail)
 export RUSTFLAGS="${RUSTFLAGS:-} -D warnings"
 
 if [ "$build_only" -eq 1 ]; then
-  [ "$instrumented" -eq 1 ] || usage "--build-only builds the instrumented selection; it cannot be --uninstrumented"
-  # Coverage is not measured on Windows, so there is nothing to keep current.
-  [[ "${OS:-}" == "Windows_NT" ]] && exit 0
   # Cargo's own artifact messages say which executables this selection is: each
   # one built or found fresh goes to stdout, one path per line, and every
   # compiler diagnostic to stderr as cargo renders it.
-  RUSTFLAGS="${RUSTFLAGS} -C linker=$root/scripts/coverage-linker.sh" \
-    cargo llvm-cov --no-report nextest "${packages[@]}" ${features[@]+"${features[@]}"} \
-    -E 'none()' --no-tests=pass --locked --status-level none --final-status-level none \
-    --cargo-message-format json-diagnostic-rendered-ansi |
+  executables() {
     node -e '
       let input = "";
       process.stdin.on("data", (d) => { input += d; }).on("end", () => {
@@ -120,6 +115,19 @@ if [ "$build_only" -eq 1 ]; then
         }
       });
     '
+  }
+  if [ "$instrumented" -eq 0 ]; then
+    # The plain run's build, with the plain run's flags, and nothing run.
+    cargo nextest run "${packages[@]}" ${features[@]+"${features[@]}"} --no-run --locked \
+      --cargo-message-format json-diagnostic-rendered-ansi | executables
+    exit 0
+  fi
+  # Coverage is not measured on Windows, so there is nothing to keep current.
+  [[ "${OS:-}" == "Windows_NT" ]] && exit 0
+  RUSTFLAGS="${RUSTFLAGS} -C linker=$root/scripts/coverage-linker.sh" \
+    cargo llvm-cov --no-report nextest "${packages[@]}" ${features[@]+"${features[@]}"} \
+    -E 'none()' --no-tests=pass --locked --status-level none --final-status-level none \
+    --cargo-message-format json-diagnostic-rendered-ansi | executables
   exit 0
 fi
 

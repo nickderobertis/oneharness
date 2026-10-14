@@ -32,10 +32,12 @@ result="${ONEBUDGETSPEC_RESULT:-}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# Every instrumented Rust test selection the gate builds, read from each
-# project's `test` target (`bash scripts/cargo-test.sh <selection>`) so the
-# measurement cannot drift from the gate (the e2e project's uninstrumented leg,
-# run through with-symlinked-tmp.sh into target/debug, is not one of them). The alternative adds `sdk-schema` through
+# Every Rust test selection the gate builds, read from each project's `test`
+# target (`bash scripts/cargo-test.sh <selection>`, bare or wrapped in
+# scripts/with-symlinked-tmp.sh, which changes only the run's TMPDIR) so the
+# measurement cannot drift from the gate: the instrumented ones build into
+# target/llvm-cov-target, the e2e project's `--uninstrumented` one into
+# target/debug, each with its own run's flags (`--build-only`). The alternative adds `sdk-schema` through
 # oneharness-core (or, where a selection does not depend on it directly, the
 # binary crate that enables it), and every crate here depends on that, so every
 # one of them gets a new metadata hash. One selection per line in each.
@@ -54,7 +56,7 @@ node -e '
   for (const file of files.sort()) {
     const test = JSON.parse(fs.readFileSync(file, "utf8")).targets?.test?.options ?? {};
     for (const command of test.commands ?? [test.command ?? ""]) {
-      const match = /^bash scripts\/cargo-test\.sh (.*)$/u.exec(command);
+      const match = /^(?:bash scripts\/with-symlinked-tmp\.sh )?bash scripts\/cargo-test\.sh (.*)$/u.exec(command);
       if (!match) continue;
       const args = match[1].replace(/ --filter "[^"]*"/gu, "").replace(/ --record \S+/gu, "").trim().split(/\s+/u);
       const selected = [args[0], ...args.flatMap((a, i) => (args[i - 1] === "--with" ? [a] : []))];
@@ -151,18 +153,27 @@ removed="$(wc -l <"$work/removed" | tr -d ' ')"
 }
 kept="$(comm -23 "$work/before-pass" "$work/alternative" | wc -l | tr -d ' ')"
 echo "measure: removed $removed entries, every one the alternative build's; all $kept other entries remain" >&2
-# This repository's crates' entries, by unit name and metadata hash.
-own() { grep -E '/(deps|\.fingerprint|build|incremental)/(lib)?oneharness[a-z0-9_-]*-[0-9a-f]{16}(\.rlib)?$' "$1" | sed 's#.*/##; s#^lib##; s#\.rlib$##' | sort -u; }
+# This repository's crates' entries, as "<profile> <unit>-<metadata hash>".
+own() {
+  grep -E '/(deps|\.fingerprint|build|incremental)/(lib)?oneharness[a-z0-9_-]*-[0-9a-f]{16}(\.rlib)?$' "$1" |
+    sed -E 's#^(.*)/(deps|\.fingerprint|build|incremental)/(lib)?([^/]*)$#\1 \4#; s#\.rlib$##' | sort -u || true
+}
 comm -23 "$work/before-pass" "$work/alternative" >"$work/ordinary"
 own "$work/ordinary" >"$work/own-before"
-own "$work/after-pass" >"$work/own-after"
+comm -23 "$work/after-pass" "$work/alternative" | own /dev/stdin >"$work/own-after"
 own "$work/alternative" >"$work/own-alternative"
+own "$work/after-pass" >"$work/own-survivors"
 if ! cmp -s "$work/own-before" "$work/own-after"; then
   diff "$work/own-before" "$work/own-after" >&2 || true
   echo "measure: this repository's ordinary build hashes changed across the timed pass (above)" >&2
   exit 1
 fi
-echo "measure: this repository's crates, ordinary build: $(wc -l <"$work/own-before" | tr -d ' ') unit/hash entries before the pass, the same $(wc -l <"$work/own-after" | tr -d ' ') after; alternative build: $(wc -l <"$work/own-alternative" | tr -d ' '), of which $(comm -12 "$work/own-alternative" "$work/own-after" | wc -l | tr -d ' ') remain as their unit's only build" >&2
+count() { awk -v p="$1" '$1 == p' "$2" | wc -l | tr -d ' '; }
+cut -d' ' -f1 "$work/own-before" "$work/own-alternative" | sort -u >"$work/profiles"
+while IFS= read -r profile; do
+  left="$(awk -v p="$profile" '$1 == p' "$work/own-alternative" | comm -12 - "$work/own-survivors" | wc -l | tr -d ' ')"
+  echo "measure: $profile, this repository's crates: ordinary $(count "$profile" "$work/own-before") unit/hash entries before the pass, $(count "$profile" "$work/own-after") after (identical); alternative $(count "$profile" "$work/own-alternative"), $left left" >&2
+done <"$work/profiles"
 sed 's/^/measure:   ordinary kept: /' "$work/own-before" >&2
 
 node -e '

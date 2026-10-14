@@ -3321,9 +3321,8 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
 }
 
 /// A server whose `thread/loaded/list` pages never end — each naming a cursor
-/// already answered — fails the reuse workload, naming the repeated cursor,
-/// rather than paging forever (the settle bound is checked between polls, not
-/// within one).
+/// already answered — fails the reuse workload at once, naming the repeated
+/// cursor, rather than paging until the listing's deadline.
 #[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
@@ -3362,6 +3361,63 @@ fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
         said.contains("thread/loaded/list answered the cursor \"0\" a second time"),
         "{said}"
     );
+}
+
+/// The live tools refuse a bad setting before they run anything, exiting 2
+/// and naming the setting, its value and the fix: the reuse workload's settle
+/// bound and lease count, and the sharing measurement's socket bound.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
+    let pool = Pool::new("pool-live-settings");
+    let reuse = repo_root().join("live/control/app-server-reuse.sh");
+    let measure = repo_root().join("scripts/measure-app-server-sharing.sh");
+    for (script, name, value, said) in [
+        (
+            &reuse,
+            "OH_REUSE_SETTLE_MS",
+            "soon",
+            "OH_REUSE_SETTLE_MS must be whole milliseconds below 1000000, got 'soon'",
+        ),
+        (&reuse, "OH_REUSE_SETTLE_MS", "1000000", "got '1000000'"),
+        (
+            &reuse,
+            "OH_REUSE_LEASES",
+            "0",
+            "OH_REUSE_LEASES must be a whole number from 1 to 99, got '0'",
+        ),
+        (&reuse, "OH_REUSE_LEASES", "100", "got '100'"),
+        (&reuse, "OH_REUSE_LEASES", "five", "got 'five'"),
+        (
+            &measure,
+            "OH_MEASURE_SOCKET_TIMEOUT",
+            "0",
+            "OH_MEASURE_SOCKET_TIMEOUT is '0'; set it to a positive whole number",
+        ),
+        (
+            &measure,
+            "OH_MEASURE_SOCKET_TIMEOUT",
+            "slow",
+            "OH_MEASURE_SOCKET_TIMEOUT is 'slow'",
+        ),
+    ] {
+        let output = Command::new("bash")
+            .arg(script)
+            .env("OH_REUSE_CODEX", mock_bin())
+            .env("OH_MEASURE_CODEX", mock_bin())
+            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .env(name, value)
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(2), "{name}={value}: {stderr}");
+        assert!(stderr.contains(said), "{name}={value}: {stderr}");
+        assert!(
+            pool.mock_servers().is_empty(),
+            "{name}={value}: a server was started"
+        );
+    }
 }
 
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.

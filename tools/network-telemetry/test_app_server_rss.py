@@ -87,6 +87,9 @@ class RssGrowthBudget(unittest.TestCase):
                 "the retained-thread list is 'thread-1', not a list",
             ),
             (FIXTURES / "reuse-no-version.json", "the record names no codex version"),
+            (FIXTURES / "reuse-duplicate-pids.json", "name a process more than once"),
+            (FIXTURES / "reuse-not-json.json", "is not JSON"),
+            (FIXTURES / "reuse-not-an-object.json", "holds no JSON object"),
         ):
             with self.subTest(fixture=fixture.name):
                 run = check(fixture)

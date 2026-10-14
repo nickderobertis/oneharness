@@ -402,7 +402,7 @@ oh_wait_pooled_servers() {
   esac
   [ -n "$file" ] && [ -f "$file" ] || return 0
   _oh_lingering() {
-    local launch socket entry pending
+    local launch socket sockdir entry pending
     jq -r 'select(.kind == "shared-app-server" and .argv != null)
       | [.launch_id, ((.argv | index("--listen")) as $i | if $i == null then "" else .argv[$i + 1] end)] | @tsv' "$file" |
       while IFS=$'\t' read -r launch socket; do
@@ -424,10 +424,10 @@ oh_wait_pooled_servers() {
         esac
         # A path that cannot be resolved fails the wait (the caller's `||`)
         # rather than reading as a server gone.
-        entry="$(dirname "$(dirname "$socket")")" || {
+        if ! sockdir="$(dirname "$socket")" || ! entry="$(dirname "$sockdir")"; then
           echo "cannot resolve the pool entry of launch $launch's socket '$socket'" >&2
           return 1
-        }
+        fi
         pending="$(dirname "$file")/.pending/$launch" || {
           echo "cannot resolve the pending-measurement path beside $file" >&2
           return 1

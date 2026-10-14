@@ -119,6 +119,9 @@ def decode_reading(
         faults.append(f"the {name} reading's pids {raw!r} are not the positive pids it summed")
         return None
     summed = [Pid(pid) for pid in pids if pid is not None]
+    if len(set(summed)) != len(summed):
+        faults.append(f"the {name} reading's pids {summed} name a process more than once")
+        return None
     if server is not None and server not in summed:
         faults.append(f"the {name} reading's pids {summed} leave out the server pid {server}")
         return None

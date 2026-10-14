@@ -157,7 +157,7 @@ class Connection:
         headers = {k.strip().lower(): v.strip() for k, _, v in (l.partition(":") for l in lines[1:] if ":" in l)}
         accept = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
         if " 101 " not in lines[0] or headers.get("upgrade", "").lower() != "websocket" \
-                or "upgrade" not in headers.get("connection", "").lower() \
+                or "upgrade" not in [token.strip() for token in headers.get("connection", "").lower().split(",")] \
                 or headers.get("sec-websocket-accept") != accept:
             stop(f"the server refused or mis-answered the WebSocket upgrade ({lines[0]!r}); check that the executable is a codex that supports `app-server --listen`")
 
@@ -296,6 +296,13 @@ def measure(work, errors):
                 server.wait()
         except OSError as error:
             print(f"measure-app-server-sharing: could not stop the server (pid {server.pid}): {error}; stop it by hand", file=sys.stderr)
+            LEFT_BEHIND.append(f"server pid {server.pid}")
+
+
+# What the measurement could not clean up. Anything here fails the run after
+# the figures, so a measurement that left something behind never reads as a
+# clean success.
+LEFT_BEHIND = []
 
 
 def main():
@@ -321,6 +328,9 @@ def main():
         shutil.rmtree(work, onerror=lambda _f, p, info: failed.append(f"{p}: {info[1]}"))
         if failed:
             print(f"measure-app-server-sharing: could not remove its scratch directory {work} ({'; '.join(failed)}); delete it by hand", file=sys.stderr)
+            LEFT_BEHIND.append(f"scratch directory {work}")
+    if LEFT_BEHIND:
+        stop(f"the measurement ran but left {', '.join(LEFT_BEHIND)} behind (see above); clean it up, then rerun for a figure taken cleanly")
     print(json.dumps({"codex_version": probe.stdout.strip(), "platform": sys.platform, "server_pid": pid,
                       "threads": threads}, separators=(",", ":")))
 

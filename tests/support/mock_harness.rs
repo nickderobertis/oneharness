@@ -120,6 +120,9 @@
 //!                   of the turn), and end it on `turn/completed` only once a
 //!                   `turn/interrupt` naming the thread and turn arrives. Every
 //!                   received line is appended to the log.
+//!   (`app-server --listen unix://PATH`)  act like the shared, multi-client
+//!                   app-server a pooled dispatch runs on, whatever else is set;
+//!                   its knobs are listed on `listen_server` below.
 //!   MOCK_CODEX_PLUGINS_LOG     if set to a path, a launch as `exec` or
 //!                              `app-server` resolves Codex's `plugins` feature
 //!                              from its argv the way Codex does (on unless

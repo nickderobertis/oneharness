@@ -728,6 +728,7 @@ apps = true                     # codex only: keep ChatGPT apps/connectors on (d
 analytics = true                # codex only: let Codex send analytics (default off)
 shared_model_catalog = false    # codex only: Codex fetches its own catalog per launch (default true)
 model_catalog_refresh_seconds = 600  # codex only: shared catalog's age limit (default 3600)
+app_server = "per-dispatch"     # codex only: a --control turn on its own app-server child (default "shared")
 
 # Lifecycle hooks, in the harness's own hooks schema, synced into its config
 # file (Claude Code's .claude/settings.json `hooks` key) uninterpreted.
@@ -1783,7 +1784,7 @@ cannot reopen a conversation and a continue over it is refused
 | Harness | `control` | Mechanism | Continues a `--session`? | Status |
 | --- | --- | --- | --- | --- |
 | Claude Code | `claude-control-request` | A `control_request` frame on the run's own stdin (`-p --input-format stream-json`) | ✓ (the ordinary `-p` run's `--resume` argv) | **LIVE** through oneharness |
-| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the `codex app-server` JSON-RPC stdio protocol | ✓ `thread/resume` | **LIVE** through oneharness |
+| Codex | `codex-app-server` | `turn/interrupt {threadId,turnId}` over the dispatch's own connection to a pooled `codex app-server --listen` ([shared](#shared-codex-app-server)), or over its own stdio child under `app_server = "per-dispatch"` | ✓ `thread/resume` | **LIVE** through oneharness |
 | Copilot | `acp-cancel` | The ACP `session/cancel` **notification** over `copilot --acp` | — (loud usage error) | **LIVE** through oneharness |
 | Goose | `acp-cancel` | The same ACP `session/cancel` **notification** over `goose acp` | — (loud usage error) | **LIVE** through oneharness |
 | OpenCode | `opencode-http` | `POST /api/session/{id}/interrupt` against a pooled `opencode serve` | — (loud usage error) | **LIVE** through oneharness |
@@ -1929,6 +1930,104 @@ Notes worth keeping, all from the probe rather than documentation:
   `status: "inProgress"`. That response is the acknowledgement, not the end of
   the turn — reading it as terminal ends every controlled run in under half a
   second, before the agent does anything. `turn/completed` is the end.
+
+#### Shared Codex app-server
+
+A `--control` Codex dispatch runs its turn on a **pooled `codex app-server`**,
+shared by every concurrent dispatch with the same pool key, rather than on a
+child of its own. It is the default on every platform where a dispatch reaches
+the app-server — today Linux and macOS: `--control` is refused on Windows, so no
+Windows dispatch reaches one yet. `app_server = "per-dispatch"` under
+`[harness.codex]` or a `[harness.codex.variant.<name>]` keeps the old
+per-dispatch stdio child exactly as before; `oneharness config` shows the
+resolved value. The `usage` probe is always a child of its own.
+
+**The server.** oneharness starts its own `codex app-server --listen unix://PATH`
+— never Codex's `daemon` or `proxy` (one daemon per Codex home ignores process
+arguments, auto-updates under the pool, and lives outside any lease), and never a
+TCP port any local user could reach. `PATH` sits in a directory only you can
+enter (mode 0700) under the pool's state (`$XDG_STATE_HOME/oneharness/servers/`,
+`%LOCALAPPDATA%` on Windows); Codex binds a path longer than `sun_path` as a
+symlink to a short target under `/tmp/codex-daemon-<uid>/`, which oneharness
+follows. Each dispatch speaks WebSocket JSON-RPC over its own connection, sends
+everything thread-level — `cwd`, model, approval policy, sandbox, its prompt — in
+its own `thread/start`, `thread/resume` and `turn/start`, and reads only frames
+naming its own thread (`thread/status/changed` is broadcast to every
+connection). A run's report names the server in `control.app_server`
+(`{pid, pool_key}`) and its result's `command` is the server's launch argv.
+
+**The pool key** is everything fixed when the server starts: the Codex
+executable's resolved path and its `--version` output, a digest of the server's
+launch environment, every process-level argument (the `-c` settings above —
+plugins, apps, analytics and the shared model catalog — and the config `args`),
+and the resolved `plugins`. Dispatches differing only in thread-level settings, or
+in a variable outside the server's environment, share one server.
+
+**The server's environment is scrubbed**, because a server's own environment
+reaches every thread's commands, whichever dispatch they belong to. It is
+launched with only the platform's base variables (Unix: `PATH`, `HOME`, `USER`,
+`LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TMPDIR`, `TERM`; Windows: `SystemRoot`,
+`USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP`, `TMP`, `PATH`, `PATHEXT`,
+`ComSpec`), the variables Codex reads for itself (`CODEX_SERVER_ENV`:
+`CODEX_HOME`, every `CODEX_*`, `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `HTTPS_PROXY`,
+`HTTP_PROXY`, `ALL_PROXY`, `NO_PROXY` and their lower-case spellings,
+`SSL_CERT_FILE`, `SSL_CERT_DIR`) as the launching dispatch's variant environment
+resolves them, and its marker `ONEHARNESS_APP_SERVER_MARKER`.
+
+**A dispatch's own environment reaches its own commands** through its thread:
+`thread/start` and `thread/resume` carry `config.shell_environment_policy` with
+`set` holding every variable of the dispatch's environment the server lacks or
+holds differently, plus a fresh `ONEHARNESS_DISPATCH_MARKER`, and `exclude`
+naming every server variable the dispatch lacks or removes with `unset_env` — so
+a thread's commands see exactly its dispatch's environment, never another's.
+
+**Lifecycle.** Each dispatch holds a lease; the server starts with the first and
+stops once the last has ended and the linger (60 s) has passed. Whenever a lease
+ends — its dispatch finishing, or its holder found dead — the pool stops every
+process carrying that dispatch's marker (a dead holder's live turn is
+interrupted first) and releases its thread with **`thread/unsubscribe`**
+(`ThreadUnsubscribeParams { threadId }` in openai/codex's app-server v2
+protocol, `codex-rs/app-server-protocol`), because Codex keeps a finished thread
+loaded. On codex-cli 0.159.2 the release takes effect after a 60 s grace:
+`thread/unsubscribe` answers `unsubscribed`, and 60 s later the server sends
+`thread/status/changed` → `notLoaded` and `thread/closed`; a connection that
+closes releases its threads the same way, so a dispatch killed before its first
+turn leaves its thread loaded only for that window. A pool-owned sweeper beside
+the server finds a dead holder within 2 s (`DEAD_LEASE_SWEEP_INTERVAL`) even with
+no other dispatch alive, and stops its commands within 5 s of that
+(`DEAD_LEASE_STOP_DEADLINE`). Stopping the server reaps every lease's marked
+commands, then stops every process carrying its marker within 10 s
+(`SERVER_STOP_DEADLINE`) — the npm launcher and the native server it starts
+alike. An interrupt is answered from oneharness's own record of the thread's
+turn (`no_active_turn` sends nothing; the server answers an interrupt for an
+ended turn with nothing at all) and waits at most 5 s for the server
+(`INTERRUPT_REPLY_DEADLINE`).
+
+**`app_server_lost`.** If the shared server crashes or restarts under a live turn
+— the connection closes, or refuses a write, while the turn has started and not
+completed — the result is `failure_kind: "app_server_lost"`: not a turn failure,
+and retryable, so a fallback chain moves to its next candidate
+(`"app-server-lost"`) and history records it (schema 1.10).
+
+**What sharing buys** a dispatch that finds its server already running, measured
+on codex-cli 0.159.2 (Linux):
+
+- **Time** — a fresh server reached a ready thread in 0.66–0.74 s, a warm one in
+  0.21–0.29 s, about 0.4 s saved per dispatch; the model's first token came at
+  about 4.25 s either way (`spike-shared-app-server`).
+- **Network** — a fresh dispatch received 785,907 B, a second dispatch on the
+  warm server 669,279 B: up to about 0.6 MB of per-process startup saved per
+  dispatch, while each `thread/start` still costs about 0.63 MB either way
+  (`spike-shared-app-server`).
+- **Memory** — one server holding one thread was 347,783,168 B resident (the
+  `codex` launcher and its native server); a second thread on it added
+  41,000,960 B, where a second server would cost the whole first figure again
+  ([`scripts/measure-app-server-sharing.sh`](scripts/measure-app-server-sharing.sh),
+  one run in [`live/control/evidence/app-server-sharing.json`](live/control/evidence/app-server-sharing.json)).
+  Under reuse the server's memory is budgeted: after five sequential leases it
+  held 0.940x what it held after the first
+  ([`live/control/evidence/app-server-reuse.md`](live/control/evidence/app-server-reuse.md);
+  `codex-shared-server-rss-growth`, at most 1.5x).
 
 ### Fallback mode (first that runs wins)
 

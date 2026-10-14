@@ -1,0 +1,49 @@
+{
+  "codex_version": "codex-cli 0.159.2",
+  "lease_count": 5,
+  "leases": [
+    {
+      "lease": 1,
+      "server_pid": 1153399,
+      "thread": "01a13838-b79f-7aa2-b2c8-ae7716030a94"
+    },
+    {
+      "lease": 2,
+      "server_pid": 1153399,
+      "thread": "01a13839-aa99-7d72-b35f-2cf7559a0294"
+    },
+    {
+      "lease": 3,
+      "server_pid": 1153399,
+      "thread": "01a13839-b176-7791-869f-b792871370ac"
+    },
+    {
+      "lease": 4,
+      "server_pid": 1153399,
+      "thread": "01a13839-bad0-7f00-84bd-cb0175069acb"
+    },
+    {
+      "lease": 5,
+      "server_pid": 1153399,
+      "thread": "01a13839-c49d-7333-a264-1be5917a12e6"
+    }
+  ],
+  "platform": "linux",
+  "readings": {
+    "after_first": {
+      "pids": [
+        1153399,
+        1153533
+      ],
+      "rss_bytes": 298479616
+    },
+    "after_last": {
+      "pids": [
+        1153399,
+        1153533
+      ],
+      "rss_bytes": 280604672
+    }
+  },
+  "retained": []
+}

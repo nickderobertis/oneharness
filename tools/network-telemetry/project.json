@@ -64,7 +64,7 @@
       "options": {
         "commands": [
           "uv sync --project python --frozen --no-install-workspace --quiet",
-          "uv run --project python --frozen --no-sync ruff format --config tools/network-telemetry/ruff.toml scripts/e2e-netmeasure.py live/pr-matrix/harness/codex/network_budget.py tools/network-telemetry",
+          "uv run --project python --frozen --no-sync ruff format --config tools/network-telemetry/ruff.toml scripts/e2e-netmeasure.py live/pr-matrix/harness/codex/network_budget.py live/control/app_server_rss_budget.py tools/network-telemetry",
           "bash scripts/shell-check.sh format-write tools/network-telemetry"
         ],
         "parallel": false

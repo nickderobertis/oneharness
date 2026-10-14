@@ -30,9 +30,13 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NewType
 
 ROOT = Path(__file__).resolve().parents[2]
 LEASES = 5
+
+Pid = NewType("Pid", int)
+"""A process id the workload recorded: always positive."""
 
 
 class Incomplete(Exception):
@@ -44,7 +48,28 @@ class Reading:
     """One whole-tree resident memory reading of the server."""
 
     rss_bytes: int
-    pids: list[int]
+    pids: list[Pid]
+
+
+@dataclass(frozen=True)
+class Lease:
+    """One lease the workload took and released."""
+
+    lease: int
+    server_pid: Pid
+    thread: str
+
+
+@dataclass(frozen=True)
+class ReuseRecord:
+    """The workload's whole record, decoded: every field the figure reads."""
+
+    platform: str
+    codex_version: str
+    leases: list[Lease]
+    server: Pid
+    after_first: Reading
+    after_last: Reading
 
 
 @dataclass(frozen=True)
@@ -69,7 +94,9 @@ def positive_int(value: object) -> int | None:
     return None
 
 
-def reading(readings: object, name: str, server: int | None, faults: list[str]) -> Reading | None:
+def decode_reading(
+    readings: object, name: str, server: Pid | None, faults: list[str]
+) -> Reading | None:
     entry = readings.get(name) if isinstance(readings, dict) else None
     if not isinstance(entry, dict):
         faults.append(f"the {name} reading is missing")
@@ -85,29 +112,43 @@ def reading(readings: object, name: str, server: int | None, faults: list[str]) 
     if not pids or any(pid is None for pid in pids):
         faults.append(f"the {name} reading's pids {raw!r} are not the positive pids it summed")
         return None
-    summed = [pid for pid in pids if pid is not None]
+    summed = [Pid(pid) for pid in pids if pid is not None]
     if server is not None and server not in summed:
         faults.append(f"the {name} reading's pids {summed} leave out the server pid {server}")
         return None
     return Reading(rss, summed)
 
 
-def server_pid(record: dict[str, object], faults: list[str]) -> int | None:
-    """The one server pid every lease ran on, or None with the faults named."""
-    leases = record.get("leases")
-    leases = leases if isinstance(leases, list) else []
+def decode_leases(record: dict[str, object], faults: list[str]) -> list[Lease]:
+    """Every lease the record lists, each with its positive server pid."""
+    raw = record.get("leases")
+    entries = raw if isinstance(raw, list) else []
     released = record.get("lease_count")
-    if not isinstance(released, int) or released < LEASES or released != len(leases):
+    if not isinstance(released, int) or released < LEASES or released != len(entries):
         faults.append(
-            f"{released!r} leases were released ({len(leases)} recorded); the workload is {LEASES}"
+            f"{released!r} leases were released ({len(entries)} recorded); the workload is {LEASES}"
         )
-    pids: set[int] = set()
-    for index, lease in enumerate(leases, start=1):
-        pid = positive_int(lease.get("server_pid")) if isinstance(lease, dict) else None
-        if pid is None:
-            faults.append(f"lease {index} names no positive server pid: {lease!r}")
-        else:
-            pids.add(pid)
+    leases: list[Lease] = []
+    for index, entry in enumerate(entries, start=1):
+        pid = positive_int(entry.get("server_pid")) if isinstance(entry, dict) else None
+        if pid is None or not isinstance(entry, dict):
+            faults.append(f"lease {index} names no positive server pid: {entry!r}")
+            continue
+        number = entry.get("lease")
+        thread = entry.get("thread")
+        leases.append(
+            Lease(
+                number if isinstance(number, int) else index,
+                Pid(pid),
+                thread if isinstance(thread, str) else "",
+            )
+        )
+    return leases
+
+
+def one_server(leases: list[Lease], faults: list[str]) -> Pid | None:
+    """The one server pid every lease ran on, or None with the fault named."""
+    pids = {lease.server_pid for lease in leases}
     if len(pids) > 1:
         faults.append(
             f"the leases used {len(pids)} server pids {sorted(pids)}; the workload is one server"
@@ -115,17 +156,8 @@ def server_pid(record: dict[str, object], faults: list[str]) -> int | None:
     return next(iter(pids)) if len(pids) == 1 else None
 
 
-def figure(path: Path) -> Figure:
-    if not path.is_file():
-        raise Incomplete(
-            f"no reuse telemetry at {path}; run live/control/app-server-reuse.sh first"
-        )
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-    except ValueError as error:
-        raise Incomplete(f"{path} is not JSON: {error}") from error
-    if not isinstance(record, dict):
-        raise Incomplete(f"{path} holds no JSON object")
+def decode(record: dict[str, object]) -> ReuseRecord:
+    """The record as a ReuseRecord, or Incomplete naming every fault."""
     faults: list[str] = []
     platform = record.get("platform")
     if platform != "linux":
@@ -135,19 +167,39 @@ def figure(path: Path) -> Figure:
         faults.append(f"the retained-thread list is {retained!r}, not a list")
     elif retained:
         faults.append(f"released threads {retained} were still loaded when the readings were taken")
-    server = server_pid(record, faults)
+    leases = decode_leases(record, faults)
+    server = one_server(leases, faults)
     readings = record.get("readings")
-    first = reading(readings, "after_first", server, faults)
-    last = reading(readings, "after_last", server, faults)
-    if faults or first is None or last is None:
+    first = decode_reading(readings, "after_first", server, faults)
+    last = decode_reading(readings, "after_last", server, faults)
+    if faults or server is None or first is None or last is None:
         raise Incomplete("; ".join(faults))
+    version = record.get("codex_version")
+    return ReuseRecord(
+        "linux", version if isinstance(version, str) else "", leases, server, first, last
+    )
+
+
+def figure(path: Path) -> Figure:
+    if not path.is_file():
+        raise Incomplete(
+            f"no reuse telemetry at {path}; run live/control/app-server-reuse.sh first"
+        )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        raise Incomplete(f"{path} is not JSON: {error}") from error
+    if not isinstance(raw, dict):
+        raise Incomplete(f"{path} holds no JSON object")
+    record = decode(raw)
+    first, last = record.after_first, record.after_last
     ratio = last.rss_bytes / first.rss_bytes
     if not math.isfinite(ratio):
         raise Incomplete(f"the ratio {last.rss_bytes} / {first.rss_bytes} is not finite")
     detail = (
-        f"after the last of {record['lease_count']} leases: {last.rss_bytes} B over pids {last.pids}; "
+        f"after the last of {len(record.leases)} leases: {last.rss_bytes} B over pids {last.pids}; "
         f"after the first: {first.rss_bytes} B over pids {first.pids}; "
-        f"server pid {server}; {record.get('codex_version')}"
+        f"server pid {record.server}; {record.codex_version}"
     )
     return Figure(ratio, detail)
 

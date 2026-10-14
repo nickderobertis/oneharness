@@ -21,7 +21,7 @@ import time
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, NewType
 
 from support import (
     BASH,
@@ -43,6 +43,9 @@ from support import (
 )
 
 PAYLOAD = 3_000_000
+
+Pid = NewType("Pid", int)
+"""A server process id a dispatch's report names."""
 
 
 def shim_for(tmp: Path, real: Path, file: Path) -> Path:
@@ -79,11 +82,11 @@ class MockState:
 class DispatchReport:
     """One pooled dispatch's run report, as far as these tests read it."""
 
-    server_pid: int
+    server_pid: Pid
 
     @staticmethod
     def parse(stdout: bytes) -> DispatchReport:
-        return DispatchReport(int(json.loads(stdout)["control"]["app_server"]["pid"]))
+        return DispatchReport(Pid(int(json.loads(stdout)["control"]["app_server"]["pid"])))
 
 
 def live_turns(mock_dir: Path) -> int:

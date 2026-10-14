@@ -6,7 +6,9 @@
 # one `thread/shellCommand` of `true` on it, resuming it once, holding it 1 s
 # and releasing it, with no model turn. The shell turn makes no model call: it
 # is there because codex-cli 0.159.2 writes a thread's rollout only after a
-# turn and refuses to resume a thread without one. It
+# turn and refuses to resume a thread without one. An idle lease of the
+# workload's own holds the server from the first lease to the last, so however
+# short the pool's linger, no gap between two leases stops it. It
 # writes the server's whole-tree resident memory after the first and the last
 # release to target/e2e-telemetry/app-server-reuse/reuse.json (or
 # $OH_E2E_REUSE_FILE), which live/control/budgets.yaml's
@@ -47,9 +49,6 @@ command -v "$codex" >/dev/null 2>&1 || {
   echo "app-server-reuse: could not build the app_server_reuse example; fix cargo's error above (run 'just bootstrap' if the toolchain is missing), then rerun" >&2
   exit 1
 }
-# The server must outlive each settle: the pool's own linger (60 s) is shorter
-# than Codex's unload grace, so the workload's server lingers longer.
-export ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS="${ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS:-$((settle + 60000))}"
 work="$(mktemp -d)" || {
   echo "app-server-reuse: cannot create a scratch directory; check that the host temp dir is writable" >&2
   exit 1

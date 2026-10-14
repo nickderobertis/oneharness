@@ -11,7 +11,10 @@
 //! through: each lease `initialize`s, starts a thread (`thread/start`), runs
 //! one `thread/shellCommand` of `true` on it, resumes it once
 //! (`thread/resume`), holds it `--hold-ms`, and releases it — never a
-//! `turn/start`, so no model turn is spent. The shell turn is there because
+//! `turn/start`, so no model turn is spent. One idle lease of its own (no
+//! thread) is held from before the first lease to after the last, so the
+//! server cannot linger out in a gap between two leases and every lease lands
+//! on the one server the readings measure. The shell turn is there because
 //! codex-cli 0.159.2 writes a thread's rollout only after a turn and refuses to
 //! resume a thread without one; a shell turn makes no model call. After the first and the last
 //! release — once the server no longer holds the threads released so far
@@ -188,6 +191,10 @@ fn run(args: &Args) -> Result<Value, String> {
     let mut after_last = Value::Null;
     let mut released: Vec<String> = Vec::new();
     let mut retained: Vec<String> = Vec::new();
+    let keeper = PooledSession::open(
+        PooledDispatch::plan(&argv, &[], &[], &args.cwd, false)
+            .ok_or("the launch is not a codex app-server launch")?,
+    )?;
     for lease in 1..=args.leases {
         let dispatch = PooledDispatch::plan(&argv, &[], &[], &args.cwd, false)
             .ok_or("the launch is not a codex app-server launch")?;
@@ -229,6 +236,7 @@ fn run(args: &Args) -> Result<Value, String> {
             args.leases
         );
     }
+    keeper.release();
     Ok(json!({
         "retained": retained,
         "codex_version": version(&args.codex),

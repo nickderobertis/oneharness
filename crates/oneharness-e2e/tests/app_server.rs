@@ -2152,7 +2152,9 @@ fn the_sharing_measurement_reports_what_the_server_it_ran_actually_did() {
 /// of the leases ran `initialize`, `thread/start`, a `thread/shellCommand` and
 /// `thread/resume` of its own thread and no `turn/start`, all on one server;
 /// and each reading's pids are exactly the server's process tree — launcher,
-/// server and grandchild — as the OS lists it.
+/// server and grandchild — as the OS lists it. A 1 ms linger cannot split the
+/// leases across servers: the workload's own idle lease holds the server from
+/// the first lease to the last.
 #[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
@@ -2167,7 +2169,7 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
         .env("CODEX_MOCK_DIR", pool.path("mock"))
         .env("CODEX_MOCK_SHIM", "1")
         .env("CODEX_MOCK_HELPER", "1")
-        .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "8000")
+        .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "1")
         .output()
         .unwrap();
     assert!(

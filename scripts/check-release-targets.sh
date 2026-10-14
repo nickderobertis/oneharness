@@ -807,7 +807,7 @@ hold_to_platforms() {
 }
 
 if [ -n "$platform_records" ]; then
-  darwin_entries="$(tr -d '\r' <"$release_workflow" | awk '/^  build-darwin:/ { inside=1; next } inside && /^  [a-z][a-z-]*:/ { exit } inside && /^    runs-on: / { runner=$2 } inside && /for target in .*apple-darwin/ { sub(/^.*for target in /, ""); sub(/; do.*$/, ""); n=split($0, targets, " "); for (i=1;i<=n;i++) print targets[i] " " runner }')"
+  darwin_entries="$(awk '{ sub(/\r$/, "") } /^  build-darwin:/ { inside=1; next } inside && /^  [a-z][a-z-]*:/ { exit } inside && /^    runs-on: / { runner=$2 } inside && /for target in .*apple-darwin/ { sub(/^.*for target in /, ""); sub(/; do.*$/, ""); n=split($0, targets, " "); for (i=1;i<=n;i++) print targets[i] " " runner }' "$release_workflow")"
   matrix_fix="make its matrix include exactly one entry per [[platform]] in $platforms, with that platform's runner as os"
   hold_to_platforms "$release_workflow's upload matrix" \
     "$(declared_platforms 1 2 3 | sed '/apple-darwin/s/macos-latest/ubuntu-latest/')" \

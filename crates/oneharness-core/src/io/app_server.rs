@@ -129,7 +129,10 @@ fn sweepable_entry(entry: &Path) -> Result<(), String> {
         .parent()
         .and_then(|parent| std::fs::canonicalize(parent).ok());
     let root = std::fs::canonicalize(&root).map_err(|err| format!("{}: {err}", root.display()))?;
-    if parent.as_deref() != Some(root.as_path()) || !entry.is_dir() {
+    // The entry itself, not what it points at: a symlink named like an entry
+    // would lead the sweeper out of the pool.
+    let real_dir = std::fs::symlink_metadata(entry).is_ok_and(|meta| meta.file_type().is_dir());
+    if parent.as_deref() != Some(root.as_path()) || !real_dir {
         return Err(format!("it is not a directory under {}", root.display()));
     }
     Ok(())

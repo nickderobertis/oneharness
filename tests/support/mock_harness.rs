@@ -2324,6 +2324,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         `thread-start-bad-id` answer `thread/start` with no
 ///                         thread or an empty id; `unsubscribe-odd-status`
 ///                         answers `thread/unsubscribe` with status `pending`;
+///                         `malformed-thread-frames` sends agent messages whose
+///                         thread field is no id during a turn;
 ///                         `ping-pong` pings each connection and handles
 ///                         nothing on it until it answers with a pong;
 ///                         `shell-completes-first` ends a shell turn before
@@ -3564,6 +3566,19 @@ mod listen_server {
             "params": {"threadId": thread_id, "turn": {"id": turn}}}),
         );
         s.status(&thread_id, "active");
+        // CODEX_MOCK_FAULT=malformed-thread-frames: agent messages on this
+        // connection whose thread field is no thread id.
+        if s.fault == "malformed-thread-frames" {
+            for params in [
+                json!({"threadId": 7, "item": {"type": "agentMessage", "id": "m1", "text": "SMUGGLED-1"}}),
+                json!({"thread": {"id": null}, "item": {"type": "agentMessage", "id": "m2", "text": "SMUGGLED-2"}}),
+            ] {
+                s.send(
+                    conn,
+                    &json!({"jsonrpc": "2.0", "method": "item/completed", "params": params}),
+                );
+            }
+        }
         let mut context =
             json!({"type": "turn_context", "cwd": cwd, "model": model, "sandbox": sandbox});
         if s.fault == "rollout-env" {

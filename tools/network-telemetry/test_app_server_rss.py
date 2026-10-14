@@ -82,6 +82,11 @@ class RssGrowthBudget(unittest.TestCase):
                 FIXTURES / "reuse-repeated-thread.json",
                 "threads ['thread-1'] were leased more than once",
             ),
+            (
+                FIXTURES / "reuse-retained-not-a-list.json",
+                "the retained-thread list is 'thread-1', not a list",
+            ),
+            (FIXTURES / "reuse-no-version.json", "the record names no codex version"),
         ):
             with self.subTest(fixture=fixture.name):
                 run = check(fixture)

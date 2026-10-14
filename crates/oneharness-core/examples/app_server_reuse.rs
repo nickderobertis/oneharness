@@ -6,6 +6,8 @@
 //!                  [--settle-ms MS] [--cwd DIR]
 //! ```
 //!
+//! Exits 2 on a usage error, 1 when the workload ran and failed.
+//!
 //! It takes N sequential leases on one pooled server through the same
 //! [`PooledSession`] a `--control` dispatch's lease, connection and release go
 //! through: each lease `initialize`s, starts a thread (`thread/start`), runs
@@ -289,7 +291,12 @@ fn write(path: &Path, value: &Value) -> Result<(), String> {
 
 fn main() {
     serve_sweeper_if_requested();
-    let outcome = args().and_then(|args| {
+    // A usage error exits 2; a workload that ran and failed exits 1.
+    let args = args().unwrap_or_else(|error| {
+        eprintln!("app_server_reuse: {error}");
+        std::process::exit(2);
+    });
+    let outcome = (|| {
         let value = run(&args)?;
         write(&args.out, &value)?;
         // Retention is its own failure, not a ratio that happens to read high:
@@ -307,7 +314,7 @@ fn main() {
             )),
             None => Ok(()),
         }
-    });
+    })();
     if let Err(error) = outcome {
         eprintln!("app_server_reuse: {error}");
         std::process::exit(1);

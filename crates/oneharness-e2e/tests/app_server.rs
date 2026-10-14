@@ -2169,8 +2169,12 @@ fn the_sweeper_refuses_a_path_that_is_no_pool_entry() {
     std::fs::create_dir_all(&stranger).unwrap();
     std::fs::write(stranger.join("keep"), "x").unwrap();
     std::fs::create_dir_all(pool.path("state/oneharness/servers")).unwrap();
+    // Named like an entry, under the root, and leading out of the pool.
+    let link = pool.path("state/oneharness/servers/codex-app-server-4567");
+    std::os::unix::fs::symlink(&stranger, &link).unwrap();
     for (entry, why) in [
         (stranger.clone(), "it is not a directory under "),
+        (link.clone(), "it is not a directory under "),
         (
             pool.path("state/oneharness/servers/../.."),
             "its name is no pool key",
@@ -2219,6 +2223,19 @@ fn a_pooled_overload_retries_on_the_shared_server_under_the_parallel_opt_in() {
         .map(|t| t["status"].clone())
         .collect();
     assert_eq!(statuses, vec![json!("failed"), json!("completed")]);
+}
+
+/// Frames whose thread field is no thread id — a number, a null — belong to no
+/// dispatch: none of them reaches the run's output or its answer.
+#[test]
+fn frames_with_a_malformed_thread_field_reach_no_dispatch() {
+    let pool = Pool::new("pool-malformed").with_env("CODEX_MOCK_FAULT", "malformed-thread-frames");
+    let (output, report) = pool.run(pool.command("guarded", &["--events"], &[]));
+    succeeded(&output, &report);
+    let ran = result(&report);
+    let seen = ran.to_string();
+    assert!(!seen.contains("SMUGGLED"), "{seen}");
+    assert_eq!(ran["text"], "work for guarded", "{ran}");
 }
 
 /// A shared server lost after its turn already ran a tool is still

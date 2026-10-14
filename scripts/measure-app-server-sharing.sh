@@ -42,7 +42,9 @@ try:
 except ValueError:
     SOCKET_TIMEOUT = 0
 if SOCKET_TIMEOUT <= 0:
-    raise SystemExit(f"measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT is {RAW_TIMEOUT!r}; set it to a positive whole number of seconds, or unset it for 120")
+    # A configuration error, not a failed measurement: exit 2.
+    print(f"measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT is {RAW_TIMEOUT!r}; set it to a positive whole number of seconds, or unset it for 120", file=sys.stderr)
+    sys.exit(2)
 # The most a WebSocket upgrade answer may be before it is refused.
 HANDSHAKE_LIMIT = 16 * 1024
 RERUN = "rerun, and check the server still starts (`codex app-server --help`)"

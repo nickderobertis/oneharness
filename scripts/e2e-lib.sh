@@ -471,11 +471,23 @@ oh_run() {
 # mechanism (Codex: its stdio app-server, not `exec`), so the network recorder
 # sees that launch kind measured beside the exec turns and the usage probe.
 #   $1 harness id
+# A scratch directory for a --control turn, printed. The control socket lands
+# at <dir>/sessions/control/<session>.sock, and a unix socket address is capped
+# at 104 bytes on macOS (sun_path, NUL included); macOS's per-user temp dir
+# (/var/folders/<..>/T/) alone uses about half of that, so there the directory
+# goes under /tmp. OH_E2E_OS (default `uname -s`) selects the platform.
+oh_control_sandbox() {
+  case "${OH_E2E_OS:-$(uname -s)}" in
+    Darwin) mktemp -d /tmp/oh.XXXXXX ;;
+    *) mktemp -d ;;
+  esac
+}
+
 oh_controlled_turn() {
   local id="$1" marker sandbox turn status=0
   _oh_phase controlled-turn
   marker="$(oh_marker)"
-  sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  sandbox="$(oh_control_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   # --control needs a handle an `oneharness interrupt` could address; this
   # turn is never interrupted, so a throwaway one in the sandbox serves. The
   # turn and its assertion run in a subshell, so the sandbox goes however the

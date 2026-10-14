@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/nickderobertis/oneharness/compare/v0.24.0...v0.25.0) - 2026-10-14
+
+### Added
+
+- *(codex)* [**breaking**] share one pooled app-server across concurrent Codex dispatches ([#1467](https://github.com/nickderobertis/oneharness/pull/1467))
+
 ## [0.24.0](https://github.com/nickderobertis/oneharness/compare/v0.23.1...v0.24.0) - 2026-10-13
 
 ### Added

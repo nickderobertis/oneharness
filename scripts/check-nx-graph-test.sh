@@ -181,8 +181,8 @@ cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
 [ "$status" -ne 0 ] || fail "a gate target running onebudgetspec over the live network budgets should have failed the boundary check"
 grep -qF "network-telemetry:test runs the network budget check" "$tmp/err" ||
   fail "the check failed but did not name the gate target that runs onebudgetspec over the live network budgets"
-# A budget check over committed, deterministic telemetry reads nothing live, so
-# a gate target may run it (github-workflows:budgets is one).
+# A budget check over telemetry a gate target derives offline from committed
+# files reads nothing live, so a gate target may run it (github-workflows:budgets).
 node -e '
   const fs = require("fs");
   const file = process.argv[1];
@@ -194,7 +194,7 @@ check
 cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
 [ "$status" -eq 0 ] || {
   cat "$tmp/err" >&2
-  fail "a gate target checking budgets over committed offline telemetry was refused (above); narrow scripts/check-nx-graph.mjs's runsBudgetCheck to the live network budgets' entry points"
+  fail "a gate target checking budgets over offline-derived telemetry was refused (above); narrow scripts/check-nx-graph.mjs's runsBudgetCheck to the live network budgets' entry points"
 }
 cp "$ws/justfile" "$tmp/saved.just"
 sed "s/--exclude='live-\*,explore-\*'/--exclude='explore-*'/" "$tmp/saved.just" >"$ws/justfile"

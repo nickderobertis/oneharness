@@ -43,7 +43,6 @@ export function gateEnv({ workflow, check }, os, tier) {
     steps: { tier: { outputs: { tier, base: "origin/main" } } },
     github: { event_name: "pull_request" },
   };
-  // A gate step with no condition runs on every platform.
   const step = gateSteps(check).find((s) => s.if === undefined || evaluate(s.if, context));
   if (!step) throw Error(`${os}/${tier}: no gate step runs; restore the check job's just check steps`);
   const literal = (env, where) =>

@@ -919,6 +919,10 @@ class Fallback(unittest.TestCase):
         self.assertEqual(len(measurements(records, start["launch_id"])), 1)
 
 
+# The stops the shim and the measurer defer while the launch starts.
+STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+
 @unittest.skipUnless(sys.platform.startswith("linux"), "the measurer the shim execs runs on Linux")
 class StoppedWhileStarting(unittest.TestCase):
     """A suite stopped by its caller signals the whole group; one stop that
@@ -965,13 +969,15 @@ class StoppedWhileStarting(unittest.TestCase):
         self.addCleanup(reap)
         return shim
 
-    def stop_when_reached(self, shim: subprocess.Popen[bytes], reached: Path) -> None:
+    def stop_when_reached(
+        self, shim: subprocess.Popen[bytes], reached: Path, stop: int = signal.SIGTERM
+    ) -> None:
         for _ in range(300):
             if reached.exists():
                 break
             time.sleep(0.05)
         self.assertTrue(reached.exists(), "the shim never reached its measurer")
-        os.killpg(shim.pid, signal.SIGTERM)
+        os.killpg(shim.pid, stop)
 
     def only_line(self, tmp: Path) -> Record:
         records = lines(tmp / "codex.jsonl")
@@ -990,8 +996,8 @@ class StoppedWhileStarting(unittest.TestCase):
         real.chmod(0o755)
         return real
 
-    def blocking_python(self, tmp: Path) -> tuple[Path, Path]:
-        # Holds SIGTERM blocked until the test's stop is pending, then execs
+    def blocking_python(self, tmp: Path, stop: int) -> tuple[Path, Path]:
+        # Holds `stop` blocked until the test's stop is pending, then execs
         # the real interpreter, so that stop reaches the measurer already
         # pending at its first instruction.
         reached = tmp / "reached"
@@ -1000,9 +1006,9 @@ class StoppedWhileStarting(unittest.TestCase):
         held.write_text(
             f"#!{self.python()} -I\n"
             "import os, signal, sys, time\n"
-            "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
+            f"signal.pthread_sigmask(signal.SIG_BLOCK, {{{int(stop)}}})\n"
             f"open({str(reached)!r}, 'w').close()\n"
-            "while signal.SIGTERM not in signal.sigpending():\n"
+            f"while {int(stop)} not in signal.sigpending():\n"
             "    time.sleep(0.01)\n"
             f"os.execv({self.python()!r}, [{self.python()!r}, *sys.argv[1:]])\n"
         )
@@ -1028,25 +1034,33 @@ class StoppedWhileStarting(unittest.TestCase):
         self.assertEqual(self.only_line(tmp)["exit"], 5)
 
     def test_a_stop_pending_as_a_direct_launch_starts_reaches_it_and_is_recorded(self) -> None:
-        tmp = scratch(self)
-        held, reached = self.blocking_python(tmp)
-        shim = self.start(tmp, held, self.lingering(tmp), path_without(tmp, "pasta"))
-        self.stop_when_reached(shim, reached)
-        self.assertEqual(shim.wait(timeout=60), 128 + signal.SIGTERM)
-        line = self.only_line(tmp)
-        self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + signal.SIGTERM))
+        for stop in STOPS:
+            with self.subTest(stop=stop.name):
+                tmp = scratch(self)
+                held, reached = self.blocking_python(tmp, stop)
+                shim = self.start(tmp, held, self.lingering(tmp), path_without(tmp, "pasta"))
+                self.stop_when_reached(shim, reached, stop)
+                # The stop itself reaches the launch, which ends by it.
+                self.assertEqual(shim.wait(timeout=60), 128 + stop)
+                line = self.only_line(tmp)
+                self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + stop))
 
     def test_a_stop_pending_as_a_measured_launch_starts_stops_its_namespace_and_is_recorded(
         self,
     ) -> None:
         need_recorder(self)
-        tmp = scratch(self)
-        held, reached = self.blocking_python(tmp)
-        shim = self.start(tmp, held, self.lingering(tmp), os.environ["PATH"])
-        self.stop_when_reached(shim, reached)
-        self.assertEqual(shim.wait(timeout=60), 128 + signal.SIGTERM)
-        line = self.only_line(tmp)
-        self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 128 + signal.SIGTERM))
+        for stop in STOPS:
+            with self.subTest(stop=stop.name):
+                tmp = scratch(self)
+                held, reached = self.blocking_python(tmp, stop)
+                shim = self.start(tmp, held, self.lingering(tmp), os.environ["PATH"])
+                self.stop_when_reached(shim, reached, stop)
+                # Any stop stops the namespace, whose init ends the launch by SIGTERM.
+                self.assertEqual(shim.wait(timeout=60), 128 + signal.SIGTERM)
+                line = self.only_line(tmp)
+                self.assertEqual(
+                    (line["method"], line["exit"]), ("netns-pasta", 128 + signal.SIGTERM)
+                )
 
 
 class Refusal(unittest.TestCase):

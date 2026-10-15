@@ -92,9 +92,10 @@ cargo nextest run "${select[@]}" --no-run >"$work/out" 2>&1 ||
 export OH_HANG_PROBE_MANIFEST="$work/manifest"
 started=$SECONDS
 # Its own bound too, past the one under test, so a config that lost the bound
-# fails this test rather than hanging it.
+# fails this test rather than hanging it. Uncoloured whatever the caller
+# forces (Nx sets FORCE_COLOR), since the lines below are parsed.
 if timeout --kill-after=10 "$((bound + 120))" cargo nextest run "${select[@]}" --run-ignored only \
-  -E "binary_id(oneharness-e2e::app_server) & test(=$probe)" \
+  -E "binary_id(oneharness-e2e::app_server) & test(=$probe)" --color never \
   --status-level fail --final-status-level fail >"$work/out" 2>&1; then
   fail "the journey that never ends passed" "restore $probe's endless wait in crates/oneharness-e2e/tests/app_server.rs: it must never return"
 fi

@@ -1019,9 +1019,9 @@ pub fn pid_alive(pid: Pid) -> bool {
 }
 
 /// Whether `pid` has exited and is waiting to be reaped, as the kernel reports
-/// its state: `Z` in `/proc/<pid>/stat` on Linux, `SZOMB` in `proc_pidinfo`'s
-/// BSD info on macOS (which answers for a zombie). A state that cannot be read
-/// is not a zombie: the caller's signal 0 has already said the pid exists.
+/// its state: `Z` in `/proc/<pid>/stat` on Linux; on macOS, a pid
+/// `proc_pidinfo` cannot find. A state that cannot be read otherwise is not a
+/// zombie: the caller's signal 0 has already said the pid exists.
 #[cfg(unix)]
 fn is_zombie(pid: u32) -> bool {
     #[cfg(target_os = "linux")]
@@ -1052,8 +1052,17 @@ fn is_zombie(pid: u32) -> bool {
                 size,
             )
         };
-        // SAFETY: the kernel filled all `size` bytes of the structure.
-        filled == size && unsafe { info.assume_init() }.pbi_status == SZOMB
+        if filled == size {
+            // SAFETY: the kernel filled all `size` bytes of the structure.
+            return unsafe { info.assume_init() }.pbi_status == SZOMB;
+        }
+        // With a zero `arg` XNU looks the pid up among processes that have not
+        // exited (`proc_find`, which skips one marked dead at exit) and answers
+        // ESRCH for any other — while signal 0 still succeeds for an exited,
+        // unreaped pid (`kill`'s `pzfind` branch). So ESRCH after signal 0
+        // answered is exactly an exited process. Any other failure says
+        // nothing about its state.
+        filled <= 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {

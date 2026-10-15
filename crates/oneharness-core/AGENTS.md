@@ -403,12 +403,15 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   keeps whatever it caught open — a caller's output pipe held this way hung
   CI for six hours. And on Darwin, `setsockopt` on a socket whose peer closed
   fails with EINVAL (`io::websocket::bound_reads`). Never let a waiter rely on
-  a kernel signal Darwin does not give: a write to a peer that shut its
-  reading succeeds there (the bytes are dropped; Linux says EPIPE), so a mock
+  a kernel signal Darwin does not give: on a Unix-domain stream whose peer
+  shut its reading but still holds the socket, a write succeeds there (XNU
+  drops the bytes; Linux says EPIPE), so a mock
   that "refuses a write" must END the connection; and a dead server's
   connection need not read EOF (a command it started can hold its end), so a
   pooled turn asks `ServerRecord::is_running` whenever it reads nothing, and
-  `pid_alive` counts a zombie as gone on both kernels. Every Rust test runs
+  `pid_alive` counts a zombie as gone on both kernels — on Darwin by the ESRCH
+  `proc_pidinfo` gives a pid signal 0 still answers for (XNU's lookup skips an
+  exited process unless asked for zombies). Every Rust test runs
   under nextest's per-test bound (`.config/nextest.toml`): a hang fails as
   TIMEOUT by name.
 

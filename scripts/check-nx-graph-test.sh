@@ -188,7 +188,7 @@ node -e '
   const fs = require("fs");
   const file = process.argv[1];
   const project = JSON.parse(fs.readFileSync(file, "utf8"));
-  project.targets.test.options.commands.push("uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml");
+  project.targets.test.options.commands.push("onebudgetspec check .github/budgets.yaml");
   fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
 ' "$ws/tools/network-telemetry/project.json"
 check
@@ -197,18 +197,40 @@ cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
 grep -qF "network-telemetry:test runs the network budget check" "$tmp/err" ||
   fail "the check failed but did not name network-telemetry:test as running the budget check"
 cp "$ws/.github/project.json" "$tmp/saved-github.json"
-node -e '
-  const fs = require("fs");
-  const file = process.argv[1];
-  const project = JSON.parse(fs.readFileSync(file, "utf8"));
-  project.targets.budgets.options.command += " live/pr-matrix/harness/codex/budgets.yaml";
-  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
-' "$ws/.github/project.json"
-check
+for command in \
+  "onebudgetspec check .github/budgets.yaml" \
+  "uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml"; do
+  node -e '
+    const fs = require("fs");
+    const [file, command] = process.argv.slice(1);
+    const project = JSON.parse(fs.readFileSync(file, "utf8"));
+    project.targets.budgets.options.command = command;
+    fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+  ' "$ws/.github/project.json" "$command"
+  check
+  [ "$status" -eq 0 ] || fail "the exact offline workflow budget command should pass: $command"
+done
+for command in \
+  "uv tool run --from onebudgetspec-cli==0.1.5 onebudgetspec check .github/budgets.yaml" \
+  "uv tool run --from onebudgetspec-cli onebudgetspec check .github/budgets.yaml" \
+  "bunx onebudgetspec check .github/budgets.yaml" \
+  "bash -c 'onebudgetspec check .github/budgets.yaml'" \
+  "onebudgetspec check .github/budgets.yaml --label host" \
+  "onebudgetspec check live/pr-matrix/harness/codex/budgets.yaml" \
+  "echo unrelated"; do
+  node -e '
+    const fs = require("fs");
+    const [file, command] = process.argv.slice(1);
+    const project = JSON.parse(fs.readFileSync(file, "utf8"));
+    project.targets.budgets.options.command = command;
+    fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+  ' "$ws/.github/project.json" "$command"
+  check
+  [ "$status" -ne 0 ] || fail "github-workflows:budgets should refuse: $command"
+  grep -qF "github-workflows:budgets" "$tmp/err" ||
+    fail "the check did not name the invalid workflow budget target"
+done
 cp "$tmp/saved-github.json" "$ws/.github/project.json"
-[ "$status" -ne 0 ] || fail "github-workflows:budgets checking the live network budgets should have failed the boundary check"
-grep -qF "github-workflows:budgets runs the network budget check" "$tmp/err" ||
-  fail "the check failed but did not name github-workflows:budgets as running the network budget check"
 cp "$ws/justfile" "$tmp/saved.just"
 sed "s/--exclude='live-\*,explore-\*'/--exclude='explore-*'/" "$tmp/saved.just" >"$ws/justfile"
 check

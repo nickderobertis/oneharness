@@ -1,0 +1,54 @@
+{
+  "name": "github-workflows",
+  "projectType": "library",
+  "tags": [
+    "type:tooling",
+    "lang:javascript"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "!{projectRoot}/.telemetry/**/*",
+      "!{projectRoot}/node_modules/**/*",
+      "{workspaceRoot}/release-platforms.toml",
+      "{workspaceRoot}/scripts/release-bundle.mjs",
+      "{workspaceRoot}/scripts/release-install.mjs",
+      "{workspaceRoot}/scripts/ci-verdict.sh",
+      "{workspaceRoot}/scripts/release-payload.mjs",
+      "{workspaceRoot}/tools/release-tooling/payload-contract/**/*"
+    ]
+  },
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node --test .github/tests/*.test.mjs"
+      },
+      "outputs": [
+        "{projectRoot}/.telemetry/macos-policy.json"
+      ]
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node .github/check-syntax.mjs"
+      }
+    },
+    "budgets": {
+      "//": "llmlint: ignore-block[new_projects_keep_the_graph_uniform] The scheduling contract requires a separate budgets target depending on telemetry-producing test; only the pinned budget CLI compares the two limits.",
+      "executor": "nx:run-commands",
+      "cache": false,
+      "dependsOn": [
+        "test"
+      ],
+      "options": {
+        "command": "uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml"
+      },
+      "//end": "llmlint: ignore-end[new_projects_keep_the_graph_uniform]"
+    }
+  },
+  "implicitDependencies": [
+    "release-payload-contract"
+  ]
+}

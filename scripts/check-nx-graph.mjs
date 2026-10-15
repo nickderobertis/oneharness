@@ -232,21 +232,33 @@ for (const name of shellTests) {
 
 // The network budgets read real telemetry: only `live-codex:live` (whose
 // recipe runs the suite, then the check) may run their check, and the gate's
-// `check` recipe excludes every live project.
+// `check` recipe excludes every live project. The one exception is
+// github-workflows:budgets running exactly its own check over the scheduling
+// telemetry its `test` derives offline from committed workflow files.
 // The pool maintenance budget builds the repository twice: only
 // `pool-maintenance:budgets-host`, a target no gate tier names, may run its
 // check (`just budgets`, after the release pull request's sweep).
 const runsBudgetCheck = /e2e-network-budget|onebudgetspec check|just live-codex/u;
+const offlineWorkflowBudget = new Set([
+	JSON.stringify("onebudgetspec check .github/budgets.yaml"),
+	JSON.stringify("uv tool run --from onebudgetspec-cli==0.1.4 onebudgetspec check .github/budgets.yaml"),
+]);
 const poolBudgetCheck = /onebudgetspec check pool-maintenance\/budgets\.yaml/u;
 for (const [name, node] of Object.entries(graph.nodes)) {
 	for (const [target, spec] of Object.entries(node.data.targets ?? {})) {
 		const commands = JSON.stringify(spec.options?.commands ?? spec.options?.command ?? "");
 		const owner = `${name}:${target}`;
-		if (poolBudgetCheck.test(commands)) {
+		if (owner === "github-workflows:budgets" && !offlineWorkflowBudget.has(commands)) {
+			failures.push(`${owner} must run exactly onebudgetspec check .github/budgets.yaml, bare or through uv tool run --from onebudgetspec-cli==0.1.4`);
+		} else if (poolBudgetCheck.test(commands)) {
 			if (owner !== "pool-maintenance:budgets-host") {
 				failures.push(`${owner} runs the pool maintenance budget check, which builds the repository twice; keep it in pool-maintenance:budgets-host (just budgets) alone`);
 			}
-		} else if (runsBudgetCheck.test(commands) && owner !== "live-codex:live") {
+		} else if (
+			runsBudgetCheck.test(commands)
+			&& owner !== "live-codex:live"
+			&& !(owner === "github-workflows:budgets" && offlineWorkflowBudget.has(commands))
+		) {
 			failures.push(`${owner} runs the network budget check, which reads live telemetry; keep it in live-codex:live (just live-codex) alone`);
 		}
 	}

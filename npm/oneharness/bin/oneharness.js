@@ -24,7 +24,6 @@ const { spawnSync } = require("node:child_process");
 const PACKAGES = {
   "linux-x64": "@oneharness/cli-linux-x64",
   "linux-arm64": "@oneharness/cli-linux-arm64",
-  "darwin-x64": "@oneharness/cli-darwin-x64",
   "darwin-arm64": "@oneharness/cli-darwin-arm64",
   "win32-x64": "@oneharness/cli-win32-x64",
   "win32-arm64": "@oneharness/cli-win32-arm64",
@@ -37,6 +36,16 @@ function fail(message) {
 
 function binaryPath() {
   const key = `${process.platform}-${process.arch}`;
+  if (key === "darwin-x64") {
+    // Discontinued rather than never shipped: say so instead of pointing at a
+    // platform package that no longer exists.
+    fail(
+      "Intel macOS (darwin-x64) is no longer supported: oneharness releases " +
+        "ship prebuilt binaries for Apple Silicon macOS only. Run it on an " +
+        "Apple Silicon Mac, or build from source with " +
+        "'cargo install oneharness --locked'."
+    );
+  }
   const pkg = PACKAGES[key];
   if (!pkg) {
     fail(

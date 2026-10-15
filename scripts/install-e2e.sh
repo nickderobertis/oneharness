@@ -67,6 +67,8 @@ detect_target() {
     arm64 | aarch64) arch_part="aarch64" ;;
     *) fail "unsupported architecture: $arch" ;;
   esac
+  [ "$os_part:$arch_part" != "apple-darwin:x86_64" ] ||
+    fail "Intel macOS is no longer released; run this on an Apple Silicon Mac or another platform release-platforms.toml declares"
 
   # The same correction install.sh makes for a shell emulating x64 on a
   # Windows ARM64 host, so the archive staged here is the one it will ask for.
@@ -352,7 +354,6 @@ verify_platform_selection() {
   done <<CASES
 Linux|x86_64|||x86_64-unknown-linux-gnu
 Linux|aarch64|||aarch64-unknown-linux-gnu
-Darwin|x86_64|||x86_64-apple-darwin
 Darwin|arm64|||aarch64-apple-darwin
 MINGW64_NT-10.0-26100|x86_64|AMD64|Intel64 Family 6 Model 85 Stepping 7, GenuineIntel|x86_64-pc-windows-msvc
 MINGW64_NT-10.0-26100|aarch64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
@@ -361,6 +362,88 @@ MINGW64_NT-10.0-26100|x86_64|ARM64|ARMv8 (64-bit) Family 8 Model 1 Revision 201,
 MSYS_NT-10.0-26100|x86_64|AMD64|ARM64 Family 8 Model 1 Revision 201, Qualcomm Technologies Inc|aarch64-pc-windows-msvc
 host||||$TARGET
 CASES
+
+  # llmlint: ignore-block[tests_mirror_real_usage, e2e_not_mocked] No runner is
+  # an Intel Mac, and none is a Rosetta shell on demand. The Intel case poses
+  # install.sh's documented ONEHARNESS_HOST_OS/ARCH inputs, as every case above
+  # does; the Rosetta cases stub only uname -m and sysctl hw.optional.arm64, the
+  # kernel facts install.sh reads. Download, checksum and extraction run for real.
+  # Intel macOS is discontinued. Serve a decoy archive for it anyway, so an
+  # installer that still mapped an Intel Mac would install it and pass; the
+  # refusal must come from install.sh itself, by name, before any download.
+  rm -rf "$work/platform-stage"
+  mkdir -p "$work/platform-stage"
+  printf 'oneharness fixture for x86_64-apple-darwin\n' >"$work/platform-stage/oneharness"
+  name="oneharness-${version}-x86_64-apple-darwin"
+  BIN_FILE=oneharness make_archive "$work/platform-stage" "$mirror/$version/${name}.tar.gz"
+  printf '%s  %s\n' "$(sha256_of "$mirror/$version/${name}.tar.gz")" "${name}.tar.gz" \
+    >"$trust/$version/${name}.sha256"
+  probe="$work/platform-probe/intel-mac"
+  rm -rf "$probe"
+  if ONEHARNESS_HOST_OS=Darwin ONEHARNESS_HOST_ARCH=x86_64 \
+    PROCESSOR_ARCHITECTURE="" PROCESSOR_IDENTIFIER="" \
+    ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
+    sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
+    >"$work/platform.out" 2>&1; then
+    cat "$work/platform.out" >&2
+    fail "install.sh installed on an Intel Mac; it must refuse, saying Intel macOS is no longer supported — fix detect_target in scripts/install.sh"
+  fi
+  grep -qF "Intel macOS is no longer supported" "$work/platform.out" || {
+    cat "$work/platform.out" >&2
+    fail "install.sh refused an Intel Mac without saying Intel macOS is no longer supported (its output is above) — fix detect_target in scripts/install.sh"
+  }
+  [ ! -e "$probe/oneharness" ] ||
+    fail "install.sh left a binary at $probe while refusing an Intel Mac"
+
+  # An unposed Mac whose shell reports x86_64: only the kernel's arm64 answer
+  # tells a Rosetta shell on Apple Silicon from an Intel Mac. uname and sysctl
+  # are the host boundary, so each case stubs them on PATH and poses nothing
+  # else. sysctl answering 1 installs the native arm64 build; 0, or a failed
+  # probe (an Intel kernel has no such key), refuses by name.
+  local stubs answer rc
+  stubs="$work/platform-stubs"
+  mkdir -p "$stubs"
+  cat >"$stubs/uname" <<'STUB'
+#!/bin/sh
+case "$1" in -m) echo x86_64 ;; *) echo Darwin ;; esac
+STUB
+  chmod +x "$stubs/uname"
+  for answer in 1 0 fail; do
+    if [ "$answer" = fail ]; then
+      cat >"$stubs/sysctl" <<'STUB'
+#!/bin/sh
+echo "sysctl: unknown oid hw.optional.arm64" >&2
+exit 1
+STUB
+    else
+      printf '#!/bin/sh\necho %s\n' "$answer" >"$stubs/sysctl"
+    fi
+    chmod +x "$stubs/sysctl"
+    probe="$work/platform-probe/rosetta-$answer"
+    rm -rf "$probe"
+    set +e
+    PATH="$stubs:$PATH" PROCESSOR_ARCHITECTURE="" PROCESSOR_IDENTIFIER="" \
+      ONEHARNESS_RELEASE_BASE_URL="$mirror" ONEHARNESS_CHECKSUM_BASE_URL="$trust" \
+      sh "$repo_root/scripts/install.sh" --version "$version" --to "$probe" \
+      >"$work/platform.out" 2>&1
+    rc=$?
+    set -e
+    if [ "$answer" = 1 ]; then
+      [ "$rc" -eq 0 ] || {
+        cat "$work/platform.out" >&2
+        fail "install.sh refused a Rosetta shell on Apple Silicon (sysctl hw.optional.arm64 = 1); it should install aarch64-apple-darwin — fix detect_target in scripts/install.sh"
+      }
+      installed="$(cat "$probe/oneharness")"
+      [ "$installed" = "oneharness fixture for aarch64-apple-darwin" ] ||
+        fail "install.sh under Rosetta on Apple Silicon installed '$installed'; it should install aarch64-apple-darwin — fix detect_target in scripts/install.sh"
+    else
+      if [ "$rc" -eq 0 ] || ! grep -qF "Intel macOS is no longer supported" "$work/platform.out"; then
+        cat "$work/platform.out" >&2
+        fail "install.sh on an x86_64 Mac whose arm64 probe answered '$answer' exited $rc without refusing Intel macOS by name — fix detect_target in scripts/install.sh"
+      fi
+    fi
+  done
+  # llmlint: ignore-end[tests_mirror_real_usage, e2e_not_mocked]
 }
 
 verify_trust_root_independence

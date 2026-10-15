@@ -1,0 +1,99 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { history } from "./history.mjs";
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
+test("engine manifests, local lock references and parsed changelogs are classified through real git histories", () => {
+  const fixture = history();
+  const commit = () => {
+    fixture.git("add", "Cargo.toml", "Cargo.lock", "crates", "CHANGELOG.md");
+    fixture.git("commit", "-qm", "metadata");
+  };
+  try {
+    fixture.git("checkout", "-q", "base");
+    mkdirSync(join(fixture.cwd, "crates/oneharness-core"), { recursive: true });
+    const core = (v) =>
+      `[package]\nname="oneharness-core"\nversion="${v}"\nedition="2021"\n`;
+    const root = (v) =>
+      `[package]\nname="oneharness"\nversion="1.0.0"\n[dependencies]\noneharness-core={path="crates/oneharness-core",version="${v}"}\n`;
+    const lock = (v) =>
+      `version=4\n[[package]]\nname="oneharness"\nversion="1.0.0"\ndependencies=["oneharness-core ${v}"]\n[[package]]\nname="oneharness-core"\nversion="${v}"\n`;
+    writeFileSync(join(fixture.cwd, "Cargo.toml"), root("1.0.0"));
+    writeFileSync(join(fixture.cwd, "Cargo.lock"), lock("1.0.0"));
+    writeFileSync(
+      join(fixture.cwd, "crates/oneharness-core/Cargo.toml"),
+      core("1.0.0"),
+    );
+    writeFileSync(
+      join(fixture.cwd, "CHANGELOG.md"),
+      "# Changes\n## 1.0.0\nOld\n",
+    );
+    commit();
+    fixture.git("tag", "-f", "base");
+    writeFileSync(join(fixture.cwd, "Cargo.toml"), root("1.0.1"));
+    writeFileSync(join(fixture.cwd, "Cargo.lock"), lock("1.0.1"));
+    writeFileSync(
+      join(fixture.cwd, "crates/oneharness-core/Cargo.toml"),
+      core("1.0.1"),
+    );
+    commit();
+    assert.equal(fixture.classify("HEAD").isReleaseOnly, true);
+    writeFileSync(
+      join(fixture.cwd, "crates/oneharness-core/Cargo.toml"),
+      core("1.0.1").replace("2021", "2024"),
+    );
+    commit();
+    assert.equal(fixture.classify("HEAD").macosRequired, true);
+    fixture.git("checkout", "-q", "base");
+    writeFileSync(
+      join(fixture.cwd, "CHANGELOG.md"),
+      "# Changes\n## 1.0.1\nNew release\n",
+    );
+    commit();
+    assert.equal(fixture.classify("HEAD").isReleaseOnly, true);
+    writeFileSync(join(fixture.cwd, "CHANGELOG.md"), "not a parsed changelog");
+    commit();
+    assert.equal(fixture.classify("HEAD").macosRequired, true);
+    for (const version of ["1.2.3-alpha.1", "1.2.3+build.01", "1.2.3-alpha+build"]) {
+      fixture.git("checkout", "-q", "base");
+      writeFileSync(join(fixture.cwd, "Cargo.toml"), root(version));
+      commit();
+      assert.equal(fixture.classify("HEAD").isReleaseOnly, true, version);
+    }
+    for (const invalidVersion of ["01.2.3", "1.2.3-..", "1.2.3-01", "1.2.3+.."]) {
+      fixture.git("checkout", "-q", "base");
+      writeFileSync(join(fixture.cwd, "Cargo.toml"), root(invalidVersion));
+      commit();
+      const invalid = fixture.classify("HEAD");
+      assert.equal(invalid.isReleaseOnly, false, invalidVersion);
+      assert.equal(invalid.macosRequired, true, invalidVersion);
+    }
+    for (const [file, content, reason] of [
+      ["Cargo.toml",root("1.0.0").replace('version="1.0.0"','version="not-a-version"'),/Invalid package version/],
+      ["Cargo.toml",root("not-a-version"),/Invalid engine version/],
+      ["Cargo.lock",lock("not-a-version"),/Invalid lockfile version/],
+    ]) {
+      fixture.git("checkout","-q","base");
+      writeFileSync(join(fixture.cwd,file),content);commit();
+      const invalid=fixture.classify("HEAD");
+      assert.equal(invalid.isReleaseOnly,false);assert.equal(invalid.macosRequired,true);assert.match(invalid.reason,reason);
+    }
+  } finally {
+    fixture.dispose();
+  }
+});
+
+test('empty and added/deleted release metadata require Mac via real classifier subprocess',()=>{
+ const fixture=history();
+ try{
+  assert.equal(fixture.classify('base').macosRequired,true);
+  fixture.git('checkout','-q','base');
+  writeFileSync(join(fixture.cwd,'CHANGELOG.md'),'## 1.0.1\n');
+  fixture.git('add','CHANGELOG.md');fixture.git('commit','-qm','added metadata');fixture.git('tag','added');
+  assert.equal(fixture.classify('added').macosRequired,true);
+  fixture.git('checkout','-q','base');fixture.git('rm','Cargo.toml');fixture.git('commit','-qm','deleted metadata');fixture.git('tag','deleted');
+  assert.equal(fixture.classify('deleted').macosRequired,true);
+ }finally{fixture.dispose();}
+});
+// llmlint: ignore-end[shell_test_tiers_stay_split]

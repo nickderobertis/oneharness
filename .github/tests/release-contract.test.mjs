@@ -1,0 +1,136 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { parse } from "yaml";
+import { SUPPORTED_TARGETS, archiveMembers } from "../../tools/release-tooling/payload-contract/contract.mjs";
+import { readPlatforms } from "../../tools/release-tooling/payload-contract/io.mjs";
+import { expand, workflows, resolveJobs } from "../workflow-graph.mjs";
+// Non-native products require their declared release runners. The native
+// builder/install/transport journey runs at the separate integration edge; this contract
+// proves non-native platform declarations and the Mac commands before publishing.
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
+test("production release graph retains every declared architecture/artifact and Darwin install proofs before uploads", () => {
+  const platforms = JSON.parse(
+    execFileSync(
+      "python3",
+      [
+        "-c",
+        'import tomllib,json; print(json.dumps(tomllib.load(open("release-platforms.toml","rb"))["platform"]))',
+      ],
+      { encoding: "utf8" },
+    ),
+  );
+  assert.deepEqual([...SUPPORTED_TARGETS].sort(),platforms.map(p=>p.target).sort());
+  const release = parse(readFileSync(".github/workflows/release.yml", "utf8"));
+  const archive = release.jobs.upload.steps.find(s => s.uses === "taiki-e/upload-rust-binary-action@v1").with;
+  assert.deepEqual([archive.bin, ...archive.include.split(",")], [...archiveMembers]);
+  const darwin = release.jobs["build-darwin"];
+  assert.match(darwin["runs-on"], /^macos-/);
+  const compile = darwin.steps.find(
+    (s) => s.name === "Compile each Darwin target once and package its bytes",
+  );
+  const build = compile.run;
+  assert.equal(compile.env?.RUSTFLAGS, "-D warnings", "the Darwin compile denies warnings");
+  const targets = build.match(/for target in (.*); do/)[1].split(" ");
+  assert.deepEqual(
+    targets.sort(),
+    platforms
+      .filter((p) => p.target.includes("apple-darwin"))
+      .map((p) => p.target)
+      .sort(),
+  );
+  assert.match(build, /just release-bundle/);
+  const installers = darwin.steps.filter((s) =>
+    s.run?.includes("scripts/release-install.mjs"),
+  );
+  assert.deepEqual(targets, ["aarch64-apple-darwin"], "Apple Silicon is the only macOS target");
+  assert.ok(installers.some((s) => s.run.startsWith("node ")));
+  // Intel macOS is discontinued: no Rosetta, x86_64 toolchain or emulated proof.
+  assert.ok(!JSON.stringify(darwin).match(/rosetta|arch -x86_64|x86_64-apple-darwin|architecture":"x64/i));
+  for (const job of ["upload", "build-wheels", "build-npm"]) {
+    const rows = expand(release.jobs[job].strategy.matrix, {});
+    const shipped = rows.map((r) => r.target);
+    if (job !== "upload") shipped.push(...targets);
+    assert.deepEqual(
+      shipped.sort(),
+      platforms.map((p) => p.target).sort(),
+      `${job} platform inventory`,
+    );
+    assert.ok(
+      rows.every((r) => !r.os.startsWith("macos-")),
+      `${job} must not consume a Mac runner`,
+    );
+  }
+  for (const job of ["publish-pypi", "publish-npm"]) {
+    assert.ok(release.jobs[job].needs.includes("build-darwin"));
+    assert.equal(release.jobs[job]["runs-on"], "ubuntu-latest");
+    assert.ok(
+      release.jobs[job].steps.some((s) => s.with?.name === "darwin-release"),
+    );
+  }
+  assert.ok(
+    release.jobs.upload.steps.some(
+      (s) => s.uses === "actions/attest-build-provenance@v2",
+    ),
+  );
+  assert.ok(
+    release.jobs.upload.steps.some((s) =>
+      s.env?.BUNDLE?.includes("bundle-path"),
+    ),
+  );
+  assert.ok(release.jobs.upload.needs.includes("build-darwin"));
+  for (const job of ["upload", "publish-pypi", "publish-npm"])
+    assert.ok(
+      release.jobs[job].steps.some((s) => s.with?.name === "darwin-release"),
+      `${job} must consume this run's exact Darwin artifact`,
+    );
+  for (const name of ["verify-pypi-windows-arm64", "verify-npm-windows-arm64"])
+    assert.equal(release.jobs[name]["runs-on"], "windows-11-arm");
+});
+test("real release builder rejects target/tag mismatch before compiling or publishing", () => {
+  for (const script of ["scripts/release-bundle.mjs", "scripts/release-install.mjs"]) {
+    const invalid = spawnSync(process.execPath,[script,"--unexpected"],{encoding:"utf8"});
+    assert.notEqual(invalid.status,0);assert.match(invalid.stderr,/Next: node scripts\/release-/);
+  }
+  for (const args of [
+    ["--target", "unknown"],
+    ["--target", "x86_64-apple-darwin"],
+    ["--target", "aarch64-apple-darwin", "--tag", "v0.0.0"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/release-bundle.mjs", ...args],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(
+      result.stderr,
+      /Unsupported release target|Release tag differs/,
+    );
+  }
+  // A blank output directory would otherwise resolve to the target's name
+  // under the current directory and compile into it.
+  for (const out of ["", "   "]) {
+    const result = spawnSync(
+      process.execPath,
+      ["scripts/release-bundle.mjs", "--target", "aarch64-apple-darwin", "--out", out],
+      { encoding: "utf8" },
+    );
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /--out must name a directory/);
+  }
+});
+
+test('inventory command derives baseline/final Mac counts and all artifact declarations',()=>{
+ const report=execFileSync(process.execPath,['.github/describe-policy.mjs','HEAD'],{encoding:'utf8'});
+ const current=workflows();
+ const baseline=Object.fromEntries(Object.keys(current).map(file=>[file,parse(execFileSync('git',['show',`HEAD:.github/workflows/${file}`],{encoding:'utf8'}))]));
+ const scenario={event:'release',action:'published',branch:'main',publish:'both',manual:false,macosRequired:false,releaseOnly:false,fork:false};
+ const before=resolveJobs('release.yml',scenario,baseline).filter(row=>row.macos).length;
+ const after=resolveJobs('release.yml',scenario,current).filter(row=>row.macos).length;
+ assert.ok(report.includes(`release.yml | release: ${before} | release: ${after}`));
+ for(const p of readPlatforms()) assert.ok(report.includes(`| ${p.target} | ${p.archive} + sha256 + Sigstore bundle | platform wheel | @oneharness/cli-${p.npm} |`));
+ assert.match(report,/modeled, not published/);
+});
+// llmlint: ignore-end[shell_test_tiers_stay_split]

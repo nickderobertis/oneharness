@@ -301,23 +301,10 @@ if [ -z "${OH_E2E_VARIANTS_CORE_ONLY:-}" ]; then
       fail "README support matrix is stale for ${expected%% *}; update it from docs/harness-auth.md"
   done
 
-  workflow="$OH_REPO_ROOT/.github/workflows/e2e-variants.yml"
-  matrix_value() {
-    local os="$1" field="$2" expected="$3"
-    awk -v os="$os" -v field="$field" -v expected="$expected" '
-            $0 ~ "^[[:space:]]*- os: " os "$" { in_os = 1; next }
-            in_os && $0 ~ "^[[:space:]]*- os:" { exit 1 }
-            in_os && $0 ~ "^[[:space:]]*" field ": \"" expected "\"$" { found = 1; exit }
-            END { exit !found }
-        ' "$workflow" ||
-      fail "e2e-variants workflow matrix must set $field=$expected for $os; keep README live-testing exclusions aligned"
-  }
-  matrix_value ubuntu-latest run_opencode 1
-  matrix_value ubuntu-latest run_qwen 1
-  matrix_value macos-latest run_opencode 1
-  matrix_value macos-latest run_qwen 0
-  matrix_value windows-latest run_opencode 0
-  matrix_value windows-latest run_qwen 1
+  node "$OH_REPO_ROOT/.github/variants-routing.mjs" \
+    --workflow "$OH_REPO_ROOT/.github/workflows/e2e-variants.yml" \
+    --ci "$OH_REPO_ROOT/.github/workflows/ci.yml" ||
+    fail "variant routing changed; preserve Linux/Windows lanes and the consolidated Mac CI selectors"
   grep -Fq 'deliberately omits Qwen 0.21.0 on macOS' "$OH_REPO_ROOT/README.md" ||
     fail "README live-testing section must document the workflow's macOS Qwen exclusion"
   grep -Fq 'omits the OpenCode' "$OH_REPO_ROOT/README.md" ||

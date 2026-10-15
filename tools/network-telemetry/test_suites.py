@@ -694,6 +694,47 @@ class Settings(unittest.TestCase):
                 )
 
 
+# What the signal module offers on Windows; any other name read at import time
+# breaks test discovery on the Windows leg before a skip can apply.
+WINDOWS_SIGNALS = ("SIGABRT", "SIGBREAK", "SIGFPE", "SIGILL", "SIGINT", "SIGSEGV", "SIGTERM")
+IMPORT_WITHOUT_POSIX_SIGNALS = """
+import importlib.util, pathlib, signal, sys
+for name in [n for n in dir(signal) if n.startswith("SIG") and not n.startswith("SIG_")]:
+    if name not in sys.argv[1].split(","):
+        delattr(signal, name)
+for name in ("pthread_sigmask", "sigpending", "alarm", "pause"):
+    if hasattr(signal, name):
+        delattr(signal, name)
+for path in sys.argv[2:]:
+    path = pathlib.Path(path)
+    sys.path.insert(0, str(path.parent))
+    spec = importlib.util.spec_from_file_location(path.stem.replace("-", "_"), path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+"""
+
+
+class ImportsOnWindows(unittest.TestCase):
+    def test_every_test_module_and_the_measurer_import_without_posix_only_signals(self) -> None:
+        here = Path(__file__).resolve().parent
+        modules = [*sorted(here.glob("test_*.py")), ROOT / "scripts" / "e2e-netmeasure.py"]
+        run = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                IMPORT_WITHOUT_POSIX_SIGNALS,
+                ",".join(WINDOWS_SIGNALS),
+                *map(str, modules),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+
 class Legs(unittest.TestCase):
     PREPARE = "Permit unprivileged namespaces for pasta"
 

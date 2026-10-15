@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """Run one live-tier launch in a measuring network namespace and record its bytes.
 
-    e2e-netmeasure.py --line-file FILE --launch-id ID [--pending PATH]
-                      [--start-line JSON] -- ARGV...
+    e2e-netmeasure.py --line-file FILE --launch-id ID [--pending PATH] -- ARGV...
 
-The Linux half of the network recorder (`scripts/e2e-netshim.sh` encodes the
-launch's `start` line, then execs this). With `--start-line` this appends that
-line and creates the pending marker itself, and only once it handles SIGTERM,
-SIGINT and SIGHUP: a stop while its interpreter starts ends a launch that
-recorded nothing, and one after it is held until the launch or its namespace
-exists, then delivered — so a start line is never left without a
-measurement. ARGV runs inside a fresh unprivileged
+The Linux half of the network recorder (`scripts/e2e-netshim.sh` writes the
+launch's `start` line, then execs this). ARGV runs inside a fresh unprivileged
 user + network + mount + PID namespace whose only interface is a `pasta` TAP
 device; when the launch's whole process tree has exited (every descendant,
 detached and double-forked included, inherits the namespace and is reaped by
@@ -340,33 +334,6 @@ def observer_argv() -> Optional[list[str]]:
     return words
 
 
-def record_start(args: argparse.Namespace) -> None:
-    """Create the launch's pending marker, then append its start line, in one
-    write like every line; refuse, recording nothing, where either fails."""
-    if args.pending is not None:
-        try:
-            Path(args.pending).parent.mkdir(parents=True, exist_ok=True)
-            Path(args.pending).touch()
-        except OSError as error:
-            sys.exit(
-                f"e2e-netshim: cannot create {args.pending} ({error}); check that "
-                f"{Path(args.line_file).parent} is writable, then rerun"
-            )
-    data = (args.start_line.rstrip("\n") + "\n").encode()
-    try:
-        fd = os.open(args.line_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
-        try:
-            os.write(fd, data)
-        finally:
-            os.close(fd)
-    except OSError as error:
-        remove_pending(args.pending)
-        sys.exit(
-            f"e2e-netshim: cannot append to {args.line_file} ({error}); check that its "
-            "directory is writable"
-        )
-
-
 def remove_pending(path: Optional[str]) -> None:
     """Remove the launch's pending marker once its line is in; a marker that
     cannot be removed is reported, since the budget step would wait on it."""
@@ -602,14 +569,29 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     return Outcome(Ending.EXITED, code=137)
 
 
-STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+# The stops a caller sent while the launch's own signal handling was not yet in
+# place. The shim ignores TERM/INT/HUP from its `start` line until `defer_stops`
+# replaces that here, before anything is spawned (an inherited ignore would
+# reach the launch): a stop sent while the shim or this interpreter is still
+# starting would otherwise end the launch with a `start` and no line. One sent
+# before the replacement is dropped, so the launch runs and is recorded; one
+# sent after it, or sent while a caller had it blocked, is held here and
+# delivered once the handlers below exist.
+DEFERRED_STOPS: list[int] = []
 
-# The stop signals that arrived before anything could act on them.
-held_stops: list[int] = []
+
+def stops() -> tuple[signal.Signals, ...]:
+    # A function, not a constant: SIGHUP is POSIX-only, and the tests import
+    # this module on Windows too.
+    return (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 
-def hold_stop(signum: int, _frame: object) -> None:
-    held_stops.append(signum)
+def defer_stops() -> None:
+    for signum in stops():
+        signal.signal(signum, lambda n, _f: DEFERRED_STOPS.append(n))
+    # A blocked mask survives exec and would pass to the launch, which then
+    # could not be stopped; unblocked, a stop already pending is held above.
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, stops())
 
 
 def run_direct(args: argparse.Namespace, reason: str) -> int:
@@ -626,9 +608,9 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
             file=sys.stderr,
         )
         return 127
-    for signum in STOPS:
+    for signum in stops():
         signal.signal(signum, lambda n, _f: launch.send_signal(n))
-    for signum in held_stops:
+    for signum in DEFERRED_STOPS:
         launch.send_signal(signum)
     code = launch.wait()
     code = 128 - code if code < 0 else code
@@ -648,10 +630,6 @@ def measure(args: argparse.Namespace) -> int:
     done_r, done_w = os.pipe()
     supervisor = os.fork()
     if supervisor == 0:
-        # Its parent's dispositions as they were before `main` held them: it
-        # leaves the caller's session at once, and installs its own handler.
-        for signum in STOPS:
-            signal.signal(signum, signal.SIG_DFL)
         os.setsid()
         os.close(life_w)
         os.close(done_r)
@@ -696,9 +674,9 @@ def measure(args: argparse.Namespace) -> int:
         except OSError:
             pass
 
-    for signum in STOPS:
+    for signum in stops():
         signal.signal(signum, let_go)
-    if held_stops:
+    if DEFERRED_STOPS:
         let_go()
     message = b""
     while True:
@@ -727,17 +705,10 @@ def measure(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str]) -> int:
-    # First, before anything is recorded: a stop until the launch or its
-    # namespace exists is held, and delivered to it once one does.
-    for signum in STOPS:
-        signal.signal(signum, hold_stop)
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--line-file")
     parser.add_argument("--launch-id")
     parser.add_argument("--pending", help="a marker file to remove once the line is written")
-    parser.add_argument(
-        "--start-line", help="the launch's start line, appended once a stop can be handled"
-    )
     parser.add_argument("--_init", dest="init", help=argparse.SUPPRESS)
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -746,16 +717,13 @@ def main(argv: list[str]) -> int:
     if not args.argv:
         parser.error("give the launch's argv after --")
     if args.init:
-        for signum in STOPS:
-            signal.signal(signum, signal.SIG_DFL)
         return namespace_init(Path(args.init), deadline_seconds(), args.argv)
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
+    defer_stops()
     # Refuse a bad value before anything runs, not inside the namespace.
     deadline_seconds()
     observer_argv()
-    if args.start_line is not None:
-        record_start(args)
     try:
         return measure(args)
     except Unrecorded:

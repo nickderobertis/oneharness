@@ -153,14 +153,10 @@ grep -q '^  schedule:$' "$tmp/repo/$workflow" &&
   fail "fixture setup: the removed-schedule case left the schedule trigger in place"
 run_case "the schedule removed" 1 "no schedule trigger"
 
-# The schedule kept, but narrowed to Linux: the daily run would repeat the pull
-# request's leg, and macOS would still never run.
+# Automatic Mac spending moved to the CI carrier; a missing proof must fail.
 build_fixture
-sed -i.bak "s/github.event_name == 'schedule' && '\[\"ubuntu-latest\",\"macos-latest\"\]'/github.event_name == 'schedule' \&\& '[\"ubuntu-latest\"]'/" \
-  "$tmp/repo/$workflow"
-grep -qF "'schedule' && '[\"ubuntu-latest\"]'" "$tmp/repo/$workflow" ||
-  fail "fixture setup: the linux-only-schedule case did not narrow the schedule matrix"
-run_case "a schedule narrowed to Linux" 1 "does not run its schedule across"
+sed -i.bak 's/run: just live-control/run: echo missing-control/' "$tmp/repo/.github/workflows/ci.yml"
+run_case "the consolidated Mac control proof removed" 1 "must retain the consolidated Mac turn-control proof"
 
 # A schedule declared with no cron under it: the trigger is there, so a grep for
 # `schedule:` alone would pass, and the workflow would never actually fire.

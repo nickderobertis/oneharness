@@ -422,18 +422,35 @@ impl UpgradeStream for LocalStream {
 
 /// Bound the stream's reads, unless the peer has already closed it.
 ///
+/// A zero timeout is refused here, before any socket call, on every platform:
+/// `std` refuses it on Unix, and this module's Winsock path would otherwise
+/// round it up to a millisecond.
+///
 /// Darwin refuses `setsockopt` with `EINVAL` on a socket whose peer has closed
 /// both directions, where Linux sets the option. Such a socket cannot block a
-/// read — it yields what the peer sent, then end-of-file — so the refusal is
+/// read — it yields what the peer sent, then end-of-file — so that refusal is
 /// not the connection's failure, and the read after it reports what the peer
 /// actually did: a server that writes its refusal and closes is named by its
-/// status line, not by `Invalid argument (os error 22)`.
+/// status line, not by `Invalid argument (os error 22)`. Only the socket call's
+/// own `EINVAL` is passed over; every other failure is the caller's.
 fn bound_reads(stream: &impl UpgradeStream, timeout: Option<Duration>) -> io::Result<()> {
+    if timeout == Some(Duration::ZERO) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot bound reads by a zero timeout",
+        ));
+    }
     match stream.set_read_timeout(timeout) {
-        Err(err) if err.kind() == io::ErrorKind::InvalidInput => Ok(()),
+        Err(err) if err.raw_os_error() == Some(SOCKET_OPTION_REFUSED) => Ok(()),
         other => other,
     }
 }
+
+/// The OS error a socket-option call returns on a connection its peer closed.
+#[cfg(unix)]
+const SOCKET_OPTION_REFUSED: i32 = libc::EINVAL;
+#[cfg(windows)]
+const SOCKET_OPTION_REFUSED: i32 = windows_sys::Win32::Networking::WinSock::WSAEINVAL;
 
 /// Send the upgrade request for `key` and read the server's whole HTTP answer,
 /// within [`HANDSHAKE_DEADLINE`].
@@ -1083,10 +1100,7 @@ mod tests {
     impl UpgradeStream for PeerClosedOnDarwin {
         fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
             if self.closed.get() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Invalid argument (os error 22)",
-                ));
+                return Err(io::Error::from_raw_os_error(SOCKET_OPTION_REFUSED));
             }
             self.stream.set_read_timeout(timeout)
         }
@@ -1143,6 +1157,72 @@ mod tests {
         let (mut reader, _writer) = upgrade(client).unwrap();
         server.join().unwrap();
         assert_eq!(reader.receive().unwrap(), Incoming::Closed);
+    }
+
+    /// A zero read timeout is refused through the reader, as `std` refuses it:
+    /// it bounds nothing, so accepting it would leave the reader's polling
+    /// unbounded while its caller believed otherwise. Any other failure of the
+    /// socket call is the caller's too, and only Darwin's peer-closed `EINVAL`
+    /// is passed over.
+    #[test]
+    fn a_zero_read_timeout_is_refused_on_a_live_connection() {
+        let dir = ScratchDir::new("ws-zero-timeout").unwrap();
+        let path = dir.join("s.sock");
+        let listener = listener::LocalListener::bind(&path).unwrap();
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let request = read_upgrade(&mut stream);
+            stream.write_all(switching(&request).as_bytes()).unwrap();
+            let _ = finished.recv();
+        });
+        let (reader, _writer) = handshake(LocalStream::connect(&path).unwrap()).unwrap();
+        let err = reader
+            .set_read_timeout(Some(Duration::ZERO))
+            .expect_err("a zero timeout was accepted");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+        reader
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let other = bound_reads(
+            &Refusing(SOCKET_OPTION_REFUSED + 1),
+            Some(Duration::from_secs(1)),
+        );
+        assert!(
+            other.is_err(),
+            "a socket failure besides the peer-closed one was passed over"
+        );
+        done.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    /// A stream whose every socket-option call fails with the OS error it holds.
+    struct Refusing(i32);
+
+    impl Read for Refusing {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Refusing {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl UpgradeStream for Refusing {
+        fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+            Err(io::Error::from_raw_os_error(self.0))
+        }
+
+        fn into_local(self) -> LocalStream {
+            unreachable!("never upgraded")
+        }
     }
 
     #[test]

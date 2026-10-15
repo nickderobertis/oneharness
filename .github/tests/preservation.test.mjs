@@ -54,10 +54,14 @@ function* scenarios(workflow) {
   }
 }
 function context(workflow, job, scenario, matrix = {}, proof = {}) {
-  const needs = Object.fromEntries(dependencies(job).map(id => [id, {
-    result: scenario.outcomes?.[id]?.result ?? "success",
-    outputs: { enabled: "true", needs_check: "false", macos_required: String(scenario.macosRequired), is_release_only: "false" },
-  }]));
+  // A producer that did not succeed exposes its declared outputs unwritten,
+  // matching resolveJobs, so a failed prerequisite's lane resolves the same here.
+  const needs = Object.fromEntries(dependencies(job).map(id => {
+    const result = scenario.outcomes?.[id]?.result ?? "success";
+    return [id, { result, outputs: result === "success"
+      ? { enabled: "true", needs_check: "false", macos_required: String(scenario.macosRequired), is_release_only: "false" }
+      : Object.fromEntries(Object.keys(workflow.jobs[id]?.outputs ?? {}).map(key => [key, ""])) }];
+  }));
   return {
     github: { event_name: scenario.event, repository: "nickderobertis/oneharness", ref: `refs/heads/${scenario.branch}`,
       event: { pull_request: { head: { repo: { full_name: scenario.fork ? "fork/repo" : "nickderobertis/oneharness" } } } } },

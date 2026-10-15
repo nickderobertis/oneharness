@@ -388,8 +388,31 @@ test("workflow boundaries and producer outcomes refuse unproven outputs", () => 
   for (const bad of [null, [], {}, {on: "push", jobs: {job: {"runs-on": "ubuntu-latest", steps: [{run:42}]}}}, {on: "push", jobs: {job: {"runs-on":"ubuntu-latest",strategy:{matrix:{include:[42]}}}}}, {on: {pull_request: {paths: [3]}}, jobs: {job: {"runs-on": "ubuntu-latest"}}}])
     assert.throws(() => validateWorkflow(bad, "bad.yml"), /Invalid/);
   const scenario = {event: "pull_request", branch: "main", macosRequired: true};
+  const checks = (outcome, graph = all) => resolveJobs("ci.yml", {...scenario, outcomes: {"macos-policy": outcome}}, graph)
+    .filter(row => row.job === "check").map(row => [row.name, row.runner]);
+  // A policy that never wrote its decision routes Mac's check to the Linux
+  // carrier, whose routing guard refuses a non-success policy (carrier.test).
   for (const result of ["failure", "cancelled", "skipped"])
-    assert.throws(() => resolveJobs("ci.yml", {...scenario, outcomes: {"macos-policy": {result}}}, all), /Unresolved job output/);
+    assert.deepEqual(checks({result}), [["check (ubuntu-latest)", "ubuntu-latest"], ["check (macos-latest)", "ubuntu-latest"], ["check (windows-latest)", "windows-latest"]], result);
+  assert.equal(checks({result: "failure", outputs: {macos_required: "true"}})[1][1], "macos-latest", "a decision written before failing is read");
+  // Only declared outputs resolve, whatever the producer's outcome.
+  const undeclared = structuredClone(all);
+  undeclared["ci.yml"].jobs.check["runs-on"] = "${{ needs.macos-policy.outputs.undeclared == 'true' && 'macos-latest' || matrix.os }}";
+  for (const result of ["success", "failure", "cancelled", "skipped"])
+    assert.throws(() => checks({result}, undeclared), /Unresolved job output: needs\.macos-policy\.outputs\.undeclared/, result);
+  // The same holds for any job declaring step-produced outputs.
+  const producer = {"runs-on": "ubuntu-latest", outputs: {flag: "${{ steps.decide.outputs.flag }}"}, steps: [{id: "decide", run: "echo flag=true >>\"$GITHUB_OUTPUT\""}]};
+  const consumer = reference => ({needs: "producer", if: "always()", "runs-on": `\${{ needs.producer.outputs.${reference} == 'true' && 'macos-latest' || 'ubuntu-latest' }}`});
+  const synthetic = reference => ({"outputs.yml": {on: "push", jobs: {producer, consumer: consumer(reference)}}});
+  const push = {event: "push", branch: "main", paths: ["src/main.rs"]};
+  const routed = (reference, outcome) => resolveJobs("outputs.yml", {...push, outcomes: {producer: outcome}}, synthetic(reference)).find(row => row.job === "consumer").runner;
+  assert.equal(routed("flag", {result: "success", outputs: {flag: "true"}}), "macos-latest");
+  for (const result of ["failure", "cancelled", "skipped"]) {
+    assert.equal(routed("flag", {result}), "ubuntu-latest", result);
+    assert.throws(() => routed("missing", {result}), /Unresolved job output: needs\.producer\.outputs\.missing/, result);
+  }
+  assert.throws(() => routed("missing", {result: "success", outputs: {flag: "true"}}), /Unresolved job output: needs\.producer\.outputs\.missing/);
+  assert.throws(() => routed("flag", {result: "success"}), /Unresolved producer output outputs\.yml\/producer\/flag/);
   const forged = structuredClone(all);
   forged["ci.yml"].jobs["macos-policy"].outputs.unproven = "${{ steps.any.outputs.unproven }}";
   assert.throws(() => resolveJobs("ci.yml", scenario, forged), /Unresolved producer output/);

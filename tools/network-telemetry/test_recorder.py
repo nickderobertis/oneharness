@@ -769,6 +769,36 @@ class Unwritable(unittest.TestCase):
                 else:
                     self.assertFalse(file.exists(), "a start line was written with no marker")
 
+    def test_a_refused_start_line_whose_marker_cannot_be_removed_says_how_to_recover(
+        self,
+    ) -> None:
+        # The line cannot be appended and the marker it already made cannot be
+        # removed (an `rm` first on PATH that fails): the refusal names the
+        # marker the budget step would wait on, and how to clear it.
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        real = tmp / "real"
+        real.write_text(f'#!/usr/bin/env bash\ntouch "{ran}"\n')
+        real.chmod(0o755)
+        failing = tmp / "failing-rm"
+        failing.mkdir()
+        (failing / "rm").write_text("#!/usr/bin/env bash\nexit 1\n")
+        (failing / "rm").chmod(0o755)
+        file = tmp / "codex.jsonl"
+        file.mkdir()
+        run = run_shim(
+            tmp,
+            [str(real)],
+            ["exec", "x"],
+            file=file,
+            env={"PATH": f"{failing}{os.pathsep}{os.environ['PATH']}"},
+        )
+        self.assertEqual(run.returncode, 126, run.stderr)
+        (marker,) = (tmp / ".pending").glob("*")
+        self.assertIn(f"nor remove its pending marker {marker}".encode(), run.stderr)
+        self.assertIn(b"remove the marker, then rerun", run.stderr)
+        self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
+
 
 class LostResult(unittest.TestCase):
     def test_a_namespace_that_ran_the_launch_but_left_no_result_records_it_unmeasured(self) -> None:

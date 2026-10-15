@@ -2346,7 +2346,12 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         `initialize`; `never-listen` stays alive and never
 ///                         binds; `stall-upgrade`
 ///                         reads a connection's upgrade request and never
-///                         answers it.
+///                         answers it; `inheritable-connections` hands every
+///                         command the server's end of the connection that
+///                         started its turn (as its stdin), as Darwin leaves a
+///                         command started while another thread was accepting
+///                         a connection holding that one — its `accept` cannot
+///                         set close-on-exec atomically.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
@@ -2362,7 +2367,7 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// MOCK_CODEX_TICK_MS (with MOCK_CODEX_HOLD_UNTIL, an agent message this often
 /// while the held turn is live),
 /// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection as its
-/// approval request goes out),
+/// approval request goes out, and end it once the request is sent),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
 /// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
@@ -2391,9 +2396,9 @@ mod listen_server {
         /// the frames received before it did.
         log: Option<std::fs::File>,
         unlogged: Vec<String>,
-        /// Kept open after its reads stopped, so a client's write onto it is
-        /// refused rather than its read seeing the end first.
-        held: bool,
+        /// Ended by the server as soon as the request in hand is handled:
+        /// its serving thread then closes it before anything else.
+        ending: bool,
     }
 
     #[derive(Clone, Default)]
@@ -2951,7 +2956,7 @@ mod listen_server {
                     record,
                     log: None,
                     unlogged: Vec::new(),
-                    held: false,
+                    ending: false,
                 },
             );
             s.save();
@@ -2967,7 +2972,7 @@ mod listen_server {
                 .write_all(&[0x89, 0x01, b'p']);
         }
         let mut held: Vec<Vec<u8>> = Vec::new();
-        while let Some(message) = read_message(&mut reader) {
+        'serve: while let Some(message) = read_message(&mut reader) {
             let ready = match message {
                 None => {
                     awaiting_pong = false;
@@ -2986,17 +2991,19 @@ mod listen_server {
                 };
                 hold(server, &frame);
                 handle(server, conn, &text, &frame);
+                if lock(server).conns.get(&conn).is_some_and(|c| c.ending) {
+                    break 'serve;
+                }
             }
         }
-        if lock(server).conns.get(&conn).is_some_and(|c| c.held) {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(3600));
-            }
-        }
-        // The client is gone. Like Codex, its threads stay loaded and their
-        // turns and commands keep running; only its subscriptions go.
+        // The client is gone, or the server ended its connection, which is
+        // closed here before anything else. Like Codex, its threads stay
+        // loaded and their turns and commands keep running; only its
+        // subscriptions go.
         let mut s = lock(server);
         s.conns.remove(&conn);
+        drop(writer);
+        drop(reader);
         for thread in s.threads.values_mut() {
             thread.subscribers.remove(&conn);
         }
@@ -3690,11 +3697,17 @@ mod listen_server {
                     json!({"request": request, "thread": thread_id, "owner": conn, "answers": []}),
                 );
                 // MOCK_CODEX_SHUT_READ_ON_APPROVAL: stop reading this
-                // connection before the request goes out, so the client's
-                // answer is always a write onto a connection that is gone.
-                if knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some() {
-                    if let Some(c) = s.conns.get_mut(&conn) {
-                        c.held = true;
+                // connection before the request goes out and end it as soon
+                // as the request is sent, so the client's answer is a write
+                // onto a connection that is gone. Both halves are needed:
+                // Linux refuses a write to a peer that shut its reading, but
+                // Darwin accepts it and discards the bytes, so only the ended
+                // connection refuses it there — and a connection kept open
+                // after its reads stopped would leave the client waiting on
+                // its turn forever.
+                let shut = knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some();
+                if shut {
+                    if let Some(c) = s.conns.get(&conn) {
                         let _ = c
                             .writer
                             .lock()
@@ -3705,6 +3718,11 @@ mod listen_server {
                 s.emit(&thread_id, &json!({"jsonrpc": "2.0", "id": request,
                     "method": "item/commandExecution/requestApproval",
                     "params": {"threadId": thread_id, "turnId": turn, "itemId": format!("{turn}-command"), "command": command}}));
+                if let Some(c) = s.conns.get_mut(&conn).filter(|_| shut) {
+                    c.ending = true;
+                    // Saved once the connection is closed, not before.
+                    return;
+                }
                 s.save();
                 return;
             }
@@ -3824,6 +3842,24 @@ mod listen_server {
         if s.fault == "escape-marker" {
             env.remove("ONEHARNESS_DISPATCH_MARKER");
         }
+        // inheritable-connections: the command holds the server's end of its
+        // thread's connection.
+        let stdin = s
+            .threads
+            .get(thread_id)
+            .filter(|_| s.fault == "inheritable-connections")
+            .and_then(|thread| thread.subscribers.iter().next())
+            .and_then(|conn| s.conns.get(conn))
+            .and_then(|c| {
+                c.writer
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .try_clone()
+                    .ok()
+            })
+            .map_or_else(std::process::Stdio::null, |held| {
+                std::process::Stdio::from(std::os::fd::OwnedFd::from(held))
+            });
         use std::os::unix::process::CommandExt;
         let child = std::process::Command::new("sh")
             .args(["-c", command])
@@ -3831,7 +3867,7 @@ mod listen_server {
             .envs(&env)
             .current_dir(cwd)
             .process_group(0)
-            .stdin(std::process::Stdio::null())
+            .stdin(stdin)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();

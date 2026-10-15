@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
 use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::server_pool::{
-    LeaseHolder, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
+    pid_alive, LeaseHolder, Pid, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
 };
 use serde_json::{json, Value};
 
@@ -67,18 +67,41 @@ fn wait_for(label: &str, limit: Duration, mut condition: impl FnMut() -> bool) {
     panic!("timed out after {limit:?} waiting for {label}");
 }
 
-/// Whether `pid` names a live process (a zombie counts as gone).
+/// Whether `pid` names a running process, by the pool's own reading — a
+/// zombie counts as gone on every platform, as it does to the pool.
 fn alive(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or_else(
-        // Not Linux: ask the kernel; a reaped process answers ESRCH.
-        // SAFETY: plain integers; signal 0 delivers nothing.
-        |_| unsafe { libc::kill(pid as libc::pid_t, 0) == 0 },
-        |stat| {
-            stat.rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().next())
-                .is_some_and(|state| state != "Z")
-        },
-    )
+    Pid::new(pid).is_ok_and(pid_alive)
+}
+
+/// Read `pipe` to its end on a thread of its own; the receiver gets the bytes
+/// once the last writer has closed it.
+fn read_to_end(
+    mut pipe: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (sender, ends) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        let _ = sender.send(bytes);
+    });
+    ends
+}
+
+/// Wait up to `limit` for `child` to exit; past it, kill it and fail the
+/// journey with `label`, so a dispatch that never ends fails here by name.
+fn exits_within(child: &mut Child, limit: Duration, label: &str) -> std::process::ExitStatus {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            sigkill(child.id());
+            let _ = child.wait();
+            panic!("{label}: still running after {limit:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn sigkill(pid: u32) {
@@ -2222,6 +2245,80 @@ fn a_shared_server_holds_none_of_its_starting_dispatch_s_output_open() {
     assert!(left.is_empty(), "still running: {left:?}");
 }
 
+/// The contract a caller of the shared server can rely on when it ends without
+/// warning. A dispatch holding its standard output and error at descriptors 3
+/// and 4 as well — not close-on-exec, as a launcher that passed them on leaves
+/// them — starts the shared server and its sweeper, runs a command on it, and
+/// is SIGKILLed mid-turn. Its caller's pipes reach end-of-file with it: the
+/// server and the sweeper hold neither. The sweeper then finds the dead lease
+/// and stops the command, the server lingers out and is stopped, the sweeper
+/// ends, and no process this journey started is left running.
+#[test]
+fn a_killed_caller_s_output_ends_with_it_and_nothing_it_started_outlives_the_journey() {
+    use std::os::unix::process::CommandExt;
+    let pool = Pool::new("pool-killed-caller");
+    let beat = pool.file("heartbeat");
+    let never = pool.file("never");
+    let mut cmd = pool.command(
+        "killed-caller",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    );
+    // SAFETY: the hook runs in the forked child before exec, after its
+    // standard streams are in place, and calls only `dup2`, which is
+    // async-signal-safe; the copies it makes are not close-on-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::dup2(1, 3) == -1 || libc::dup2(2, 4) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut caller = pool.spawn(cmd);
+    let stdout = read_to_end(caller.stdout.take().unwrap());
+    let stderr = read_to_end(caller.stderr.take().unwrap());
+    let server = pool.await_live_turns(1);
+    wait_for("the heartbeat to start", Duration::from_secs(10), || {
+        lines(&beat) >= 3
+    });
+    let command = command_running(&pool, server, &beat)["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    let (_, sweeper) = entry_and_sweeper(&pool);
+
+    sigkill(caller.id());
+    caller.wait().unwrap();
+    let bound = Duration::from_secs(2);
+    stdout
+        .recv_timeout(bound)
+        .expect("the killed caller's standard output is held open past its end");
+    stderr
+        .recv_timeout(bound)
+        .expect("the killed caller's standard error is held open past its end");
+    assert!(
+        alive(server) && alive(sweeper),
+        "the shared server and its sweeper did not outlive the caller, so nothing was proven"
+    );
+
+    let retire = DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE;
+    wait_for("the dead caller's command to stop", retire * 3, || {
+        !alive(command)
+    });
+    let stop = Duration::from_millis(LINGER_MS) + retire + Duration::from_secs(10);
+    wait_for("the lingered-out server to stop", stop, || !alive(server));
+    wait_for("its sweeper to end", stop, || !alive(sweeper));
+    let left: Vec<u32> = [caller.id(), server, sweeper, command]
+        .into_iter()
+        .chain(pool.server_pids())
+        .filter(|pid| alive(*pid))
+        .collect();
+    assert!(left.is_empty(), "still running: {left:?}");
+}
+
 /// A shell turn that completes before the server replies to the request that
 /// ran it still completes: the reuse workload runs to its end.
 #[cfg(target_os = "linux")]
@@ -4042,12 +4139,20 @@ fn a_server_that_dies_at_start_is_started_once_more() {
 
 /// A connection that refuses the dispatch's write while its turn runs — here,
 /// the answer to an approval request onto a connection the server stopped
-/// reading — is the shared server lost under the turn: `app_server_lost`.
+/// reading and ended — is the shared server lost under the turn:
+/// `app_server_lost`, within a bound, on every kernel.
+///
+/// Linux refuses the answer however it races the end, since the server shut
+/// its reading first. Darwin accepts a write to a peer that shut its reading
+/// and discards it, so there the answer is refused only once the connection
+/// has ended; one written in the moment between the request and the end is
+/// discarded, and the end that follows is read instead. Either is the loss
+/// of the server under the turn, and neither leaves the dispatch waiting.
 #[test]
 fn a_write_refused_under_a_live_turn_is_app_server_lost() {
     let pool = Pool::new("pool-write-lost");
     let never = pool.file("never");
-    let (output, report) = pool.run(pool.command(
+    let mut child = pool.spawn(pool.command(
         "write-lost",
         &["--mode", "bypass"],
         &[
@@ -4057,6 +4162,12 @@ fn a_write_refused_under_a_live_turn_is_app_server_lost() {
             ("MOCK_CODEX_HOLD_UNTIL", &never),
         ],
     ));
+    exits_within(
+        &mut child,
+        Duration::from_secs(30),
+        "the dispatch whose connection refused its write",
+    );
+    let (output, report) = Pool::finish(child);
     let lost = result(&report);
     assert_eq!(
         lost["status"],
@@ -4065,11 +4176,74 @@ fn a_write_refused_under_a_live_turn_is_app_server_lost() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
+    let error = lost["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("refused a write") || error.contains("went away while the turn was running"),
+        "the loss was not read off the ended connection: {lost}"
+    );
+}
+
+/// A shared server killed while a command it started holds the server's end
+/// of the dispatch's connection is still lost under the turn: the dispatch
+/// reads no end-of-file — the command keeps the connection open — so it learns
+/// of the loss from the server itself, then stops the command, and nothing is
+/// left running. On macOS a command holds a connection this way whenever the
+/// server started it while another thread was accepting one;
+/// `inheritable-connections` stages that on every platform.
+#[test]
+fn a_shared_server_killed_while_its_command_holds_the_connection_is_lost_within_a_bound() {
+    let pool = Pool::new("pool-held-conn").with_env("CODEX_MOCK_FAULT", "inheritable-connections");
+    let beat = pool.file("heartbeat");
+    let never = pool.file("never");
+    let mut dispatch = pool.spawn(pool.command(
+        "held-conn",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let server = pool.await_live_turns(1);
+    wait_for("the heartbeat to start", Duration::from_secs(10), || {
+        lines(&beat) >= 3
+    });
+    let command = command_running(&pool, server, &beat)["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    sigkill(server);
+    let stdout = read_to_end(dispatch.stdout.take().unwrap());
+    let stderr = read_to_end(dispatch.stderr.take().unwrap());
+    let status = exits_within(
+        &mut dispatch,
+        DEAD_LEASE_STOP_DEADLINE * 3,
+        "the dispatch whose server died under a command holding its connection",
+    );
+    let bound = Duration::from_secs(2);
+    let output = Output {
+        status,
+        stdout: stdout
+            .recv_timeout(bound)
+            .expect("the dispatch's output ended"),
+        stderr: stderr
+            .recv_timeout(bound)
+            .expect("the dispatch's errors ended"),
+    };
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "no JSON report ({err}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let lost = result(&report);
+    assert_eq!(lost["status"], "nonzero", "{lost}");
+    assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
     assert!(
         lost["error"]
             .as_str()
-            .unwrap_or_default()
-            .contains("refused a write"),
-        "the loss was not read off the refused write: {lost}"
+            .is_some_and(|error| error.contains(&format!("(pid {server}) exited"))),
+        "the loss was not read off the server's own exit: {lost}"
     );
+    wait_for("the command holding the connection to stop", bound, || {
+        !alive(command)
+    });
 }

@@ -976,18 +976,24 @@ fn close_above_stdio_on_exec(open_max: libc::c_int) {
     }
 }
 
-/// Whether the OS still knows `pid`. This is the pool's whole correctness
+/// Whether `pid` is still running. This is the pool's whole correctness
 /// argument, so it asks the kernel rather than trusting any bookkeeping.
+///
+/// A zombie is not running. It still answers signal 0 on every Unix, and it
+/// stays one for as long as its parent lives without waiting on it — a shared
+/// server is the child of whichever dispatch started it, and that dispatch
+/// waits on nothing while its turn runs. Counted as alive, a dead server would
+/// never be stopped by marker, so a command it started that kept a client's
+/// connection open would hold that client waiting for end-of-file forever.
 #[must_use]
 pub fn pid_alive(pid: Pid) -> bool {
     let pid = pid.get();
     #[cfg(unix)]
     {
         // Signal 0 performs the existence/permission check without delivering.
-        // A zombie still answers, but a zombie server is reaped by its parent's
-        // exit, so treating it as alive only defers reclamation by one sweep.
         // SAFETY: `kill` takes plain integers and signal 0 delivers nothing.
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+        let known = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        known && !is_zombie(pid)
     }
     #[cfg(windows)]
     {
@@ -1006,6 +1012,50 @@ pub fn pid_alive(pid: Pid) -> bool {
         }
     }
     #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Whether `pid` has exited and is waiting to be reaped, as the kernel reports
+/// its state: `Z` in `/proc/<pid>/stat` on Linux, `SZOMB` in `proc_pidinfo`'s
+/// BSD info on macOS (which answers for a zombie). A state that cannot be read
+/// is not a zombie: the caller's signal 0 has already said the pid exists.
+#[cfg(unix)]
+fn is_zombie(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|state| matches!(state, "Z" | "X"))
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // <sys/proc.h>'s `SZOMB`, the `p_stat` of a process awaiting collection.
+        const SZOMB: u32 = 5;
+        let Ok(pid) = libc::c_int::try_from(pid) else {
+            return false;
+        };
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is writable for `size` bytes, the size of the
+        // structure PROC_PIDTBSDINFO fills.
+        let filled = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        // SAFETY: the kernel filled all `size` bytes of the structure.
+        filled == size && unsafe { info.assume_init() }.pbi_status == SZOMB
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         false

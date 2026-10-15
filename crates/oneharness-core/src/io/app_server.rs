@@ -1102,6 +1102,21 @@ pub(crate) fn run_pooled_turn(
             }
             let text = match connection.reader.receive() {
                 Ok(Incoming::Text(text)) => text,
+                // A server that died is not always a connection that closed:
+                // a process it started can hold the server's end open. On
+                // macOS one does whenever the server started it while another
+                // of its threads was accepting a connection — Darwin has no
+                // atomic close-on-exec `accept` — and nothing then ever reads
+                // end-of-file. So a quiet connection asks after the server.
+                Ok(Incoming::Idle) if !lease.record().is_running() => {
+                    break lost_or_failed(
+                        handle,
+                        format!(
+                            "the shared codex app-server (pid {}) exited",
+                            lease.record().pid.get()
+                        ),
+                    )
+                }
                 Ok(Incoming::Idle) => continue,
                 Ok(Incoming::Closed) => {
                     break lost_or_failed(

@@ -396,7 +396,13 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   are the dispatch's own `MOCK_*`, read off `shell_environment_policy.set`; a
   journey scripting the stdio mock app-server runs under `per-dispatch`
   (`codex_per_dispatch` in `tests/cli.rs`). Its journeys:
-  `crates/oneharness-e2e/tests/app_server.rs`.
+  `crates/oneharness-e2e/tests/app_server.rs`. Anything that outlives its
+  dispatch spawns through `io::server_pool::detach`, which also marks every
+  descriptor above stderr close-on-exec: on macOS `std` marks a new pipe or
+  socket close-on-exec only after creating it, so a detached child otherwise
+  keeps whatever it caught open — a caller's output pipe held this way hung
+  CI for six hours. And on Darwin, `setsockopt` on a socket whose peer closed
+  fails with EINVAL (`io::websocket::bound_reads`).
 
 ## Adding or changing a harness
 

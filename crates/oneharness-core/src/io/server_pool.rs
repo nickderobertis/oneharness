@@ -894,25 +894,87 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
     }
 }
 
+/// Start `command` detached from the caller: in a session of its own, holding
+/// no descriptor but the three standard ones it was given.
+///
+/// Its own session/process group, so terminating the dispatch's tree does not
+/// take the shared process down with it. No other descriptor, because a
+/// detached process outlives its caller: anything it inherits stays open as
+/// long as it runs. A caller's descriptors are not all close-on-exec — a
+/// launcher that passed its own output on at another number, or, on macOS,
+/// a pipe or socket another thread had just made (`std` marks those
+/// close-on-exec only after creating them) — and a shared server holding one
+/// end of a caller's output pipe keeps whoever reads that pipe from ever
+/// seeing end-of-file.
 #[cfg(unix)]
-fn detach(command: &mut std::process::Command) {
+pub(crate) fn detach(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
-    // Its own session/process group, so terminating the dispatch's tree does
-    // not take the shared server down with it.
+    // Read before the fork: `getrlimit` is not async-signal-safe.
+    let open_max = descriptor_bound();
     // SAFETY: the hook runs in the forked child before exec and calls only
-    // `setsid`, which is async-signal-safe, and allocates nothing.
+    // `setsid`, `syscall(close_range)` and `fcntl`, which are
+    // async-signal-safe, and allocates nothing.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
+            close_above_stdio_on_exec(open_max);
             Ok(())
         });
     }
 }
 
 #[cfg(not(unix))]
-fn detach(_command: &mut std::process::Command) {}
+pub(crate) fn detach(_command: &mut std::process::Command) {}
+
+/// One past the highest descriptor number this process may hold, capped so a
+/// limit reported as unbounded does not cost a spawn millions of calls.
+#[cfg(unix)]
+fn descriptor_bound() -> libc::c_int {
+    const CAP: libc::rlim_t = 1 << 20;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a live, writable `rlimit` for the call.
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0;
+    let bound = if read && limit.rlim_cur != libc::RLIM_INFINITY {
+        limit.rlim_cur.min(CAP)
+    } else {
+        CAP
+    };
+    libc::c_int::try_from(bound).unwrap_or(libc::c_int::MAX)
+}
+
+/// Mark every descriptor above standard error close-on-exec, in a forked
+/// child about to exec. `std`'s own exec-error pipe is close-on-exec already.
+#[cfg(unix)]
+fn close_above_stdio_on_exec(open_max: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: plain integer arguments; a kernel without `close_range`
+        // (before 5.11 for this flag) fails it, and the loop below runs.
+        let marked = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if marked == 0 {
+            return;
+        }
+    }
+    for fd in 3..open_max {
+        // SAFETY: plain integers; a number naming no open descriptor fails
+        // with EBADF, which is ignored.
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+}
 
 /// Whether the OS still knows `pid`. This is the pool's whole correctness
 /// argument, so it asks the kernel rather than trusting any bookkeeping.

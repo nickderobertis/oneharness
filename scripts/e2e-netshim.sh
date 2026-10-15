@@ -148,6 +148,11 @@ start="$(jq -nc --arg suite "$suite" --arg phase "$phase" --arg harness "$harnes
   --arg kind "$kind" --arg id "$launch_id" --argjson argv "$argv" \
   '{suite: $suite, phase: $phase, harness: $harness, kind: $kind, launch_id: $id, argv: $argv}' |
   tr -d '\r')" || die "jq could not write the start line; install jq (the live suites need it) and rerun"
+# From here a stop must not end the launch between its start line and the
+# measurer's handlers: ignored, it is either dropped (and the launch runs and is
+# recorded) or held by e2e-netmeasure.py's defer_stops. The fallback below
+# replaces this with its own handler.
+trap '' TERM INT HUP
 printf '%s\n' "$start" >>"$file" || die "cannot append to $file; check that its directory is writable"
 # Marks the launch as still being measured until its line is in, so the
 # budget step waits for a namespace still winding down.

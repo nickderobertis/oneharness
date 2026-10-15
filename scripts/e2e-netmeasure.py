@@ -569,6 +569,22 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
     return Outcome(Ending.EXITED, code=137)
 
 
+# The stops a caller sent while the launch's own signal handling was not yet in
+# place. The shim ignores TERM/INT/HUP from its `start` line until `defer_stops`
+# replaces that here, before anything is spawned (an inherited ignore would
+# reach the launch): a stop sent while the shim or this interpreter is still
+# starting would otherwise end the launch with a `start` and no line. One sent
+# before the replacement is dropped, so the launch runs and is recorded; one
+# sent after it is held here and delivered once the handlers below exist.
+DEFERRED_STOPS: list[int] = []
+STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+
+def defer_stops() -> None:
+    for signum in STOPS:
+        signal.signal(signum, lambda n, _f: DEFERRED_STOPS.append(n))
+
+
 def run_direct(args: argparse.Namespace, reason: str) -> int:
     """Run the launch without the namespace and record why it was not measured."""
     t0 = time.monotonic()
@@ -583,8 +599,10 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
             file=sys.stderr,
         )
         return 127
-    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    for signum in STOPS:
         signal.signal(signum, lambda n, _f: launch.send_signal(n))
+    for signum in DEFERRED_STOPS:
+        launch.send_signal(signum)
     code = launch.wait()
     code = 128 - code if code < 0 else code
     append_line(
@@ -647,8 +665,10 @@ def measure(args: argparse.Namespace) -> int:
         except OSError:
             pass
 
-    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    for signum in STOPS:
         signal.signal(signum, let_go)
+    if DEFERRED_STOPS:
+        let_go()
     message = b""
     while True:
         try:
@@ -691,6 +711,7 @@ def main(argv: list[str]) -> int:
         return namespace_init(Path(args.init), deadline_seconds(), args.argv)
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
+    defer_stops()
     # Refuse a bad value before anything runs, not inside the namespace.
     deadline_seconds()
     observer_argv()

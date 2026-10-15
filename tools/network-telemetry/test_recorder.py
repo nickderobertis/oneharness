@@ -918,6 +918,66 @@ class Fallback(unittest.TestCase):
         self.assertEqual(len(measurements(records, start["launch_id"])), 1)
 
 
+@unittest.skipUnless(sys.platform.startswith("linux"), "the measurer the shim execs runs on Linux")
+class StoppedWhileStarting(unittest.TestCase):
+    def test_a_stop_before_the_measurer_is_ready_still_leaves_the_launch_one_line(self) -> None:
+        # A suite stopped by its caller signals the whole group; one that
+        # lands after the shim's start line but before the measurer can
+        # handle it must not leave that start without a line. A python3
+        # first on PATH holds the shim in that window long enough to aim at.
+        tmp = scratch(self)
+        python = subprocess.run(
+            ["bash", "-c", "command -v python3"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        reached = tmp / "reached"
+        slow = tmp / "slow-python"
+        slow.mkdir()
+        (slow / "python3").write_text(
+            f'#!/usr/bin/env bash\n: >"{reached}"\nsleep 1\nexec "{python}" "$@"\n'
+        )
+        (slow / "python3").chmod(0o755)
+        real = tmp / "echo-double"
+        real.write_text("#!/usr/bin/env bash\ncat\nexit 5\n")
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "PATH": f"{slow}{os.pathsep}{os.environ['PATH']}"},
+            start_new_session=True,
+        )
+        for _ in range(300):
+            if reached.exists():
+                break
+            time.sleep(0.05)
+        self.assertTrue(reached.exists(), "the shim never reached its measurer")
+        os.killpg(shim.pid, signal.SIGTERM)
+        self.assertEqual(shim.wait(timeout=60), 5)
+        records = lines(file)
+        (start,) = starts(records)
+        (line,) = measurements(records, start["launch_id"])
+        self.assertEqual(line["exit"], 5, line)
+        self.assertEqual(list((tmp / ".pending").glob("*")), [], "a pending marker was left")
+
+
 class Refusal(unittest.TestCase):
     def test_the_shim_refuses_to_wrap_itself_or_another_shim(self) -> None:
         tmp = scratch(self)

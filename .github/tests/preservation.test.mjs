@@ -54,10 +54,14 @@ function* scenarios(workflow) {
   }
 }
 function context(workflow, job, scenario, matrix = {}, proof = {}) {
-  const needs = Object.fromEntries(dependencies(job).map(id => [id, {
-    result: scenario.outcomes?.[id]?.result ?? "success",
-    outputs: scenario.outcomes?.[id]?.outputs ?? { enabled: "true", needs_check: "false", macos_required: String(scenario.macosRequired), is_release_only: "false" },
-  }]));
+  // A producer that did not succeed exposes its declared outputs unwritten,
+  // matching resolveJobs, so a failed prerequisite's lane resolves the same here.
+  const needs = Object.fromEntries(dependencies(job).map(id => {
+    const result = scenario.outcomes?.[id]?.result ?? "success";
+    return [id, { result, outputs: result === "success"
+      ? { enabled: "true", needs_check: "false", macos_required: String(scenario.macosRequired), is_release_only: "false" }
+      : Object.fromEntries(Object.keys(workflow.jobs[id]?.outputs ?? {}).map(key => [key, ""])) }];
+  }));
   return {
     github: { event_name: scenario.event, repository: "nickderobertis/oneharness", ref: `refs/heads/${scenario.branch}`,
       event: { pull_request: { head: { repo: { full_name: scenario.fork ? "fork/repo" : "nickderobertis/oneharness" } } } } },
@@ -162,11 +166,7 @@ function compare(before, after) {
       // conditions. An aggregate cannot silently stop observing a failed leg.
       const prerequisites = new Set(Object.values(oldWorkflow.jobs).flatMap(dependencies));
       for (const prerequisite of prerequisites) for (const result of ["failure", "cancelled"]) {
-        // The failed prerequisite set none of its outputs; a consumer that
-        // still runs (`if: always()`) reads each as GitHub does, as ''.
-        const declared = { ...oldWorkflow.jobs[prerequisite]?.outputs, ...newWorkflow.jobs[prerequisite]?.outputs };
-        const unset = Object.fromEntries(Object.keys(declared).map(key => [key, ""]));
-        const failed = { ...scenario, outcomes: { [prerequisite]: { result, outputs: unset } } };
+        const failed = { ...scenario, outcomes: { [prerequisite]: { result } } };
         const oldRows = new Set(retained(resolveJobs(file, failed, before, [], scenario.input)).map(laneKey));
         const newRows = new Set(retained(resolveJobs(file, failed, after, [], scenario.input)).map(laneKey));
         for (const row of originalRows) assert.equal(newRows.has(laneKey(row)), oldRows.has(laneKey(row)), `${file}/${row.name}: changed prerequisite ${prerequisite}/${result} propagation`);

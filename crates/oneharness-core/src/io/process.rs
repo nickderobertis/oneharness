@@ -99,10 +99,11 @@ impl Process {
     /// [`Process::spawn`] for a child that must not outlive this process,
     /// however this process ends — SIGKILLed included, when no deadline it
     /// holds will ever fire. On Unix the child joins the process group of a
-    /// guard that holds the read end of a pipe only this process writes: once
-    /// every writer is gone the guard reads end-of-file and SIGKILLs its group,
-    /// the child and its descendants with it. Neither inherits a descriptor
-    /// above standard error, so neither holds this process's output. On
+    /// guard, a fork of this process that watches its own parent pid: once
+    /// this process is gone the guard is reparented, and it SIGKILLs its
+    /// group, the child and its descendants with it. The guard holds no
+    /// descriptor and the child none above standard error, so neither holds
+    /// this process's output. On
     /// Windows the Job Object every spawn joins already kills the tree when
     /// its last handle, this process's, closes.
     pub(crate) fn spawn_tethered(mut command: Command) -> io::Result<Self> {
@@ -829,8 +830,8 @@ mod platform {
         pub(super) fn prepare_tethered(command: &mut Command) -> io::Result<Self> {
             let tether = Tether::start()?;
             let group = tether.group();
-            // SAFETY: as in `prepare`; the guard leads `group` and is alive,
-            // blocked on its lifeline, until `tether` is dropped.
+            // SAFETY: as in `prepare`; the guard leads `group` and stays
+            // alive, polling for its caller's end, until `tether` is dropped.
             unsafe {
                 command.pre_exec(move || {
                     if libc::setpgid(0, group) == -1 {

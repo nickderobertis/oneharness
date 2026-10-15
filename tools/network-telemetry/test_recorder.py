@@ -308,7 +308,27 @@ class EarlyStop(unittest.TestCase):
     gets exactly one measurement line and leaves no pending marker; one stopped
     earlier records nothing at all."""
 
-    @unittest.skipIf(WINDOWS, "process groups and their signals are POSIX")
+    # Each launch in a process group of its own (bash job control), stopped
+    # by SIGTERM to that group from bash's own `kill`: what a suite's runner
+    # does, and on every platform the shim runs on — Git Bash delivers it to
+    # its own processes on Windows.
+    DRIVER = """set -m
+shim=$1 real=$2 self=$3 file=$4
+shift 4
+pids=()
+for delay in "$@"; do
+  "$BASH" "$shim" --suite codex --harness codex --real "$real" --self "$self" \\
+    --file "$file" -- exec x </dev/null >/dev/null 2>&1 &
+  pid=$!
+  sleep "$delay"
+  kill -TERM -- "-$pid" 2>/dev/null || true
+  pids+=("$pid")
+done
+for pid in "${pids[@]}"; do
+  wait "$pid" || true
+done
+"""
+
     def test_a_stop_at_any_moment_of_the_recorders_start_leaves_each_start_line_one_line(
         self,
     ) -> None:
@@ -319,38 +339,28 @@ class EarlyStop(unittest.TestCase):
         real.write_text("#!/usr/bin/env bash\nexec sleep 600\n")
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
-        shims = []
-        for step in range(30):
-            shim = subprocess.Popen(
-                [
-                    BASH,
-                    str(NETSHIM),
-                    "--suite",
-                    "codex",
-                    "--harness",
-                    "codex",
-                    "--real",
-                    str(real),
-                    "--self",
-                    str(tmp / "shims" / "codex"),
-                    "--file",
-                    str(file),
-                    "--",
-                    "exec",
-                    "x",
-                ],
-                start_new_session=True,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            # 0 to 145 ms: from the shim's first line to well past the
-            # recorder's interpreter start, staggered across the launches.
-            time.sleep(step * 0.005)
-            os.killpg(shim.pid, signal.SIGTERM)
-            shims.append(shim)
-        for shim in shims:
-            shim.wait(timeout=60)
+        # 0 to 145 ms: from the shim's first line to well past the recorder's
+        # interpreter start, staggered across the launches.
+        delays = [f"{step * 0.005:.3f}" for step in range(30)]
+        driver = subprocess.run(
+            [
+                BASH,
+                "-c",
+                self.DRIVER,
+                "driver",
+                str(NETSHIM),
+                str(real),
+                str(tmp / "shims" / "codex"),
+                str(file),
+                *delays,
+            ],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+        self.assertEqual(driver.returncode, 0, driver.stderr)
         pending = tmp / ".pending"
         deadline = time.monotonic() + 60
         while any(pending.glob("*")) and time.monotonic() < deadline:
@@ -704,10 +714,10 @@ class Unwritable(unittest.TestCase):
             list((tmp / ".pending").glob("*")), "the pending marker outlived the failure"
         )
 
-    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_a_start_line_or_marker_that_cannot_be_written_refuses_the_launch(self) -> None:
         # The recorder writes the marker, then the start line, before the
-        # launch; where either cannot be written it says which and why, and
+        # launch — the measuring recorder on Linux, the shim's own fallback
+        # elsewhere; where either cannot be written it says which and why, and
         # neither runs the launch nor leaves a marker the budget would wait on.
         for blocked, said in (("line", "cannot append to"), ("marker", "cannot create")):
             with self.subTest(blocked=blocked):
@@ -723,9 +733,7 @@ class Unwritable(unittest.TestCase):
                     file.mkdir()
                 else:
                     (tmp / ".pending").write_text("")
-                run = run_shim(
-                    tmp, [str(real)], ["exec", "x"], file=file, env={"OH_E2E_OS": "Linux"}
-                )
+                run = run_shim(tmp, [str(real)], ["exec", "x"], file=file)
                 self.assertNotEqual(run.returncode, 0, run.stderr)
                 self.assertIn(said.encode(), run.stderr)
                 self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")

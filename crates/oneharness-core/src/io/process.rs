@@ -96,6 +96,20 @@ impl Process {
         Self::spawn_supervised(command, None)
     }
 
+    /// [`Process::spawn`] for a child that must not outlive this process,
+    /// however this process ends — SIGKILLed included, when no deadline it
+    /// holds will ever fire. On Unix the child joins the process group of a
+    /// guard that holds the read end of a pipe only this process writes: once
+    /// every writer is gone the guard reads end-of-file and SIGKILLs its group,
+    /// the child and its descendants with it. Neither inherits a descriptor
+    /// above standard error, so neither holds this process's output. On
+    /// Windows the Job Object every spawn joins already kills the tree when
+    /// its last handle, this process's, closes.
+    pub(crate) fn spawn_tethered(mut command: Command) -> io::Result<Self> {
+        let tree = platform::Tree::prepare_tethered(&mut command)?;
+        Self::spawn_prepared(command, tree, None)
+    }
+
     /// [`Process::spawn`] with the caller's own claim on the child
     /// ([`ProcessSupervisor`]). `None` is byte for byte [`Process::spawn`].
     ///
@@ -111,7 +125,15 @@ impl Process {
         mut command: Command,
         supervisor: Option<&dyn ProcessSupervisor>,
     ) -> io::Result<Self> {
-        let mut tree = platform::Tree::prepare(&mut command)?;
+        let tree = platform::Tree::prepare(&mut command)?;
+        Self::spawn_prepared(command, tree, supervisor)
+    }
+
+    fn spawn_prepared(
+        mut command: Command,
+        mut tree: platform::Tree,
+        supervisor: Option<&dyn ProcessSupervisor>,
+    ) -> io::Result<Self> {
         if let Some(supervisor) = supervisor {
             supervisor.spawning(&mut command);
         }
@@ -374,17 +396,180 @@ mod tests {
     }
 }
 
+/// Mark every descriptor above standard error close-on-exec in `command`'s
+/// child, so it holds only the three standard ones it was given. A caller's
+/// descriptors are not all close-on-exec — a launcher that passed its own
+/// output on at another number, or, on macOS, a pipe or socket another thread
+/// had just made (`std` marks those close-on-exec only after creating them) —
+/// and a child that outlives its caller holding one end of the caller's output
+/// pipe keeps whoever reads that pipe from ever seeing end-of-file.
+#[cfg(unix)]
+pub(crate) fn close_inherited_on_exec(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // Read before the fork: `getrlimit` is not async-signal-safe.
+    let open_max = descriptor_bound();
+    // SAFETY: the hook runs in the forked child before exec and calls only
+    // `syscall(close_range)` and `fcntl`, which are async-signal-safe, and
+    // allocates nothing.
+    unsafe {
+        command.pre_exec(move || {
+            close_above_stdio_on_exec(open_max);
+            Ok(())
+        });
+    }
+}
+
+/// One past the highest descriptor number this process may hold, capped so a
+/// limit reported as unbounded does not cost a spawn millions of calls.
+#[cfg(unix)]
+fn descriptor_bound() -> libc::c_int {
+    const CAP: libc::rlim_t = 1 << 20;
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a live, writable `rlimit` for the call.
+    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0;
+    let bound = if read && limit.rlim_cur != libc::RLIM_INFINITY {
+        limit.rlim_cur.min(CAP)
+    } else {
+        CAP
+    };
+    libc::c_int::try_from(bound).unwrap_or(libc::c_int::MAX)
+}
+
+/// Mark every descriptor above standard error close-on-exec, in a forked
+/// child about to exec. `std`'s own exec-error pipe is close-on-exec already.
+#[cfg(unix)]
+fn close_above_stdio_on_exec(open_max: libc::c_int) {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: plain integer arguments; a kernel without `close_range`
+        // (before 5.11 for this flag) fails it, and the loop below runs.
+        let marked = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if marked == 0 {
+            return;
+        }
+    }
+    for fd in 3..open_max {
+        // SAFETY: plain integers; a number naming no open descriptor fails
+        // with EBADF, which is ignored.
+        unsafe {
+            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+}
+
 #[cfg(unix)]
 mod platform {
     use std::io;
+    #[cfg(not(target_os = "linux"))]
+    use std::os::fd::AsRawFd;
+    use std::os::fd::{FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
-    use std::process::{Child, Command};
+    use std::process::{Child, Command, Stdio};
     use std::time::Duration;
 
     use wait_timeout::ChildExt;
 
     pub(super) struct Tree {
         owned: Option<Owned>,
+        /// The guard whose group the child joins, for a tethered spawn.
+        tether: Option<Tether>,
+    }
+
+    /// The guard of a tethered spawn ([`super::Process::spawn_tethered`]): a
+    /// shell leading the child's process group, blocked reading a pipe whose
+    /// only writer is `lifeline`, held here. When this process ends, however it
+    /// ends, the kernel closes `lifeline`; the guard reads end-of-file and
+    /// SIGKILLs its group. While the guard is unreaped its pid, and so the
+    /// group's id, cannot be reused, so signalling the group never reaches a
+    /// stranger.
+    struct Tether {
+        guard: Child,
+        _lifeline: OwnedFd,
+    }
+
+    /// The guard's whole program: wait for the lifeline's end, then kill the
+    /// group. Nothing ever writes to the lifeline.
+    const GUARD: &str = "read -r _; kill -s KILL 0";
+
+    impl Tether {
+        fn start() -> io::Result<Self> {
+            let (read, lifeline) = cloexec_pipe()?;
+            let mut guard = Command::new("/bin/sh");
+            guard
+                .args(["-c", GUARD])
+                .env_clear()
+                .stdin(Stdio::from(read))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            // SAFETY: the hook runs in the forked child before exec and calls
+            // only async-signal-safe `setpgid`.
+            unsafe {
+                guard.pre_exec(|| {
+                    if libc::setpgid(0, 0) == -1 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            super::close_inherited_on_exec(&mut guard);
+            Ok(Self {
+                guard: guard.spawn()?,
+                _lifeline: lifeline,
+            })
+        }
+
+        fn group(&self) -> libc::pid_t {
+            // A pid always fits pid_t; `Child::id` widens it to u32.
+            self.guard.id() as libc::pid_t
+        }
+    }
+
+    impl Drop for Tether {
+        fn drop(&mut self) {
+            // The child is done with, or never started: end whatever is left
+            // in the group, the guard included, then reap the guard — only now,
+            // so until here the group's id stayed reserved.
+            signal_group(self.group(), libc::SIGKILL);
+            let _ = self.guard.wait();
+        }
+    }
+
+    /// A pipe whose two ends are close-on-exec, so no child inherits either.
+    /// Linux sets the flag as it creates them; elsewhere it is set just after,
+    /// and a child another thread forks in that instant keeps the write end
+    /// (and with it the guard waiting) until that child exits.
+    fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` is a live, writable two-element array.
+        #[cfg(target_os = "linux")]
+        let made = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+        // SAFETY: as above.
+        #[cfg(not(target_os = "linux"))]
+        let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        if made == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `pipe` just returned both descriptors, owned by nothing else.
+        let ends = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        #[cfg(not(target_os = "linux"))]
+        for end in [&ends.0, &ends.1] {
+            // SAFETY: plain integers naming a descriptor this function owns.
+            if unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        Ok(ends)
     }
 
     /// What this run may signal when it tears the child down.
@@ -414,7 +599,34 @@ mod platform {
                     }
                 });
             }
-            Ok(Self { owned: None })
+            Ok(Self {
+                owned: None,
+                tether: None,
+            })
+        }
+
+        /// [`Tree::prepare`], but the child joins a fresh [`Tether`]'s group
+        /// rather than leading its own, and inherits no descriptor above
+        /// standard error.
+        pub(super) fn prepare_tethered(command: &mut Command) -> io::Result<Self> {
+            let tether = Tether::start()?;
+            let group = tether.group();
+            // SAFETY: as in `prepare`; the guard leads `group` and is alive,
+            // blocked on its lifeline, until `tether` is dropped.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::setpgid(0, group) == -1 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    }
+                });
+            }
+            super::close_inherited_on_exec(command);
+            Ok(Self {
+                owned: None,
+                tether: Some(tether),
+            })
         }
 
         pub(super) fn attach(&mut self, child: &mut Child) -> io::Result<()> {
@@ -430,8 +642,9 @@ mod platform {
             // the alternative silently drops descendant teardown.
             // SAFETY: `getpgid` only reads the process table for `pid`.
             let group = unsafe { libc::getpgid(pid) };
-            self.owned = Some(if group == pid || group == -1 {
-                Owned::Group(pid)
+            let asked = self.tether.as_ref().map_or(pid, Tether::group);
+            self.owned = Some(if group == asked || group == -1 {
+                Owned::Group(asked)
             } else {
                 Owned::DirectChild(pid)
             });
@@ -537,6 +750,12 @@ mod platform {
             Ok(Self { job })
         }
 
+        /// Every Windows spawn is already tethered: its Job Object kills the
+        /// tree once its last handle — this process's — closes.
+        pub(super) fn prepare_tethered(command: &mut Command) -> io::Result<Self> {
+            Self::prepare(command)
+        }
+
         pub(super) fn attach(&mut self, child: &mut Child) -> io::Result<()> {
             let process = child.as_raw_handle() as HANDLE;
             // SAFETY: both handles are live; the process is still suspended.
@@ -633,6 +852,10 @@ mod platform {
     impl Tree {
         pub(super) fn prepare(_command: &mut Command) -> io::Result<Self> {
             Ok(Self)
+        }
+
+        pub(super) fn prepare_tethered(command: &mut Command) -> io::Result<Self> {
+            Self::prepare(command)
         }
 
         pub(super) fn attach(&mut self, _child: &mut Child) -> io::Result<()> {

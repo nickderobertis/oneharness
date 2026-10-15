@@ -909,72 +909,21 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
 #[cfg(unix)]
 pub(crate) fn detach(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
-    // Read before the fork: `getrlimit` is not async-signal-safe.
-    let open_max = descriptor_bound();
     // SAFETY: the hook runs in the forked child before exec and calls only
-    // `setsid`, `syscall(close_range)` and `fcntl`, which are
-    // async-signal-safe, and allocates nothing.
+    // `setsid`, which is async-signal-safe.
     unsafe {
-        command.pre_exec(move || {
+        command.pre_exec(|| {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
-            close_above_stdio_on_exec(open_max);
             Ok(())
         });
     }
+    crate::io::process::close_inherited_on_exec(command);
 }
 
 #[cfg(not(unix))]
 pub(crate) fn detach(_command: &mut std::process::Command) {}
-
-/// One past the highest descriptor number this process may hold, capped so a
-/// limit reported as unbounded does not cost a spawn millions of calls.
-#[cfg(unix)]
-fn descriptor_bound() -> libc::c_int {
-    const CAP: libc::rlim_t = 1 << 20;
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: `limit` is a live, writable `rlimit` for the call.
-    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0;
-    let bound = if read && limit.rlim_cur != libc::RLIM_INFINITY {
-        limit.rlim_cur.min(CAP)
-    } else {
-        CAP
-    };
-    libc::c_int::try_from(bound).unwrap_or(libc::c_int::MAX)
-}
-
-/// Mark every descriptor above standard error close-on-exec, in a forked
-/// child about to exec. `std`'s own exec-error pipe is close-on-exec already.
-#[cfg(unix)]
-fn close_above_stdio_on_exec(open_max: libc::c_int) {
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: plain integer arguments; a kernel without `close_range`
-        // (before 5.11 for this flag) fails it, and the loop below runs.
-        let marked = unsafe {
-            libc::syscall(
-                libc::SYS_close_range,
-                3u32,
-                u32::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            )
-        };
-        if marked == 0 {
-            return;
-        }
-    }
-    for fd in 3..open_max {
-        // SAFETY: plain integers; a number naming no open descriptor fails
-        // with EBADF, which is ignored.
-        unsafe {
-            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-        }
-    }
-}
 
 /// Whether `pid` is still running. This is the pool's whole correctness
 /// argument, so it asks the kernel rather than trusting any bookkeeping.

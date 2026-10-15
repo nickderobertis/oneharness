@@ -458,7 +458,9 @@ fn probe_version(
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    let mut process = Process::spawn(command)
+    // Tethered: a caller killed mid-probe leaves no deadline to end a probe
+    // that never answers, nor anything to stop it holding the caller's output.
+    let mut process = Process::spawn_tethered(command)
         .map_err(|err| format!("cannot run `{executable} --version`: {err}"))?;
     let status = process
         .wait_until(Instant::now() + VERSION_PROBE_TIMEOUT)

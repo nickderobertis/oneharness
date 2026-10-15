@@ -151,6 +151,11 @@
 //!                              MOCK_ARGV_FILE and exiting with MOCK_EXIT, since
 //!                              oneharness asks it before every Codex launch.
 //!   MOCK_CODEX_VERSION_DELAY_MS  how long `--version` takes to answer.
+//!   MOCK_CODEX_VERSION_STALL   a path: `--version` never answers, as a wedged
+//!                              launcher does. It starts a descendant that
+//!                              keeps its output, writes its own pid, the
+//!                              descendant's and its working directory to the
+//!                              path, and waits forever.
 //!   MOCK_CODEX_VERSION_EXIT    the exit code `--version` answers with (the
 //!                              launch itself keeps MOCK_EXIT).
 //!   MOCK_CODEX_CACHE_CORRUPT   with MOCK_CODEX_CATALOG_LOG, a fetch writes a
@@ -446,6 +451,9 @@ fn refuse(message: &str) -> ! {
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
+    if let Some(path) = mock_var_os("MOCK_CODEX_VERSION_STALL") {
+        stall_version(std::path::Path::new(&path));
+    }
     if let Some(ms) = millis_knob("MOCK_CODEX_VERSION_DELAY_MS") {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
@@ -493,6 +501,38 @@ fn millis_knob(name: &str) -> Option<u64> {
     match text.parse() {
         Ok(ms) => Some(ms),
         Err(_) => refuse(&format!("{name} must be whole milliseconds, got `{text}`")),
+    }
+}
+
+/// MOCK_CODEX_VERSION_STALL: a `--version` that never answers, with a
+/// descendant (this binary as an app-server helper, which only lives) holding
+/// the same output. Both pids and the directory it runs in, which says which
+/// of oneharness's probes this is, are written whole, by a rename, once both
+/// run.
+fn stall_version(path: &std::path::Path) -> ! {
+    let mut descendant = std::process::Command::new(
+        std::env::current_exe().unwrap_or_else(|e| refuse(&format!("no current exe: {e}"))),
+    )
+    .env("ONEHARNESS_MOCK_APP_SERVER_HELPER", "1")
+    .stdin(std::process::Stdio::null())
+    .spawn()
+    .unwrap_or_else(|e| refuse(&format!("cannot start the stalled probe's descendant: {e}")));
+    let partial = path.with_extension("partial");
+    let cwd =
+        std::env::current_dir().unwrap_or_else(|e| refuse(&format!("no working directory: {e}")));
+    let pids = format!(
+        "{}\n{}\n{}\n",
+        std::process::id(),
+        descendant.id(),
+        cwd.display()
+    );
+    if let Err(e) = std::fs::write(&partial, pids).and_then(|()| std::fs::rename(&partial, path)) {
+        refuse(&format!("cannot write {}: {e}", path.display()));
+    }
+    // The descendant only lives, so this waits as long as something lets it.
+    let _ = descendant.wait();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
     }
 }
 

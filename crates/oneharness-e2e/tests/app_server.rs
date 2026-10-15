@@ -2319,6 +2319,120 @@ fn a_killed_caller_s_output_ends_with_it_and_nothing_it_started_outlives_the_jou
     assert!(left.is_empty(), "still running: {left:?}");
 }
 
+/// A caller killed while a dispatch is still asking Codex its version —
+/// before any server exists — leaves nothing behind either. Two probes run
+/// first: the shared model catalog's, and the shared server's own (the first
+/// once the catalog is off). Each case stalls the first and says which it
+/// stalled by where it runs: the server's probe runs in the pool's root. The
+/// stalled probe never answers and has started a descendant; the dispatch
+/// holds its standard output and error at descriptors 3 and 4 as well, not
+/// close-on-exec. Once it is SIGKILLed nothing it left is there to end the
+/// probe by its deadline, so the probe must not need it: the caller's pipes
+/// reach end-of-file, and the probe, its descendant and everything in the
+/// probe's process group end.
+#[test]
+fn a_caller_killed_mid_version_probe_leaves_no_probe_and_its_output_ends() {
+    let pool = Pool::new("pool-killed-probe");
+    let servers = pool.path("state/oneharness/servers");
+    for (case, catalog_off) in [("catalog", false), ("server", true)] {
+        let stalled = pool.file(&format!("{case}-version-stall"));
+        let envs = [("CODEX_MOCK_VERSION_STALL", stalled.as_str())];
+        let cmd = if catalog_off {
+            pool.command_with_config(
+                case,
+                "[harness.codex]\nshared_model_catalog = false\n",
+                &[],
+                &envs,
+            )
+        } else {
+            pool.command(case, &[], &envs)
+        };
+        let cwd = kill_the_caller_mid_probe(&pool, cmd, Path::new(&stalled), case);
+        // The pool's root exists once the server's probe is asked, not before.
+        let in_pool = std::fs::canonicalize(&servers)
+            .is_ok_and(|root| std::fs::canonicalize(&cwd).is_ok_and(|cwd| cwd == root));
+        assert_eq!(
+            in_pool, catalog_off,
+            "{case}: stalled the probe running in {cwd}, not the {case}'s"
+        );
+    }
+}
+
+/// Run `cmd` — a dispatch whose first `--version` stalls, writing to
+/// `stalled` — with its output also at descriptors 3 and 4, SIGKILL it once
+/// the probe stalls, and hold everything it left to the bound. Returns the
+/// directory the stalled probe ran in.
+fn kill_the_caller_mid_probe(pool: &Pool, mut cmd: Command, stalled: &Path, case: &str) -> String {
+    use std::os::unix::process::CommandExt;
+
+    /// The caller and the probe's processes, SIGKILLed on the way out should
+    /// the journey fail with them still running: pids this journey captured,
+    /// never more.
+    struct Captured(Vec<u32>);
+    impl Drop for Captured {
+        fn drop(&mut self) {
+            for pid in &self.0 {
+                if alive(*pid) {
+                    sigkill(*pid);
+                }
+            }
+        }
+    }
+
+    // SAFETY: the hook runs in the forked child before exec, after its
+    // standard streams are in place, and calls only `dup2`, which is
+    // async-signal-safe; the copies it makes are not close-on-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::dup2(1, 3) == -1 || libc::dup2(2, 4) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut caller = pool.spawn(cmd);
+    let mut captured = Captured(vec![caller.id()]);
+    let stdout = read_to_end(caller.stdout.take().unwrap());
+    let stderr = read_to_end(caller.stderr.take().unwrap());
+    wait_for(
+        &format!("{case}: the version probe to stall"),
+        Duration::from_secs(10),
+        || stalled.exists(),
+    );
+    let written = std::fs::read_to_string(stalled).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    let [probe, descendant, cwd] = lines[..] else {
+        panic!("{case}: the stalled probe wrote {written:?}, not two pids and a directory");
+    };
+    let (probe, descendant): (u32, u32) = (probe.parse().unwrap(), descendant.parse().unwrap());
+    captured.0.extend([probe, descendant]);
+    // SAFETY: `getpgid` only reads the process table.
+    let group = unsafe { libc::getpgid(probe as libc::pid_t) };
+    assert!(group > 0, "{case}: {}", std::io::Error::last_os_error());
+
+    sigkill(caller.id());
+    caller.wait().unwrap();
+    let bound = Duration::from_secs(5);
+    stdout.recv_timeout(bound).unwrap_or_else(|_| {
+        panic!("{case}: the killed caller's standard output is held open past its end")
+    });
+    stderr.recv_timeout(bound).unwrap_or_else(|_| {
+        panic!("{case}: the killed caller's standard error is held open past its end")
+    });
+    // An exited member nobody has reaped yet still answers for its group, so
+    // the group is given the same bound to be collected.
+    wait_for(
+        &format!("{case}: the probe's process group to end"),
+        bound,
+        || {
+            // SAFETY: signal 0 to a group delivers nothing.
+            !alive(probe) && !alive(descendant) && unsafe { libc::kill(-group, 0) } == -1
+        },
+    );
+    drop(captured);
+    cwd.to_string()
+}
+
 /// A shell turn that completes before the server replies to the request that
 /// ran it still completes: the reuse workload runs to its end.
 #[cfg(target_os = "linux")]

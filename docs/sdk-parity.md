@@ -125,7 +125,7 @@ omitted when empty, and `exact` when false, so an add-only report is unchanged.
 
 Read from the project definitions and the justfile's `check` recipe, so
 this is the composition a run actually has rather than a second copy of it.
-`just check` runs those targets (`format`, `lint`, `typecheck`, `build`, `test`, `e2e`, `coverage`, `budgets`)
+`just check` runs those targets (`format`, `lint`, `typecheck`, `build`, `test`, `e2e`, `coverage`)
 on every project a change can reach, and `just check all` on every project;
 each row below also runs alone with `bash scripts/nx run-many -p <project> -t <targets>`.
 

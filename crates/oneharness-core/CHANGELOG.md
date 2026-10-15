@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.0...oneharness-core-v0.28.1) - 2026-10-15
+
+### Fixed
+
+- *(app-server)* report a refused upgrade and release the caller's output on macOS ([#1470](https://github.com/nickderobertis/oneharness/pull/1470))
+
 ## [0.28.0](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.27.0...oneharness-core-v0.28.0) - 2026-10-14
 
 ### Added

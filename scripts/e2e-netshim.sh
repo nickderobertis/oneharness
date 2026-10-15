@@ -161,7 +161,8 @@ if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
   die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
 fi
 if ! printf '%s\n' "$start" >>"$file"; then
-  rm -f "$pending"
+  rm -f "$pending" ||
+    die "cannot append to $file, nor remove its pending marker $pending, which the budget step would wait on; check that $(dirname "$file") is writable, remove the marker, then rerun"
   die "cannot append to $file; check that its directory is writable"
 fi
 

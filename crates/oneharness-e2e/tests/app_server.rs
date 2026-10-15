@@ -2664,7 +2664,6 @@ fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
         .map(PathBuf::from)
         .expect("the server's --listen path");
 
-    // Connect and upgrade, then stop reading.
     let mut stalled =
         UnixStream::connect(oneharness_core::io::websocket::dial_path(&listen)).unwrap();
     stalled

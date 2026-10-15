@@ -10,15 +10,12 @@
   ],
   "namedInputs": {
     "default": [
-      "{projectRoot}/**/*",
+      "{projectRoot}/*.mjs",
+      "{projectRoot}/project.json",
       "{workspaceRoot}/package.json",
       "{workspaceRoot}/bun.lock",
       "{workspaceRoot}/nx.json",
-      "{workspaceRoot}/.github/project.json",
       "{workspaceRoot}/.github/workflows/release.yml",
-      "{workspaceRoot}/.github/workflows/ci.yml",
-      "{workspaceRoot}/.github/workflows/e2e-variants.yml",
-      "{workspaceRoot}/.github/variants-routing.mjs",
       "{workspaceRoot}/.github/package.json",
       "{workspaceRoot}/.github/bun.lock",
       "{workspaceRoot}/scripts/release-*.mjs",
@@ -36,31 +33,22 @@
       "{workspaceRoot}/justfile",
       "{workspaceRoot}/CHANGELOG.md",
       "{workspaceRoot}/rust-toolchain.toml",
-      "{workspaceRoot}/.cargo/config.toml",
-      "{workspaceRoot}/scripts/nx",
-      "{workspaceRoot}/scripts/check-usage-enforce.sh",
-      "{workspaceRoot}/scripts/with-portable-sed.sh",
-      "{workspaceRoot}/scripts/e2e-lib.sh"
+      "{workspaceRoot}/.cargo/config.toml"
     ]
   },
   "targets": {
     "lint": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "node --check .github/integration/transfer-journey.mjs && node --check .github/integration/rejection-journey.mjs && node --check .github/integration/journey.mjs && node --check .github/integration/setup-journey.mjs && node --check .github/integration/gate-env-journey.mjs"
+        "command": "node --check .github/integration/transfer-journey.mjs && node --check .github/integration/rejection-journey.mjs && node --check .github/integration/journey.mjs"
       }
     },
     "e2e": {
-      "//": "llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Artifact construction and private workflow-tool setup are integration proofs selected by the files each reads; locked registry setup and local packing/install journeys make no model or paid calls and remain separate from fast workflow tests.",
+      "//": "llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Release construction is an integration proof selected by the files it reads; the local build, pack and install journey makes no model or paid calls and stays separate from fast workflow tests and from the setup and gate-env journeys, each its own project under this directory.",
       "executor": "nx:run-commands",
       "cache": false,
       "options": {
-        "commands": [
-          "node .github/integration/setup-journey.mjs",
-          "node .github/integration/journey.mjs",
-          "node .github/integration/gate-env-journey.mjs"
-        ],
-        "parallel": false
+        "command": "node .github/integration/journey.mjs"
       },
       "//end": "llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]"
     }

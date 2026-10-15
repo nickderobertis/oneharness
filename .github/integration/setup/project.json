@@ -1,0 +1,46 @@
+{
+  "name": "github-workflows-setup",
+  "projectType": "library",
+  "tags": [
+    "type:test",
+    "lang:javascript"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/scripts/nx",
+      "{workspaceRoot}/justfile",
+      "{workspaceRoot}/package.json",
+      "{workspaceRoot}/bun.lock",
+      "{workspaceRoot}/nx.json",
+      "{workspaceRoot}/.github/package.json",
+      "{workspaceRoot}/.github/bun.lock",
+      "{workspaceRoot}/.github/project.json",
+      "{workspaceRoot}/.github/integration/project.json",
+      "{workspaceRoot}/tools/release-tooling/payload-contract/project.json",
+      "{workspaceRoot}/.github/variants-routing.mjs",
+      "{workspaceRoot}/.github/workflows/ci.yml",
+      "{workspaceRoot}/.github/workflows/e2e-variants.yml",
+      "{workspaceRoot}/npm/oneharness/package.json",
+      "{workspaceRoot}/npm/oneharness/bin/oneharness.js",
+      "{workspaceRoot}/npm/oneharness-sdk/package.json"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --check .github/integration/setup/setup-journey.mjs"
+      }
+    },
+    "e2e": {
+      "//": "llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] The private workflow-tool setup is an integration proof selected by the files it copies into its own checkout; its locked registry install makes no model or paid calls and stays separate from fast workflow tests and from release construction.",
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node .github/integration/setup/setup-journey.mjs"
+      },
+      "//end": "llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]"
+    }
+  }
+}

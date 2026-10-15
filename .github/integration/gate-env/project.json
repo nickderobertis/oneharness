@@ -1,0 +1,38 @@
+{
+  "name": "github-workflows-gate-env",
+  "projectType": "library",
+  "tags": [
+    "type:test",
+    "lang:javascript"
+  ],
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/.github/workflows/ci.yml",
+      "{workspaceRoot}/.github/package.json",
+      "{workspaceRoot}/.github/bun.lock",
+      "{workspaceRoot}/scripts/with-portable-sed.sh",
+      "{workspaceRoot}/scripts/check-usage-enforce.sh",
+      "{workspaceRoot}/scripts/e2e-lib.sh",
+      "{workspaceRoot}/npm/oneharness-sdk/src/generated/schemas.json",
+      "{workspaceRoot}/tests/fixtures/utc-instant-matrix.json"
+    ]
+  },
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --check .github/integration/gate-env/gate-env-journey.mjs"
+      }
+    },
+    "e2e": {
+      "//": "llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] Runs e2e-support's real usage-enforce check under ci.yml's gate env, selected by the files that check and that workflow read; it makes no model or paid calls and stays separate from release construction and the setup journey.",
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "command": "node .github/integration/gate-env/gate-env-journey.mjs"
+      },
+      "//end": "llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]"
+    }
+  }
+}

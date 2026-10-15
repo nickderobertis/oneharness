@@ -10,7 +10,7 @@ import { checkJob, gateEnv, gateSteps } from "../gate-env.mjs";
 // once, and e2e-support:test's hermetic check-usage-enforce.sh then refused its
 // own "absent harness skips" case on every platform. These pin that the gate
 // steps each platform runs see none of the live-only OH_E2E_* demands;
-// .github/integration/gate-env-journey.mjs runs e2e-support's real check under them.
+// .github/integration/gate-env/gate-env-journey.mjs runs e2e-support's real check under them.
 const ci = checkJob();
 
 test("every platform's gate step runs without the live suites' no-skip demand", () => {

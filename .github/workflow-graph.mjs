@@ -1,5 +1,5 @@
 // Repository-local executable scheduling contract; unresolved calls/runners fail.
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { parse } from "yaml";
 import { Lexer, Parser, Evaluator, data } from "@actions/expressions";
@@ -48,7 +48,10 @@ export function digest() {
     ...readdirSync(".github/tests")
       .filter((f) => f.endsWith(".mjs"))
       .map((f) => `.github/tests/${f}`),
-    ...readdirSync(".github/integration").map((f) => `.github/integration/${f}`),
+    // Each integration journey is its own project in a subdirectory.
+    ...readdirSync(".github/integration", { recursive: true })
+      .map((f) => `.github/integration/${f.replaceAll("\\", "/")}`)
+      .filter((f) => statSync(f).isFile()),
     "scripts/ci-verdict.sh",
     "scripts/release-bundle.mjs",
     "scripts/release-install.mjs",

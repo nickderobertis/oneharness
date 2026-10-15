@@ -578,15 +578,20 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
 # sent after it, or sent while a caller had it blocked, is held here and
 # delivered once the handlers below exist.
 DEFERRED_STOPS: list[int] = []
-STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+
+
+def stops() -> tuple[signal.Signals, ...]:
+    # A function, not a constant: SIGHUP is POSIX-only, and the tests import
+    # this module on Windows too.
+    return (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 
 def defer_stops() -> None:
-    for signum in STOPS:
+    for signum in stops():
         signal.signal(signum, lambda n, _f: DEFERRED_STOPS.append(n))
     # A blocked mask survives exec and would pass to the launch, which then
     # could not be stopped; unblocked, a stop already pending is held above.
-    signal.pthread_sigmask(signal.SIG_UNBLOCK, STOPS)
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, stops())
 
 
 def run_direct(args: argparse.Namespace, reason: str) -> int:
@@ -603,7 +608,7 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
             file=sys.stderr,
         )
         return 127
-    for signum in STOPS:
+    for signum in stops():
         signal.signal(signum, lambda n, _f: launch.send_signal(n))
     for signum in DEFERRED_STOPS:
         launch.send_signal(signum)
@@ -669,7 +674,7 @@ def measure(args: argparse.Namespace) -> int:
         except OSError:
             pass
 
-    for signum in STOPS:
+    for signum in stops():
         signal.signal(signum, let_go)
     if DEFERRED_STOPS:
         let_go()

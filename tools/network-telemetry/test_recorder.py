@@ -919,8 +919,11 @@ class Fallback(unittest.TestCase):
         self.assertEqual(len(measurements(records, start["launch_id"])), 1)
 
 
-# The stops the shim and the measurer defer while the launch starts.
-STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
+def stops() -> tuple[signal.Signals, ...]:
+    """The stops the shim and the measurer defer while the launch starts,
+    read when a test runs: SIGHUP is POSIX-only, and this module is imported
+    on Windows too."""
+    return (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "the measurer the shim execs runs on Linux")
@@ -1034,7 +1037,7 @@ class StoppedWhileStarting(unittest.TestCase):
         self.assertEqual(self.only_line(tmp)["exit"], 5)
 
     def test_a_stop_pending_as_a_direct_launch_starts_reaches_it_and_is_recorded(self) -> None:
-        for stop in STOPS:
+        for stop in stops():
             with self.subTest(stop=stop.name):
                 tmp = scratch(self)
                 held, reached = self.blocking_python(tmp, stop)
@@ -1049,7 +1052,7 @@ class StoppedWhileStarting(unittest.TestCase):
         self,
     ) -> None:
         need_recorder(self)
-        for stop in STOPS:
+        for stop in stops():
             with self.subTest(stop=stop.name):
                 tmp = scratch(self)
                 held, reached = self.blocking_python(tmp, stop)

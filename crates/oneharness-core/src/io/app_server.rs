@@ -865,7 +865,7 @@ fn ensure_sweeper(entry: &Path) {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(log);
-    detach(&mut command);
+    server_pool::detach(&mut command);
     match command.spawn() {
         Ok(child) => {
             // Recorded by the starter as well as by the sweeper itself, so a
@@ -900,24 +900,6 @@ fn live_sweeper(entry: &Path) -> bool {
         .and_then(|text| serde_json::from_str::<LeaseHolder>(&text).ok())
         .is_some_and(|holder| holder.is_live())
 }
-
-#[cfg(unix)]
-fn detach(command: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    // SAFETY: the hook runs in the forked child before exec and calls only
-    // `setsid`, which is async-signal-safe, and allocates nothing.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(unix))]
-fn detach(_command: &mut std::process::Command) {}
 
 /// The sweeper's whole life: every [`DEAD_LEASE_SWEEP_INTERVAL`], reconcile the
 /// entry — retiring the leases of dead holders, and stopping the server once no

@@ -190,9 +190,11 @@ impl WsReader {
         }
     }
 
-    /// Bound every read of [`Self::receive`].
+    /// Bound every read of [`Self::receive`]. A connection whose peer has
+    /// closed it takes no bound and needs none (see `bound_reads`): the next
+    /// receive reports what the peer sent, then [`Incoming::Closed`].
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
-        self.stream.set_read_timeout(timeout)
+        bound_reads(&self.stream, timeout)
     }
 
     fn take_frame(&mut self) -> io::Result<Option<Incoming>> {
@@ -349,55 +351,14 @@ pub const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 /// The answer must arrive within [`HANDSHAKE_DEADLINE`]: a peer that accepts
 /// the connection and never answers fails the handshake rather than holding
 /// the caller past its own bounds.
-pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
+pub fn handshake(stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
+    upgrade(stream)
+}
+
+/// [`handshake`] over any stream that ends up a [`LocalStream`].
+fn upgrade(mut stream: impl UpgradeStream) -> io::Result<(WsReader, Arc<Mutex<WsWriter>>)> {
     let key = base64(&random_bytes::<16>());
-    let request = format!(
-        "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
-         Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes())?;
-    let deadline = std::time::Instant::now() + HANDSHAKE_DEADLINE;
-    let mut response = Vec::new();
-    let mut byte = [0u8; 1];
-    while !response.ends_with(b"\r\n\r\n") {
-        if response.len() > MAX_HANDSHAKE_BYTES {
-            return Err(protocol_error("a handshake response larger than 16 KiB"));
-        }
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        if left.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!(
-                    "the server did not answer the WebSocket upgrade within {}s",
-                    HANDSHAKE_DEADLINE.as_secs()
-                ),
-            ));
-        }
-        stream.set_read_timeout(Some(left))?;
-        let read = match stream.read(&mut byte) {
-            Err(err)
-                if matches!(
-                    err.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                continue
-            }
-            other => other?,
-        };
-        match read {
-            0 => {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "the server closed the connection during the WebSocket handshake",
-                ))
-            }
-            _ => response.push(byte[0]),
-        }
-    }
-    // The handshake's bound is its own: the reader sets whatever its caller
-    // asks for from here on.
-    stream.set_read_timeout(None)?;
+    let response = read_upgrade_response(&mut stream, &key)?;
     let text = String::from_utf8_lossy(&response);
     let status = text.lines().next().unwrap_or_default().to_string();
     let header = |wanted: &str| {
@@ -424,6 +385,10 @@ pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsW
             "the server's Sec-WebSocket-Accept does not answer this handshake's key",
         ));
     }
+    // The handshake's bound is its own: the reader sets whatever its caller
+    // asks for from here on.
+    bound_reads(&stream, None)?;
+    let stream = stream.into_local();
     let writer = Arc::new(Mutex::new(WsWriter {
         stream: stream.try_clone()?,
     }));
@@ -436,6 +401,105 @@ pub fn handshake(mut stream: LocalStream) -> io::Result<(WsReader, Arc<Mutex<WsW
         },
         writer,
     ))
+}
+
+/// The stream calls the upgrade makes, so a test can stand in for a platform's
+/// socket where this one behaves differently.
+trait UpgradeStream: Read + Write {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()>;
+    fn into_local(self) -> LocalStream;
+}
+
+impl UpgradeStream for LocalStream {
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        LocalStream::set_read_timeout(self, timeout)
+    }
+
+    fn into_local(self) -> LocalStream {
+        self
+    }
+}
+
+/// Bound the stream's reads, unless the peer has already closed it.
+///
+/// A zero timeout is refused here, before any socket call, on every platform:
+/// `std` refuses it on Unix, and this module's Winsock path would otherwise
+/// round it up to a millisecond.
+///
+/// Darwin refuses `setsockopt` with `EINVAL` on a socket whose peer has closed
+/// both directions, where Linux sets the option. Such a socket cannot block a
+/// read — it yields what the peer sent, then end-of-file — so that refusal is
+/// not the connection's failure, and the read after it reports what the peer
+/// actually did: a server that writes its refusal and closes is named by its
+/// status line, not by `Invalid argument (os error 22)`. Only the socket call's
+/// own `EINVAL` is passed over; every other failure is the caller's.
+fn bound_reads(stream: &impl UpgradeStream, timeout: Option<Duration>) -> io::Result<()> {
+    if timeout == Some(Duration::ZERO) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cannot bound reads by a zero timeout",
+        ));
+    }
+    match stream.set_read_timeout(timeout) {
+        Err(err) if err.raw_os_error() == Some(SOCKET_OPTION_REFUSED) => Ok(()),
+        other => other,
+    }
+}
+
+/// The OS error a socket-option call returns on a connection its peer closed.
+#[cfg(unix)]
+const SOCKET_OPTION_REFUSED: i32 = libc::EINVAL;
+#[cfg(windows)]
+const SOCKET_OPTION_REFUSED: i32 = windows_sys::Win32::Networking::WinSock::WSAEINVAL;
+
+/// Send the upgrade request for `key` and read the server's whole HTTP answer,
+/// within [`HANDSHAKE_DEADLINE`].
+fn read_upgrade_response(stream: &mut impl UpgradeStream, key: &str) -> io::Result<Vec<u8>> {
+    let request = format!(
+        "GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+         Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes())?;
+    let deadline = std::time::Instant::now() + HANDSHAKE_DEADLINE;
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        if response.len() > MAX_HANDSHAKE_BYTES {
+            return Err(protocol_error("a handshake response larger than 16 KiB"));
+        }
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "the server did not answer the WebSocket upgrade within {}s",
+                    HANDSHAKE_DEADLINE.as_secs()
+                ),
+            ));
+        }
+        bound_reads(stream, Some(left))?;
+        let read = match stream.read(&mut byte) {
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                continue
+            }
+            other => other?,
+        };
+        match read {
+            0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "the server closed the connection during the WebSocket handshake",
+                ))
+            }
+            _ => response.push(byte[0]),
+        }
+    }
+    Ok(response)
 }
 
 fn protocol_error(what: &str) -> io::Error {
@@ -997,6 +1061,168 @@ mod tests {
             err.to_string().contains("HTTP/1.1 400 Bad Request"),
             "{err}"
         );
+    }
+
+    /// A connection as Darwin's socket layer has it once the peer closed both
+    /// directions: what the peer sent is still read, but `setsockopt` — so
+    /// every read timeout — fails with `EINVAL`. The closing is real; only the
+    /// refusal Linux does not make is played, from the moment the server has
+    /// dropped its end.
+    struct PeerClosedOnDarwin {
+        stream: LocalStream,
+        server_closed: std::sync::mpsc::Receiver<()>,
+        closed: std::cell::Cell<bool>,
+    }
+
+    impl Read for PeerClosedOnDarwin {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.stream.read(buf)
+        }
+    }
+
+    impl Write for PeerClosedOnDarwin {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            let written = self.stream.write(buf)?;
+            if !self.closed.get() {
+                // The server answers the whole request and closes before the
+                // client makes its next call: the race CI's macOS runner lost.
+                self.server_closed.recv().unwrap();
+                self.closed.set(true);
+            }
+            Ok(written)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl UpgradeStream for PeerClosedOnDarwin {
+        fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+            if self.closed.get() {
+                return Err(io::Error::from_raw_os_error(SOCKET_OPTION_REFUSED));
+            }
+            self.stream.set_read_timeout(timeout)
+        }
+
+        fn into_local(self) -> LocalStream {
+            self.stream
+        }
+    }
+
+    /// A server that answers the upgrade with `answer` (given the request)
+    /// and closes at once, and a client connection to it on which every
+    /// socket option fails after that close, as on Darwin.
+    fn answer_and_close(
+        tag: &str,
+        answer: impl FnOnce(&str) -> String + Send + 'static,
+    ) -> (PeerClosedOnDarwin, std::thread::JoinHandle<()>, ScratchDir) {
+        let dir = ScratchDir::new(tag).unwrap();
+        let path = dir.join("s.sock");
+        let listener = listener::LocalListener::bind(&path).unwrap();
+        let (closed, server_closed) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let request = read_upgrade(&mut stream);
+            stream.write_all(answer(&request).as_bytes()).unwrap();
+            drop(stream);
+            closed.send(()).unwrap();
+        });
+        let client = PeerClosedOnDarwin {
+            stream: LocalStream::connect(&path).unwrap(),
+            server_closed,
+            closed: std::cell::Cell::new(false),
+        };
+        (client, server, dir)
+    }
+
+    #[test]
+    fn a_refusal_from_a_peer_that_closed_at_once_names_its_status_where_socket_options_fail() {
+        let (client, server, _dir) = answer_and_close("ws-refused-closed", |_| {
+            "HTTP/1.1 400 Bad Request\r\n\r\n".to_string()
+        });
+        let err = upgrade(client).err().unwrap();
+        server.join().unwrap();
+        assert!(
+            err.to_string()
+                .contains("refused the WebSocket upgrade: `HTTP/1.1 400 Bad Request`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_upgrade_from_a_peer_that_closed_at_once_opens_and_reads_closed_where_socket_options_fail()
+    {
+        let (client, server, _dir) = answer_and_close("ws-upgraded-closed", switching);
+        let (mut reader, _writer) = upgrade(client).unwrap();
+        server.join().unwrap();
+        assert_eq!(reader.receive().unwrap(), Incoming::Closed);
+    }
+
+    /// A zero read timeout is refused through the reader, as `std` refuses it:
+    /// it bounds nothing, so accepting it would leave the reader's polling
+    /// unbounded while its caller believed otherwise. Any other failure of the
+    /// socket call is the caller's too, and only Darwin's peer-closed `EINVAL`
+    /// is passed over.
+    #[test]
+    fn a_zero_read_timeout_is_refused_on_a_live_connection() {
+        let dir = ScratchDir::new("ws-zero-timeout").unwrap();
+        let path = dir.join("s.sock");
+        let listener = listener::LocalListener::bind(&path).unwrap();
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap();
+            let request = read_upgrade(&mut stream);
+            stream.write_all(switching(&request).as_bytes()).unwrap();
+            let _ = finished.recv();
+        });
+        let (reader, _writer) = handshake(LocalStream::connect(&path).unwrap()).unwrap();
+        let err = reader
+            .set_read_timeout(Some(Duration::ZERO))
+            .expect_err("a zero timeout was accepted");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+        reader
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let other = bound_reads(
+            &Refusing(SOCKET_OPTION_REFUSED + 1),
+            Some(Duration::from_secs(1)),
+        );
+        assert!(
+            other.is_err(),
+            "a socket failure besides the peer-closed one was passed over"
+        );
+        done.send(()).unwrap();
+        server.join().unwrap();
+    }
+
+    /// A stream whose every socket-option call fails with the OS error it holds.
+    struct Refusing(i32);
+
+    impl Read for Refusing {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for Refusing {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl UpgradeStream for Refusing {
+        fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
+            Err(io::Error::from_raw_os_error(self.0))
+        }
+
+        fn into_local(self) -> LocalStream {
+            unreachable!("never upgraded")
+        }
     }
 
     #[test]

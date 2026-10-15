@@ -191,7 +191,7 @@ impl WsReader {
     }
 
     /// Bound every read of [`Self::receive`]. A connection whose peer has
-    /// closed it takes no bound and needs none (see [`bound_reads`]): the next
+    /// closed it takes no bound and needs none (see `bound_reads`): the next
     /// receive reports what the peer sent, then [`Incoming::Closed`].
     pub fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
         bound_reads(&self.stream, timeout)

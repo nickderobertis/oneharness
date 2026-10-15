@@ -226,11 +226,11 @@ cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
 [ "$status" -ne 0 ] || fail "a gate target running the pool maintenance budget check should have failed the boundary check"
 grep -qF "network-telemetry:test runs the pool maintenance budget check" "$tmp/err" ||
   fail "the check failed but did not name the gate target that runs the pool maintenance budget check"
-sed "s/-t format,lint,typecheck,build,test,e2e,coverage,budgets --skip-nx-cache/-t format,lint,typecheck,build,test,e2e,coverage,budgets,budgets-host --skip-nx-cache/" "$tmp/saved.just" >"$ws/justfile"
+sed "s/-t format,lint,typecheck,build,test,e2e,coverage --skip-nx-cache/-t format,lint,typecheck,build,test,e2e,coverage,budgets-host --skip-nx-cache/" "$tmp/saved.just" >"$ws/justfile"
 check
 cp "$tmp/saved.just" "$ws/justfile"
 [ "$status" -ne 0 ] || fail "a check recipe that runs budgets-host should have failed the boundary check"
-grep -qF "check recipe runs the format,lint,typecheck,build,test,e2e,coverage,budgets,budgets-host targets" "$tmp/err" ||
+grep -qF "check recipe runs the format,lint,typecheck,build,test,e2e,coverage,budgets-host targets" "$tmp/err" ||
   fail "the check failed but did not say the gate runs the budget targets"
 # A Windows checkout (core.autocrlf=true) ends the justfile's lines in CRLF;
 # the same recipes still pass.

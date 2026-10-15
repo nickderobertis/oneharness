@@ -187,6 +187,14 @@ jobs:
         env:
           OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: just check all
+      # `just check` names no budget target, so the offline workflow budgets
+      # (github-workflows:budgets, after its telemetry-recording test) run here
+      # when the diff reaches them; the full sweep's `just budgets` covers them.
+      - name: Offline budgets (just budgets-offline)
+        if: steps.tier.outputs.tier == 'affected' && runner.os == 'Linux'
+        env:
+          NX_BASE: ${{ steps.tier.outputs.base }}
+        run: just budgets-offline
       # llmlint: ignore-block[external_service_suite_stays_out_of_the_affected_tier] The scheduling contract explicitly requires CI's one Mac check to own the existing real live commands sequentially. They remain separate from Nx's deterministic affected tier, gated to trusted heads and the original workflow paths, while their Linux/Windows workflows retain coverage.
       - name: Select consolidated live paths
         id: live-paths

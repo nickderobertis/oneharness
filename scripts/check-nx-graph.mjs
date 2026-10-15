@@ -260,10 +260,8 @@ if (!/^check tier=[\s\S]*?--exclude='live-\*,explore-\*'/mu.test(justfile)) {
 }
 const checkRecipe = justfile.match(/^check tier=.*\n((?:[ \t]+\S.*\n)+)/mu)?.[1] ?? "";
 for (const [, targets] of checkRecipe.matchAll(/ -t (\S+)/gu)) {
-	// The offline `budgets` targets are cached gate checks; `budgets-host`
-	// (pool-maintenance's, which builds the repository twice) is not.
-	if (targets.split(",").includes("budgets-host")) {
-		failures.push(`the justfile's check recipe runs the ${targets} targets, so every change would build the repository twice for pool-maintenance's budget; leave budgets-host to 'just budgets'`);
+	if (targets.split(",").some((t) => t.startsWith("budgets"))) {
+		failures.push(`the justfile's check recipe runs the ${targets} targets, so every change would build the repository twice for pool-maintenance's budget; leave budgets to 'just budgets'`);
 	}
 }
 const liveCodex = justfile.match(/^live-codex:.*\n((?:[ \t]+\S.*\n)+)/mu)?.[1].trim().split(/\n\s*/u) ?? [];

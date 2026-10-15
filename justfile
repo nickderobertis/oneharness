@@ -68,8 +68,7 @@ pool-maintenance:
 
 # The onebudgetspec budgets of the Nx projects (each one's `budgets` and
 # uncached host-reading `budgets-host` targets) at the tier, then the root
-# budgets.yaml where one exists. `check` runs the offline `budgets` targets but
-# never `budgets-host`: the one host budget,
+# budgets.yaml where one exists. Not part of `check`: the one project budget,
 # pool-maintenance's, builds the repository twice, so ci.yml's release pull
 # request leg runs `just budgets` after its full sweep (pool-maintenance/AGENTS.md).
 budgets tier="all":
@@ -85,6 +84,16 @@ budgets tier="all":
         uv run --project python --frozen --no-sync onebudgetspec check budgets.yaml
     fi
 
+# The offline `budgets` targets of the projects the diff since the base reaches
+# (github-workflows' macOS scheduling budgets, over the telemetry its `test`
+# records), never a host-reading `budgets-host`. ci.yml's affected-tier legs run
+# it on Linux after `just check`; the full sweep's `just budgets` covers them.
+budgets-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base="$(bash scripts/nx-base.sh)"
+    bash scripts/nx affected --base="$base" -t budgets
+
 # The quality gate, through the Nx project graph. `just check` is the AFFECTED
 # tier: every gate target of each project the diff since the base can reach
 # (scripts/nx-base.sh: NX_BASE when set — a plain ref name or a commit SHA, and
@@ -99,8 +108,8 @@ check tier="affected":
     #!/usr/bin/env bash
     set -euo pipefail
     case {{ quote(tier) }} in
-        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t format,lint,typecheck,build,test,e2e,coverage,budgets ;;
-        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t format,lint,typecheck,build,test,e2e,coverage,budgets --skip-nx-cache ;;
+        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t format,lint,typecheck,build,test,e2e,coverage ;;
+        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t format,lint,typecheck,build,test,e2e,coverage --skip-nx-cache ;;
         *) printf "check: unknown tier '%s' — use 'affected' (the default) or 'all'\n" {{ quote(tier) }} >&2; exit 2 ;;
     esac
     echo "check ({{tier}}): ok"

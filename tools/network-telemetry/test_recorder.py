@@ -23,6 +23,7 @@ from support import (
     NETSHIM,
     OBSERVER,
     WINDOWS,
+    Record,
     lines,
     measurements,
     need_recorder,
@@ -972,7 +973,7 @@ class StoppedWhileStarting(unittest.TestCase):
         self.assertTrue(reached.exists(), "the shim never reached its measurer")
         os.killpg(shim.pid, signal.SIGTERM)
 
-    def only_line(self, tmp: Path) -> dict[str, object]:
+    def only_line(self, tmp: Path) -> Record:
         records = lines(tmp / "codex.jsonl")
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
@@ -982,7 +983,9 @@ class StoppedWhileStarting(unittest.TestCase):
     def lingering(self, tmp: Path) -> Path:
         real = tmp / "real"
         real.write_text(
-            "#!/usr/bin/env bash\nexec " + " ".join(transfer_argv(0, 0, 0, "--linger", "600")) + "\n"
+            "#!/usr/bin/env bash\nexec "
+            + " ".join(transfer_argv(0, 0, 0, "--linger", "600"))
+            + "\n"
         )
         real.chmod(0o755)
         return real

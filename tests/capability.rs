@@ -271,3 +271,37 @@ fn method_names_are_unique_and_translate_to_python() {
         .expect("historyList is a capability");
     assert_eq!(history_list.python_method(), "history_list");
 }
+
+/// The manifest each SDK generator reads is these capabilities serialized, and
+/// the Python SDK ships the generator's output verbatim, keyed by method. So
+/// serializing `CAPABILITIES` must reproduce the manifest the Python package
+/// carries: every capability's `{method, argv, options, output, stdout, stdin,
+/// rust, always, bindings, uncovered}`, each binding flattened to `{option,
+/// flag, kind, unless}` plus the additive `unless_resolution` and `window` keys
+/// only where they apply. A change to the wire shape here is a change to what
+/// both SDKs build their argv from.
+#[test]
+fn the_serialized_manifest_is_the_one_the_python_sdk_ships() {
+    let serialized = serde_json::to_value(CAPABILITIES).expect("the manifest serializes");
+    let by_method: serde_json::Map<String, serde_json::Value> = serialized
+        .as_array()
+        .expect("the manifest is a list")
+        .iter()
+        .map(|capability| {
+            (
+                capability["method"].as_str().unwrap().to_string(),
+                capability.clone(),
+            )
+        })
+        .collect();
+    let shipped: serde_json::Value = serde_json::from_str(include_str!(
+        "../python/oneharness-sdk/src/oneharness_sdk/_generated/capabilities.json"
+    ))
+    .expect("the Python SDK's manifest is JSON");
+    assert_eq!(
+        serde_json::Value::Object(by_method),
+        shipped,
+        "the serialized manifest is not the one the Python SDK ships; if the change is \
+         intended, regenerate both SDKs (`just sdk-generate`, `just python-sdk-generate`)"
+    );
+}

@@ -49,14 +49,15 @@ jobs:
         # The checkout is the pull request's own code, so a pull request is
         # classified by its base commit's policy, never by a classifier it
         # carries. A base without that policy, or a base SHA that is not a
-        # commit id, requires Mac.
+        # commit id, requires Mac. tar reads stdin inside the directory rather
+        # than parsing it from -C, which mangles a Windows RUNNER_TEMP.
         run: |
           policy=.github/macos-route.mjs
           if [ "$EVENT_NAME" = pull_request ]; then
             trusted="$RUNNER_TEMP/base-macos-policy"
             mkdir -p "$trusted"
             if ! [[ "$BASE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] ||
-              ! git archive "$BASE_SHA" .github tools/release-tooling/payload-contract | tar -x -C "$trusted" ||
+              ! git archive "$BASE_SHA" .github tools/release-tooling/payload-contract | (cd "$trusted" && tar -xf -) ||
               [ ! -f "$trusted/.github/macos-route.mjs" ]; then
               echo "No base classifier at base commit '$BASE_SHA'; macOS is required."
               printf 'macos_required=true\nis_release_only=false\n' >>"$GITHUB_OUTPUT"

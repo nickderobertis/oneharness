@@ -18,6 +18,7 @@
       "{workspaceRoot}/scripts/cargo-test.sh",
       "{workspaceRoot}/scripts/coverage-linker.sh",
       "{workspaceRoot}/scripts/check-temp-leaks.sh",
+      "{workspaceRoot}/.config/nextest.toml",
       {
         "env": "OS"
       }

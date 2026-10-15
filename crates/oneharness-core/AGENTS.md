@@ -400,8 +400,8 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   dispatch spawns through `io::server_pool::detach`, which also marks every
   descriptor above stderr close-on-exec: on macOS `std` marks a new pipe or
   socket close-on-exec only after creating it, so a detached child otherwise
-  keeps whatever it caught open — a caller's output pipe held this way hung
-  CI for six hours. And on Darwin, `setsockopt` on a socket whose peer closed
+  keeps whatever it caught open — a caller's output pipe held this way never
+  reaches end-of-file for whoever reads it. And on Darwin, `setsockopt` on a socket whose peer closed
   fails with EINVAL (`io::websocket::bound_reads`).
 
 ## Adding or changing a harness

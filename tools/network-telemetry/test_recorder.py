@@ -7,6 +7,8 @@ makes that a failure. The fallback and refusal cases run everywhere.
 
 from __future__ import annotations
 
+import dataclasses
+import importlib.util
 import json
 import os
 import signal
@@ -20,6 +22,7 @@ from typing import Literal, NamedTuple
 
 from support import (
     BASH,
+    NETMEASURE,
     NETSHIM,
     OBSERVER,
     WINDOWS,
@@ -33,6 +36,23 @@ from support import (
     starts,
     transfer_argv,
 )
+
+
+def unavailable_fields() -> set[str]:
+    """The fields of the recorder's own unmeasured line (`Unavailable` in
+    scripts/e2e-netmeasure.py), which every unmeasured line the shim writes
+    itself must carry exactly."""
+    spec = importlib.util.spec_from_file_location("netmeasure_fields", NETMEASURE)
+    assert spec is not None and spec.loader is not None
+    netmeasure = importlib.util.module_from_spec(spec)
+    # Its dataclasses resolve their annotations through sys.modules.
+    sys.modules["netmeasure_fields"] = netmeasure
+    try:
+        spec.loader.exec_module(netmeasure)
+        return {field.name for field in dataclasses.fields(netmeasure.Unavailable)}
+    finally:
+        sys.modules.pop("netmeasure_fields", None)
+
 
 DOWN = 5_000_000
 UP = 3_000_000
@@ -368,7 +388,9 @@ done
         self.assertEqual(list(pending.glob("*")), [], "a stopped launch's marker outlived it")
         records = lines(file)
         for start in starts(records):
-            self.assertEqual(len(measurements(records, start["launch_id"])), 1, start)
+            (line,) = measurements(records, start["launch_id"])
+            if line["method"] == "unavailable":
+                self.assertEqual(set(line), unavailable_fields(), line)
 
 
 class Concurrency(unittest.TestCase):
@@ -786,6 +808,7 @@ class Fallback(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "unavailable")
+        self.assertEqual(set(line), unavailable_fields(), line)
         self.assertIn(reason, line["reason"])
         self.assertEqual(line["exit"], 5)
         for field in ("rx_bytes", "tx_bytes", "payload_rx_estimate", "payload_tx_estimate"):

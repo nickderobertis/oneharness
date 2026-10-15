@@ -184,12 +184,19 @@ case "$os" in
   *) reason="the netns-pasta method needs Linux network namespaces; this leg is $os, which the network budgets do not support" ;;
 esac
 
+# An unmeasured launch's line: the recorder's `Unavailable` record
+# (scripts/e2e-netmeasure.py), whose fields test_recorder.py holds this to.
+# EXIT is JSON: the launch's status, or null for one that never ran.
+unavailable_line() { # REASON SECONDS EXIT
+  jq -nc --arg id "$launch_id" --arg reason "$1" --argjson seconds "$2" --argjson exit "$3" \
+    '{launch_id: $id, method: "unavailable", reason: $reason, seconds: $seconds, exit: $exit}' |
+    tr -d '\r'
+}
 # The line for a launch stopped between its start line and its launch,
 # encoded while a stop still simply ends this shim.
-unlaunched="$(jq -nc --arg id "$launch_id" \
-  --arg reason "the launch was stopped by a signal before it started, so it exchanged no bytes" \
-  '{launch_id: $id, method: "unavailable", reason: $reason, seconds: 0, exit: null}' |
-  tr -d '\r')" || die "jq could not write the stopped-launch line; install jq (the live suites need it) and rerun"
+unlaunched="$(unavailable_line \
+  "the launch was stopped by a signal before it started, so it exchanged no bytes" 0 null)" ||
+  die "jq could not write the stopped-launch line; install jq (the live suites need it) and rerun"
 mkdir -p "$(dirname "$pending")" ||
   die "cannot create $(dirname "$pending"); check that $(dirname "$file") is writable, then rerun"
 # A stop is noted from here, and only builtins run until the launch, so
@@ -223,10 +230,7 @@ unrecorded() {
     "$real" "$rc" "$file" "$1" >&2
   exit 125
 }
-line="$(jq -nc --arg id "$launch_id" --arg reason "$reason" --argjson seconds "$((SECONDS - t0))" \
-  --argjson exit "$rc" \
-  '{launch_id: $id, method: "unavailable", reason: $reason, seconds: $seconds, exit: $exit}' | tr -d '\r')" ||
-  unrecorded "jq failed"
+line="$(unavailable_line "$reason" "$((SECONDS - t0))" "$rc")" || unrecorded "jq failed"
 printf '%s\n' "$line" >>"$file" || unrecorded "the append failed"
 rm -f "$pending" || unrecorded "its pending marker $pending could not be removed"
 exit "$rc"

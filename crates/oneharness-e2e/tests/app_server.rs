@@ -22,7 +22,9 @@ use std::time::{Duration, Instant};
 
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
 use oneharness_core::io::scratch::ScratchDir;
-use oneharness_core::io::server_pool::{DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL};
+use oneharness_core::io::server_pool::{
+    LeaseHolder, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
+};
 use serde_json::{json, Value};
 
 /// The shared server's linger every journey runs under (milliseconds).
@@ -113,21 +115,38 @@ impl Drop for Pool {
         while live() && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(100));
         }
-        for record in self.mock_servers() {
-            if let Some(pid) = record["pid"].as_u64() {
-                if alive(pid as u32) {
-                    sigkill(pid as u32);
-                }
-            }
+        // Then every process this world started is stopped and gone before
+        // the journey returns: its servers, their commands, and the sweepers
+        // beside them, which would otherwise run on after the scratch
+        // directory is removed until their next sweep noticed.
+        // A sweeper by the identity it recorded, so a pid recycled since it
+        // ended is never signalled.
+        let sweepers = std::fs::read_dir(&servers)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| std::fs::read_to_string(entry.path().join("sweeper.json")).ok())
+            .filter_map(|text| serde_json::from_str::<LeaseHolder>(&text).ok())
+            .filter(LeaseHolder::is_live)
+            .map(|holder| u64::from(holder.pid.get()));
+        let commands = self
+            .states()
+            .into_iter()
+            .flat_map(|state| state["commands"].as_array().cloned().unwrap_or_default())
+            .filter_map(|command| command["pid"].as_u64());
+        let started: Vec<u32> = self
+            .server_pids()
+            .into_iter()
+            .chain(commands.map(|pid| pid as u32))
+            .chain(sweepers.map(|pid| pid as u32))
+            .filter(|pid| alive(*pid))
+            .collect();
+        for pid in &started {
+            sigkill(*pid);
         }
-        for state in self.states() {
-            for command in state["commands"].as_array().into_iter().flatten() {
-                if let Some(pid) = command["pid"].as_u64() {
-                    if alive(pid as u32) {
-                        sigkill(pid as u32);
-                    }
-                }
-            }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while started.iter().any(|pid| alive(*pid)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
         }
     }
 }
@@ -2119,6 +2138,88 @@ fn a_sweeper_adopts_the_server_that_replaced_its_own_and_reclaims_it() {
         !alive(second)
     });
     wait_for("the sweeper to end", bound, || !alive(sweeper));
+}
+
+/// A caller reading a dispatch's output to its end is never held by the shared
+/// server the dispatch started. The dispatch here also holds its standard
+/// output and error at descriptors 3 and 4, not close-on-exec — as a launcher
+/// that passed them on leaves them, and as a pipe another thread had just made
+/// is on macOS, where `std` marks one close-on-exec only after creating it. The
+/// server and the sweeper it starts outlive the dispatch, and must hold
+/// neither: both pipes end with the dispatch, while they run on. Then each
+/// stops on its own, and nothing this journey started is left running.
+#[test]
+fn a_shared_server_holds_none_of_its_starting_dispatch_s_output_open() {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    let linger = Duration::from_secs(5);
+    let pool = Pool::new("pool-output-held");
+    let mut cmd = pool.command(
+        "held-output",
+        &[],
+        &[(
+            "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+            &linger.as_millis().to_string(),
+        )],
+    );
+    // SAFETY: the hook runs in the forked child before exec, after its
+    // standard streams are in place, and calls only `dup2`, which is
+    // async-signal-safe; the copies it makes are not close-on-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::dup2(1, 3) == -1 || libc::dup2(2, 4) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut dispatch = pool.spawn(cmd);
+    let ended = |mut pipe: Box<dyn Read + Send>| {
+        let (sender, ends) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = pipe.read_to_end(&mut bytes);
+            let _ = sender.send(bytes);
+        });
+        ends
+    };
+    let stdout = ended(Box::new(dispatch.stdout.take().unwrap()));
+    let stderr = ended(Box::new(dispatch.stderr.take().unwrap()));
+    let status = dispatch.wait().unwrap();
+    let bound = Duration::from_secs(2);
+    let stdout = stdout
+        .recv_timeout(bound)
+        .expect("the dispatch's standard output is held open past its exit");
+    let stderr = stderr
+        .recv_timeout(bound)
+        .expect("the dispatch's standard error is held open past its exit");
+    let report: Value = serde_json::from_slice(&stdout).unwrap_or_else(|err| {
+        panic!(
+            "no JSON report ({err}): {}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        )
+    });
+    let output = Output {
+        status,
+        stdout,
+        stderr,
+    };
+    succeeded(&output, &report);
+    let server = reported_server(&report);
+    let (_, sweeper) = entry_and_sweeper(&pool);
+    assert!(
+        alive(server) && alive(sweeper),
+        "the shared server and its sweeper did not outlive the dispatch, so nothing was proven"
+    );
+    let stop = linger + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(10);
+    wait_for("the lingered-out server to stop", stop, || !alive(server));
+    wait_for("its sweeper to end", stop, || !alive(sweeper));
+    let left: Vec<u32> = std::iter::once(dispatch.id())
+        .chain(pool.server_pids())
+        .filter(|pid| alive(*pid))
+        .collect();
+    assert!(left.is_empty(), "still running: {left:?}");
 }
 
 /// A shell turn that completes before the server replies to the request that

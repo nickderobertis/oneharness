@@ -920,26 +920,17 @@ class Fallback(unittest.TestCase):
 
 @unittest.skipUnless(sys.platform.startswith("linux"), "the measurer the shim execs runs on Linux")
 class StoppedWhileStarting(unittest.TestCase):
-    def test_a_stop_before_the_measurer_is_ready_still_leaves_the_launch_one_line(self) -> None:
-        # A suite stopped by its caller signals the whole group; one that
-        # lands after the shim's start line but before the measurer can
-        # handle it must not leave that start without a line. A python3
-        # first on PATH holds the shim in that window long enough to aim at.
-        tmp = scratch(self)
-        python = subprocess.run(
+    """A suite stopped by its caller signals the whole group; one stop that
+    lands after the shim's start line but before the measurer's handlers are
+    in place must not leave that start without a line. A python3 first on
+    PATH holds the shim in that window long enough to aim at."""
+
+    def python(self) -> str:
+        return subprocess.run(
             ["bash", "-c", "command -v python3"], capture_output=True, text=True, check=True
         ).stdout.strip()
-        reached = tmp / "reached"
-        slow = tmp / "slow-python"
-        slow.mkdir()
-        (slow / "python3").write_text(
-            f'#!/usr/bin/env bash\n: >"{reached}"\nsleep 1\nexec "{python}" "$@"\n'
-        )
-        (slow / "python3").chmod(0o755)
-        real = tmp / "echo-double"
-        real.write_text("#!/usr/bin/env bash\ncat\nexit 5\n")
-        real.chmod(0o755)
-        file = tmp / "codex.jsonl"
+
+    def start(self, tmp: Path, held: Path, real: Path, path: str) -> subprocess.Popen[bytes]:
         shim = subprocess.Popen(
             [
                 BASH,
@@ -953,7 +944,7 @@ class StoppedWhileStarting(unittest.TestCase):
                 "--self",
                 str(tmp / "shims" / "codex"),
                 "--file",
-                str(file),
+                str(tmp / "codex.jsonl"),
                 "--",
                 "exec",
                 "x",
@@ -961,21 +952,98 @@ class StoppedWhileStarting(unittest.TestCase):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            env={**os.environ, "PATH": f"{slow}{os.pathsep}{os.environ['PATH']}"},
+            env={**os.environ, "PATH": f"{held.parent}{os.pathsep}{path}"},
             start_new_session=True,
         )
+
+        def reap() -> None:
+            if shim.poll() is None:
+                os.killpg(shim.pid, signal.SIGKILL)
+                shim.wait()
+
+        self.addCleanup(reap)
+        return shim
+
+    def stop_when_reached(self, shim: subprocess.Popen[bytes], reached: Path) -> None:
         for _ in range(300):
             if reached.exists():
                 break
             time.sleep(0.05)
         self.assertTrue(reached.exists(), "the shim never reached its measurer")
         os.killpg(shim.pid, signal.SIGTERM)
-        self.assertEqual(shim.wait(timeout=60), 5)
-        records = lines(file)
+
+    def only_line(self, tmp: Path) -> dict[str, object]:
+        records = lines(tmp / "codex.jsonl")
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
-        self.assertEqual(line["exit"], 5, line)
         self.assertEqual(list((tmp / ".pending").glob("*")), [], "a pending marker was left")
+        return line
+
+    def lingering(self, tmp: Path) -> Path:
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\nexec " + " ".join(transfer_argv(0, 0, 0, "--linger", "600")) + "\n"
+        )
+        real.chmod(0o755)
+        return real
+
+    def blocking_python(self, tmp: Path) -> tuple[Path, Path]:
+        # Holds SIGTERM blocked until the test's stop is pending, then execs
+        # the real interpreter, so that stop reaches the measurer already
+        # pending at its first instruction.
+        reached = tmp / "reached"
+        held = tmp / "held-python" / "python3"
+        held.parent.mkdir()
+        held.write_text(
+            f"#!{self.python()} -I\n"
+            "import os, signal, sys, time\n"
+            "signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})\n"
+            f"open({str(reached)!r}, 'w').close()\n"
+            "while signal.SIGTERM not in signal.sigpending():\n"
+            "    time.sleep(0.01)\n"
+            f"os.execv({self.python()!r}, [{self.python()!r}, *sys.argv[1:]])\n"
+        )
+        held.chmod(0o755)
+        return held, reached
+
+    def test_a_stop_before_the_measurer_is_ready_still_leaves_the_launch_one_line(self) -> None:
+        tmp = scratch(self)
+        reached = tmp / "reached"
+        held = tmp / "slow-python" / "python3"
+        held.parent.mkdir()
+        held.write_text(
+            f'#!/usr/bin/env bash\n: >"{reached}"\nsleep 1\nexec "{self.python()}" "$@"\n'
+        )
+        held.chmod(0o755)
+        real = tmp / "echo-double"
+        real.write_text("#!/usr/bin/env bash\ncat\nexit 5\n")
+        real.chmod(0o755)
+        shim = self.start(tmp, held, real, os.environ["PATH"])
+        self.stop_when_reached(shim, reached)
+        # Dropped, the stop leaves the launch to run its course and be recorded.
+        self.assertEqual(shim.wait(timeout=60), 5)
+        self.assertEqual(self.only_line(tmp)["exit"], 5)
+
+    def test_a_stop_pending_as_a_direct_launch_starts_reaches_it_and_is_recorded(self) -> None:
+        tmp = scratch(self)
+        held, reached = self.blocking_python(tmp)
+        shim = self.start(tmp, held, self.lingering(tmp), path_without(tmp, "pasta"))
+        self.stop_when_reached(shim, reached)
+        self.assertEqual(shim.wait(timeout=60), 128 + signal.SIGTERM)
+        line = self.only_line(tmp)
+        self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + signal.SIGTERM))
+
+    def test_a_stop_pending_as_a_measured_launch_starts_stops_its_namespace_and_is_recorded(
+        self,
+    ) -> None:
+        need_recorder(self)
+        tmp = scratch(self)
+        held, reached = self.blocking_python(tmp)
+        shim = self.start(tmp, held, self.lingering(tmp), os.environ["PATH"])
+        self.stop_when_reached(shim, reached)
+        self.assertEqual(shim.wait(timeout=60), 128 + signal.SIGTERM)
+        line = self.only_line(tmp)
+        self.assertEqual((line["method"], line["exit"]), ("netns-pasta", 128 + signal.SIGTERM))
 
 
 class Refusal(unittest.TestCase):

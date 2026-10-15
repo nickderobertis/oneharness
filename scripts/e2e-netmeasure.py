@@ -575,7 +575,8 @@ def supervise(args: argparse.Namespace, pasta: str, scratch: Path, life: int) ->
 # reach the launch): a stop sent while the shim or this interpreter is still
 # starting would otherwise end the launch with a `start` and no line. One sent
 # before the replacement is dropped, so the launch runs and is recorded; one
-# sent after it is held here and delivered once the handlers below exist.
+# sent after it, or sent while a caller had it blocked, is held here and
+# delivered once the handlers below exist.
 DEFERRED_STOPS: list[int] = []
 STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 
@@ -583,6 +584,9 @@ STOPS = (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)
 def defer_stops() -> None:
     for signum in STOPS:
         signal.signal(signum, lambda n, _f: DEFERRED_STOPS.append(n))
+    # A blocked mask survives exec and would pass to the launch, which then
+    # could not be stopped; unblocked, a stop already pending is held above.
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, STOPS)
 
 
 def run_direct(args: argparse.Namespace, reason: str) -> int:

@@ -2362,7 +2362,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// MOCK_CODEX_TICK_MS (with MOCK_CODEX_HOLD_UNTIL, an agent message this often
 /// while the held turn is live),
 /// MOCK_CODEX_SHUT_READ_ON_APPROVAL (stop reading the connection as its
-/// approval request goes out),
+/// approval request goes out), MOCK_CODEX_SHUT_READ_DISCARDS (with it, the
+/// shut read side discards what the client writes, as Darwin's does, instead
+/// of refusing it, as Linux's does),
 /// MOCK_CODEX_UNSUBSCRIBE_DELAY_MS, MOCK_CODEX_UNSUBSCRIBE_REFUSE (answer
 /// `thread/unsubscribe` with an error), MOCK_CODEX_ECHO_PROMPT,
 /// MOCK_CODEX_OVERLOAD_ATTEMPTS with MOCK_ATTEMPT_FILE (the first N turns,
@@ -2391,9 +2393,8 @@ mod listen_server {
         /// the frames received before it did.
         log: Option<std::fs::File>,
         unlogged: Vec<String>,
-        /// Kept open after its reads stopped, so a client's write onto it is
-        /// refused rather than its read seeing the end first.
-        held: bool,
+        /// Its reads were stopped (MOCK_CODEX_SHUT_READ_ON_APPROVAL).
+        read_shut: bool,
     }
 
     #[derive(Clone, Default)]
@@ -2894,6 +2895,20 @@ mod listen_server {
         }
     }
 
+    /// A shut read side as Darwin has one, on any platform: everything the
+    /// client writes is taken and dropped. XNU's `shutdown(SHUT_RD)` marks the
+    /// receive buffer `SB_DROP`, so a peer's write onto it succeeds and goes
+    /// nowhere, where Linux's fails the write with `EPIPE`.
+    fn discard_reads(stream: &UnixStream) {
+        let Ok(mut drain) = stream.try_clone() else {
+            return;
+        };
+        std::thread::spawn(move || {
+            let mut sink = [0u8; 16 * 1024];
+            while drain.read(&mut sink).is_ok_and(|read| read > 0) {}
+        });
+    }
+
     fn serve(server: &Shared, stream: UnixStream) {
         let Ok(writer) = stream.try_clone() else {
             return;
@@ -2951,7 +2966,7 @@ mod listen_server {
                     record,
                     log: None,
                     unlogged: Vec::new(),
-                    held: false,
+                    read_shut: false,
                 },
             );
             s.save();
@@ -2987,11 +3002,22 @@ mod listen_server {
                 hold(server, &frame);
                 handle(server, conn, &text, &frame);
             }
-        }
-        if lock(server).conns.get(&conn).is_some_and(|c| c.held) {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(3600));
+            // A shut read side reads nothing more on either platform; what
+            // becomes of the client's writes onto it is the platform's.
+            if lock(server).conns.get(&conn).is_some_and(|c| c.read_shut) {
+                break;
             }
+        }
+        // A connection whose reads were shut is ended whole rather than held
+        // open. Holding it waited on the platform to refuse the client's next
+        // write, which Darwin never does, so a client with a held turn and no
+        // timeout waited on it forever; its end is what every platform reports.
+        if let Some(c) = lock(server).conns.get(&conn).filter(|c| c.read_shut) {
+            let _ = c
+                .writer
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .shutdown(std::net::Shutdown::Both);
         }
         // The client is gone. Like Codex, its threads stay loaded and their
         // turns and commands keep running; only its subscriptions go.
@@ -3693,13 +3719,15 @@ mod listen_server {
                 // connection before the request goes out, so the client's
                 // answer is always a write onto a connection that is gone.
                 if knob("MOCK_CODEX_SHUT_READ_ON_APPROVAL").is_some() {
+                    let discards = knob("MOCK_CODEX_SHUT_READ_DISCARDS").is_some();
                     if let Some(c) = s.conns.get_mut(&conn) {
-                        c.held = true;
-                        let _ = c
-                            .writer
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner())
-                            .shutdown(std::net::Shutdown::Read);
+                        c.read_shut = true;
+                        let stream = c.writer.lock().unwrap_or_else(|p| p.into_inner());
+                        if discards {
+                            discard_reads(&stream);
+                        } else {
+                            let _ = stream.shutdown(std::net::Shutdown::Read);
+                        }
                     }
                 }
                 s.emit(&thread_id, &json!({"jsonrpc": "2.0", "id": request,

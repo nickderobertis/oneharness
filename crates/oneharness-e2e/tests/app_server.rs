@@ -330,6 +330,25 @@ impl Pool {
         Self::finish(self.spawn(cmd))
     }
 
+    /// [`Self::finish`], failing the journey if the run has not ended within
+    /// `limit` — after killing it, so a run that never ends is a failure that
+    /// says so, not a journey that waits on it forever.
+    fn finish_within(mut child: Child, limit: Duration) -> (Output, Value) {
+        let deadline = Instant::now() + limit;
+        while child.try_wait().expect("poll oneharness").is_none() {
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().expect("oneharness killed");
+                panic!(
+                    "the run had not ended after {limit:?}\n--- stderr ---\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        Self::finish(child)
+    }
+
     /// The control socket a session listens on.
     fn socket(&self, session: &str) -> PathBuf {
         self.path("sess")
@@ -4043,6 +4062,8 @@ fn a_server_that_dies_at_start_is_started_once_more() {
 /// A connection that refuses the dispatch's write while its turn runs — here,
 /// the answer to an approval request onto a connection the server stopped
 /// reading — is the shared server lost under the turn: `app_server_lost`.
+/// Only Linux refuses that write; Darwin drops it, which the journey after
+/// this one plays on every platform.
 #[test]
 fn a_write_refused_under_a_live_turn_is_app_server_lost() {
     let pool = Pool::new("pool-write-lost");
@@ -4065,11 +4086,89 @@ fn a_write_refused_under_a_live_turn_is_app_server_lost() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
-    assert!(
-        lost["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("refused a write"),
-        "the loss was not read off the refused write: {lost}"
+    if cfg!(target_os = "linux") {
+        assert!(
+            lost["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("refused a write"),
+            "the loss was not read off the refused write: {lost}"
+        );
+    }
+}
+
+/// The same answer onto a connection the server stopped reading, where the
+/// platform does not refuse it: a Unix socket whose reader shut its read side
+/// takes a write and drops it on Darwin (XNU marks the receive buffer
+/// `SB_DROP`), where Linux fails it with `EPIPE`. Played on every platform
+/// (MOCK_CODEX_SHUT_READ_DISCARDS), as macOS CI met it: the answer goes nowhere
+/// and nothing says so, while the turn is held and the run has no timeout. The
+/// server ends the connection it stopped reading, so the run still ends
+/// `app_server_lost`, within a bound, rather than waiting on a turn that
+/// cannot end — which it did while the server held that connection open.
+#[test]
+fn a_write_dropped_under_a_live_turn_still_ends_the_run_app_server_lost() {
+    let pool = Pool::new("pool-write-dropped");
+    let never = pool.file("never");
+    let child = pool.spawn(pool.command(
+        "write-dropped",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", "true"),
+            ("MOCK_CODEX_REQUEST_APPROVAL", "1"),
+            ("MOCK_CODEX_SHUT_READ_ON_APPROVAL", "1"),
+            ("MOCK_CODEX_SHUT_READ_DISCARDS", "1"),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let (output, report) = Pool::finish_within(child, Duration::from_secs(30));
+    let lost = result(&report);
+    assert_eq!(
+        lost["status"],
+        "nonzero",
+        "{lost}\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    // Dropped and then read as the connection's end, or refused outright
+    // when the server's end of the connection came first: both are the
+    // server lost under the turn.
+    assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
+    let approvals = &pool.state(pool.the_server())["approvals"];
+    assert_eq!(
+        approvals[0]["answers"],
+        json!([]),
+        "the server read an answer it should have dropped: {approvals}"
+    );
+}
+
+/// Hangs on purpose, the way a journey hung on macOS CI: a pooled dispatch
+/// whose turn never ends, waited on with no bound of the journey's own. Ignored
+/// in every ordinary run: `scripts/app-server-hang-bound-test.sh` runs it
+/// through cargo nextest to prove that the suite's per-test bound
+/// (`.config/nextest.toml`) ends it as a failure naming it, and that nothing it
+/// started is left running. What it started is written, before it waits, to
+/// the file `OH_HANG_PROBE_MANIFEST` names.
+#[test]
+#[ignore = "hangs on purpose; scripts/app-server-hang-bound-test.sh runs it"]
+fn a_journey_that_never_ends_is_ended_by_the_suite_s_bound() {
+    let manifest = std::env::var_os("OH_HANG_PROBE_MANIFEST")
+        .expect("OH_HANG_PROBE_MANIFEST names the file to record what this journey starts");
+    let pool = Pool::new("pool-hang-probe");
+    let never = pool.file("never");
+    let dispatch =
+        pool.spawn(pool.command("hang-probe", &[], &[("MOCK_CODEX_HOLD_UNTIL", &never)]));
+    let server = pool.await_live_turns(1);
+    let (_, sweeper) = entry_and_sweeper(&pool);
+    std::fs::write(
+        &manifest,
+        format!(
+            "dir={}\ntest={}\ndispatch={}\nserver={server}\nsweeper={sweeper}\n",
+            pool.dir.path().display(),
+            std::process::id(),
+            dispatch.id()
+        ),
+    )
+    .unwrap();
+    let (_, report) = Pool::finish(dispatch);
+    panic!("the held turn ended: {report}");
 }

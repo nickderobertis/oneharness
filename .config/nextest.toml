@@ -1,0 +1,12 @@
+# Per-test bounds nextest enforces wherever it runs the suites: every platform
+# of the `check` job, and locally.
+
+# The shared Codex app-server journeys (crates/oneharness-e2e/tests/app_server.rs)
+# wait on real dispatches, servers and sweepers. One that never ended held a
+# shared macOS runner for hours; each is now ended at 180 s, about 2.5 times the
+# slowest that passes (73 s, instrumented). Ended, it is a TIMEOUT failure that
+# names it, and nextest terminates its process group.
+# scripts/app-server-hang-bound-test.sh proves this through the runner itself.
+[[profile.default.overrides]]
+filter = "binary_id(oneharness-e2e::app_server)"
+slow-timeout = { period = "60s", terminate-after = 3 }

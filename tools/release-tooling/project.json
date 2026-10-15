@@ -45,7 +45,10 @@
       "{workspaceRoot}/.github/workflows/release.yml",
       "{workspaceRoot}/.github/workflows/release-plz.yml",
       "{workspaceRoot}/.github/workflows/package-pr.yml",
-      "{workspaceRoot}/.github/workflows/ci.yml"
+      "{workspaceRoot}/.github/workflows/ci.yml",
+      "{workspaceRoot}/scripts/release-bundle.mjs",
+      "{workspaceRoot}/scripts/release-install.mjs",
+      "{workspaceRoot}/scripts/release-payload.mjs"
     ]
   },
   "targets": {

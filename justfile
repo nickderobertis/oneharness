@@ -28,6 +28,7 @@ bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
     @just js-install
+    @just github-install
     uv sync --project python --frozen --no-install-workspace --quiet
     @bash scripts/shell-tools.sh install
     ./scripts/setup-llmlint.sh
@@ -82,6 +83,16 @@ budgets tier="all":
         uv sync --project python --frozen --no-install-workspace --quiet
         uv run --project python --frozen --no-sync onebudgetspec check budgets.yaml
     fi
+
+# The offline `budgets` targets of the projects the diff since the base reaches
+# (github-workflows' macOS scheduling budgets, over the telemetry its `test`
+# records), never a host-reading `budgets-host`. ci.yml's affected-tier legs run
+# it on Linux after `just check`; the full sweep's `just budgets` covers them.
+budgets-offline:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    base="$(bash scripts/nx-base.sh)"
+    bash scripts/nx affected --base="$base" -t budgets
 
 # The quality gate, through the Nx project graph. `just check` is the AFFECTED
 # tier: every gate target of each project the diff since the base can reach
@@ -258,6 +269,10 @@ sdk-generate:
 js-install:
     @out=$(bun install --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Node workspace dependency install failed; the bun output above says why. If a package.json changed, refresh the root bun.lock with 'bun install'; otherwise check network access to the npm registry and rerun 'just js-install'." >&2; exit 1; }
 
+# Install the isolated workflow-policy tooling without modifying the product lock.
+github-install:
+    @out=$(bun install --cwd .github --frozen-lockfile 2>&1) || { printf '%s\n' "$out" >&2; echo "Workflow tooling install failed. Next: repair .github/bun.lock or registry access and rerun just github-install." >&2; exit 1; }
+
 # Compile the Node SDK's publishable `dist/` — the release's spelling of the
 # node-sdk project's `build`, which the release runs without Nx because it skips
 # the gate when CI already swept the tree. Same command, so they cannot drift.
@@ -401,3 +416,7 @@ lint-llm-diff base="origin/main" *args:
 # fresh roll that neither reads nor records one.
 lint-llm-local base:
     scripts/local-llmlint-gate.sh "{{base}}"
+
+# Release packaging from one compiled/stripped binary per target; never publishes.
+release-bundle target out="dist/release" tag="":
+    node scripts/release-bundle.mjs --target {{quote(target)}} --out {{quote(out)}} {{if tag == "" { "" } else { "--tag " + quote(tag) }}}

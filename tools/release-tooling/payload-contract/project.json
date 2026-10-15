@@ -1,0 +1,28 @@
+{
+  "name": "release-payload-contract",
+  "projectType": "library",
+  "tags": [
+    "type:contract",
+    "lang:javascript"
+  ],
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --check tools/release-tooling/payload-contract/contract.mjs && node --check tools/release-tooling/payload-contract/io.mjs"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node --test tools/release-tooling/payload-contract/contract.test.mjs"
+      }
+    }
+  },
+  "namedInputs": {
+    "default": [
+      "{projectRoot}/**/*",
+      "{workspaceRoot}/release-platforms.toml"
+    ]
+  }
+}

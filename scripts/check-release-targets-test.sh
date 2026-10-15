@@ -757,12 +757,12 @@ assert_red toolchain-target-extra "a toolchain listing a target no release build
 root="$(stage platform-unknown-key)"
 rewrite "$root" release-platforms.toml '{ sub(/^runner = "windows-11-arm"$/, "runnr = \"windows-11-arm\""); print }'
 assert_red platform-unknown-key "a platform key the declaration does not define" \
-  'names "runnr" in [[platform]] 6, which is not one of'
+  'names "runnr" in [[platform]] 5, which is not one of'
 
 root="$(stage platform-missing-key)"
 rewrite "$root" release-platforms.toml '!/^archive = "zip"$/ { print }'
 assert_red platform-missing-key "a platform missing a required key" \
-  "[[platform]] 5 declares no archive"
+  "[[platform]] 4 declares no archive"
 
 root="$(stage platform-twice)"
 cat >>"$root/release-platforms.toml" <<'PLATFORM'
@@ -784,22 +784,22 @@ assert_red platform-key-before-first "a key outside any platform" \
 root="$(stage platform-key-repeated)"
 rewrite "$root" release-platforms.toml '{ print } /^runner = "windows-11-arm"$/ { print "runner = \"windows-latest\"" }'
 assert_red platform-key-repeated "one key written twice in a platform" \
-  "names runner twice in [[platform]] 6"
+  "names runner twice in [[platform]] 5"
 
 root="$(stage platform-pull-request-string)"
 rewrite "$root" release-platforms.toml '{ sub(/^pull_request = true$/, "pull_request = \"true\""); print }'
 assert_red platform-pull-request-string "pull_request written as a string" \
-  "writes pull_request in [[platform]] 6 as a string"
+  "writes pull_request in [[platform]] 5 as a string"
 
 root="$(stage platform-empty-value)"
 rewrite "$root" release-platforms.toml '{ sub(/^npm = "win32-arm64"$/, "npm = \"\""); print }'
 assert_red platform-empty-value "a required key left empty" \
-  "leaves npm empty in [[platform]] 6"
+  "leaves npm empty in [[platform]] 5"
 
 root="$(stage platform-malformed-line)"
 rewrite "$root" release-platforms.toml '{ sub(/^archive = "zip"$/, "archive = zip"); print }'
 assert_red platform-malformed-line "a platform line that is not key = \"value\"" \
-  "has a line in [[platform]] 5 that is not key = \"value\" (or pull_request = true): archive = zip"
+  "has a line in [[platform]] 4 that is not key = \"value\" (or pull_request = true): archive = zip"
 
 root="$(stage platforms-none-declared)"
 rewrite "$root" release-platforms.toml '/^#/ || /^$/ { print }'

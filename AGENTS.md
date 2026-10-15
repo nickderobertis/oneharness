@@ -66,7 +66,9 @@ follow-ups (see "After the main task").
   `oneharness-integration`, `oneharness-mock-harness`, `oneharness-e2e`,
   `history-compat`, `mock-responder`, `harness-captures`, `sdk-contract`,
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
-  `install-surface`, `release-tooling`, `ci-contracts`, `e2e-support`,
+  `install-surface`, `release-tooling`, `ci-contracts`, `github-workflows`,
+  `github-workflows-integration`, `github-workflows-setup`,
+  `github-workflows-gate-env`, `release-payload-contract`, `e2e-support`,
   `network-breakdown`, `network-telemetry`, `pool-maintenance`, `workspace`,
   `workspace-integration`, `rust-coverage`, `shell-coverage`,
   `shell-toolchain`, `scripts`, the paid `live-*` suites
@@ -98,8 +100,9 @@ follow-ups (see "After the main task").
 <!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 
 Nx runs every target; each ecosystem resolves through its own one workspace and
-lockfile — Cargo (`Cargo.lock`), one Bun workspace (root `package.json` +
-`bun.lock`: the Node SDK, the npm launcher and Nx itself), and one uv workspace
+lockfile — Cargo (`Cargo.lock`), the Bun product workspace (root `package.json` +
+`bun.lock`: the Node SDK, npm launcher and Nx), plus a private locked
+`.github/` tooling package for workflow parsing, expressions and budget reporting, and one uv workspace
 rooted at `python/` (`python/uv.lock`, resolving for Python 3.9; rooted there
 because the root `pyproject.toml` is maturin's `oneharness-cli` wrapper, which a
 uv workspace at the root would build). Every project declares the targets that
@@ -296,6 +299,7 @@ Use the `just` recipes; do not hand-roll equivalents.
 
 ## Releasing
 
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] This bullet must quote scripts/ci-verdict.sh's '# CONTRACT: ' sentence word for word: scripts/check-ci-verdict.sh fails unless AGENTS.md, README.md, release.yml and release-plz.toml each state the CI-verdict fallback rule exactly as that script does, so trimming it to a reference breaks that drift gate. The block brackets the bullet from outside because a comment inside it would split the list item. -->
 - Releases are automated from conventional commits by **release-plz**
   (`release-plz.toml` + `.github/workflows/release-plz.yml`), mirroring
   nickderobertis/allowlister. Land conventional commits on `main` (`feat` →
@@ -308,15 +312,14 @@ Use the `just` recipes; do not hand-roll equivalents.
   batches merges behind its release PR, so the tree that ships is one no merge
   job swept. The full sweep (`just check all`, `scripts/ci-gate-tier.sh`)
   therefore runs on the release PR, and merge-to-main and every other PR run
-  the affected tier. `release.yml` reads that sweep's verdict
-  (`scripts/ci-verdict.sh`) rather than sweeping the same tree again — the
-  merged release PR's run when its head carried exactly the tagged tree, else a
-  `workflow_dispatch` of `ci.yml` with `tier=all` on the release tag (the
-  manual fallback): a failed check job refuses release; only a complete check
-  matrix whose every job ran the full sweep successfully skips the release
-  gate; once CI ends, a non-Ubuntu check job without a successful sweep refuses
-  release, and an Ubuntu one alone runs the sweep on the Ubuntu release runner.
-  An in-flight matrix is awaited to a bound.
+  the affected tier. `release.yml` reuses that sweep's verdict rather than
+  sweeping the same tree again; `scripts/ci-verdict.sh` decides which run
+  counts (the release PR's, else a `workflow_dispatch` of `ci.yml` with
+  `tier=all` on the tag): a failed check job refuses release; only a complete
+  check matrix whose jobs successfully swept or whose Mac carrier authorized
+  omission skips the release gate; once CI ends, a non-Ubuntu check job
+  without either verdict refuses release, and an Ubuntu one alone runs the
+  sweep on the Ubuntu release runner.
   The release publishes both crates in dependency order
   (`oneharness-core`, then `oneharness`), attaches the checksummed cross-platform
   binaries + their Sigstore `.sigstore.json` bundles, and builds/publishes the
@@ -338,6 +341,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   version at publish time, so `Cargo.toml` pins
   `oneharness-core = { path = ..., version = "x.y.z" }` (release-plz keeps that
   `version` in step).
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - **Requires two secrets.** The automation runs only once BOTH repo secrets
   exist; the `guard` job no-ops cleanly (no partial release) until then.
   `RELEASE_PLZ_TOKEN` is a PAT (classic or fine-grained, `contents: write` +

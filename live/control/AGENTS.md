@@ -11,14 +11,12 @@ Rules for the `live-control` suite alone (`scripts/e2e-control.sh`,
   nature (two 15s freeze windows per harness), so it is opt-in locally and
   outside the gate and the shared per-PR e2e matrix — but NOT outside CI: goose,
   opencode and crush authenticate from provider keys a developer box generally
-  does not carry, so `e2e-control.yml` (which supplies all of them) is the only
-  place those three are ever proven. It runs on a `pull_request` whose paths
-  touch the control feature's own sources, and on demand; a PR touching anything
-  else does not run a minute of it. **macOS is on the daily `schedule`, never on
-  the pull request**: this feature has broken there three times in ways Linux
-  cannot show (`/tmp`→`/private/tmp`, the shorter `sun_path` budget, a
-  refusal-reason mismatch), and a second 26-minute leg per control PR is not
-  what that is worth. A scheduled failure opens (or comments on) an issue,
+  does not carry, so `e2e-control.yml` and the consolidated Mac CI job supply
+  the credentials and are the
+  places those three are proven. The Linux workflow runs for control-source
+  changes, on its daily schedule, and on demand. CI's one Mac check runs the
+  same proof on trusted ordinary PRs, consolidating the former scheduled Mac
+  assertions. A scheduled Linux failure opens (or comments on) an issue,
   because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went

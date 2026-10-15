@@ -858,6 +858,27 @@ for answer in '[{"message":"Not Found"}]' 'not json'; do
   expect_said "$tmp/err" "the pull requests behind $SHA_UNDER_TEST were unreadable"
 done
 
+# The Mac carrier can authorize omission, but only with its own successful
+# semantic omission step and a successful job; other platforms cannot use it.
+for outcome in success failure skipped cancelled misnamed wrong-platform; do
+  fixture="$(run_with_jobs 400 success success affected success | jq -c --arg outcome "$outcome" '
+    .check_jobs |= map(if .name == "check (macos-latest)" then
+      .steps += [{name:(if $outcome == "misnamed" then "Mac omission renamed" else "Authorized Mac omission" end), status:"completed", conclusion:(if $outcome == "success" or $outcome == "misnamed" or $outcome == "wrong-platform" then "success" else $outcome end)}]
+      | if $outcome == "cancelled" then .conclusion="cancelled" else . end
+      | if $outcome == "wrong-platform" then .steps |= map(select(.name != "Authorized Mac omission")) else . end
+    elif .name == "check (ubuntu-latest)" and $outcome == "wrong-platform" then
+      .steps += [{name:"Authorized Mac omission", status:"completed", conclusion:"success"}]
+    else . end)
+  ')"
+  run_case "{\"workflow_runs\":[$fixture]}" "Mac omission with $outcome"
+  if [ "$outcome" = success ]; then
+    expect_status 0
+    expect_needs_check false
+  else
+    expect_refused
+  fi
+done
+
 # Keep the four prose copies of the fallback rule aligned with the contract in
 # scripts/ci-verdict.sh.
 #

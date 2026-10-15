@@ -12,9 +12,10 @@ pull-request matrix contract: the eight per-harness suites under `harness/` and
   as redundant paid model calls: the release-plz `release vX.Y.Z` PR re-runs the
   suite as the pre-release gate, so main is already covered by the last PR
   before a release. The **PR matrix is deliberately slim** — only **claude-code
-  and codex run cross-platform** (ubuntu/macos/windows); every other harness
-  (and the schema feature) runs **Linux-only** on PRs. Cross-platform coverage
-  for the rest is **on demand**, not automatic. To check a single harness and/or
+  and codex run cross-platform** (ubuntu/windows in their workflows, with Mac assertions consolidated
+  sequentially in ci.yml); every other harness
+  (and the schema feature) runs **Linux-only** on PRs. The optional Mac commands also live in ci.yml behind their workflow paths;
+  explicit per-harness dispatches remain available for diagnostics. To check a single harness and/or
   platform, DO NOT push a commit — that re-runs the whole PR suite. Instead
   dispatch the one workflow with its `os` input (`all`, or a single
   `ubuntu-latest` / `macos-latest` / `windows-latest`; `default` = the PR
@@ -25,4 +26,4 @@ pull-request matrix contract: the eight per-harness suites under `harness/` and
   by necessity; `scripts/check-e2e-matrix.sh` (in `ci-contracts`' `test`, so in
   `just check` and CI) is its **drift gate** — it holds the one canonical
   spelling of the contract and fails if any workflow diverges (no `push`
-  trigger; claude/codex cross-platform, the rest Linux-only on PR).
+  trigger; claude/codex Linux/Windows, the rest Linux-only in their workflows).

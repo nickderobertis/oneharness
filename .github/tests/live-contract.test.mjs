@@ -1,0 +1,186 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync, cpSync, writeFileSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { resolve, join } from "node:path";
+import { execFileSync, spawnSync } from "node:child_process";
+import { parse, stringify } from "yaml";
+import { history } from "./history.mjs";
+import { evaluate } from "../workflow-graph.mjs";
+import { tmpdir } from "node:os";
+// Paid Mac CLI execution requires hosted credentials and a Mac runner.
+// Structural command/credential checks do not claim native execution.
+// llmlint: ignore-block[shell_test_tiers_stay_split] The required offline real Git/Python workflow suite runs in github-workflows:test, measured about 10 seconds, with no installs or model calls; artifact installation remains in the separate integration tier.
+test("consolidated Mac job retains real live commands and credential bindings from every workflow", () => {
+  const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8")).jobs.check;
+  const names = [
+    "claude",
+    "codex",
+    "opencode",
+    "goose",
+    "qwen",
+    "crush",
+    "copilot",
+    "cursor",
+    "schema",
+    "variants",
+    "control",
+  ];
+  for (const name of names) {
+    const workflow = parse(
+      readFileSync(`.github/workflows/e2e-${name}.yml`, "utf8"),
+    );
+    const original = workflow.jobs.live;
+    const noSkip = original.env?.OH_E2E_NO_SKIP ?? workflow.env?.OH_E2E_NO_SKIP;
+    assert.equal(noSkip, 1, `${name}: source workflow demands a no-skip run`);
+    for (const step of original.steps.filter(
+      (s) => s.run && (!s.if || evaluate(s.if, { runner: { os: "macOS" } })),
+    )) {
+      const command = (s) =>
+        s
+          .split("\n")
+          .filter((l) => !l.trim().startsWith("#"))
+          .join("\n");
+      const copies = ci.steps.filter(
+        (s) =>
+          s.run &&
+          command(s.run) === command(step.run) &&
+          s.if?.includes(`outputs.${name} == 'true'`),
+      );
+      assert.equal(
+        copies.length,
+        1,
+        `${name}: missing/duplicate command ${step.name}`,
+      );
+      // The no-skip/selector flags move from the source workflow or job onto
+      // the consolidated step, so they never reach the check job's gate steps.
+      const { OH_E2E_NO_SKIP, OH_E2E_VARIANTS_API_ONLY, OH_E2E_VARIANTS_RUN_OPENCODE,
+        OH_E2E_VARIANTS_RUN_QWEN, ...credentials } = copies[0].env ?? {};
+      assert.deepEqual(
+        Object.keys(credentials).length ? credentials : undefined,
+        step.env,
+        `${name}: credential/model drift`,
+      );
+      if (/^\s*just live-/m.test(step.run))
+        assert.equal(OH_E2E_NO_SKIP, noSkip, `${name}: live step must keep the no-skip demand`);
+      const context = {
+        matrix: { os: "macos-latest" },
+        needs: { "macos-policy": { outputs: { macos_required: "true" } } },
+        github: {
+          repository: "nickderobertis/oneharness",
+          event: {
+            pull_request: { head: { repo: { full_name: "fork/repo" } } },
+          },
+        },
+        steps: { "live-paths": { outputs: { [name]: "true" } } },
+        runner: { os: "macOS" },
+      };
+      assert.equal(
+        evaluate(copies[0].if, context),
+        false,
+        `${name}: fork must not receive live credentials`,
+      );
+      context.github.event.pull_request.head.repo.full_name = context.github.repository;
+      assert.equal(evaluate(copies[0].if, context), true, `${name}: trusted selected lane must execute`);
+      context.steps["live-paths"].outputs[name] = "false";
+      assert.equal(evaluate(copies[0].if, context), false, `${name}: unselected lane must omit`);
+    }
+  }
+  const variants = ci.steps.find((s) => s.run === "just live-variants");
+  assert.equal(variants.env.OH_E2E_VARIANTS_API_ONLY, 1);
+  assert.equal(variants.env.OH_E2E_VARIANTS_RUN_OPENCODE, "1");
+  assert.equal(variants.env.OH_E2E_VARIANTS_RUN_QWEN, "0");
+});
+test("real path-routing subprocess reads workflow filters and keeps former control schedule proof", () => {
+  const fixture = history();
+  try {
+    cpSync(".github/workflows", join(fixture.cwd, ".github/workflows"), {
+      recursive: true,
+    });
+    const output = join(fixture.cwd, "outputs");
+    writeFileSync(output, "");
+    execFileSync(process.execPath, [resolve(".github/live-paths.mjs")], {
+      cwd: fixture.cwd,
+      env: {
+        ...process.env,
+        BASE_SHA: "base",
+        HEAD_SHA: "version-only",
+        GITHUB_OUTPUT: output,
+      },
+    });
+    const flags = Object.fromEntries(
+      readFileSync(output, "utf8")
+        .trim()
+        .split("\n")
+        .map((s) => s.split("=")),
+    );
+    assert.equal(flags.claude, "true");
+    assert.equal(flags.codex, "true");
+    assert.equal(flags.variants, "false");
+    assert.equal(flags.control, "true");
+    const routed = (head) => {
+      writeFileSync(output, "");
+      execFileSync(process.execPath,[resolve(".github/live-paths.mjs")],{cwd:fixture.cwd,env:{...process.env,BASE_SHA:"base",HEAD_SHA:head,GITHUB_OUTPUT:output}});
+      return Object.fromEntries(readFileSync(output,"utf8").trim().split("\n").map(s=>s.split("=")));
+    };
+    fixture.git("checkout","-q","base");
+    mkdirSync(join(fixture.cwd,"src/commands"),{recursive:true});
+    writeFileSync(join(fixture.cwd,"src/commands/interrupt.rs"),"fn changed() {}\n");
+    fixture.git("add","src/commands/interrupt.rs");fixture.git("commit","-qm","source path");fixture.git("tag","path-source");
+    const source=routed("path-source");
+    assert.equal(source.claude,"true");assert.equal(source.codex,"true");assert.equal(source.variants,"true");assert.equal(source.control,"true");
+    fixture.git("checkout","-q","base");
+    mkdirSync(join(fixture.cwd,"crates/sdk-contract"),{recursive:true});
+    writeFileSync(join(fixture.cwd,"crates/sdk-contract/excluded.md"),"excluded path\n");
+    fixture.git("add","crates/sdk-contract/excluded.md");fixture.git("commit","-qm","excluded path");fixture.git("tag","path-excluded");
+    const excluded=routed("path-excluded");
+    assert.equal(excluded.claude,"false");assert.equal(excluded.codex,"false");assert.equal(excluded.variants,"false");assert.equal(excluded.control,"true");
+
+  } finally {
+    fixture.dispose();
+  }
+});
+// llmlint: ignore-end[shell_test_tiers_stay_split]
+
+test("live variants preflight accepts the actual consolidated graph and rejects selector drift", () => {
+  const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "variants-routing-"));
+  try {
+    const ci = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
+    const path = join(cwd, "ci.yml");
+    const workflowPath = join(cwd, "variants.yml");
+    const workflowText = readFileSync(".github/workflows/e2e-variants.yml", "utf8");
+    writeFileSync(workflowPath, workflowText);
+    const run = () => spawnSync(process.execPath, [
+      resolve(".github/variants-routing.mjs"), "--workflow",
+      workflowPath, "--ci", path,
+    ], { encoding: "utf8" });
+    writeFileSync(path, stringify(ci));
+    assert.equal(run().status, 0);
+    const variantsStep = ci.jobs.check.steps.find((s) => s.run === "just live-variants");
+    variantsStep.env.OH_E2E_VARIANTS_RUN_OPENCODE = "0";
+    writeFileSync(path, stringify(ci));
+    const failed = run();
+    assert.notEqual(failed.status, 0);
+    assert.match(failed.stderr, /Mac CI: preserve OpenCode variant selector/);
+    variantsStep.env.OH_E2E_VARIANTS_RUN_OPENCODE = "1";
+    writeFileSync(path, stringify(ci));
+    assert.equal(run().status, 0);
+    for (const invalid of [null, { jobs: {} }, { jobs: { check: { env: {}, steps: [{} , { if: 7 }] } } }]) {
+      writeFileSync(path, stringify(invalid));
+      const invalidRun = run();
+      assert.notEqual(invalidRun.status, 0);
+      assert.match(invalidRun.stderr, /Invalid .*?(mapping|steps)/);
+    }
+    writeFileSync(path, stringify(ci));
+    for (const include of [null, {}, [null], [{ os: "ubuntu-latest", run_opencode: 1, run_qwen: "1" }]]) {
+      writeFileSync(workflowPath, stringify({ jobs: { live: { strategy: { matrix: { include } } } } }));
+      const invalidRun = run();
+      assert.notEqual(invalidRun.status, 0);
+      assert.match(invalidRun.stderr, /Invalid variants matrix/);
+    }
+    writeFileSync(workflowPath, workflowText);
+    assert.equal(run().status, 0);
+    const missing = spawnSync(process.execPath, [resolve(".github/variants-routing.mjs")], { encoding: "utf8" });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /--workflow requires a workflow file path/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});

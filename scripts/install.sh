@@ -137,6 +137,19 @@ detect_target() {
     *) err "unsupported architecture: $arch" ;;
   esac
 
+  # Releases ship Apple Silicon macOS only. A shell under Rosetta on an Apple
+  # Silicon Mac also reports x86_64, so an unposed host asks the kernel whether
+  # it can run arm64 and installs that native binary; a real Intel Mac is
+  # refused by name rather than sent after an archive that is not published.
+  if [ "$os_part" = "apple-darwin" ] && [ "$arch_part" = "x86_64" ]; then
+    if [ -z "${ONEHARNESS_HOST_ARCH:-}" ] &&
+      [ "$(sysctl -n hw.optional.arm64 2>/dev/null || true)" = "1" ]; then
+      arch_part="aarch64"
+    else
+      err "Intel macOS is no longer supported: oneharness releases ship prebuilt binaries for Apple Silicon macOS only. Run it on an Apple Silicon Mac, or build from source with 'cargo install oneharness --locked'."
+    fi
+  fi
+
   # A Windows ARM64 host can run this shell itself under x64 emulation, and
   # then `uname -m` reports the emulated x86_64. Windows still says what the
   # machine is: a native shell's PROCESSOR_ARCHITECTURE, or PROCESSOR_IDENTIFIER,

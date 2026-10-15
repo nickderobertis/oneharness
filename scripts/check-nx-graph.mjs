@@ -24,7 +24,9 @@
 // Every `test` running a shell test step also reads, through its inputs, every
 // file scripts/shell-test.sh reads. And the network budgets, which read live
 // telemetry only `just live-codex` records, are checked by no target but the
-// paid `live-codex:live`, which no gate tier runs (live/AGENTS.md).
+// paid `live-codex:live`, which no gate tier runs (live/AGENTS.md); the pool
+// maintenance budget, which builds the repository twice, by no target but
+// `pool-maintenance:budgets-host`, which the `check` recipe never names.
 //
 // Quiet on success: one line. Node built-ins only.
 import { execFileSync } from "node:child_process";
@@ -231,12 +233,21 @@ for (const name of shellTests) {
 // The network budgets read real telemetry: only `live-codex:live` (whose
 // recipe runs the suite, then the check) may run their check, and the gate's
 // `check` recipe excludes every live project.
+// The pool maintenance budget builds the repository twice: only
+// `pool-maintenance:budgets-host`, a target no gate tier names, may run its
+// check (`just budgets`, after the release pull request's sweep).
 const runsBudgetCheck = /e2e-network-budget|onebudgetspec check|just live-codex/u;
+const poolBudgetCheck = /onebudgetspec check pool-maintenance\/budgets\.yaml/u;
 for (const [name, node] of Object.entries(graph.nodes)) {
 	for (const [target, spec] of Object.entries(node.data.targets ?? {})) {
 		const commands = JSON.stringify(spec.options?.commands ?? spec.options?.command ?? "");
-		if (runsBudgetCheck.test(commands) && `${name}:${target}` !== "live-codex:live") {
-			failures.push(`${name}:${target} runs the network budget check, which reads live telemetry; keep it in live-codex:live (just live-codex) alone`);
+		const owner = `${name}:${target}`;
+		if (poolBudgetCheck.test(commands)) {
+			if (owner !== "pool-maintenance:budgets-host") {
+				failures.push(`${owner} runs the pool maintenance budget check, which builds the repository twice; keep it in pool-maintenance:budgets-host (just budgets) alone`);
+			}
+		} else if (runsBudgetCheck.test(commands) && owner !== "live-codex:live") {
+			failures.push(`${owner} runs the network budget check, which reads live telemetry; keep it in live-codex:live (just live-codex) alone`);
 		}
 	}
 }
@@ -244,6 +255,12 @@ for (const [name, node] of Object.entries(graph.nodes)) {
 const justfile = readFileSync(join(root, "justfile"), "utf8").replace(/\r\n/gu, "\n");
 if (!/^check tier=[\s\S]*?--exclude='live-\*,explore-\*'/mu.test(justfile)) {
 	failures.push(`the justfile's check recipe no longer excludes the live-* projects, so the gate would check the network budgets against whatever telemetry is lying around; restore --exclude='live-*,explore-*'`);
+}
+const checkRecipe = justfile.match(/^check tier=.*\n((?:[ \t]+\S.*\n)+)/mu)?.[1] ?? "";
+for (const [, targets] of checkRecipe.matchAll(/ -t (\S+)/gu)) {
+	if (targets.split(",").some((t) => t.startsWith("budgets"))) {
+		failures.push(`the justfile's check recipe runs the ${targets} targets, so every change would build the repository twice for pool-maintenance's budget; leave budgets to 'just budgets'`);
+	}
 }
 const liveCodex = justfile.match(/^live-codex:.*\n((?:[ \t]+\S.*\n)+)/mu)?.[1].trim().split(/\n\s*/u) ?? [];
 const recipe = ['ONEHARNESS_BIN="{{ONEHARNESS_BIN}}" bash scripts/e2e-codex.sh', "bash scripts/e2e-network-budget.sh codex"];

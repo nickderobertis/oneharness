@@ -117,6 +117,12 @@ jobs:
         env:
           OH_NET_NO_SKIP: ${{ runner.os == 'Linux' && '1' || '' }}
         run: just check all
+      # The project budgets no gate tier runs — pool-maintenance's builds the
+      # repository twice — follow the full sweep, on the Linux leg alone: the
+      # pool slots whose maintenance it times are Linux (pool-maintenance/AGENTS.md).
+      - name: Project budgets (just budgets)
+        if: steps.tier.outputs.tier == 'all' && runner.os == 'Linux'
+        run: just budgets
 
   # Package both crates exactly as Cargo will verify them at publish time. On its
   # own job for the same reason `deny` is — it needs the network-fetched

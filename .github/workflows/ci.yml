@@ -574,6 +574,13 @@ jobs:
 
       # llmlint: ignore-end[external_service_suite_stays_out_of_the_affected_tier]
 
+      # The project budgets no gate tier runs — pool-maintenance's builds the
+      # repository twice — follow the full sweep, on the Linux leg alone: the
+      # pool slots whose maintenance it times are Linux (pool-maintenance/AGENTS.md).
+      - name: Project budgets (just budgets)
+        if: steps.tier.outputs.tier == 'all' && runner.os == 'Linux'
+        run: just budgets
+
   # Package both crates exactly as Cargo will verify them at publish time. On its
   # own job for the same reason `deny` is — it needs the network-fetched
   # crates.io index — and, unlike `check`, deliberately absent from release.yml:

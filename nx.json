@@ -91,6 +91,20 @@
     },
     "explore": {
       "cache": false
+    },
+    "budgets": {
+      "cache": true,
+      "inputs": [
+        "default",
+        "^default",
+        {
+          "dependentTasksOutputFiles": "**/telemetry/*.json"
+        },
+        "pyToolchain"
+      ]
+    },
+    "budgets-host": {
+      "cache": false
     }
   }
 }

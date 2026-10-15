@@ -22,7 +22,8 @@ default:
 # The `llvm-tools-preview` component is what `cargo
 # llvm-cov` needs to instrument each crate's tests for the coverage floor;
 # scripts/shell-tools.sh installs the shellcheck, shfmt and (on Linux) kcov
-# that .shell-tool-versions pins.
+# that .shell-tool-versions pins. `_prune-superseded-install` puts the pinned
+# pruner `pool-maintenance` runs on PATH.
 bootstrap:
     rustup component add rustfmt clippy llvm-tools-preview
     cargo fetch --locked
@@ -31,6 +32,58 @@ bootstrap:
     uv sync --project python --frozen --no-install-workspace --quiet
     @bash scripts/shell-tools.sh install
     ./scripts/setup-llmlint.sh
+    @just _prune-superseded-install
+
+# The cargo-prune-superseded release `bootstrap` installs and `pool-maintenance`
+# requires: its one pin.
+PRUNE_SUPERSEDED_VERSION := "0.1.1"
+
+# Install the pinned cargo-prune-superseded unless that release is already the
+# one on PATH. It needs a newer rustc than rust-toolchain.toml pins, so it builds
+# on the `stable` toolchain (installed minimal when absent).
+_prune-superseded-install:
+    @if [ "$(cargo-prune-superseded --version 2>/dev/null || true)" != "cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}" ]; then \
+        { cargo +stable --version >/dev/null 2>&1 || rustup toolchain install stable --profile minimal --no-self-update; } && \
+        cargo +stable install --locked --quiet cargo-prune-superseded --version "{{PRUNE_SUPERSEDED_VERSION}}" || \
+        { echo "bootstrap: could not install cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}} on the stable toolchain (above); fix the error it names, then re-run 'just bootstrap'" >&2; exit 1; }; \
+        echo "bootstrap: installed cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}"; \
+    fi
+
+# onevcs's pool maintenance for this repository (onevcs.toml): remove each
+# compiled unit's superseded builds older than 2 days, keeping its newest build
+# and every build modified within the window. `target` is every directory this
+# repository's cargo builds write to: .cargo/config.toml's `target-dir`, the one
+# cargo config in the tree. Its pass time is budgeted in
+# pool-maintenance/budgets.yaml.
+pool-maintenance:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    want="cargo-prune-superseded {{PRUNE_SUPERSEDED_VERSION}}"
+    have="$(cargo-prune-superseded --version 2>/dev/null || true)"
+    if [ "$have" != "$want" ]; then
+        echo "pool-maintenance: needs $want on PATH, found '${have:-nothing}'; run 'just bootstrap'" >&2
+        exit 1
+    fi
+    cargo-prune-superseded --keep-within 2d target
+
+# The onebudgetspec budgets of the Nx projects (each one's `budgets` and
+# uncached host-reading `budgets-host` targets) at the tier, then the root
+# budgets.yaml where one exists. `check` runs the offline `budgets` targets but
+# never `budgets-host`: the one host budget,
+# pool-maintenance's, builds the repository twice, so ci.yml's release pull
+# request leg runs `just budgets` after its full sweep (pool-maintenance/AGENTS.md).
+budgets tier="all":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case {{ quote(tier) }} in
+        affected) base="$(bash scripts/nx-base.sh)"; bash scripts/nx affected --base="$base" -t budgets,budgets-host ;;
+        all) bash scripts/nx run-many --all --exclude='live-*,explore-*' -t budgets,budgets-host ;;
+        *) printf "budgets: unknown tier '%s' — use 'all' (the default) or 'affected'\n" {{ quote(tier) }} >&2; exit 2 ;;
+    esac
+    if [ -f budgets.yaml ]; then
+        uv sync --project python --frozen --no-install-workspace --quiet
+        uv run --project python --frozen --no-sync onebudgetspec check budgets.yaml
+    fi
 
 # The quality gate, through the Nx project graph. `just check` is the AFFECTED
 # tier: every gate target of each project the diff since the base can reach

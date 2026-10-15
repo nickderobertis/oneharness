@@ -476,7 +476,7 @@ resolved_base=$(cd "$tmp/repo" && "$root/scripts/comparison-base.sh" origin)
 # boundary. Existing hooksPath settings must survive setup unchanged.
 bootstrap_repo="$tmp/bootstrap-repo"
 bootstrap_bin="$tmp/bootstrap-bin"
-mkdir -p "$bootstrap_repo/scripts" "$bootstrap_repo/npm/oneharness-sdk" "$bootstrap_bin"
+mkdir -p "$bootstrap_repo/scripts" "$bootstrap_repo/npm/oneharness-sdk" "$bootstrap_repo/.just-tmp" "$bootstrap_bin"
 cp "$root/justfile" "$bootstrap_repo/justfile"
 cp "$root/scripts/setup-llmlint.sh" "$bootstrap_repo/scripts/setup-llmlint.sh"
 # The pinned shell toolchain's installer downloads, so it is stubbed like the
@@ -489,10 +489,28 @@ for tool in rustup cargo bun uv; do
   cat >"$bootstrap_bin/$tool" <<'STUB'
 #!/usr/bin/env bash
 printf '%s %s\n' "$(basename "$0")" "$*" >> "$CALL_LOG"
+# A case makes every call whose arguments contain STUB_FAIL_ON fail.
+if [ -n "${STUB_FAIL_ON:-}" ] && [[ "$*" == *"$STUB_FAIL_ON"* ]]; then
+  echo "$(basename "$0") stub: failing '$*' on purpose" >&2
+  exit 1
+fi
 STUB
   chmod +x "$bootstrap_bin/$tool"
 done
 ln -s "$(command -v just)" "$bootstrap_bin/just"
+# The pinned pruner pool maintenance runs, reporting whichever release a case
+# names, so no case reaches the host's own install. A pass records its argv and
+# directory and prints a per-target line, as the real one does.
+cat >"$bootstrap_bin/cargo-prune-superseded" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = --version ]; then
+  echo "cargo-prune-superseded ${PRUNE_STUB_VERSION:-0.0.0}"
+  exit 0
+fi
+printf 'cargo-prune-superseded %s in %s\n' "$*" "$PWD" >>"$CALL_LOG"
+echo "cargo-prune-superseded: ${*: -1}: stub pass"
+STUB
+chmod +x "$bootstrap_bin/cargo-prune-superseded"
 for expected_hooks_path in retained-hooks 'retained hooks [*]?'; do
   git -C "$bootstrap_repo" config core.hooksPath "$expected_hooks_path" || {
     echo "check-local-gate: could not configure the bootstrap fixture's hooksPath; check that $bootstrap_repo/.git/config is writable, then re-run" >&2
@@ -515,6 +533,97 @@ for expected_hooks_path in retained-hooks 'retained hooks [*]?'; do
     exit 1
   }
 done
+
+# Bootstrap installs the justfile's one pinned cargo-prune-superseded, on the
+# `stable` toolchain, over any other release on PATH, and leaves the pinned
+# release alone once it is the one installed.
+prune_pin=$(sed -n 's/^PRUNE_SUPERSEDED_VERSION := "\(.*\)"$/\1/p' "$root/justfile")
+[ -n "$prune_pin" ] || {
+  echo "check-local-gate: could not read PRUNE_SUPERSEDED_VERSION from $root/justfile; restore its 'PRUNE_SUPERSEDED_VERSION := \"x.y.z\"' pin" >&2
+  exit 1
+}
+prune_log="$tmp/prune-calls"
+CALL_LOG="$prune_log" PRUNE_STUB_VERSION=0.0.0 PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
+assert_file_contains "cargo +stable install --locked --quiet cargo-prune-superseded --version $prune_pin" "$prune_log" \
+  "bootstrap did not install the pinned cargo-prune-superseded over another release"
+: >"$prune_log"
+CALL_LOG="$prune_log" PRUNE_STUB_VERSION="$prune_pin" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >/dev/null
+if grep -q 'cargo-prune-superseded' "$prune_log"; then
+  echo "check-local-gate: bootstrap reinstalled cargo-prune-superseded $prune_pin, already the release on PATH; it ran:" >&2
+  cat "$prune_log" >&2
+  echo "  fix: keep the version guard in the justfile's _prune-superseded-install recipe" >&2
+  exit 1
+fi
+# A failed install, or a failed setup of the toolchain it builds on, fails
+# bootstrap and never prints the success line.
+for fail_on in "install --locked" "stable"; do
+  : >"$prune_log"
+  status=0
+  CALL_LOG="$prune_log" STUB_FAIL_ON="$fail_on" PRUNE_STUB_VERSION=0.0.0 PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+    just --justfile "$bootstrap_repo/justfile" --working-directory "$bootstrap_repo" bootstrap >"$tmp/prune-out" 2>&1 || status=$?
+  if [ "$status" -eq 0 ] || grep -q 'bootstrap: installed cargo-prune-superseded' "$tmp/prune-out" ||
+    ! grep -q 'bootstrap: could not install cargo-prune-superseded' "$tmp/prune-out"; then
+    echo "check-local-gate: with every call containing '$fail_on' failing, bootstrap exited $status and printed:" >&2
+    cat "$tmp/prune-out" >&2
+    echo "  fix: make the justfile's _prune-superseded-install recipe fail, saying it could not install, before its success line" >&2
+    exit 1
+  fi
+done
+
+# onevcs runs onevcs.toml's [pool.maintain] command in an idle slot's worktree:
+# that argv, run in the fixture checkout, runs the pinned pruner with a 2-day
+# window over the target dir .cargo/config.toml sets (resolved against the
+# checkout root, as cargo resolves it), and refuses any other pruner release.
+cp "$root/onevcs.toml" "$bootstrap_repo/onevcs.toml"
+maintain_argv="$tmp/maintain-argv"
+node -e '
+  const fs = require("node:fs");
+  const [file, out] = process.argv.slice(1);
+  let table = "";
+  let command;
+  for (const line of fs.readFileSync(file, "utf8").split(/\r?\n/u)) {
+    const header = /^\s*\[([^\]]+)\]\s*$/u.exec(line);
+    if (header) table = header[1].trim();
+    const match = /^\s*command\s*=\s*(\[.*\])\s*$/u.exec(line);
+    if (table === "pool.maintain" && match) command = JSON.parse(match[1]);
+  }
+  if (!Array.isArray(command) || command.length === 0 || !command.every((a) => typeof a === "string" && a !== "")) {
+    throw new Error(file + ": no [pool.maintain] command of non-empty strings");
+  }
+  fs.writeFileSync(out, command.join("\0") + "\0");
+' "$bootstrap_repo/onevcs.toml" "$maintain_argv" || {
+  echo "check-local-gate: could not read [pool.maintain] command from $root/onevcs.toml (above); keep it one line of quoted strings" >&2
+  exit 1
+}
+maintain=()
+while IFS= read -r -d '' arg; do maintain+=("$arg"); done <"$maintain_argv"
+maintain_target=$(sed -n 's/^target-dir = "\(.*\)"$/\1/p' "$root/.cargo/config.toml")
+maintain_target=${maintain_target:-target}
+: >"$prune_log"
+status=0
+(cd "$bootstrap_repo" && CALL_LOG="$prune_log" PRUNE_STUB_VERSION="$prune_pin" PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  "${maintain[@]}") >"$tmp/maintain-out" 2>&1 || status=$?
+if [ "$status" -ne 0 ] || ! grep -qxF "cargo-prune-superseded --keep-within 2d $maintain_target in $bootstrap_repo" "$prune_log" ||
+  ! grep -qxF "cargo-prune-superseded: $maintain_target: stub pass" "$tmp/maintain-out"; then
+  echo "check-local-gate: onevcs.toml's maintenance command '${maintain[*]}' exited $status, printed:" >&2
+  cat "$tmp/maintain-out" >&2
+  echo "  and ran the pruner as:" >&2
+  cat "$prune_log" >&2
+  echo "  fix: make it run 'cargo-prune-superseded --keep-within 2d $maintain_target' from the checkout root and pass its output through" >&2
+  exit 1
+fi
+: >"$prune_log"
+status=0
+(cd "$bootstrap_repo" && CALL_LOG="$prune_log" PRUNE_STUB_VERSION=0.0.0 PATH="$bootstrap_bin:$PATH" HOME="$tmp/home" \
+  "${maintain[@]}") >"$tmp/maintain-out" 2>&1 || status=$?
+if [ "$status" -eq 0 ] || [ -s "$prune_log" ] || ! grep -qF "run 'just bootstrap'" "$tmp/maintain-out"; then
+  echo "check-local-gate: with cargo-prune-superseded 0.0.0 on PATH, onevcs.toml's maintenance command exited $status, printed:" >&2
+  cat "$tmp/maintain-out" >&2
+  echo "  fix: make the justfile's pool-maintenance recipe refuse a release other than $prune_pin, naming 'just bootstrap', before it prunes" >&2
+  exit 1
+fi
 
 # The llmlint installer runs from the SessionStart hook, so under its `set -e`
 # every failure it guards must still end in exit 0. Each case drives the real

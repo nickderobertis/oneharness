@@ -209,6 +209,29 @@ cp "$tmp/saved.just" "$ws/justfile"
 [ "$status" -ne 0 ] || fail "a live-codex recipe without its budget check should have failed the boundary check"
 grep -qF "live-codex recipe is" "$tmp/err" ||
   fail "the check failed but did not name the live-codex recipe that dropped its budget check"
+
+# The pool maintenance budget builds the repository twice: a gate project's
+# target that runs its check, and a check recipe that runs the budget targets,
+# are each refused.
+cp "$ws/tools/network-telemetry/project.json" "$tmp/saved.json"
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const project = JSON.parse(fs.readFileSync(file, "utf8"));
+  project.targets.test.options.commands.push("uv run --project python --frozen --no-sync onebudgetspec check pool-maintenance/budgets.yaml --label host");
+  fs.writeFileSync(file, JSON.stringify(project, null, 2) + "\n");
+' "$ws/tools/network-telemetry/project.json"
+check
+cp "$tmp/saved.json" "$ws/tools/network-telemetry/project.json"
+[ "$status" -ne 0 ] || fail "a gate target running the pool maintenance budget check should have failed the boundary check"
+grep -qF "network-telemetry:test runs the pool maintenance budget check" "$tmp/err" ||
+  fail "the check failed but did not name the gate target that runs the pool maintenance budget check"
+sed "s/-t format,lint,typecheck,build,test,e2e,coverage,budgets --skip-nx-cache/-t format,lint,typecheck,build,test,e2e,coverage,budgets,budgets-host --skip-nx-cache/" "$tmp/saved.just" >"$ws/justfile"
+check
+cp "$tmp/saved.just" "$ws/justfile"
+[ "$status" -ne 0 ] || fail "a check recipe that runs budgets-host should have failed the boundary check"
+grep -qF "check recipe runs the format,lint,typecheck,build,test,e2e,coverage,budgets,budgets-host targets" "$tmp/err" ||
+  fail "the check failed but did not say the gate runs the budget targets"
 # A Windows checkout (core.autocrlf=true) ends the justfile's lines in CRLF;
 # the same recipes still pass.
 awk '{ printf "%s\r\n", $0 }' "$tmp/saved.just" >"$ws/justfile"

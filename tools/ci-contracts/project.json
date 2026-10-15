@@ -35,6 +35,8 @@
       "{workspaceRoot}/.tool-versions",
       "{workspaceRoot}/justfile",
       "{workspaceRoot}/oneharness.toml",
+      "{workspaceRoot}/onevcs.toml",
+      "{workspaceRoot}/.cargo/config.toml",
       "{workspaceRoot}/scripts/ci-verdict.sh",
       "{workspaceRoot}/Cargo.toml",
       "{workspaceRoot}/crates/*/Cargo.toml",

@@ -68,7 +68,7 @@ follow-ups (see "After the main task").
   `sdk-conformance`, `node-sdk`, `python-sdk`, `npm-launcher`,
   `install-surface`, `release-tooling`, `ci-contracts`, `github-workflows`,
   `github-workflows-integration`, `release-payload-contract`, `e2e-support`,
-  `network-breakdown`, `network-telemetry`, `workspace`,
+  `network-breakdown`, `network-telemetry`, `pool-maintenance`, `workspace`,
   `workspace-integration`, `rust-coverage`, `shell-coverage`,
   `shell-toolchain`, `scripts`, the paid `live-*` suites
   (claude, codex, opencode, goose, qwen, crush, copilot, cursor, schema,

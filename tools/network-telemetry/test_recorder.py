@@ -704,7 +704,6 @@ class Unwritable(unittest.TestCase):
             list((tmp / ".pending").glob("*")), "the pending marker outlived the failure"
         )
 
-
     @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_a_start_line_or_marker_that_cannot_be_written_refuses_the_launch(self) -> None:
         # The recorder writes the marker, then the start line, before the

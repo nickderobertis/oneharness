@@ -300,6 +300,67 @@ class MeasuredLaunch(unittest.TestCase):
         self.assertEqual(len(lines(file)), 2, "the launch was recorded more than once")
 
 
+class EarlyStop(unittest.TestCase):
+    """A stop can reach a launch's process group at any moment of the
+    recorder's own start — while the shim encodes the start line, while the
+    recorder's interpreter starts, before its namespace exists — as a suite
+    stopped mid-phase does. Whenever it lands, a launch that wrote a start line
+    gets exactly one measurement line and leaves no pending marker; one stopped
+    earlier records nothing at all."""
+
+    @unittest.skipIf(WINDOWS, "process groups and their signals are POSIX")
+    def test_a_stop_at_any_moment_of_the_recorders_start_leaves_each_start_line_one_line(
+        self,
+    ) -> None:
+        tmp = scratch(self)
+        real = tmp / "real"
+        # A launch that never ends on its own: one the stop missed would hold
+        # its pending marker past the bound below.
+        real.write_text("#!/usr/bin/env bash\nexec sleep 600\n")
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shims = []
+        for step in range(30):
+            shim = subprocess.Popen(
+                [
+                    BASH,
+                    str(NETSHIM),
+                    "--suite",
+                    "codex",
+                    "--harness",
+                    "codex",
+                    "--real",
+                    str(real),
+                    "--self",
+                    str(tmp / "shims" / "codex"),
+                    "--file",
+                    str(file),
+                    "--",
+                    "exec",
+                    "x",
+                ],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # 0 to 145 ms: from the shim's first line to well past the
+            # recorder's interpreter start, staggered across the launches.
+            time.sleep(step * 0.005)
+            os.killpg(shim.pid, signal.SIGTERM)
+            shims.append(shim)
+        for shim in shims:
+            shim.wait(timeout=60)
+        pending = tmp / ".pending"
+        deadline = time.monotonic() + 60
+        while any(pending.glob("*")) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(list(pending.glob("*")), [], "a stopped launch's marker outlived it")
+        records = lines(file)
+        for start in starts(records):
+            self.assertEqual(len(measurements(records, start["launch_id"])), 1, start)
+
+
 class Concurrency(unittest.TestCase):
     def test_launches_recorded_at_once_each_get_one_whole_line(self) -> None:
         need_recorder(self)

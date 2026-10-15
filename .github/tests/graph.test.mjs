@@ -390,6 +390,16 @@ test("workflow boundaries and producer outcomes refuse unproven outputs", () => 
   const scenario = {event: "pull_request", branch: "main", macosRequired: true};
   for (const result of ["failure", "cancelled", "skipped"])
     assert.throws(() => resolveJobs("ci.yml", {...scenario, outcomes: {"macos-policy": {result}}}, all), /Unresolved job output/);
+  // Stated as GitHub reads an output a failed producer never set (''), the
+  // `always()` check still runs, and its Mac leg falls back to Linux.
+  for (const result of ["failure", "cancelled"]) {
+    const unset = {macos_required: "", is_release_only: ""};
+    const legs = resolveJobs("ci.yml", {...scenario, outcomes: {"macos-policy": {result, outputs: unset}}}, all)
+      .filter(row => row.job === "check").map(row => [row.name, row.runner]);
+    assert.deepEqual(legs, [["check (ubuntu-latest)", "ubuntu-latest"], ["check (macos-latest)", "ubuntu-latest"], ["check (windows-latest)", "windows-latest"]], result);
+  }
+  for (const outputs of [[], {unproven: ""}, {macos_required: false}])
+    assert.throws(() => resolveJobs("ci.yml", {...scenario, outcomes: {"macos-policy": {result: "failure", outputs}}}, all), /Invalid job output/);
   const forged = structuredClone(all);
   forged["ci.yml"].jobs["macos-policy"].outputs.unproven = "${{ steps.any.outputs.unproven }}";
   assert.throws(() => resolveJobs("ci.yml", scenario, forged), /Unresolved producer output/);

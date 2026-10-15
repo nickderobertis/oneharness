@@ -56,7 +56,7 @@ function* scenarios(workflow) {
 function context(workflow, job, scenario, matrix = {}, proof = {}) {
   const needs = Object.fromEntries(dependencies(job).map(id => [id, {
     result: scenario.outcomes?.[id]?.result ?? "success",
-    outputs: { enabled: "true", needs_check: "false", macos_required: String(scenario.macosRequired), is_release_only: "false" },
+    outputs: scenario.outcomes?.[id]?.outputs ?? { enabled: "true", needs_check: "false", macos_required: String(scenario.macosRequired), is_release_only: "false" },
   }]));
   return {
     github: { event_name: scenario.event, repository: "nickderobertis/oneharness", ref: `refs/heads/${scenario.branch}`,
@@ -162,7 +162,11 @@ function compare(before, after) {
       // conditions. An aggregate cannot silently stop observing a failed leg.
       const prerequisites = new Set(Object.values(oldWorkflow.jobs).flatMap(dependencies));
       for (const prerequisite of prerequisites) for (const result of ["failure", "cancelled"]) {
-        const failed = { ...scenario, outcomes: { [prerequisite]: { result } } };
+        // The failed prerequisite set none of its outputs; a consumer that
+        // still runs (`if: always()`) reads each as GitHub does, as ''.
+        const declared = { ...oldWorkflow.jobs[prerequisite]?.outputs, ...newWorkflow.jobs[prerequisite]?.outputs };
+        const unset = Object.fromEntries(Object.keys(declared).map(key => [key, ""]));
+        const failed = { ...scenario, outcomes: { [prerequisite]: { result, outputs: unset } } };
         const oldRows = new Set(retained(resolveJobs(file, failed, before, [], scenario.input)).map(laneKey));
         const newRows = new Set(retained(resolveJobs(file, failed, after, [], scenario.input)).map(laneKey));
         for (const row of originalRows) assert.equal(newRows.has(laneKey(row)), oldRows.has(laneKey(row)), `${file}/${row.name}: changed prerequisite ${prerequisite}/${result} propagation`);

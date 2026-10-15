@@ -249,6 +249,17 @@ export function resolveJobs(
     const result = override?.result ?? "success";
     if (!["success", "failure", "cancelled", "skipped"].includes(result)) throw Error(`Invalid job outcome ${id}/${result}`);
     const outputs = {};
+    // A producer that did not succeed sets none of its outputs on its own: a
+    // scenario states what its consumers read (GitHub reads an unset one as
+    // ''), or reading one stays unresolved.
+    if (result !== "success" && override?.outputs !== undefined) {
+      if (!object(override.outputs)) throw Error(`Invalid job outputs ${file}/${id}. Next: state them as a mapping of declared output names.`);
+      for (const [key, value] of Object.entries(override.outputs)) {
+        if (!(key in (job.outputs ?? {})) || typeof value !== "string")
+          throw Error(`Invalid job output ${file}/${id}/${key}. Next: state only declared outputs, each as a string.`);
+        outputs[key] = value;
+      }
+    }
     if (result === "success") for (const [key, expression] of Object.entries(job.outputs ?? {})) {
       if (override?.outputs && key in override.outputs) outputs[key] = override.outputs[key];
       else if (file === "ci.yml" && id === "macos-policy" && ["macos_required", "is_release_only"].includes(key) && expression === "${{ steps.policy.outputs." + key + " }}")

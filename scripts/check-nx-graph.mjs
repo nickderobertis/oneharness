@@ -249,9 +249,11 @@ for (const [name, node] of Object.entries(graph.nodes)) {
 			if (owner !== "pool-maintenance:budgets-host") {
 				failures.push(`${owner} runs the pool maintenance budget check, which builds the repository twice; keep it in pool-maintenance:budgets-host (just budgets) alone`);
 			}
-		} else if (owner === "github-workflows:budgets" && offlineWorkflowBudget.test(commands)) {
-			// Reads only .github/.telemetry, which github-workflows:test records offline.
-		} else if (runsBudgetCheck.test(commands) && owner !== "live-codex:live") {
+		} else if (
+			runsBudgetCheck.test(commands)
+			&& owner !== "live-codex:live"
+			&& !(owner === "github-workflows:budgets" && offlineWorkflowBudget.test(commands))
+		) {
 			failures.push(`${owner} runs the network budget check, which reads live telemetry; keep it in live-codex:live (just live-codex) alone`);
 		}
 	}

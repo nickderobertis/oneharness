@@ -298,6 +298,7 @@ Use the `just` recipes; do not hand-roll equivalents.
 
 ## Releasing
 
+<!-- llmlint: ignore-block[agents_md_durable_and_terse] This bullet must quote scripts/ci-verdict.sh's '# CONTRACT: ' sentence word for word: scripts/check-ci-verdict.sh fails unless AGENTS.md, README.md, release.yml and release-plz.toml each state the CI-verdict fallback rule exactly as that script does, so trimming it to a reference breaks that drift gate. The block brackets the bullet from outside because a comment inside it would split the list item. -->
 - Releases are automated from conventional commits by **release-plz**
   (`release-plz.toml` + `.github/workflows/release-plz.yml`), mirroring
   nickderobertis/allowlister. Land conventional commits on `main` (`feat` →
@@ -339,6 +340,7 @@ Use the `just` recipes; do not hand-roll equivalents.
   version at publish time, so `Cargo.toml` pins
   `oneharness-core = { path = ..., version = "x.y.z" }` (release-plz keeps that
   `version` in step).
+<!-- llmlint: ignore-end[agents_md_durable_and_terse] -->
 - **Requires two secrets.** The automation runs only once BOTH repo secrets
   exist; the `guard` job no-ops cleanly (no partial release) until then.
   `RELEASE_PLZ_TOKEN` is a PAT (classic or fine-grained, `contents: write` +

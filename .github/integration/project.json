@@ -12,9 +12,6 @@
     "default": [
       "{projectRoot}/*.mjs",
       "{projectRoot}/project.json",
-      "{workspaceRoot}/package.json",
-      "{workspaceRoot}/bun.lock",
-      "{workspaceRoot}/nx.json",
       "{workspaceRoot}/.github/workflows/release.yml",
       "{workspaceRoot}/.github/package.json",
       "{workspaceRoot}/.github/bun.lock",

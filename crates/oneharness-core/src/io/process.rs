@@ -360,6 +360,8 @@ fn poll_deadline(deadline: Instant) -> Instant {
 mod tests {
     use super::*;
     use std::io::Cursor;
+    #[cfg(unix)]
+    use std::path::Path;
 
     #[test]
     fn coalesced_pipe_read_is_observed_as_complete_records() {
@@ -378,6 +380,215 @@ mod tests {
         // platform, so the spawn attempt — and its error message — stay accurate.
         let name = "oneharness-no-such-binary-zzz";
         assert_eq!(resolve_program(name), std::ffi::OsString::from(name));
+    }
+
+    /// Set when this test binary is re-executed as a tethered child's caller:
+    /// the directory the caller and the journey share.
+    #[cfg(unix)]
+    const TETHERED_CALLER: &str = "ONEHARNESS_TETHERED_CALLER_DIR";
+
+    #[cfg(unix)]
+    const COMPETING_SPAWN_TEST: &str =
+        "io::process::tests::a_tethered_child_ends_with_its_caller_whatever_a_competing_spawn_inherited";
+
+    /// A tethered child ends with its caller even when another child of the
+    /// caller holds every descriptor the caller had — as one does that another
+    /// thread forked before a descriptor being made could be marked
+    /// close-on-exec, which Darwin cannot do atomically for a pipe. This test
+    /// binary is re-executed as the caller: it starts a tethered shell that
+    /// starts a descendant, then a competing child holding all its descriptors
+    /// (its output aside), and waits. The journey holds the caller's output at
+    /// descriptors 3 and 4 too, SIGKILLs it, and requires its output to end and
+    /// the tethered shell, its descendant and its whole process group to end
+    /// within the bound, while the competing child — no tether's — lives on.
+    #[cfg(unix)]
+    #[test]
+    fn a_tethered_child_ends_with_its_caller_whatever_a_competing_spawn_inherited() {
+        use crate::io::scratch::ScratchDir;
+        use crate::io::server_pool::{pid_alive, Pid};
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+
+        /// Pids this journey captured, SIGKILLed on the way out should it fail
+        /// with them still running; never any other.
+        struct Captured(Vec<u32>);
+        impl Drop for Captured {
+            fn drop(&mut self) {
+                for pid in &self.0 {
+                    if alive(*pid) {
+                        // SAFETY: plain integers; a pid this journey captured.
+                        unsafe { libc::kill(*pid as libc::pid_t, libc::SIGKILL) };
+                    }
+                }
+            }
+        }
+        fn alive(pid: u32) -> bool {
+            Pid::new(pid).is_ok_and(pid_alive)
+        }
+        fn read_to_end(mut pipe: impl Read + Send + 'static) -> Receiver<Vec<u8>> {
+            let (sender, ends) = mpsc::channel();
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                let _ = pipe.read_to_end(&mut bytes);
+                let _ = sender.send(bytes);
+            });
+            ends
+        }
+        fn wait_for(label: &str, limit: Duration, mut done: impl FnMut() -> bool) {
+            let deadline = Instant::now() + limit;
+            while !done() {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out after {limit:?} waiting for {label}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+
+        if let Some(dir) = std::env::var_os(TETHERED_CALLER) {
+            be_the_tethered_caller(Path::new(&dir));
+        }
+
+        let scratch = ScratchDir::new("tether-competing-spawn").unwrap();
+        let mut caller = Command::new(std::env::current_exe().unwrap());
+        caller
+            .args([
+                COMPETING_SPAWN_TEST,
+                "--exact",
+                "--nocapture",
+                "--test-threads",
+                "1",
+            ])
+            .env(TETHERED_CALLER, scratch.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        // SAFETY: the hook runs in the forked child before exec, after its
+        // standard streams are in place, and calls only async-signal-safe
+        // `dup2`; the copies it makes are not close-on-exec.
+        unsafe {
+            caller.pre_exec(|| {
+                if libc::dup2(1, 3) == -1 || libc::dup2(2, 4) == -1 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut caller = caller.spawn().unwrap();
+        let mut captured = Captured(vec![caller.id()]);
+        let stdout = read_to_end(caller.stdout.take().unwrap());
+        let stderr = read_to_end(caller.stderr.take().unwrap());
+        let pids = scratch.path().join("pids");
+        wait_for(
+            "the caller to start its children",
+            Duration::from_secs(30),
+            || pids.exists(),
+        );
+        let pids: Vec<u32> = std::fs::read_to_string(&pids)
+            .unwrap()
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        captured.0.extend(&pids);
+        let [tethered, descendant, competing] = pids[..] else {
+            panic!("the caller wrote {pids:?}, not three pids");
+        };
+        // SAFETY: `getpgid` only reads the process table.
+        let group = unsafe { libc::getpgid(tethered as libc::pid_t) };
+        assert!(group > 0, "{}", io::Error::last_os_error());
+
+        // SAFETY: plain integers; the caller is this journey's own child.
+        unsafe { libc::kill(caller.id() as libc::pid_t, libc::SIGKILL) };
+        caller.wait().unwrap();
+        let bound = Duration::from_secs(5);
+        stdout
+            .recv_timeout(bound)
+            .expect("the killed caller's standard output is held open past its end");
+        stderr
+            .recv_timeout(bound)
+            .expect("the killed caller's standard error is held open past its end");
+        wait_for("the tethered process group to end", bound, || {
+            // SAFETY: signal 0 to a group delivers nothing.
+            !alive(tethered) && !alive(descendant) && unsafe { libc::kill(-group, 0) } == -1
+        });
+        assert!(
+            alive(competing),
+            "the competing child did not outlive the caller, so nothing was proven"
+        );
+    }
+
+    /// The caller of [`a_tethered_child_ends_with_its_caller_whatever_a_competing_spawn_inherited`]:
+    /// never returns; the journey SIGKILLs it.
+    #[cfg(unix)]
+    fn be_the_tethered_caller(dir: &Path) -> ! {
+        use std::ffi::CString;
+        use std::process::Stdio;
+
+        let started = dir.join("tethered");
+        let mut tethered = Command::new("/bin/sh");
+        tethered
+            .args([
+                "-c",
+                r#"sleep 600 & echo "$$ $!" >"$1.partial" && mv "$1.partial" "$1"; wait"#,
+            ])
+            .arg("tethered")
+            .arg(&started)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let _tethered = Process::spawn_tethered(tethered).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !started.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "the tethered shell never started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+
+        // The competing child: forked and exec'd by hand, not through `std`,
+        // whose exec-status pipe would otherwise lose its close-on-exec flag
+        // below. Everything it needs is built before the fork.
+        let sleep = CString::new("/bin/sleep").unwrap();
+        let seconds = CString::new("600").unwrap();
+        let argv = [sleep.as_ptr(), seconds.as_ptr(), std::ptr::null()];
+        let envp = [std::ptr::null()];
+        let open_max = descriptor_bound();
+        let null = std::fs::File::open("/dev/null").unwrap();
+        let null = std::os::fd::AsRawFd::as_raw_fd(&null);
+        // SAFETY: the child calls only async-signal-safe `dup2`, `close`,
+        // `fcntl`, `execve` and `_exit`, on data prepared before the fork.
+        let competing = unsafe { libc::fork() };
+        if competing == 0 {
+            // SAFETY: as above.
+            unsafe {
+                // None of the caller's output, which the journey reads to its
+                // end: that would be the competing child's hold, not a tether's.
+                for fd in 0..=2 {
+                    libc::dup2(null, fd);
+                }
+                libc::close(3);
+                libc::close(4);
+                for fd in 5..open_max {
+                    libc::fcntl(fd, libc::F_SETFD, 0);
+                }
+                libc::execve(sleep.as_ptr(), argv.as_ptr(), envp.as_ptr());
+                libc::_exit(127);
+            }
+        }
+        assert!(competing > 0, "{}", io::Error::last_os_error());
+
+        let mut pids = std::fs::read_to_string(&started)
+            .unwrap()
+            .trim()
+            .to_string();
+        pids.push_str(&format!(" {competing}"));
+        let partial = dir.join("pids.partial");
+        std::fs::write(&partial, pids).unwrap();
+        std::fs::rename(&partial, dir.join("pids")).unwrap();
+        loop {
+            std::thread::sleep(Duration::from_secs(3600));
+        }
     }
 
     #[cfg(windows)]
@@ -470,11 +681,8 @@ fn close_above_stdio_on_exec(open_max: libc::c_int) {
 #[cfg(unix)]
 mod platform {
     use std::io;
-    #[cfg(not(target_os = "linux"))]
-    use std::os::fd::AsRawFd;
-    use std::os::fd::{FromRawFd, OwnedFd};
     use std::os::unix::process::CommandExt;
-    use std::process::{Child, Command, Stdio};
+    use std::process::{Child, Command};
     use std::time::Duration;
 
     use wait_timeout::ChildExt;
@@ -486,52 +694,52 @@ mod platform {
     }
 
     /// The guard of a tethered spawn ([`super::Process::spawn_tethered`]): a
-    /// shell leading the child's process group, blocked reading a pipe whose
-    /// only writer is `lifeline`, held here. When this process ends, however it
-    /// ends, the kernel closes `lifeline`; the guard reads end-of-file and
-    /// SIGKILLs its group. While the guard is unreaped its pid, and so the
-    /// group's id, cannot be reused, so signalling the group never reaches a
-    /// stranger.
+    /// bare fork of this process leading the child's process group, which
+    /// SIGKILLs that group as soon as this process is gone.
+    ///
+    /// It learns that from its own parent pid, which the kernel changes when
+    /// this process ends however it ends — the guard is reparented — and
+    /// which nothing else can hold unchanged: no descriptor stands for this
+    /// process's life, so no child holding one (one another thread forked
+    /// before a descriptor could be marked close-on-exec, say) can keep the
+    /// guard waiting. Nor can its parent pid come back: it is reparented to a
+    /// running process, never to the dead one's pid. While the guard is
+    /// unreaped its pid, and so the group's id, cannot be reused, so signalling
+    /// the group never reaches a stranger.
     struct Tether {
-        guard: Child,
-        _lifeline: OwnedFd,
+        guard: libc::pid_t,
     }
 
-    /// The guard's whole program: wait for the lifeline's end, then kill the
-    /// group. Nothing ever writes to the lifeline.
-    const GUARD: &str = "read -r _; kill -s KILL 0";
+    /// How often the guard looks at its parent pid.
+    const GUARD_POLL_MS: libc::c_int = 50;
 
     impl Tether {
         fn start() -> io::Result<Self> {
-            let (read, lifeline) = cloexec_pipe()?;
-            let mut guard = Command::new("/bin/sh");
-            guard
-                .args(["-c", GUARD])
-                .env_clear()
-                .stdin(Stdio::from(read))
-                .stdout(Stdio::null())
-                .stderr(Stdio::null());
-            // SAFETY: the hook runs in the forked child before exec and calls
-            // only async-signal-safe `setpgid`.
-            unsafe {
-                guard.pre_exec(|| {
-                    if libc::setpgid(0, 0) == -1 {
-                        Err(io::Error::last_os_error())
-                    } else {
-                        Ok(())
-                    }
-                });
+            // Read before the fork: nothing in the guard may allocate or take a
+            // lock another thread could have held.
+            // SAFETY: `getpid` only reads this process's id.
+            let caller = unsafe { libc::getpid() };
+            let open_max = super::descriptor_bound();
+            // SAFETY: the child runs only `guard`, which calls nothing but
+            // async-signal-safe functions, as a child of a multithreaded
+            // process must until it exits.
+            match unsafe { libc::fork() } {
+                -1 => Err(io::Error::last_os_error()),
+                // SAFETY: as above; `guard` never returns.
+                0 => unsafe { guard(caller, open_max) },
+                guard => {
+                    // The guard leads its group from here, whichever of this
+                    // and its own `setpgid` runs first, so a child spawned
+                    // next can always join it.
+                    // SAFETY: plain integers naming this process's own child.
+                    unsafe { libc::setpgid(guard, guard) };
+                    Ok(Self { guard })
+                }
             }
-            super::close_inherited_on_exec(&mut guard);
-            Ok(Self {
-                guard: guard.spawn()?,
-                _lifeline: lifeline,
-            })
         }
 
         fn group(&self) -> libc::pid_t {
-            // A pid always fits pid_t; `Child::id` widens it to u32.
-            self.guard.id() as libc::pid_t
+            self.guard
         }
     }
 
@@ -540,36 +748,46 @@ mod platform {
             // The child is done with, or never started: end whatever is left
             // in the group, the guard included, then reap the guard — only now,
             // so until here the group's id stayed reserved.
-            signal_group(self.group(), libc::SIGKILL);
-            let _ = self.guard.wait();
+            signal_group(self.guard, libc::SIGKILL);
+            let mut status = 0;
+            // SAFETY: `status` is writable; the guard is this process's child.
+            unsafe { libc::waitpid(self.guard, &mut status, 0) };
         }
     }
 
-    /// A pipe whose two ends are close-on-exec, so no child inherits either.
-    /// Linux sets the flag as it creates them; elsewhere it is set just after,
-    /// and a child another thread forks in that instant keeps the write end
-    /// (and with it the guard waiting) until that child exits.
-    fn cloexec_pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-        let mut fds = [0 as libc::c_int; 2];
-        // SAFETY: `fds` is a live, writable two-element array.
+    /// The guard's whole life, in the forked child: lead a group of its own,
+    /// hold no descriptor and no inherited signal handling, wait for the
+    /// caller to be gone, then SIGKILL the group. Every call is
+    /// async-signal-safe — `syscall(close_range)` is the plain system call that
+    /// `close` makes, in bulk — and nothing allocates.
+    unsafe fn guard(caller: libc::pid_t, open_max: libc::c_int) -> ! {
+        libc::setpgid(0, 0);
         #[cfg(target_os = "linux")]
-        let made = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
-        // SAFETY: as above.
+        let closed = libc::syscall(libc::SYS_close_range, 0u32, u32::MAX, 0) == 0;
         #[cfg(not(target_os = "linux"))]
-        let made = unsafe { libc::pipe(fds.as_mut_ptr()) };
-        if made == -1 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `pipe` just returned both descriptors, owned by nothing else.
-        let ends = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
-        #[cfg(not(target_os = "linux"))]
-        for end in [&ends.0, &ends.1] {
-            // SAFETY: plain integers naming a descriptor this function owns.
-            if unsafe { libc::fcntl(end.as_raw_fd(), libc::F_SETFD, libc::FD_CLOEXEC) } == -1 {
-                return Err(io::Error::last_os_error());
+        let closed = false;
+        if !closed {
+            for fd in 0..open_max {
+                libc::close(fd);
             }
         }
-        Ok(ends)
+        // A handler of the caller's would run here on a stop meant for the
+        // group: take the defaults back, and block nothing.
+        let mut default: libc::sigaction = std::mem::zeroed();
+        default.sa_sigaction = libc::SIG_DFL;
+        for signal in 1..32 {
+            if signal != libc::SIGKILL && signal != libc::SIGSTOP {
+                libc::sigaction(signal, &default, std::ptr::null_mut());
+            }
+        }
+        let mut none: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut none);
+        libc::sigprocmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+        while libc::getppid() == caller {
+            libc::poll(std::ptr::null_mut(), 0, GUARD_POLL_MS);
+        }
+        libc::kill(0, libc::SIGKILL);
+        libc::_exit(0)
     }
 
     /// What this run may signal when it tears the child down.

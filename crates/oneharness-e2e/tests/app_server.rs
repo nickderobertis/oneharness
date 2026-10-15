@@ -2646,10 +2646,10 @@ fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
         &[],
         &[
             ("MOCK_CODEX_HOLD_UNTIL", &release),
-            ("MOCK_CODEX_TICK_MS", "1"),
+            ("MOCK_CODEX_TICK_MS", "10"),
         ],
     ));
-    // Read as they arrive: a report carrying thousands of ticks outgrows a
+    // Read as they arrive: a report carrying hundreds of ticks outgrows a
     // pipe nobody is reading.
     let live_out = read_to_end(live.stdout.take().unwrap());
     let live_err = read_to_end(live.stderr.take().unwrap());
@@ -2684,9 +2684,32 @@ fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
         answer.push(byte[0]);
     }
     assert!(answer.starts_with(b"HTTP/1.1 101"), "{answer:?}");
-    // The live turn's broadcast ticks fill the stalled connection's buffer
-    // well within this.
-    std::thread::sleep(Duration::from_secs(3));
+    // Every frame the server sends the stalled connection, as the mock
+    // records it. A server that writes under its lock stops sending once the
+    // buffer is full — a few hundred ticks on Linux, far fewer on macOS — and
+    // never reaches this many; one that does not stall goes on queueing.
+    // The connection registered after the live dispatch's own.
+    let stalled_conn = || {
+        let conns: Vec<u64> = pool.state(server)["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_u64)
+            .collect();
+        (conns.len() == 2)
+            .then(|| conns.into_iter().max())
+            .flatten()
+    };
+    wait_for(
+        "the stalled connection to register",
+        Duration::from_secs(10),
+        || stalled_conn().is_some_and(|conn| !pool.sent(server, conn).is_empty()),
+    );
+    let conn = stalled_conn().unwrap();
+    let flooded = Instant::now() + Duration::from_secs(20);
+    while pool.sent(server, conn).len() < 1000 && Instant::now() < flooded {
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     let mut joining = pool.spawn(pool.command("joining", &[], &[]));
     let captured = [live.id(), joining.id(), server, sweeper];

@@ -31,15 +31,14 @@ Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the buil
   with this crate's directory as its working directory.
 - **A fixture's socket behaviour is a platform's; say which.** A Unix socket
   whose reader shut its read side drops a peer's writes on Darwin (XNU marks the
-  buffer `SB_DROP`) where Linux refuses them with `EPIPE`, so a mock that held
-  such a connection open and waited for the refusal hung every macOS `check`
-  for hours under a held turn. The mock now ends a connection it stopped
-  reading; `MOCK_CODEX_SHUT_READ_DISCARDS` plays Darwin's behaviour on any
-  platform, so Linux runs the macOS case too.
+  buffer `SB_DROP`) where Linux refuses them with `EPIPE`, so a mock that waits
+  for that refusal waits forever on macOS. A mock that stops reading a
+  connection must close it; `MOCK_CODEX_SHUT_READ_DISCARDS` plays Darwin's
+  behaviour on any platform, so Linux runs the macOS case too.
 - **Every app-server journey is bounded twice.** Its own waits are bounded
   (`wait_for`, `Pool::finish_within`) so it fails naming what it waited on; and
   `.config/nextest.toml` ends any journey at 180 s as a `TIMEOUT` naming it,
   identically on every platform. Raise that bound only when the slowest passing
-  journey nears it (73 s instrumented when it was set);
+  journey, run instrumented, nears it;
   `scripts/app-server-hang-bound-test.sh` (Linux, in this crate's `test`)
   proves it ends a hung journey and leaves none of its processes running.

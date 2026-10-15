@@ -91,7 +91,7 @@ pub struct UsageReading {
 /// harness's output. It is the single source for the `failure_kind` contract
 /// value: serialized as the snake_case token a consumer reads in the report
 /// (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
-/// `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
+/// `tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum
 /// keeps a misspelled or invalid kind unrepresentable and gives every
 /// producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
 /// the report, history) one definition to share instead of scattered string
@@ -146,6 +146,13 @@ pub enum FailureKind {
     /// this identity briefly and then try a fallback identity; work evidence
     /// preserves the classified failure without retry or fallback.
     ServerOverloaded,
+    /// The shared Codex app-server a pooled dispatch's turn ran on went away
+    /// under it: the connection reached EOF, was closed, or refused a write
+    /// (`EPIPE`) while oneharness's own record showed a turn started and not
+    /// completed. The server crashed or was restarted, not the turn — so it is
+    /// never a turn failure, and a fallback chain moves on to its next
+    /// candidate (`"app-server-lost"`).
+    AppServerLost,
 }
 
 impl FailureKind {
@@ -154,7 +161,7 @@ impl FailureKind {
     /// against the enum's own generated schema (`sdk_schema`), so a kind added
     /// without being listed here fails the gate rather than shipping an SDK that
     /// accepts it at a version whose reader refuses it.
-    pub const ALL: [FailureKind; 10] = [
+    pub const ALL: [FailureKind; 11] = [
         FailureKind::Auth,
         FailureKind::RateLimit,
         FailureKind::ModelNotFound,
@@ -165,6 +172,7 @@ impl FailureKind {
         FailureKind::InputTooLarge,
         FailureKind::ModelMismatch,
         FailureKind::ServerOverloaded,
+        FailureKind::AppServerLost,
     ];
 
     /// Whether this kind asserts the harness or its provider **refused to run
@@ -172,14 +180,17 @@ impl FailureKind {
     /// contradicts, and the one
     /// [`RunResult::with_work_evidence`][wwe] declines to stamp there.
     ///
-    /// Every kind but [`FailureKind::ToolDeferred`] is a refusal: each says the
+    /// Every kind but [`FailureKind::ToolDeferred`] and
+    /// [`FailureKind::AppServerLost`] is a refusal: each says the
     /// request was rejected (`auth`, `rate_limit`, `quota`, `model_not_found`)
     /// or never made at all (`session_not_found`, `untrusted_directory`,
     /// `input_too_large`, `model_mismatch`). `ToolDeferred` is the odd one out because it is not a
     /// refusal at all: the turn completed, and the finding is about *what it
     /// produced* — a deferred builtin tool call instead of an executed one — so
     /// a clean, billed exit is exactly the shape it describes rather than one
-    /// that contradicts it.
+    /// that contradicts it. `AppServerLost` is not one either: the turn was
+    /// accepted and running when the shared server under it went away, so work
+    /// the turn billed before that is what happened, not a contradiction.
     ///
     /// Matched exhaustively on purpose: a new kind is a deliberate answer to
     /// "does a completed, billed run refute this?", not an inherited default.
@@ -197,7 +208,7 @@ impl FailureKind {
             | FailureKind::InputTooLarge
             | FailureKind::ModelMismatch
             | FailureKind::ServerOverloaded => true,
-            FailureKind::ToolDeferred => false,
+            FailureKind::ToolDeferred | FailureKind::AppServerLost => false,
         }
     }
 
@@ -215,6 +226,7 @@ impl FailureKind {
             FailureKind::InputTooLarge => "input_too_large",
             FailureKind::ModelMismatch => "model_mismatch",
             FailureKind::ServerOverloaded => "server_overloaded",
+            FailureKind::AppServerLost => "app_server_lost",
         }
     }
 }

@@ -172,6 +172,8 @@ pub enum FallThroughReason {
     RateLimit,
     /// Codex serving capacity remained exhausted after local retries.
     ServerOverloaded,
+    /// The shared Codex app-server went away under the candidate's live turn.
+    AppServerLost,
 }
 
 impl FallThroughReason {
@@ -191,6 +193,7 @@ impl FallThroughReason {
             FallThroughReason::ModelNotFound => "model-not-found",
             FallThroughReason::RateLimit => "rate-limit",
             FallThroughReason::ServerOverloaded => "server-overloaded",
+            FallThroughReason::AppServerLost => "app-server-lost",
         }
     }
 }
@@ -317,6 +320,13 @@ pub fn startup_failure_reason(
         }
         (Status::Nonzero | Status::Ok, Some(FailureKind::ServerOverloaded)) => {
             Some(FallThroughReason::ServerOverloaded)
+        }
+        // The shared server under the turn crashed or restarted: the candidate
+        // is fine and so is the task, so the next candidate takes it. Read off a
+        // non-zero result only, because the pooled driver is its one producer
+        // and always reports the lost turn as one.
+        (Status::Nonzero, Some(FailureKind::AppServerLost)) => {
+            Some(FallThroughReason::AppServerLost)
         }
         (Status::Nonzero, Some(FailureKind::SessionNotFound)) => {
             Some(FallThroughReason::SessionNotFound)
@@ -522,6 +532,26 @@ mod tests {
                 "{kind:?} on a clean exit is not a refusal any CLI has produced"
             );
         }
+    }
+
+    #[test]
+    fn a_turn_whose_shared_app_server_went_away_falls_through() {
+        // The server under the turn crashed or restarted; the candidate and the
+        // task are both fine, so the next candidate takes it.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Nonzero,
+                Some(FailureKind::AppServerLost),
+                false,
+                RunWork::None
+            ),
+            Some(FallThroughReason::AppServerLost)
+        );
+        assert_eq!(FallThroughReason::AppServerLost.as_str(), "app-server-lost");
+        assert_eq!(FailureKind::AppServerLost.as_str(), "app_server_lost");
+        // Not a refusal: the turn was accepted and running when the server
+        // went, so work it billed first is what happened.
+        assert!(!FailureKind::AppServerLost.is_refusal());
     }
 
     #[test]
@@ -748,6 +778,7 @@ mod tests {
             ),
             (Status::Nonzero, Some(FailureKind::InputTooLarge), false),
             (Status::Nonzero, Some(FailureKind::ModelMismatch), false),
+            (Status::Nonzero, Some(FailureKind::AppServerLost), false),
             (Status::Nonzero, Some(FailureKind::RateLimit), false),
             (Status::Ok, Some(FailureKind::RateLimit), false),
             (Status::Nonzero, Some(FailureKind::ModelNotFound), true),

@@ -2,6 +2,8 @@
 //! These modules build commands, shape the report, and parse output; all real
 //! I/O stays behind the `io` and `commands` boundaries.
 
+// The shared Codex app-server's environment, pool key and frame ownership.
+pub mod app_server;
 pub mod batch;
 // The declared capability surface the parity gate reconciles against.
 pub mod capability;

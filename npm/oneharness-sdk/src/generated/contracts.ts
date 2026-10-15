@@ -72,7 +72,8 @@ export type FallThroughReason =
   | "model-mismatch"
   | "model-not-found"
   | "rate-limit"
-  | "server-overloaded";
+  | "server-overloaded"
+  | "app-server-lost";
 export type ToolCallStatus = "completed" | "failed" | "timeout" | "interrupted";
 /**
  * How a normalized tool interval was obtained.
@@ -83,7 +84,7 @@ export type TimingSource = "provider_measured" | "stdout_observed";
  * harness's output. It is the single source for the `failure_kind` contract
  * value: serialized as the snake_case token a consumer reads in the report
  * (`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,
- * `tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum
+ * `tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum
  * keeps a misspelled or invalid kind unrepresentable and gives every
  * producer/consumer (classifier, `is_failure`, the fallback fall-through rule,
  * the report, history) one definition to share instead of scattered string
@@ -99,7 +100,8 @@ export type FailureKind =
   | "untrusted_directory"
   | "input_too_large"
   | "model_mismatch"
-  | "server_overloaded";
+  | "server_overloaded"
+  | "app_server_lost";
 /**
  * How a harness emits its result, which decides how `text` is extracted.
  *
@@ -314,6 +316,12 @@ export interface BatchReport {
  */
 export interface ControlReport {
   /**
+   * The shared Codex app-server the run's turn ran on, when it ran on one
+   * (`app_server = "shared"`). Absent for every other mechanism and for a
+   * dispatch's own `codex app-server` child.
+   */
+  app_server?: AppServerReport | null | undefined;
+  /**
    * Every control request served, in order.
    */
   interrupts: ControlEvent[];
@@ -325,6 +333,22 @@ export interface ControlReport {
    * Absolute path of the socket this run listened on.
    */
   socket: string;
+  [k: string]: unknown;
+}
+/**
+ * Which shared Codex app-server a pooled dispatch's turn ran on.
+ */
+export interface AppServerReport {
+  /**
+   * The pid the pool recorded for the server (its `server.json`): the
+   * process it launched, which is the launcher shim when Codex is one.
+   */
+  pid: number;
+  /**
+   * The pool entry the server belongs to — equal for every dispatch that
+   * shared it.
+   */
+  pool_key: string;
   [k: string]: unknown;
 }
 /**

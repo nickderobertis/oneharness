@@ -488,6 +488,26 @@ impl std::fmt::Display for PoolKey {
     }
 }
 
+impl JsonSchema for PoolKey {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PoolKey")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        // Held to `is_pool_key` by `the_pool_key_schema_accepts_exactly_what_parse_does`.
+        schemars::json_schema!({
+            "type": "string",
+            "minLength": 1,
+            "maxLength": POOL_KEY_MAX_LEN,
+            "pattern": "^[A-Za-z0-9_-]+$",
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for PoolKey {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de::Error;
@@ -535,6 +555,9 @@ pub fn pool_key(
     PoolKey(format!("{prefix}-{:016x}", fnv1a64(material.as_bytes())))
 }
 
+/// The longest pool key, in its schema and at runtime alike.
+const POOL_KEY_MAX_LEN: usize = 128;
+
 /// Whether `key` is shaped like a [`pool_key`] result — the single rule behind
 /// [`PoolKey`].
 ///
@@ -547,7 +570,7 @@ pub fn pool_key(
 /// needed.
 fn is_pool_key(key: &str) -> bool {
     !key.is_empty()
-        && key.len() <= 128
+        && key.len() <= POOL_KEY_MAX_LEN
         && key
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
@@ -1430,6 +1453,22 @@ pub struct ControlReport {
     pub mechanism: ControlShape,
     /// Every control request served, in order.
     pub interrupts: Vec<ControlEvent>,
+    /// The shared Codex app-server the run's turn ran on, when it ran on one
+    /// (`app_server = "shared"`). Absent for every other mechanism and for a
+    /// dispatch's own `codex app-server` child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_server: Option<AppServerReport>,
+}
+
+/// Which shared Codex app-server a pooled dispatch's turn ran on.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AppServerReport {
+    /// The pid the pool recorded for the server (its `server.json`): the
+    /// process it launched, which is the launcher shim when Codex is one.
+    pub pid: std::num::NonZeroU32,
+    /// The pool entry the server belongs to — equal for every dispatch that
+    /// shared it.
+    pub pool_key: PoolKey,
 }
 
 #[cfg(test)]
@@ -1534,6 +1573,7 @@ mod control_mode_parity {
                 mode,
                 resume: None,
                 posture: posture_of(harness::by_id("codex").unwrap(), mode),
+                shell_environment_policy: None,
             },
         )
         .expect("codex drives its turn over the app-server")
@@ -1570,6 +1610,7 @@ mod control_mode_parity {
                         mode,
                         resume: None,
                         posture: posture_of(spec, mode),
+                        shell_environment_policy: None,
                     },
                 )
                 .expect("ACP drives its turn");
@@ -1909,6 +1950,29 @@ mod control_mode_parity {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_pool_key_schema_accepts_exactly_what_parse_does() {
+        let schema = serde_json::to_value(schemars::schema_for!(PoolKey)).unwrap();
+        let pattern = regex::Regex::new(schema["pattern"].as_str().unwrap()).unwrap();
+        let min = schema["minLength"].as_u64().unwrap() as usize;
+        let max = schema["maxLength"].as_u64().unwrap() as usize;
+        let mut corpus: Vec<String> = (0u8..=127).map(|b| (b as char).to_string()).collect();
+        corpus.extend([0, 1, 127, 128, 129, 200].iter().map(|n| "k".repeat(*n)));
+        corpus.extend([
+            "é".to_string(),
+            "a b".to_string(),
+            "codex-app-server-1f".to_string(),
+        ]);
+        for key in corpus {
+            let by_schema = pattern.is_match(&key) && (min..=max).contains(&key.chars().count());
+            assert_eq!(
+                PoolKey::parse(&key).is_ok(),
+                by_schema,
+                "{key:?}: the runtime and the schema disagree"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

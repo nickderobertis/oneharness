@@ -1,0 +1,28 @@
+schema_version: 1
+# Memory a shared Codex app-server keeps under reuse, read from the telemetry
+# live/control/app-server-reuse.sh writes (target/e2e-telemetry/app-server-reuse/
+# reuse.json): scripts/e2e-control.sh runs that workload and checks this file on
+# its Linux leg.
+budgets:
+  - id: codex-shared-server-rss-growth
+    description: >-
+      The shared Codex app-server's whole-tree resident memory (the pid in its
+      pool entry's server.json and every descendant, summed VmRSS from /proc)
+      after the 5th of 5 sequential leases is released, over the same reading
+      after the 1st, both with no lease live on one server pid. Workload: one
+      pooled app-server on Linux serving 5 sequential leases, each a thread
+      started, given one thread/shellCommand of `true`, resumed once, held 1 s
+      and released, with no model call and no turn/start. The shell command is
+      there because codex-cli writes a thread's rollout only after a turn and
+      refuses to resume a thread without one. The
+      threshold is 1.5: a server that releases a finished dispatch's state
+      returns to its one-dispatch footprint, so sustained growth past 1.5x is
+      retained per-dispatch state (5 leases detect a retention above about an
+      eighth of the one-dispatch footprint). An estimate, not a measured
+      baseline. Incomplete telemetry is an error naming what is missing.
+    measure: reported
+    command: ["uv", "run", "--no-project", "python", "app_server_rss_budget.py"]
+    unit: ratio
+    direction: max
+    threshold: 1.5
+    timeout_seconds: 120

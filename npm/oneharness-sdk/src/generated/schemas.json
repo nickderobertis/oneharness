@@ -1661,6 +1661,29 @@
           "status"
         ]
       },
+      "AppServerReport": {
+        "description": "Which shared Codex app-server a pooled dispatch's turn ran on.",
+        "type": "object",
+        "properties": {
+          "pid": {
+            "description": "The pid the pool recorded for the server (its `server.json`): the\nprocess it launched, which is the launcher shim when Codex is one.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 1
+          },
+          "pool_key": {
+            "description": "The pool entry the server belongs to — equal for every dispatch that\nshared it.",
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "pid",
+          "pool_key"
+        ]
+      },
       "BatchReport": {
         "description": "Metadata for a same-prefix batch run (one harness, N prompts sharing a\ncacheable prefix). Present on [`RunReport::batch`] only in that mode.",
         "type": "object",
@@ -1782,6 +1805,17 @@
         "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
         "type": "object",
         "properties": {
+          "app_server": {
+            "description": "The shared Codex app-server the run's turn ran on, when it ran on one\n(`app_server = \"shared\"`). Absent for every other mechanism and for a\ndispatch's own `codex app-server` child.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AppServerReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interrupts": {
             "description": "Every control request served, in order.",
             "type": "array",
@@ -1940,7 +1974,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -1991,6 +2025,11 @@
             "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
+          },
+          {
+            "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
+            "type": "string",
+            "const": "app_server_lost"
           }
         ]
       },
@@ -2077,6 +2116,11 @@
             "description": "Codex serving capacity remained exhausted after local retries.",
             "type": "string",
             "const": "server-overloaded"
+          },
+          {
+            "description": "The shared Codex app-server went away under the candidate's live turn.",
+            "type": "string",
+            "const": "app-server-lost"
           }
         ]
       },
@@ -2742,6 +2786,29 @@
           "status"
         ]
       },
+      "AppServerReport": {
+        "description": "Which shared Codex app-server a pooled dispatch's turn ran on.",
+        "type": "object",
+        "properties": {
+          "pid": {
+            "description": "The pid the pool recorded for the server (its `server.json`): the\nprocess it launched, which is the launcher shim when Codex is one.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 1
+          },
+          "pool_key": {
+            "description": "The pool entry the server belongs to — equal for every dispatch that\nshared it.",
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "required": [
+          "pid",
+          "pool_key"
+        ]
+      },
       "BatchReport": {
         "description": "Metadata for a same-prefix batch run (one harness, N prompts sharing a\ncacheable prefix). Present on [`RunReport::batch`] only in that mode.",
         "type": "object",
@@ -2863,6 +2930,17 @@
         "description": "The run report's `control` block: where the socket lived, which mechanism\nbacked it, and every request served over the run's lifetime.",
         "type": "object",
         "properties": {
+          "app_server": {
+            "description": "The shared Codex app-server the run's turn ran on, when it ran on one\n(`app_server = \"shared\"`). Absent for every other mechanism and for a\ndispatch's own `codex app-server` child.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AppServerReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "interrupts": {
             "description": "Every control request served, in order.",
             "type": "array",
@@ -3021,7 +3099,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -3072,6 +3150,11 @@
             "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
+          },
+          {
+            "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
+            "type": "string",
+            "const": "app_server_lost"
           }
         ]
       },
@@ -3158,6 +3241,11 @@
             "description": "Codex serving capacity remained exhausted after local retries.",
             "type": "string",
             "const": "server-overloaded"
+          },
+          {
+            "description": "The shared Codex app-server went away under the candidate's live turn.",
+            "type": "string",
+            "const": "app-server-lost"
           }
         ]
       },
@@ -4616,7 +4704,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session_name": {
@@ -4759,7 +4848,8 @@
                               "1.6",
                               "1.7",
                               "1.8",
-                              "1.9"
+                              "1.9",
+                              "1.10"
                             ]
                           }
                         },
@@ -4821,7 +4911,8 @@
                             "enum": [
                               "1.7",
                               "1.8",
-                              "1.9"
+                              "1.9",
+                              "1.10"
                             ]
                           },
                           "status": {
@@ -4868,7 +4959,8 @@
                         "type": "string",
                         "enum": [
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     },
@@ -4907,7 +4999,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -4932,6 +5025,7 @@
                               "input_too_large",
                               "model_mismatch",
                               "server_overloaded",
+                              "app_server_lost",
                               null
                             ]
                           }
@@ -4947,7 +5041,8 @@
                               "1.6",
                               "1.7",
                               "1.8",
-                              "1.9"
+                              "1.9",
+                              "1.10"
                             ]
                           }
                         }
@@ -4969,6 +5064,7 @@
                               "tool_deferred",
                               "model_mismatch",
                               "server_overloaded",
+                              "app_server_lost",
                               null
                             ]
                           }
@@ -4983,7 +5079,8 @@
                               "1.6",
                               "1.7",
                               "1.8",
-                              "1.9"
+                              "1.9",
+                              "1.10"
                             ]
                           }
                         }
@@ -5006,6 +5103,7 @@
                               "untrusted_directory",
                               "input_too_large",
                               "server_overloaded",
+                              "app_server_lost",
                               null
                             ]
                           }
@@ -5018,7 +5116,8 @@
                             "type": "string",
                             "enum": [
                               "1.8",
-                              "1.9"
+                              "1.9",
+                              "1.10"
                             ]
                           }
                         }
@@ -5041,6 +5140,7 @@
                               "untrusted_directory",
                               "input_too_large",
                               "model_mismatch",
+                              "app_server_lost",
                               null
                             ]
                           }
@@ -5052,7 +5152,43 @@
                           "schema_version": {
                             "type": "string",
                             "enum": [
-                              "1.9"
+                              "1.9",
+                              "1.10"
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "failure_kind": {
+                            "enum": [
+                              "auth",
+                              "rate_limit",
+                              "model_not_found",
+                              "quota",
+                              "session_not_found",
+                              "tool_deferred",
+                              "untrusted_directory",
+                              "input_too_large",
+                              "model_mismatch",
+                              "server_overloaded",
+                              null
+                            ]
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "schema_version": {
+                            "type": "string",
+                            "enum": [
+                              "1.10"
                             ]
                           }
                         }
@@ -5162,7 +5298,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session": {
@@ -5367,7 +5504,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session": {
@@ -5570,7 +5708,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session": {
@@ -5754,7 +5893,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session": {
@@ -5937,7 +6077,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session": {
@@ -6137,7 +6278,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "session": {
@@ -6327,7 +6469,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -6378,6 +6520,11 @@
             "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
+          },
+          {
+            "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
+            "type": "string",
+            "const": "app_server_lost"
           }
         ]
       },
@@ -6605,7 +6752,8 @@
                       "1.6",
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 },
@@ -6667,7 +6815,8 @@
                     "enum": [
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   },
                   "status": {
@@ -6714,7 +6863,8 @@
                 "type": "string",
                 "enum": [
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               }
             },
@@ -6753,7 +6903,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               }
             }
@@ -6778,6 +6929,7 @@
                       "input_too_large",
                       "model_mismatch",
                       "server_overloaded",
+                      "app_server_lost",
                       null
                     ]
                   }
@@ -6793,7 +6945,8 @@
                       "1.6",
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 }
@@ -6815,6 +6968,7 @@
                       "tool_deferred",
                       "model_mismatch",
                       "server_overloaded",
+                      "app_server_lost",
                       null
                     ]
                   }
@@ -6829,7 +6983,8 @@
                       "1.6",
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 }
@@ -6852,6 +7007,7 @@
                       "untrusted_directory",
                       "input_too_large",
                       "server_overloaded",
+                      "app_server_lost",
                       null
                     ]
                   }
@@ -6864,7 +7020,8 @@
                     "type": "string",
                     "enum": [
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 }
@@ -6887,6 +7044,7 @@
                       "untrusted_directory",
                       "input_too_large",
                       "model_mismatch",
+                      "app_server_lost",
                       null
                     ]
                   }
@@ -6898,7 +7056,43 @@
                   "schema_version": {
                     "type": "string",
                     "enum": [
-                      "1.9"
+                      "1.9",
+                      "1.10"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "failure_kind": {
+                    "enum": [
+                      "auth",
+                      "rate_limit",
+                      "model_not_found",
+                      "quota",
+                      "session_not_found",
+                      "tool_deferred",
+                      "untrusted_directory",
+                      "input_too_large",
+                      "model_mismatch",
+                      "server_overloaded",
+                      null
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "schema_version": {
+                    "type": "string",
+                    "enum": [
+                      "1.10"
                     ]
                   }
                 }
@@ -7208,7 +7402,8 @@
               "1.6",
               "1.7",
               "1.8",
-              "1.9"
+              "1.9",
+              "1.10"
             ]
           },
           "session": {
@@ -7868,7 +8063,8 @@
               "1.6",
               "1.7",
               "1.8",
-              "1.9"
+              "1.9",
+              "1.10"
             ]
           },
           "session": {
@@ -8066,7 +8262,8 @@
               "1.6",
               "1.7",
               "1.8",
-              "1.9"
+              "1.9",
+              "1.10"
             ]
           },
           "session": {
@@ -8262,7 +8459,8 @@
               "1.6",
               "1.7",
               "1.8",
-              "1.9"
+              "1.9",
+              "1.10"
             ]
           },
           "session": {
@@ -8459,7 +8657,8 @@
               "1.6",
               "1.7",
               "1.8",
-              "1.9"
+              "1.9",
+              "1.10"
             ]
           },
           "session": {
@@ -9367,7 +9566,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -9418,6 +9617,11 @@
             "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
+          },
+          {
+            "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
+            "type": "string",
+            "const": "app_server_lost"
           }
         ]
       },
@@ -9751,7 +9955,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -9802,6 +10006,11 @@
             "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
+          },
+          {
+            "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
+            "type": "string",
+            "const": "app_server_lost"
           }
         ]
       },
@@ -9841,7 +10050,8 @@
                       "1.6",
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   },
                   "session_name": {
@@ -9990,7 +10200,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     },
@@ -10052,7 +10263,8 @@
                         "enum": [
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "status": {
@@ -10099,7 +10311,8 @@
                     "type": "string",
                     "enum": [
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 },
@@ -10138,7 +10351,8 @@
                       "1.6",
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 }
@@ -10163,6 +10377,7 @@
                           "input_too_large",
                           "model_mismatch",
                           "server_overloaded",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -10178,7 +10393,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -10200,6 +10416,7 @@
                           "tool_deferred",
                           "model_mismatch",
                           "server_overloaded",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -10214,7 +10431,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -10237,6 +10455,7 @@
                           "untrusted_directory",
                           "input_too_large",
                           "server_overloaded",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -10249,7 +10468,8 @@
                         "type": "string",
                         "enum": [
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -10272,6 +10492,7 @@
                           "untrusted_directory",
                           "input_too_large",
                           "model_mismatch",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -10283,7 +10504,43 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.9"
+                          "1.9",
+                          "1.10"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          "model_mismatch",
+                          "server_overloaded",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.10"
                         ]
                       }
                     }
@@ -10593,7 +10850,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -11253,7 +11511,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -11451,7 +11710,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -11647,7 +11907,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -11844,7 +12105,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -12933,7 +13195,7 @@
         ]
       },
       "FailureKind": {
-        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
+        "description": "The normalized, closed set of failure reasons oneharness can classify from a\nharness's output. It is the single source for the `failure_kind` contract\nvalue: serialized as the snake_case token a consumer reads in the report\n(`auth`, `rate_limit`, `model_not_found`, `quota`, `session_not_found`,\n`tool_deferred`, `server_overloaded`, `app_server_lost`), so the wire shape is unchanged — modeling it as an enum\nkeeps a misspelled or invalid kind unrepresentable and gives every\nproducer/consumer (classifier, `is_failure`, the fallback fall-through rule,\nthe report, history) one definition to share instead of scattered string\nliterals.",
         "oneOf": [
           {
             "description": "Authentication / authorization rejected the request (401/403, missing or\ninvalid credentials).",
@@ -12984,6 +13246,11 @@
             "description": "Codex's provider reported that serving capacity was exhausted. When the\nresult has no answer, tool event, or billed usage, oneharness may retry\nthis identity briefly and then try a fallback identity; work evidence\npreserves the classified failure without retry or fallback.",
             "type": "string",
             "const": "server_overloaded"
+          },
+          {
+            "description": "The shared Codex app-server a pooled dispatch's turn ran on went away\nunder it: the connection reached EOF, was closed, or refused a write\n(`EPIPE`) while oneharness's own record showed a turn started and not\ncompleted. The server crashed or was restarted, not the turn — so it is\nnever a turn failure, and a fallback chain moves on to its next\ncandidate (`\"app-server-lost\"`).",
+            "type": "string",
+            "const": "app_server_lost"
           }
         ]
       },
@@ -13036,7 +13303,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     },
@@ -13098,7 +13366,8 @@
                         "enum": [
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       },
                       "status": {
@@ -13145,7 +13414,8 @@
                     "type": "string",
                     "enum": [
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 },
@@ -13184,7 +13454,8 @@
                       "1.6",
                       "1.7",
                       "1.8",
-                      "1.9"
+                      "1.9",
+                      "1.10"
                     ]
                   }
                 }
@@ -13209,6 +13480,7 @@
                           "input_too_large",
                           "model_mismatch",
                           "server_overloaded",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -13224,7 +13496,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -13246,6 +13519,7 @@
                           "tool_deferred",
                           "model_mismatch",
                           "server_overloaded",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -13260,7 +13534,8 @@
                           "1.6",
                           "1.7",
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -13283,6 +13558,7 @@
                           "untrusted_directory",
                           "input_too_large",
                           "server_overloaded",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -13295,7 +13571,8 @@
                         "type": "string",
                         "enum": [
                           "1.8",
-                          "1.9"
+                          "1.9",
+                          "1.10"
                         ]
                       }
                     }
@@ -13318,6 +13595,7 @@
                           "untrusted_directory",
                           "input_too_large",
                           "model_mismatch",
+                          "app_server_lost",
                           null
                         ]
                       }
@@ -13329,7 +13607,43 @@
                       "schema_version": {
                         "type": "string",
                         "enum": [
-                          "1.9"
+                          "1.9",
+                          "1.10"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "failure_kind": {
+                        "enum": [
+                          "auth",
+                          "rate_limit",
+                          "model_not_found",
+                          "quota",
+                          "session_not_found",
+                          "tool_deferred",
+                          "untrusted_directory",
+                          "input_too_large",
+                          "model_mismatch",
+                          "server_overloaded",
+                          null
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "schema_version": {
+                        "type": "string",
+                        "enum": [
+                          "1.10"
                         ]
                       }
                     }
@@ -13639,7 +13953,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -14299,7 +14614,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -14497,7 +14813,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -14693,7 +15010,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -14890,7 +15208,8 @@
                   "1.6",
                   "1.7",
                   "1.8",
-                  "1.9"
+                  "1.9",
+                  "1.10"
                 ]
               },
               "session": {
@@ -16628,6 +16947,21 @@
       "harness"
     ],
     "$defs": {
+      "AppServerMode": {
+        "description": "Where a controlled (`--control`) Codex dispatch's turn runs: the\n`app_server` key of `[harness.codex]` and `[harness.codex.variant.<name>]`.\n\nResolved variant, then harness, then [`AppServerMode::Shared`] on every\nplatform, apart from `args` exactly as `plugins` is\n([`FileConfig::app_server_for`]). Accepted only for `codex`.",
+        "oneOf": [
+          {
+            "description": "One `codex app-server --listen unix://…` per pool key, shared by every\nconcurrent dispatch with that key and managed by oneharness's server\npool. The default.",
+            "type": "string",
+            "const": "shared"
+          },
+          {
+            "description": "The dispatch's own `codex app-server` stdio child, started for it and\ntorn down with it — the behavior before pooling.",
+            "type": "string",
+            "const": "per-dispatch"
+          }
+        ]
+      },
       "Field": {
         "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
         "type": "object",
@@ -16668,6 +17002,32 @@
             "items": {
               "$ref": "#/$defs/HookEntry"
             }
+          }
+        },
+        "required": [
+          "value",
+          "source"
+        ]
+      },
+      "Field11": {
+        "description": "One resolved field in the `oneharness config` report: the effective value\nplus where it came from (a config file path, or [`DEFAULT_SOURCE`]). Both\nare `null` when the field is unset everywhere and has no built-in default.",
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "value": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/AppServerMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -16884,6 +17244,17 @@
             "anyOf": [
               {
                 "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "app_server": {
+            "description": "The resolved `app_server` (`\"shared\"` by default), present only for\n`codex`.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field11"
               },
               {
                 "type": "null"
@@ -17115,6 +17486,17 @@
             "anyOf": [
               {
                 "$ref": "#/$defs/Field"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "app_server": {
+            "description": "The `app_server` a launch of this variant resolves to: the variant's\nown, else its harness's, else `\"shared\"`. Present only for `codex`.",
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Field11"
               },
               {
                 "type": "null"

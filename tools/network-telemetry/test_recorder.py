@@ -300,6 +300,67 @@ class MeasuredLaunch(unittest.TestCase):
         self.assertEqual(len(lines(file)), 2, "the launch was recorded more than once")
 
 
+class EarlyStop(unittest.TestCase):
+    """A stop can reach a launch's process group at any moment of the
+    recorder's own start — while the shim encodes the start line, while the
+    recorder's interpreter starts, before its namespace exists — as a suite
+    stopped mid-phase does. Whenever it lands, a launch that wrote a start line
+    gets exactly one measurement line and leaves no pending marker; one stopped
+    earlier records nothing at all."""
+
+    @unittest.skipIf(WINDOWS, "process groups and their signals are POSIX")
+    def test_a_stop_at_any_moment_of_the_recorders_start_leaves_each_start_line_one_line(
+        self,
+    ) -> None:
+        tmp = scratch(self)
+        real = tmp / "real"
+        # A launch that never ends on its own: one the stop missed would hold
+        # its pending marker past the bound below.
+        real.write_text("#!/usr/bin/env bash\nexec sleep 600\n")
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shims = []
+        for step in range(30):
+            shim = subprocess.Popen(
+                [
+                    BASH,
+                    str(NETSHIM),
+                    "--suite",
+                    "codex",
+                    "--harness",
+                    "codex",
+                    "--real",
+                    str(real),
+                    "--self",
+                    str(tmp / "shims" / "codex"),
+                    "--file",
+                    str(file),
+                    "--",
+                    "exec",
+                    "x",
+                ],
+                start_new_session=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            # 0 to 145 ms: from the shim's first line to well past the
+            # recorder's interpreter start, staggered across the launches.
+            time.sleep(step * 0.005)
+            os.killpg(shim.pid, signal.SIGTERM)
+            shims.append(shim)
+        for shim in shims:
+            shim.wait(timeout=60)
+        pending = tmp / ".pending"
+        deadline = time.monotonic() + 60
+        while any(pending.glob("*")) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertEqual(list(pending.glob("*")), [], "a stopped launch's marker outlived it")
+        records = lines(file)
+        for start in starts(records):
+            self.assertEqual(len(measurements(records, start["launch_id"])), 1, start)
+
+
 class Concurrency(unittest.TestCase):
     def test_launches_recorded_at_once_each_get_one_whole_line(self) -> None:
         need_recorder(self)
@@ -642,6 +703,38 @@ class Unwritable(unittest.TestCase):
         self.assertFalse(
             list((tmp / ".pending").glob("*")), "the pending marker outlived the failure"
         )
+
+    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    def test_a_start_line_or_marker_that_cannot_be_written_refuses_the_launch(self) -> None:
+        # The recorder writes the marker, then the start line, before the
+        # launch; where either cannot be written it says which and why, and
+        # neither runs the launch nor leaves a marker the budget would wait on.
+        for blocked, said in (("line", "cannot append to"), ("marker", "cannot create")):
+            with self.subTest(blocked=blocked):
+                tmp = scratch(self)
+                ran = tmp / "ran"
+                real = tmp / "real"
+                real.write_text(f'#!/usr/bin/env bash\ntouch "{ran}"\n')
+                real.chmod(0o755)
+                file = tmp / "codex.jsonl"
+                # A directory where the line file goes, or a file where the
+                # markers' directory goes.
+                if blocked == "line":
+                    file.mkdir()
+                else:
+                    (tmp / ".pending").write_text("")
+                run = run_shim(
+                    tmp, [str(real)], ["exec", "x"], file=file, env={"OH_E2E_OS": "Linux"}
+                )
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn(said.encode(), run.stderr)
+                self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
+                if blocked == "line":
+                    self.assertFalse(
+                        list((tmp / ".pending").glob("*")), "the marker outlived the refusal"
+                    )
+                else:
+                    self.assertFalse(file.exists(), "a start line was written with no marker")
 
 
 class LostResult(unittest.TestCase):

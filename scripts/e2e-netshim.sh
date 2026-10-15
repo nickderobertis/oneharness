@@ -148,13 +148,12 @@ start="$(jq -nc --arg suite "$suite" --arg phase "$phase" --arg harness "$harnes
   --arg kind "$kind" --arg id "$launch_id" --argjson argv "$argv" \
   '{suite: $suite, phase: $phase, harness: $harness, kind: $kind, launch_id: $id, argv: $argv}' |
   tr -d '\r')" || die "jq could not write the start line; install jq (the live suites need it) and rerun"
-printf '%s\n' "$start" >>"$file" || die "cannot append to $file; check that its directory is writable"
-# Marks the launch as still being measured until its line is in, so the
-# budget step waits for a namespace still winding down.
+# The launch's pending marker: present from its start line until its
+# measurement line is in, so the budget step — and anything else waiting on
+# the file — waits for a namespace still winding down.
 pending="$(dirname "$file")/.pending/$launch_id"
-if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
-  die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
-fi
+os="${OH_E2E_OS:-$(uname -s)}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # A shared Codex app-server is started with a server marker
 # (ONEHARNESS_APP_SERVER_MARKER), and stopping it stops every process carrying
@@ -167,24 +166,56 @@ if [ -n "${ONEHARNESS_APP_SERVER_MARKER:-}" ]; then
   unset ONEHARNESS_APP_SERVER_MARKER
 fi
 
-os="${OH_E2E_OS:-$(uname -s)}"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Nothing is recorded before this point, so a stop until here ends a launch
+# that left no trace. From its start line on, a launch must also get its
+# measurement line, whatever stops it.
 case "$os" in
   Linux*)
     if command -v python3 >/dev/null 2>&1; then
+      # The recorder writes the start line and the marker itself, once it
+      # handles a stop: a stop while its interpreter starts ends it with
+      # nothing recorded, rather than leaving a start line no measurement
+      # will ever join.
       exec python3 "$here/e2e-netmeasure.py" --line-file "$file" --launch-id "$launch_id" \
-        --pending "$pending" -- "${launch[@]}" "$@"
+        --pending "$pending" --start-line "$start" -- "${launch[@]}" "$@"
     fi
     reason="no python3 on PATH to run scripts/e2e-netmeasure.py"
     ;;
   *) reason="the netns-pasta method needs Linux network namespaces; this leg is $os, which the network budgets do not support" ;;
 esac
 
+# The line for a launch stopped between its start line and its launch,
+# encoded while a stop still simply ends this shim.
+unlaunched="$(jq -nc --arg id "$launch_id" \
+  --arg reason "the launch was stopped by a signal before it started, so it exchanged no bytes" \
+  '{launch_id: $id, method: "unavailable", reason: $reason, seconds: 0, exit: null}' |
+  tr -d '\r')" || die "jq could not write the stopped-launch line; install jq (the live suites need it) and rerun"
+mkdir -p "$(dirname "$pending")" ||
+  die "cannot create $(dirname "$pending"); check that $(dirname "$file") is writable, then rerun"
+# A stop is noted from here, and only builtins run until the launch, so
+# neither this shim nor a child of it is ended between the start line and
+# its measurement.
+stopped=""
+trap 'stopped=143' TERM
+trap 'stopped=130' INT
+trap 'stopped=129' HUP
+: >"$pending" || die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
+if ! printf '%s\n' "$start" >>"$file"; then
+  rm -f "$pending"
+  die "cannot append to $file; check that its directory is writable"
+fi
+if [ -n "$stopped" ]; then
+  printf '%s\n' "$unlaunched" >>"$file" || die "cannot append to $file; check that its directory is writable"
+  rm -f "$pending" ||
+    die "recorded the stopped launch, but cannot remove its pending marker $pending, which the budget step would wait on; remove it, then rerun"
+  exit "$stopped"
+fi
+
 # The fallback: run the launch directly and record that it was not measured.
 # The trap is a handler, not an ignore, so the launch keeps default signal
 # dispositions; a signal to the process group ends it and this still records.
 trap ':' TERM INT HUP
-t0="$(date +%s)"
+t0=$SECONDS
 rc=0
 "${launch[@]}" "$@" || rc=$?
 unrecorded() {
@@ -192,7 +223,7 @@ unrecorded() {
     "$real" "$rc" "$file" "$1" >&2
   exit 125
 }
-line="$(jq -nc --arg id "$launch_id" --arg reason "$reason" --argjson seconds "$(($(date +%s) - t0))" \
+line="$(jq -nc --arg id "$launch_id" --arg reason "$reason" --argjson seconds "$((SECONDS - t0))" \
   --argjson exit "$rc" \
   '{launch_id: $id, method: "unavailable", reason: $reason, seconds: $seconds, exit: $exit}' | tr -d '\r')" ||
   unrecorded "jq failed"

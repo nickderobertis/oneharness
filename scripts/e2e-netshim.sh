@@ -206,7 +206,8 @@ if ! printf '%s\n' "$start" >>"$file"; then
 fi
 if [ -n "$stopped" ]; then
   printf '%s\n' "$unlaunched" >>"$file" || die "cannot append to $file; check that its directory is writable"
-  rm -f "$pending"
+  rm -f "$pending" ||
+    die "recorded the stopped launch, but cannot remove its pending marker $pending, which the budget step would wait on; remove it, then rerun"
   exit "$stopped"
 fi
 

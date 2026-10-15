@@ -705,6 +705,39 @@ class Unwritable(unittest.TestCase):
         )
 
 
+    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    def test_a_start_line_or_marker_that_cannot_be_written_refuses_the_launch(self) -> None:
+        # The recorder writes the marker, then the start line, before the
+        # launch; where either cannot be written it says which and why, and
+        # neither runs the launch nor leaves a marker the budget would wait on.
+        for blocked, said in (("line", "cannot append to"), ("marker", "cannot create")):
+            with self.subTest(blocked=blocked):
+                tmp = scratch(self)
+                ran = tmp / "ran"
+                real = tmp / "real"
+                real.write_text(f'#!/usr/bin/env bash\ntouch "{ran}"\n')
+                real.chmod(0o755)
+                file = tmp / "codex.jsonl"
+                # A directory where the line file goes, or a file where the
+                # markers' directory goes.
+                if blocked == "line":
+                    file.mkdir()
+                else:
+                    (tmp / ".pending").write_text("")
+                run = run_shim(
+                    tmp, [str(real)], ["exec", "x"], file=file, env={"OH_E2E_OS": "Linux"}
+                )
+                self.assertNotEqual(run.returncode, 0, run.stderr)
+                self.assertIn(said.encode(), run.stderr)
+                self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
+                if blocked == "line":
+                    self.assertFalse(
+                        list((tmp / ".pending").glob("*")), "the marker outlived the refusal"
+                    )
+                else:
+                    self.assertFalse(file.exists(), "a start line was written with no marker")
+
+
 class LostResult(unittest.TestCase):
     def test_a_namespace_that_ran_the_launch_but_left_no_result_records_it_unmeasured(self) -> None:
         # The launch plants a directory where the namespace's init writes its

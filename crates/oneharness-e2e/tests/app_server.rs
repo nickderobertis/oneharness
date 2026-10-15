@@ -2626,6 +2626,125 @@ fn a_shared_server_lost_after_its_turn_ran_a_tool_keeps_the_work_and_stops_the_c
     );
 }
 
+/// A client of the shared server that connects, upgrades, and then never
+/// reads again — a dispatch frozen mid-turn, or anything else dialling the
+/// socket — must cost every other dispatch nothing. The server broadcasts each
+/// thread's frames to every connection, so this one's buffer fills: a server
+/// writing to it under its one lock would stall every other dispatch for as
+/// long as it stays connected. The mock bounds each write and ends a
+/// connection that stops reading; the dispatch held live across the stall and
+/// one started into it both finish, the stalled connection reads its end, and
+/// every process the journey captured — both dispatches, the server and its
+/// sweeper — is gone once the server lingers out.
+#[test]
+fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
+    use std::io::Read;
+    let pool = Pool::new("pool-stalled-reader").with_env("CODEX_MOCK_BROADCAST", "1");
+    let release = pool.file("release");
+    let mut live = pool.spawn(pool.command(
+        "live",
+        &[],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+            ("MOCK_CODEX_TICK_MS", "1"),
+        ],
+    ));
+    // Read as they arrive: a report carrying thousands of ticks outgrows a
+    // pipe nobody is reading.
+    let live_out = read_to_end(live.stdout.take().unwrap());
+    let live_err = read_to_end(live.stderr.take().unwrap());
+    let server = pool.await_live_turns(1);
+    let (_, sweeper) = entry_and_sweeper(&pool);
+    let listen = pool.mock_servers()[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|arg| arg.strip_prefix("unix://"))
+        .map(PathBuf::from)
+        .expect("the server's --listen path");
+
+    // Connect and upgrade, then stop reading.
+    let mut stalled =
+        UnixStream::connect(oneharness_core::io::websocket::dial_path(&listen)).unwrap();
+    stalled
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut answer = Vec::new();
+    let mut byte = [0u8; 1];
+    while !answer.ends_with(b"\r\n\r\n") {
+        assert_eq!(
+            stalled.read(&mut byte).unwrap(),
+            1,
+            "the upgrade went unanswered"
+        );
+        answer.push(byte[0]);
+    }
+    assert!(answer.starts_with(b"HTTP/1.1 101"), "{answer:?}");
+    // The live turn's broadcast ticks fill the stalled connection's buffer
+    // well within this.
+    std::thread::sleep(Duration::from_secs(3));
+
+    let mut joining = pool.spawn(pool.command("joining", &[], &[]));
+    let captured = [live.id(), joining.id(), server, sweeper];
+    let joining_out = read_to_end(joining.stdout.take().unwrap());
+    let joining_err = read_to_end(joining.stderr.take().unwrap());
+    let bound = Duration::from_secs(40);
+    let joined = exits_within(
+        &mut joining,
+        bound,
+        "a dispatch started while another client stopped reading",
+    );
+    std::fs::write(&release, b"").unwrap();
+    let lived = exits_within(
+        &mut live,
+        bound,
+        "a dispatch held live while another client stopped reading",
+    );
+    for (status, out, err, name) in [
+        (joined, joining_out, joining_err, "joining"),
+        (lived, live_out, live_err, "live"),
+    ] {
+        let output = Output {
+            status,
+            stdout: out
+                .recv_timeout(bound)
+                .expect("the dispatch's output ended"),
+            stderr: err
+                .recv_timeout(bound)
+                .expect("the dispatch's errors ended"),
+        };
+        let report: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|err| panic!("{name}: no JSON report ({err})"));
+        succeeded(&output, &report);
+        assert_eq!(reported_server(&report), server, "{name}");
+    }
+
+    // The server ended the connection that stopped reading: what it sent
+    // before the bound, then the end.
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    let mut rest = Vec::new();
+    stalled
+        .read_to_end(&mut rest)
+        .expect("the stalled connection was never ended");
+
+    let gone =
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(15);
+    wait_for("the lingered-out server to stop", gone, || !alive(server));
+    wait_for("its sweeper to end", gone, || !alive(sweeper));
+    let left: Vec<u32> = captured
+        .into_iter()
+        .chain(pool.server_pids())
+        .filter(|pid| alive(*pid))
+        .collect();
+    assert!(left.is_empty(), "still running: {left:?}");
+}
+
 /// One dispatch's thread-level settings.
 struct Settings<'a> {
     session: &'a str,

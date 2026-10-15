@@ -5,7 +5,7 @@
 # (10 minutes) is terminated and reported as TIMEOUT, failing the run with its
 # name. Without it a hung test holds its job silently until the CI job limit:
 # Nx buffers each task's output, so nothing names the test that hung. The
-# slowest test measured takes about 2.3 minutes, so the bound leaves room for a
+# slowest test measured takes about 3 minutes, so the bound leaves room for a
 # loaded runner and the instrumented coverage build.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 10 }

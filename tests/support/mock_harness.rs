@@ -2390,7 +2390,13 @@ mod listen_server {
     type Shared = Arc<Mutex<Server>>;
 
     struct Conn {
+        /// The connection's stream, for what is done to the connection
+        /// itself — shutting it, handing a command its end. Frames go through
+        /// [`Conn::outbox`], never a write here.
         writer: Arc<Mutex<UnixStream>>,
+        /// The frames queued for the connection's own writer thread
+        /// ([`deliver`]), which writes them outside the server's lock.
+        outbox: std::sync::mpsc::Sender<Vec<u8>>,
         record: Option<std::fs::File>,
         /// The dispatch's own raw frame log, once its thread names one, and
         /// the frames received before it did.
@@ -2740,11 +2746,12 @@ mod listen_server {
             }
         }
 
+        /// Queue `frame` for `conn`. Never a write under the server's lock: a
+        /// client that stops reading would otherwise stop every connection.
         fn send(&mut self, conn: u64, frame: &Value) {
             self.record(conn, "out", frame);
             if let Some(c) = self.conns.get(&conn) {
-                let mut writer = c.writer.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = write_frame(&mut writer, frame.to_string().as_bytes());
+                let _ = c.outbox.send(encode_frame(frame.to_string().as_bytes()));
             }
         }
 
@@ -2834,7 +2841,29 @@ mod listen_server {
         }
     }
 
-    fn write_frame(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
+    /// How long one write to a connection may wait for its client to read.
+    /// Past it the client is not reading, as no dispatch stops doing mid-turn,
+    /// and the connection is ended rather than left to hold its writer.
+    const WRITE_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A connection's writer thread: every frame queued for it, in order,
+    /// each write bounded by [`WRITE_BOUND`]. A write past the bound ends the
+    /// connection — its client reads the end of what was sent — and whatever
+    /// is queued after it is dropped.
+    fn deliver(mut stream: UnixStream, queued: std::sync::mpsc::Receiver<Vec<u8>>) {
+        if stream.set_write_timeout(Some(WRITE_BOUND)).is_err() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        for frame in queued {
+            if stream.write_all(&frame).is_err() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+        }
+    }
+
+    fn encode_frame(payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0x81u8];
         let len = payload.len();
         if len < 126 {
@@ -2847,7 +2876,7 @@ mod listen_server {
             frame.extend_from_slice(&(len as u64).to_be_bytes());
         }
         frame.extend_from_slice(payload);
-        stream.write_all(&frame)
+        frame
     }
 
     /// One client message, unmasked; `None` once the client is gone.
@@ -2938,6 +2967,11 @@ mod listen_server {
                 return;
             }
         }
+        let Ok(delivering) = writer.lock().unwrap_or_else(|p| p.into_inner()).try_clone() else {
+            return;
+        };
+        let (outbox, queued) = std::sync::mpsc::channel();
+        let delivery = std::thread::spawn(move || deliver(delivering, queued));
         let conn = {
             let mut s = lock(server);
             let id = s.next_conn;
@@ -2953,6 +2987,7 @@ mod listen_server {
                 id,
                 Conn {
                     writer: Arc::clone(&writer),
+                    outbox,
                     record,
                     log: None,
                     unlogged: Vec::new(),
@@ -3000,14 +3035,21 @@ mod listen_server {
         // closed here before anything else. Like Codex, its threads stay
         // loaded and their turns and commands keep running; only its
         // subscriptions go.
-        let mut s = lock(server);
-        s.conns.remove(&conn);
+        let removed = {
+            let mut s = lock(server);
+            for thread in s.threads.values_mut() {
+                thread.subscribers.remove(&conn);
+            }
+            s.conns.remove(&conn)
+        };
+        // Its queue closed, its writer sends what was queued — within the
+        // bound, outside the lock — and lets go of the stream; then the
+        // connection is closed.
+        drop(removed);
+        let _ = delivery.join();
         drop(writer);
         drop(reader);
-        for thread in s.threads.values_mut() {
-            thread.subscribers.remove(&conn);
-        }
-        s.save();
+        lock(server).save();
     }
 
     /// Keep a request waiting, outside the server's lock, where a knob says

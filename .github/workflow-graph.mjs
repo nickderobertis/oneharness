@@ -244,12 +244,17 @@ export function resolveJobs(
         : undefined,
     workflow_run: { conclusion: "success" },
   };
+  // A job that did not succeed still exposes every output it declares; one its
+  // producer step never wrote reads as the empty string, as in Actions. A
+  // scenario may supply the value a failed producer wrote before failing.
+  const unwritten = (job, override) => Object.fromEntries(Object.keys(job.outputs ?? {}).map((key) => [key, override?.outputs && key in override.outputs ? override.outputs[key] : ""]));
   const needs = Object.fromEntries(Object.entries(workflow.jobs).map(([id, job]) => {
     const override = scenario.outcomes?.[id];
     const result = override?.result ?? "success";
     if (!["success", "failure", "cancelled", "skipped"].includes(result)) throw Error(`Invalid job outcome ${id}/${result}`);
+    if (result !== "success") return [id, { result, outputs: unwritten(job, override) }];
     const outputs = {};
-    if (result === "success") for (const [key, expression] of Object.entries(job.outputs ?? {})) {
+    for (const [key, expression] of Object.entries(job.outputs ?? {})) {
       if (override?.outputs && key in override.outputs) outputs[key] = override.outputs[key];
       else if (file === "ci.yml" && id === "macos-policy" && ["macos_required", "is_release_only"].includes(key) && expression === "${{ steps.policy.outputs." + key + " }}")
         outputs[key] = String(key === "macos_required" ? scenario.macosRequired : scenario.releaseOnly);
@@ -296,7 +301,7 @@ export function resolveJobs(
     const job = workflow.jobs[id];
     if (!job) throw Error(`Unresolved required job ${file}/${id}`);
     const dependencies = typeof job.needs === "string" ? [job.needs] : job.needs ?? [];
-    for (const dependency of dependencies) if (!active(dependency, [...visiting, id])) needs[dependency] = {result:"skipped",outputs:{}};
+    for (const dependency of dependencies) if (!active(dependency, [...visiting, id])) needs[dependency] = {result:"skipped",outputs:unwritten(workflow.jobs[dependency])};
     const local = {...context, needs:Object.fromEntries(dependencies.map(d=>[d,needs[d]]))};
     const explicitStatus = /\b(always|success|failure|cancelled)\s*\(/.test(job.if ?? "");
     const success = dependencies.every(d=>needs[d].result === "success");

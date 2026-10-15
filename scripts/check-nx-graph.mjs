@@ -232,13 +232,14 @@ for (const name of shellTests) {
 
 // The network budgets read real telemetry: only `live-codex:live` (whose
 // recipe runs the suite, then the check) may run their check, and the gate's
-// `check` recipe excludes every live project. A budget check over telemetry a
-// gate target derives offline from committed files (github-workflows:budgets)
-// reads none, so the match is the network budgets' entry points alone.
+// `check` recipe excludes every live project. The one exception is
+// github-workflows:budgets running exactly its own check over the scheduling
+// telemetry its `test` derives offline from committed workflow files.
 // The pool maintenance budget builds the repository twice: only
 // `pool-maintenance:budgets-host`, a target no gate tier names, may run its
 // check (`just budgets`, after the release pull request's sweep).
-const runsBudgetCheck = /e2e-network-budget|onebudgetspec check[^"]*live\/pr-matrix\/|just live-codex/u;
+const runsBudgetCheck = /e2e-network-budget|onebudgetspec check|just live-codex/u;
+const offlineWorkflowBudget = /^"uv tool run --from onebudgetspec-cli==[0-9.]+ onebudgetspec check \.github\/budgets\.yaml"$/u;
 const poolBudgetCheck = /onebudgetspec check pool-maintenance\/budgets\.yaml/u;
 for (const [name, node] of Object.entries(graph.nodes)) {
 	for (const [target, spec] of Object.entries(node.data.targets ?? {})) {
@@ -248,6 +249,8 @@ for (const [name, node] of Object.entries(graph.nodes)) {
 			if (owner !== "pool-maintenance:budgets-host") {
 				failures.push(`${owner} runs the pool maintenance budget check, which builds the repository twice; keep it in pool-maintenance:budgets-host (just budgets) alone`);
 			}
+		} else if (owner === "github-workflows:budgets" && offlineWorkflowBudget.test(commands)) {
+			// Reads only .github/.telemetry, which github-workflows:test records offline.
 		} else if (runsBudgetCheck.test(commands) && owner !== "live-codex:live") {
 			failures.push(`${owner} runs the network budget check, which reads live telemetry; keep it in live-codex:live (just live-codex) alone`);
 		}

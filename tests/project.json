@@ -62,6 +62,7 @@
         "rustTestRunner",
         "{workspaceRoot}/docs/history-index.md",
         "{workspaceRoot}/python/oneharness-sdk/src/oneharness_sdk/_generated/capabilities.json",
+        "{workspaceRoot}/npm/oneharness-sdk/src/generated/schemas.json",
         "{workspaceRoot}/scripts/check-capability-surface.sh",
         "shellTestRunner"
       ],

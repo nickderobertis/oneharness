@@ -2121,15 +2121,19 @@ fn a_library_pooled_session_runs_a_thread_through_its_whole_life() {
     let server = session.record().pid.get();
     session.release();
 
-    let releases = pool.state(server)["releases"].clone();
-    assert!(
-        releases
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|release| release["thread"] == thread.as_str()
-                && release["status"] == "unsubscribed"),
-        "the released session's thread was not unsubscribed: {releases}"
+    // The mock records a release after answering it.
+    wait_for(
+        "the server to record the session's thread unsubscribed",
+        Duration::from_secs(10),
+        || {
+            pool.state(server)["releases"]
+                .as_array()
+                .is_some_and(|releases| {
+                    releases.iter().any(|release| {
+                        release["thread"] == thread.as_str() && release["status"] == "unsubscribed"
+                    })
+                })
+        },
     );
     let still = keeper
         .loaded_threads(Instant::now() + Duration::from_secs(10))

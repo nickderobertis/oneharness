@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.1](https://github.com/nickderobertis/oneharness/compare/v0.25.0...v0.25.1) - 2026-10-15
+
+### Fixed
+
+- *(ci)* make the workflow tests resolve the macOS policy job's output ([#1475](https://github.com/nickderobertis/oneharness/pull/1475))
+
 ## [0.25.0](https://github.com/nickderobertis/oneharness/compare/v0.24.0...v0.25.0) - 2026-10-14
 
 ### Added

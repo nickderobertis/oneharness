@@ -640,6 +640,68 @@ class Deadline(unittest.TestCase):
                     self.assertGreaterEqual(line["seconds"], 3)
 
 
+# e2e-netmeasure.py's grace between the relayed stop and SIGKILL.
+KILL_GRACE = 5.0
+
+
+def start_line(launch_id: str) -> str:
+    """A start line of the shape scripts/e2e-netshim.sh writes."""
+    return json.dumps(
+        {
+            "suite": "codex",
+            "phase": "",
+            "harness": "codex",
+            "kind": "exec",
+            "launch_id": launch_id,
+            "argv": ["exec", "x"],
+        }
+    )
+
+
+def measure_argv(tmp: Path, start: str, launch: list[str]) -> list[str]:
+    """The measurer as the shim execs it on an unmeasured leg, for launch `L`."""
+    return [
+        sys.executable,
+        str(NETMEASURE),
+        "--line-file",
+        str(tmp / "codex.jsonl"),
+        "--launch-id",
+        "L",
+        "--pending",
+        str(tmp / ".pending" / "L"),
+        "--start-line",
+        start,
+        "--unmeasured",
+        "a test's direct launch",
+        "--",
+        *launch,
+    ]
+
+
+def measure_directly(
+    tmp: Path, start: str, launch: list[str]
+) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        measure_argv(tmp, start, launch),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def children(pid: int) -> list[int]:
+    """The pids whose parent is `pid`, as `ps` lists them now."""
+    listing = subprocess.run(
+        ["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, check=True
+    ).stdout
+    return [
+        int(child)
+        for child, parent in (row.split() for row in listing.splitlines() if row.strip())
+        if int(parent) == pid
+    ]
+
+
 class Arguments(unittest.TestCase):
     @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_a_long_argument_is_recorded_cut_and_passed_whole(self) -> None:
@@ -653,6 +715,44 @@ class Arguments(unittest.TestCase):
         self.assertEqual(got.read_text(), prompt, "the harness did not get the whole argument")
         (start,) = starts(lines(tmp / "codex.jsonl"))
         self.assertEqual(start["argv"], ["exec", "p" * 199 + "Q" + "…"])
+
+    @unittest.skipIf(WINDOWS, "the measurer forks its supervisor, which Git Bash's python3 cannot")
+    def test_a_start_line_is_refused_unless_it_is_the_shim_s_record_and_is_written_on_one_line(
+        self,
+    ) -> None:
+        # A start line the budget step could not place — a field missing or
+        # added, a non-string where a string goes — is refused before anything
+        # is written or run; the shim's record, however it is spelled, lands as
+        # one JSONL line.
+        start = {
+            "suite": "codex",
+            "phase": "p",
+            "harness": "codex",
+            "kind": "exec",
+            "launch_id": "L",
+            "argv": ["exec", "x"],
+        }
+        refused = {
+            "a field missing": {k: v for k, v in start.items() if k != "suite"},
+            "a field added": {**start, "extra": 1},
+            "a non-string kind": {**start, "kind": 3},
+            "argv not of strings": {**start, "argv": ["exec", 1]},
+            "another launch's id": {**start, "launch_id": "M"},
+        }
+        for case, record in refused.items():
+            with self.subTest(case=case):
+                tmp = scratch(self)
+                ran = tmp / "ran"
+                run = measure_directly(tmp, json.dumps(record), ["touch", str(ran)])
+                self.assertEqual(run.returncode, 2, run.stderr)
+                self.assertIn(b"--start-line must be the shim's start record", run.stderr)
+                self.assertFalse(ran.exists(), "the launch ran with its start refused")
+                self.assertFalse((tmp / "codex.jsonl").exists(), "a refused start was written")
+        tmp = scratch(self)
+        run = measure_directly(tmp, json.dumps(start, indent=2), ["true"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        first = (tmp / "codex.jsonl").read_text(encoding="utf-8").splitlines()[0]
+        self.assertEqual(json.loads(first), start)
 
 
 class MalformedResult(unittest.TestCase):
@@ -865,6 +965,76 @@ class Unwritable(unittest.TestCase):
         (marker,) = (tmp / ".pending").glob("*")
         self.assertIn(f"nor remove its pending marker {marker}".encode(), run.stderr)
         self.assertIn(b"remove the marker, then rerun", run.stderr)
+        self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
+
+
+class SupervisorStart(unittest.TestCase):
+    """The measuring supervisor's own refusals and losses before the launch,
+    where the shim hands the start line to it."""
+
+    @unittest.skipIf(WINDOWS, "the measurer forks its supervisor, which Git Bash's python3 cannot")
+    def test_a_start_line_it_cannot_append_whose_marker_it_cannot_remove_says_how_to_recover(
+        self,
+    ) -> None:
+        # The marker is made (its file already there and writable), the line
+        # cannot be appended (a directory where the file goes), and the marker
+        # cannot then be removed (its directory is read-only): the refusal
+        # names the marker the budget step would wait on and how to clear it.
+        tmp = scratch(self)
+        markers = tmp / ".pending"
+        markers.mkdir()
+        pending = markers / "L"
+        pending.write_text("")
+        markers.chmod(0o555)
+        self.addCleanup(markers.chmod, 0o755)
+        (tmp / "codex.jsonl").mkdir()
+        ran = tmp / "ran"
+        run = measure_directly(tmp, start_line("L"), ["touch", str(ran)])
+        self.assertEqual(run.returncode, 126, run.stderr)
+        self.assertIn(f"nor remove its pending marker {pending}".encode(), run.stderr)
+        self.assertIn(b"remove the marker, then rerun", run.stderr)
+        self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
+
+    @unittest.skipIf(WINDOWS, "SIGKILL and a FIFO are POSIX")
+    def test_a_supervisor_lost_before_its_start_line_runs_nothing_and_clears_its_marker(
+        self,
+    ) -> None:
+        # The line file is a FIFO nobody reads, so the supervisor blocks
+        # opening it once its marker is made, and is SIGKILLed there. The
+        # measurer then finds no start line (it opens the FIFO and reads its
+        # end), so it records nothing — a measurement line would block on the
+        # FIFO and time this test out — removes the marker, says the launch did
+        # not run, and exits 137.
+        tmp = scratch(self)
+        file = tmp / "codex.jsonl"
+        os.mkfifo(file)
+        pending = tmp / ".pending" / "L"
+        ran = tmp / "ran"
+        measurer = subprocess.Popen(
+            measure_argv(tmp, start_line("L"), ["touch", str(ran)]),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(measurer.kill)
+        deadline = time.monotonic() + 30
+        while not pending.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(pending.exists(), "the supervisor never made its marker")
+        (supervisor,) = children(measurer.pid)
+        os.kill(supervisor, signal.SIGKILL)
+        # Let the measurer's read of the FIFO end: a writer that opens once it
+        # is reading, and closes having written nothing.
+        while time.monotonic() < deadline:
+            try:
+                os.close(os.open(file, os.O_WRONLY | os.O_NONBLOCK))
+                break
+            except OSError:
+                time.sleep(0.02)
+        _, stderr = measurer.communicate(timeout=30)
+        self.assertEqual(measurer.returncode, 137, stderr)
+        self.assertIn(b"ended before recording it, so it did not run", stderr)
+        self.assertFalse(pending.exists(), "the marker outlived the lost supervisor")
         self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
 
 
@@ -1083,6 +1253,59 @@ class Fallback(unittest.TestCase):
         size = heartbeat.stat().st_size
         time.sleep(0.5)
         self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the signal")
+
+    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    def test_an_unmeasured_launch_that_ignores_the_stop_is_killed_after_the_grace(self) -> None:
+        # The supervisor relays the shim's stop to the direct launch's group;
+        # a launch that ignores it is SIGKILLed KILL_GRACE later and recorded
+        # with that exit, and runs no further.
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\ntrap '' TERM\n"
+            f'while :; do printf . >>"{heartbeat}"; sleep 0.1; done\n'
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "OH_E2E_OS": "Darwin"},
+        )
+        self.addCleanup(shim.kill)
+        for _ in range(100):
+            if heartbeat.exists():
+                break
+            time.sleep(0.1)
+        stopped = time.monotonic()
+        shim.send_signal(signal.SIGTERM)
+        self.assertEqual(shim.wait(timeout=30), 128 + signal.SIGKILL)
+        self.assertGreaterEqual(time.monotonic() - stopped, KILL_GRACE - 0.5)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + signal.SIGKILL))
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the kill")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without python3")
     def test_a_linux_host_without_python3_runs_the_launch_unmeasured(self) -> None:

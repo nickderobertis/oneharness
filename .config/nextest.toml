@@ -1,11 +1,22 @@
-# nextest's configuration for every `cargo nextest run` in this workspace — the
-# Rust projects' `test` targets (scripts/cargo-test.sh) on every platform.
-#
-# A per-test bound: a test still running after `period` x `terminate-after`
-# (10 minutes) is terminated and reported as TIMEOUT, failing the run with its
-# name. Without it a hung test holds its job silently until the CI job limit:
-# Nx buffers each task's output, so nothing names the test that hung. The
-# slowest test measured takes about 3 minutes, so the bound leaves room for a
-# loaded runner and the instrumented coverage build.
+# Per-test bounds nextest enforces wherever it runs the suites: every platform
+# of the `check` job, and locally. A test still running at its bound is
+# terminated and reported as TIMEOUT, failing the run with its name, rather than
+# holding its job silently until the CI job limit (Nx buffers each task's
+# output, so nothing else would name it).
+
+# Every other test: ended at 600 s (`period` x `terminate-after`). Without it
+# nextest never ends one. The slowest outside the app-server journeys measures
+# about 2.5 minutes (156 s, history_index's reindex memory test), so the bound
+# leaves room for a loaded runner and the instrumented coverage build.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The shared Codex app-server journeys (crates/oneharness-e2e/tests/app_server.rs)
+# wait on real dispatches, servers and sweepers. One that never ended held a
+# shared macOS runner for hours; each is now ended at 180 s, about 2.5 times the
+# slowest that passes (73 s, instrumented). Ended, it is a TIMEOUT failure that
+# names it, and nextest terminates its process group.
+# scripts/app-server-hang-bound-test.sh proves this through the runner itself.
+[[profile.default.overrides]]
+filter = "binary_id(oneharness-e2e::app_server)"
+slow-timeout = { period = "60s", terminate-after = 3 }

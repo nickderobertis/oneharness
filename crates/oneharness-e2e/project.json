@@ -6,7 +6,7 @@
     "type:e2e",
     "lang:rust"
   ],
-  "//": "The binary e2e journeys: tests/cli.rs drives the built executables as subprocesses, the symlinked-TMPDIR lane replays them under the temp-path spelling macOS gives every run, and the smoke drives the built debug binary. `test` depends on the two builds the smoke reads; the suite itself selects both crates beside it so cargo builds them under the same instrumentation.",
+  "//": "The binary e2e journeys: tests/cli.rs drives the built executables as subprocesses, the symlinked-TMPDIR lane replays them under the temp-path spelling macOS gives every run, app-server-hang-bound-test.sh proves the per-test bound .config/nextest.toml puts on the app-server journeys, and the smoke drives the built debug binary. `test` depends on the two builds the smoke reads; the suite itself selects both crates beside it so cargo builds them under the same instrumentation.",
   "implicitDependencies": [
     "oneharness-core",
     "oneharness",
@@ -54,7 +54,8 @@
           "bash scripts/cargo-test.sh oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness",
           "bash scripts/with-symlinked-tmp.sh bash scripts/cargo-test.sh oneharness-e2e --with oneharness --with oneharness-mock-harness --features oneharness/mock-harness --uninstrumented",
           "bash scripts/shell-test.sh oneharness-e2e scripts/with-portable-sed.sh scripts/with-symlinked-tmp-test.sh",
-          "bash scripts/shell-test.sh oneharness-e2e scripts/with-portable-sed.sh scripts/check-smoke-env.sh"
+          "bash scripts/shell-test.sh oneharness-e2e scripts/with-portable-sed.sh scripts/check-smoke-env.sh",
+          "bash scripts/shell-test.sh oneharness-e2e scripts/with-portable-sed.sh scripts/app-server-hang-bound-test.sh"
         ],
         "parallel": false
       },
@@ -71,6 +72,7 @@
         "{workspaceRoot}/scripts/check-smoke-env.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp.sh",
         "{workspaceRoot}/scripts/with-symlinked-tmp-test.sh",
+        "{workspaceRoot}/scripts/app-server-hang-bound-test.sh",
         "shellTestRunner"
       ],
       "outputs": [

@@ -75,8 +75,9 @@ oh_codex_rendezvous_check() {
       fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
     [ "$bound" = "$want" ] ||
       fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update prepare_daemon_dir in crates/oneharness-core/src/io/app_server.rs (and the mock's daemon_dir) to it"
-    # GNU stat on Linux, BSD's elsewhere (macOS).
-    if [ "$(uname -s)" = Linux ]; then
+    # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
+    # -c, BSD's (macOS) takes -f.
+    if stat -c %a / >/dev/null 2>&1; then
       mode="$(stat -c %a "$bound")"
     else
       mode="$(stat -f %Lp "$bound")"

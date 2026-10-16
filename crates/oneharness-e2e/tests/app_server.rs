@@ -1982,6 +1982,48 @@ fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
     );
 }
 
+/// A shared server that exits before it listens fails the dispatch with the
+/// server's own account of why — its exit status and the end of its stderr —
+/// since nobody else reads a detached server's stderr. The log it is read from
+/// is the server's alone, started afresh with each launch.
+#[test]
+fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason() {
+    let pool = Pool::new("pool-early-exit");
+    let (_, report) =
+        pool.run(pool.command("early-exit", &[], &[("CODEX_MOCK_FAULT", "exit-at-start")]));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    let entries: Vec<PathBuf> = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    let [entry] = entries.as_slice() else {
+        panic!("expected one pool entry, found {entries:?}");
+    };
+    let socket = entry.join("sock").join("app-server.sock");
+    for said in [
+        "exited before accepting a connection on ".to_string(),
+        "it ended with exit status: 7".to_string(),
+        format!(
+            "its stderr ending: mock codex: warming up\nError: mock codex refuses to listen on {}",
+            socket.display()
+        ),
+    ] {
+        assert!(error.contains(&said), "no `{said}` in: {error}");
+    }
+    // Started twice — a server that dies at start is retried once — and the
+    // log holds only the last launch's stderr.
+    let log = entry.join("server.log");
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(text.matches("warming up").count(), 1, "{text}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
+}
+
 /// A server that refuses `initialize` fails a pooled session's open naming the
 /// refusal — here through the reuse workload, which opens its leases that way.
 #[test]

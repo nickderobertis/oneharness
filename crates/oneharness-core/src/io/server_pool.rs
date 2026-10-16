@@ -32,6 +32,7 @@
 //! <pool-key>/server.json     the running server: pid + identity, argv, address
 //! <pool-key>/leases/<id>     one file per live dispatch: its pid + identity
 //! <pool-key>/.lock           whole-entry mutex around start/stop decisions
+//! <pool-key>/server.log      a shared Codex app-server's stderr, from its start
 //! ```
 
 use std::fs;
@@ -70,6 +71,10 @@ pub const INTERRUPT_REPLY_DEADLINE: Duration = Duration::from_secs(5);
 const LEASE_DIR: &str = "leases";
 const SERVER_FILE: &str = "server.json";
 const LOCK_FILE: &str = ".lock";
+const SERVER_LOG: &str = "server.log";
+
+/// How much of a server's stderr an early-exit diagnosis quotes, from its end.
+const STDERR_TAIL_BYTES: u64 = 2048;
 
 /// A process id the OS could actually have handed out.
 ///
@@ -735,15 +740,26 @@ pub fn sweep(root: &Path, linger: Duration) -> io::Result<usize> {
 /// per-turn directory, a log, a scratch file) lands in that project's tree. It
 /// did: a live control run from this repository's root left the agent's
 /// `step-*.txt` files in the checkout.
+///
+/// A shared Codex app-server's stderr goes to the entry's log, started afresh
+/// with each server, so a server that exits before it serves can be asked why
+/// ([`early_exit`]): nobody reads a detached process's stderr, and a pipe
+/// would outlive its reader with the dispatch that started it.
 fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<ServerRecord> {
     let (program, args) = plan.argv.split();
+    let stderr = if plan.marker.is_some() {
+        open_server_log(entry)
+            .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from)
+    } else {
+        std::process::Stdio::null()
+    };
     let mut command = std::process::Command::new(program);
     command
         .args(args)
         .current_dir(entry)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(stderr);
     if plan.env_clear {
         command.env_clear();
     }
@@ -779,6 +795,56 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
     };
     write_record(entry, &record)?;
     Ok(record)
+}
+
+/// The entry's server log, emptied for the server about to start and readable
+/// by its owner alone: what a server says may name its configuration.
+fn open_server_log(entry: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(entry.join(SERVER_LOG))
+}
+
+/// Why the server `record` names, in the pool entry `entry`, stopped before it
+/// served: its exit status when this process started and reaped it, and the
+/// tail of what it wrote to stderr. Read once the server is known not to be
+/// running.
+#[must_use]
+pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
+    let status = exit_status(record.pid).map_or_else(
+        || "its exit status is unknown here, since another process started it".to_string(),
+        |status| format!("it ended with {status}"),
+    );
+    match stderr_tail(&entry.join(SERVER_LOG)) {
+        Some(tail) => format!("{status}, its stderr ending: {tail}"),
+        None => format!("{status}, and wrote nothing to stderr"),
+    }
+}
+
+/// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed; `None` when it is absent
+/// or holds only whitespace.
+fn stderr_tail(log: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(log).ok()?;
+    let len = file.metadata().ok()?.len();
+    let from = len.saturating_sub(STDERR_TAIL_BYTES);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim();
+    (!text.is_empty()).then(|| {
+        if from > 0 {
+            format!("…{text}")
+        } else {
+            text.to_string()
+        }
+    })
 }
 
 /// Read a kernel value that changes when a pid is recycled.
@@ -1031,6 +1097,37 @@ fn spawned() -> &'static std::sync::Mutex<Vec<std::process::Child>> {
     SPAWNED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+/// How many reaped servers' exit statuses are kept for [`exit_status`].
+const EXITED_KEPT: usize = 32;
+
+/// The exit statuses of the servers this process reaped, newest last: the
+/// reap is what makes a dead server read as dead, and it consumes the status.
+fn exited() -> &'static std::sync::Mutex<Vec<(u32, std::process::ExitStatus)>> {
+    static EXITED: std::sync::OnceLock<std::sync::Mutex<Vec<(u32, std::process::ExitStatus)>>> =
+        std::sync::OnceLock::new();
+    EXITED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn remember_exit(pid: u32, status: std::process::ExitStatus) {
+    if let Ok(mut statuses) = exited().lock() {
+        statuses.retain(|(known, _)| *known != pid);
+        statuses.push((pid, status));
+        let excess = statuses.len().saturating_sub(EXITED_KEPT);
+        statuses.drain(..excess);
+    }
+}
+
+/// How the server `pid` ended, when this process started it and has reaped it.
+fn exit_status(pid: Pid) -> Option<std::process::ExitStatus> {
+    reap_finished();
+    let statuses = exited().lock().ok()?;
+    statuses
+        .iter()
+        .rev()
+        .find(|(known, _)| *known == pid.get())
+        .map(|(_, status)| *status)
+}
+
 fn remember_spawned(child: std::process::Child) {
     if let Ok(mut children) = spawned().lock() {
         children.push(child);
@@ -1044,7 +1141,9 @@ fn reap_spawned(pid: u32) {
     };
     if let Some(index) = children.iter().position(|child| child.id() == pid) {
         let mut child = children.remove(index);
-        let _ = child.wait();
+        if let Ok(status) = child.wait() {
+            remember_exit(pid, status);
+        }
     }
 }
 
@@ -1054,7 +1153,13 @@ fn reap_finished() {
     let Ok(mut children) = spawned().lock() else {
         return;
     };
-    children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+    children.retain_mut(|child| match child.try_wait() {
+        Ok(Some(status)) => {
+            remember_exit(child.id(), status);
+            false
+        }
+        _ => true,
+    });
 }
 
 fn kill(pid: Pid) {

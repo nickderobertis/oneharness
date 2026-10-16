@@ -380,9 +380,10 @@ fn lease_server(
                 Err(err) => {
                     if !record.is_running() {
                         break Err(format!(
-                            "the shared codex app-server (pid {}) exited before accepting a connection on {}: {err}",
+                            "the shared codex app-server (pid {}) exited before accepting a connection on {}: {err}; {}",
                             record.pid.get(),
-                            socket.display()
+                            socket.display(),
+                            server_pool::early_exit(lease.entry(), &record)
                         ));
                     }
                     if Instant::now() >= until {

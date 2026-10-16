@@ -2394,7 +2394,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         answer it with a non-string id or cursor;
 ///                         `refuse-initialize` refuses
 ///                         `initialize`; `never-listen` stays alive and never
-///                         binds; `stall-upgrade`
+///                         binds; `exit-at-start` writes why it cannot start
+///                         to stderr and exits 7 before binding; `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it; `inheritable-connections` hands every
 ///                         command the server's end of the connection that
@@ -2544,6 +2545,13 @@ mod listen_server {
             {
                 std::process::exit(1);
             }
+        }
+        // CODEX_MOCK_FAULT=exit-at-start: say why on stderr and exit before
+        // binding, as a Codex server refusing its launch does.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-at-start") {
+            eprintln!("mock codex: warming up");
+            eprintln!("Error: mock codex refuses to listen on {}", path.display());
+            std::process::exit(7);
         }
         // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {

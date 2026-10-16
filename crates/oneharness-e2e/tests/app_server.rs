@@ -2259,6 +2259,81 @@ fn a_library_pooled_session_names_each_way_the_server_fails_it() {
     reclaim_lingering_servers();
 }
 
+/// Whether this process's child `pid` has exited, leaving it unreaped for
+/// whoever owns its handle.
+fn exited_unreaped(pid: u32) -> bool {
+    // SAFETY: a zeroed siginfo_t is a valid out-parameter for waitid.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: plain integers and a live out-parameter; WNOWAIT reaps nothing.
+    let waited = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+        )
+    };
+    // SAFETY: si_pid is valid to read once waitid filled the struct.
+    waited == 0 && unsafe { info.si_pid() } == pid as libc::pid_t
+}
+
+/// A shared server that dies under a library caller's live session is found
+/// dead by the next session's lease, which stops the commands the dead
+/// server ran for the live session — and no other dispatch's — before it
+/// starts a fresh server.
+#[test]
+fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead() {
+    use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
+    let pool = Pool::new("pool-session-dead-server");
+    let argv = as_library_caller(&pool);
+    let cwd = pool.worktree("work");
+    let plan = || PooledDispatch::plan(&argv, &[], &[], &cwd, false).unwrap();
+    // A command started with the environment a dispatch's thread gives the
+    // commands its server runs for it.
+    let command_of = |dispatch: &PooledDispatch| {
+        let set = dispatch.thread_config()["shell_environment_policy"]["set"].clone();
+        let mut command = Command::new("sleep");
+        command.arg("60").stdin(Stdio::null());
+        for (name, value) in set.as_object().unwrap() {
+            command.env(name, value.as_str().unwrap());
+        }
+        command.spawn().unwrap()
+    };
+
+    let dispatch = plan();
+    let mut orphaned = command_of(&dispatch);
+    let mut neighbour = command_of(&plan());
+    let keeper = PooledSession::open(dispatch).unwrap();
+    let dead = keeper.record().pid.get();
+    sigkill(dead);
+    wait_for("the server to exit", Duration::from_secs(10), || {
+        exited_unreaped(dead)
+    });
+
+    let session = PooledSession::open(plan()).unwrap();
+    assert_ne!(
+        session.record().pid.get(),
+        dead,
+        "the dead server was leased again"
+    );
+    wait_for(
+        "the dead server's command for the live session to stop",
+        DEAD_LEASE_STOP_DEADLINE + Duration::from_secs(5),
+        || orphaned.try_wait().unwrap().is_some(),
+    );
+    assert!(
+        neighbour.try_wait().unwrap().is_none(),
+        "another dispatch's command was stopped"
+    );
+    neighbour.kill().unwrap();
+    neighbour.wait().unwrap();
+    keeper.release();
+    let server = session.record().pid.get();
+    session.release();
+    reclaim_lingering_servers();
+    assert!(!alive(server), "the swept server is still running");
+}
+
 /// Frames for a dispatch's thread that arrive before the reply naming the
 /// thread are held and replayed once the dispatch knows it, so they reach its
 /// report; a frame for another thread held the same way never does.

@@ -21,10 +21,6 @@ command -v "$codex" >/dev/null 2>&1 || {
   echo "measure-app-server-sharing: no Codex executable '$codex'; install codex or set OH_MEASURE_CODEX" >&2
   exit 1
 }
-[ -r /proc/self/status ] || {
-  echo "measure-app-server-sharing: needs /proc to read resident memory; run it on Linux with /proc mounted" >&2
-  exit 1
-}
 command -v python3 >/dev/null 2>&1 || {
   echo "measure-app-server-sharing: needs python3 for its WebSocket client; install python3 or put it on PATH, then rerun" >&2
   exit 1
@@ -45,6 +41,10 @@ if not 0 < SOCKET_TIMEOUT <= 3600:
     # A configuration error, not a failed measurement: exit 2.
     print(f"measure-app-server-sharing: OH_MEASURE_SOCKET_TIMEOUT is {RAW_TIMEOUT!r}; set it to a whole number of seconds from 1 to 3600, or unset it for 120", file=sys.stderr)
     sys.exit(2)
+# Checked once the settings are: a bad one is refused wherever this runs.
+if not os.access("/proc/self/status", os.R_OK):
+    print("measure-app-server-sharing: needs /proc to read resident memory; run it on Linux with /proc mounted", file=sys.stderr)
+    sys.exit(1)
 # The most a WebSocket upgrade answer may be before it is refused.
 HANDSHAKE_LIMIT = 16 * 1024
 RERUN = "rerun, and check the server still starts (`codex app-server --help`)"

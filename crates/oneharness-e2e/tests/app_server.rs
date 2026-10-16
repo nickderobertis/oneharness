@@ -1986,7 +1986,6 @@ fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
 
 /// A server that refuses `initialize` fails a pooled session's open naming the
 /// refusal — here through the reuse workload, which opens its leases that way.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_refused_initialize_fails_the_pooled_session_naming_it() {
     let pool = Pool::new("pool-refused-init");
@@ -2479,7 +2478,6 @@ fn kill_the_caller_mid_probe(pool: &Pool, mut cmd: Command, stalled: &Path, case
 
 /// A shell turn that completes before the server replies to the request that
 /// ran it still completes: the reuse workload runs to its end.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_shell_turn_completed_before_its_reply_still_completes() {
     let pool = Pool::new("pool-shell-first");
@@ -2513,7 +2511,6 @@ fn a_shell_turn_completed_before_its_reply_still_completes() {
 /// never-completing, failed or hung-up shell turn; and a refused listing, one
 /// naming a thread that is no id, or a cursor that is no string. The cases run
 /// side by side, two of them waiting out a 30 s bound.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_names_each_shell_turn_and_listing_failure() {
     let cases = [
@@ -3588,8 +3585,7 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
     }
 }
 
-/// The repository root, for the Linux-only journeys that run its scripts.
-#[cfg(target_os = "linux")]
+/// The repository root, for the journeys that run its scripts.
 fn repo_root() -> PathBuf {
     std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap()
 }
@@ -3597,7 +3593,13 @@ fn repo_root() -> PathBuf {
 /// `pid` and every descendant of it, as the OS lists them now (`/proc`).
 #[cfg(target_os = "linux")]
 fn os_process_tree(root: u32) -> Vec<u64> {
-    let parents: Vec<(u64, u64)> = std::fs::read_dir("/proc")
+    descendants(root, &linux_parents())
+}
+
+/// Every process's (pid, parent pid), from `/proc`.
+#[cfg(target_os = "linux")]
+fn linux_parents() -> Vec<(u64, u64)> {
+    std::fs::read_dir("/proc")
         .unwrap()
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<u64>().ok())
@@ -3612,7 +3614,51 @@ fn os_process_tree(root: u32) -> Vec<u64> {
                 .ok()?;
             Some((pid, ppid))
         })
+        .collect()
+}
+
+/// `pid` and every descendant of it, as the OS lists them now: libproc's
+/// listing of every pid and each one's BSD info, not the `ps` listing the
+/// workload under test reads.
+#[cfg(target_os = "macos")]
+fn os_process_tree(root: u32) -> Vec<u64> {
+    let mut pids = vec![0 as libc::c_int; 1 << 16];
+    let bytes = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())).unwrap();
+    // SAFETY: `pids` is writable for `bytes` bytes.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    assert!(listed > 0, "{}", std::io::Error::last_os_error());
+    pids.truncate(usize::try_from(listed).unwrap());
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).unwrap();
+    let parents: Vec<(u64, u64)> = pids
+        .into_iter()
+        .filter_map(|pid| {
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+            // SAFETY: `info` is writable for `size` bytes, the size of the
+            // structure PROC_PIDTBSDINFO fills.
+            let filled = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    info.as_mut_ptr().cast(),
+                    size,
+                )
+            };
+            // SAFETY: the kernel filled all `size` bytes of the structure.
+            (filled == size).then(|| {
+                (
+                    u64::try_from(pid).unwrap(),
+                    u64::from(unsafe { info.assume_init() }.pbi_ppid),
+                )
+            })
+        })
         .collect();
+    descendants(root, &parents)
+}
+
+/// `root` and every pid descending from it through `parents` (pid, parent
+/// pid), sorted.
+fn descendants(root: u32, parents: &[(u64, u64)]) -> Vec<u64> {
     let mut tree = vec![u64::from(root)];
     let mut index = 0;
     while index < tree.len() {
@@ -3907,7 +3953,6 @@ fn the_sharing_measurement_names_each_failure_and_leaves_no_scratch() {
 /// server and grandchild — as the OS lists it. A 1 ms linger cannot split the
 /// leases across servers: the workload's own idle lease holds the server from
 /// the first lease to the last.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
     let pool = Pool::new("pool-reuse");
@@ -3996,7 +4041,6 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
 /// A server whose `thread/loaded/list` pages never end — each naming a cursor
 /// already answered — fails the reuse workload at once, naming the repeated
 /// cursor, rather than paging until the listing's deadline.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
     let pool = Pool::new("pool-reuse-cycle");
@@ -4039,7 +4083,6 @@ fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
 /// The live tools refuse a bad setting before they run anything, exiting 2
 /// and naming the setting, its value and the fix: the reuse workload's settle
 /// bound and lease count, and the sharing measurement's socket bound.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
     let pool = Pool::new("pool-live-settings");
@@ -4100,7 +4143,8 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
 }
 
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
-/// Linux-only, as its journeys are: the reuse phase reads `/proc`.
+/// Linux-only, as its journeys are: the suite runs its pooled-reuse phase, and
+/// that phase's memory budget, on Linux alone.
 #[cfg(target_os = "linux")]
 struct ControlSuite {
     pool: Pool,
@@ -4160,7 +4204,6 @@ impl ControlSuite {
 /// A server whose `thread/loaded/list` keeps naming fresh cursors fails the
 /// reuse workload once its listing runs past the settle bound (and its grace),
 /// naming that, instead of paging forever.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
     let pool = Pool::new("pool-reuse-endless");

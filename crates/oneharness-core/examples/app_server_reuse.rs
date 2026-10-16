@@ -24,7 +24,8 @@
 //! unloads a released thread only 60 s after its last subscriber leaves) — it
 //! reads the server's whole-tree resident memory (the pid in the
 //! pool entry's `server.json` and every descendant, summed `VmRSS` from
-//! `/proc`), and writes the readings to `--out` as the JSON
+//! `/proc` on Linux, the `rss` column of one `ps` listing elsewhere), and
+//! writes the readings to `--out` as the JSON
 //! `live/control/app_server_rss_budget.py` reads. A released thread still
 //! loaded at the bound fails the workload, naming it beside both readings.
 
@@ -95,6 +96,7 @@ fn args() -> Result<Args, String> {
 /// Whether a `/proc/<pid>` read failed because the process has gone: its
 /// directory removed (`ENOENT`), or the process exiting under the read
 /// (`ESRCH`, 3 on Linux, the only platform this reads).
+#[cfg(target_os = "linux")]
 fn vanished(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
 }
@@ -102,6 +104,7 @@ fn vanished(error: &std::io::Error) -> bool {
 /// `pid` and every descendant of it, as the OS lists them now. A process that
 /// exits between the listing and its read is skipped; any other failure to
 /// read `/proc` could hide a live descendant, so it fails the reading.
+#[cfg(target_os = "linux")]
 fn process_tree(root: u32) -> Result<Vec<u32>, String> {
     let listing = std::fs::read_dir("/proc").map_err(|e| format!("cannot list /proc: {e}"))?;
     let mut parents: Vec<(u32, u32)> = Vec::new();
@@ -126,6 +129,12 @@ fn process_tree(root: u32) -> Result<Vec<u32>, String> {
             .ok_or_else(|| format!("/proc/{pid}/stat names no parent: {stat:?}"))?;
         parents.push((pid, ppid));
     }
+    Ok(descendants(root, &parents))
+}
+
+/// `root` and every pid descending from it through `parents` (pid, parent
+/// pid), sorted.
+fn descendants(root: u32, parents: &[(u32, u32)]) -> Vec<u32> {
     let mut tree = vec![root];
     let mut index = 0;
     while index < tree.len() {
@@ -139,12 +148,13 @@ fn process_tree(root: u32) -> Result<Vec<u32>, String> {
         index += 1;
     }
     tree.sort_unstable();
-    Ok(tree)
+    tree
 }
 
 /// The resident memory `pid` holds, in bytes: 0 once it has exited, or for a
 /// zombie (which reports no `VmRSS` and holds none); any other failure would
 /// undercount the server, so it fails the reading.
+#[cfg(target_os = "linux")]
 fn rss(pid: u32) -> Result<u64, String> {
     let status = match std::fs::read_to_string(format!("/proc/{pid}/status")) {
         Ok(status) => status,
@@ -165,12 +175,58 @@ fn rss(pid: u32) -> Result<u64, String> {
 // llmlint: ignore-end[changed_behavior_has_e2e]
 
 /// The whole-tree reading of the server `pid`.
+#[cfg(target_os = "linux")]
 fn reading(pid: u32) -> Result<Value, String> {
     let pids = process_tree(pid)?;
     let mut bytes = 0u64;
     for pid in &pids {
         bytes += rss(*pid)?;
     }
+    Ok(json!({"rss_bytes": bytes, "pids": pids}))
+}
+
+/// The whole-tree reading of the server `pid`, from one `ps` listing of
+/// every process's pid, parent and resident size — a single snapshot, so no
+/// process can exit between being found and being read. `rss` is in KiB
+/// (ps(1) on macOS: 1024-byte units) and 0 for a zombie, which holds none.
+#[cfg(not(target_os = "linux"))]
+fn reading(pid: u32) -> Result<Value, String> {
+    const LISTING: [&str; 3] = ["-A", "-o", "pid=,ppid=,rss="];
+    let out = std::process::Command::new("ps")
+        .args(LISTING)
+        .output()
+        .map_err(|e| format!("cannot run `ps`: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`ps {}` failed ({}): {}",
+            LISTING.join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let mut parents = Vec::new();
+    let mut sizes = std::collections::HashMap::new();
+    for row in listing.lines().filter(|row| !row.trim().is_empty()) {
+        let fields: Vec<u64> = row
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .map_err(|e| format!("`ps` listed an unreadable row {row:?}: {e}"))?;
+        let [pid, ppid, kib] = fields[..] else {
+            return Err(format!("`ps` listed {row:?}, not a pid, parent and rss"));
+        };
+        let (Ok(pid), Ok(ppid)) = (u32::try_from(pid), u32::try_from(ppid)) else {
+            return Err(format!("`ps` listed a pid out of range: {row:?}"));
+        };
+        parents.push((pid, ppid));
+        sizes.insert(pid, kib * 1024);
+    }
+    if !sizes.contains_key(&pid) {
+        return Err(format!("the server (pid {pid}) is not running"));
+    }
+    let pids = descendants(pid, &parents);
+    let bytes = pids.iter().filter_map(|pid| sizes.get(pid)).sum::<u64>();
     Ok(json!({"rss_bytes": bytes, "pids": pids}))
 }
 

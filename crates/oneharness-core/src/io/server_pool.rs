@@ -795,15 +795,17 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
 
 /// The entry's server log, emptied for the server about to start and readable
 /// by its owner alone: what a server says may name its configuration. It is
-/// opened without following a link, and anything there but a regular file is
-/// refused rather than written through.
+/// opened without following a link or waiting on a FIFO, and anything there
+/// but a regular file is refused rather than written through.
 fn open_server_log(entry: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let file = options.open(entry.join(SERVER_LOG))?;
     if !file.metadata()?.is_file() {
@@ -838,12 +840,23 @@ pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
     }
 }
 
-/// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed; `None` when it is absent
-/// or holds only whitespace.
+/// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed; `None` when it is absent,
+/// is not a regular file (never waited on, as a FIFO would be), or holds only
+/// whitespace.
 fn stderr_tail(log: &Path) -> Option<String> {
     // llmlint: ignore[changed_behavior_has_e2e] Every outcome here is one reading of the same bytes: a long log's cut tail and an empty one are driven end to end by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`; an absent or unreadable log takes the empty log's `None` through `?`, and a whitespace-only or non-UTF-8 one differs only in the `trim` and `from_utf8_lossy` calls, which std defines.
     use std::io::{Read, Seek, SeekFrom};
-    let mut file = fs::File::open(log).ok()?;
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(log).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
     let len = file.metadata().ok()?.len();
     let from = len.saturating_sub(STDERR_TAIL_BYTES);
     file.seek(SeekFrom::Start(from)).ok()?;

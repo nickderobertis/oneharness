@@ -2061,6 +2061,38 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
     let mode = std::fs::metadata(&log).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
 
+    // A FIFO in the log's place is neither written to nor read from — either
+    // would wait for a peer that never comes — so the launch reports the exit
+    // with no stderr to quote, at once.
+    // llmlint: ignore-block[tests_mirror_real_usage] No oneharness interface puts a FIFO in a pool entry; an outside actor doing so is the condition, so the journey stages it and asserts through the dispatch's report.
+    std::fs::remove_file(&log).unwrap();
+    let fifo = std::ffi::CString::new(log.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: a valid NUL-terminated path and a plain mode.
+    assert_eq!(
+        unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) },
+        0,
+        "{}",
+        log.display()
+    );
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let started = Instant::now();
+    let (_, report) =
+        pool.run(pool.command("fifo-log", &[], &[("CODEX_MOCK_FAULT", "exit-at-start")]));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    assert!(
+        ran["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("it ended with exit status: 7, and wrote nothing to stderr"),
+        "{ran}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+
     // A server that says nothing is reported as having said nothing.
     let (_, report) =
         pool.run(pool.command("silent-exit", &[], &[("CODEX_MOCK_FAULT", "exit-silently")]));

@@ -443,11 +443,14 @@ fn lease_server(
 /// someone else, or anything that is not a directory, is left for Codex to
 /// refuse with the reason the caller is then shown. An absent directory is
 /// left for Codex to create.
+///
+/// The path is Codex's contract, not ours: every live codex leg holds it to
+/// real Codex after its controlled turn (`oh_codex_rendezvous_check` in
+/// `scripts/e2e-codex.sh`), reading the euid from the server's own process.
 fn prepare_daemon_dir() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-        // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Where Codex binds is Codex's own, and real Codex cannot run in the deterministic gate. Drift fails loudly, not silently: every live codex leg (Linux and macOS) runs a controlled turn through this launch, and a server Codex refuses ends it with Codex's own reason quoted (`server_pool::early_exit`). A moved directory makes this repair a no-op, never a wrong change.
         let dir = match std::env::var_os(DAEMON_DIR_ENV).filter(|dir| !dir.is_empty()) {
             Some(dir) => std::path::PathBuf::from(dir),
             None => {
@@ -458,7 +461,6 @@ fn prepare_daemon_dir() {
                 tmp.join(format!("codex-daemon-{}", unsafe { libc::geteuid() }))
             }
         };
-        // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
         // Checked and tightened through one handle, opened without following a
         // link: nothing can swap the path between the check and the chmod.
         let Ok(handle) = std::fs::OpenOptions::new()

@@ -30,6 +30,27 @@ else
   # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log.
   note "» controlled turn: a --control turn must round-trip over codex's stdio app-server"
   oh_controlled_turn codex
+  # The drift alarm for the rendezvous directory the shared-server launch
+  # tightens to 0700 before Codex starts (`prepare_daemon_dir` in
+  # crates/oneharness-core/src/io/app_server.rs): real Codex binds the socket
+  # there and leaves the pool entry's --listen path as a link to it. Read
+  # while the turn's server still lingers, so its link is there.
+  daemon="$(cd "/tmp/codex-daemon-$(id -u)" 2>/dev/null && pwd -P)" ||
+    fail "codex: the controlled turn left no /tmp/codex-daemon-$(id -u); Codex has moved its socket rendezvous, so update prepare_daemon_dir in crates/oneharness-core/src/io/app_server.rs to the directory it now binds under"
+  linked=""
+  for link in "${XDG_STATE_HOME:-$HOME/.local/state}"/oneharness/servers/codex-app-server-*/sock/app-server.sock; do
+    # A link that is gone or unreadable by now is a server that has stopped,
+    # not the lingering one sought.
+    if [ ! -L "$link" ] || ! target="$(readlink "$link")"; then
+      continue
+    fi
+    if [ "$(cd "$(dirname "$target")" 2>/dev/null && pwd -P)" = "$daemon" ]; then
+      linked="$link"
+      break
+    fi
+  done
+  [ -n "$linked" ] ||
+    fail "codex: no shared app-server socket in the pool links into $daemon; Codex has moved its socket rendezvous, so update prepare_daemon_dir in crates/oneharness-core/src/io/app_server.rs to the directory the link now names"
 fi
 
 # Usage enforcement: the app-server answers `account/rateLimits/read`

@@ -4050,11 +4050,22 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
 /// Each way the reuse workload's process listing can fail fails the workload
 /// naming it, writing no telemetry: a `ps` it cannot run, one that fails, and
 /// one listing a row it cannot read, a row of the wrong shape, a pid or an
-/// rss out of range, or no server at all. `ps` is a double first on PATH, or,
-/// to be unrunnable, absent from a PATH of only the tools the run needs.
+/// rss out of range, no server at all, or a server tree whose rows are each
+/// in range but sum past it. `ps` is a double first on PATH (wrapping the real
+/// one for the sum), or, to be unrunnable, absent from a PATH of only the
+/// tools the run needs. The server runs behind a launcher with a helper, so
+/// its tree is three processes.
 #[test]
 fn the_reuse_workload_names_each_process_listing_failure() {
-    let cases: [(&str, &str, &str); 7] = [
+    let real_ps = Command::new("sh")
+        .args(["-c", "command -v ps"])
+        .output()
+        .unwrap();
+    let real_ps = String::from_utf8(real_ps.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let cases: [(&str, &str, &str); 8] = [
         ("unrunnable", "", "cannot run `ps`: "),
         (
             "failing",
@@ -4082,10 +4093,17 @@ fn the_reuse_workload_names_each_process_listing_failure() {
             "`ps` listed an rss out of range: \"12 1 18014398509481984\"",
         ),
         ("serverless", "echo '1 0 10'", ") is not running"),
+        (
+            // The largest rss whose bytes fit: any two of them overflow.
+            "sum-range",
+            "\"$OH_REAL_PS\" \"$@\" | awk '{ print $1, $2, \"18014398509481983\" }'",
+            "the server tree's rss over pids [",
+        ),
     ];
     let runs: Vec<_> = cases
         .into_iter()
         .map(|(case, body, said)| {
+            let real_ps = real_ps.clone();
             std::thread::spawn(move || {
                 let pool = Pool::new(&format!("pool-reuse-ps-{case}"));
                 let bin = pool.path("ps-double");
@@ -4120,6 +4138,9 @@ fn the_reuse_workload_names_each_process_listing_failure() {
                     .arg(repo_root().join("live/control/app-server-reuse.sh"))
                     .env("PATH", path)
                     .env("OH_REUSE_CODEX", mock_bin())
+                    .env("OH_REAL_PS", &real_ps)
+                    .env("CODEX_MOCK_SHIM", "1")
+                    .env("CODEX_MOCK_HELPER", "1")
                     .env("OH_REUSE_LEASES", "1")
                     .env("OH_REUSE_SETTLE_MS", "1000")
                     .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))

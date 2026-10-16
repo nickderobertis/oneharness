@@ -794,16 +794,31 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
 }
 
 /// The entry's server log, emptied for the server about to start and readable
-/// by its owner alone: what a server says may name its configuration.
+/// by its owner alone: what a server says may name its configuration. It is
+/// opened without following a link, and anything there but a regular file is
+/// refused rather than written through.
 fn open_server_log(entry: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
     }
-    options.open(entry.join(SERVER_LOG))
+    let file = options.open(entry.join(SERVER_LOG))?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "the server log is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.set_len(0)?;
+    Ok(file)
 }
 
 /// Why the server `record` names, in the pool entry `entry`, stopped before it
@@ -826,6 +841,7 @@ pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
 /// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed; `None` when it is absent
 /// or holds only whitespace.
 fn stderr_tail(log: &Path) -> Option<String> {
+    // llmlint: ignore[changed_behavior_has_e2e] Every outcome here is one reading of the same bytes: a long log's cut tail and an empty one are driven end to end by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`; an absent or unreadable log takes the empty log's `None` through `?`, and a whitespace-only or non-UTF-8 one differs only in the `trim` and `from_utf8_lossy` calls, which std defines.
     use std::io::{Read, Seek, SeekFrom};
     let mut file = fs::File::open(log).ok()?;
     let len = file.metadata().ok()?.len();
@@ -868,6 +884,7 @@ fn identify_spawned(
         return Ok(ProcessIdentity(EXITED_UNIDENTIFIED.to_string()));
     }
     remember_spawned(child);
+    // llmlint: ignore[changed_behavior_has_e2e] A child still running whose start time the kernel will not answer cannot be staged without mocking `/proc` or `proc_pidinfo`, the platform layer this reads; `identify_spawned` takes its reader as a parameter so the unit tests drive this branch, and it is the error the launch returned before this change.
     Err(io::Error::new(
         io::ErrorKind::Other,
         format!(
@@ -1139,6 +1156,7 @@ fn exited() -> &'static std::sync::Mutex<Vec<(u32, std::process::ExitStatus)>> {
 }
 
 fn remember_exit(pid: u32, status: std::process::ExitStatus) {
+    // llmlint: ignore[changed_behavior_has_e2e] Reaching the bound end to end takes one long-lived process starting and reaping more than EXITED_KEPT real servers, and all it changes is whether a stale early-exit diagnostic names a status or says it is unknown; `only_the_newest_reaped_exit_statuses_are_kept` holds the bound and the replacement through this function and `exit_status`, and every journey that reports an exit status reads the same path.
     if let Ok(mut statuses) = exited().lock() {
         statuses.retain(|(known, _)| *known != pid);
         statuses.push((pid, status));

@@ -446,7 +446,8 @@ fn lease_server(
 fn prepare_daemon_dir() {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        // llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] Where Codex binds is Codex's own, and real Codex cannot run in the deterministic gate. Drift fails loudly, not silently: every live codex leg (Linux and macOS) runs a controlled turn through this launch, and a server Codex refuses ends it with Codex's own reason quoted (`server_pool::early_exit`). A moved directory makes this repair a no-op, never a wrong change.
         let dir = match std::env::var_os(DAEMON_DIR_ENV).filter(|dir| !dir.is_empty()) {
             Some(dir) => std::path::PathBuf::from(dir),
             None => {
@@ -457,15 +458,24 @@ fn prepare_daemon_dir() {
                 tmp.join(format!("codex-daemon-{}", unsafe { libc::geteuid() }))
             }
         };
-        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+        // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+        // Checked and tightened through one handle, opened without following a
+        // link: nothing can swap the path between the check and the chmod.
+        let Ok(handle) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(&dir)
+        else {
+            return;
+        };
+        let Ok(meta) = handle.metadata() else {
             return;
         };
         // SAFETY: as above.
         let ours = meta.uid() == unsafe { libc::geteuid() };
         // llmlint: ignore[changed_behavior_has_e2e] A directory another user owns, or a chmod refused on one this user owns, needs a second account or root to stage; unprivileged journeys prove the owned-and-loose repair and the not-a-directory refusal (`a_shared_server_starts_once_its_loose_socket_directory_is_made_private`), and either case left alone reaches the caller as Codex's own refusal through the early-exit report.
-        if meta.is_dir() && ours && meta.mode() & 0o777 != 0o700 {
-            if let Err(err) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            {
+        if ours && meta.mode() & 0o777 != 0o700 {
+            if let Err(err) = handle.set_permissions(std::fs::Permissions::from_mode(0o700)) {
                 eprintln!(
                     "oneharness: warning: could not make codex's socket directory {} private (mode 0700), so a shared codex app-server will refuse it: {err}",
                     dir.display()

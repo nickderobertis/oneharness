@@ -2049,6 +2049,18 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
     let mode = std::fs::metadata(&log).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
 
+    // A log left readable by others is made private again by the next launch.
+    // llmlint: ignore[tests_mirror_real_usage] No oneharness interface loosens a pool entry's log; an outside chmod is the condition, so the journey makes it and reads the mode the next launch leaves.
+    std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (_, report) = pool.run(pool.command(
+        "early-exit-again",
+        &[],
+        &[("CODEX_MOCK_FAULT", "exit-at-start")],
+    ));
+    assert_eq!(result(&report)["status"], "spawn-error", "{report}");
+    let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
+
     // A server that says nothing is reported as having said nothing.
     let (_, report) =
         pool.run(pool.command("silent-exit", &[], &[("CODEX_MOCK_FAULT", "exit-silently")]));
@@ -2095,12 +2107,34 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
     // llmlint: ignore-end[tests_mirror_real_usage]
     let (out, report) = pool.run(pool.command("no-log", &[], &[]));
     succeeded(&out, &report);
+    let second = reported_server(&report);
+    assert_ne!(second, first, "the stopped server served again");
+    assert!(log.is_dir(), "{}", log.display());
+
+    // A link where the log belongs is never written through: the file it
+    // names keeps its content, and the launch goes on without a log.
+    wait_for(
+        "the no-log turn's server to stop after its linger",
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 2 + Duration::from_secs(5),
+        || !alive(second),
+    );
+    let elsewhere = pool.path("elsewhere.txt");
+    std::fs::write(&elsewhere, "not the server's").unwrap();
+    // llmlint: ignore-block[tests_mirror_real_usage] As above: a link left in the pool entry is an outside actor's doing, which no oneharness interface makes, so the journey stages it and asserts through the turn and the file the link names.
+    std::fs::remove_dir(&log).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &log).unwrap();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let (out, report) = pool.run(pool.command("linked-log", &[], &[]));
+    succeeded(&out, &report);
     assert_ne!(
         reported_server(&report),
-        first,
+        second,
         "the stopped server served again"
     );
-    assert!(log.is_dir(), "{}", log.display());
+    assert_eq!(
+        std::fs::read_to_string(&elsewhere).unwrap(),
+        "not the server's"
+    );
 }
 
 /// Codex refuses to start when its socket rendezvous directory is not this
@@ -2161,6 +2195,26 @@ fn a_shared_server_starts_once_its_loose_socket_directory_is_made_private() {
         "{error}"
     );
     assert!(std::fs::metadata(&file).unwrap().is_file());
+
+    // A link in its place: not followed, so the directory it names keeps its
+    // mode, and Codex's refusal is the reason.
+    let target = pool.path("daemon-target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = pool.path("daemon-link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let envs = at(&link);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (_, report) = pool.run(pool.command("linked-dir", &[], &envs));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    assert!(
+        ran["error"].as_str().unwrap_or_default().contains(
+            "Error: app-server socket directory must be a user-owned directory with mode 0700"
+        ),
+        "{ran}"
+    );
+    assert_eq!(mode(&target), 0o755);
 }
 
 /// A server that refuses `initialize` fails a pooled session's open naming the

@@ -7,8 +7,6 @@ makes that a failure. The fallback and refusal cases run everywhere.
 
 from __future__ import annotations
 
-import dataclasses
-import importlib.util
 import json
 import os
 import signal
@@ -26,6 +24,7 @@ from support import (
     NETSHIM,
     OBSERVER,
     WINDOWS,
+    LaunchId,
     Record,
     lines,
     measurements,
@@ -39,22 +38,11 @@ from support import (
     transfer_argv,
 )
 
-
-def unavailable_fields() -> set[str]:
-    """The fields of the recorder's own unmeasured line (`Unavailable` in
-    scripts/e2e-netmeasure.py), which every unmeasured line the shim writes
-    itself must carry exactly."""
-    spec = importlib.util.spec_from_file_location("netmeasure_fields", NETMEASURE)
-    assert spec is not None and spec.loader is not None
-    netmeasure = importlib.util.module_from_spec(spec)
-    # Its dataclasses resolve their annotations through sys.modules.
-    sys.modules["netmeasure_fields"] = netmeasure
-    try:
-        spec.loader.exec_module(netmeasure)
-        return {field.name for field in dataclasses.fields(netmeasure.Unavailable)}
-    finally:
-        sys.modules.pop("netmeasure_fields", None)
-
+# The fields of the recorder's own unmeasured line (`Unavailable` in
+# scripts/e2e-netmeasure.py), which every unmeasured line the shim writes itself
+# must carry exactly. Pinned against the measurer's real output by
+# Arguments.test_the_measurer_s_unmeasured_line_carries_exactly_the_pinned_fields.
+UNAVAILABLE_FIELDS = frozenset({"launch_id", "reason", "seconds", "exit", "method"})
 
 DOWN = 5_000_000
 UP = 3_000_000
@@ -394,7 +382,7 @@ done
         for start in starts(records):
             (line,) = measurements(records, start["launch_id"])
             if line["method"] == "unavailable":
-                self.assertEqual(set(line), unavailable_fields(), line)
+                self.assertEqual(set(line), UNAVAILABLE_FIELDS, line)
 
     @unittest.skipIf(WINDOWS, "SIGKILL to a process group is POSIX")
     def test_a_caller_that_kills_its_launch_s_group_at_any_moment_leaves_each_start_line_one_line(
@@ -715,6 +703,17 @@ class Arguments(unittest.TestCase):
         self.assertEqual(got.read_text(), prompt, "the harness did not get the whole argument")
         (start,) = starts(lines(tmp / "codex.jsonl"))
         self.assertEqual(start["argv"], ["exec", "p" * 199 + "Q" + "…"])
+
+    @unittest.skipIf(WINDOWS, "the measurer forks its supervisor, which Git Bash's python3 cannot")
+    def test_the_measurer_s_unmeasured_line_carries_exactly_the_pinned_fields(self) -> None:
+        # The shim's own unmeasured lines are held to UNAVAILABLE_FIELDS; this
+        # holds that set to the line the measurer itself writes.
+        tmp = scratch(self)
+        run = measure_directly(tmp, start_line("L"), ["true"])
+        self.assertEqual(run.returncode, 0, run.stderr)
+        (line,) = measurements(lines(tmp / "codex.jsonl"), LaunchId("L"))
+        self.assertEqual(line["method"], "unavailable")
+        self.assertEqual(set(line), UNAVAILABLE_FIELDS, line)
 
     @unittest.skipIf(WINDOWS, "the measurer forks its supervisor, which Git Bash's python3 cannot")
     def test_a_start_line_is_refused_unless_it_is_the_shim_s_record_and_is_written_on_one_line(
@@ -1079,7 +1078,7 @@ class Fallback(unittest.TestCase):
         (start,) = starts(records)
         (line,) = measurements(records, start["launch_id"])
         self.assertEqual(line["method"], "unavailable")
-        self.assertEqual(set(line), unavailable_fields(), line)
+        self.assertEqual(set(line), UNAVAILABLE_FIELDS, line)
         self.assertIn(reason, line["reason"])
         self.assertEqual(line["exit"], 5)
         for field in ("rx_bytes", "tx_bytes", "payload_rx_estimate", "payload_tx_estimate"):

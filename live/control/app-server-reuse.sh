@@ -23,8 +23,7 @@
 # still loaded at that bound fails the workload, named beside both readings.
 #
 # OH_REUSE_CODEX names the Codex executable (default: `codex` on PATH);
-# OH_REUSE_LEASES the lease count (default 5). The reading is /proc's on Linux
-# and one `ps` listing's elsewhere.
+# OH_REUSE_LEASES the lease count (default 5). The reading is one `ps` listing's.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)" || {

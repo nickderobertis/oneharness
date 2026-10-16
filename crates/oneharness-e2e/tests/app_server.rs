@@ -3950,11 +3950,13 @@ fn the_sharing_measurement_names_each_failure_and_leaves_no_scratch() {
 /// of the leases ran `initialize`, `thread/start`, a `thread/shellCommand` and
 /// `thread/resume` of its own thread and no `turn/start`, all on one server;
 /// and each reading's pids are exactly the server's process tree — launcher,
-/// server and grandchild — as the OS lists it. A 1 ms linger cannot split the
+/// server and grandchild — as the OS lists it, its bytes counting at least the
+/// server's own footprint, which is no root's. A 1 ms linger cannot split the
 /// leases across servers: the workload's own idle lease holds the server from
 /// the first lease to the last.
 #[test]
 fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
+    const SERVER_BYTES: u64 = 64 * 1024 * 1024;
     let pool = Pool::new("pool-reuse");
     let out = pool.path("reuse.json");
     let output = Command::new("bash")
@@ -3966,6 +3968,7 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
         .env("CODEX_MOCK_DIR", pool.path("mock"))
         .env("CODEX_MOCK_SHIM", "1")
         .env("CODEX_MOCK_HELPER", "1")
+        .env("CODEX_MOCK_SERVER_BYTES", SERVER_BYTES.to_string())
         .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "1")
         .output()
         .unwrap();
@@ -3994,7 +3997,12 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
             .map(|p| p.as_u64().unwrap())
             .collect();
         assert_eq!(pids, tree, "{name} did not sum the server's whole tree");
-        assert!(reuse["readings"][name]["rss_bytes"].as_u64().unwrap() > 0);
+        // The root is the launcher; the footprint is its child's.
+        let bytes = reuse["readings"][name]["rss_bytes"].as_u64().unwrap();
+        assert!(
+            bytes >= SERVER_BYTES,
+            "{name}: {bytes} B leaves out the server's own {SERVER_BYTES} B"
+        );
     }
     let native = pool.the_server();
     assert!(tree.contains(&u64::from(native)));
@@ -4035,6 +4043,104 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
             .find(|frame| frame["method"] == "thread/resume")
             .unwrap();
         assert_eq!(resumed["params"]["threadId"], thread);
+    }
+}
+
+/// Each way the reuse workload's process listing can fail fails the workload
+/// naming it, writing no telemetry: a `ps` it cannot run, one that fails, and
+/// one listing a row it cannot read, a row of the wrong shape, a pid or an
+/// rss out of range, or no server at all. `ps` is a double first on PATH, or,
+/// to be unrunnable, absent from a PATH of only the tools the run needs.
+#[test]
+fn the_reuse_workload_names_each_process_listing_failure() {
+    let cases: [(&str, &str, &str); 7] = [
+        ("unrunnable", "", "cannot run `ps`: "),
+        (
+            "failing",
+            "echo 'ps: no listing here' >&2; exit 1",
+            "`ps -A -o pid=,ppid=,rss=` failed (exit status: 1): ps: no listing here",
+        ),
+        (
+            "unreadable",
+            "echo '12 x 3'",
+            "`ps` listed an unreadable row \"12 x 3\"",
+        ),
+        (
+            "short",
+            "echo '12 1'",
+            "`ps` listed \"12 1\", not a pid, parent and rss",
+        ),
+        (
+            "pid-range",
+            "echo '99999999999 1 3'",
+            "`ps` listed a pid out of range: \"99999999999 1 3\"",
+        ),
+        (
+            "rss-range",
+            "echo '12 1 99999999999999999999'",
+            "`ps` listed an unreadable row",
+        ),
+        ("serverless", "echo '1 0 10'", ") is not running"),
+    ];
+    let runs: Vec<_> = cases
+        .into_iter()
+        .map(|(case, body, said)| {
+            std::thread::spawn(move || {
+                let pool = Pool::new(&format!("pool-reuse-ps-{case}"));
+                let bin = pool.path("ps-double");
+                std::fs::create_dir_all(&bin).unwrap();
+                let path = if body.is_empty() {
+                    // PATH lookup skips an entry it cannot run, so no `ps`
+                    // anywhere on it: only the tools the run itself calls.
+                    for tool in ["bash", "sh", "cargo", "mktemp", "rm", "dirname"] {
+                        let found = Command::new("sh")
+                            .args(["-c", &format!("command -v {tool}")])
+                            .output()
+                            .unwrap();
+                        let found = String::from_utf8(found.stdout).unwrap();
+                        std::os::unix::fs::symlink(found.trim(), bin.join(tool)).unwrap();
+                    }
+                    bin.display().to_string()
+                } else {
+                    let ps = bin.join("ps");
+                    std::fs::write(&ps, format!("#!/bin/sh\n{body}\n")).unwrap();
+                    std::fs::set_permissions(
+                        &ps,
+                        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+                    )
+                    .unwrap();
+                    format!(
+                        "{}:{}",
+                        bin.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    )
+                };
+                let output = Command::new("bash")
+                    .arg(repo_root().join("live/control/app-server-reuse.sh"))
+                    .env("PATH", path)
+                    .env("OH_REUSE_CODEX", mock_bin())
+                    .env("OH_REUSE_LEASES", "1")
+                    .env("OH_REUSE_SETTLE_MS", "1000")
+                    .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+                    .env("XDG_STATE_HOME", pool.path("state"))
+                    .env("CODEX_MOCK_DIR", pool.path("mock"))
+                    .env(
+                        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+                        LINGER_MS.to_string(),
+                    )
+                    .output()
+                    .unwrap();
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                let wrote = pool.path("reuse.json").exists();
+                (case, said, output.status.success(), stderr, wrote)
+            })
+        })
+        .collect();
+    for run in runs {
+        let (case, said, ok, stderr, wrote) = run.join().unwrap();
+        assert!(!ok, "{case}: {stderr}");
+        assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");
+        assert!(!wrote, "{case}: telemetry was written");
     }
 }
 

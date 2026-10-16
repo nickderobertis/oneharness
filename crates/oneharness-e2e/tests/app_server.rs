@@ -2004,21 +2004,32 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
         panic!("expected one pool entry, found {entries:?}");
     };
     let socket = entry.join("sock").join("app-server.sock");
+    let last = format!(
+        "mock codex: warming up 199\nError: mock codex refuses to listen on {}",
+        socket.display()
+    );
     for said in [
-        "exited before accepting a connection on ".to_string(),
-        "it ended with exit status: 7".to_string(),
-        format!(
-            "its stderr ending: mock codex: warming up\nError: mock codex refuses to listen on {}",
-            socket.display()
-        ),
+        "exited before accepting a connection on ",
+        "it ended with exit status: 7, its stderr ending: …",
+        &last,
     ] {
-        assert!(error.contains(&said), "no `{said}` in: {error}");
+        assert!(error.contains(said), "no `{said}` in: {error}");
     }
+    // Only the end of a long stderr is quoted: its last 2 KiB, marked as cut.
+    let (_, tail) = error.split_once("its stderr ending: ").unwrap();
+    assert!(
+        tail.len() <= 2048 + "…".len(),
+        "{} bytes: {tail}",
+        tail.len()
+    );
+    assert!(tail.ends_with(&last), "{tail}");
+    assert!(!tail.contains("warming up 000"), "{tail}");
     // Started twice — a server that dies at start is retried once — and the
-    // log holds only the last launch's stderr.
+    // log holds only the last launch's stderr, all of it.
     let log = entry.join("server.log");
     let text = std::fs::read_to_string(&log).unwrap();
-    assert_eq!(text.matches("warming up").count(), 1, "{text}");
+    assert_eq!(text.matches("warming up 000").count(), 1, "{text}");
+    assert!(text.trim_end().ends_with(&last), "{text}");
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(&log).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());

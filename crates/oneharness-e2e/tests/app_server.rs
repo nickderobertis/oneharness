@@ -787,16 +787,31 @@ fn the_pool_key_separates_what_the_server_fixes_at_start_and_nothing_else() {
     let (out, before) = pool.run(pool.command("ver-a", &["--bin", &release_a], &[]));
     succeeded(&out, &before);
     std::fs::write(&version, "1.1.0").unwrap();
-    let (out, after) = pool.run(pool.command("ver-b", &["--bin", &release_a], &[]));
+    // Held live while the same release runs again, so the server it started
+    // is certainly still up: reuse is what is asserted, not that a second run
+    // beat the linger.
+    let release = pool.path("ver-b-release");
+    let held = pool.spawn(pool.command(
+        "ver-b",
+        &["--bin", &release_a],
+        &[("MOCK_CODEX_HOLD_UNTIL", &release.display().to_string())],
+    ));
+    wait_for("ver-b's turn to be live", Duration::from_secs(30), || {
+        pool.server_pids()
+            .into_iter()
+            .any(|pid| pool.live_turns(pid) == 1)
+    });
+    // The same release again: the server it already has.
+    let (out, again) = pool.run(pool.command("ver-c", &["--bin", &release_a], &[]));
+    succeeded(&out, &again);
+    std::fs::write(&release, "").unwrap();
+    let (out, after) = Pool::finish(held);
     succeeded(&out, &after);
     assert_ne!(
         reported_server(&before),
         reported_server(&after),
         "a new release reused the old release's server"
     );
-    // The same release again: the server it already has.
-    let (out, again) = pool.run(pool.command("ver-c", &["--bin", &release_a], &[]));
-    succeeded(&out, &again);
     assert_eq!(reported_server(&again), reported_server(&after));
 
     // A variable Codex reads for itself.

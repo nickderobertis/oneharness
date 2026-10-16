@@ -74,6 +74,9 @@ METHOD = "netns-pasta"
 # Ethernet 14 + IPv4 20 + TCP 20: what one TAP frame carries beyond its payload.
 FRAME_HEADERS = 54
 KILL_GRACE = 5.0
+# How long a killed direct launch's group gets to be reaped before the
+# measurer records it anyway.
+REAP_WAIT = 2.0
 DEFAULT_DEADLINE = 1800.0
 CLONE_NEWNS = 0x00020000
 CLONE_NEWPID = 0x20000000
@@ -709,7 +712,8 @@ def run_direct(args: argparse.Namespace, reason: str, life: int) -> Outcome:
     """In the supervisor: run the launch without the namespace, in a process
     group of its own, and record why it was not measured. The stop the shim
     relays over `life` reaches the launch's group as the same signal, and
-    SIGKILL follows KILL_GRACE later if it is still there."""
+    SIGKILL follows KILL_GRACE later if any of the group is still there —
+    whether or not the launch itself has exited by then."""
     t0 = time.monotonic()
     try:
         launch = subprocess.Popen(args.argv, start_new_session=True)
@@ -742,6 +746,17 @@ def run_direct(args: argparse.Namespace, reason: str, life: int) -> Outcome:
         elif kill_at is not None and time.monotonic() >= kill_at:
             signal_group(launch.pid, signal.SIGKILL)
             kill_at = None
+    if kill_at is not None:
+        # The leader obeyed the stop, but what it started in its group may
+        # not have: they get the rest of the grace, then the same SIGKILL.
+        while group_alive(launch.pid) and time.monotonic() < kill_at:
+            time.sleep(0.05)
+        signal_group(launch.pid, signal.SIGKILL)
+        # SIGKILL lands asynchronously; return once the group is reaped, so
+        # nothing the launch started outlives this record of it.
+        settled = time.monotonic() + REAP_WAIT
+        while group_alive(launch.pid) and time.monotonic() < settled:
+            time.sleep(0.02)
     code = 128 - code if code < 0 else code
     append_line(
         args.line_file, Unavailable(args.launch_id, reason, round(time.monotonic() - t0, 3), code)
@@ -755,6 +770,14 @@ def signal_group(group: int, signum: int) -> None:
         os.killpg(group, signum)
     except ProcessLookupError:
         pass  # the whole group is already gone
+
+
+def group_alive(group: int) -> bool:
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    return True
 
 
 def run_launch(args: argparse.Namespace, life: int) -> Outcome:

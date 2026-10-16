@@ -690,6 +690,15 @@ def children(pid: int) -> list[int]:
     ]
 
 
+def running(pid: int) -> bool:
+    """Whether `pid` is a process that has not yet exited: a zombie awaiting
+    its reaper counts as gone."""
+    state = subprocess.run(
+        ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
 class Arguments(unittest.TestCase):
     @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
     def test_a_long_argument_is_recorded_cut_and_passed_whole(self) -> None:
@@ -1307,6 +1316,70 @@ class Fallback(unittest.TestCase):
         size = heartbeat.stat().st_size
         time.sleep(0.5)
         self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the kill")
+
+    @unittest.skipIf(
+        WINDOWS, "the measurer forks its supervisor and SIGKILLs the launch's process group"
+    )
+    def test_a_descendant_that_ignores_the_stop_its_launch_obeys_is_killed_after_the_grace(
+        self,
+    ) -> None:
+        # The launch exits on the relayed stop at once, but a child it started
+        # in its group ignores it: the supervisor must not take the leader's
+        # exit for the group's, and SIGKILLs what is left KILL_GRACE later.
+        tmp = scratch(self)
+        heartbeat = tmp / "heartbeat"
+        pids = tmp / "pids"
+        real = tmp / "real"
+        real.write_text(
+            "#!/usr/bin/env bash\n"
+            f"(trap '' TERM; while :; do printf . >>\"{heartbeat}\"; sleep 0.1; done) &\n"
+            f'echo "$!" >"{pids}"\n'
+            "wait\n"
+        )
+        real.chmod(0o755)
+        file = tmp / "codex.jsonl"
+        shim = subprocess.Popen(
+            [
+                BASH,
+                str(NETSHIM),
+                "--suite",
+                "codex",
+                "--harness",
+                "codex",
+                "--real",
+                str(real),
+                "--self",
+                str(tmp / "shims" / "codex"),
+                "--file",
+                str(file),
+                "--",
+                "exec",
+                "x",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env={**os.environ, "OH_E2E_OS": "Darwin"},
+        )
+        self.addCleanup(shim.kill)
+        for _ in range(100):
+            if heartbeat.exists() and pids.exists() and pids.read_text().strip():
+                break
+            time.sleep(0.1)
+        descendant = int(pids.read_text())
+        # Only the pid this test's launch reported is ever signalled.
+        self.addCleanup(lambda: running(descendant) and os.kill(descendant, signal.SIGKILL))
+        stopped = time.monotonic()
+        shim.send_signal(signal.SIGTERM)
+        self.assertEqual(shim.wait(timeout=30), 128 + signal.SIGTERM)
+        self.assertFalse(running(descendant), "the launch's descendant outlived the measurer")
+        self.assertGreaterEqual(time.monotonic() - stopped, KILL_GRACE - 0.5)
+        (start,) = starts(lines(file))
+        (line,) = measurements(lines(file), start["launch_id"])
+        self.assertEqual((line["method"], line["exit"]), ("unavailable", 128 + signal.SIGTERM))
+        size = heartbeat.stat().st_size
+        time.sleep(0.5)
+        self.assertEqual(heartbeat.stat().st_size, size, "the descendant outlived the kill")
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "a Linux host without python3")
     def test_a_linux_host_without_python3_runs_the_launch_unmeasured(self) -> None:

@@ -14,10 +14,14 @@
 # `phase` is OH_E2E_PHASE, which the suite's helpers export; `kind` is derived
 # from the argv (_kind below). On Linux the launch runs under
 # scripts/e2e-netmeasure.py, whose line carries the bytes its network namespace
-# exchanged ("method": "netns-pasta"); where that cannot run — macOS, Windows,
-# a Linux host without python3 or pasta — the launch runs directly and the line
-# is "method": "unavailable" with a reason. Either way stdin, stdout and stderr
-# are the launch's own and the exit status is the launch's.
+# exchanged ("method": "netns-pasta"); where that cannot measure — macOS, a
+# Linux host without pasta — it runs the launch directly and the line is
+# "method": "unavailable" with a reason. Wherever python3 runs it, the
+# measurer's own-session supervisor writes the start line too, so a caller that
+# SIGKILLs this shim's process group (oneharness does, 100 ms after a SIGTERM)
+# never leaves a start line without its measurement. Without python3 (Windows,
+# a bare Linux host) this shim records the launch itself. Either way stdin,
+# stdout and stderr are the launch's own and the exit status is the launch's.
 #
 # OH_E2E_OS (default: `uname -s`) selects the platform, so a test can drive the
 # fallback a macOS or Windows leg takes. A recorder that cannot record exits
@@ -148,23 +152,15 @@ start="$(jq -nc --arg suite "$suite" --arg phase "$phase" --arg harness "$harnes
   --arg kind "$kind" --arg id "$launch_id" --argjson argv "$argv" \
   '{suite: $suite, phase: $phase, harness: $harness, kind: $kind, launch_id: $id, argv: $argv}' |
   tr -d '\r')" || die "jq could not write the start line; install jq (the live suites need it) and rerun"
-# From here a stop must not end the launch between its start line and the
-# measurer's handlers: ignored, it is either dropped (and the launch runs and is
-# recorded) or held by e2e-netmeasure.py's defer_stops. The fallback below
-# replaces this with its own handler.
+# From here a stop must not end the launch before the measurer's handlers:
+# ignored, it is either dropped (and the launch runs and is recorded) or held by
+# e2e-netmeasure.py's defer_stops. The fallback below replaces this with its
+# own handler.
 trap '' TERM INT HUP
 # Marks the launch as still being measured until its line is in, so the
 # budget step waits for a namespace still winding down. Made before the start
 # line, so no start line is ever written without one.
 pending="$(dirname "$file")/.pending/$launch_id"
-if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
-  die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
-fi
-if ! printf '%s\n' "$start" >>"$file"; then
-  rm -f "$pending" ||
-    die "cannot append to $file, nor remove its pending marker $pending, which the budget step would wait on; check that $(dirname "$file") is writable, remove the marker, then rerun"
-  die "cannot append to $file; check that its directory is writable"
-fi
 
 # A shared Codex app-server is started with a server marker
 # (ONEHARNESS_APP_SERVER_MARKER), and stopping it stops every process carrying
@@ -180,17 +176,32 @@ fi
 os="${OH_E2E_OS:-$(uname -s)}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 case "$os" in
-  Linux*)
-    if command -v python3 >/dev/null 2>&1; then
-      exec python3 "$here/e2e-netmeasure.py" --line-file "$file" --launch-id "$launch_id" \
-        --pending "$pending" -- "${launch[@]}" "$@"
-    fi
-    reason="no python3 on PATH to run scripts/e2e-netmeasure.py"
+  Linux*) unmeasured=() reason="no python3 on PATH to run scripts/e2e-netmeasure.py" ;;
+  *)
+    reason="the netns-pasta method needs Linux network namespaces; this leg is $os, which the network budgets do not support"
+    unmeasured=(--unmeasured "$reason")
     ;;
-  *) reason="the netns-pasta method needs Linux network namespaces; this leg is $os, which the network budgets do not support" ;;
+esac
+# Git Bash's python3 cannot fork, so Windows keeps the fallback below.
+case "$os" in MINGW* | MSYS* | CYGWIN* | Windows*) ;; *)
+  if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$here/e2e-netmeasure.py" --line-file "$file" --launch-id "$launch_id" \
+      --pending "$pending" --start-line "$start" ${unmeasured[@]+"${unmeasured[@]}"} \
+      -- "${launch[@]}" "$@"
+  fi
+  ;;
 esac
 
-# The fallback: run the launch directly and record that it was not measured.
+# The fallback: record the start, run the launch directly, and record that it
+# was not measured.
+if ! { mkdir -p "$(dirname "$pending")" && : >"$pending"; }; then
+  die "cannot create $pending; check that $(dirname "$file") is writable, then rerun"
+fi
+if ! printf '%s\n' "$start" >>"$file"; then
+  rm -f "$pending" ||
+    die "cannot append to $file, nor remove its pending marker $pending, which the budget step would wait on; check that $(dirname "$file") is writable, remove the marker, then rerun"
+  die "cannot append to $file; check that its directory is writable"
+fi
 # The trap is a handler, not an ignore, so the launch keeps default signal
 # dispositions; a signal to the process group ends it and this still records.
 trap ':' TERM INT HUP

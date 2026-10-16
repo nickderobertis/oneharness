@@ -73,6 +73,11 @@ const SERVER_FILE: &str = "server.json";
 const LOCK_FILE: &str = ".lock";
 const SERVER_LOG: &str = "server.log";
 
+/// The identity recorded for a server that exited before its own could be
+/// read. No kernel reading is ever spelled this way, so it never matches a
+/// running process.
+const EXITED_UNIDENTIFIED: &str = "exited-before-identified";
+
 /// How much of a server's stderr an early-exit diagnosis quotes, from its end.
 const STDERR_TAIL_BYTES: u64 = 2048;
 
@@ -770,16 +775,7 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
     let child = command.spawn()?;
     let pid =
         Pid::new(child.id()).map_err(|message| io::Error::new(io::ErrorKind::Other, message))?;
-    let identity = process_identity(pid).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "could not read the identity of spawned server pid {}",
-                pid.get()
-            ),
-        )
-    })?;
-    remember_spawned(child);
+    let identity = identify_spawned(child, pid, process_identity)?;
     let record = ServerRecord {
         pid,
         identity,
@@ -845,6 +841,38 @@ fn stderr_tail(log: &Path) -> Option<String> {
             text.to_string()
         }
     })
+}
+
+/// The identity of the server just spawned as `child` (`pid`), as `read`
+/// answers it, keeping the child to be reaped later.
+///
+/// Gone before it could be identified — macOS answers nothing for a process
+/// that has exited, while Linux still reads a zombie's — is a server that
+/// exited at start, not a launch that failed: it is identified as
+/// [`EXITED_UNIDENTIFIED`], which no running process can match, so it reads as
+/// not running and its caller reports the exit (status included) and
+/// relaunches, as it would for one that died a moment later.
+fn identify_spawned(
+    mut child: std::process::Child,
+    pid: Pid,
+    read: impl Fn(Pid) -> Option<ProcessIdentity>,
+) -> io::Result<ProcessIdentity> {
+    if let Some(identity) = read(pid) {
+        remember_spawned(child);
+        return Ok(identity);
+    }
+    if let Ok(Some(status)) = child.try_wait() {
+        remember_exit(pid.get(), status);
+        return Ok(ProcessIdentity(EXITED_UNIDENTIFIED.to_string()));
+    }
+    remember_spawned(child);
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "could not read the identity of spawned server pid {}",
+            pid.get()
+        ),
+    ))
 }
 
 /// Read a kernel value that changes when a pid is recycled.
@@ -1291,6 +1319,51 @@ mod tests {
             let refused = serde_json::from_str::<LeaseNote>(bad).unwrap_err();
             assert!(refused.to_string().contains("is not a"), "{bad}: {refused}");
         }
+    }
+
+    /// A server gone before its identity could be read — as macOS reports a
+    /// process that has exited — is a server that exited at start: it reads as
+    /// not running, and how it ended is kept for its caller to report. One the
+    /// kernel cannot identify while it still runs is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_gone_before_it_was_identified_reads_as_exited_with_its_status() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exit 5"])
+            .spawn()
+            .unwrap();
+        let pid = Pid::new(child.id()).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while pid_alive(pid) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let identity = identify_spawned(child, pid, |_| None).unwrap();
+        let record = ServerRecord {
+            pid,
+            identity,
+            argv: LaunchArgv::new(vec!["sh".to_string()]).unwrap(),
+            address: ServerAddress::Stdio,
+            idle_since: None,
+            idle_since_ms: None,
+            marker: None,
+            linger_ms: None,
+        };
+        assert!(!record.is_running(), "{record:?}");
+        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(5));
+
+        let running = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let running_pid = Pid::new(running.id()).unwrap();
+        let refused = identify_spawned(running, running_pid, |_| None).unwrap_err();
+        kill(running_pid);
+        assert!(
+            refused
+                .to_string()
+                .contains("could not read the identity of spawned server pid"),
+            "{refused}"
+        );
     }
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test

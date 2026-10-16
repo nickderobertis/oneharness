@@ -2279,38 +2279,55 @@ fn exited_unreaped(pid: u32) -> bool {
 
 /// A shared server that dies under a library caller's live session is found
 /// dead by the next session's lease, which stops the commands the dead
-/// server ran for the live session — and no other dispatch's — before it
-/// starts a fresh server.
+/// server ran for the live session — and not one another server runs for
+/// another dispatch — before it starts a fresh server.
 #[test]
 fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead() {
     use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
     let pool = Pool::new("pool-session-dead-server");
     let argv = as_library_caller(&pool);
     let cwd = pool.worktree("work");
-    let plan = || PooledDispatch::plan(&argv, &[], &[], &cwd, false).unwrap();
-    // A command started with the environment a dispatch's thread gives the
-    // commands its server runs for it.
-    let command_of = |dispatch: &PooledDispatch| {
-        let set = dispatch.thread_config()["shell_environment_policy"]["set"].clone();
-        let mut command = Command::new("sleep");
-        command.arg("60").stdin(Stdio::null());
-        for (name, value) in set.as_object().unwrap() {
-            command.env(name, value.as_str().unwrap());
-        }
-        command.spawn().unwrap()
+    let plan =
+        |env: &[(String, String)]| PooledDispatch::plan(&argv, env, &[], &cwd, false).unwrap();
+    // A command the server runs for the session's thread that outlives the
+    // shell turn starting it, as a backgrounded one does; its pid lands in
+    // `pid_file`.
+    let run_in_background = |session: &mut PooledSession, pid_file: &str| -> u32 {
+        session.open_thread(&cwd, None).unwrap();
+        session
+            .shell_turn(&format!(
+                "sleep 60 >/dev/null 2>&1 & echo $! > '{pid_file}'"
+            ))
+            .unwrap();
+        let mut pid = None;
+        wait_for("the command to start", Duration::from_secs(10), || {
+            pid = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok());
+            pid.is_some()
+        });
+        pid.unwrap()
     };
 
-    let dispatch = plan();
-    let mut orphaned = command_of(&dispatch);
-    let mut neighbour = command_of(&plan());
-    let keeper = PooledSession::open(dispatch).unwrap();
+    let mut keeper = PooledSession::open(plan(&[])).unwrap();
+    let orphaned = run_in_background(&mut keeper, &pool.file("orphaned.pid"));
+    // A CODEX_ variable keys the other dispatch to a server of its own.
+    let mut neighbour =
+        PooledSession::open(plan(&[("CODEX_OH_NEIGHBOUR".into(), "1".into())])).unwrap();
     let dead = keeper.record().pid.get();
+    assert_ne!(
+        neighbour.record().pid.get(),
+        dead,
+        "the neighbour shares the server"
+    );
+    let neighbouring = run_in_background(&mut neighbour, &pool.file("neighbour.pid"));
     sigkill(dead);
     wait_for("the server to exit", Duration::from_secs(10), || {
         exited_unreaped(dead)
     });
+    assert!(alive(orphaned), "the command died with its server");
 
-    let session = PooledSession::open(plan()).unwrap();
+    let session = PooledSession::open(plan(&[])).unwrap();
     assert_ne!(
         session.record().pid.get(),
         dead,
@@ -2319,19 +2336,24 @@ fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead
     wait_for(
         "the dead server's command for the live session to stop",
         DEAD_LEASE_STOP_DEADLINE + Duration::from_secs(5),
-        || orphaned.try_wait().unwrap().is_some(),
+        || !alive(orphaned),
     );
     assert!(
-        neighbour.try_wait().unwrap().is_none(),
+        alive(neighbouring),
         "another dispatch's command was stopped"
     );
-    neighbour.kill().unwrap();
-    neighbour.wait().unwrap();
     keeper.release();
-    let server = session.record().pid.get();
+    let servers = [session.record().pid.get(), neighbour.record().pid.get()];
     session.release();
+    neighbour.release();
+    assert!(
+        !alive(neighbouring),
+        "a released session's command still runs"
+    );
     reclaim_lingering_servers();
-    assert!(!alive(server), "the swept server is still running");
+    for server in servers {
+        assert!(!alive(server), "the swept server {server} is still running");
+    }
 }
 
 /// Frames for a dispatch's thread that arrive before the reply naming the

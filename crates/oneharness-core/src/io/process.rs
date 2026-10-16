@@ -586,9 +586,30 @@ mod tests {
         pids.push_str(&format!(" {competing}"));
         let partial = dir.join("pids.partial");
         std::fs::write(&partial, pids).unwrap();
+        // The journey SIGKILLs this process as soon as the pids are in, and a
+        // killed process writes no coverage profile: write it while it can.
+        write_coverage_profile();
         std::fs::rename(&partial, dir.join("pids")).unwrap();
         loop {
             std::thread::sleep(Duration::from_secs(3600));
+        }
+    }
+
+    /// Write this process's coverage counters to its profile now, in an
+    /// instrumented build; nothing otherwise.
+    // `coverage` is the cfg cargo-llvm-cov sets on instrumented builds alone,
+    // which no manifest of this workspace declares.
+    #[allow(unexpected_cfgs)]
+    #[cfg(unix)]
+    fn write_coverage_profile() {
+        #[cfg(coverage)]
+        {
+            extern "C" {
+                fn __llvm_profile_write_file() -> libc::c_int;
+            }
+            // SAFETY: the instrumented build's profiler runtime defines it;
+            // it writes this process's counters to its profile file.
+            unsafe { __llvm_profile_write_file() };
         }
     }
 

@@ -11,6 +11,10 @@
 //!   MOCK_STDERR     bytes written to stderr
 //!   MOCK_EXIT       process exit code (default: 0)
 //!   MOCK_EXIT_<n>   with MOCK_ATTEMPT_FILE, process exit code for attempt n
+//!   MOCK_EXIT_WORK_MS  once the answer is written, spend this long exiting —
+//!                   the work an exit does (under coverage, writing the
+//!                   profile) — before exiting; with MOCK_EXIT_MARK, then write
+//!                   `exited` there, so a test sees that exit run to its end
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
@@ -2262,7 +2266,7 @@ pub fn run() -> ! {
             }
         }
         log_line("COMPLETE\n");
-        std::process::exit(0);
+        finish(0);
     }
 
     // Incremental streaming mode: with MOCK_STREAM_DELAY_MS set, emit MOCK_STDOUT
@@ -2285,9 +2289,12 @@ pub fn run() -> ! {
             }
         }
         log_line("COMPLETE\n");
-        std::process::exit(0);
+        finish(0);
     }
 
+    // The answer is the run's last act, so a caller that stops after reading
+    // part of it may signal the mock any moment from here (see `finish`).
+    hold_term();
     let _ = write!(std::io::stdout(), "{stdout}");
     let _ = std::io::stdout().flush();
 
@@ -2299,7 +2306,37 @@ pub fn run() -> ! {
                 .expect("MOCK_EXIT[_<attempt>] must be an integer")
         })
         .unwrap_or(0);
-    std::process::exit(code);
+    finish(code);
+}
+
+/// Exit with `code` once the run's answer is written, finishing that exit
+/// whatever the caller sends meanwhile, as a CLI that handles TERM does.
+///
+/// A caller that stops reading after an early line ends the tree with TERM,
+/// then KILL after a grace — often while this process is already exiting.
+/// Taking TERM's default there cuts the exit short: under coverage the exit is
+/// where this process writes its profile, and one left truncated fails the
+/// whole `llvm-profdata merge`. Ignoring TERM lets the exit finish within the
+/// grace; KILL still ends one that outlives it.
+fn finish(code: i32) -> ! {
+    hold_term();
+    if let Some(ms) = millis_knob("MOCK_EXIT_WORK_MS") {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        if let Some(mark) = std::env::var_os("MOCK_EXIT_MARK") {
+            let _ = std::fs::write(mark, "exited\n");
+        }
+    }
+    std::process::exit(code)
+}
+
+/// From here on TERM no longer ends this process ([`finish`] says why). Set
+/// only once the mock starts no further child, which would inherit it.
+fn hold_term() {
+    #[cfg(unix)]
+    // SAFETY: installs the ignore disposition for one signal; no handler runs.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+    }
 }
 
 /// `MOCK_CODEX_*` knobs also answer to a `CODEX_MOCK_*` spelling (the

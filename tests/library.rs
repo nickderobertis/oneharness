@@ -1359,19 +1359,12 @@ fn the_controlled_streaming_entry_points_stream_an_uncontrolled_job() {
     use oneharness_core::io::runner::{
         run_job_streaming_controlled, run_job_streaming_controlled_cancellable, Job, StreamStep,
     };
-    // The caller that stops is answered by TERM, a 100 ms grace and KILL, which
-    // can land while the mock is writing its coverage profile on exit.
-    let redirect = fixture::profile_redirect();
-    let (profile_var, profile_path) = redirect
-        .split_once('=')
-        .expect("the redirect is NAME=VALUE");
     let job = |stdout: &str| Job {
         argv: vec![fixture::mock_bin().display().to_string()],
         cwd: None,
         env: vec![
             ("MOCK_STDOUT".to_string(), stdout.to_string()),
             ("ONEHARNESS_NO_CONFIG".to_string(), "1".to_string()),
-            (profile_var.to_string(), profile_path.to_string()),
         ],
         env_remove: Vec::new(),
         timeout: Duration::from_secs(60),
@@ -1416,4 +1409,48 @@ fn the_controlled_streaming_entry_points_stream_an_uncontrolled_job() {
     );
     assert_eq!(seen, ["five"]);
     assert_eq!(capture.status, Status::Ok, "{capture:?}");
+}
+
+/// A caller that stops after the first line ends the job while its child,
+/// whose whole answer is already written, is exiting. The teardown that
+/// follows must let that exit run to its end and reap the child before the
+/// call returns: an exit cut short by TERM is, under coverage, a truncated
+/// profile that fails the suite's merge. `MOCK_EXIT_WORK_MS` stands in for the
+/// profile write, so this holds on an uninstrumented build too.
+#[cfg(unix)]
+#[test]
+fn a_stopped_job_lets_its_exiting_child_finish_before_returning() {
+    use oneharness_core::io::runner::{run_job_streaming_controlled_cancellable, Job, StreamStep};
+    let mark = scratch("stopped-exit.mark");
+    let job = Job {
+        argv: vec![fixture::mock_bin().display().to_string()],
+        cwd: None,
+        env: vec![
+            ("MOCK_STDOUT".to_string(), "five\nsix\n".to_string()),
+            ("ONEHARNESS_NO_CONFIG".to_string(), "1".to_string()),
+            // Well inside the teardown's grace before KILL.
+            ("MOCK_EXIT_WORK_MS".to_string(), "30".to_string()),
+            ("MOCK_EXIT_MARK".to_string(), mark.display().to_string()),
+        ],
+        env_remove: Vec::new(),
+        timeout: Duration::from_secs(60),
+        stdin: None,
+    };
+
+    let mut seen = Vec::new();
+    let capture =
+        run_job_streaming_controlled_cancellable(&job, None, &CancelToken::new(), |line| {
+            seen.push(line.to_string());
+            StreamStep::Stop
+        });
+    let exited = std::fs::read_to_string(&mark).ok();
+    let _ = std::fs::remove_file(&mark);
+
+    assert_eq!(seen, ["five"]);
+    assert_eq!(capture.status, Status::Ok, "{capture:?}");
+    assert_eq!(
+        exited.as_deref(),
+        Some("exited\n"),
+        "the stopped job's teardown cut its child's exit short"
+    );
 }

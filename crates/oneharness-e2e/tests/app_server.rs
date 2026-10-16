@@ -2160,9 +2160,6 @@ fn a_library_pooled_session_names_each_way_the_server_fails_it() {
     let pool = Pool::new("pool-session-faults");
     let argv = as_library_caller(&pool);
     let cwd = pool.worktree("work");
-    // What a session does, step by step, until the server fails it: the
-    // first error, or `None` when every step succeeded. `listing` bounds the
-    // loaded-thread listing.
     let session = move |fault: &str, listing: Duration| -> Option<String> {
         let env = [("CODEX_MOCK_FAULT".to_string(), fault.to_string())];
         let plan = PooledDispatch::plan(&argv, &env, &[], &cwd, false).unwrap();

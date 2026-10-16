@@ -1365,6 +1365,9 @@ class Fallback(unittest.TestCase):
         )
         real.chmod(0o755)
         file = tmp / "codex.jsonl"
+        said = tmp / "stderr"
+        err = said.open("wb")
+        self.addCleanup(err.close)
         shim = subprocess.Popen(
             [
                 BASH,
@@ -1385,7 +1388,7 @@ class Fallback(unittest.TestCase):
             ],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=err,
             env={**os.environ, "OH_E2E_OS": "Darwin"},
         )
         self.addCleanup(shim.kill)
@@ -1398,7 +1401,7 @@ class Fallback(unittest.TestCase):
         self.addCleanup(lambda: running(descendant) and os.kill(descendant, signal.SIGKILL))
         stopped = time.monotonic()
         shim.send_signal(signal.SIGTERM)
-        self.assertEqual(shim.wait(timeout=30), 128 + signal.SIGTERM)
+        self.assertEqual(shim.wait(timeout=30), 128 + signal.SIGTERM, said.read_text())
         self.assertFalse(running(descendant), "the launch's descendant outlived the measurer")
         self.assertGreaterEqual(time.monotonic() - stopped, KILL_GRACE - 0.5)
         (start,) = starts(lines(file))

@@ -768,14 +768,19 @@ def run_direct(args: argparse.Namespace, reason: str, life: int) -> Outcome:
 def signal_group(group: int, signum: int) -> None:
     try:
         os.killpg(group, signum)
-    except ProcessLookupError:
-        pass  # the whole group is already gone
+    except (ProcessLookupError, PermissionError):
+        pass  # the whole group is already gone, or only its unreaped members are left
 
 
 def group_alive(group: int) -> bool:
+    """Whether any of `group` is still running. On Darwin a group whose
+    members have all exited but are not yet reaped answers EPERM, not ESRCH:
+    kill(2) fails a group "if any members of the group could not be
+    signaled", and XNU signals no zombie. Every member here is this user's
+    own launch, so EPERM means only those exited members are left."""
     try:
         os.killpg(group, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, PermissionError):
         return False
     return True
 

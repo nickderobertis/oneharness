@@ -2824,6 +2824,12 @@ fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
 
     let mut stalled =
         UnixStream::connect(oneharness_core::io::websocket::dial_path(&listen)).unwrap();
+    // Bounded now, while the server still holds its end: on Darwin
+    // `setsockopt` on a socket whose peer closed fails with EINVAL, and the
+    // server is expected to end this connection before it is read again.
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
     stalled
         .write_all(
             b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
@@ -2905,9 +2911,6 @@ fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
 
     // The server ended the connection that stopped reading: what it sent
     // before the bound, then the end.
-    stalled
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .unwrap();
     let mut rest = Vec::new();
     stalled
         .read_to_end(&mut rest)

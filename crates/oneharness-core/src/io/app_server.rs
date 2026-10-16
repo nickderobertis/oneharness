@@ -61,6 +61,12 @@ pub const SWEEPER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_SWEEPER";
 /// server stop without waiting a minute.
 pub const LINGER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS";
 
+/// A directory replacing Codex's own socket rendezvous directory
+/// (`/tmp/codex-daemon-<euid>`) as the one a launch prepares. Internal: it
+/// exists so a hermetic journey can prepare a directory of its own rather than
+/// the host's, which every Codex on it shares.
+pub const DAEMON_DIR_ENV: &str = "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR";
+
 /// How long a dispatch waits for a server it started (or found) to accept a
 /// connection, unless its own timeout is shorter.
 const READY_WINDOW: Duration = Duration::from_secs(60);
@@ -358,6 +364,8 @@ fn lease_server(
     template.extend(dispatch.process_args.iter().cloned());
     template.extend(rules::LISTEN_ARGS.iter().map(|arg| (*arg).to_string()));
 
+    prepare_daemon_dir();
+
     let mut attempts = 2;
     loop {
         attempts -= 1;
@@ -413,6 +421,54 @@ fn lease_server(
                 if attempts == 0 {
                     return Err(message);
                 }
+            }
+        }
+    }
+}
+
+/// Leave Codex's socket rendezvous directory in the one shape Codex accepts,
+/// when it is ours and only its mode is wrong.
+///
+/// Codex binds every `--listen unix://` socket under `/tmp/codex-daemon-<euid>`
+/// (`/private/tmp` on macOS), whatever path it is told, and refuses to start —
+/// "app-server socket directory must be a user-owned directory with mode
+/// 0700", exit 1, before it listens — when that directory is anything but a
+/// directory this user owns at mode 0700. Another tool creating it first with
+/// its own umask's mode (0755) is enough: it outlives that tool until a reboot
+/// clears `/tmp`, and every shared server fails to start meanwhile. That
+/// happened on macOS CI, where the hermetic suite's Codex double made it
+/// before the live run.
+///
+/// Only that case is repaired, and only by tightening: a directory owned by
+/// someone else, or anything that is not a directory, is left for Codex to
+/// refuse with the reason the caller is then shown. An absent directory is
+/// left for Codex to create.
+fn prepare_daemon_dir() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = match std::env::var_os(DAEMON_DIR_ENV).filter(|dir| !dir.is_empty()) {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => {
+                let Ok(tmp) = std::fs::canonicalize("/tmp") else {
+                    return;
+                };
+                // SAFETY: `geteuid` takes nothing and cannot fail.
+                tmp.join(format!("codex-daemon-{}", unsafe { libc::geteuid() }))
+            }
+        };
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+            return;
+        };
+        // SAFETY: as above.
+        let ours = meta.uid() == unsafe { libc::geteuid() };
+        if meta.is_dir() && ours && meta.mode() & 0o777 != 0o700 {
+            if let Err(err) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            {
+                eprintln!(
+                    "oneharness: warning: could not make codex's socket directory {} private (mode 0700), so a shared codex app-server will refuse it: {err}",
+                    dir.display()
+                );
             }
         }
     }

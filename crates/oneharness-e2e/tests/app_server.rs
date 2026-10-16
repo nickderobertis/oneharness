@@ -2050,6 +2050,66 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
     assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
 }
 
+/// Codex refuses to start when its socket rendezvous directory is not this
+/// user's at mode 0700 — macOS CI met one another tool had made at 0755, and
+/// every shared server exited at once. The launch tightens one that is ours,
+/// so the turn completes; anything else it leaves for Codex to refuse, and the
+/// dispatch says why. Run against a directory of the journey's own, never the
+/// host's `/tmp/codex-daemon-<uid>`, which every Codex on it shares.
+#[test]
+fn a_shared_server_starts_once_its_loose_socket_directory_is_made_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Pool::new("pool-daemon-dir");
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let daemon = pool.path("daemon");
+    std::fs::create_dir(&daemon).unwrap();
+    std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let at = |dir: &Path| {
+        let dir = dir.display().to_string();
+        vec![
+            (
+                "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR".to_string(),
+                dir.clone(),
+            ),
+            ("CODEX_MOCK_DAEMON_DIR".to_string(), dir),
+        ]
+    };
+    let envs = at(&daemon);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (output, report) = pool.run(pool.command("loose", &[], &envs));
+    succeeded(&output, &report);
+    assert_eq!(mode(&daemon), 0o700);
+    // The server bound under that directory, not the host's.
+    let socket = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path().join("sock").join("app-server.sock"))
+        .find(|socket| std::fs::symlink_metadata(socket).is_ok())
+        .expect("the shared server's socket link");
+    assert!(
+        std::fs::read_link(&socket).unwrap().starts_with(&daemon),
+        "{}",
+        socket.display()
+    );
+
+    // Not a directory at all: left alone, and Codex's refusal is the reason.
+    let file = pool.path("daemon-file");
+    std::fs::write(&file, "").unwrap();
+    let envs = at(&file);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (_, report) = pool.run(pool.command("not-a-dir", &[], &envs));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains(
+            "it ended with exit status: 1, its stderr ending: Error: app-server socket directory must be a user-owned directory with mode 0700"
+        ),
+        "{error}"
+    );
+    assert!(std::fs::metadata(&file).unwrap().is_file());
+}
+
 /// A server that refuses `initialize` fails a pooled session's open naming the
 /// refusal — here through the reuse workload, which opens its leases that way.
 #[test]

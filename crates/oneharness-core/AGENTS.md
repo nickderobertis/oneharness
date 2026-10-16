@@ -396,7 +396,15 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   are the dispatch's own `MOCK_*`, read off `shell_environment_policy.set`; a
   journey scripting the stdio mock app-server runs under `per-dispatch`
   (`codex_per_dispatch` in `tests/cli.rs`). Its journeys:
-  `crates/oneharness-e2e/tests/app_server.rs`. Anything that outlives its
+  `crates/oneharness-e2e/tests/app_server.rs`. A server that dies before it
+  listens is diagnosed from its stderr, kept in the entry's `server.log` and
+  quoted in the dispatch's error. Real Codex binds every `--listen` socket
+  under `/tmp/codex-daemon-<euid>` and exits 1 unless that directory is the
+  user's at mode 0700; the launch tightens one that is ours
+  (`prepare_daemon_dir`), and the mock enforces the same rule. Never point a
+  test at the host's directory: it is shared by every Codex on the machine,
+  and a journey uses `ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR` +
+  `CODEX_MOCK_DAEMON_DIR` instead. Anything that outlives its
   dispatch spawns through `io::server_pool::detach`, which also marks every
   descriptor above stderr close-on-exec: on macOS `std` marks a new pipe or
   socket close-on-exec only after creating it, so a detached child otherwise

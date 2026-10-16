@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.3](https://github.com/nickderobertis/oneharness/compare/v0.25.2...v0.25.3) - 2026-10-16
+
+### Fixed
+
+- *(app-server)* stop the app-server tests hanging the macOS sweep ([#1481](https://github.com/nickderobertis/oneharness/pull/1481))
+
 ## [0.25.2](https://github.com/nickderobertis/oneharness/compare/v0.25.1...v0.25.2) - 2026-10-16
 
 ### Fixed

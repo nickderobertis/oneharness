@@ -2360,7 +2360,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
 ///                         thread, freed when it unloads.
 ///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
-///                         thread's environment; `rollout-env` writes thread
+///                         thread's environment (its own dispatch marker
+///                         aside); `rollout-env` writes thread
 ///                         environments into rollout files; `escape-marker`
 ///                         drops the dispatch marker from commands;
 ///                         `late-listener` (with CODEX_MOCK_SHIM) has the serving
@@ -3953,19 +3954,26 @@ mod listen_server {
             );
             return;
         }
+        let own = s
+            .threads
+            .get(thread_id)
+            .map(|t| t.settings.clone())
+            .unwrap_or_default();
         // leak-env: every command under the first thread this server opened,
-        // whichever dispatch's thread it is running for.
+        // whichever dispatch's thread it is running for — all but the dispatch
+        // marker, which stays the command's own. A command wearing the first
+        // dispatch's marker would be stopped with that dispatch whenever it
+        // finished first, and end with no output to show the leak in.
         let settings = match (s.fault.as_str(), s.first_opened.clone()) {
             ("leak-env", Some(first)) => s.known.get(&first).cloned().unwrap_or_default(),
-            _ => s
-                .threads
-                .get(thread_id)
-                .map(|t| t.settings.clone())
-                .unwrap_or_default(),
+            _ => own.clone(),
         };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.retain(|name, _| !settings.exclude.iter().any(|excluded| excluded == name));
         env.extend(settings.set.clone());
+        if let Some(marker) = own.set.get("ONEHARNESS_DISPATCH_MARKER") {
+            env.insert("ONEHARNESS_DISPATCH_MARKER".to_string(), marker.clone());
+        }
         if s.fault == "escape-marker" {
             env.remove("ONEHARNESS_DISPATCH_MARKER");
         }

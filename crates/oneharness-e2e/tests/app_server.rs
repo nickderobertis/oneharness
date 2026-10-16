@@ -4859,10 +4859,28 @@ fn left_nothing_behind(pool: &Pool, server: u32, report: &Value) {
 /// cancelled (SIGTERM to oneharness) is `cancelled`; either way its live turn
 /// is interrupted on the server, its commands stopped and its thread released,
 /// rather than left running on a server nobody reads.
+///
+/// The timed dispatch runs once the cancelled one's turn is beating, on the
+/// server that one started: its deadline is about a turn cut short, and a
+/// cold server's start — slow under coverage on macOS — would otherwise spend
+/// it before any thread opened.
 #[test]
 fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
     let pool = Pool::new("pool-cut");
     let never = pool.file("never");
+    let cancel_beat = pool.file("cancel-beat");
+    let child = pool.spawn(pool.command(
+        "cancelled",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&cancel_beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    wait_for("the heartbeat to start", Duration::from_secs(20), || {
+        lines(&cancel_beat) >= 3
+    });
+
     let beat = pool.file("timeout-beat");
     let (output, report) = pool.run(pool.command(
         "timed",
@@ -4878,27 +4896,17 @@ fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    left_nothing_behind(&pool, reported_server(&report), &report);
+    let server = reported_server(&report);
+    left_nothing_behind(&pool, server, &report);
 
-    let beat = pool.file("cancel-beat");
-    let child = pool.spawn(pool.command(
-        "cancelled",
-        &["--mode", "bypass"],
-        &[
-            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
-            ("MOCK_CODEX_HOLD_UNTIL", &never),
-        ],
-    ));
-    wait_for("the heartbeat to start", Duration::from_secs(20), || {
-        lines(&beat) >= 3
-    });
     // SAFETY: plain integers; the pid is the run this journey started.
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
     }
     let (_, report) = Pool::finish(child);
     assert_eq!(result(&report)["status"], "cancelled", "{report}");
-    left_nothing_behind(&pool, reported_server(&report), &report);
+    assert_eq!(reported_server(&report), server, "{report}");
+    left_nothing_behind(&pool, server, &report);
 }
 
 /// A streaming consumer that stops reading — its end of `run --stream`'s

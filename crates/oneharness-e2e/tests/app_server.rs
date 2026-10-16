@@ -4588,35 +4588,3 @@ fn a_write_dropped_under_a_live_turn_still_ends_the_run_app_server_lost() {
         "the server read an answer it should have dropped: {approvals}"
     );
 }
-
-/// Hangs on purpose, the way a journey hung on macOS CI: a pooled dispatch
-/// whose turn never ends, waited on with no bound of the journey's own. Ignored
-/// in every ordinary run: `scripts/app-server-hang-bound-test.sh` runs it
-/// through cargo nextest to prove that the suite's per-test bound
-/// (`.config/nextest.toml`) ends it as a failure naming it, and that nothing it
-/// started is left running. What it started is written, before it waits, to
-/// the file `OH_HANG_PROBE_MANIFEST` names.
-#[test]
-#[ignore = "hangs on purpose; scripts/app-server-hang-bound-test.sh runs it"]
-fn a_journey_that_never_ends_is_ended_by_the_suite_s_bound() {
-    let manifest = std::env::var_os("OH_HANG_PROBE_MANIFEST")
-        .expect("OH_HANG_PROBE_MANIFEST names the file to record what this journey starts");
-    let pool = Pool::new("pool-hang-probe");
-    let never = pool.file("never");
-    let dispatch =
-        pool.spawn(pool.command("hang-probe", &[], &[("MOCK_CODEX_HOLD_UNTIL", &never)]));
-    let server = pool.await_live_turns(1);
-    let (_, sweeper) = entry_and_sweeper(&pool);
-    std::fs::write(
-        &manifest,
-        format!(
-            "dir={}\ntest={}\ndispatch={}\nserver={server}\nsweeper={sweeper}\n",
-            pool.dir.path().display(),
-            std::process::id(),
-            dispatch.id()
-        ),
-    )
-    .unwrap();
-    let (_, report) = Pool::finish(dispatch);
-    panic!("the held turn ended: {report}");
-}

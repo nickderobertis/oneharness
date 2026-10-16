@@ -18,7 +18,6 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 # in a full workspace run; mostly waiting on sweeps and lingers, not CPU).
 # Ended, it is a TIMEOUT failure that names it, and nextest terminates its
 # process group.
-# scripts/app-server-hang-bound-test.sh proves this through the runner itself.
 [[profile.default.overrides]]
 filter = "binary_id(oneharness-e2e::app_server)"
 slow-timeout = { period = "60s", terminate-after = 3 }

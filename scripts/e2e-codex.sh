@@ -29,7 +29,7 @@ _oh_codex_server_euid() {
     pid="${env#/proc/}" pid="${pid%/environ}"
     exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
     [ "${exe##*/}" = codex ] || continue
-    tr '\0' '\n' <"$env" 2>/dev/null | grep -qxF "ONEHARNESS_APP_SERVER_MARKER=$marker" || continue
+    tr '\0' '\n' 2>/dev/null <"$env" | grep -qxF "ONEHARNESS_APP_SERVER_MARKER=$marker" || continue
     outer="$(awk '/^Uid:/ { print $3 }' "/proc/$pid/status" 2>/dev/null)" && [ -n "$outer" ] || continue
     awk -v u="$outer" '$2 <= u && u < $2 + $3 { print $1 + u - $2; found = 1; exit } END { exit !found }' \
       "/proc/$pid/uid_map" 2>/dev/null && return

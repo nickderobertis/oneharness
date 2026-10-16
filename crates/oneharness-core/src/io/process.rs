@@ -712,7 +712,7 @@ mod platform {
     }
 
     /// How often the guard looks at its parent pid.
-    const GUARD_POLL_MS: libc::c_int = 50;
+    const GUARD_POLL_US: libc::suseconds_t = 50_000;
 
     impl Tether {
         fn start() -> io::Result<Self> {
@@ -784,8 +784,20 @@ mod platform {
         let mut none: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut none);
         libc::sigprocmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+        // `select` with no descriptor and a timeout is the documented
+        // portable sleep (select(2) on Linux and Darwin alike).
         while libc::getppid() == caller {
-            libc::poll(std::ptr::null_mut(), 0, GUARD_POLL_MS);
+            let mut wait = libc::timeval {
+                tv_sec: 0,
+                tv_usec: GUARD_POLL_US,
+            };
+            libc::select(
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut wait,
+            );
         }
         libc::kill(0, libc::SIGKILL);
         libc::_exit(0)

@@ -2377,10 +2377,35 @@ fn a_caller_killed_mid_version_probe_leaves_no_probe_and_its_output_ends() {
     }
 }
 
-/// Run `cmd` — a dispatch whose first `--version` stalls, writing to
-/// `stalled` — with its output also at descriptors 3 and 4, SIGKILL it once
-/// the probe stalls, and hold everything it left to the bound. Returns the
-/// directory the stalled probe ran in.
+/// A caller killed while the shared model catalog's refresh helper — a
+/// `codex app-server --stdio` the dispatch starts before any shared server —
+/// is wedged leaves nothing behind either. The helper never fetches and never
+/// exits, its stdin closed or not, and has started a descendant; the dispatch
+/// holds its output at descriptors 3 and 4 as well, not close-on-exec. Once
+/// the caller is SIGKILLed its refresh deadline is gone with it, so the
+/// helper must not need it: the caller's pipes reach end-of-file, and the
+/// helper, its descendant and everything in its process group end.
+#[test]
+fn a_caller_killed_mid_catalog_refresh_leaves_no_helper_and_its_output_ends() {
+    let pool = catalog_pool("pool-killed-refresh");
+    let stalled = pool.file("refresh-stall");
+    let cmd = pool.command(
+        "refresh",
+        &[],
+        &[("CODEX_MOCK_CATALOG_STALL", stalled.as_str())],
+    );
+    kill_the_caller_mid_probe(&pool, cmd, Path::new(&stalled), "refresh");
+    assert_eq!(
+        pool.server_pids(),
+        Vec::<u32>::new(),
+        "the caller was killed before any shared server started"
+    );
+}
+
+/// Run `cmd` — a dispatch whose first `--version` (or catalog refresh)
+/// stalls, writing to `stalled` — with its output also at descriptors 3 and
+/// 4, SIGKILL it once the launch stalls, and hold everything it left to the
+/// bound. Returns the directory the stalled launch ran in.
 fn kill_the_caller_mid_probe(pool: &Pool, mut cmd: Command, stalled: &Path, case: &str) -> String {
     use std::os::unix::process::CommandExt;
 
@@ -2414,14 +2439,14 @@ fn kill_the_caller_mid_probe(pool: &Pool, mut cmd: Command, stalled: &Path, case
     let stdout = read_to_end(caller.stdout.take().unwrap());
     let stderr = read_to_end(caller.stderr.take().unwrap());
     wait_for(
-        &format!("{case}: the version probe to stall"),
+        &format!("{case}: its first launch to stall"),
         Duration::from_secs(10),
         || stalled.exists(),
     );
     let written = std::fs::read_to_string(stalled).unwrap();
     let lines: Vec<&str> = written.lines().collect();
     let [probe, descendant, cwd] = lines[..] else {
-        panic!("{case}: the stalled probe wrote {written:?}, not two pids and a directory");
+        panic!("{case}: the stalled launch wrote {written:?}, not two pids and a directory");
     };
     let (probe, descendant): (u32, u32) = (probe.parse().unwrap(), descendant.parse().unwrap());
     captured.0.extend([probe, descendant]);

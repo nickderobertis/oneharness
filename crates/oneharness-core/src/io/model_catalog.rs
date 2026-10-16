@@ -299,7 +299,9 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Cat
     let deadline = Instant::now() + MODEL_CATALOG_REFRESH_DEADLINE;
     let mut command = launch_command(launch, &refresh_helper_args());
     command.stdin(Stdio::piped());
-    let mut helper = Process::spawn(command)
+    // Tethered, like the version probe: a caller killed mid-refresh leaves no
+    // deadline to end a helper that never exits.
+    let mut helper = Process::spawn_tethered(command)
         .map_err(|error| format!("cannot start `{} app-server`: {error}", launch.bin))?;
     let mut stdin = helper.take_stdin();
     if let Some(stdin) = stdin.as_mut() {

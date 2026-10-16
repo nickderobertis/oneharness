@@ -412,10 +412,10 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   a zombie as gone on both kernels — on Darwin by the ESRCH `proc_pidinfo`
   gives a pid signal 0 still answers for (XNU's lookup skips an exited process
   unless asked for zombies). A short child the caller only bounds by its own
-  deadline (a `--version` probe) goes through `Process::spawn_tethered`: a
-  caller SIGKILLed mid-probe enforces no deadline, and `Process::spawn`'s own
-  process group is out of reach of any signal sent to the caller's. Every Rust
-  test runs under a nextest per-test bound (`.config/nextest.toml`): a hang
+  deadline (a `--version` probe, the model catalog's refresh helper) goes
+  through `Process::spawn_tethered`: a caller SIGKILLed mid-probe enforces no
+  deadline, and `Process::spawn`'s own process group is out of reach of any
+  signal sent to the caller's. Every Rust test runs under a nextest per-test bound (`.config/nextest.toml`): a hang
   fails as TIMEOUT by name.
 
 ## Adding or changing a harness

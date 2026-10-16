@@ -183,6 +183,11 @@
 //!                              It then carries on as it otherwise would.
 //!   MOCK_CODEX_CATALOG_FETCH_MS  with MOCK_CODEX_CATALOG_LOG, how long a fetch
 //!                              takes before it writes the cache.
+//!   MOCK_CODEX_CATALOG_STALL   with MOCK_CODEX_CATALOG_LOG, a path: an
+//!                              `app-server` launch that would fetch never
+//!                              does and never exits, its stdin closed or not,
+//!                              as a wedged refresh does; otherwise like
+//!                              MOCK_CODEX_VERSION_STALL.
 //!   MOCK_CODEX_CATALOG_THEN_EXIT  with MOCK_CODEX_CATALOG_LOG, an `app-server`
 //!                              launch that fetched exits 0 right after,
 //!                              instead of serving its stdin.
@@ -452,7 +457,7 @@ fn refuse(message: &str) -> ! {
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
     if let Some(path) = mock_var_os("MOCK_CODEX_VERSION_STALL") {
-        stall_version(std::path::Path::new(&path));
+        stall(std::path::Path::new(&path));
     }
     if let Some(ms) = millis_knob("MOCK_CODEX_VERSION_DELAY_MS") {
         std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -504,12 +509,12 @@ fn millis_knob(name: &str) -> Option<u64> {
     }
 }
 
-/// MOCK_CODEX_VERSION_STALL: a `--version` that never answers, with a
-/// descendant (this binary as an app-server helper, which only lives) holding
-/// the same output. Both pids and the directory it runs in, which says which
-/// of oneharness's probes this is, are written whole, by a rename, once both
-/// run.
-fn stall_version(path: &std::path::Path) -> ! {
+/// MOCK_CODEX_VERSION_STALL and MOCK_CODEX_CATALOG_STALL: a launch that never
+/// answers, with a descendant (this binary as an app-server helper, which only
+/// lives) holding the same output. Both pids and the directory it runs in,
+/// which says which of oneharness's launches this is, are written whole, by a
+/// rename, once both run.
+fn stall(path: &std::path::Path) -> ! {
     let mut descendant = std::process::Command::new(
         std::env::current_exe().unwrap_or_else(|e| refuse(&format!("no current exe: {e}"))),
     )
@@ -622,6 +627,11 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         };
         line["catalog_models"] = models.into();
     } else {
+        if subcommand == "app-server" {
+            if let Some(path) = mock_var_os("MOCK_CODEX_CATALOG_STALL") {
+                stall(std::path::Path::new(&path));
+            }
+        }
         if let Some(ms) = millis_knob("MOCK_CODEX_CATALOG_FETCH_MS") {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }

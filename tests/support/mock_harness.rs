@@ -3515,6 +3515,15 @@ mod listen_server {
                     return reply(&mut s, json!({}));
                 }
                 reply(&mut s, json!({}));
+                // The command runs as a turn's would, under the thread's
+                // environment; the shell turn ends without waiting for it.
+                let command = params
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let cwd = s.threads[&thread].settings.cwd.clone();
+                run_command(server, &mut s, &thread, &turn, &command, &cwd, None);
                 s.emit(
                     &thread,
                     &json!({"jsonrpc": "2.0", "method": "turn/started",

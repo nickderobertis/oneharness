@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.28.2](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.1...oneharness-core-v0.28.2) - 2026-10-16
+
+### Fixed
+
+- *(app-server)* stop the shared app-server tests hanging the macOS check ([#1474](https://github.com/nickderobertis/oneharness/pull/1474))
+
 ## [0.28.1](https://github.com/nickderobertis/oneharness/compare/oneharness-core-v0.28.0...oneharness-core-v0.28.1) - 2026-10-15
 
 ### Fixed

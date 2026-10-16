@@ -1348,3 +1348,65 @@ fn a_controlled_turn_hands_its_harness_child_to_the_supervisor() {
     let _ = std::fs::remove_dir_all(&store);
     let _ = std::fs::remove_dir_all(&cwd);
 }
+
+/// The streaming entry points that hold a child's stdin open for turn control,
+/// called with no control — as a library caller streaming an ordinary job does —
+/// run it exactly as `run_job_streaming` would: each stdout line reaches the
+/// caller as it arrives and the capture keeps all of it, and a caller that
+/// says stop is handed no further line.
+#[test]
+fn the_controlled_streaming_entry_points_stream_an_uncontrolled_job() {
+    use oneharness_core::io::runner::{
+        run_job_streaming_controlled, run_job_streaming_controlled_cancellable, Job, StreamStep,
+    };
+    let job = |stdout: &str| Job {
+        argv: vec![fixture::mock_bin().display().to_string()],
+        cwd: None,
+        env: vec![
+            ("MOCK_STDOUT".to_string(), stdout.to_string()),
+            ("ONEHARNESS_NO_CONFIG".to_string(), "1".to_string()),
+        ],
+        env_remove: Vec::new(),
+        timeout: Duration::from_secs(60),
+        stdin: None,
+    };
+
+    let mut seen = Vec::new();
+    let capture = run_job_streaming_controlled(&job("one\ntwo\n"), None, |line| {
+        seen.push(line.to_string());
+        StreamStep::Continue
+    });
+    assert_eq!(capture.status, Status::Ok, "{:?}", capture.error);
+    assert_eq!(capture.exit_code, Some(0));
+    assert_eq!(seen, ["one", "two"]);
+    assert_eq!(capture.stdout, "one\ntwo\n");
+
+    let mut seen = Vec::new();
+    let capture = run_job_streaming_controlled_cancellable(
+        &job("three\nfour\n"),
+        None,
+        &CancelToken::new(),
+        |line| {
+            seen.push(line.to_string());
+            StreamStep::Continue
+        },
+    );
+    assert_eq!(capture.status, Status::Ok, "{:?}", capture.error);
+    assert_eq!(seen, ["three", "four"]);
+    assert_eq!(capture.stdout, "three\nfour\n");
+
+    // A caller that has gone away after the first line is handed nothing
+    // more, and the run stays `ok`: the caller already has what it asked for.
+    let mut seen = Vec::new();
+    let capture = run_job_streaming_controlled_cancellable(
+        &job("five\nsix\n"),
+        None,
+        &CancelToken::new(),
+        |line| {
+            seen.push(line.to_string());
+            StreamStep::Stop
+        },
+    );
+    assert_eq!(seen, ["five"]);
+    assert_eq!(capture.status, Status::Ok, "{capture:?}");
+}

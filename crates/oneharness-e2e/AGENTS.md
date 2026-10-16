@@ -42,3 +42,9 @@ Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the buil
   journey, run instrumented, nears it, and prove a change to it by adding a
   journey that never ends, running it through `just e2e`, and removing it:
   nothing that hangs on purpose stays in the suite.
+- **Gate a journey off macOS only for a facility macOS lacks, and name it.**
+  The Rust coverage floor is measured on macOS too, from one run; a journey
+  gated to Linux takes every line only it reaches out of that measurement. Here
+  that facility is `/proc`, which `scripts/measure-app-server-sharing.sh` reads
+  the server's memory from; the reuse workload reads one `ps` listing and runs
+  everywhere, as do `PooledSession`'s own journeys (`a_library_pooled_session_*`).

@@ -426,27 +426,22 @@ fn lease_server(
     }
 }
 
-/// Leave Codex's socket rendezvous directory in the one shape Codex accepts,
-/// when it is ours and only its mode is wrong.
+/// Leave Codex's socket rendezvous directory ([`rules::codex_daemon_dir`],
+/// for this euid) in the one shape Codex accepts, when it is ours and only its
+/// mode is wrong.
 ///
-/// Codex binds every `--listen unix://` socket under `/tmp/codex-daemon-<euid>`
-/// (`/private/tmp` on macOS), whatever path it is told, and refuses to start —
-/// "app-server socket directory must be a user-owned directory with mode
-/// 0700", exit 1, before it listens — when that directory is anything but a
-/// directory this user owns at mode 0700. Another tool creating it first with
-/// its own umask's mode (0755) is enough: it outlives that tool until a reboot
-/// clears `/tmp`, and every shared server fails to start meanwhile. That
-/// happened on macOS CI, where the hermetic suite's Codex double made it
-/// before the live run.
+/// Codex binds every `--listen unix://` socket in that directory, whatever path
+/// it is told, and refuses to start — exit 1, before it listens — when it is
+/// anything but a directory this user owns at the one mode Codex accepts.
+/// Another tool creating it first with its own umask's mode (0755) is enough:
+/// it outlives that tool until a reboot clears `/tmp`, and every shared server
+/// fails to start meanwhile. That happened on macOS CI, where the hermetic
+/// suite's Codex double made it before the live run.
 ///
 /// Only that case is repaired, and only by tightening: a directory owned by
 /// someone else, or anything that is not a directory, is left for Codex to
 /// refuse with the reason the caller is then shown. An absent directory is
 /// left for Codex to create.
-///
-/// The path is Codex's contract, not ours: every live codex leg holds it to
-/// real Codex after its controlled turn (`oh_codex_rendezvous_check` in
-/// `scripts/e2e-codex.sh`), reading the euid from the server's own process.
 fn prepare_daemon_dir() {
     #[cfg(unix)]
     {
@@ -458,7 +453,7 @@ fn prepare_daemon_dir() {
                     return;
                 };
                 // SAFETY: `geteuid` takes nothing and cannot fail.
-                tmp.join(format!("codex-daemon-{}", unsafe { libc::geteuid() }))
+                rules::codex_daemon_dir(&tmp, unsafe { libc::geteuid() })
             }
         };
         // Checked and tightened through one handle, opened without following a
@@ -475,11 +470,12 @@ fn prepare_daemon_dir() {
         };
         // SAFETY: as above.
         let ours = meta.uid() == unsafe { libc::geteuid() };
+        let mode = rules::CODEX_DAEMON_DIR_MODE;
         // llmlint: ignore[changed_behavior_has_e2e] A directory another user owns, or a chmod refused on one this user owns, needs a second account or root to stage; unprivileged journeys prove the owned-and-loose repair and the not-a-directory refusal (`a_shared_server_starts_once_its_loose_socket_directory_is_made_private`), and either case left alone reaches the caller as Codex's own refusal through the early-exit report.
-        if ours && meta.mode() & 0o777 != 0o700 {
-            if let Err(err) = handle.set_permissions(std::fs::Permissions::from_mode(0o700)) {
+        if ours && meta.mode() & 0o777 != mode {
+            if let Err(err) = handle.set_permissions(std::fs::Permissions::from_mode(mode)) {
                 eprintln!(
-                    "oneharness: warning: could not make codex's socket directory {} private (mode 0700), so a shared codex app-server will refuse it: {err}",
+                    "oneharness: warning: could not make codex's socket directory {} private (mode {mode:04o}), so a shared codex app-server will refuse it: {err}",
                     dir.display()
                 );
             }

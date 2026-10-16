@@ -38,8 +38,8 @@ _oh_codex_server_euid() {
 }
 
 # The drift gate for Codex's socket rendezvous, which the shared-server launch
-# tightens to 0700 before Codex starts (`prepare_daemon_dir` in
-# crates/oneharness-core/src/io/app_server.rs, `<canonical /tmp>/codex-daemon-<euid>`):
+# tightens before Codex starts (stated once as `codex_daemon_dir` and
+# `CODEX_DAEMON_DIR_MODE` in crates/oneharness-core/src/domain/app_server.rs):
 # every pooled codex server still lingering after the controlled turn must have
 # left its --listen path linking into exactly that directory for the euid it
 # runs as, at mode 0700. Read from the server's own process, so it holds under
@@ -74,7 +74,7 @@ oh_codex_rendezvous_check() {
     bound="$(cd "$(dirname "$target")" && pwd -P)" ||
       fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
     [ "$bound" = "$want" ] ||
-      fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update prepare_daemon_dir in crates/oneharness-core/src/io/app_server.rs (and the mock's daemon_dir) to it"
+      fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update codex_daemon_dir in crates/oneharness-core/src/domain/app_server.rs, the one source the launch and the mock both read, to it"
     # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
     # -c, BSD's (macOS) takes -f.
     if stat -c %a / >/dev/null 2>&1; then

@@ -2329,8 +2329,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///
 /// What it imitates:
 /// - a WebSocket endpoint on the socket; a path too long for `sun_path` bound
-///   as a short target under `/tmp/codex-daemon-<uid>/` with a symlink left at
-///   the path; a second server on a live path exits 1;
+///   as a short target in Codex's rendezvous directory with a symlink left
+///   at the path; a second server on a live path exits 1;
 /// - per-thread settings, and commands run under the thread's
 ///   `shell_environment_policy` (`set` over the server's own environment, minus
 ///   `exclude`) in their own process group, outliving `turn/interrupt`;
@@ -2696,10 +2696,10 @@ mod listen_server {
     }
 
     /// Bind the socket the way Codex does: a path too long for `sun_path` gets
-    /// a short target under `/tmp/codex-daemon-<uid>/` (CODEX_MOCK_DAEMON_DIR
-    /// instead, when set) and a symlink at the path. That directory is created
-    /// private, and one that is not a directory this user owns at mode 0700 is
-    /// refused at start, as Codex refuses it. A path a live server answers on
+    /// a short target in Codex's rendezvous directory (`codex_daemon_dir`;
+    /// CODEX_MOCK_DAEMON_DIR instead, when set) and a symlink at the path. That
+    /// directory is created private, and one Codex would not accept is refused
+    /// at start, as Codex refuses it. A path a live server answers on
     /// is refused; a stale one replaced.
     fn bind(path: &Path) -> UnixListener {
         if UnixStream::connect(super::dial_target(path)).is_ok() {
@@ -2717,7 +2717,10 @@ mod listen_server {
                 .unwrap_or(0);
             let dir = std::env::var_os("CODEX_MOCK_DAEMON_DIR")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(format!("/tmp/codex-daemon-{uid}")));
+                .unwrap_or_else(|| {
+                    // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and reading Codex's rendezvous from its one source is what keeps this model from drifting from the launch that prepares it.
+                    oneharness_core::domain::app_server::codex_daemon_dir(Path::new("/tmp"), uid)
+                });
             daemon_dir(&dir, uid);
             let digest = path
                 .as_os_str()
@@ -2745,14 +2748,17 @@ mod listen_server {
         listener
     }
 
-    /// Codex's socket rendezvous directory: created at mode 0700 when absent,
-    /// and refused — Codex's own message, exit 1 — when it is not a directory
-    /// owned by `uid` (the user whose socket this is) at exactly that mode.
+    /// Codex's socket rendezvous directory: created at the one mode Codex
+    /// accepts when absent, and refused — Codex's own message, exit 1 — when it
+    /// is not a directory owned by `uid` (the user whose socket this is) at
+    /// exactly that mode.
     fn daemon_dir(dir: &Path, uid: u32) {
+        // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and reading Codex's rendezvous from its one source is what keeps this model from drifting from the launch that prepares it.
+        use oneharness_core::domain::app_server::CODEX_DAEMON_DIR_MODE as MODE;
         use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-        let _ = std::fs::DirBuilder::new().mode(0o700).create(dir);
+        let _ = std::fs::DirBuilder::new().mode(MODE).create(dir);
         let usable = std::fs::symlink_metadata(dir)
-            .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o777 == 0o700);
+            .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o777 == MODE);
         if !usable {
             eprintln!(
                 "Error: app-server socket directory must be a user-owned directory with mode 0700"

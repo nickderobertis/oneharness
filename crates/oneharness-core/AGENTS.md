@@ -399,9 +399,11 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   `crates/oneharness-e2e/tests/app_server.rs`. A server that dies before it
   listens is diagnosed from its stderr, kept in the entry's `server.log` and
   quoted in the dispatch's error. Real Codex binds every `--listen` socket
-  under `/tmp/codex-daemon-<euid>` and exits 1 unless that directory is the
-  user's at mode 0700; the launch tightens one that is ours
-  (`prepare_daemon_dir`), and the mock enforces the same rule. Never point a
+  in one rendezvous directory and exits 1 unless it is the user's at one mode;
+  both are stated once, in `domain::app_server::codex_daemon_dir` /
+  `CODEX_DAEMON_DIR_MODE`, which the launch (`prepare_daemon_dir`, tightening
+  one that is ours) and the mock both read, and `oh_codex_rendezvous_check`
+  holds to real Codex live. Never point a
   test at the host's directory: it is shared by every Codex on the machine,
   and a journey uses `ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR` +
   `CODEX_MOCK_DAEMON_DIR` instead. Anything that outlives its

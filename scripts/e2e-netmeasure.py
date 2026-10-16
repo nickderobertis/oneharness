@@ -65,7 +65,7 @@ import sys
 import tempfile
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple, NewType, Optional
@@ -605,31 +605,44 @@ def defer_stops() -> None:
     signal.pthread_sigmask(signal.SIG_UNBLOCK, stops())
 
 
-# The start record's string fields, as scripts/e2e-netshim.sh writes them;
-# `argv`, a list of strings, completes it.
-START_STRINGS = ("suite", "phase", "harness", "kind", "launch_id")
+@dataclass(frozen=True)
+class StartRecord:
+    """A launch's `start` line, in the fields and order scripts/e2e-netshim.sh
+    writes them."""
 
+    suite: str
+    phase: str
+    harness: str
+    kind: str
+    launch_id: LaunchId
+    argv: tuple[str, ...]
 
-def start_record(text: str, launch_id: str) -> Optional[dict[str, object]]:
-    """`text` as the shim's start record for `launch_id`, or None when it is
-    anything else — the budget step could not place a start of another shape."""
-    try:
-        start = json.loads(text)
-    except ValueError:
-        return None
-    if not isinstance(start, dict) or set(start) != {*START_STRINGS, "argv"}:
-        return None
-    if not all(isinstance(start[key], str) for key in START_STRINGS):
-        return None
-    argv = start["argv"]
-    if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
-        return None
-    if start["launch_id"] != launch_id:
-        return None
-    # In the shim's own field order.
-    record: dict[str, object] = {key: start[key] for key in START_STRINGS}
-    record["argv"] = argv
-    return record
+    @staticmethod
+    def parse(text: str, launch_id: str) -> Optional[StartRecord]:
+        """`text` as the shim's start record for `launch_id`, or None when it is
+        anything else — the budget step could not place a start of another
+        shape."""
+        try:
+            start = json.loads(text)
+        except ValueError:
+            return None
+        names = [field.name for field in fields(StartRecord)]
+        if not isinstance(start, dict) or set(start) != set(names):
+            return None
+        strings = [start[name] for name in names if name != "argv"]
+        argv = start["argv"]
+        if not all(isinstance(value, str) for value in strings):
+            return None
+        if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
+            return None
+        if start["launch_id"] != launch_id:
+            return None
+        suite, phase, harness, kind, _ = strings
+        return StartRecord(suite, phase, harness, kind, LaunchId(launch_id), tuple(argv))
+
+    def line(self) -> str:
+        """The record as one JSONL line, whatever the caller's spelling."""
+        return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":"))
 
 
 def record_start(args: argparse.Namespace) -> Optional[str]:
@@ -879,15 +892,14 @@ def main(argv: list[str]) -> int:
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
     if args.start_line is not None:
-        start = start_record(args.start_line, args.launch_id)
+        start = StartRecord.parse(args.start_line, args.launch_id)
         if start is None:
             parser.error(
                 "--start-line must be the shim's start record: a JSON object of exactly "
-                f"{', '.join(START_STRINGS)} (strings) and argv (a list of strings), "
-                "whose launch_id is --launch-id"
+                "suite, phase, harness, kind and launch_id (strings) and argv (a list of "
+                "strings), whose launch_id is --launch-id"
             )
-        # One line whatever the caller's spelling: the file is JSONL.
-        args.start_line = json.dumps(start, ensure_ascii=False, separators=(",", ":"))
+        args.start_line = start.line()
         if not args.pending:
             parser.error("--start-line needs --pending, the marker made before it")
     defer_stops()

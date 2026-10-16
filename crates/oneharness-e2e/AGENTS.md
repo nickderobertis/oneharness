@@ -40,5 +40,5 @@ Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the buil
   `.config/nextest.toml` ends any journey at 180 s as a `TIMEOUT` naming it,
   identically on every platform. Raise that bound only when the slowest passing
   journey, run instrumented, nears it, and prove a change to it by adding a
-  journey that never ends, running it through `cargo nextest`, and removing it:
+  journey that never ends, running it through `just e2e`, and removing it:
   nothing that hangs on purpose stays in the suite.

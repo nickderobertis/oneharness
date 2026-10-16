@@ -711,7 +711,9 @@ mod platform {
         guard: libc::pid_t,
     }
 
-    /// How often the guard looks at its parent pid.
+    /// How often the guard looks at its parent pid: a probe outlives a killed
+    /// caller by at most this long, while a guard, which lives only as long as
+    /// a seconds-long probe, wakes a negligible 20 times a second.
     const GUARD_POLL_US: libc::suseconds_t = 50_000;
 
     impl Tether {

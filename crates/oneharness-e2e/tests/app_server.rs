@@ -1997,6 +1997,65 @@ fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
     );
 }
 
+/// The stderr an early exit quotes is only what the server legibly said: a
+/// stderr of whitespace alone is reported as nothing said, one that is not
+/// UTF-8 is quoted with each undecodable byte — the character the 2 KiB cut
+/// lands inside included — replaced rather than refused, and a log the launch
+/// could not keep is reported as nothing said rather than failing the report.
+#[test]
+fn an_early_exit_quotes_only_the_stderr_it_can_read() {
+    let pool = Pool::new("pool-early-exit-legible");
+    let early_exit = |id: &str, fault: &str| {
+        let (_, report) = pool.run(pool.command(id, &[], &[("CODEX_MOCK_FAULT", fault)]));
+        let ran = result(&report).clone();
+        assert_eq!(ran["status"], "spawn-error", "{ran}");
+        ran["error"].as_str().unwrap_or_default().to_string()
+    };
+
+    let error = early_exit("blank", "exit-blank");
+    assert!(
+        error.contains("it ended with exit status: 5, and wrote nothing to stderr"),
+        "{error}"
+    );
+
+    let error = early_exit("non-utf8", "exit-non-utf8");
+    let (_, tail) = error
+        .split_once("it ended with exit status: 9, its stderr ending: ")
+        .unwrap_or_else(|| panic!("no exit status and stderr in: {error}"));
+    let cut = format!("\u{2026}\u{fffd}{}", "\u{e9}".repeat(1006));
+    assert!(tail.starts_with(&cut), "{tail}");
+    assert!(
+        tail.ends_with("\u{e9}Error: mock codex: bad byte \u{fffd} here"),
+        "{tail}"
+    );
+
+    // The entry the last launch made keeps its log; a dangling link in its
+    // place is never followed, by the launch or by the report.
+    let entries: Vec<PathBuf> = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join("server.log").exists())
+        .filter(|path| {
+            std::fs::read(path.join("server.log")).is_ok_and(|bytes| bytes.contains(&0xff))
+        })
+        .collect();
+    let [entry] = entries.as_slice() else {
+        panic!("expected one pool entry with the non-UTF-8 log, found {entries:?}");
+    };
+    let log = entry.join("server.log");
+    // llmlint: ignore-block[tests_mirror_real_usage] No oneharness interface puts a link in a pool entry's log's place; an outside actor doing so is the condition, so the journey stages it and asserts through the dispatch's report.
+    std::fs::remove_file(&log).unwrap();
+    std::os::unix::fs::symlink(entry.join("nowhere"), &log).unwrap();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let error = early_exit("unreadable-log", "exit-non-utf8");
+    assert!(
+        error.contains("it ended with exit status: 9, and wrote nothing to stderr"),
+        "{error}"
+    );
+    assert!(!entry.join("nowhere").exists(), "the link was followed");
+}
+
 /// A shared server that exits before it listens fails the dispatch with the
 /// server's own account of why — its exit status and the end of its stderr —
 /// since nobody else reads a detached server's stderr. The log it is read from

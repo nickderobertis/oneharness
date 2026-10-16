@@ -2399,7 +2399,11 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         start-up chatter and then why it cannot start to
 ///                         stderr, and exits 7 before binding;
 ///                         `exit-silently` exits 3 before binding having
-///                         written nothing; `stall-upgrade`
+///                         written nothing; `exit-blank` exits 5 having
+///                         written only whitespace; `exit-non-utf8` exits 9
+///                         having written more than 2 KiB that is not UTF-8,
+///                         whose last 2 KiB start inside a character;
+///                         `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it; `inheritable-connections` hands every
 ///                         command the server's end of the connection that
@@ -2562,6 +2566,23 @@ mod listen_server {
         // CODEX_MOCK_FAULT=exit-silently: exit before binding, saying nothing.
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-silently") {
             std::process::exit(3);
+        }
+        // CODEX_MOCK_FAULT=exit-blank: exit before binding, having written
+        // only whitespace.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-blank") {
+            let _ = std::io::stderr().write_all(b"  \n\t\n   \n");
+            std::process::exit(5);
+        }
+        // CODEX_MOCK_FAULT=exit-non-utf8: exit before binding, having written a
+        // stray byte, 1500 two-byte characters and a 35-byte last line holding
+        // another stray byte — so the last 2 KiB begin on a character's second
+        // byte.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-non-utf8") {
+            let mut said = vec![0xff];
+            said.extend("\u{e9}".repeat(1500).into_bytes());
+            said.extend(b"Error: mock codex: bad byte \xff here\n");
+            let _ = std::io::stderr().write_all(&said);
+            std::process::exit(9);
         }
         // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {

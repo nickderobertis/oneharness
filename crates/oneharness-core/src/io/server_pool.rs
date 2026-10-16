@@ -840,11 +840,11 @@ pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
     }
 }
 
-/// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed; `None` when it is absent,
-/// is not a regular file (never waited on, as a FIFO would be), or holds only
+/// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed, with any bytes that are
+/// not UTF-8 replaced; `None` when it is absent or a link (never followed), is
+/// not a regular file (never waited on, as a FIFO would be), or holds only
 /// whitespace.
 fn stderr_tail(log: &Path) -> Option<String> {
-    // llmlint: ignore[changed_behavior_has_e2e] Every outcome here is one reading of the same bytes: a long log's cut tail and an empty one are driven end to end by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`; an absent or unreadable log takes the empty log's `None` through `?`, and a whitespace-only or non-UTF-8 one differs only in the `trim` and `from_utf8_lossy` calls, which std defines.
     use std::io::{Read, Seek, SeekFrom};
     let mut options = fs::OpenOptions::new();
     options.read(true);

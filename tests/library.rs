@@ -1359,12 +1359,19 @@ fn the_controlled_streaming_entry_points_stream_an_uncontrolled_job() {
     use oneharness_core::io::runner::{
         run_job_streaming_controlled, run_job_streaming_controlled_cancellable, Job, StreamStep,
     };
+    // The caller that stops is answered by TERM, a 100 ms grace and KILL, which
+    // can land while the mock is writing its coverage profile on exit.
+    let redirect = fixture::profile_redirect();
+    let (profile_var, profile_path) = redirect
+        .split_once('=')
+        .expect("the redirect is NAME=VALUE");
     let job = |stdout: &str| Job {
         argv: vec![fixture::mock_bin().display().to_string()],
         cwd: None,
         env: vec![
             ("MOCK_STDOUT".to_string(), stdout.to_string()),
             ("ONEHARNESS_NO_CONFIG".to_string(), "1".to_string()),
+            (profile_var.to_string(), profile_path.to_string()),
         ],
         env_remove: Vec::new(),
         timeout: Duration::from_secs(60),

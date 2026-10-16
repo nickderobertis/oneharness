@@ -1448,6 +1448,34 @@ class Fallback(unittest.TestCase):
         self.assertEqual(start["kind"], "local")
         self.assertEqual(len(measurements(records, start["launch_id"])), 1)
 
+    def test_a_leg_named_unmeasured_on_a_windows_host_runs_the_launch_without_python(
+        self,
+    ) -> None:
+        # scripts/e2e-variants-test.sh names its leg `unmeasured` on every
+        # platform. The name picks the recorder's method, never whether the
+        # host's python3 can run the measurer: Git Bash's cannot fork, so on a
+        # host whose `uname -s` is Windows the shim records the launch itself.
+        # The host is played by doubles: that `uname`, and a python3 that fails
+        # as one that cannot fork does.
+        tmp = scratch(self)
+        host = tmp / "windows-host"
+        host.mkdir()
+        (host / "uname").write_text("#!/usr/bin/env bash\necho MINGW64_NT-10.0-20348\n")
+        (host / "python3").write_text(
+            "#!/usr/bin/env bash\necho 'python3: os.fork is unavailable here' >&2\nexit 1\n"
+        )
+        for double in ("uname", "python3"):
+            (host / double).chmod(0o755)
+        blob = os.urandom(4_096)
+        run = run_shim(
+            tmp,
+            [str(self.echo(tmp))],
+            ["exec", "-"],
+            stdin=blob,
+            env={"OH_E2E_OS": "unmeasured", "PATH": f"{host}{os.pathsep}{os.environ['PATH']}"},
+        )
+        self.assert_unavailable(tmp, run, blob, "this leg is unmeasured")
+
 
 def stops() -> tuple[signal.Signals, ...]:
     """The stops the shim and the measurer defer while the launch starts,

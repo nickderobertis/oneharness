@@ -182,8 +182,10 @@ case "$os" in
     unmeasured=(--unmeasured "$reason")
     ;;
 esac
-# Git Bash's python3 cannot fork, so Windows keeps the fallback below.
-case "$os" in MINGW* | MSYS* | CYGWIN* | Windows*) ;; *)
+# Git Bash's python3 cannot fork, so a Windows host keeps the fallback below —
+# asked of the host itself: OH_E2E_OS names the leg, which a test may set to
+# anything (scripts/e2e-variants-test.sh's is `unmeasured` on every platform).
+case "$(uname -s)" in MINGW* | MSYS* | CYGWIN* | Windows*) ;; *)
   if command -v python3 >/dev/null 2>&1; then
     exec python3 "$here/e2e-netmeasure.py" --line-file "$file" --launch-id "$launch_id" \
       --pending "$pending" --start-line "$start" ${unmeasured[@]+"${unmeasured[@]}"} \

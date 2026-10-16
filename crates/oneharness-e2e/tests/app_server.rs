@@ -4046,6 +4046,7 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The workload and its pooled server run for real; only `ps` is replaced, by a script or by its absence, because a real `ps` cannot be made to fail, list a malformed row or omit a running server on demand. The real listing is read end to end by the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree, which holds it to the OS's own process tree.
 /// Each way the reuse workload's process listing can fail fails the workload
 /// naming it, writing no telemetry: a `ps` it cannot run, one that fails, and
 /// one listing a row it cannot read, a row of the wrong shape, a pid or an
@@ -4077,8 +4078,8 @@ fn the_reuse_workload_names_each_process_listing_failure() {
         ),
         (
             "rss-range",
-            "echo '12 1 99999999999999999999'",
-            "`ps` listed an unreadable row",
+            "echo '12 1 18014398509481984'",
+            "`ps` listed an rss out of range: \"12 1 18014398509481984\"",
         ),
         ("serverless", "echo '1 0 10'", ") is not running"),
     ];
@@ -4143,6 +4144,8 @@ fn the_reuse_workload_names_each_process_listing_failure() {
         assert!(!wrote, "{case}: telemetry was written");
     }
 }
+
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A server whose `thread/loaded/list` pages never end — each naming a cursor
 /// already answered — fails the reuse workload at once, naming the repeated

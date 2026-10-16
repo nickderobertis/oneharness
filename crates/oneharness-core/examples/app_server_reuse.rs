@@ -154,7 +154,11 @@ fn reading(pid: u32) -> Result<Value, String> {
         return Err(format!("the server (pid {pid}) is not running"));
     }
     let pids = descendants(pid, &parents);
-    let bytes = pids.iter().filter_map(|pid| sizes.get(pid)).sum::<u64>();
+    let bytes = pids
+        .iter()
+        .filter_map(|pid| sizes.get(pid))
+        .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
+        .ok_or_else(|| format!("the server tree's rss over pids {pids:?} is out of range"))?;
     Ok(json!({"rss_bytes": bytes, "pids": pids}))
 }
 

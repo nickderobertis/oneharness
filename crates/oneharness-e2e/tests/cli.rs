@@ -28243,6 +28243,74 @@ fn interrupt_refuses_a_redirection_that_is_not_a_message() {
     }
 }
 
+/// Whatever listens on a session's control socket and answers no control
+/// response is no run: `interrupt` delivers its request, then reports
+/// `not_running` (exit 1) naming what came back — a listener that hangs up
+/// without a word, one whose answer runs past the run's own 64 KiB frame
+/// bound, and one whose answer is not a control response.
+#[cfg(unix)]
+#[test]
+fn interrupt_names_a_listener_that_answers_no_control_response() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+    let oversized = format!("{}\n", "x".repeat(64 * 1024 + 16));
+    for (case, answer, said) in [
+        (
+            "hangup",
+            None,
+            "the run closed the control connection without answering",
+        ),
+        (
+            "oversized",
+            Some(oversized),
+            "the control answer is longer than 65536 bytes",
+        ),
+        (
+            "unreadable",
+            Some("not a control response\n".to_string()),
+            "the run sent an unreadable control response",
+        ),
+    ] {
+        let store = control_store_dir(&format!("listener-{case}"));
+        let socket = oneharness_core::domain::control::socket_path(&store, "peer")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        let peer = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(&stream).read_line(&mut request).unwrap();
+            if let Some(answer) = answer {
+                // The client stops reading at its bound and hangs up, which
+                // can refuse the rest of an oversized answer.
+                let _ = (&stream).write_all(answer.as_bytes());
+            }
+            request
+        });
+        let output = run(
+            &[
+                "interrupt",
+                "--session",
+                "peer",
+                "--session-dir",
+                &store.display().to_string(),
+                "--compact",
+            ],
+            &[],
+        );
+        let request: Value = serde_json::from_str(&peer.join().unwrap()).unwrap();
+        assert_eq!(request["verb"], "interrupt", "{case}: {request}");
+        assert_eq!(output.status.code(), Some(1), "{case}: {output:?}");
+        let frame = json_stdout(&output);
+        assert_eq!(frame["ok"], false, "{case}: {frame}");
+        assert_eq!(frame["reason"], "not_running", "{case}: {frame}");
+        assert!(
+            frame["error"].as_str().unwrap_or_default().contains(said),
+            "{case}: no `{said}` in {frame}"
+        );
+    }
+}
+
 #[cfg(unix)]
 #[test]
 fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {

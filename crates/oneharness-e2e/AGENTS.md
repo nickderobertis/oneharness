@@ -42,3 +42,9 @@ Subtree rules for the binary e2e journeys (`tests/cli.rs`), which drive the buil
   journey, run instrumented, nears it;
   `scripts/app-server-hang-bound-test.sh` (Linux, in this crate's `test`)
   proves it ends a hung journey and leaves none of its processes running.
+- **Gate a journey off macOS only for a facility macOS lacks, and name it.**
+  The Rust coverage floor is measured on macOS too, from one run; a journey
+  gated to Linux takes every line only it reaches out of that measurement. Here
+  that facility is `/proc` (a workload that runs to its end reads the server's
+  memory from it); its failure paths and `PooledSession` itself run everywhere
+  (`a_library_pooled_session_*`).

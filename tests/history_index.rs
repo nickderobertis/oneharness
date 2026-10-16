@@ -9,9 +9,9 @@
 //!   reading blocks and the bounded run fails on its deadline;
 //! - a file it has no business opening is mode `000` (when not root), so the
 //!   open fails loudly;
-//! - on Linux, a child's `rchar` (bytes read) and peak RSS are read after it
-//!   exits, and a store grown tenfold — sparse files, so the size costs no disk —
-//!   must not move them.
+//! - on Linux and macOS, a child's peak RSS (and, where the kernel counts it,
+//!   its `rchar` — bytes read) is read after it exits, and a store grown
+//!   tenfold — sparse files, so the size costs no disk — must not move them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -342,7 +342,7 @@ fn set_mode(path: &Path, mode: u32) {
 
 /// A sparse file: one real line, then `size` bytes of hole — a full read of it
 /// is `size` bytes of `rchar` and of heap, at no disk cost.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn sparse(path: &Path, first_line: &str, size: u64) {
     std::fs::write(path, format!("{first_line}\n")).unwrap();
     std::fs::OpenOptions::new()
@@ -437,7 +437,7 @@ fn the_contract_documents_exactly_the_fields_each_entry_serializes() {
 /// (mode `000`, sparse), one FIFO session file in the run's own project, and
 /// today's segments already long (sparse) — which the writer appends to after
 /// reading one byte.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 struct CrowdedStore {
     _scratch: ScratchDir,
     store: PathBuf,
@@ -445,7 +445,7 @@ struct CrowdedStore {
     untouchable: Vec<PathBuf>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl CrowdedStore {
     fn new(tag: &str, sessions: u64) -> CrowdedStore {
         let scratch = ScratchDir::new(&format!("hindex-crowd-{tag}")).unwrap();
@@ -511,7 +511,7 @@ impl CrowdedStore {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl Drop for CrowdedStore {
     fn drop(&mut self) {
         // Mode 000 files are the scratch guard's to remove, which needs the
@@ -523,12 +523,12 @@ impl Drop for CrowdedStore {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 trait WriteNewline {
     fn write_all_newline(self);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 impl WriteNewline for std::fs::File {
     fn write_all_newline(mut self) {
         use std::io::Write;
@@ -536,7 +536,7 @@ impl WriteNewline for std::fs::File {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod measured {
     //! A command's bytes read and peak RSS, measured by a small helper process
     //! (this test binary, re-entered as `measure_helper`) that spawns it,
@@ -548,10 +548,13 @@ mod measured {
     //! size. The helper is small and single-purpose, so its children's figures
     //! are theirs, and a reaped child's I/O is folded into the helper's own.
     //!
-    //! A kernel built without per-task I/O accounting (WSL2's) has no
-    //! `/proc/self/io`: there the bytes read are [`BytesRead`]'s `Err`, naming
-    //! why, and each assertion on them is skipped aloud through [`bytes_read`]
-    //! while every other figure is still measured.
+    //! A kernel built without per-task I/O accounting (WSL2's), or with no
+    //! `/proc` at all (macOS's), has no `/proc/self/io`: there the bytes read
+    //! are [`BytesRead`]'s `Err`, naming why, and each assertion on them is
+    //! skipped aloud through [`bytes_read`] while every other figure is still
+    //! measured. The resident sizes are kernel figures on both: Linux's
+    //! `VmRSS` and KiB `ru_maxrss`, macOS's `proc_pidinfo` task info and byte
+    //! `ru_maxrss` — each reported here in KiB.
     use super::*;
     use serde::{Deserialize, Serialize};
 
@@ -648,6 +651,7 @@ mod measured {
     /// The child's resident size, adding the bytes this read took to
     /// `own_reads`: the helper's own `rchar` carries every one of them, and how
     /// many there are depends only on how long the child lived.
+    #[cfg(target_os = "linux")]
     fn vm_rss_kib(pid: u32, own_reads: &mut u64) -> Option<u64> {
         let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
         *own_reads += status.len() as u64;
@@ -655,6 +659,35 @@ mod measured {
             .lines()
             .find_map(|line| line.strip_prefix("VmRSS:"))
             .and_then(|rest| rest.trim().trim_end_matches("kB").trim().parse().ok())
+    }
+
+    /// The child's resident size, from the kernel's task info: a call, not a
+    /// file read, so `own_reads` has nothing to count.
+    #[cfg(target_os = "macos")]
+    fn vm_rss_kib(pid: u32, _own_reads: &mut u64) -> Option<u64> {
+        // SAFETY: a zeroed proc_taskinfo is a valid out-parameter.
+        let mut info: libc::proc_taskinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of::<libc::proc_taskinfo>() as libc::c_int;
+        // SAFETY: `info` is a live local of exactly `size` bytes.
+        let filled = unsafe {
+            libc::proc_pidinfo(
+                pid as libc::c_int,
+                libc::PROC_PIDTASKINFO,
+                0,
+                std::ptr::addr_of_mut!(info).cast(),
+                size,
+            )
+        };
+        (filled == size).then_some(info.pti_resident_size / 1024)
+    }
+
+    /// `ru_maxrss` in KiB: Linux reports it in KiB, macOS in bytes.
+    fn max_rss_kib(usage: &libc::rusage) -> i64 {
+        if cfg!(target_os = "macos") {
+            usage.ru_maxrss / 1024
+        } else {
+            usage.ru_maxrss
+        }
     }
 
     /// The helper's half: run the request and report on it.
@@ -739,7 +772,7 @@ mod measured {
                     .saturating_sub(before)
                     .saturating_sub(own_reads))
             }),
-            max_rss_kib: usage.ru_maxrss,
+            max_rss_kib: max_rss_kib(&usage),
             sampled_rss_kib,
             series,
             timed_out,
@@ -827,7 +860,7 @@ mod measured {
 }
 
 /// The helper half of [`measured::measure`]: run only as its child.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 #[ignore = "the measuring helper measured::measure re-enters this binary as"]
 fn measure_helper() {
@@ -853,7 +886,7 @@ fn measure_helper() {
 /// What a tenfold store must not move in a run that should never read it:
 /// its bytes read (where the kernel counts them) and its peak RSS. Returns the
 /// note it printed when the bytes read could not be counted.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn assert_unmoved_by_store(
     label: &str,
     small: &measured::Measured,
@@ -903,7 +936,7 @@ fn rss_ballast_child() {
 
 /// A measured command: this test binary holding `ballast_mib` MiB, after
 /// writing `rchar_after` into the stand-in accounting file if one is given.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn stand_in_command(ballast_mib: usize, rchar_after: Option<(&Path, u64)>) -> Command {
     // Every value reaches the script as a positional argument, never as source.
     let (accounting, rchar) = rchar_after.map_or((PathBuf::new(), 0), |(path, rchar)| {
@@ -924,7 +957,7 @@ fn stand_in_command(ballast_mib: usize, rchar_after: Option<(&Path, u64)>) -> Co
 }
 
 /// A stand-in `/proc/self/io` reporting `rchar` bytes read so far.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn stand_in_accounting(scratch: &ScratchDir, name: &str, rchar: u64) -> PathBuf {
     let path = scratch.join(name);
     std::fs::write(&path, format!("rchar: {rchar}\nwchar: 0\n")).unwrap();
@@ -932,7 +965,7 @@ fn stand_in_accounting(scratch: &ScratchDir, name: &str, rchar: u64) -> PathBuf 
 }
 
 /// The panic message of `check`, which must panic.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn panic_of(check: impl FnOnce() + std::panic::UnwindSafe) -> String {
     let payload = std::panic::catch_unwind(check).expect_err("the assertion must fail");
     payload
@@ -942,7 +975,7 @@ fn panic_of(check: impl FnOnce() + std::panic::UnwindSafe) -> String {
         .unwrap()
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn where_the_kernel_counts_bytes_read_a_run_that_read_more_fails_the_bound() {
     let scratch = ScratchDir::new("hindex-accounting-counted").unwrap();
@@ -976,7 +1009,7 @@ fn where_the_kernel_counts_bytes_read_a_run_that_read_more_fails_the_bound() {
     assert_eq!(assert_unmoved_by_store("stand-in", &small, &small), None);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn without_io_accounting_only_the_bytes_read_bound_is_skipped_and_said() {
     let scratch = ScratchDir::new("hindex-accounting-absent").unwrap();
@@ -1009,7 +1042,7 @@ fn without_io_accounting_only_the_bytes_read_bound_is_skipped_and_said() {
 
 /// How a recording run is started: the CLI buffered, the CLI streaming, and an
 /// in-process library run through `io::run` (this test binary, re-entered).
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Copy, Debug)]
 enum Recorder {
     Cli,
@@ -1017,7 +1050,7 @@ enum Recorder {
     Library,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn recording_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
     let store = crowd.store.display().to_string();
     let project = crowd.project.display().to_string();
@@ -1136,7 +1169,7 @@ fn library_recording_child() {
 
 /// The history file a recording's stdout names: the buffered report, the
 /// streamed terminal envelope, or the library child's printed report.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn recorded_history_file(stdout: &[u8]) -> PathBuf {
     let text = String::from_utf8_lossy(stdout);
     if let Ok(report) = serde_json::from_str::<Value>(&text) {
@@ -1161,7 +1194,7 @@ fn recorded_history_file(stdout: &[u8]) -> PathBuf {
     PathBuf::from(report["history_file"].as_str().unwrap())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn recording_reads_nothing_but_its_own_files_however_large_the_store() {
     for recorder in [Recorder::Cli, Recorder::CliStreaming, Recorder::Library] {
@@ -1219,7 +1252,7 @@ fn recording_reads_nothing_but_its_own_files_however_large_the_store() {
 /// How many tool events the long-lived recording streams, and the gap between
 /// the lines that carry them: a turn of about four seconds (two lines per call)
 /// that appends to the event segment the whole time.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const LONG_TURN_EVENTS: usize = 80;
 const LONG_TURN_EVENT_GAP_MS: u64 = 25;
 
@@ -1243,7 +1276,7 @@ fn long_turn_stdout(events: usize) -> String {
 }
 
 /// A long-lived streaming recording through the CLI or `io::run`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn long_lived_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
     let mut command = match recorder {
         Recorder::CliStreaming => {
@@ -1271,7 +1304,7 @@ fn long_lived_command(recorder: Recorder, crowd: &CrowdedStore) -> Command {
 /// times larger on the larger store, so it shows in every phase after it.
 /// Memory the run spends on its own events is the same on both stores, and
 /// this test does not ask it to be absent.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_long_lived_recording_run_holds_no_index_at_any_point_of_its_life() {
     for recorder in [Recorder::CliStreaming, Recorder::Library] {
@@ -2589,7 +2622,7 @@ fn a_legacy_entry_pointing_into_the_index_directory_is_refused_by_path() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn an_all_time_lookup_streams_the_legacy_index_in_bounded_memory() {
     let mut peaks = Vec::new();
@@ -2745,7 +2778,7 @@ fn reindex_indexes_copied_in_sessions_appending_only_what_each_segment_lacks() {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn reindex_memory_does_not_grow_with_the_session_files_it_reads() {
     let mut peaks = Vec::new();
@@ -2821,7 +2854,7 @@ fn reindex_memory_does_not_grow_with_the_session_files_it_reads() {
     );
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn reindex_memory_does_not_grow_with_the_sessions_one_utc_day_holds() {
     const EVENTS: usize = 10;

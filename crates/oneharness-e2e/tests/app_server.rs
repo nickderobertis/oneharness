@@ -166,7 +166,6 @@ impl Pool {
         }
     }
 
-    #[cfg(target_os = "linux")]
     fn with_bin(mut self, bin: PathBuf) -> Self {
         self.bin = Some(bin);
         self
@@ -1097,7 +1096,6 @@ fn a_sigkilled_pooled_dispatch_is_stopped_and_released_when_it_was_the_only_one(
 /// pool's sweeper, so its death is found and its commands stopped with no other
 /// dispatch alive. On Linux the running image's path then reads
 /// `… (deleted)`, which names no file to start the sweeper from.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_sigkilled_pooled_dispatch_is_stopped_after_its_executable_was_replaced() {
     use std::os::unix::fs::PermissionsExt;
@@ -1963,7 +1961,6 @@ fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
 
 /// A server that refuses `initialize` fails a pooled session's open naming the
 /// refusal — here through the reuse workload, which opens its leases that way.
-#[cfg(target_os = "linux")]
 #[test]
 fn a_refused_initialize_fails_the_pooled_session_naming_it() {
     let pool = Pool::new("pool-refused-init");
@@ -2046,6 +2043,317 @@ fn without_a_hosted_sweeper_a_lingering_server_is_reclaimed_by_the_next_pool_ope
         !alive(second_pid)
     });
     assert!(!entry.join("server.json").exists());
+}
+
+/// This journey's process as a library caller of the shared pool: its pool
+/// root, Codex home, mock records and linger, set in the environment that
+/// `PooledSession` reads (each nextest test is its own process, so it is this
+/// journey's alone), and the mock's `app-server` launch.
+fn as_library_caller(pool: &Pool) -> Vec<String> {
+    std::env::set_var("XDG_STATE_HOME", pool.path("state"));
+    std::env::set_var("CODEX_HOME", pool.path("codex-home"));
+    std::env::set_var("CODEX_MOCK_DIR", pool.path("mock"));
+    std::env::set_var(
+        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+        LINGER_MS.to_string(),
+    );
+    vec![mock_bin().display().to_string(), "app-server".to_string()]
+}
+
+/// Stop the servers a library caller's released sessions left lingering: it
+/// hosts no sweeper, so the next pool operation is what reclaims them — here,
+/// a sweep once their linger has passed.
+fn reclaim_lingering_servers() {
+    use oneharness_core::io::server_pool;
+    std::thread::sleep(Duration::from_millis(LINGER_MS + 200));
+    let root = server_pool::resolve_root(None).unwrap();
+    server_pool::sweep(&root, Duration::from_millis(LINGER_MS)).unwrap();
+}
+
+/// A library caller's pooled session — oneharness-core's `PooledSession`, the
+/// lease the reuse workload takes — runs a thread's whole life on the shared
+/// server: it opens the thread, runs a shell turn on it, reopens it, finds it
+/// loaded across every page of the listing, and once the session is released
+/// the server has let it go. A session with no thread yet has no shell turn
+/// to run.
+#[test]
+fn a_library_pooled_session_runs_a_thread_through_its_whole_life() {
+    use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
+    use oneharness_core::io::server_pool::ThreadId;
+    let pool = Pool::new("pool-session-life");
+    let argv = as_library_caller(&pool);
+    let cwd = pool.worktree("work");
+    // Pages of one: the listing pages through every loaded thread.
+    let env = [("CODEX_MOCK_LOADED_PAGE".to_string(), "1".to_string())];
+    let plan = || PooledDispatch::plan(&argv, &env, &[], &cwd, false).unwrap();
+
+    let mut keeper = PooledSession::open(plan()).unwrap();
+    keeper.open_thread(&cwd, None).unwrap();
+    let mut session = PooledSession::open(plan()).unwrap();
+    assert_eq!(
+        session.record().pid,
+        keeper.record().pid,
+        "the two sessions leased two servers"
+    );
+    assert_eq!(session.entry(), keeper.entry());
+    assert_eq!(
+        session.shell_turn("true").unwrap_err(),
+        "the session has no thread to run a shell turn on"
+    );
+    let started = session.open_thread(&cwd, None).unwrap();
+    let thread = started
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+        .and_then(ThreadId::new)
+        .unwrap_or_else(|| panic!("thread/start named no thread: {started}"));
+    session.shell_turn("true").unwrap();
+    let resumed = session.open_thread(&cwd, Some(&thread)).unwrap();
+    assert_eq!(
+        resumed["result"]["thread"]["id"],
+        thread.as_str(),
+        "{resumed}"
+    );
+    let loaded = session
+        .loaded_threads(Instant::now() + Duration::from_secs(10))
+        .unwrap();
+    assert_eq!(loaded.len(), 2, "both sessions' threads, over two pages");
+    assert!(loaded.contains(&thread), "{loaded:?}");
+    let server = session.record().pid.get();
+    session.release();
+
+    // The mock records a release after answering it.
+    wait_for(
+        "the server to record the session's thread unsubscribed",
+        Duration::from_secs(10),
+        || {
+            pool.state(server)["releases"]
+                .as_array()
+                .is_some_and(|releases| {
+                    releases.iter().any(|release| {
+                        release["thread"] == thread.as_str() && release["status"] == "unsubscribed"
+                    })
+                })
+        },
+    );
+    let still = keeper
+        .loaded_threads(Instant::now() + Duration::from_secs(10))
+        .unwrap();
+    assert!(
+        !still.contains(&thread),
+        "the server still holds the released thread: {still:?}"
+    );
+    assert_eq!(still.len(), 1, "the keeper's own thread is still loaded");
+    keeper.release();
+    reclaim_lingering_servers();
+    assert!(!alive(server), "the swept server is still running");
+}
+
+/// Each way the shared server can fail a library caller's pooled session —
+/// in its `initialize`, its thread's open, a shell turn or the loaded-thread
+/// listing — fails the call that met it, naming what the server did; a shell
+/// turn that completes before its reply still completes. Each case runs on a
+/// server of its own (the fault is in its launch environment, so in its pool
+/// key), side by side, two of them waiting out a 30 s bound.
+#[test]
+fn a_library_pooled_session_names_each_way_the_server_fails_it() {
+    use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
+    let pool = Pool::new("pool-session-faults");
+    let argv = as_library_caller(&pool);
+    let cwd = pool.worktree("work");
+    let session = move |fault: &str, listing: Duration| -> Option<String> {
+        let env = [("CODEX_MOCK_FAULT".to_string(), fault.to_string())];
+        let plan = PooledDispatch::plan(&argv, &env, &[], &cwd, false).unwrap();
+        let mut session = match PooledSession::open(plan) {
+            Ok(session) => session,
+            Err(err) => return Some(err),
+        };
+        let failed = session
+            .open_thread(&cwd, None)
+            .and_then(|_| session.shell_turn("true"))
+            .and_then(|()| session.loaded_threads(Instant::now() + listing))
+            .err();
+        session.release();
+        failed
+    };
+    let cases: [(&str, Option<&str>); 15] = [
+        (
+            "refuse-initialize",
+            Some("the app-server's initialize failed: it refused initialize: "),
+        ),
+        ("refuse-thread-start", Some("thread/start was refused: ")),
+        (
+            "thread-start-no-thread",
+            Some("thread/start named no thread: "),
+        ),
+        (
+            "thread-start-bad-id",
+            Some("thread/start named an unusable thread id \"\""),
+        ),
+        (
+            "refuse-shell",
+            Some("the app-server's thread/shellCommand failed: it refused thread/shellCommand: "),
+        ),
+        (
+            "silent-shell",
+            Some("the app-server did not answer thread/shellCommand"),
+        ),
+        (
+            "shell-no-completion",
+            Some("the shell turn did not complete within 30s"),
+        ),
+        (
+            "shell-hangup",
+            Some("thread/shellCommand: the shared codex app-server closed the connection"),
+        ),
+        (
+            "fail-shell",
+            Some("the shell turn ended failed, not completed"),
+        ),
+        ("shell-completes-first", None),
+        ("refuse-loaded", Some("thread/loaded/list was refused: ")),
+        (
+            "loaded-bad-id",
+            Some("thread/loaded/list named a thread 7 that is no id"),
+        ),
+        (
+            "loaded-cursor-number",
+            Some("thread/loaded/list answered a cursor 2 that is no string"),
+        ),
+        (
+            "loaded-cycle",
+            Some("thread/loaded/list answered the cursor \"0\" a second time"),
+        ),
+        // Stopped before a page's request or after its answer, as the clock
+        // falls; both name the deadline.
+        ("loaded-endless", Some("thread/loaded/list ")),
+    ];
+    let session = std::sync::Arc::new(session);
+    let runs: Vec<_> = cases
+        .into_iter()
+        .map(|(fault, said)| {
+            let session = std::sync::Arc::clone(&session);
+            let listing = if fault == "loaded-endless" {
+                Duration::from_millis(500)
+            } else {
+                Duration::from_secs(10)
+            };
+            std::thread::spawn(move || (fault, said, session(fault, listing)))
+        })
+        .collect();
+    for run in runs {
+        let (fault, said, failed) = run.join().unwrap();
+        match (said, failed) {
+            (None, None) => {}
+            (Some(said), Some(failed)) => {
+                assert!(failed.contains(said), "{fault}: no `{said}` in: {failed}");
+                if fault == "loaded-endless" {
+                    assert!(
+                        failed.contains("deadline"),
+                        "{fault}: the deadline went unnamed: {failed}"
+                    );
+                }
+            }
+            (said, failed) => panic!("{fault}: expected {said:?}, the session met {failed:?}"),
+        }
+    }
+    reclaim_lingering_servers();
+}
+
+/// Whether this process's child `pid` has exited, leaving it unreaped for
+/// whoever owns its handle.
+fn exited_unreaped(pid: u32) -> bool {
+    // SAFETY: a zeroed siginfo_t is a valid out-parameter for waitid.
+    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+    // SAFETY: plain integers and a live out-parameter; WNOWAIT reaps nothing.
+    let waited = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOWAIT | libc::WNOHANG,
+        )
+    };
+    // SAFETY: si_pid is valid to read once waitid filled the struct.
+    waited == 0 && unsafe { info.si_pid() } == pid as libc::pid_t
+}
+
+/// A shared server that dies under a library caller's live session is found
+/// dead by the next session's lease, which stops the commands the dead
+/// server ran for the live session — and not one another server runs for
+/// another dispatch — before it starts a fresh server.
+#[test]
+fn a_library_pooled_session_s_commands_are_stopped_when_its_server_is_found_dead() {
+    use oneharness_core::io::app_server::{PooledDispatch, PooledSession};
+    let pool = Pool::new("pool-session-dead-server");
+    let argv = as_library_caller(&pool);
+    let cwd = pool.worktree("work");
+    let plan =
+        |env: &[(String, String)]| PooledDispatch::plan(&argv, env, &[], &cwd, false).unwrap();
+    // A command the server runs for the session's thread that outlives the
+    // shell turn starting it, as a backgrounded one does; its pid lands in
+    // `pid_file`.
+    let run_in_background = |session: &mut PooledSession, pid_file: &str| -> u32 {
+        session.open_thread(&cwd, None).unwrap();
+        session
+            .shell_turn(&format!(
+                "sleep 60 >/dev/null 2>&1 & echo $! > '{pid_file}'"
+            ))
+            .unwrap();
+        let mut pid = None;
+        wait_for("the command to start", Duration::from_secs(10), || {
+            pid = std::fs::read_to_string(pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok());
+            pid.is_some()
+        });
+        pid.unwrap()
+    };
+
+    let mut keeper = PooledSession::open(plan(&[])).unwrap();
+    let orphaned = run_in_background(&mut keeper, &pool.file("orphaned.pid"));
+    // A CODEX_ variable keys the other dispatch to a server of its own.
+    let mut neighbour =
+        PooledSession::open(plan(&[("CODEX_OH_NEIGHBOUR".into(), "1".into())])).unwrap();
+    let dead = keeper.record().pid.get();
+    assert_ne!(
+        neighbour.record().pid.get(),
+        dead,
+        "the neighbour shares the server"
+    );
+    let neighbouring = run_in_background(&mut neighbour, &pool.file("neighbour.pid"));
+    sigkill(dead);
+    wait_for("the server to exit", Duration::from_secs(10), || {
+        exited_unreaped(dead)
+    });
+    assert!(alive(orphaned), "the command died with its server");
+
+    let session = PooledSession::open(plan(&[])).unwrap();
+    assert_ne!(
+        session.record().pid.get(),
+        dead,
+        "the dead server was leased again"
+    );
+    wait_for(
+        "the dead server's command for the live session to stop",
+        DEAD_LEASE_STOP_DEADLINE + Duration::from_secs(5),
+        || !alive(orphaned),
+    );
+    assert!(
+        alive(neighbouring),
+        "another dispatch's command was stopped"
+    );
+    keeper.release();
+    let servers = [session.record().pid.get(), neighbour.record().pid.get()];
+    session.release();
+    neighbour.release();
+    assert!(
+        !alive(neighbouring),
+        "a released session's command still runs"
+    );
+    reclaim_lingering_servers();
+    for server in servers {
+        assert!(!alive(server), "the swept server {server} is still running");
+    }
 }
 
 /// Frames for a dispatch's thread that arrive before the reply naming the
@@ -2242,7 +2550,10 @@ fn a_shared_server_holds_none_of_its_starting_dispatch_s_output_open() {
 }
 
 /// A shell turn that completes before the server replies to the request that
-/// ran it still completes: the reuse workload runs to its end.
+/// ran it still completes: the reuse workload runs to its end. Linux only: a
+/// workload that runs to its end reads the server's memory from `/proc`
+/// (`a_library_pooled_session_names_each_way_the_server_fails_it` runs the
+/// same turn everywhere).
 #[cfg(target_os = "linux")]
 #[test]
 fn a_shell_turn_completed_before_its_reply_still_completes() {
@@ -2277,7 +2588,6 @@ fn a_shell_turn_completed_before_its_reply_still_completes() {
 /// never-completing, failed or hung-up shell turn; and a refused listing, one
 /// naming a thread that is no id, or a cursor that is no string. The cases run
 /// side by side, two of them waiting out a 30 s bound.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_names_each_shell_turn_and_listing_failure() {
     let cases = [
@@ -3208,8 +3518,7 @@ fn a_dispatch_without_a_startup_fetch_setting_gets_a_server_of_its_own() {
     }
 }
 
-/// The repository root, for the Linux-only journeys that run its scripts.
-#[cfg(target_os = "linux")]
+/// The repository root, for the journeys that run its scripts.
 fn repo_root() -> PathBuf {
     std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).unwrap()
 }
@@ -3616,7 +3925,6 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
 /// A server whose `thread/loaded/list` pages never end — each naming a cursor
 /// already answered — fails the reuse workload at once, naming the repeated
 /// cursor, rather than paging until the listing's deadline.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
     let pool = Pool::new("pool-reuse-cycle");
@@ -3658,8 +3966,9 @@ fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
 
 /// The live tools refuse a bad setting before they run anything, exiting 2
 /// and naming the setting, its value and the fix: the reuse workload's settle
-/// bound and lease count, and the sharing measurement's socket bound.
-#[cfg(target_os = "linux")]
+/// bound and lease count, and the sharing measurement's socket bound — on
+/// Linux alone, since the measurement refuses to start without `/proc` before
+/// it reads a setting.
 #[test]
 fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
     let pool = Pool::new("pool-live-settings");
@@ -3699,7 +4008,10 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
             "slow",
             "OH_MEASURE_SOCKET_TIMEOUT is 'slow'",
         ),
-    ] {
+    ]
+    .into_iter()
+    .filter(|(script, ..)| cfg!(target_os = "linux") || *script != &measure)
+    {
         let output = Command::new("bash")
             .arg(script)
             .env("OH_REUSE_CODEX", mock_bin())
@@ -3720,13 +4032,12 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
 }
 
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
-/// Linux-only, as its journeys are: the reuse phase reads `/proc`.
-#[cfg(target_os = "linux")]
+/// The suite runs its reuse phase on Linux alone (its memory reading is
+/// `/proc`'s) and says it skipped it elsewhere.
 struct ControlSuite {
     pool: Pool,
 }
 
-#[cfg(target_os = "linux")]
 impl ControlSuite {
     fn new(tag: &str) -> Self {
         let pool = Pool::new(tag);
@@ -3780,7 +4091,6 @@ impl ControlSuite {
 /// A server whose `thread/loaded/list` keeps naming fresh cursors fails the
 /// reuse workload once its listing runs past the settle bound (and its grace),
 /// naming that, instead of paging forever.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
     let pool = Pool::new("pool-reuse-endless");
@@ -3822,7 +4132,6 @@ fn the_reuse_workload_refuses_a_loaded_list_still_paging_at_its_deadline() {
 
 /// scripts/e2e-control.sh's pooled-kill bound restates the pool's own sweep
 /// interval and stop deadline, and is held to them here.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_control_suite_s_kill_bound_is_the_pool_s_own_deadlines() {
     let script = std::fs::read_to_string(repo_root().join("scripts/e2e-control.sh")).unwrap();
@@ -3847,7 +4156,6 @@ fn the_control_suite_s_kill_bound_is_the_pool_s_own_deadlines() {
 /// assertion, when the mock leaks one dispatch's value into the other's
 /// command or into a rollout, runs the two on two servers, or leaves the
 /// heartbeat running.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     let suite = ControlSuite::new("pool-suite");

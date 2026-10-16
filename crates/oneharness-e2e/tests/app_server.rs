@@ -2048,6 +2048,57 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(&log).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
+
+    // A server that says nothing is reported as having said nothing.
+    let (_, report) =
+        pool.run(pool.command("silent-exit", &[], &[("CODEX_MOCK_FAULT", "exit-silently")]));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("it ended with exit status: 3, and wrote nothing to stderr"),
+        "{error}"
+    );
+
+    // A log that cannot be opened costs only the reason, never the launch:
+    // the server starts with its stderr discarded and the turn completes. The
+    // fault is part of the pool key, so a serving launch has its own entry,
+    // made by a first turn whose server is let go before its log is replaced.
+    let entries = || -> Vec<PathBuf> {
+        std::fs::read_dir(pool.path("state/oneharness/servers"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect()
+    };
+    let before = entries();
+    let (out, report) = pool.run(pool.command("serving", &[], &[]));
+    succeeded(&out, &report);
+    let first = reported_server(&report);
+    let made: Vec<PathBuf> = entries()
+        .into_iter()
+        .filter(|path| !before.contains(path))
+        .collect();
+    let [serving] = made.as_slice() else {
+        panic!("expected one new pool entry, found {made:?}");
+    };
+    wait_for(
+        "the serving turn's server to stop after its linger",
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 2 + Duration::from_secs(5),
+        || !alive(first),
+    );
+    let log = serving.join("server.log");
+    std::fs::remove_file(&log).unwrap();
+    std::fs::create_dir(&log).unwrap();
+    let (out, report) = pool.run(pool.command("no-log", &[], &[]));
+    succeeded(&out, &report);
+    assert_ne!(
+        reported_server(&report),
+        first,
+        "the stopped server served again"
+    );
+    assert!(log.is_dir(), "{}", log.display());
 }
 
 /// Codex refuses to start when its socket rendezvous directory is not this

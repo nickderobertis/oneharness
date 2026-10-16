@@ -813,6 +813,7 @@ fn open_server_log(entry: &Path) -> io::Result<fs::File> {
 #[must_use]
 pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
     let status = exit_status(record.pid).map_or_else(
+        // llmlint: ignore[changed_behavior_has_e2e] An unknown status needs a server another dispatch started to die after that dispatch connected and before this one's first dial, a window no journey can place a death inside; the silent and long-stderr halves beside it are proven by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`.
         || "its exit status is unknown here, since another process started it".to_string(),
         |status| format!("it ended with {status}"),
     );
@@ -863,6 +864,7 @@ fn identify_spawned(
     }
     if let Ok(Some(status)) = child.try_wait() {
         remember_exit(pid.get(), status);
+        // llmlint: ignore[invalid_states_unrepresentable] The identity is written to server.json, which every oneharness release sharing the pool reads; a value no kernel reading can spell makes each of them, releases before this one included, read the record as a server not running, where a new state would change a record shape they cannot parse.
         return Ok(ProcessIdentity(EXITED_UNIDENTIFIED.to_string()));
     }
     remember_spawned(child);

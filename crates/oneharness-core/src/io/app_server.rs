@@ -462,6 +462,7 @@ fn prepare_daemon_dir() {
         };
         // SAFETY: as above.
         let ours = meta.uid() == unsafe { libc::geteuid() };
+        // llmlint: ignore[changed_behavior_has_e2e] A directory another user owns, or a chmod refused on one this user owns, needs a second account or root to stage; unprivileged journeys prove the owned-and-loose repair and the not-a-directory refusal (`a_shared_server_starts_once_its_loose_socket_directory_is_made_private`), and either case left alone reaches the caller as Codex's own refusal through the early-exit report.
         if meta.is_dir() && ours && meta.mode() & 0o777 != 0o700 {
             if let Err(err) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
             {

@@ -1294,6 +1294,38 @@ mod tests {
     use crate::domain::control::ServerTransport;
     use crate::io::scratch::ScratchDir;
 
+    /// A long-lived supervisor reaps servers without end, so only the newest
+    /// [`EXITED_KEPT`] statuses are kept: an older one reads as unknown, the
+    /// early-exit report's "another process started it" fallback, and a pid
+    /// reaped again keeps only its latest status. The pids are ones no process
+    /// on a test host has, so concurrent tests' reaps cannot collide with them.
+    #[test]
+    fn only_the_newest_reaped_exit_statuses_are_kept() {
+        #[cfg(unix)]
+        let status = |code: i32| {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code << 8)
+        };
+        #[cfg(windows)]
+        let status = |code: i32| {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code as u32)
+        };
+        let base = 4_000_000_000_u32;
+        let pid = |offset: usize| Pid::new(base + offset as u32).unwrap();
+        remember_exit(pid(0).get(), status(9));
+        remember_exit(pid(0).get(), status(1));
+        assert_eq!(exit_status(pid(0)).and_then(|s| s.code()), Some(1));
+        for offset in 1..=EXITED_KEPT {
+            remember_exit(pid(offset).get(), status(2));
+        }
+        assert_eq!(exit_status(pid(0)), None, "the oldest status was kept");
+        assert_eq!(
+            exit_status(pid(EXITED_KEPT)).and_then(|s| s.code()),
+            Some(2)
+        );
+    }
+
     #[test]
     fn a_lease_note_names_only_usable_identities_and_refuses_the_rest_when_read() {
         assert_eq!(ThreadId::new("th-1").unwrap().as_str(), "th-1");

@@ -2089,8 +2089,10 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
         || !alive(first),
     );
     let log = serving.join("server.log");
+    // llmlint: ignore-block[tests_mirror_real_usage] No oneharness interface makes a pool entry's log unopenable: the condition is the filesystem refusing it (a full or read-only state dir, a path taken by something else), so the journey stages exactly that and asserts only through what a caller sees, the turn completing on a fresh server.
     std::fs::remove_file(&log).unwrap();
     std::fs::create_dir(&log).unwrap();
+    // llmlint: ignore-end[tests_mirror_real_usage]
     let (out, report) = pool.run(pool.command("no-log", &[], &[]));
     succeeded(&out, &report);
     assert_ne!(

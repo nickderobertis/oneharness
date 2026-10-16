@@ -296,7 +296,7 @@ pub fn pool_key(
 /// path still spelled `{address}` for the pool to render.
 pub const LISTEN_ARGS: [&str; 2] = ["--listen", "unix://{address}"];
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the one in-repo statement of Codex's socket rendezvous: the shared-server launch (`prepare_daemon_dir`) and the mock harness's `daemon_dir` both derive from it, so neither can drift from the other. Where real Codex binds can only be read from a running Codex, which the deterministic gate does not have; that reconciliation is the live codex suite's (`oh_codex_rendezvous_check` in scripts/e2e-codex.sh holds a pooled server's bound socket to this directory and mode), as `oh_codex_feature_flag_order` is for Codex's flag precedence.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the one in-repo statement of Codex's socket rendezvous: the shared-server launch (`prepare_daemon_dir`) and the mock harness's `daemon_dir` both derive from it, and the live check's expected values are held to it in the gate by `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares` (io::app_server), so no copy can drift from it. Where real Codex binds can only be read from a running Codex, which the deterministic gate does not have; that reconciliation is the live codex suite's (`oh_codex_rendezvous_check` in scripts/e2e-codex.sh holds a pooled server's bound socket to this directory and mode), as `oh_codex_feature_flag_order` is for Codex's flag precedence.
 /// Codex's socket rendezvous directory for `euid` under the canonical temp
 /// directory `tmp`: Codex binds every `--listen unix://` socket there, whatever
 /// path it is told, and refuses to start unless it is a directory that user

@@ -42,10 +42,13 @@ _oh_codex_server_euid() {
 # `CODEX_DAEMON_DIR_MODE` in crates/oneharness-core/src/domain/app_server.rs):
 # every pooled codex server still lingering after the controlled turn must have
 # left its --listen path linking into exactly that directory for the euid it
-# runs as, at mode 0700. Read from the server's own process, so it holds under
-# the recorder's namespace as well as outside it.
+# runs as, at the mode Codex accepts. Read from the server's own process, so it
+# holds under the recorder's namespace as well as outside it.
 oh_codex_rendezvous_check() {
   local state="${XDG_STATE_HOME:-$HOME/.local/state}" tmp record link fields pid marker euid target bound want mode checked=0
+  # The rendezvous as the Rust source states it, held there by core's
+  # `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares`.
+  local rendezvous_prefix=codex-daemon- rendezvous_mode=700
   tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
   for record in "$state"/oneharness/servers/codex-app-server-*/server.json; do
     link="$(dirname "$record")/sock/app-server.sock"
@@ -70,7 +73,7 @@ oh_codex_rendezvous_check() {
     fi
     euid="$(_oh_codex_server_euid "$marker")" ||
       fail "codex rendezvous: no running codex process carries the server marker in $record, so the euid its socket directory is named for is unknown; check \`ps -ef | grep app-server\` while a pooled server lingers"
-    want="$tmp/codex-daemon-$euid"
+    want="$tmp/$rendezvous_prefix$euid"
     bound="$(cd "$(dirname "$target")" && pwd -P)" ||
       fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
     [ "$bound" = "$want" ] ||
@@ -82,8 +85,8 @@ oh_codex_rendezvous_check() {
     else
       mode="$(stat -f %Lp "$bound")"
     fi || fail "codex rendezvous: cannot read the mode of $bound (stat's error above); run \`ls -ld $bound\` to see it"
-    [ "$mode" = 700 ] ||
-      fail "codex rendezvous: $bound is mode $mode, not the 0700 Codex demands of it; read Codex's refusal for what it now requires"
+    [ "$mode" = "$rendezvous_mode" ] ||
+      fail "codex rendezvous: $bound is mode $mode, not the 0$rendezvous_mode Codex demands of it; read Codex's refusal for what it now requires"
     checked=$((checked + 1))
   done
   [ "$checked" -gt 0 ] ||

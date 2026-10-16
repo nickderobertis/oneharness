@@ -1616,6 +1616,37 @@ mod tests {
 
     use super::*;
 
+    /// The live drift gate for Codex's rendezvous (`oh_codex_rendezvous_check`
+    /// in scripts/e2e-codex.sh) expects exactly the directory and mode the
+    /// launch prepares, so a change to either cannot leave it checking real
+    /// Codex against the old one.
+    #[test]
+    fn the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares() {
+        let lane = include_str!("../../../../scripts/e2e-codex.sh").replace("\r\n", "\n");
+        let named = rules::codex_daemon_dir(Path::new(""), 4242);
+        let prefix = named
+            .to_str()
+            .and_then(|name| name.strip_suffix("4242"))
+            .expect("the rendezvous directory ends in the euid");
+        let values = format!(
+            "  local rendezvous_prefix={prefix} rendezvous_mode={:o}\n",
+            rules::CODEX_DAEMON_DIR_MODE
+        );
+        assert!(
+            lane.contains(&values),
+            "scripts/e2e-codex.sh lacks `{values}`"
+        );
+        for derived in [
+            r#"want="$tmp/$rendezvous_prefix$euid""#,
+            r#"[ "$mode" = "$rendezvous_mode" ]"#,
+        ] {
+            assert!(
+                lane.contains(derived),
+                "scripts/e2e-codex.sh lacks `{derived}`"
+            );
+        }
+    }
+
     #[test]
     fn a_dispatch_plans_a_pooled_turn_only_for_an_app_server_launch() {
         let argv = |words: &[&str]| words.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();

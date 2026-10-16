@@ -253,7 +253,7 @@ oh_pooled_reuse() {
   case "$(uname -s)" in
     Linux*) ;;
     *)
-      note "  SKIP pooled-reuse: the memory budget reads /proc and is measured on Linux only; not run on $(uname -s)"
+      note "  SKIP pooled-reuse: the memory budget is measured on Linux only; not run on $(uname -s)"
       return 0
       ;;
   esac

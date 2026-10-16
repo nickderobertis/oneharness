@@ -260,3 +260,75 @@ fn two_dispatches_sharing_a_key_share_one_server_and_a_dead_holder_cannot_leak_i
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn a_holder_that_exited_unreaped_is_not_running_and_does_not_retain_the_server() {
+    // A process that has exited but whose parent has not waited on it is a
+    // zombie: it still answers signal 0 on every Unix, and stays one for as
+    // long as its parent lives. A shared server is the child of the dispatch
+    // that started it, and that dispatch waits on nothing mid-turn — counted
+    // as running, a dead server would never be stopped, nor a lease a dead
+    // holder left behind be retired.
+    let root = pool_root("zombie");
+    let key = oneharness_core::domain::control::pool_key("zombie", &[], &[]);
+    let lease = server_pool::acquire(&root, &key, &plan(), server_pool::DEFAULT_LINGER).unwrap();
+    let server = lease.record().pid;
+
+    let mut holder = std::process::Command::new("sleep")
+        .arg("0.1")
+        .spawn()
+        .unwrap();
+    let holder_pid = Pid::new(holder.id()).unwrap();
+    let stray = LeaseHolder {
+        pid: holder_pid,
+        identity: server_pool::process_identity(holder_pid)
+            .expect("a live process has an identity"),
+    };
+    std::fs::write(
+        root.join(key.as_str()).join("leases").join("stray.lease"),
+        serde_json::to_string(&stray).unwrap(),
+    )
+    .unwrap();
+    drop(lease);
+
+    // Wait for the holder to exit WITHOUT reaping it (`WNOWAIT`).
+    // SAFETY: `info` is a live, writable `siginfo_t`; the pid is this test's
+    // own child.
+    let waited = unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        libc::waitid(
+            libc::P_PID,
+            holder.id() as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOWAIT,
+        )
+    };
+    assert_eq!(waited, 0, "{}", std::io::Error::last_os_error());
+    // SAFETY: plain integers; signal 0 delivers nothing.
+    let known = unsafe { libc::kill(holder.id() as libc::pid_t, 0) } == 0;
+    assert!(known, "an unreaped child is still known to the kernel");
+    assert!(
+        !server_pool::pid_alive(holder_pid),
+        "an exited, unreaped process read as running"
+    );
+    assert!(
+        !stray.is_live(),
+        "a zombie holder read as holding its lease"
+    );
+
+    // The zombie's lease is dead, so the idle server is reclaimed.
+    assert_eq!(
+        server_pool::sweep(&root, Duration::from_secs(0)).unwrap(),
+        1,
+        "a lease held only by a zombie retained the server"
+    );
+    holder.wait().unwrap();
+    for _ in 0..100 {
+        if !server_pool::pid_alive(server) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!server_pool::pid_alive(server));
+    let _ = std::fs::remove_dir_all(&root);
+}

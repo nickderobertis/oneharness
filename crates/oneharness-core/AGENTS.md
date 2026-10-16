@@ -402,7 +402,21 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   socket close-on-exec only after creating it, so a detached child otherwise
   keeps whatever it caught open — a caller's output pipe held this way never
   reaches end-of-file for whoever reads it. And on Darwin, `setsockopt` on a socket whose peer closed
-  fails with EINVAL (`io::websocket::bound_reads`).
+  fails with EINVAL (`io::websocket::bound_reads`). Never let a waiter rely on
+  a kernel signal Darwin does not give: on a Unix-domain stream whose peer
+  shut its reading but still holds the socket, a write succeeds there (XNU
+  drops the bytes; Linux says EPIPE), so a mock that "refuses a write" must
+  END the connection; and a dead server's connection need not read EOF (a
+  command it started can hold its end), so a pooled turn asks
+  `ServerRecord::is_running` whenever it reads nothing, and `pid_alive` counts
+  a zombie as gone on both kernels — on Darwin by the ESRCH `proc_pidinfo`
+  gives a pid signal 0 still answers for (XNU's lookup skips an exited process
+  unless asked for zombies). A short child the caller only bounds by its own
+  deadline (a `--version` probe, the model catalog's refresh helper) goes
+  through `Process::spawn_tethered`: a caller SIGKILLed mid-probe enforces no
+  deadline, and `Process::spawn`'s own process group is out of reach of any
+  signal sent to the caller's. Every Rust test runs under a nextest per-test bound (`.config/nextest.toml`): a hang
+  fails as TIMEOUT by name.
 
 ## Adding or changing a harness
 

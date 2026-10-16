@@ -7,7 +7,7 @@ budgets:
   - id: codex-shared-server-rss-growth
     description: >-
       The shared Codex app-server's whole-tree resident memory (the pid in its
-      pool entry's server.json and every descendant, summed VmRSS from /proc)
+      pool entry's server.json and every descendant, summed from one ps listing)
       after the 5th of 5 sequential leases is released, over the same reading
       after the 1st, both with no lease live on one server pid. Workload: one
       pooled app-server on Linux serving 5 sequential leases, each a thread

@@ -151,6 +151,11 @@
 //!                              MOCK_ARGV_FILE and exiting with MOCK_EXIT, since
 //!                              oneharness asks it before every Codex launch.
 //!   MOCK_CODEX_VERSION_DELAY_MS  how long `--version` takes to answer.
+//!   MOCK_CODEX_VERSION_STALL   a path: `--version` never answers, as a wedged
+//!                              launcher does. It starts a descendant that
+//!                              keeps its output, writes its own pid, the
+//!                              descendant's and its working directory to the
+//!                              path, and waits forever.
 //!   MOCK_CODEX_VERSION_EXIT    the exit code `--version` answers with (the
 //!                              launch itself keeps MOCK_EXIT).
 //!   MOCK_CODEX_CACHE_CORRUPT   with MOCK_CODEX_CATALOG_LOG, a fetch writes a
@@ -178,6 +183,11 @@
 //!                              It then carries on as it otherwise would.
 //!   MOCK_CODEX_CATALOG_FETCH_MS  with MOCK_CODEX_CATALOG_LOG, how long a fetch
 //!                              takes before it writes the cache.
+//!   MOCK_CODEX_CATALOG_STALL   with MOCK_CODEX_CATALOG_LOG, a path: an
+//!                              `app-server` launch that would fetch never
+//!                              does and never exits, its stdin closed or not,
+//!                              as a wedged refresh does; otherwise like
+//!                              MOCK_CODEX_VERSION_STALL.
 //!   MOCK_CODEX_CATALOG_THEN_EXIT  with MOCK_CODEX_CATALOG_LOG, an `app-server`
 //!                              launch that fetched exits 0 right after,
 //!                              instead of serving its stdin.
@@ -446,6 +456,9 @@ fn refuse(message: &str) -> ! {
 /// `--version`, answered with no other effect: `codex-cli <MOCK_CODEX_VERSION>`
 /// when that is set, else MOCK_STDOUT (else the default document).
 fn answer_version(argv: &[String]) -> ! {
+    if let Some(path) = mock_var_os("MOCK_CODEX_VERSION_STALL") {
+        stall(std::path::Path::new(&path));
+    }
     if let Some(ms) = millis_knob("MOCK_CODEX_VERSION_DELAY_MS") {
         std::thread::sleep(std::time::Duration::from_millis(ms));
     }
@@ -493,6 +506,38 @@ fn millis_knob(name: &str) -> Option<u64> {
     match text.parse() {
         Ok(ms) => Some(ms),
         Err(_) => refuse(&format!("{name} must be whole milliseconds, got `{text}`")),
+    }
+}
+
+/// MOCK_CODEX_VERSION_STALL and MOCK_CODEX_CATALOG_STALL: a launch that never
+/// answers, with a descendant (this binary as an app-server helper, which only
+/// lives) holding the same output. Both pids and the directory it runs in,
+/// which says which of oneharness's launches this is, are written whole, by a
+/// rename, once both run.
+fn stall(path: &std::path::Path) -> ! {
+    let mut descendant = std::process::Command::new(
+        std::env::current_exe().unwrap_or_else(|e| refuse(&format!("no current exe: {e}"))),
+    )
+    .env("ONEHARNESS_MOCK_APP_SERVER_HELPER", "1")
+    .stdin(std::process::Stdio::null())
+    .spawn()
+    .unwrap_or_else(|e| refuse(&format!("cannot start the stalled probe's descendant: {e}")));
+    let partial = path.with_extension("partial");
+    let cwd =
+        std::env::current_dir().unwrap_or_else(|e| refuse(&format!("no working directory: {e}")));
+    let pids = format!(
+        "{}\n{}\n{}\n",
+        std::process::id(),
+        descendant.id(),
+        cwd.display()
+    );
+    if let Err(e) = std::fs::write(&partial, pids).and_then(|()| std::fs::rename(&partial, path)) {
+        refuse(&format!("cannot write {}: {e}", path.display()));
+    }
+    // The descendant only lives, so this waits as long as something lets it.
+    let _ = descendant.wait();
+    loop {
+        std::thread::sleep(std::time::Duration::from_secs(3600));
     }
 }
 
@@ -582,6 +627,11 @@ fn codex_model_catalog(path: &str, argv: &[String]) {
         };
         line["catalog_models"] = models.into();
     } else {
+        if subcommand == "app-server" {
+            if let Some(path) = mock_var_os("MOCK_CODEX_CATALOG_STALL") {
+                stall(std::path::Path::new(&path));
+            }
+        }
         if let Some(ms) = millis_knob("MOCK_CODEX_CATALOG_FETCH_MS") {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
@@ -2346,7 +2396,12 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         `initialize`; `never-listen` stays alive and never
 ///                         binds; `stall-upgrade`
 ///                         reads a connection's upgrade request and never
-///                         answers it.
+///                         answers it; `inheritable-connections` hands every
+///                         command the server's end of the connection that
+///                         started its turn (as its stdin), as Darwin leaves a
+///                         command started while another thread was accepting
+///                         a connection holding that one — its `accept` cannot
+///                         set close-on-exec atomically.
 ///   CODEX_MOCK_EXIT_FIRST  a path: the first launch creates it and exits before
 ///                         listening.
 ///   CODEX_MOCK_LOADED_PAGE  answer `thread/loaded/list` in pages of this many.
@@ -2387,7 +2442,13 @@ mod listen_server {
     type Shared = Arc<Mutex<Server>>;
 
     struct Conn {
+        /// The connection's stream, for what is done to the connection
+        /// itself — shutting it, handing a command its end. Frames go through
+        /// [`Conn::outbox`], never a write here.
         writer: Arc<Mutex<UnixStream>>,
+        /// The frames queued for the connection's own writer thread
+        /// ([`deliver`]), which writes them outside the server's lock.
+        outbox: std::sync::mpsc::Sender<Vec<u8>>,
         record: Option<std::fs::File>,
         /// The dispatch's own raw frame log, once its thread names one, and
         /// the frames received before it did.
@@ -2736,11 +2797,12 @@ mod listen_server {
             }
         }
 
+        /// Queue `frame` for `conn`. Never a write under the server's lock: a
+        /// client that stops reading would otherwise stop every connection.
         fn send(&mut self, conn: u64, frame: &Value) {
             self.record(conn, "out", frame);
             if let Some(c) = self.conns.get(&conn) {
-                let mut writer = c.writer.lock().unwrap_or_else(|p| p.into_inner());
-                let _ = write_frame(&mut writer, frame.to_string().as_bytes());
+                let _ = c.outbox.send(encode_frame(frame.to_string().as_bytes()));
             }
         }
 
@@ -2830,7 +2892,29 @@ mod listen_server {
         }
     }
 
-    fn write_frame(stream: &mut UnixStream, payload: &[u8]) -> std::io::Result<()> {
+    /// How long one write to a connection may wait for its client to read.
+    /// Past it the client is not reading, as no dispatch stops doing mid-turn,
+    /// and the connection is ended rather than left to hold its writer.
+    const WRITE_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// A connection's writer thread: every frame queued for it, in order,
+    /// each write bounded by [`WRITE_BOUND`]. A write past the bound ends the
+    /// connection — its client reads the end of what was sent — and whatever
+    /// is queued after it is dropped.
+    fn deliver(mut stream: UnixStream, queued: std::sync::mpsc::Receiver<Vec<u8>>) {
+        if stream.set_write_timeout(Some(WRITE_BOUND)).is_err() {
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            return;
+        }
+        for frame in queued {
+            if stream.write_all(&frame).is_err() {
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+                return;
+            }
+        }
+    }
+
+    fn encode_frame(payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0x81u8];
         let len = payload.len();
         if len < 126 {
@@ -2843,7 +2927,7 @@ mod listen_server {
             frame.extend_from_slice(&(len as u64).to_be_bytes());
         }
         frame.extend_from_slice(payload);
-        stream.write_all(&frame)
+        frame
     }
 
     /// One client message, unmasked; `None` once the client is gone.
@@ -2948,6 +3032,11 @@ mod listen_server {
                 return;
             }
         }
+        let Ok(delivering) = writer.lock().unwrap_or_else(|p| p.into_inner()).try_clone() else {
+            return;
+        };
+        let (outbox, queued) = std::sync::mpsc::channel();
+        let delivery = std::thread::spawn(move || deliver(delivering, queued));
         let conn = {
             let mut s = lock(server);
             let id = s.next_conn;
@@ -2963,6 +3052,7 @@ mod listen_server {
                 id,
                 Conn {
                     writer: Arc::clone(&writer),
+                    outbox,
                     record,
                     log: None,
                     unlogged: Vec::new(),
@@ -3008,25 +3098,35 @@ mod listen_server {
                 break;
             }
         }
-        // A connection whose reads were shut is ended whole rather than held
-        // open. Holding it waited on the platform to refuse the client's next
-        // write, which Darwin never does, so a client with a held turn and no
-        // timeout waited on it forever; its end is what every platform reports.
-        if let Some(c) = lock(server).conns.get(&conn).filter(|c| c.read_shut) {
-            let _ = c
-                .writer
+        // The client is gone, or its reads were shut. Like Codex, its threads
+        // stay loaded and their turns and commands keep running; only its
+        // subscriptions go.
+        let removed = {
+            let mut s = lock(server);
+            for thread in s.threads.values_mut() {
+                thread.subscribers.remove(&conn);
+            }
+            s.conns.remove(&conn)
+        };
+        let read_shut = removed.as_ref().is_some_and(|c| c.read_shut);
+        // Its queue closed, its writer sends what was queued — within the
+        // bound, outside the lock — and lets go of the stream.
+        drop(removed);
+        let _ = delivery.join();
+        // A connection whose reads were shut is then ended whole rather than
+        // held open. Holding it waited on the platform to refuse the client's
+        // next write, which Darwin never does, so a client with a held turn
+        // and no timeout waited on it forever; its end is what every platform
+        // reports. Only now: the request that shut it is already sent.
+        if read_shut {
+            let _ = writer
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .shutdown(std::net::Shutdown::Both);
         }
-        // The client is gone. Like Codex, its threads stay loaded and their
-        // turns and commands keep running; only its subscriptions go.
-        let mut s = lock(server);
-        s.conns.remove(&conn);
-        for thread in s.threads.values_mut() {
-            thread.subscribers.remove(&conn);
-        }
-        s.save();
+        drop(writer);
+        drop(reader);
+        lock(server).save();
     }
 
     /// Keep a request waiting, outside the server's lock, where a knob says
@@ -3861,6 +3961,24 @@ mod listen_server {
         if s.fault == "escape-marker" {
             env.remove("ONEHARNESS_DISPATCH_MARKER");
         }
+        // inheritable-connections: the command holds the server's end of its
+        // thread's connection.
+        let stdin = s
+            .threads
+            .get(thread_id)
+            .filter(|_| s.fault == "inheritable-connections")
+            .and_then(|thread| thread.subscribers.iter().next())
+            .and_then(|conn| s.conns.get(conn))
+            .and_then(|c| {
+                c.writer
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .try_clone()
+                    .ok()
+            })
+            .map_or_else(std::process::Stdio::null, |held| {
+                std::process::Stdio::from(std::os::fd::OwnedFd::from(held))
+            });
         use std::os::unix::process::CommandExt;
         let child = std::process::Command::new("sh")
             .args(["-c", command])
@@ -3868,7 +3986,7 @@ mod listen_server {
             .envs(&env)
             .current_dir(cwd)
             .process_group(0)
-            .stdin(std::process::Stdio::null())
+            .stdin(stdin)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn();

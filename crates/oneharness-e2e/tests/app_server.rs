@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use oneharness_core::io::marked_processes::{find_marked, ProcessMarker};
 use oneharness_core::io::scratch::ScratchDir;
 use oneharness_core::io::server_pool::{
-    LeaseHolder, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
+    pid_alive, LeaseHolder, Pid, DEAD_LEASE_STOP_DEADLINE, DEAD_LEASE_SWEEP_INTERVAL,
 };
 use serde_json::{json, Value};
 
@@ -67,18 +67,41 @@ fn wait_for(label: &str, limit: Duration, mut condition: impl FnMut() -> bool) {
     panic!("timed out after {limit:?} waiting for {label}");
 }
 
-/// Whether `pid` names a live process (a zombie counts as gone).
+/// Whether `pid` names a running process, by the pool's own reading — a
+/// zombie counts as gone on every platform, as it does to the pool.
 fn alive(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).map_or_else(
-        // Not Linux: ask the kernel; a reaped process answers ESRCH.
-        // SAFETY: plain integers; signal 0 delivers nothing.
-        |_| unsafe { libc::kill(pid as libc::pid_t, 0) == 0 },
-        |stat| {
-            stat.rsplit_once(')')
-                .and_then(|(_, rest)| rest.split_whitespace().next())
-                .is_some_and(|state| state != "Z")
-        },
-    )
+    Pid::new(pid).is_ok_and(pid_alive)
+}
+
+/// Read `pipe` to its end on a thread of its own; the receiver gets the bytes
+/// once the last writer has closed it.
+fn read_to_end(
+    mut pipe: impl std::io::Read + Send + 'static,
+) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (sender, ends) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = pipe.read_to_end(&mut bytes);
+        let _ = sender.send(bytes);
+    });
+    ends
+}
+
+/// Wait up to `limit` for `child` to exit; past it, kill it and fail the
+/// journey with `label`, so a dispatch that never ends fails here by name.
+fn exits_within(child: &mut Child, limit: Duration, label: &str) -> std::process::ExitStatus {
+    let deadline = Instant::now() + limit;
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        if Instant::now() >= deadline {
+            sigkill(child.id());
+            let _ = child.wait();
+            panic!("{label}: still running after {limit:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 fn sigkill(pid: u32) {
@@ -2549,12 +2572,221 @@ fn a_shared_server_holds_none_of_its_starting_dispatch_s_output_open() {
     assert!(left.is_empty(), "still running: {left:?}");
 }
 
+/// The contract a caller of the shared server can rely on when it ends without
+/// warning. A dispatch holding its standard output and error at descriptors 3
+/// and 4 as well — not close-on-exec, as a launcher that passed them on leaves
+/// them — starts the shared server and its sweeper, runs a command on it, and
+/// is SIGKILLed mid-turn. Its caller's pipes reach end-of-file with it: the
+/// server and the sweeper hold neither. The sweeper then finds the dead lease
+/// and stops the command, the server lingers out and is stopped, the sweeper
+/// ends, and no process this journey started is left running.
+#[test]
+fn a_killed_caller_s_output_ends_with_it_and_nothing_it_started_outlives_the_journey() {
+    use std::os::unix::process::CommandExt;
+    let pool = Pool::new("pool-killed-caller");
+    let beat = pool.file("heartbeat");
+    let never = pool.file("never");
+    let mut cmd = pool.command(
+        "killed-caller",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    );
+    // SAFETY: the hook runs in the forked child before exec, after its
+    // standard streams are in place, and calls only `dup2`, which is
+    // async-signal-safe; the copies it makes are not close-on-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::dup2(1, 3) == -1 || libc::dup2(2, 4) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut caller = pool.spawn(cmd);
+    let stdout = read_to_end(caller.stdout.take().unwrap());
+    let stderr = read_to_end(caller.stderr.take().unwrap());
+    let server = pool.await_live_turns(1);
+    wait_for("the heartbeat to start", Duration::from_secs(10), || {
+        lines(&beat) >= 3
+    });
+    let command = command_running(&pool, server, &beat)["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    let (_, sweeper) = entry_and_sweeper(&pool);
+
+    sigkill(caller.id());
+    caller.wait().unwrap();
+    let bound = Duration::from_secs(2);
+    stdout
+        .recv_timeout(bound)
+        .expect("the killed caller's standard output is held open past its end");
+    stderr
+        .recv_timeout(bound)
+        .expect("the killed caller's standard error is held open past its end");
+    assert!(
+        alive(server) && alive(sweeper),
+        "the shared server and its sweeper did not outlive the caller, so nothing was proven"
+    );
+
+    let retire = DEAD_LEASE_SWEEP_INTERVAL + DEAD_LEASE_STOP_DEADLINE;
+    wait_for("the dead caller's command to stop", retire * 3, || {
+        !alive(command)
+    });
+    let stop = Duration::from_millis(LINGER_MS) + retire + Duration::from_secs(10);
+    wait_for("the lingered-out server to stop", stop, || !alive(server));
+    wait_for("its sweeper to end", stop, || !alive(sweeper));
+    let left: Vec<u32> = [caller.id(), server, sweeper, command]
+        .into_iter()
+        .chain(pool.server_pids())
+        .filter(|pid| alive(*pid))
+        .collect();
+    assert!(left.is_empty(), "still running: {left:?}");
+}
+
+/// A caller killed while a dispatch is still asking Codex its version —
+/// before any server exists — leaves nothing behind either. Two probes run
+/// first: the shared model catalog's, and the shared server's own (the first
+/// once the catalog is off). Each case stalls the first and says which it
+/// stalled by where it runs: the server's probe runs in the pool's root. The
+/// stalled probe never answers and has started a descendant; the dispatch
+/// holds its standard output and error at descriptors 3 and 4 as well, not
+/// close-on-exec. Once it is SIGKILLed nothing it left is there to end the
+/// probe by its deadline, so the probe must not need it: the caller's pipes
+/// reach end-of-file, and the probe, its descendant and everything in the
+/// probe's process group end.
+#[test]
+fn a_caller_killed_mid_version_probe_leaves_no_probe_and_its_output_ends() {
+    let pool = Pool::new("pool-killed-probe");
+    let servers = pool.path("state/oneharness/servers");
+    for (case, catalog_off) in [("catalog", false), ("server", true)] {
+        let stalled = pool.file(&format!("{case}-version-stall"));
+        let envs = [("CODEX_MOCK_VERSION_STALL", stalled.as_str())];
+        let cmd = if catalog_off {
+            pool.command_with_config(
+                case,
+                "[harness.codex]\nshared_model_catalog = false\n",
+                &[],
+                &envs,
+            )
+        } else {
+            pool.command(case, &[], &envs)
+        };
+        let cwd = kill_the_caller_mid_probe(&pool, cmd, Path::new(&stalled), case);
+        // The pool's root exists once the server's probe is asked, not before.
+        let in_pool = std::fs::canonicalize(&servers)
+            .is_ok_and(|root| std::fs::canonicalize(&cwd).is_ok_and(|cwd| cwd == root));
+        assert_eq!(
+            in_pool, catalog_off,
+            "{case}: stalled the probe running in {cwd}, not the {case}'s"
+        );
+    }
+}
+
+/// A caller killed while the shared model catalog's refresh helper — a
+/// `codex app-server --stdio` the dispatch starts before any shared server —
+/// is wedged leaves nothing behind either. The helper never fetches and never
+/// exits, its stdin closed or not, and has started a descendant; the dispatch
+/// holds its output at descriptors 3 and 4 as well, not close-on-exec. Once
+/// the caller is SIGKILLed its refresh deadline is gone with it, so the
+/// helper must not need it: the caller's pipes reach end-of-file, and the
+/// helper, its descendant and everything in its process group end.
+#[test]
+fn a_caller_killed_mid_catalog_refresh_leaves_no_helper_and_its_output_ends() {
+    let pool = catalog_pool("pool-killed-refresh");
+    let stalled = pool.file("refresh-stall");
+    let cmd = pool.command(
+        "refresh",
+        &[],
+        &[("CODEX_MOCK_CATALOG_STALL", stalled.as_str())],
+    );
+    kill_the_caller_mid_probe(&pool, cmd, Path::new(&stalled), "refresh");
+    assert_eq!(
+        pool.server_pids(),
+        Vec::<u32>::new(),
+        "the caller was killed before any shared server started"
+    );
+}
+
+/// Run `cmd` — a dispatch whose first `--version` (or catalog refresh)
+/// stalls, writing to `stalled` — with its output also at descriptors 3 and
+/// 4, SIGKILL it once the launch stalls, and hold everything it left to the
+/// bound. Returns the directory the stalled launch ran in.
+fn kill_the_caller_mid_probe(pool: &Pool, mut cmd: Command, stalled: &Path, case: &str) -> String {
+    use std::os::unix::process::CommandExt;
+
+    /// The caller and the probe's processes, SIGKILLed on the way out should
+    /// the journey fail with them still running: pids this journey captured,
+    /// never more.
+    struct Captured(Vec<u32>);
+    impl Drop for Captured {
+        fn drop(&mut self) {
+            for pid in &self.0 {
+                if alive(*pid) {
+                    sigkill(*pid);
+                }
+            }
+        }
+    }
+
+    // SAFETY: the hook runs in the forked child before exec, after its
+    // standard streams are in place, and calls only `dup2`, which is
+    // async-signal-safe; the copies it makes are not close-on-exec.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::dup2(1, 3) == -1 || libc::dup2(2, 4) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut caller = pool.spawn(cmd);
+    let mut captured = Captured(vec![caller.id()]);
+    let stdout = read_to_end(caller.stdout.take().unwrap());
+    let stderr = read_to_end(caller.stderr.take().unwrap());
+    wait_for(
+        &format!("{case}: its first launch to stall"),
+        Duration::from_secs(10),
+        || stalled.exists(),
+    );
+    let written = std::fs::read_to_string(stalled).unwrap();
+    let lines: Vec<&str> = written.lines().collect();
+    let [probe, descendant, cwd] = lines[..] else {
+        panic!("{case}: the stalled launch wrote {written:?}, not two pids and a directory");
+    };
+    let (probe, descendant): (u32, u32) = (probe.parse().unwrap(), descendant.parse().unwrap());
+    captured.0.extend([probe, descendant]);
+    // SAFETY: `getpgid` only reads the process table.
+    let group = unsafe { libc::getpgid(probe as libc::pid_t) };
+    assert!(group > 0, "{case}: {}", std::io::Error::last_os_error());
+
+    sigkill(caller.id());
+    caller.wait().unwrap();
+    let bound = Duration::from_secs(5);
+    stdout.recv_timeout(bound).unwrap_or_else(|_| {
+        panic!("{case}: the killed caller's standard output is held open past its end")
+    });
+    stderr.recv_timeout(bound).unwrap_or_else(|_| {
+        panic!("{case}: the killed caller's standard error is held open past its end")
+    });
+    // An exited member nobody has reaped yet still answers for its group, so
+    // the group is given the same bound to be collected.
+    wait_for(
+        &format!("{case}: the probe's process group to end"),
+        bound,
+        || {
+            // SAFETY: signal 0 to a group delivers nothing.
+            !alive(probe) && !alive(descendant) && unsafe { libc::kill(-group, 0) } == -1
+        },
+    );
+    drop(captured);
+    cwd.to_string()
+}
+
 /// A shell turn that completes before the server replies to the request that
-/// ran it still completes: the reuse workload runs to its end. Linux only: a
-/// workload that runs to its end reads the server's memory from `/proc`
-/// (`a_library_pooled_session_names_each_way_the_server_fails_it` runs the
-/// same turn everywhere).
-#[cfg(target_os = "linux")]
+/// ran it still completes: the reuse workload runs to its end.
 #[test]
 fn a_shell_turn_completed_before_its_reply_still_completes() {
     let pool = Pool::new("pool-shell-first");
@@ -2856,6 +3088,150 @@ fn a_shared_server_lost_after_its_turn_ran_a_tool_keeps_the_work_and_stops_the_c
         !Path::new(&alt_log).exists(),
         "the next candidate ran after the lost turn's work"
     );
+}
+
+/// A client of the shared server that connects, upgrades, and then never
+/// reads again — a dispatch frozen mid-turn, or anything else dialling the
+/// socket — must cost every other dispatch nothing. The server broadcasts each
+/// thread's frames to every connection, so this one's buffer fills: a server
+/// writing to it under its one lock would stall every other dispatch for as
+/// long as it stays connected. The mock bounds each write and ends a
+/// connection that stops reading; the dispatch held live across the stall and
+/// one started into it both finish, the stalled connection reads its end, and
+/// every process the journey captured — both dispatches, the server and its
+/// sweeper — is gone once the server lingers out.
+#[test]
+fn a_client_that_stops_reading_stalls_no_other_dispatch_and_is_ended() {
+    use std::io::Read;
+    let pool = Pool::new("pool-stalled-reader").with_env("CODEX_MOCK_BROADCAST", "1");
+    let release = pool.file("release");
+    let mut live = pool.spawn(pool.command(
+        "live",
+        &[],
+        &[
+            ("MOCK_CODEX_HOLD_UNTIL", &release),
+            ("MOCK_CODEX_TICK_MS", "10"),
+        ],
+    ));
+    // Read as they arrive: a report carrying hundreds of ticks outgrows a
+    // pipe nobody is reading.
+    let live_out = read_to_end(live.stdout.take().unwrap());
+    let live_err = read_to_end(live.stderr.take().unwrap());
+    let server = pool.await_live_turns(1);
+    let (_, sweeper) = entry_and_sweeper(&pool);
+    let listen = pool.mock_servers()[0]["argv"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .find_map(|arg| arg.strip_prefix("unix://"))
+        .map(PathBuf::from)
+        .expect("the server's --listen path");
+
+    let mut stalled =
+        UnixStream::connect(oneharness_core::io::websocket::dial_path(&listen)).unwrap();
+    // Bounded now, while the server still holds its end: on Darwin
+    // `setsockopt` on a socket whose peer closed fails with EINVAL, and the
+    // server is expected to end this connection before it is read again.
+    stalled
+        .set_read_timeout(Some(Duration::from_secs(20)))
+        .unwrap();
+    stalled
+        .write_all(
+            b"GET / HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\
+              Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+        )
+        .unwrap();
+    let mut answer = Vec::new();
+    let mut byte = [0u8; 1];
+    while !answer.ends_with(b"\r\n\r\n") {
+        assert_eq!(
+            stalled.read(&mut byte).unwrap(),
+            1,
+            "the upgrade went unanswered"
+        );
+        answer.push(byte[0]);
+    }
+    assert!(answer.starts_with(b"HTTP/1.1 101"), "{answer:?}");
+    // Every frame the server sends the stalled connection, as the mock
+    // records it. A server that writes under its lock stops sending once the
+    // buffer is full — a few hundred ticks on Linux, far fewer on macOS — and
+    // never reaches this many; one that does not stall goes on queueing.
+    // The connection registered after the live dispatch's own.
+    let stalled_conn = || {
+        let conns: Vec<u64> = pool.state(server)["connections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_u64)
+            .collect();
+        (conns.len() == 2)
+            .then(|| conns.into_iter().max())
+            .flatten()
+    };
+    wait_for(
+        "the stalled connection to register",
+        Duration::from_secs(10),
+        || stalled_conn().is_some_and(|conn| !pool.sent(server, conn).is_empty()),
+    );
+    let conn = stalled_conn().unwrap();
+    let flooded = Instant::now() + Duration::from_secs(20);
+    while pool.sent(server, conn).len() < 1000 && Instant::now() < flooded {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let mut joining = pool.spawn(pool.command("joining", &[], &[]));
+    let captured = [live.id(), joining.id(), server, sweeper];
+    let joining_out = read_to_end(joining.stdout.take().unwrap());
+    let joining_err = read_to_end(joining.stderr.take().unwrap());
+    let bound = Duration::from_secs(40);
+    let joined = exits_within(
+        &mut joining,
+        bound,
+        "a dispatch started while another client stopped reading",
+    );
+    std::fs::write(&release, b"").unwrap();
+    let lived = exits_within(
+        &mut live,
+        bound,
+        "a dispatch held live while another client stopped reading",
+    );
+    for (status, out, err, name) in [
+        (joined, joining_out, joining_err, "joining"),
+        (lived, live_out, live_err, "live"),
+    ] {
+        let output = Output {
+            status,
+            stdout: out
+                .recv_timeout(bound)
+                .expect("the dispatch's output ended"),
+            stderr: err
+                .recv_timeout(bound)
+                .expect("the dispatch's errors ended"),
+        };
+        let report: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|err| panic!("{name}: no JSON report ({err})"));
+        succeeded(&output, &report);
+        assert_eq!(reported_server(&report), server, "{name}");
+    }
+
+    // The server ended the connection that stopped reading: what it sent
+    // before the bound, then the end.
+    let mut rest = Vec::new();
+    stalled
+        .read_to_end(&mut rest)
+        .expect("the stalled connection was never ended");
+
+    let gone =
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 3 + Duration::from_secs(15);
+    wait_for("the lingered-out server to stop", gone, || !alive(server));
+    wait_for("its sweeper to end", gone, || !alive(sweeper));
+    let left: Vec<u32> = captured
+        .into_iter()
+        .chain(pool.server_pids())
+        .filter(|pid| alive(*pid))
+        .collect();
+    assert!(left.is_empty(), "still running: {left:?}");
 }
 
 /// One dispatch's thread-level settings.
@@ -3526,7 +3902,13 @@ fn repo_root() -> PathBuf {
 /// `pid` and every descendant of it, as the OS lists them now (`/proc`).
 #[cfg(target_os = "linux")]
 fn os_process_tree(root: u32) -> Vec<u64> {
-    let parents: Vec<(u64, u64)> = std::fs::read_dir("/proc")
+    descendants(root, &linux_parents())
+}
+
+/// Every process's (pid, parent pid), from `/proc`.
+#[cfg(target_os = "linux")]
+fn linux_parents() -> Vec<(u64, u64)> {
+    std::fs::read_dir("/proc")
         .unwrap()
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<u64>().ok())
@@ -3541,7 +3923,51 @@ fn os_process_tree(root: u32) -> Vec<u64> {
                 .ok()?;
             Some((pid, ppid))
         })
+        .collect()
+}
+
+/// `pid` and every descendant of it, as the OS lists them now: libproc's
+/// listing of every pid and each one's BSD info, not the `ps` listing the
+/// workload under test reads.
+#[cfg(target_os = "macos")]
+fn os_process_tree(root: u32) -> Vec<u64> {
+    let mut pids = vec![0 as libc::c_int; 1 << 16];
+    let bytes = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())).unwrap();
+    // SAFETY: `pids` is writable for `bytes` bytes.
+    let listed = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    assert!(listed > 0, "{}", std::io::Error::last_os_error());
+    pids.truncate(usize::try_from(listed).unwrap());
+    let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).unwrap();
+    let parents: Vec<(u64, u64)> = pids
+        .into_iter()
+        .filter_map(|pid| {
+            let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+            // SAFETY: `info` is writable for `size` bytes, the size of the
+            // structure PROC_PIDTBSDINFO fills.
+            let filled = unsafe {
+                libc::proc_pidinfo(
+                    pid,
+                    libc::PROC_PIDTBSDINFO,
+                    0,
+                    info.as_mut_ptr().cast(),
+                    size,
+                )
+            };
+            // SAFETY: the kernel filled all `size` bytes of the structure.
+            (filled == size).then(|| {
+                (
+                    u64::try_from(pid).unwrap(),
+                    u64::from(unsafe { info.assume_init() }.pbi_ppid),
+                )
+            })
+        })
         .collect();
+    descendants(root, &parents)
+}
+
+/// `root` and every pid descending from it through `parents` (pid, parent
+/// pid), sorted.
+fn descendants(root: u32, parents: &[(u64, u64)]) -> Vec<u64> {
     let mut tree = vec![u64::from(root)];
     let mut index = 0;
     while index < tree.len() {
@@ -3833,12 +4259,13 @@ fn the_sharing_measurement_names_each_failure_and_leaves_no_scratch() {
 /// of the leases ran `initialize`, `thread/start`, a `thread/shellCommand` and
 /// `thread/resume` of its own thread and no `turn/start`, all on one server;
 /// and each reading's pids are exactly the server's process tree — launcher,
-/// server and grandchild — as the OS lists it. A 1 ms linger cannot split the
+/// server and grandchild — as the OS lists it, its bytes counting at least the
+/// server's own footprint, which is no root's. A 1 ms linger cannot split the
 /// leases across servers: the workload's own idle lease holds the server from
 /// the first lease to the last.
-#[cfg(target_os = "linux")]
 #[test]
 fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
+    const SERVER_BYTES: u64 = 64 * 1024 * 1024;
     let pool = Pool::new("pool-reuse");
     let out = pool.path("reuse.json");
     let output = Command::new("bash")
@@ -3850,6 +4277,7 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
         .env("CODEX_MOCK_DIR", pool.path("mock"))
         .env("CODEX_MOCK_SHIM", "1")
         .env("CODEX_MOCK_HELPER", "1")
+        .env("CODEX_MOCK_SERVER_BYTES", SERVER_BYTES.to_string())
         .env("ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS", "1")
         .output()
         .unwrap();
@@ -3878,7 +4306,12 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
             .map(|p| p.as_u64().unwrap())
             .collect();
         assert_eq!(pids, tree, "{name} did not sum the server's whole tree");
-        assert!(reuse["readings"][name]["rss_bytes"].as_u64().unwrap() > 0);
+        // The root is the launcher; the footprint is its child's.
+        let bytes = reuse["readings"][name]["rss_bytes"].as_u64().unwrap();
+        assert!(
+            bytes >= SERVER_BYTES,
+            "{name}: {bytes} B leaves out the server's own {SERVER_BYTES} B"
+        );
     }
     let native = pool.the_server();
     assert!(tree.contains(&u64::from(native)));
@@ -3921,6 +4354,128 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
         assert_eq!(resumed["params"]["threadId"], thread);
     }
 }
+
+// llmlint: ignore-block[e2e_not_mocked] The workload and its pooled server run for real; only `ps` is replaced, by a script or by its absence, because a real `ps` cannot be made to fail, list a malformed row or omit a running server on demand. The real listing is read end to end by the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree, which holds it to the OS's own process tree.
+/// Each way the reuse workload's process listing can fail fails the workload
+/// naming it, writing no telemetry: a `ps` it cannot run, one that fails, and
+/// one listing a row it cannot read, a row of the wrong shape, a pid or an
+/// rss out of range, no server at all, or a server tree whose rows are each
+/// in range but sum past it. `ps` is a double first on PATH (wrapping the real
+/// one for the sum), or, to be unrunnable, absent from a PATH of only the
+/// tools the run needs. The server runs behind a launcher with a helper, so
+/// its tree is three processes.
+#[test]
+fn the_reuse_workload_names_each_process_listing_failure() {
+    let real_ps = Command::new("sh")
+        .args(["-c", "command -v ps"])
+        .output()
+        .unwrap();
+    let real_ps = String::from_utf8(real_ps.stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let cases: [(&str, &str, &str); 8] = [
+        ("unrunnable", "", "cannot run `ps`: "),
+        (
+            "failing",
+            "echo 'ps: no listing here' >&2; exit 1",
+            "`ps -A -o pid=,ppid=,rss=` failed (exit status: 1): ps: no listing here",
+        ),
+        (
+            "unreadable",
+            "echo '12 x 3'",
+            "`ps` listed an unreadable row \"12 x 3\"",
+        ),
+        (
+            "short",
+            "echo '12 1'",
+            "`ps` listed \"12 1\", not a pid, parent and rss",
+        ),
+        (
+            "pid-range",
+            "echo '99999999999 1 3'",
+            "`ps` listed a pid out of range: \"99999999999 1 3\"",
+        ),
+        (
+            "rss-range",
+            "echo '12 1 18014398509481984'",
+            "`ps` listed an rss out of range: \"12 1 18014398509481984\"",
+        ),
+        ("serverless", "echo '1 0 10'", ") is not running"),
+        (
+            // The largest rss whose bytes fit: any two of them overflow.
+            "sum-range",
+            "\"$OH_REAL_PS\" \"$@\" | awk '{ print $1, $2, \"18014398509481983\" }'",
+            "the server tree's rss over pids [",
+        ),
+    ];
+    let runs: Vec<_> = cases
+        .into_iter()
+        .map(|(case, body, said)| {
+            let real_ps = real_ps.clone();
+            std::thread::spawn(move || {
+                let pool = Pool::new(&format!("pool-reuse-ps-{case}"));
+                let bin = pool.path("ps-double");
+                std::fs::create_dir_all(&bin).unwrap();
+                let path = if body.is_empty() {
+                    // PATH lookup skips an entry it cannot run, so no `ps`
+                    // anywhere on it: only the tools the run itself calls.
+                    for tool in ["bash", "sh", "cargo", "mktemp", "rm", "dirname"] {
+                        let found = Command::new("sh")
+                            .args(["-c", &format!("command -v {tool}")])
+                            .output()
+                            .unwrap();
+                        let found = String::from_utf8(found.stdout).unwrap();
+                        std::os::unix::fs::symlink(found.trim(), bin.join(tool)).unwrap();
+                    }
+                    bin.display().to_string()
+                } else {
+                    let ps = bin.join("ps");
+                    std::fs::write(&ps, format!("#!/bin/sh\n{body}\n")).unwrap();
+                    std::fs::set_permissions(
+                        &ps,
+                        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+                    )
+                    .unwrap();
+                    format!(
+                        "{}:{}",
+                        bin.display(),
+                        std::env::var("PATH").unwrap_or_default()
+                    )
+                };
+                let output = Command::new("bash")
+                    .arg(repo_root().join("live/control/app-server-reuse.sh"))
+                    .env("PATH", path)
+                    .env("OH_REUSE_CODEX", mock_bin())
+                    .env("OH_REAL_PS", &real_ps)
+                    .env("CODEX_MOCK_SHIM", "1")
+                    .env("CODEX_MOCK_HELPER", "1")
+                    .env("OH_REUSE_LEASES", "1")
+                    .env("OH_REUSE_SETTLE_MS", "1000")
+                    .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+                    .env("XDG_STATE_HOME", pool.path("state"))
+                    .env("CODEX_MOCK_DIR", pool.path("mock"))
+                    .env(
+                        "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS",
+                        LINGER_MS.to_string(),
+                    )
+                    .output()
+                    .unwrap();
+                let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+                let wrote = pool.path("reuse.json").exists();
+                (case, said, output.status.success(), stderr, wrote)
+            })
+        })
+        .collect();
+    for run in runs {
+        let (case, said, ok, stderr, wrote) = run.join().unwrap();
+        assert!(!ok, "{case}: {stderr}");
+        assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");
+        assert!(!wrote, "{case}: telemetry was written");
+    }
+}
+
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A server whose `thread/loaded/list` pages never end — each naming a cursor
 /// already answered — fails the reuse workload at once, naming the repeated
@@ -3966,9 +4521,7 @@ fn the_reuse_workload_refuses_a_loaded_list_that_repeats_its_cursor() {
 
 /// The live tools refuse a bad setting before they run anything, exiting 2
 /// and naming the setting, its value and the fix: the reuse workload's settle
-/// bound and lease count, and the sharing measurement's socket bound — on
-/// Linux alone, since the measurement refuses to start without `/proc` before
-/// it reads a setting.
+/// bound and lease count, and the sharing measurement's socket bound.
 #[test]
 fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
     let pool = Pool::new("pool-live-settings");
@@ -4008,10 +4561,7 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
             "slow",
             "OH_MEASURE_SOCKET_TIMEOUT is 'slow'",
         ),
-    ]
-    .into_iter()
-    .filter(|(script, ..)| cfg!(target_os = "linux") || *script != &measure)
-    {
+    ] {
         let output = Command::new("bash")
             .arg(script)
             .env("OH_REUSE_CODEX", mock_bin())
@@ -4032,8 +4582,8 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
 }
 
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
-/// The suite runs its reuse phase on Linux alone (its memory reading is
-/// `/proc`'s) and says it skipped it elsewhere.
+/// The suite runs its reuse phase on Linux alone, where its memory budget is
+/// measured, and says it skipped it elsewhere.
 struct ControlSuite {
     pool: Pool,
 }
@@ -4376,7 +4926,7 @@ fn a_server_that_dies_at_start_is_started_once_more() {
 fn a_write_refused_under_a_live_turn_is_app_server_lost() {
     let pool = Pool::new("pool-write-lost");
     let never = pool.file("never");
-    let (output, report) = pool.run(pool.command(
+    let mut child = pool.spawn(pool.command(
         "write-lost",
         &["--mode", "bypass"],
         &[
@@ -4386,6 +4936,12 @@ fn a_write_refused_under_a_live_turn_is_app_server_lost() {
             ("MOCK_CODEX_HOLD_UNTIL", &never),
         ],
     ));
+    exits_within(
+        &mut child,
+        Duration::from_secs(30),
+        "the dispatch whose connection refused its write",
+    );
+    let (output, report) = Pool::finish(child);
     let lost = result(&report);
     assert_eq!(
         lost["status"],
@@ -4403,6 +4959,71 @@ fn a_write_refused_under_a_live_turn_is_app_server_lost() {
             "the loss was not read off the refused write: {lost}"
         );
     }
+}
+
+/// A shared server killed while a command it started holds the server's end
+/// of the dispatch's connection is still lost under the turn: the dispatch
+/// reads no end-of-file — the command keeps the connection open — so it learns
+/// of the loss from the server itself, then stops the command, and nothing is
+/// left running. On macOS a command holds a connection this way whenever the
+/// server started it while another thread was accepting one;
+/// `inheritable-connections` stages that on every platform.
+#[test]
+fn a_shared_server_killed_while_its_command_holds_the_connection_is_lost_within_a_bound() {
+    let pool = Pool::new("pool-held-conn").with_env("CODEX_MOCK_FAULT", "inheritable-connections");
+    let beat = pool.file("heartbeat");
+    let never = pool.file("never");
+    let mut dispatch = pool.spawn(pool.command(
+        "held-conn",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    let server = pool.await_live_turns(1);
+    wait_for("the heartbeat to start", Duration::from_secs(10), || {
+        lines(&beat) >= 3
+    });
+    let command = command_running(&pool, server, &beat)["pid"]
+        .as_u64()
+        .unwrap() as u32;
+    sigkill(server);
+    let stdout = read_to_end(dispatch.stdout.take().unwrap());
+    let stderr = read_to_end(dispatch.stderr.take().unwrap());
+    let status = exits_within(
+        &mut dispatch,
+        DEAD_LEASE_STOP_DEADLINE * 3,
+        "the dispatch whose server died under a command holding its connection",
+    );
+    let bound = Duration::from_secs(2);
+    let output = Output {
+        status,
+        stdout: stdout
+            .recv_timeout(bound)
+            .expect("the dispatch's output ended"),
+        stderr: stderr
+            .recv_timeout(bound)
+            .expect("the dispatch's errors ended"),
+    };
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "no JSON report ({err}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let lost = result(&report);
+    assert_eq!(lost["status"], "nonzero", "{lost}");
+    assert_eq!(lost["failure_kind"], "app_server_lost", "{lost}");
+    assert!(
+        lost["error"]
+            .as_str()
+            .is_some_and(|error| error.contains(&format!("(pid {server}) exited"))),
+        "the loss was not read off the server's own exit: {lost}"
+    );
+    wait_for("the command holding the connection to stop", bound, || {
+        !alive(command)
+    });
 }
 
 /// The same answer onto a connection the server stopped reading, where the
@@ -4447,36 +5068,4 @@ fn a_write_dropped_under_a_live_turn_still_ends_the_run_app_server_lost() {
         json!([]),
         "the server read an answer it should have dropped: {approvals}"
     );
-}
-
-/// Hangs on purpose, the way a journey hung on macOS CI: a pooled dispatch
-/// whose turn never ends, waited on with no bound of the journey's own. Ignored
-/// in every ordinary run: `scripts/app-server-hang-bound-test.sh` runs it
-/// through cargo nextest to prove that the suite's per-test bound
-/// (`.config/nextest.toml`) ends it as a failure naming it, and that nothing it
-/// started is left running. What it started is written, before it waits, to
-/// the file `OH_HANG_PROBE_MANIFEST` names.
-#[test]
-#[ignore = "hangs on purpose; scripts/app-server-hang-bound-test.sh runs it"]
-fn a_journey_that_never_ends_is_ended_by_the_suite_s_bound() {
-    let manifest = std::env::var_os("OH_HANG_PROBE_MANIFEST")
-        .expect("OH_HANG_PROBE_MANIFEST names the file to record what this journey starts");
-    let pool = Pool::new("pool-hang-probe");
-    let never = pool.file("never");
-    let dispatch =
-        pool.spawn(pool.command("hang-probe", &[], &[("MOCK_CODEX_HOLD_UNTIL", &never)]));
-    let server = pool.await_live_turns(1);
-    let (_, sweeper) = entry_and_sweeper(&pool);
-    std::fs::write(
-        &manifest,
-        format!(
-            "dir={}\ntest={}\ndispatch={}\nserver={server}\nsweeper={sweeper}\n",
-            pool.dir.path().display(),
-            std::process::id(),
-            dispatch.id()
-        ),
-    )
-    .unwrap();
-    let (_, report) = Pool::finish(dispatch);
-    panic!("the held turn ended: {report}");
 }

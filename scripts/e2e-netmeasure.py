@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Run one live-tier launch in a measuring network namespace and record its bytes.
 
-    e2e-netmeasure.py --line-file FILE --launch-id ID [--pending PATH] -- ARGV...
+    e2e-netmeasure.py --line-file FILE --launch-id ID [--pending PATH]
+                      [--start-line JSON] [--unmeasured REASON] -- ARGV...
 
-The Linux half of the network recorder (`scripts/e2e-netshim.sh` writes the
-launch's `start` line, then execs this). ARGV runs inside a fresh unprivileged
-user + network + mount + PID namespace whose only interface is a `pasta` TAP
-device; when the launch's whole process tree has exited (every descendant,
+The half of the network recorder `scripts/e2e-netshim.sh` execs wherever
+python3 can run it (Linux and macOS). Every write this makes for the launch —
+its pending marker and `start` line (`--start-line`, which the shim encodes),
+the launch itself, and its measurement line — comes from a supervisor in its
+own session, so a caller that SIGKILLs this process's group, as oneharness does
+100 ms after a SIGTERM, can never land between a `start` line and its
+measurement: a kill before the supervisor exists leaves neither.
+
+ARGV runs inside a fresh unprivileged user + network + mount + PID namespace
+whose only interface is a `pasta` TAP device; when the launch's whole process tree has exited (every descendant,
 detached and double-forked included, inherits the namespace and is reaped by
 its init), one measurement line is appended to FILE:
 
@@ -20,7 +27,8 @@ host-NIC wire bytes (pasta terminates the namespace's TCP and re-originates it
 from host sockets). The payload estimates subtract 54 B per frame.
 
 Where the namespace cannot be built (no pasta on PATH, unprivileged user
-namespaces refused) the launch runs directly instead and the line is
+namespaces refused), or `--unmeasured` says why it is not tried (macOS), the
+launch runs directly instead, still under the supervisor, and the line is
 `{"launch_id", "method": "unavailable", "reason", "seconds", "exit"}`.
 
 Either way stdin, stdout and stderr are the launch's own and the exit status is
@@ -30,9 +38,11 @@ process — or SIGKILLs its whole process group, as oneharness does 100 ms after
 a SIGTERM — still gets exactly one line: the supervisor sees this process gone,
 stops the namespace and records what it measured.
 
-Stopping the namespace, at the deadline (`OH_E2E_NET_DEADLINE` seconds after
-the launch starts, default 1800, 0 for none) or because this process was
-signalled, sends SIGTERM to every process in it and SIGKILL 5 s later.
+A stop this process receives reaches a launch that runs directly as that same
+signal, and SIGKILL 5 s later. Stopping the namespace, at the deadline
+(`OH_E2E_NET_DEADLINE` seconds after the launch starts, default 1800, 0 for
+none) or because this process was signalled, sends SIGTERM to every process in
+it and SIGKILL 5 s later.
 
 `OH_E2E_NET_OBSERVER`, a JSON argv, is the self-check's seam: that command is
 started inside the namespace before the counters are first read, with the
@@ -55,7 +65,7 @@ import sys
 import tempfile
 import time
 import traceback
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple, NewType, Optional
@@ -64,6 +74,9 @@ METHOD = "netns-pasta"
 # Ethernet 14 + IPv4 20 + TCP 20: what one TAP frame carries beyond its payload.
 FRAME_HEADERS = 54
 KILL_GRACE = 5.0
+# How long a killed direct launch's group gets to be reaped before the
+# measurer records it anyway.
+REAP_WAIT = 2.0
 DEFAULT_DEADLINE = 1800.0
 CLONE_NEWNS = 0x00020000
 CLONE_NEWPID = 0x20000000
@@ -132,8 +145,9 @@ class Unavailable:
 class Ending(Enum):
     """How the supervisor's work ended, as it tells the shim."""
 
-    EXITED = "exited"  # the launch ran in the namespace; `code` is its status
+    EXITED = "exited"  # the launch ran and is recorded; `code` is its status
     UNLAUNCHED = "unlaunched"  # the namespace never ran it; `reason` says why
+    REFUSED = "refused"  # its marker or start line could not be written; `reason` says why
 
 
 @dataclass(frozen=True)
@@ -594,11 +608,115 @@ def defer_stops() -> None:
     signal.pthread_sigmask(signal.SIG_UNBLOCK, stops())
 
 
-def run_direct(args: argparse.Namespace, reason: str) -> int:
-    """Run the launch without the namespace and record why it was not measured."""
+@dataclass(frozen=True)
+class StartRecord:
+    """A launch's `start` line, in the fields and order scripts/e2e-netshim.sh
+    writes them."""
+
+    suite: str
+    phase: str
+    harness: str
+    kind: str
+    launch_id: LaunchId
+    argv: tuple[str, ...]
+
+    @staticmethod
+    def parse(text: str, launch_id: str) -> Optional[StartRecord]:
+        """`text` as the shim's start record for `launch_id`, or None when it is
+        anything else — the budget step could not place a start of another
+        shape."""
+        try:
+            start = json.loads(text)
+        except ValueError:
+            return None
+        names = [field.name for field in fields(StartRecord)]
+        if not isinstance(start, dict) or set(start) != set(names):
+            return None
+        strings = [start[name] for name in names if name != "argv"]
+        argv = start["argv"]
+        if not all(isinstance(value, str) for value in strings):
+            return None
+        if not isinstance(argv, list) or not all(isinstance(word, str) for word in argv):
+            return None
+        if start["launch_id"] != launch_id:
+            return None
+        suite, phase, harness, kind, _ = strings
+        return StartRecord(suite, phase, harness, kind, LaunchId(launch_id), tuple(argv))
+
+    def line(self) -> str:
+        """The record as one JSONL line, whatever the caller's spelling."""
+        return json.dumps(asdict(self), ensure_ascii=False, separators=(",", ":"))
+
+
+def record_start(args: argparse.Namespace) -> Optional[str]:
+    """Make the launch's pending marker, then append its `start` line — in that
+    order, so no start line is ever written without one. None once both are
+    in (or there is no start line to write); otherwise why not, with neither
+    left behind where that can be helped."""
+    if args.start_line is None:
+        return None
+    pending = args.pending
+    markers = os.path.dirname(pending)
+    try:
+        os.makedirs(markers, exist_ok=True)
+        with open(pending, "w"):
+            pass
+    except OSError as error:
+        return (
+            f"cannot create {pending} ({error}); check that "
+            f"{os.path.dirname(args.line_file)} is writable, then rerun"
+        )
+    try:
+        fd = os.open(args.line_file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+        try:
+            os.write(fd, (args.start_line + "\n").encode())
+        finally:
+            os.close(fd)
+    except OSError as error:
+        try:
+            os.unlink(pending)
+        except OSError:
+            return (
+                f"cannot append to {args.line_file} ({error}), nor remove its pending marker "
+                f"{pending}, which the budget step would wait on; check that "
+                f"{os.path.dirname(args.line_file)} is writable, remove the marker, then rerun"
+            )
+        return f"cannot append to {args.line_file} ({error}); check that its directory is writable"
+    return None
+
+
+def start_recorded(args: argparse.Namespace) -> bool:
+    """Whether the launch's `start` line is in its file: a measurement line
+    with no start would be one the budget step cannot place."""
+    if args.start_line is None:
+        return True
+    try:
+        text = Path(args.line_file).read_text(errors="replace")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if (
+            isinstance(record, dict)
+            and "suite" in record
+            and record.get("launch_id") == args.launch_id
+        ):
+            return True
+    return False
+
+
+def run_direct(args: argparse.Namespace, reason: str, life: int) -> Outcome:
+    """In the supervisor: run the launch without the namespace, in a process
+    group of its own, and record why it was not measured. The stop the shim
+    relays over `life` reaches the launch's group as the same signal, and
+    SIGKILL follows KILL_GRACE later if any of the group is still there —
+    whether or not the launch itself has exited by then."""
     t0 = time.monotonic()
     try:
-        launch = subprocess.Popen(args.argv)
+        launch = subprocess.Popen(args.argv, start_new_session=True)
     except OSError as error:
         append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, 127))
         remove_pending(args.pending)
@@ -607,39 +725,86 @@ def run_direct(args: argparse.Namespace, reason: str) -> int:
             "installed there (the shim resolved it at setup), then rerun the suite to resolve it again",
             file=sys.stderr,
         )
-        return 127
-    for signum in stops():
-        signal.signal(signum, lambda n, _f: launch.send_signal(n))
-    for signum in DEFERRED_STOPS:
-        launch.send_signal(signum)
-    code = launch.wait()
+        return Outcome(Ending.EXITED, code=127)
+    stop = signal.SIGTERM
+    watching = True
+    kill_at: Optional[float] = None
+    while True:
+        try:
+            code = launch.wait(timeout=0.05)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+        if watching and select.select([life], [], [], 0)[0]:
+            chunk = os.read(life, 64)
+            if chunk:
+                stop = signal.Signals(chunk[0])
+                continue
+            watching = False
+            signal_group(launch.pid, stop)
+            kill_at = time.monotonic() + KILL_GRACE
+        elif kill_at is not None and time.monotonic() >= kill_at:
+            signal_group(launch.pid, signal.SIGKILL)
+            kill_at = None
+    if kill_at is not None:
+        # The leader obeyed the stop, but what it started in its group may
+        # not have: they get the rest of the grace, then the same SIGKILL.
+        while group_alive(launch.pid) and time.monotonic() < kill_at:
+            time.sleep(0.05)
+        signal_group(launch.pid, signal.SIGKILL)
+        # SIGKILL lands asynchronously; return once the group is reaped, so
+        # nothing the launch started outlives this record of it.
+        settled = time.monotonic() + REAP_WAIT
+        while group_alive(launch.pid) and time.monotonic() < settled:
+            time.sleep(0.02)
     code = 128 - code if code < 0 else code
     append_line(
         args.line_file, Unavailable(args.launch_id, reason, round(time.monotonic() - t0, 3), code)
     )
     remove_pending(args.pending)
-    return code
+    return Outcome(Ending.EXITED, code=code)
 
 
-def measure(args: argparse.Namespace) -> int:
+def signal_group(group: int, signum: int) -> None:
+    try:
+        os.killpg(group, signum)
+    except (ProcessLookupError, PermissionError):
+        pass  # the whole group is already gone, or only its unreaped members are left
+
+
+def group_alive(group: int) -> bool:
+    """Whether any of `group` is still running. On Darwin a group whose
+    members have all exited but are not yet reaped answers EPERM, not ESRCH:
+    kill(2) fails a group "if any members of the group could not be
+    signaled", and XNU signals no zombie. Every member here is this user's
+    own launch, so EPERM means only those exited members are left."""
+    try:
+        os.killpg(group, 0)
+    except (ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def run_launch(args: argparse.Namespace, life: int) -> Outcome:
+    """The supervisor's whole work: record the start, run the launch —
+    measured where the namespace can be built, else directly — and record it."""
+    refusal = record_start(args)
+    if refusal is not None:
+        return Outcome(Ending.REFUSED, code=126, reason=refusal)
+    if args.unmeasured is not None:
+        return run_direct(args, args.unmeasured, life)
     pasta = shutil.which("pasta")
     if pasta is None:
-        return run_direct(args, f"no pasta on PATH; {NAMESPACE_ADVICE}")
+        return run_direct(args, f"no pasta on PATH; {NAMESPACE_ADVICE}", life)
     scratch = Path(tempfile.mkdtemp(prefix="oh-netmeasure-"))
-    life_r, life_w = os.pipe()
-    done_r, done_w = os.pipe()
-    supervisor = os.fork()
-    if supervisor == 0:
-        os.setsid()
-        os.close(life_w)
-        os.close(done_r)
+    try:
         try:
-            outcome = supervise(args, pasta, scratch, life_r)
+            outcome = supervise(args, pasta, scratch, life)
         except Unrecorded:
             outcome = Outcome(Ending.EXITED, code=UNRECORDED)
         except Exception as error:
-            # The shim still gets an answer and the launch a line: run it
-            # directly if it never started, else record why it went unmeasured.
+            # The launch still gets a line: run it directly if it never
+            # started, else record why it went unmeasured.
             traceback.print_exc()
             reason = (
                 f"the measuring supervisor failed ({error!r}; its traceback is on stderr); rerun "
@@ -653,7 +818,29 @@ def measure(args: argparse.Namespace) -> int:
                     outcome = Outcome(Ending.EXITED, code=UNRECORDED)
             else:
                 outcome = Outcome(Ending.UNLAUNCHED, reason=reason)
+    finally:
+        remove_scratch(scratch)
+    if outcome.ending is Ending.UNLAUNCHED:
+        return run_direct(args, outcome.reason, life)
+    return outcome
+
+
+def measure(args: argparse.Namespace) -> int:
+    life_r, life_w = os.pipe()
+    done_r, done_w = os.pipe()
+    supervisor = os.fork()
+    if supervisor == 0:
+        # Out of the caller's process group before anything is written: a
+        # group SIGKILL from here on cannot reach the writer, and one before
+        # this leaves nothing written.
+        os.setsid()
+        os.close(life_w)
+        os.close(done_r)
         try:
+            try:
+                outcome = run_launch(args, life_r)
+            except Unrecorded:
+                outcome = Outcome(Ending.EXITED, code=UNRECORDED)
             if outcome.ending is Ending.EXITED:
                 remove_pending(args.pending)
             try:
@@ -661,15 +848,15 @@ def measure(args: argparse.Namespace) -> int:
             except BrokenPipeError:
                 pass  # the shim is gone — signalled away — and the line already recorded
         finally:
-            remove_scratch(scratch)
             os._exit(0)
     os.close(life_r)
     os.close(done_w)
 
-    def let_go(*_: object) -> None:
-        # Closing the pipe is the supervisor's cue to stop the namespace; this
-        # process keeps waiting for the launch's exit status.
+    def let_go(signum: int = signal.SIGTERM, _frame: object = None) -> None:
+        # The stop, then the pipe's close — the supervisor's cue to stop the
+        # launch; this process keeps waiting for the launch's exit status.
         try:
+            os.write(life_w, bytes([signum]))
             os.close(life_w)
         except OSError:
             pass
@@ -677,7 +864,7 @@ def measure(args: argparse.Namespace) -> int:
     for signum in stops():
         signal.signal(signum, let_go)
     if DEFERRED_STOPS:
-        let_go()
+        let_go(DEFERRED_STOPS[0])
     message = b""
     while True:
         try:
@@ -691,6 +878,15 @@ def measure(args: argparse.Namespace) -> int:
     outcome = Outcome.decode(message)
     # llmlint: ignore[structural_pattern_matching] Linted and type-checked at the uv workspace's Python 3.9 floor, where `match` does not parse; the outcome is a closed Enum told apart by identity.
     if outcome is None:
+        if not start_recorded(args):
+            # Lost before its start line: nothing was launched or recorded.
+            remove_pending(args.pending)
+            print(
+                f"e2e-netmeasure: launch {args.launch_id}: the measuring supervisor ended before "
+                "recording it, so it did not run; rerun it",
+                file=sys.stderr,
+            )
+            return 137
         reason = (
             "the measuring supervisor ended without reporting, so this launch's bytes are "
             "unknown; rerun it, and if it recurs run scripts/e2e-netmeasure.py by hand around it"
@@ -699,8 +895,9 @@ def measure(args: argparse.Namespace) -> int:
         append_line(args.line_file, Unavailable(args.launch_id, reason, 0.0, None))
         remove_pending(args.pending)
         return 137
-    if outcome.ending is Ending.UNLAUNCHED:
-        return run_direct(args, outcome.reason)
+    if outcome.ending is Ending.REFUSED:
+        print(f"e2e-netshim: {outcome.reason}", file=sys.stderr)
+        return 126
     return outcome.code
 
 
@@ -709,6 +906,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--line-file")
     parser.add_argument("--launch-id")
     parser.add_argument("--pending", help="a marker file to remove once the line is written")
+    parser.add_argument("--start-line", help="the launch's start line, written before it runs")
+    parser.add_argument("--unmeasured", help="run the launch directly, recording this reason")
     parser.add_argument("--_init", dest="init", help=argparse.SUPPRESS)
     parser.add_argument("argv", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
@@ -720,6 +919,17 @@ def main(argv: list[str]) -> int:
         return namespace_init(Path(args.init), deadline_seconds(), args.argv)
     if not args.line_file or not args.launch_id:
         parser.error("--line-file and --launch-id are required")
+    if args.start_line is not None:
+        start = StartRecord.parse(args.start_line, args.launch_id)
+        if start is None:
+            parser.error(
+                "--start-line must be the shim's start record: a JSON object of exactly "
+                "suite, phase, harness, kind and launch_id (strings) and argv (a list of "
+                "strings), whose launch_id is --launch-id"
+            )
+        args.start_line = start.line()
+        if not args.pending:
+            parser.error("--start-line needs --pending, the marker made before it")
     defer_stops()
     # Refuse a bad value before anything runs, not inside the namespace.
     deadline_seconds()

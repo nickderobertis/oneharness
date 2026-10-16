@@ -299,7 +299,9 @@ fn refresh(launch: &CatalogLaunch<'_>, home: &Path, version: &str) -> Result<Cat
     let deadline = Instant::now() + MODEL_CATALOG_REFRESH_DEADLINE;
     let mut command = launch_command(launch, &refresh_helper_args());
     command.stdin(Stdio::piped());
-    let mut helper = Process::spawn(command)
+    // Tethered, like the version probe: a caller killed mid-refresh leaves no
+    // deadline to end a helper that never exits.
+    let mut helper = Process::spawn_tethered(command)
         .map_err(|error| format!("cannot start `{} app-server`: {error}", launch.bin))?;
     let mut stdin = helper.take_stdin();
     if let Some(stdin) = stdin.as_mut() {
@@ -404,9 +406,12 @@ fn launch_command(launch: &CatalogLaunch<'_>, args: &[String]) -> Command {
 }
 
 /// `<bin> --version`'s output, under the launch's environment; `None` when it
-/// cannot be run, fails, or does not answer in time.
+/// cannot be run, fails, or does not answer in time. Tethered, like the shared
+/// server's own probe: a caller killed mid-probe leaves no deadline to end a
+/// probe that never answers.
 fn probe_version(launch: &CatalogLaunch<'_>) -> Option<String> {
-    let process = Process::spawn(launch_command(launch, &["--version".to_string()])).ok()?;
+    let process =
+        Process::spawn_tethered(launch_command(launch, &["--version".to_string()])).ok()?;
     let mut process = process;
     let status = process
         .wait_until(Instant::now() + CODEX_VERSION_PROBE_TIMEOUT)

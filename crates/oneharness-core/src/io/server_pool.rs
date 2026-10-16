@@ -909,85 +909,40 @@ pub fn process_identity(pid: Pid) -> Option<ProcessIdentity> {
 #[cfg(unix)]
 pub(crate) fn detach(command: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
-    // Read before the fork: `getrlimit` is not async-signal-safe.
-    let open_max = descriptor_bound();
     // SAFETY: the hook runs in the forked child before exec and calls only
-    // `setsid`, `syscall(close_range)` and `fcntl`, which are
-    // async-signal-safe, and allocates nothing.
+    // `setsid`, which is async-signal-safe.
     unsafe {
-        command.pre_exec(move || {
+        command.pre_exec(|| {
             if libc::setsid() == -1 {
                 return Err(io::Error::last_os_error());
             }
-            close_above_stdio_on_exec(open_max);
             Ok(())
         });
     }
+    crate::io::process::close_inherited_on_exec(command);
 }
 
 #[cfg(not(unix))]
 pub(crate) fn detach(_command: &mut std::process::Command) {}
 
-/// One past the highest descriptor number this process may hold, capped so a
-/// limit reported as unbounded does not cost a spawn millions of calls.
-#[cfg(unix)]
-fn descriptor_bound() -> libc::c_int {
-    const CAP: libc::rlim_t = 1 << 20;
-    let mut limit = libc::rlimit {
-        rlim_cur: 0,
-        rlim_max: 0,
-    };
-    // SAFETY: `limit` is a live, writable `rlimit` for the call.
-    let read = unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0;
-    let bound = if read && limit.rlim_cur != libc::RLIM_INFINITY {
-        limit.rlim_cur.min(CAP)
-    } else {
-        CAP
-    };
-    libc::c_int::try_from(bound).unwrap_or(libc::c_int::MAX)
-}
-
-/// Mark every descriptor above standard error close-on-exec, in a forked
-/// child about to exec. `std`'s own exec-error pipe is close-on-exec already.
-#[cfg(unix)]
-fn close_above_stdio_on_exec(open_max: libc::c_int) {
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: plain integer arguments; a kernel without `close_range`
-        // (before 5.11 for this flag) fails it, and the loop below runs.
-        let marked = unsafe {
-            libc::syscall(
-                libc::SYS_close_range,
-                3u32,
-                u32::MAX,
-                libc::CLOSE_RANGE_CLOEXEC,
-            )
-        };
-        if marked == 0 {
-            return;
-        }
-    }
-    for fd in 3..open_max {
-        // SAFETY: plain integers; a number naming no open descriptor fails
-        // with EBADF, which is ignored.
-        unsafe {
-            libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
-        }
-    }
-}
-
-/// Whether the OS still knows `pid`. This is the pool's whole correctness
+/// Whether `pid` is still running. This is the pool's whole correctness
 /// argument, so it asks the kernel rather than trusting any bookkeeping.
+///
+/// A zombie is not running. It still answers signal 0 on every Unix, and it
+/// stays one for as long as its parent lives without waiting on it — a shared
+/// server is the child of whichever dispatch started it, and that dispatch
+/// waits on nothing while its turn runs. Counted as alive, a dead server would
+/// never be stopped by marker, so a command it started that kept a client's
+/// connection open would hold that client waiting for end-of-file forever.
 #[must_use]
 pub fn pid_alive(pid: Pid) -> bool {
     let pid = pid.get();
     #[cfg(unix)]
     {
         // Signal 0 performs the existence/permission check without delivering.
-        // A zombie still answers, but a zombie server is reaped by its parent's
-        // exit, so treating it as alive only defers reclamation by one sweep.
         // SAFETY: `kill` takes plain integers and signal 0 delivers nothing.
-        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+        let known = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+        known && !is_zombie(pid)
     }
     #[cfg(windows)]
     {
@@ -1006,6 +961,59 @@ pub fn pid_alive(pid: Pid) -> bool {
         }
     }
     #[cfg(not(any(unix, windows)))]
+    {
+        let _ = pid;
+        false
+    }
+}
+
+/// Whether `pid` has exited and is waiting to be reaped, as the kernel reports
+/// its state: `Z` in `/proc/<pid>/stat` on Linux; on macOS, a pid
+/// `proc_pidinfo` cannot find. A state that cannot be read otherwise is not a
+/// zombie: the caller's signal 0 has already said the pid exists.
+#[cfg(unix)]
+fn is_zombie(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|state| matches!(state, "Z" | "X"))
+        })
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // <sys/proc.h>'s `SZOMB`, the `p_stat` of a process awaiting collection.
+        const SZOMB: u32 = 5;
+        let Ok(pid) = libc::c_int::try_from(pid) else {
+            return false;
+        };
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+        // SAFETY: `info` is writable for `size` bytes, the size of the
+        // structure PROC_PIDTBSDINFO fills.
+        let filled = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                size,
+            )
+        };
+        if filled == size {
+            // SAFETY: the kernel filled all `size` bytes of the structure.
+            return unsafe { info.assume_init() }.pbi_status == SZOMB;
+        }
+        // With a zero `arg` XNU looks the pid up among processes that have not
+        // exited (`proc_find`, which skips one marked dead at exit) and answers
+        // ESRCH for any other — while signal 0 still succeeds for an exited,
+        // unreaped pid (`kill`'s `pzfind` branch). So ESRCH after signal 0
+        // answered is exactly an exited process. Any other failure says
+        // nothing about its state.
+        filled <= 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = pid;
         false

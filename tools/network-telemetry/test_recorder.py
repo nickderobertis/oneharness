@@ -762,6 +762,28 @@ class Arguments(unittest.TestCase):
         first = (tmp / "codex.jsonl").read_text(encoding="utf-8").splitlines()[0]
         self.assertEqual(json.loads(first), start)
 
+    def test_a_start_line_without_its_pending_marker_is_refused_before_anything_runs(
+        self,
+    ) -> None:
+        # The marker is made before the start line so that no start line is
+        # ever written without one: with no --pending to name it, neither is
+        # written and the launch never runs.
+        tmp = scratch(self)
+        ran = tmp / "ran"
+        argv = measure_argv(
+            tmp, start_line("L"), [sys.executable, "-c", f"open({str(ran)!r}, 'w')"]
+        )
+        pending = argv.index("--pending")
+        del argv[pending : pending + 2]
+        run = subprocess.run(
+            argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=False
+        )
+        self.assertEqual(run.returncode, 2, run.stderr)
+        self.assertIn(b"--start-line needs --pending, the marker made before it", run.stderr)
+        self.assertFalse(ran.exists(), "the launch ran with no marker for its start")
+        self.assertFalse((tmp / "codex.jsonl").exists(), "a start line was written")
+        self.assertFalse((tmp / ".pending").exists(), "a marker was made")
+
 
 class MalformedResult(unittest.TestCase):
     @unittest.skipUnless(
@@ -1329,6 +1351,8 @@ class Fallback(unittest.TestCase):
         # The launch exits on the relayed stop at once, but a child it started
         # in its group ignores it: the supervisor must not take the leader's
         # exit for the group's, and SIGKILLs what is left KILL_GRACE later.
+        # The leader becomes a plain `sleep`, which the stop ends by default,
+        # whatever a shell's own `wait` does with it.
         tmp = scratch(self)
         heartbeat = tmp / "heartbeat"
         pids = tmp / "pids"
@@ -1337,7 +1361,7 @@ class Fallback(unittest.TestCase):
             "#!/usr/bin/env bash\n"
             f"(trap '' TERM; while :; do printf . >>\"{heartbeat}\"; sleep 0.1; done) &\n"
             f'echo "$!" >"{pids}"\n'
-            "wait\n"
+            "exec sleep 60\n"
         )
         real.chmod(0o755)
         file = tmp / "codex.jsonl"

@@ -1254,7 +1254,9 @@ class Fallback(unittest.TestCase):
         time.sleep(0.5)
         self.assertEqual(heartbeat.stat().st_size, size, "the launch outlived the signal")
 
-    @unittest.skipIf(WINDOWS, "the legs are named through OH_E2E_OS on unix")
+    @unittest.skipIf(
+        WINDOWS, "the measurer forks its supervisor and SIGKILLs the launch's process group"
+    )
     def test_an_unmeasured_launch_that_ignores_the_stop_is_killed_after_the_grace(self) -> None:
         # The supervisor relays the shim's stop to the direct launch's group;
         # a launch that ignores it is SIGKILLed KILL_GRACE later and recorded

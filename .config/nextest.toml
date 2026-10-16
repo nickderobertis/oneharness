@@ -5,17 +5,19 @@
 # output, so nothing else would name it).
 
 # Every other test: ended at 600 s (`period` x `terminate-after`). Without it
-# nextest never ends one. The slowest outside the app-server journeys measures
-# under 3 minutes (168 s, history_index's reindex memory test, in an
-# instrumented workspace run), so the bound leaves room for a loaded runner.
+# nextest never ends one. The slowest outside the app-server journeys measured
+# 231 s (history_index's reindex memory test, in a workspace run on a host still
+# compiling beside it; 121 s for the slowest in an unloaded instrumented run),
+# so the bound leaves room for a loaded runner.
 [profile.default]
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The shared Codex app-server journeys (crates/oneharness-e2e/tests/app_server.rs)
 # wait on real dispatches, servers and sweepers. One that never ended held a
-# shared macOS runner for hours; each is now ended at 180 s, about 1.7 times the
-# slowest that passes (105 s, the control suite's pooled phases, instrumented,
-# in a full workspace run; mostly waiting on sweeps and lingers, not CPU).
+# shared macOS runner for hours; each is now ended at 180 s. The slowest that
+# passes, the control suite's pooled phases, measured 83-127 s across full
+# workspace runs, instrumented or not, the slower on a loaded host; it mostly
+# waits on sweeps and lingers, not CPU.
 # Ended, it is a TIMEOUT failure that names it, and nextest terminates its
 # process group.
 [[profile.default.overrides]]

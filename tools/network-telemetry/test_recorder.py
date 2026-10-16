@@ -971,7 +971,10 @@ class Unwritable(unittest.TestCase):
         )
         self.assertEqual(run.returncode, 126, run.stderr)
         (marker,) = (tmp / ".pending").glob("*")
-        self.assertIn(f"nor remove its pending marker {marker}".encode(), run.stderr)
+        # As the shim spells it: the line file's directory, then `/`, whatever
+        # separator that directory was given in (`\` on Windows).
+        spelled = f"{tmp}/.pending/{marker.name}"
+        self.assertIn(f"nor remove its pending marker {spelled}".encode(), run.stderr)
         self.assertIn(b"remove the marker, then rerun", run.stderr)
         self.assertFalse(ran.exists(), "the launch ran with nothing recorded for it")
 

@@ -178,7 +178,7 @@ oh_deadline() {
   fi
   case "$secs" in
     '' | *[!0-9]*)
-      echo "oh_deadline: '$secs' is not a whole number of seconds, the only form the perl fallback can bound" >&2
+      echo "oh_deadline: '$secs' is not a whole number of seconds, the only form the perl fallback can bound; set the timeout in whole seconds (e.g. 180, not 3m), or install coreutils' timeout" >&2
       return 2
       ;;
   esac
@@ -189,8 +189,8 @@ oh_deadline() {
   # shellcheck disable=SC2016 # the program is perl's, expanded by perl
   perl -e '
     my $secs = shift;
-    defined(my $pid = fork) or die "oh_deadline: cannot fork: $!\n";
-    if (!$pid) { exec @ARGV or do { print STDERR "oh_deadline: cannot run $ARGV[0]: $!\n"; exit 127 } }
+    defined(my $pid = fork) or die "oh_deadline: cannot fork to run $ARGV[0]: $!; the host is out of processes or memory, so free some (ulimit -u, running jobs) and rerun\n";
+    if (!$pid) { exec @ARGV or do { print STDERR "oh_deadline: cannot run $ARGV[0]: $!; check it is installed and executable on PATH, then rerun\n"; exit 127 } }
     local $SIG{ALRM} = sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 };
     alarm $secs;
     waitpid $pid, 0;

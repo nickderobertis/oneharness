@@ -3945,15 +3945,27 @@ mod listen_server {
             );
             return;
         }
+        let own = s
+            .threads
+            .get(thread_id)
+            .map(|t| t.settings.clone())
+            .unwrap_or_default();
         // leak-env: every command under the first thread this server opened,
-        // whichever dispatch's thread it is running for.
+        // whichever dispatch's thread it is running for — all but its dispatch
+        // marker, which stays its own: carrying the first dispatch's would have
+        // that dispatch's release stop this command before it printed, failing
+        // the suite on missing output rather than on the leak.
         let settings = match (s.fault.as_str(), s.first_opened.clone()) {
-            ("leak-env", Some(first)) => s.known.get(&first).cloned().unwrap_or_default(),
-            _ => s
-                .threads
-                .get(thread_id)
-                .map(|t| t.settings.clone())
-                .unwrap_or_default(),
+            ("leak-env", Some(first)) => {
+                let mut leaked = s.known.get(&first).cloned().unwrap_or_default();
+                let marker = "ONEHARNESS_DISPATCH_MARKER";
+                match own.set.get(marker) {
+                    Some(value) => leaked.set.insert(marker.to_string(), value.clone()),
+                    None => leaked.set.remove(marker),
+                };
+                leaked
+            }
+            _ => own,
         };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.retain(|name, _| !settings.exclude.iter().any(|excluded| excluded == name));

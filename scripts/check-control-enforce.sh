@@ -369,6 +369,32 @@ if command -v timeout >/dev/null 2>&1; then
   deadline_case "with timeout"
 fi
 
+# What a resumed turn that ran into its bound was doing. The live resume phase
+# once spent 300 s on a turn that said nothing, and a timeout alone cannot tell a
+# stalled model stream from a resume codex never took — so each reading below is
+# the frames such a turn leaves, read back into the one line the phase prints.
+silent_case() {
+  local description="$1" needle="$2" frames="$3" reading
+  jq -n --arg out "$frames" '{results: [{status: "timeout", stdout: $out}]}' >"$evidence_tmp/silent.json"
+  reading="$(_oh_silent_turn_reading "$evidence_tmp/silent.json")"
+  case "$reading" in
+    *"$needle"*) ;;
+    *) fail "$description: the reading was '$reading', not one naming '$needle'" ;;
+  esac
+}
+silent_case "a turn that sent nothing" "never announced the thread" ""
+silent_case "a resume that never started a turn" "never started the turn" \
+  '{"type":"thread.started","thread_id":"t"}'
+silent_case "a stalled model stream" "a stalled model stream" \
+  "$(printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.started"}')"
+silent_case "a command that never finished" "never finished: touch resume-auto.txt" \
+  "$(printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.started"}' \
+    '{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"touch resume-auto.txt"}}')"
+silent_case "a command that finished before the stall" "a stalled model stream" \
+  "$(printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.started"}' \
+    '{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"touch x"}}' \
+    '{"type":"item.completed","item":{"id":"i0","type":"command_execution","command":"touch x"}}')"
+
 # The control phase end to end, against an agent that works as fast as a shell
 # can and would batch everything it could: goose finished all 60 steps of a
 # paced workload in 15 s, three attempts running, so the phase never had a turn

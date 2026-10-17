@@ -4547,6 +4547,121 @@ fn a_resumed_codex_turn_is_sandboxed_like_a_fresh_one_over_a_callers_override() 
 }
 
 #[test]
+fn a_resumed_codex_turn_under_auto_runs_or_says_why_it_cannot() {
+    // The live resume phase under `--mode auto` once spent its whole 300 s
+    // bound on a turn that said nothing. Against a Codex double that keeps a
+    // thread store and refuses what Codex refuses, a resumable session must
+    // complete through `codex exec resume`, and one that cannot be resumed —
+    // a thread Codex has no rollout for, or a mode the adapter refuses — must
+    // end at once with the reason, never wait out the run's timeout.
+    let store = session_store_dir("codex-resume-auto");
+    let store_arg = store.display().to_string();
+    let cwd = session_store_dir("codex-resume-auto-cwd");
+    let cwd_arg = cwd.display().to_string();
+    let threads = store.join("threads");
+    let threads_arg = threads.display().to_string();
+    let argv_file = store.join("argv.txt");
+    let argv_arg = argv_file.display().to_string();
+    let stdout = concat!(
+        r#"{"type":"thread.started","thread_id":"th-resume-auto"}"#,
+        "\n",
+        r#"{"type":"turn.started"}"#,
+        "\n",
+        r#"{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"OK"}}"#,
+        "\n",
+        r#"{"type":"turn.completed","usage":{"input_tokens":3,"cached_input_tokens":0,"output_tokens":1}}"#,
+        "\n",
+    );
+    let lost = store.join("lost-threads");
+    let lost_arg = lost.display().to_string();
+    let bin = bin_override("codex");
+    let lost_stdout = stdout.replace("th-resume-auto", "th-lost");
+    // `threads` is the store the double keeps its threads in for this turn.
+    let turn = |mode: &str, session: &str, threads: &str, stdout: &str| {
+        let args = [
+            "run",
+            "--harness",
+            "codex",
+            "--mode",
+            mode,
+            "--session",
+            session,
+            "--session-dir",
+            &store_arg,
+            "--cwd",
+            &cwd_arg,
+            "--prompt",
+            "go",
+            "--bin",
+            &bin,
+            "--timeout",
+            "300",
+            "--compact",
+        ];
+        let env = [
+            ("MOCK_STDOUT", stdout),
+            ("MOCK_CODEX_THREADS", threads),
+            ("MOCK_ARGV_FILE", argv_arg.as_str()),
+        ];
+        run_within(&args, &env, std::time::Duration::from_secs(60))
+    };
+
+    let first = turn("auto", "chat", &threads_arg, stdout);
+    assert!(first.status.success(), "{first:?}");
+    assert_eq!(json_stdout(&first)["session"]["token"], "th-resume-auto");
+
+    let second = turn("auto", "chat", &threads_arg, stdout);
+    assert!(second.status.success(), "{second:?}");
+    let report = json_stdout(&second);
+    assert_eq!(report["session"]["phase"], "continue", "{report:#}");
+    assert_eq!(report["results"][0]["status"], "ok", "{report:#}");
+    assert_eq!(report["results"][0]["text"], "OK", "{report:#}");
+    let argv = std::fs::read_to_string(&argv_file).unwrap();
+    let argv: Vec<&str> = argv.lines().collect();
+    assert_eq!(argv[..2], ["exec", "resume"], "{argv:?}");
+    assert!(
+        argv.windows(2)
+            .any(|w| w == ["-c", "sandbox_mode=workspace-write"]),
+        "{argv:?}"
+    );
+    assert!(argv.contains(&"th-resume-auto"), "{argv:?}");
+
+    // A stored session whose thread Codex has no rollout for (turn one's
+    // thread went to a store this Codex does not read): Codex's own reason,
+    // at once.
+    let created = turn("auto", "lost", &lost_arg, &lost_stdout);
+    assert!(created.status.success(), "{created:?}");
+    let missing = turn("auto", "lost", &threads_arg, &lost_stdout);
+    let report = json_stdout(&missing);
+    let result = &report["results"][0];
+    assert_eq!(result["status"], "nonzero", "{report:#}");
+    assert_eq!(result["exit_code"], 1, "{report:#}");
+    assert!(
+        result["stderr"]
+            .as_str()
+            .unwrap()
+            .contains("no rollout found for thread id th-lost"),
+        "{report:#}"
+    );
+    assert!(
+        result["duration_ms"].as_u64().unwrap() < 30_000,
+        "a refused resume waited: {report:#}"
+    );
+    // The summary names the classified cause; the result keeps Codex's words.
+    let said = String::from_utf8_lossy(&missing.stderr);
+    assert!(
+        said.contains("codex [session-not-found]"),
+        "the caller was not told why: {said}"
+    );
+
+    // A mode the codex adapter cannot express is refused before anything runs.
+    let refused = turn("edit", "chat", &threads_arg, stdout);
+    assert_eq!(refused.status.code(), Some(2), "{refused:?}");
+    let said = String::from_utf8_lossy(&refused.stderr);
+    assert!(said.contains("edit") && said.contains("codex"), "{said}");
+}
+
+#[test]
 fn every_spelling_of_a_callers_sandbox_mode_is_outranked_on_a_resumed_codex_turn() {
     // Codex takes a config override as `-c k=v`, `--config k=v`,
     // `--config=k=v` or `-ck=v`; each one is a `sandbox_mode` that would win a

@@ -205,6 +205,13 @@
 //!                              fails it like `fail`, and an `app-server`
 //!                              launch then exits 1 at once, as a Codex
 //!                              server that cannot start does.
+//!   MOCK_CODEX_THREADS         a directory: act like `codex exec` about its
+//!                              threads. A fresh `exec` stores the `thread_id`
+//!                              its MOCK_STDOUT announces; `exec resume <id>`
+//!                              refuses a `--sandbox` flag (exit 2) and a
+//!                              thread it never stored (exit 1, Codex's `no
+//!                              rollout found` error), and otherwise answers
+//!                              as the default path does.
 //!   MOCK_CODEX_ECHO_PROMPT     with MOCK_CODEX_APP_SERVER_LOG, the turn's
 //!                              agent message is the text of the `turn/start`
 //!                              input instead of a fixed "still working".
@@ -2020,6 +2027,10 @@ pub fn run() -> ! {
         codex_model_catalog(&path, &argv);
     }
 
+    if let Ok(dir) = mock_var("MOCK_CODEX_THREADS") {
+        codex_exec_threads(std::path::Path::new(&dir), &argv);
+    }
+
     // `codex app-server --listen unix://PATH`: the shared server a pooled
     // dispatch's turn runs on.
     #[cfg(unix)]
@@ -2410,6 +2421,62 @@ fn mock_var(name: &str) -> Result<String, std::env::VarError> {
         None => Err(err),
     })
 }
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; the refusals are codex-cli 0.163.0's own (`codex exec resume` has no `--sandbox`, and `thread/resume` answers a thread with no rollout `no rollout found for thread id <id>`, which exec prints as `Error: thread/resume: …` and exits 1), and the live `oh_resume_mode_enforce` phases are the drift alarm.
+/// Act like `codex exec` over a thread store (MOCK_CODEX_THREADS): a fresh
+/// `exec` stores the `thread_id` its scripted stdout announces, and `exec
+/// resume <id>` refuses what real Codex refuses — a `--sandbox` flag (exit 2,
+/// clap's wording) and a thread with no rollout (exit 1) — before carrying on
+/// as the default path does for one it knows.
+fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
+    if argv.first().map(String::as_str) != Some("exec") {
+        return;
+    }
+    let refuse = |code: i32, message: String| -> ! {
+        let _ = writeln!(std::io::stderr(), "{message}");
+        std::process::exit(code);
+    };
+    if argv.get(1).map(String::as_str) != Some("resume") {
+        let stdout = std::env::var("MOCK_STDOUT").unwrap_or_default();
+        for line in stdout.lines() {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if let Some(id) = value["thread_id"].as_str() {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(id), "");
+            }
+        }
+        return;
+    }
+    let mut positionals = Vec::new();
+    let mut args = argv[2..].iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--sandbox" | "-s" => refuse(
+                2,
+                format!(
+                    "error: unexpected argument '{arg}' found\n\nUsage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]"
+                ),
+            ),
+            "-c" | "--config" | "-m" | "--model" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') && flag != "-" => {}
+            positional => positionals.push(positional),
+        }
+    }
+    let Some(id) = positionals.first() else {
+        refuse(2, "error: codex exec resume needs a session id".to_string());
+    };
+    if !dir.join(id).is_file() {
+        refuse(
+            1,
+            format!("Error: thread/resume: no rollout found for thread id {id}"),
+        );
+    }
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// [`mock_var`] for a presence knob.
 fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {

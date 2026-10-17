@@ -2213,7 +2213,23 @@ oh_resume_mode_enforce() {
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
       "$sandbox/second.json" "$sandbox/second.err" --events "$@"
   fi
+  # A turn that ran into its bound having said nothing is a stall, not a
+  # verdict on the resume: say what it was doing and resume once more. A
+  # refused resume ends at once, non-zero, and is judged below as it ran.
+  if [ "$(_oh_result_status "$sandbox/second.json")" = timeout ]; then
+    note "  resume-mode: turn two under --mode $mode ran into its ${_OH_RESUME_TURN_TIMEOUT}s bound: $(_oh_silent_turn_reading "$sandbox/second.json"); resuming once more"
+    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
+      "$sandbox/second.json" "$sandbox/second.err" --events "$@"
+  fi
   status="$(_oh_result_status "$sandbox/second.json")"
+  if [ "$status" = timeout ]; then
+    note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
+    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" | tail -n 6 | cut -c1-300)"
+    local reading
+    reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
+    rm -rf "$sandbox"
+    fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_TIMEOUT}s bound twice: $reading. A resume codex refused would have ended at once with its reason; read the frames above, and if the model stream stalled both times, rerun \`just live-codex\`"
+  fi
   if [ "$status" != "ok" ]; then
     refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
     if [ -n "$refusal" ]; then
@@ -2463,10 +2479,50 @@ _oh_resume_mode_turn() {
   shift 8
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
+  # Bounded well inside codex's own stream-idle timeout (300 s in codex-cli
+  # 0.163), which the suite's 300 s bound used to equal: a model stream that
+  # stalls is killed while codex is still waiting to notice, so the run says
+  # nothing at all. These turns take seconds; `_oh_silent_turn_reading` says
+  # what a turn that reaches the bound was doing.
   ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
     --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
-    --timeout "${OH_TIMEOUT:-300}" --compact \
+    --timeout "$_OH_RESUME_TURN_TIMEOUT" --compact \
     "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
+}
+
+# The bound on one resume-phase turn, in seconds; see `_oh_resume_mode_turn`.
+_OH_RESUME_TURN_TIMEOUT=120
+
+# What a turn that ran into its bound was doing when it was stopped, read off
+# the frames it sent, as one line: codex never announced the thread, announced
+# it and never started the turn, started the turn and sent nothing more, or
+# started a command (named) that never finished. A silent timeout is otherwise
+# indistinguishable from a resume codex refused, and that is the difference
+# between a provider that stalled and an adapter that is broken.
+#   $1 report
+_oh_silent_turn_reading() {
+  local frames
+  frames="$(jq -r '.results[0].stdout // ""' "$1" 2>/dev/null | jq -R -c 'fromjson? // empty' 2>/dev/null)" || frames=""
+  if ! printf '%s\n' "$frames" | jq -e -s 'any(.[]; .type == "thread.started")' >/dev/null 2>&1; then
+    printf 'codex never announced the thread (no thread.started frame), so it stopped before the resume took'
+    return 0
+  fi
+  if ! printf '%s\n' "$frames" | jq -e -s 'any(.[]; .type == "turn.started")' >/dev/null 2>&1; then
+    printf 'codex resumed the thread and never started the turn'
+    return 0
+  fi
+  local open
+  open="$(printf '%s\n' "$frames" | jq -r -s '
+    [.[] | select(.type == "item.started" or .type == "item.completed")] as $items
+    | [$items[] | select(.type == "item.started") | .item]
+    | map(select(.id as $id | ($items | any(.type == "item.completed" and .item.id == $id)) | not))
+    | map(.command // .type) | first // empty' 2>/dev/null)" || open=""
+  if [ -n "$open" ]; then
+    printf 'the turn started a command that never finished: %s' "$(printf '%s' "$open" | head -c 300)"
+    return 0
+  fi
+  printf 'the turn started and the model sent nothing more (%s frames, the last a %s) — a stalled model stream' \
+    "$(printf '%s\n' "$frames" | grep -c .)" "$(printf '%s\n' "$frames" | jq -r -s 'last | .type // "?"' 2>/dev/null)"
 }
 
 # Live proof that `--mode edit` AUTO-APPROVES file edits — the reliably-testable

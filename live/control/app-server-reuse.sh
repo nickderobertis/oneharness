@@ -50,7 +50,9 @@ command -v "$codex" >/dev/null 2>&1 || {
 }
 # The example runs from wherever this build put it, which cargo's own artifact
 # message names: a caller's CARGO_TARGET_DIR (cargo llvm-cov's
-# target/llvm-cov-target, say) moves it out of target/debug.
+# target/llvm-cov-target, say) moves it out of target/debug. Only those JSON
+# messages reach stdout: `json-render-diagnostics` has cargo render compiler
+# errors as text on stderr, which this capture leaves on the terminal.
 artifacts="$(cd "$root" && cargo build --quiet --locked -p oneharness-core --example app_server_reuse \
   --message-format json-render-diagnostics)" || {
   echo "app-server-reuse: could not build the app_server_reuse example; fix cargo's error above (run 'just bootstrap' if the toolchain is missing), then rerun" >&2

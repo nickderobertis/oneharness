@@ -2502,10 +2502,12 @@ _OH_RESUME_TURN_ENV=()
 _OH_RESUME_TURN_BOUND=120
 
 # Whether a timed-out turn's frames show a model stream that went silent before
-# any tool ran: the thread and the turn started, and nothing after them names a
-# tool call or an end. Only then is resuming again safe and meaningful — no
-# command, edit or MCP call can be replayed, and a refused resume or a turn
-# that stopped mid-command reads otherwise.
+# any tool ran: the thread and the turn started, nothing ended the turn, and no
+# item is anything but the model's own words (`agent_message`, `reasoning`, or
+# an `error` notice). Every other item type — a command, an edit, an MCP or
+# collaborator call, or one codex adds later — counts as a tool, so only then
+# is resuming again safe: no work can be replayed, and a refused resume or a
+# turn that stopped mid-tool reads otherwise.
 #   $1 report
 _oh_stalled_before_tools() {
   jq -r '.results[0].stdout // ""' "$1" 2>/dev/null |
@@ -2514,7 +2516,7 @@ _oh_stalled_before_tools() {
       any(.[]; .type == "thread.started") and any(.[]; .type == "turn.started")
       and (any(.[]; .type == "turn.completed" or .type == "turn.failed") | not)
       and (any(.[]; (.type | startswith("item.")) and
-        ((.item.type // "") | IN("command_execution", "file_change", "mcp_tool_call", "web_search"))) | not)
+        ((.item.type // "") | IN("agent_message", "reasoning", "error") | not)) | not)
     ' >/dev/null 2>&1
 }
 
@@ -2531,7 +2533,8 @@ _oh_resume_turn_retrying_a_stall() {
   [ "$(_oh_result_status "$report")" = timeout ] && _oh_stalled_before_tools "$report" || return 0
   # llmlint: ignore[tool_output_is_signal] A retry that then passes is itself the finding: it is how a provider stall shows up in a green run, and a transcript that printed only the verdict could never say one happened.
   note "  resume: the turn ran into its ${_OH_RESUME_TURN_BOUND}s bound on $(_oh_silent_turn_reading "$report"); resuming once more"
-  cp "$report" "$report.stalled" || note "  could not keep the stalled attempt's report as $report.stalled"
+  cp "$report" "$report.stalled" ||
+    note "  could not keep the stalled attempt's report as $report.stalled (check the host temp dir is writable and has space); its frames are in the line above"
   _OH_RESUME_STALL_RETRIED=1
   _oh_resume_mode_turn "$@"
 }

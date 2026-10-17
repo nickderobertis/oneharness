@@ -513,7 +513,8 @@ esac
 # resumed again. A stand-in `oneharness` answers the phase's turns: turn one
 # creates the session; each resumed turn appends a line to FAKE_RESUME_LOG and
 # then, by its knobs, times out on a silent stream (the first
-# FAKE_RESUME_SILENT times), times out mid-command (FAKE_RESUME_MIDCOMMAND),
+# FAKE_RESUME_SILENT times), times out mid-tool (FAKE_RESUME_MIDTOOL, the item
+# type it had started),
 # is refused as codex refuses a lost thread (FAKE_RESUME_REFUSE), or runs —
 # touching the file it was asked to and recalling the word.
 resume_dir="$(mktemp -d /tmp/oh-resume.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
@@ -557,8 +558,8 @@ if [ -n "${FAKE_RESUME_REFUSE:-}" ]; then
   jq -n '{results: [{status: "nonzero", exit_code: 1, command: ["codex", "exec", "resume"], stdout: "", stderr: "Error: thread/resume: thread/resume failed: no rollout found for thread id th-1 (code -32600)\n"}], session: {phase: "continue", token: "th-1"}}'
   exit 1
 fi
-if [ -n "${FAKE_RESUME_MIDCOMMAND:-}" ]; then
-  jq -n '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: "{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.started\",\"item\":{\"id\":\"i0\",\"type\":\"command_execution\",\"command\":\"touch it\"}}"}], session: {phase: "continue", token: "th-1"}}'
+if [ -n "${FAKE_RESUME_MIDTOOL:-}" ]; then
+  jq -n --arg tool "$FAKE_RESUME_MIDTOOL" '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: ("{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.started\",\"item\":{\"id\":\"i0\",\"type\":\"" + $tool + "\",\"command\":\"touch it\"}}")}], session: {phase: "continue", token: "th-1"}}'
   exit 1
 fi
 if [ "$n" -le "${FAKE_RESUME_SILENT:-0}" ]; then
@@ -616,8 +617,14 @@ resume_case 2
 resume_expect "a stall on the one retry too" 1 2 "stalled again on its one retry" "argv_codex"
 resume_case 0 FAKE_RESUME_REFUSE=1
 resume_expect "a resume codex refused" 1 1 "no rollout found for thread id th-1" "resuming once more"
-resume_case 0 FAKE_RESUME_MIDCOMMAND=1
+resume_case 0 FAKE_RESUME_MIDTOOL=command_execution
 resume_expect "a turn gone silent mid-command" 1 1 "never finished: touch it" "resuming once more"
+# Every item but the model's own words is a tool, whether or not this suite
+# names it: a collaborator call, or a kind codex has not shipped yet.
+resume_case 0 FAKE_RESUME_MIDTOOL=collab_tool_call
+resume_expect "a turn gone silent mid-collaborator-call" 1 1 "not resumed again" "resuming once more"
+resume_case 0 FAKE_RESUME_MIDTOOL=some_future_tool
+resume_expect "a turn gone silent in an item this suite does not know" 1 1 "not resumed again" "resuming once more"
 
 # The stalling endpoint `oh_resume_stall_enforce` points real codex at. Its
 # verdict rests on the endpoint stalling exactly one model request and serving

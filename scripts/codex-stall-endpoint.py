@@ -36,7 +36,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, NamedTuple, TypedDict, TypeVar
+from typing import TYPE_CHECKING, Callable, NamedTuple, NewType, TypedDict, TypeVar
 
 if TYPE_CHECKING:
     from typing_extensions import override
@@ -87,6 +87,10 @@ class Frame(NamedTuple):
     payload: bytes
 
 
+MessageId = NewType("MessageId", str)
+ResponseId = NewType("ResponseId", str)
+
+
 class Content(TypedDict):
     type: str
     text: str
@@ -95,7 +99,7 @@ class Content(TypedDict):
 class Message(TypedDict):
     type: str
     role: str
-    id: str
+    id: MessageId
     content: list[Content]
 
 
@@ -108,7 +112,7 @@ class Usage(TypedDict):
 
 
 class Response(TypedDict, total=False):
-    id: str
+    id: ResponseId
     usage: Usage
 
 
@@ -176,7 +180,7 @@ def parse_request(body: bytes) -> dict[str, object] | None:
 
 
 def created(number: int) -> Event:
-    return {"type": "response.created", "response": {"id": f"resp_{number}"}}
+    return {"type": "response.created", "response": {"id": ResponseId(f"resp_{number}")}}
 
 
 def completion(number: int) -> list[Event]:
@@ -184,7 +188,7 @@ def completion(number: int) -> list[Event]:
     item: Message = {
         "type": "message",
         "role": "assistant",
-        "id": f"msg_{number}",
+        "id": MessageId(f"msg_{number}"),
         "content": [{"type": "output_text", "text": ANSWER}],
     }
     usage: Usage = {
@@ -196,7 +200,10 @@ def completion(number: int) -> list[Event]:
     }
     return [
         {"type": "response.output_item.done", "output_index": 0, "item": item},
-        {"type": "response.completed", "response": {"id": f"resp_{number}", "usage": usage}},
+        {
+            "type": "response.completed",
+            "response": {"id": ResponseId(f"resp_{number}"), "usage": usage},
+        },
     ]
 
 

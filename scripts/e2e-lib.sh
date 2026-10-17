@@ -2598,7 +2598,6 @@ _oh_stall_cleanup() {
   rm -rf "$1" || note "  could not remove $1; delete it by hand"
 }
 
-# `_oh_stall_cleanup`, then fail with $3.
 _oh_stall_abort() {
   _oh_stall_cleanup "$1" "$2"
   fail "$3"

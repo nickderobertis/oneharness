@@ -2599,12 +2599,12 @@ _oh_port_in() {
   case "$port" in
     [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9] | [1-9][0-9][0-9][0-9][0-9]) ;;
     *)
-      echo "$1 holds '$port', not a TCP port" >&2
+      echo "$1 holds '$port', not a TCP port; whatever wrote it must write one decimal port from 1 to 65535 and nothing else" >&2
       return 1
       ;;
   esac
   if [ "$port" -gt 65535 ]; then
-    echo "$1 holds $port, past the last TCP port" >&2
+    echo "$1 holds $port, past the last TCP port; whatever wrote it must write a port from 1 to 65535" >&2
     return 1
   fi
   printf '%s' "$port"

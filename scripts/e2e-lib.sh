@@ -740,6 +740,58 @@ oh_assert_echoed() {
   note "PASS: $id live e2e"
 }
 
+# The plain echo turn, started with nothing from the checkout or the machine in
+# the model's context, so it passes or fails on oneharness delivering the prompt
+# and extracting the reply. Run from the repository root, qwen loads every
+# QWEN.md and AGENTS.md from its cwd up to the project root, plus its global
+# QWEN.md and auto-memory. That came to about 10,700 tokens on macOS CI (run
+# 39076207320), and gpt-4o-mini answered "I'm ready to assist you!" in place of
+# the marker. So the turn starts in an empty `work/`, with HOME and qwen's home,
+# runtime and memory directories set to an empty `home/` beside it. With no git
+# root above it, qwen stops its upward search at HOME's parent, the sandbox
+# itself. A `.git` above the sandbox would make that the project root and widen
+# the search, so the helper refuses to launch. The marker assertion is
+# oh_assert_echoed's, unchanged.
+oh_echo_without_context() {
+  local id="$1" dir up marker turn status=0
+  local context_env=()
+  case "$id" in
+    qwen) ;;
+    *) fail "oh_echo_without_context: no context-free launch is known for $id; name the context it loads and how to point it away first" ;;
+  esac
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+    fail "could not create a scratch directory — check that the host temp dir is writable"
+  dir="$(cd "$dir" && pwd -P)"
+  up="$dir"
+  while :; do
+    if [ -e "$up/.git" ]; then
+      rm -rf "$dir"
+      fail "$id: the context-free sandbox $dir sits inside the git checkout at $up, so $id would load that checkout's context files; set TMPDIR to a directory outside any checkout and rerun"
+    fi
+    [ "$up" = / ] && break
+    up="$(dirname "$up")"
+  done
+  mkdir "$dir/work" "$dir/home"
+  context_env=(
+    --env "HOME=$(oh_native_path "$dir/home")"
+    --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"
+    --env "QWEN_HOME=$(oh_native_path "$dir/home/.qwen")"
+    --env "QWEN_RUNTIME_DIR=$(oh_native_path "$dir/home/.qwen")"
+    --env "QWEN_CODE_MEMORY_BASE_DIR=$(oh_native_path "$dir/home/.qwen")"
+  )
+  marker="$(oh_marker)"
+  # In a subshell, as oh_controlled_turn does, so the sandbox goes however the
+  # turn ends.
+  (
+    oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}"
+    oh_assert_echoed "$id" "$marker"
+  ) </dev/null &
+  turn=$!
+  wait "$turn" || status=$?
+  rm -rf "$dir" || note "  could not remove the scratch directory $dir — delete it by hand"
+  [ "$status" -eq 0 ] || exit "$status"
+}
+
 # --- large prompts / system (issue #1115) ------------------------------------
 
 # Live proof that a LARGE prompt (and, where the harness supports it, a large

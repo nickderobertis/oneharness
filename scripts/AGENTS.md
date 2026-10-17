@@ -25,3 +25,9 @@ Subtree rules for the repository's tooling scripts.
   a control or app-server socket under `oh_socket_sandbox`: macOS's resolved
   `$TMPDIR` is too long for a socket address. Give `mktemp -d` an explicit
   template, because macOS's bare `mktemp -d` ignores `$TMPDIR`.
+- **A live echo turn proves oneharness, not the checkout's context.** qwen loads
+  every `QWEN.md`/`AGENTS.md` from its cwd up to the git root, plus its global
+  ones and auto-memory. Run from here, that is about 10.7k tokens of this repo's
+  rules, and gpt-4o-mini answered with a greeting instead of the marker. So
+  `e2e-qwen.sh`'s echo turn goes through `oh_echo_without_context`, held by
+  `check-qwen-context-free.sh`.

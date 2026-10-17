@@ -18,6 +18,7 @@
       "{workspaceRoot}/scripts/e2e-lib.sh",
       "{workspaceRoot}/scripts/check-usage-enforce.sh",
       "{workspaceRoot}/scripts/check-control-enforce.sh",
+      "{workspaceRoot}/scripts/check-qwen-context-free.sh",
       "{workspaceRoot}/scripts/check-copilot-login-probe.sh",
       "{workspaceRoot}/scripts/check-codex-usage-schema.sh",
       "{workspaceRoot}/scripts/check-codex-usage-schema-test.sh",
@@ -64,6 +65,7 @@
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probes.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-probe-http.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-control-enforce.sh",
+          "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-qwen-context-free.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/check-copilot-login-probe.sh",
           "bash scripts/shell-test.sh e2e-support scripts/with-portable-sed.sh scripts/e2e-variants-test.sh"
         ],

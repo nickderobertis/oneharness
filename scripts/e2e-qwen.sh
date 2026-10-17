@@ -14,9 +14,8 @@ oh_telemetry_setup qwen
 need_env "Qwen (OpenAI-compatible) auth" OPENAI_API_KEY DASHSCOPE_API_KEY
 
 export OH_MODEL="${QWEN_E2E_MODEL:-}"
-marker="$(oh_marker)"
-oh_run qwen "$(oh_prompt "$marker")"
-oh_assert_echoed qwen "$marker"
+# Not from the checkout: qwen would load its AGENTS.md files into the turn.
+oh_echo_without_context qwen
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to
 # qwen's stdin (`-p` omitted), with the system prepended — so it never trips the

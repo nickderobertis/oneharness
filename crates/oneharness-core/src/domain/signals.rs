@@ -784,14 +784,39 @@ pub fn detect_harness_provider_failure(
     stdout: &str,
 ) -> Option<FailureReading> {
     json_candidates(stdout).into_iter().rev().find_map(|value| {
-        let kind = error_record_failure(dialect, &value)
+        let refusal = error_record_failure(dialect, &value)
+            .map(Refusal::plain)
             .or_else(|| codex_turn_failure(dialect, &value))?;
         Some(FailureReading {
-            kind,
+            kind: refusal.kind,
             source: "stdout".to_string(),
-            detail: None,
+            detail: refusal.detail,
         })
     })
+}
+
+/// Whether `stdout` carries Codex's refusal of the requested model **for the
+/// account it is signed in with** — the reading that classified a run
+/// [`FailureKind::ModelNotFound`] from its terminal `400 invalid_request_error`
+/// ("… is not supported when using Codex with …") rather than by the generic
+/// vocabulary.
+///
+/// The fallback verdict needs the difference and the kind alone cannot carry
+/// it: an unknown model is a configuration mistake every candidate shares, so
+/// on a single-model chain it stops; a model *this account* may not use is a
+/// property of the identity, so the next candidate — another harness or
+/// another account — can still run the task. Read with the same terminal-record
+/// scan that produced the classification, so the two cannot disagree.
+#[must_use]
+pub fn model_refused_for_account(dialect: FailureDialect, stdout: &str) -> bool {
+    dialect == FailureDialect::Codex
+        && json_candidates(stdout)
+            .iter()
+            .rev()
+            .filter_map(|value| {
+                codex_exec_turn_error(value).or_else(|| codex_app_server_turn_error(value))
+            })
+            .any(|error| codex_model_refused_for_account(error).is_some())
 }
 
 fn error_record_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
@@ -853,23 +878,69 @@ fn is_provider_failure_envelope(value: &Value) -> bool {
         || value.get("api_error_status").is_some_and(Value::is_number)
 }
 
-/// Codex reports usage exhaustion and serving overload inside its stdout stream
-/// — never on stderr — and the process can still exit zero. Only an error the
-/// harness attached to a terminal turn is read, and only when it carries one of
-/// those machine-readable signatures; ordinary failed turns stay unclassified.
+/// Codex reports usage exhaustion, serving overload and an account's refusal of
+/// the requested model inside its stdout stream — never on stderr — and the
+/// process can still exit zero. Only an error the harness attached to a terminal
+/// turn is read, and only when it carries one of those machine-readable
+/// signatures; ordinary failed turns stay unclassified.
 ///
 /// Both transports are read because the *run* picks one, not the caller: an
 /// ordinary dispatch gets `codex exec`'s event stream, a `--control` dispatch
 /// gets the `codex app-server` protocol.
-fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<FailureKind> {
+fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<Refusal> {
     (dialect == FailureDialect::Codex).then_some(())?;
     let error = codex_exec_turn_error(value).or_else(|| codex_app_server_turn_error(value))?;
     if codex_server_overloaded_error(error) {
-        Some(FailureKind::ServerOverloaded)
+        Some(Refusal::plain(FailureKind::ServerOverloaded))
+    } else if codex_usage_limit_error(error) {
+        Some(Refusal::plain(FailureKind::Quota))
     } else {
-        codex_usage_limit_error(error).then_some(FailureKind::Quota)
+        codex_model_refused_for_account(error).map(|detail| Refusal {
+            kind: FailureKind::ModelNotFound,
+            detail: Some(detail),
+        })
     }
 }
+
+/// The provider's own error object when a Codex terminal error says the
+/// requested model **is not available to the account Codex is signed in
+/// with** — captured verbatim from `codex exec -m gpt-5.5` under a ChatGPT
+/// sign-in (`tests/fixtures/codex-model-unsupported-for-account.jsonl`):
+///
+/// ```text
+/// {"type":"error","status":400,"error":{"type":"invalid_request_error",
+///  "message":"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."}}
+/// ```
+///
+/// That object arrives as the *string* value of the error's `message`, so it is
+/// parsed and matched on its stable parts only: status `400`, type
+/// `invalid_request_error`, and the `not supported when using Codex with`
+/// wording. The model name and the account kind are deliberately not part of
+/// the signature — the refusal means the same for any model and any plan. Every
+/// other `400` (a bad parameter, a malformed request) is a request this
+/// identity's neighbour would refuse too, so it stays unclassified and stops the
+/// chain. Handed back as the provider wrote it, bounded like
+/// [`provider_error_data`], so the cause travels with the fall-through record.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The authoritative surface is OpenAI's answer to a Codex account of one particular kind asking for a model that kind may not use, which neither the deterministic gate nor the paid live suite can produce on demand; the signature is held to a byte-for-byte capture of the real refusal (tests/fixtures/codex-model-unsupported-for-account.jsonl, codex-cli 0.159.2), as tests/fixtures/AGENTS.md requires, and it fails closed: a reworded or restructured refusal is left unclassified and stops the chain exactly as before this reading existed, never a false fall-through.
+fn codex_model_refused_for_account(error: &Value) -> Option<String> {
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|m| m.len() <= MAX_DETAIL_BYTES)?;
+    let provider: Value = serde_json::from_str(message).ok()?;
+    (provider.get("status").and_then(Value::as_u64) == Some(400)).then_some(())?;
+    let inner = provider.get("error")?;
+    (inner.get("type").and_then(Value::as_str) == Some("invalid_request_error")).then_some(())?;
+    inner
+        .get("message")
+        .and_then(Value::as_str)
+        .is_some_and(|m| {
+            m.to_lowercase()
+                .contains("not supported when using codex with")
+        })
+        .then(|| message.to_string())
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// Whether a Codex terminal error carries its stable overload code. Both field
 /// spellings are emitted by supported Codex surfaces: app-server uses camel
@@ -1969,6 +2040,80 @@ mod tests {
                 .kind,
             FailureKind::Quota
         );
+    }
+
+    #[test]
+    fn codex_account_model_refusal_classifies_as_model_not_found_for_any_model() {
+        // The real capture: `codex exec -m gpt-5.5` under a ChatGPT sign-in. The
+        // provider's object is the *string* value of `turn.failed`'s message,
+        // and it is what the reading hands back as the cause.
+        let captured =
+            include_str!("../../../../tests/fixtures/codex-model-unsupported-for-account.jsonl");
+        let got = detect_harness_provider_failure(FailureDialect::Codex, captured).unwrap();
+        assert_eq!(got.kind, FailureKind::ModelNotFound);
+        assert_eq!(got.source, "stdout");
+        let detail = got.detail.expect("the provider's own object is the cause");
+        assert!(
+            detail.starts_with(r#"{"type":"error","status":400"#),
+            "{detail}"
+        );
+        assert!(model_refused_for_account(FailureDialect::Codex, captured));
+        // The model and the account kind are not the signature, and the
+        // app-server's terminal frame carries the same error object.
+        for stdout in [
+            r#"{"type":"turn.failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'o9-preview' model is not supported when using Codex with an enterprise account.\"}}"}}"#,
+            r#"{"method":"turn/completed","params":{"turn":{"status":"failed","error":{"message":"{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.\"}}"}}}}"#,
+        ] {
+            let got = detect_harness_provider_failure(FailureDialect::Codex, stdout)
+                .unwrap_or_else(|| panic!("unclassified: {stdout}"));
+            assert_eq!(got.kind, FailureKind::ModelNotFound, "{stdout}");
+            assert!(
+                model_refused_for_account(FailureDialect::Codex, stdout),
+                "{stdout}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_codexs_account_model_refusal_reads_as_one() {
+        // Each stable part is load-bearing: another 400, another error type,
+        // another status, the sentence as prose rather than the provider's
+        // object, or an agent merely quoting it — none is the refusal.
+        let refusal =
+            "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.";
+        let turn_failed = |status: u16, kind: &str, message: &str| {
+            let provider = serde_json::json!({
+                "type": "error",
+                "status": status,
+                "error": {"type": kind, "message": message},
+            });
+            serde_json::json!({"type": "turn.failed", "error": {"message": provider.to_string()}})
+                .to_string()
+        };
+        for stdout in [
+            turn_failed(400, "invalid_request_error", "Unsupported parameter: 'temperature' is not supported with this model."),
+            turn_failed(400, "server_error", refusal),
+            turn_failed(404, "invalid_request_error", refusal),
+            serde_json::json!({"type": "turn.failed", "error": {"message": refusal}}).to_string(),
+            serde_json::json!({"type": "item.completed", "item": {"type": "agent_message", "text": refusal}}).to_string(),
+        ] {
+            assert!(
+                detect_harness_provider_failure(FailureDialect::Codex, &stdout).is_none(),
+                "{stdout}"
+            );
+            assert!(!model_refused_for_account(FailureDialect::Codex, &stdout), "{stdout}");
+        }
+        // The shape is Codex's own, read for Codex only.
+        let captured =
+            include_str!("../../../../tests/fixtures/codex-model-unsupported-for-account.jsonl");
+        assert!(!model_refused_for_account(
+            FailureDialect::Generic,
+            captured
+        ));
+        assert!(!model_refused_for_account(
+            FailureDialect::ClaudeCode,
+            captured
+        ));
     }
 
     #[test]

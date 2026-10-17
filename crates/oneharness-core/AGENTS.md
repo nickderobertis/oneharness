@@ -699,7 +699,14 @@ shape. When you add one:
   `rate_limit` falls through on ANY chain, not only a model fan-out: the limit
   belongs to whoever is being billed, not to the model, so the next identity
   carries its own.
-  `model_not_found` stays model-list-only — a config mistake the user should see.
+  `model_not_found` stays model-list-only — a config mistake the user should see
+  — except a model the harness's *account* refuses (Codex's `400
+  invalid_request_error` "not supported when using Codex with …",
+  `signals::model_refused_for_account`), which `io::run::fallback_step` routes
+  to `fallback::account_model_refusal_reason` instead: it hands on on any chain
+  and from a clean exit too, while `startup_failure_reason` keeps every other
+  `model_not_found` non-zero-only and model-list-only. The kind cannot tell the two
+  apart, so that predicate re-reads the terminal record the classifier read.
 - **A completed run that did the work carries no refusal classification.**
   `status: ok` + exit `0` + [`RunWork::Done`] refutes any `failure_kind` naming a
   refusal, so `RunResult::with_work_evidence` — the funnel every constructor

@@ -452,8 +452,9 @@ export interface FallbackReport {
    * The candidates fallen through because they could not run the task at all,
    * in priority order, each with why (`not-installed`, `spawn-error`, `auth`,
    * `quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,
-   * `model-mismatch`, and — on a model fan-out — `model-not-found` /
-   * `rate-limit`; see
+   * `model-mismatch`, `rate-limit`, and `model-not-found` — on a model
+   * fan-out, or where the account a harness is signed in with may not use
+   * the model; see
    * [`crate::domain::fallback::startup_failure_reason`]).
    */
   fell_through: FallThrough[];

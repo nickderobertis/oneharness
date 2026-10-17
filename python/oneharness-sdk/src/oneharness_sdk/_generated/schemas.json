@@ -14865,7 +14865,7 @@
           },
           {
             "const": "model-not-found",
-            "description": "This model is unavailable \u2014 only on a model fan-out.",
+            "description": "This model is unavailable \u2014 on a model fan-out, or on any chain when the\nharness said the model is not available to the account it is signed in\nwith (Codex's `400 invalid_request_error` \"\u2026 is not supported when using\nCodex with a ChatGPT account\").",
             "type": "string"
           },
           {
@@ -14889,7 +14889,7 @@
         "description": "Metadata for a fallback run (harnesses tried in priority order until one\nruns). Present on [`RunReport::fallback`] only in that mode. The per-harness\ndetail lives in `results`; this block summarizes the outcome so a consumer\nneed not re-derive it from statuses.",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, and \u2014 on a model fan-out \u2014 `model-not-found` /\n`rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, `rate-limit`, and `model-not-found` \u2014 on a model\nfan-out, or where the account a harness is signed in with may not use\nthe model; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "items": {
               "$ref": "#/$defs/FallThrough"
             },
@@ -16115,7 +16115,7 @@
           },
           {
             "const": "model-not-found",
-            "description": "This model is unavailable \u2014 only on a model fan-out.",
+            "description": "This model is unavailable \u2014 on a model fan-out, or on any chain when the\nharness said the model is not available to the account it is signed in\nwith (Codex's `400 invalid_request_error` \"\u2026 is not supported when using\nCodex with a ChatGPT account\").",
             "type": "string"
           },
           {
@@ -16139,7 +16139,7 @@
         "description": "Metadata for a fallback run (harnesses tried in priority order until one\nruns). Present on [`RunReport::fallback`] only in that mode. The per-harness\ndetail lives in `results`; this block summarizes the outcome so a consumer\nneed not re-derive it from statuses.",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, and \u2014 on a model fan-out \u2014 `model-not-found` /\n`rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, `rate-limit`, and `model-not-found` \u2014 on a model\nfan-out, or where the account a harness is signed in with may not use\nthe model; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "items": {
               "$ref": "#/$defs/FallThrough"
             },

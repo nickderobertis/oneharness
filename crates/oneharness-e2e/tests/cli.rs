@@ -2669,6 +2669,343 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` — its config loading, classification and both fallback drivers — end to end; only the paid harness CLIs are replaced, by the repository's own subprocess double (oneharness-mock-harness), because a real account cannot be made to refuse a model on demand — in either journey below — and the codex refusal replays the byte-for-byte capture of the real one (tests/fixtures/codex-model-unsupported-for-account.jsonl).
+/// Codex signed in with an account that may not use the configured model
+/// answers `HTTP 400 invalid_request_error` — "The '<model>' model is not
+/// supported when using Codex with a ChatGPT account." — before doing any work.
+/// That is a property of the identity, not of the task, so a single-model chain
+/// must hand it on to the next harness (reason `model-not-found`) exactly as it
+/// hands on a missing or unauthenticated one, on the buffered and the streamed
+/// driver alike; codex's stdout below is the real capture from `codex exec -m
+/// gpt-5.5`, its thread id aside. Every other 400 still ends the chain at
+/// codex, as an ordinary failed run.
+#[test]
+fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
+    let mock = mock_bin().display().to_string();
+    // A Windows checkout (core.autocrlf) hands the capture over CRLF; the
+    // variants below splice whole `\n`-ended records, so read it as codex wrote it.
+    let capture = include_str!("../../../tests/fixtures/codex-model-unsupported-for-account.jsonl")
+        .replace("\r\n", "\n");
+    // The captured thread id's `…-7401-…` holds the bare `401` the generic
+    // vocabulary reads as `auth` — a reading of the id, not of the refusal — so
+    // every variant below swaps in a neutral id, leaving the refusal itself as
+    // the only thing that can route the chain.
+    let neutral = capture.replace(
+        "01a1471e-4505-7401-8904-bfebc49d6a71",
+        "019fb99f-9a2f-7c31-9f0d-2f4c8b6d1e77",
+    );
+    assert_ne!(neutral, capture, "the capture's thread id must be swapped");
+    let refusal = "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.";
+    // The provider's object exactly as the capture's `turn.failed` carries it
+    // (spelled out rather than built, which would reorder its keys).
+    let provider = format!(
+        r#"{{"type":"error","status":400,"error":{{"type":"invalid_request_error","message":"{refusal}"}}}}"#
+    );
+    assert!(
+        neutral.contains(&serde_json::to_string(&provider).unwrap()),
+        "the provider object must be the capture's own"
+    );
+    // A `--control` turn reports the same object in the app-server's terminal
+    // `turn/completed` frame instead of `turn.failed`.
+    let app_server = serde_json::json!({
+        "method": "turn/completed",
+        "params": {"turn": {"status": "failed", "error": {"message": provider}}},
+    })
+    .to_string();
+    // One run of the chain on one driver, with any extra mock knobs and CLI
+    // flags: its exit code and its report.
+    let chain_with = |label: &str,
+                      codex_stdout: &str,
+                      exit: &str,
+                      driver: &str,
+                      knobs: &str,
+                      flags: &[&str]| {
+        let codex_stdout = serde_json::to_string(codex_stdout).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["codex", "claude-code"]
+            run_mode = "fallback"
+
+            [harness.codex]
+            bin = '{mock}'
+            model = "gpt-5.5"
+            env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = {codex_stdout}{knobs} }}
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{{"session_id":"s","result":"served-by-claude"}}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(&format!("{label}-{exit}-{driver}"), &project, "");
+        let cwd = fx.cwd();
+        let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+        args.extend_from_slice(flags);
+        if driver == "streamed" {
+            args.push("--stream");
+        }
+        let output = run_with_config(&args, &[], &fx.user_config());
+        let report = if driver == "streamed" {
+            stream_envelopes(&output)
+                .last()
+                .map(|envelope| envelope["report"].clone())
+                .unwrap_or_else(|| panic!("{label}/{driver}: a streamed run ends with its report"))
+        } else {
+            json_stdout(&output)
+        };
+        (output, report)
+    };
+    let chain = |label: &str, codex_stdout: &str, exit: &str, driver: &str| {
+        chain_with(label, codex_stdout, exit, driver, "", &[])
+    };
+
+    for driver in ["buffered", "streamed"] {
+        // The refusal as captured (codex exited 1), the same refusal from a
+        // codex that exited 0 after its `turn.failed`, the same refusal naming
+        // another model (the signature is the refusal's wording, never the
+        // model it names), and the app-server's frame carrying it.
+        for (label, stdout, exit) in [
+            ("codex-account-model", neutral.clone(), "1"),
+            ("codex-account-model-clean-exit", neutral.clone(), "0"),
+            (
+                "codex-account-model-other",
+                neutral.replace("'gpt-5.5'", "'o9-preview'"),
+                "1",
+            ),
+            ("codex-account-model-app-server", app_server.clone(), "1"),
+        ] {
+            let tag = format!("{label}/{driver}");
+            let (output, value) = chain(label, &stdout, exit, driver);
+            assert!(
+                output.status.success(),
+                "{tag}: exit {:?}, stderr {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
+            let status = if exit == "0" { "ok" } else { "nonzero" };
+            assert_eq!(value["results"][0]["status"], status, "{tag}");
+            assert_eq!(
+                value["results"][0]["failure_kind"], "model_not_found",
+                "{tag}"
+            );
+            let fell = value["fallback"]["fell_through"].as_array().unwrap();
+            assert_eq!(fell.len(), 1, "{tag}: {fell:?}");
+            assert_eq!(fell[0]["harness"], "codex", "{tag}");
+            assert_eq!(fell[0]["reason"], "model-not-found", "{tag}");
+            // The provider's own words travel with the verdict.
+            let detail = fell[0]["detail"].as_str().unwrap_or_default();
+            assert!(
+                detail.contains("is not supported when using Codex with a ChatGPT account"),
+                "{tag}: {detail}"
+            );
+            assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
+            assert_eq!(value["results"][1]["harness"], "claude-code", "{tag}");
+            assert_eq!(value["results"][1]["text"], "served-by-claude", "{tag}");
+        }
+
+        // Every part of the signature is load-bearing: another 400
+        // `invalid_request_error`, the wording under another status or another
+        // error type, the sentence as bare prose rather than the provider's
+        // object, and an object past the size the reading accepts are each a
+        // request the next harness's provider may refuse too — unclassified,
+        // each stops the chain at codex.
+        let escaped = |object: &str| serde_json::to_string(object).unwrap();
+        let in_capture = |object: String| {
+            let stdout = neutral.replace(&escaped(&provider), &escaped(&object));
+            assert_ne!(stdout, neutral, "the substitution must change the capture");
+            stdout
+        };
+        let stops = [
+            (
+                "other-invalid-request",
+                in_capture(provider.replace(
+                    refusal,
+                    "Unsupported parameter: 'temperature' is not supported with this model.",
+                )),
+            ),
+            (
+                "other-status",
+                in_capture(provider.replace("\"status\":400", "\"status\":404")),
+            ),
+            (
+                "other-error-type",
+                in_capture(provider.replace("invalid_request_error", "server_error")),
+            ),
+            ("bare-prose", in_capture(refusal.to_string())),
+            (
+                "oversized",
+                in_capture(provider.replace(refusal, &format!("{refusal}{}", " ".repeat(512)))),
+            ),
+        ];
+        for (label, stdout) in stops {
+            let tag = format!("codex-{label}/{driver}");
+            let (output, value) = chain(&format!("codex-{label}"), &stdout, "1", driver);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{tag}: a real codex failure fails the run: stderr {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                value["results"].as_array().unwrap().len(),
+                1,
+                "{tag}: {value}"
+            );
+            assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
+            assert!(
+                value["results"][0]["failure_kind"].is_null(),
+                "{tag}: it must not classify: {}",
+                value["results"][0]["failure_kind"]
+            );
+            assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+            assert_eq!(
+                value["fallback"]["fell_through"].as_array().unwrap().len(),
+                0,
+                "{tag}"
+            );
+        }
+        // The refusal is bounded like every fall-through: a codex that did
+        // billed work before refusing ran the task, so it stops the chain with
+        // the refusal still named — the next harness is never spawned.
+        let tag = format!("codex-account-model-after-work/{driver}");
+        let worked = neutral.replacen(
+            "{\"type\":\"turn.started\"}\n",
+            "{\"type\":\"turn.started\"}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":4102,\"cached_input_tokens\":0,\"output_tokens\":311}}\n{\"type\":\"turn.started\"}\n",
+            1,
+        );
+        assert_ne!(worked, neutral, "the work must be added to the capture");
+        let (output, value) = chain("codex-account-model-after-work", &worked, "1", driver);
+        assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+        assert_eq!(
+            value["results"].as_array().unwrap().len(),
+            1,
+            "{tag}: {value}"
+        );
+        assert_eq!(value["results"][0]["usage"]["input_tokens"], 4102, "{tag}");
+        assert_eq!(
+            value["results"][0]["failure_kind"], "model_not_found",
+            "{tag}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{tag}"
+        );
+
+        // A refusal printed by a codex that then hung past its deadline is a
+        // timeout — a run, never a fall-through — whatever it printed first:
+        // the capture streams out a line at a time and filler keeps the
+        // process alive until `--timeout` kills it.
+        let tag = format!("codex-account-model-timeout/{driver}");
+        let hung = format!("{neutral}{}", "{\"type\":\"turn.started\"}\n".repeat(20));
+        let (output, value) = chain_with(
+            "codex-account-model-timeout",
+            &hung,
+            "1",
+            driver,
+            r#", MOCK_STREAM_DELAY_MS = "250""#,
+            &["--timeout", "2"],
+        );
+        assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+        assert_eq!(
+            value["results"].as_array().unwrap().len(),
+            1,
+            "{tag}: {value}"
+        );
+        assert_eq!(value["results"][0]["status"], "timeout", "{tag}: {value}");
+        assert!(
+            value["results"][0]["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("is not supported when using Codex with"),
+            "{tag}: the refusal must have been printed before the deadline: {value}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{tag}"
+        );
+    }
+}
+
+/// The bound on the account refusal's clean-exit reading: a **generic**
+/// clean-exit model rejection — Claude Code's `is_error` terminal record that
+/// exits 0, with no account wording — still stops the chain, with a model list
+/// or without one, exactly as before the account refusal was taught. Only that
+/// refusal hands on from a clean exit; this one is classified honestly and the
+/// next model is never spawned.
+#[test]
+fn a_generic_clean_exit_model_rejection_still_stops_the_chain() {
+    let mock = mock_bin().display().to_string();
+    let rejected = serde_json::to_string(
+        r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model not found: opus"}"#,
+    )
+    .unwrap();
+    // What the second model would answer, were it ever spawned.
+    let served =
+        serde_json::to_string(r#"{"session_id":"s","result":"served-by-sonnet"}"#).unwrap();
+    for driver in ["buffered", "streamed"] {
+        for models in [&["opus", "sonnet"][..], &["opus"][..]] {
+            let tag = format!("{}/{driver}", models.join("+"));
+            let counter = temp_counter(&format!("clean-model-rejection-{}-{driver}", models.len()));
+            let project = format!(
+                r#"
+                harnesses = ["claude-code"]
+                run_mode = "fallback"
+
+                [harness.claude-code]
+                bin = '{mock}'
+                env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_EXIT_1 = "0", MOCK_STDOUT_1 = {rejected}, MOCK_EXIT_2 = "0", MOCK_STDOUT_2 = {served} }}
+                "#
+            );
+            let fx = ConfigFixture::new(
+                &format!("clean-model-rejection-{}-{driver}", models.len()),
+                &project,
+                "",
+            );
+            let cwd = fx.cwd();
+            let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+            for model in models {
+                args.extend(["--model", model]);
+            }
+            if driver == "streamed" {
+                args.push("--stream");
+            }
+            let output = run_with_config(&args, &[], &fx.user_config());
+            let value = if driver == "streamed" {
+                stream_envelopes(&output)
+                    .last()
+                    .map(|envelope| envelope["report"].clone())
+                    .unwrap_or_else(|| panic!("{tag}: a streamed run ends with its report"))
+            } else {
+                json_stdout(&output)
+            };
+            let _ = std::fs::remove_file(&counter);
+            assert_eq!(value["results"][0]["model"], "opus", "{tag}");
+            assert_eq!(value["results"][0]["status"], "ok", "{tag}");
+            assert_eq!(
+                value["results"][0]["failure_kind"], "model_not_found",
+                "{tag}"
+            );
+            assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+            assert_eq!(
+                value["fallback"]["fell_through"].as_array().unwrap().len(),
+                0,
+                "{tag}: {value}"
+            );
+            assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
+            assert_eq!(
+                value["results"].as_array().unwrap().len(),
+                1,
+                "{tag}: the second model must never be spawned"
+            );
+        }
+    }
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
 #[test]
 fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {
     // The defect this closes, measured twice on a real host. A 94-minute Claude

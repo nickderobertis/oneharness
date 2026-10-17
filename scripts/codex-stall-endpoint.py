@@ -34,6 +34,7 @@ import struct
 import sys
 import threading
 import time
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, NamedTuple, NewType, TypedDict, TypeVar
@@ -71,9 +72,16 @@ class Mode(enum.Enum):
 
 class Opcode(enum.IntEnum):
     TEXT = 0x1
+    BINARY = 0x2
     CLOSE = 0x8
     PING = 0x9
     PONG = 0xA
+
+
+# Every opcode RFC 6455 defines; a frame with any other is refused.
+KNOWN_OPCODES = frozenset(int(opcode) for opcode in Opcode)
+RESPONSES_PATH = "/v1/responses"
+MODELS_PATH = "/v1/models"
 
 
 @dataclass(frozen=True)
@@ -227,7 +235,7 @@ def read_frame(conn: socket.socket) -> Frame | None:
     if head is None or not head[1] & 0x80 or head[0] & 0x70 or not head[0] & 0x80:
         return None
     opcode, length = head[0] & 0x0F, head[1] & 0x7F
-    if opcode & 0x8 and length > 125:
+    if opcode not in KNOWN_OPCODES or (opcode & 0x8 and length > 125):
         return None
     if length in (126, 127):
         raw = read_exactly(conn, 2 if length == 126 else 8)
@@ -286,14 +294,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
         self.close_connection = True
 
+    def route(self) -> str:
+        return urllib.parse.urlsplit(self.path).path.rstrip("/")
+
     def do_GET(self) -> None:
         if self.headers.get("upgrade", "").lower() != "websocket":
+            if self.route() != MODELS_PATH:
+                self.refuse(404, f"only {MODELS_PATH} and {RESPONSES_PATH} are served")
+                return
             body = json.dumps({"models": []}).encode()
             self.send_response(200)
             self.send_header("content-type", "application/json")
             self.send_header("content-length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+            return
+        if self.route() != RESPONSES_PATH:
+            self.refuse(404, f"the Responses websocket is {RESPONSES_PATH}")
+            return
+        connection = {
+            token.strip().lower() for token in self.headers.get("connection", "").split(",")
+        }
+        if "upgrade" not in connection or self.headers.get("sec-websocket-version") != "13":
+            self.refuse(
+                400, "a websocket upgrade needs Connection: Upgrade and Sec-WebSocket-Version: 13"
+            )
             return
         accept = websocket_accept(self.headers.get("sec-websocket-key"))
         if accept is None:
@@ -332,6 +357,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
 
     def do_POST(self) -> None:
+        if self.route() != RESPONSES_PATH:
+            self.refuse(404, f"Responses requests go to {RESPONSES_PATH}")
+            return
         try:
             length = int(self.headers.get("content-length", "0"))
         except ValueError:

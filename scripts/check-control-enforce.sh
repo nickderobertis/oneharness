@@ -461,8 +461,9 @@ while [ -n "$tok" ]; do
     fi
     sleep 0.1
   done
-  # A step that failed prints no next command, which ends the chain.
-  wait "$call" 2>/dev/null || true
+  if ! wait "$call"; then
+    die "step $tok failed, saying: $(cat agent.out 2>/dev/null || echo '<nothing readable>')"
+  fi
   tok="$(token <agent.out)"
 done
 rm -f "$socket" || die "cannot remove $socket"

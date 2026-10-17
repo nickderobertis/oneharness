@@ -3646,6 +3646,9 @@ _oh_gated_workload() {
   cat >"$sandbox/ohstep.sh" <<'STEP' || return
 # One step of a oneharness control-phase fixture; see `_oh_gated_workload`.
 set -eu
+# Where the agent's shell has it (bash, zsh, dash 0.5.11+); this script runs
+# no pipeline, so a shell without it loses nothing.
+if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi
 # Every failure here is the fixture's, not the agent's: the phase that wrote
 # this script removed or could not write its sandbox, or stopped releasing.
 die() {

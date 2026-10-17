@@ -4756,7 +4756,9 @@ fn the_reuse_workload_names_each_process_listing_failure() {
                 let path = if body.is_empty() {
                     // PATH lookup skips an entry it cannot run, so no `ps`
                     // anywhere on it: only the tools the run itself calls.
-                    for tool in ["bash", "sh", "cargo", "node", "mktemp", "rm", "dirname"] {
+                    for tool in [
+                        "bash", "sh", "cargo", "node", "mktemp", "rm", "dirname", "cp", "sleep",
+                    ] {
                         let found = Command::new("sh")
                             .args(["-c", &format!("command -v {tool}")])
                             .output()
@@ -4826,13 +4828,20 @@ fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot
              \"name\":\"app_server_reuse\"}},\"executable\":{executable}}}"
         )
     };
-    let run = |case: &str, message: &str| {
+    // `after`, when not empty, is a command the double runs half a second
+    // after it has answered, as another build re-linking the example would.
+    let run = |case: &str, message: &str, after: &str| {
         let pool = Pool::new(&format!("pool-reuse-cargo-{case}"));
         let bin = pool.path("cargo-double");
         std::fs::create_dir_all(&bin).unwrap();
         let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
         let cargo = bin.join("cargo");
-        std::fs::write(&cargo, "#!/bin/sh\ncat \"$OH_CARGO_MESSAGE\"\n").unwrap();
+        std::fs::write(
+            &cargo,
+            "#!/bin/sh\ncat \"$OH_CARGO_MESSAGE\"\n\
+             [ -z \"$OH_CARGO_AFTER\" ] || (sleep 0.5; sh -c \"$OH_CARGO_AFTER\") >/dev/null 2>&1 &\n",
+        )
+        .unwrap();
         std::fs::set_permissions(&cargo, mode).unwrap();
         let message_file = pool.path("cargo-message");
         std::fs::write(&message_file, format!("{message}\n")).unwrap();
@@ -4847,6 +4856,7 @@ fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot
                 ),
             )
             .env("OH_CARGO_MESSAGE", &message_file)
+            .env("OH_CARGO_AFTER", after)
             .env("OH_REUSE_CODEX", mock_bin())
             .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
             .env("XDG_STATE_HOME", pool.path("state"))
@@ -4888,7 +4898,7 @@ fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot
         escaped.contains("\\\"") && escaped.contains("\\\\"),
         "{escaped}"
     );
-    let (_scratch, output) = run("escaped", &artifact(&escaped));
+    let (_scratch, output) = run("escaped", &artifact(&escaped), "");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert_eq!(output.status.code(), Some(1), "escaped: {stderr}");
     assert!(
@@ -4897,6 +4907,23 @@ fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot
     );
     let args = std::fs::read_to_string(&ran).expect("the escaped path's example did not run");
     assert!(args.starts_with("--codex "), "{args}");
+
+    // Missing for a moment when the build answers, as while another build
+    // re-links it, then back: the workload waits for it and runs it.
+    let relinked = pool.path("relinked");
+    std::fs::create_dir_all(&relinked).unwrap();
+    let later = relinked.join("app_server_reuse");
+    let after = format!("cp '{}' '{}'", example.display(), later.display());
+    std::fs::remove_file(&ran).unwrap();
+    let named = serde_json::to_string(&later.display().to_string()).unwrap();
+    let (_scratch, output) = run("relinked", &artifact(&named), &after);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "relinked: {stderr}");
+    assert!(
+        stderr.contains("app-server-reuse: the workload failed"),
+        "relinked: {stderr}"
+    );
+    assert!(ran.exists(), "relinked: the example did not run: {stderr}");
 
     let cases = [
         (
@@ -4916,7 +4943,7 @@ fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot
         ),
     ];
     for (case, message, said) in cases {
-        let (_scratch, output) = run(case, &message);
+        let (_scratch, output) = run(case, &message, "");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{case}: {stderr}");
         assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");

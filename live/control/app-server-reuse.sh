@@ -79,15 +79,30 @@ example="$(printf '%s\n' "$artifacts" | node -e '
   echo "app-server-reuse: cargo built the app_server_reuse example but its output named no executable for it; check 'cargo --version' against rust-toolchain.toml, then rerun" >&2
   exit 1
 }
-[ -x "$example" ] || {
-  echo "app-server-reuse: cargo named $example as the app_server_reuse example, but no executable is there; check that nothing removed it from its target directory, then rerun" >&2
-  exit 1
-}
 work="$(mktemp -d)" || {
   echo "app-server-reuse: cannot create a scratch directory; check that the host temp dir is writable" >&2
   exit 1
 }
 trap 'rm -rf "$work" || echo "app-server-reuse: could not remove $work; delete it by hand" >&2' EXIT
+# Run a copy of its own: the path cargo names is shared by every build in that
+# target directory, and one that re-links it — removing the file, then linking
+# it again — leaves it missing for a moment, which a run that looked once (as
+# on macOS CI, beside other builds of the same checkout) took for gone. A file
+# missing for longer than the wait is reported as gone.
+copied="$work/app_server_reuse"
+for ((tries = 0; tries < 50; tries++)); do
+  [ -x "$example" ] && cp "$example" "$copied" 2>/dev/null && break
+  rm -f "$copied" || {
+    echo "app-server-reuse: cannot remove the partial copy $copied; check its permissions" >&2
+    exit 1
+  }
+  sleep 0.1
+done
+[ -x "$copied" ] || {
+  echo "app-server-reuse: cargo named $example as the app_server_reuse example, but no executable is there; check that nothing removed it from its target directory, then rerun" >&2
+  exit 1
+}
+example="$copied"
 rm -f "$out" || {
   echo "app-server-reuse: cannot remove the previous telemetry $out; check its permissions" >&2
   exit 1

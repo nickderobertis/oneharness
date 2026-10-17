@@ -424,21 +424,29 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
+# The fixture's own failures, named, so the check that drove it can say why.
+die() {
+  echo "fake agent: $*; check that /tmp is writable and rerun scripts/check-control-enforce.sh" >&2
+  exit 1
+}
 flag="$store/control/$name.interrupted"
 if [ "$cmd" = interrupt ]; then
-  : >"$flag"
+  : >"$flag" || die "cannot record the interrupt at $flag"
   printf '{"ok":true,"mechanism":"fake-mechanism"}\n'
   exit 0
 fi
-mkdir -p "$store/control"
+mkdir -p "$store/control" || die "cannot create $store/control"
 socket="$store/control/$name.sock"
-perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "$!\n"' "$socket"
-cd "$cwd"
+perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "$!\n"' "$socket" ||
+  die "cannot open a control socket at $socket"
+cd "$cwd" || die "cannot enter $cwd"
 # The first step command a text names, or nothing.
 token() { sed -n 's/.*sh ohstep\.sh \([0-9a-f]*\).*/\1/p' | sed -n 1p; }
 tok="$(printf '%s' "$prompt" | token)"
 if [ -z "$tok" ]; then
-  for ((n = 1; n <= 60; n++)); do : >"$(printf 'step-%03d.txt' "$n")"; done
+  for ((n = 1; n <= 60; n++)); do
+    : >"$(printf 'step-%03d.txt' "$n")" || die "cannot write step file $n in $cwd"
+  done
   sleep 2
 fi
 while [ -n "$tok" ]; do
@@ -457,7 +465,7 @@ while [ -n "$tok" ]; do
   wait "$call" 2>/dev/null || true
   tok="$(token <agent.out)"
 done
-rm -f "$socket"
+rm -f "$socket" || die "cannot remove $socket"
 outcome=none
 if [ -e "$flag" ]; then
   outcome=served
@@ -521,23 +529,33 @@ while [ $# -gt 0 ]; do
     *) shift ;;
   esac
 done
-mkdir -p "$store"
+die() {
+  echo "fake oneharness: $*; check that /tmp is writable and rerun scripts/check-control-enforce.sh" >&2
+  exit 3
+}
+mkdir -p "$store" || die "cannot create $store"
 word="$store/$session.word"
 if [ ! -e "$word" ]; then
-  printf '%s' "$prompt" | sed -n 's/.*for the rest of our conversation: \([A-Z0-9]*\)\..*/\1/p' >"$word"
+  printf '%s' "$prompt" | sed -n 's/.*for the rest of our conversation: \([A-Z0-9]*\)\..*/\1/p' >"$word" ||
+    die "cannot store the word turn one established in $word"
   jq -n '{results: [{status: "ok", command: ["codex", "exec"], text: "OK"}], session: {phase: "create", token: "th-1"}}'
   exit 0
 fi
 count="$store/$session.resumes"
-n=$(($(cat "$count" 2>/dev/null || echo 0) + 1))
-echo "$n" >"$count"
+n=0
+if [ -e "$count" ]; then
+  n="$(cat "$count")" || die "cannot read the resume count in $count"
+fi
+n=$((n + 1))
+echo "$n" >"$count" || die "cannot write the resume count to $count"
 if [ "$n" -le "${FAKE_RESUME_SILENT:-0}" ]; then
   jq -n '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: "{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}"}], session: {phase: "continue", token: "th-1"}}'
   exit 1
 fi
 file="$(printf '%s' "$prompt" | sed -n 's/.*in the current directory: touch \([^;]*\);.*/\1/p')"
-: >"$cwd/$file"
-jq -n --arg word "$(cat "$word")" '{results: [{status: "ok", command: ["codex", "exec", "resume"], text: $word}], session: {phase: "continue", token: "th-1"}}'
+: >"$cwd/$file" || die "cannot touch $cwd/$file"
+recalled="$(cat "$word")" || die "cannot read $word"
+jq -n --arg word "$recalled" '{results: [{status: "ok", command: ["codex", "exec", "resume"], text: $word}], session: {phase: "continue", token: "th-1"}}'
 RESUME
 chmod +x "$resume_dir/oneharness" || fail "could not make $resume_dir/oneharness executable; check that /tmp allows it"
 resume_case() {

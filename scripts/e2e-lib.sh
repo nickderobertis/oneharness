@@ -2217,6 +2217,7 @@ oh_resume_mode_enforce() {
   # verdict on the resume: say what it was doing and resume once more. A
   # refused resume ends at once, non-zero, and is judged below as it ran.
   if [ "$(_oh_result_status "$sandbox/second.json")" = timeout ]; then
+    # llmlint: ignore[tool_output_is_signal] A retry that then passes is the finding, not chatter, for the reason `oh_control_enforce` reports which attempt won: a phase that needs this every night is a provider about to fail it, and a transcript that printed only the verdict could never say so.
     note "  resume-mode: turn two under --mode $mode ran into its ${_OH_RESUME_TURN_TIMEOUT}s bound: $(_oh_silent_turn_reading "$sandbox/second.json"); resuming once more"
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
       "$sandbox/second.json" "$sandbox/second.err" --events "$@"

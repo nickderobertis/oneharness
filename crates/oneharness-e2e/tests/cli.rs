@@ -4546,6 +4546,7 @@ fn a_resumed_codex_turn_is_sandboxed_like_a_fresh_one_over_a_callers_override() 
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --session` end to end; only codex is replaced, by the repository's own subprocess double with a thread store, because real Codex cannot be made to lose a thread's rollout on demand and the gate cannot spend a model call. Real Codex's resumed turn under each mode is held by scripts/e2e-codex.sh's `oh_resume_mode_enforce` phases.
 #[test]
 fn a_resumed_codex_turn_under_auto_runs_or_says_why_it_cannot() {
     // The live resume phase under `--mode auto` once spent its whole 300 s
@@ -4660,6 +4661,7 @@ fn a_resumed_codex_turn_under_auto_runs_or_says_why_it_cannot() {
     let said = String::from_utf8_lossy(&refused.stderr);
     assert!(said.contains("edit") && said.contains("codex"), "{said}");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn every_spelling_of_a_callers_sandbox_mode_is_outranked_on_a_resumed_codex_turn() {

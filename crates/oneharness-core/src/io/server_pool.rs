@@ -38,7 +38,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,12 @@ const SERVER_LOG: &str = "server.log";
 /// read. No kernel reading is ever spelled this way, so it never matches a
 /// running process.
 const EXITED_UNIDENTIFIED: &str = "exited-before-identified";
+
+/// How long a server just spawned that the kernel will not yet identify, and
+/// that has not yet been seen to exit, is watched for either before the launch
+/// is refused, and how often it is looked at meanwhile.
+const IDENTIFY_GRACE: Duration = Duration::from_secs(2);
+const IDENTIFY_POLL: Duration = Duration::from_millis(5);
 
 /// How much of a server's stderr an early-exit diagnosis quotes, from its end.
 const STDERR_TAIL_BYTES: u64 = 2048;
@@ -775,7 +781,7 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
     let child = command.spawn()?;
     let pid =
         Pid::new(child.id()).map_err(|message| io::Error::new(io::ErrorKind::Other, message))?;
-    let identity = identify_spawned(child, pid, process_identity)?;
+    let identity = identify_spawned(child, pid, process_identity, IDENTIFY_GRACE)?;
     let record = ServerRecord {
         pid,
         identity,
@@ -882,19 +888,31 @@ fn stderr_tail(log: &Path) -> Option<String> {
 /// [`EXITED_UNIDENTIFIED`], which no running process can match, so it reads as
 /// not running and its caller reports the exit (status included) and
 /// relaunches, as it would for one that died a moment later.
+///
+/// macOS stops answering for a process as soon as it starts to exit, before a
+/// wait can see it gone, so one that answers neither is given up to `grace` to
+/// settle into one or the other before the launch is refused.
 fn identify_spawned(
     mut child: std::process::Child,
     pid: Pid,
     read: impl Fn(Pid) -> Option<ProcessIdentity>,
+    grace: Duration,
 ) -> io::Result<ProcessIdentity> {
-    if let Some(identity) = read(pid) {
-        remember_spawned(child);
-        return Ok(identity);
-    }
-    if let Ok(Some(status)) = child.try_wait() {
-        remember_exit(pid.get(), status);
-        // llmlint: ignore[invalid_states_unrepresentable] The identity is written to server.json, which every oneharness release sharing the pool reads; a value no kernel reading can spell makes each of them, releases before this one included, read the record as a server not running, where a new state would change a record shape they cannot parse.
-        return Ok(ProcessIdentity(EXITED_UNIDENTIFIED.to_string()));
+    let until = Instant::now() + grace;
+    loop {
+        if let Some(identity) = read(pid) {
+            remember_spawned(child);
+            return Ok(identity);
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            remember_exit(pid.get(), status);
+            // llmlint: ignore[invalid_states_unrepresentable] The identity is written to server.json, which every oneharness release sharing the pool reads; a value no kernel reading can spell makes each of them, releases before this one included, read the record as a server not running, where a new state would change a record shape they cannot parse.
+            return Ok(ProcessIdentity(EXITED_UNIDENTIFIED.to_string()));
+        }
+        if Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(IDENTIFY_POLL);
     }
     remember_spawned(child);
     // llmlint: ignore[changed_behavior_has_e2e] A child still running whose start time the kernel will not answer cannot be staged without mocking `/proc` or `proc_pidinfo`, the platform layer this reads; `identify_spawned` takes its reader as a parameter so the unit tests drive this branch, and it is the error the launch returned before this change.
@@ -1402,7 +1420,7 @@ mod tests {
         while pid_alive(pid) && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(10));
         }
-        let identity = identify_spawned(child, pid, |_| None).unwrap();
+        let identity = identify_spawned(child, pid, |_| None, Duration::ZERO).unwrap();
         let record = ServerRecord {
             pid,
             identity,
@@ -1421,7 +1439,8 @@ mod tests {
             .spawn()
             .unwrap();
         let running_pid = Pid::new(running.id()).unwrap();
-        let refused = identify_spawned(running, running_pid, |_| None).unwrap_err();
+        let refused = identify_spawned(running, running_pid, |_| None, Duration::from_millis(50))
+            .unwrap_err();
         kill(running_pid);
         assert!(
             refused
@@ -1429,6 +1448,23 @@ mod tests {
                 .contains("could not read the identity of spawned server pid"),
             "{refused}"
         );
+    }
+
+    /// macOS stops answering for a process while it is still exiting, before
+    /// a wait can see it gone: a server unidentifiable at once that exits a
+    /// moment later is still a server that exited at start, with its status,
+    /// not a launch that failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_still_exiting_when_it_could_not_be_identified_reads_as_exited() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2; exit 6"])
+            .spawn()
+            .unwrap();
+        let pid = Pid::new(child.id()).unwrap();
+        let identity = identify_spawned(child, pid, |_| None, Duration::from_secs(10)).unwrap();
+        assert_eq!(identity.0, EXITED_UNIDENTIFIED);
+        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(6));
     }
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test

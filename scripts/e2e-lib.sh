@@ -175,7 +175,7 @@ oh_deadline() {
   local secs="$1"
   shift
   case "$OH_DEADLINE_KILL_AFTER" in
-    '' | 0 | *[!0-9]*)
+    '' | 0* | *[!0-9]*)
       echo "oh_deadline: OH_DEADLINE_KILL_AFTER is '$OH_DEADLINE_KILL_AFTER', not a whole number of seconds from 1; set it to one (default 5), then rerun" >&2
       return 2
       ;;
@@ -2581,7 +2581,7 @@ _oh_control_mode_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(oh_socket_sandbox)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/store"
@@ -2864,7 +2864,7 @@ oh_control_session_enforce() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(oh_socket_sandbox)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/sessions"
@@ -2985,7 +2985,7 @@ oh_control_model_enforce() {
       ;;
   esac
 
-  sandbox="$(oh_socket_sandbox)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/store"
@@ -3090,7 +3090,7 @@ _oh_control_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(oh_socket_sandbox)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   git init -q "$sandbox" 2>/dev/null || true
@@ -3384,7 +3384,7 @@ _oh_control_redirect_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(oh_socket_sandbox)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   git init -q "$sandbox" 2>/dev/null || true

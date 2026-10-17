@@ -90,8 +90,11 @@ trap 'rm -rf "$work" || echo "app-server-reuse: could not remove $work; delete i
 # on macOS CI, beside other builds of the same checkout) took for gone. A file
 # missing for longer than the wait is reported as gone.
 copied="$work/app_server_reuse"
+copy_error=""
 for ((tries = 0; tries < 50; tries++)); do
-  [ -x "$example" ] && cp "$example" "$copied" 2>/dev/null && break
+  if [ -x "$example" ]; then
+    copy_error="$(cp "$example" "$copied" 2>&1)" && break
+  fi
   rm -f "$copied" || {
     echo "app-server-reuse: cannot remove the partial copy $copied; check its permissions" >&2
     exit 1
@@ -99,7 +102,11 @@ for ((tries = 0; tries < 50; tries++)); do
   sleep 0.1
 done
 [ -x "$copied" ] || {
-  echo "app-server-reuse: cargo named $example as the app_server_reuse example, but no executable is there; check that nothing removed it from its target directory, then rerun" >&2
+  if [ -n "$copy_error" ]; then
+    echo "app-server-reuse: cannot copy the app_server_reuse example $example into $work: $copy_error; check both paths' permissions and free space, then rerun" >&2
+  else
+    echo "app-server-reuse: cargo named $example as the app_server_reuse example, but no executable is there; check that nothing removed it from its target directory, then rerun" >&2
+  fi
   exit 1
 }
 example="$copied"

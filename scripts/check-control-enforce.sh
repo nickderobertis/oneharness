@@ -303,7 +303,8 @@ socket_len() {
   printf '%s' "${#socket}"
 }
 moved="" short_tmp=""
-trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp"' EXIT
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" ||
+  echo "check-control-enforce: could not remove its scratch ($evidence_tmp $crlf_sort_dir $settled_tmp $moved $short_tmp); delete them by hand" >&2' EXIT
 in_place="$(mktemp -d "$long_tmp/tmp.XXXXXXXXXX")" || fail "cannot create a sandbox in place under $long_tmp"
 moved="$(TMPDIR="$long_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a long temp dir"
 short_tmp="$(mktemp -d /tmp/oh.XXXXXX)" || fail "cannot create a short temp dir under /tmp"
@@ -353,7 +354,7 @@ deadline_case() {
   [ "$status" -eq 137 ] || fail "$branch: a run that ignored the TERM ended $status, not 137"
   [ "$elapsed" -le 6 ] || fail "$branch: a run that ignored the TERM went on for ${elapsed}s past a 1 s deadline and 1 s grace"
   # A grace that is not whole seconds from 1 is refused before anything runs.
-  for grace in "" 0 3s -1; do
+  for grace in "" 0 00 05 3s -1; do
     status=0
     OH_DEADLINE_KILL_AFTER="$grace" oh_deadline 1 sh -c 'echo ran' 2>/dev/null || status=$?
     [ "$status" -eq 2 ] || fail "$branch: a kill grace of '$grace' was not refused (ended $status)"

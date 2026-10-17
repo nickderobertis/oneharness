@@ -4925,6 +4925,29 @@ fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot
     );
     assert!(ran.exists(), "relinked: the example did not run: {stderr}");
 
+    // There but not readable, so it cannot be copied: the copy's own error,
+    // not a missing executable, is the reason.
+    let locked = pool.path("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let unreadable = locked.join("app_server_reuse");
+    std::fs::copy(&example, &unreadable).unwrap();
+    std::fs::set_permissions(
+        &unreadable,
+        std::os::unix::fs::PermissionsExt::from_mode(0o311),
+    )
+    .unwrap();
+    let named = serde_json::to_string(&unreadable.display().to_string()).unwrap();
+    let (_scratch, output) = run("uncopyable", &artifact(&named), "");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "uncopyable: {stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "cannot copy the app_server_reuse example {}",
+            unreadable.display()
+        )) && stderr.contains("Permission denied"),
+        "uncopyable: {stderr}"
+    );
+
     let cases = [
         (
             "unnamed",

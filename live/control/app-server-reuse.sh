@@ -72,7 +72,7 @@ example="$(printf '%s\n' "$artifacts" | node -e '
     process.stdout.write(executable);
   });
 ')" || {
-  echo "app-server-reuse: cargo's artifact message for the app_server_reuse example is not JSON node can read; its error is above" >&2
+  echo "app-server-reuse: cargo's artifact message for the app_server_reuse example is not JSON node can read; its error is above. Run 'cargo build -p oneharness-core --example app_server_reuse --message-format json-render-diagnostics' from $root to see the line it rejected, and check 'cargo --version' against rust-toolchain.toml" >&2
   exit 1
 }
 [ -n "$example" ] || {

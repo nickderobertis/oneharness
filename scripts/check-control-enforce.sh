@@ -604,27 +604,40 @@ _oh_wait_for 15 test -s "$endpoint_dir/port" ||
   fail "the stalling endpoint never wrote its port: $(cat "$endpoint_dir/endpoint.log" 2>/dev/null)"
 endpoint="http://127.0.0.1:$(tr -dc 0-9 <"$endpoint_dir/port")/v1/responses"
 printf 'stall-next\n' >"$endpoint_dir/mode" || fail "could not arm the endpoint's stall in $endpoint_dir/mode"
-post() { curl -s --max-time "$1" -H 'content-type: application/json' -d "$2" "$endpoint" || true; }
-case "$(post 5 '{"generate":false}')" in
+# One POST, failing the check unless curl ends as expected: 0 when the endpoint
+# serves, 28 (its time limit) when it is meant to be holding the response.
+# Anything else is a connection or protocol failure, reported as curl's own.
+#   $1 time limit, $2 body, $3 the exit curl must end with
+post() {
+  local status=0 out
+  out="$(curl -sS --max-time "$1" -H 'content-type: application/json' -d "$2" "$endpoint" 2>&1)" || status=$?
+  [ "$status" -eq "$3" ] ||
+    fail "curl ended $status, not $3, posting $2 to the stalling endpoint: $out (its log: $endpoint_dir/endpoint.log)"
+  printf '%s' "$out"
+}
+case "$(post 5 '{"generate":false}' 0)" in
   *response.completed*) ;;
   *) fail "the endpoint stalled a warmup, which codex abandons, so the stall would prove nothing" ;;
 esac
-case "$(post 2 '{"input":[]}')" in
+case "$(post 2 '{"input":[]}' 28)" in
   *response.completed*) fail "the endpoint served the model request it was armed to stall" ;;
   *response.created*) ;;
   *) fail "the endpoint's stalled request did not even announce its response" ;;
 esac
-case "$(post 5 '{"input":[]}')" in
+case "$(post 5 '{"input":[]}' 0)" in
   *response.completed*) ;;
   *) fail "the endpoint did not serve the request after its one stall, so codex's retry would stall too" ;;
 esac
 [ "$(awk '{print $2, $3, $4}' "$endpoint_dir/requests.log" | tr '\n' ';')" = "sse warmup serve;sse request stall;sse request serve;" ] ||
   fail "the endpoint's request log was not warmup served, request stalled, request served: $(cat "$endpoint_dir/requests.log")"
-# The upgraded socket stays open, so curl ends on its time limit; what it read
-# before that is the answer.
-accept="$({ curl -s -i --max-time 2 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$endpoint" || true; } |
-  tr -d '\r' | awk -F': ' 'tolower($1) == "sec-websocket-accept" { print $2 }')"
+# The upgraded socket stays open, so curl ends on its time limit (28) having
+# read the handshake; any other ending is the probe failing, not the endpoint.
+handshake_status=0
+handshake="$(curl -sS -i --max-time 2 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$endpoint" 2>&1)" || handshake_status=$?
+[ "$handshake_status" -eq 28 ] ||
+  fail "the websocket probe's curl ended $handshake_status, not 28 (its time limit on the open socket): $handshake"
+accept="$(printf '%s\n' "$handshake" | tr -d '\r' | awk -F': ' 'tolower($1) == "sec-websocket-accept" { print $2 }')"
 [ "$accept" = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" ] ||
   fail "the endpoint's websocket accept was '$accept', not RFC 6455's s3pPLMBiTxaQ9kYGzzhZRbK+xOo=, so codex would refuse the transport it uses by default"
 kill "$endpoint_pid" 2>/dev/null || true

@@ -2551,11 +2551,12 @@ oh_resume_stall_enforce() {
     sed 's/^/    /' "$sandbox/git.log" >&2 || true
     _oh_stall_abort "$sandbox" "$pid" "$id: could not make $sandbox/work a git repository (output above); check that git is installed and the host temp dir is writable"
   fi
-  "$py" -I "$OH_REPO_ROOT/scripts/codex-stall-endpoint.py" "$(oh_native_path "$endpoint")" >"$sandbox/endpoint.log" 2>&1 &
-  pid=$!
-  if ! _oh_wait_for 15 test -s "$endpoint/port"; then
+  local started_ok=0
+  _oh_stall_endpoint_start "$py" "$endpoint" "$sandbox/endpoint.log" || started_ok=$?
+  pid="$_OH_STALL_ENDPOINT_PID"
+  if [ "$started_ok" -ne 0 ]; then
     sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
-    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint never reported its port (its output is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint never reported its port (its output, with the stack it hung in, is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
   fi
   port="$(_oh_port_in "$endpoint/port")" ||
     _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint's port file does not hold one TCP port; run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see what it wrote"
@@ -2628,6 +2629,21 @@ _oh_port_in() {
 }
 
 #   $1 sandbox, $2 the stalling endpoint's pid, or empty before it started
+# Starts scripts/codex-stall-endpoint.py serving DIR, its output in LOG, and
+# waits for it to write DIR/port; its pid is left in _OH_STALL_ENDPOINT_PID
+# either way. It runs under faulthandler, so an endpoint that never reports
+# its port is sent SIGABRT and leaves every thread's stack in LOG: a startup
+# that hangs says where, rather than leaving an empty log behind.
+#   $1 python interpreter, $2 DIR, $3 LOG, $4 seconds to wait (default 15)
+_oh_stall_endpoint_start() {
+  "$1" -I -X faulthandler "$OH_REPO_ROOT/scripts/codex-stall-endpoint.py" "$(oh_native_path "$2")" >"$3" 2>&1 &
+  _OH_STALL_ENDPOINT_PID=$!
+  _oh_wait_for "${4:-15}" test -s "$2/port" && return 0
+  kill -ABRT "$_OH_STALL_ENDPOINT_PID" 2>/dev/null || true
+  wait "$_OH_STALL_ENDPOINT_PID" 2>/dev/null || true
+  return 1
+}
+
 _oh_stall_cleanup() {
   if [ -n "$2" ]; then
     kill "$2" 2>/dev/null || true

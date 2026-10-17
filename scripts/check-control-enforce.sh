@@ -628,12 +628,47 @@ esac
 # and on its websocket handshake being one codex accepts (RFC 6455's own
 # example key and accept value).
 endpoint_dir="$(mktemp -d /tmp/oh-stall.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
-trap 'kill "${endpoint_pid:-}" 2>/dev/null || true; rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" "$endpoint_dir" ||
+trap 'kill "${endpoint_pid:-}" 2>/dev/null || true; kill "${_OH_STALL_ENDPOINT_PID:-}" 2>/dev/null || true; rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" "$endpoint_dir" ||
   echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
-python3 -I "$root/scripts/codex-stall-endpoint.py" "$endpoint_dir" >"$endpoint_dir/endpoint.log" 2>&1 &
-endpoint_pid=$!
-_oh_wait_for 15 test -s "$endpoint_dir/port" ||
+# An interpreter that runs the endpoint with one of its startup calls swapped
+# for a hang, the way macOS's resolver held `socket.getfqdn("127.0.0.1")` past
+# the 15 s the phase waits for the port. $1 names the call.
+hanging_python() {
+  mkdir -p "$endpoint_dir/hang" || fail "could not create $endpoint_dir/hang"
+  # Called as `python -I -X faulthandler SCRIPT DIR`: keep the flags, run
+  # SCRIPT through runpy once $1 hangs.
+  if ! cat >"$endpoint_dir/hang/python" <<EOF_PY
+#!/usr/bin/env bash
+exec "$(command -v python3)" "\$1" "\$2" "\$3" -c '
+import runpy, socket, socketserver, sys, time
+$1 = lambda *_: time.sleep(3600)
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name="__main__")' "\$4" "\$5"
+EOF_PY
+  then
+    fail "could not write $endpoint_dir/hang/python"
+  fi
+  chmod +x "$endpoint_dir/hang/python" || fail "could not make $endpoint_dir/hang/python executable"
+  printf '%s' "$endpoint_dir/hang/python"
+}
+# The endpoint binds without asking the resolver for its own name, so a
+# reverse lookup that never answers cannot keep it from reporting its port.
+mkdir "$endpoint_dir/no-dns" || fail "could not create $endpoint_dir/no-dns"
+_oh_stall_endpoint_start "$(hanging_python socket.getfqdn)" "$endpoint_dir/no-dns" "$endpoint_dir/no-dns.log" ||
+  fail "the stalling endpoint never reported its port while a reverse lookup hung, as macOS's can: $(cat "$endpoint_dir/no-dns.log")"
+kill "$_OH_STALL_ENDPOINT_PID" 2>/dev/null || true
+wait "$_OH_STALL_ENDPOINT_PID" 2>/dev/null || true
+# A startup that does hang is stopped, and leaves the stack it hung in.
+mkdir "$endpoint_dir/hung" || fail "could not create $endpoint_dir/hung"
+! _oh_stall_endpoint_start "$(hanging_python socketserver.TCPServer.server_bind)" "$endpoint_dir/hung" "$endpoint_dir/hung.log" 2 ||
+  fail "an endpoint whose bind hung was reported as started"
+grep -q "in server_bind" "$endpoint_dir/hung.log" ||
+  fail "an endpoint whose startup hung left no stack naming where: $(cat "$endpoint_dir/hung.log")"
+kill -0 "$_OH_STALL_ENDPOINT_PID" 2>/dev/null && fail "an endpoint whose startup hung was left running"
+
+_oh_stall_endpoint_start python3 "$endpoint_dir" "$endpoint_dir/endpoint.log" ||
   fail "the stalling endpoint never wrote its port: $(cat "$endpoint_dir/endpoint.log" 2>/dev/null)"
+endpoint_pid="$_OH_STALL_ENDPOINT_PID"
 endpoint_port="$(_oh_port_in "$endpoint_dir/port")" ||
   fail "the stalling endpoint's port file does not hold one TCP port (said above)"
 # The port reader the phase dials with refuses anything but one TCP port.

@@ -30,6 +30,7 @@ import hashlib
 import http.server
 import json
 import socket
+import socketserver
 import struct
 import sys
 import threading
@@ -403,6 +404,23 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
 
 
+class Server(http.server.ThreadingHTTPServer):
+    """An HTTP server that binds without resolving its own address's name.
+
+    `HTTPServer.server_bind` names the server with `socket.getfqdn`, a reverse
+    lookup of 127.0.0.1 that macOS's resolver can hold for longer than a phase
+    waits for the port file, so the endpoint never reported its port there.
+    Nothing here reads the name, so the bound address stands in for it.
+    """
+
+    @override
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = str(host)
+        self.server_port = int(port)
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: codex-stall-endpoint.py DIR", file=sys.stderr)
@@ -413,7 +431,7 @@ def main() -> int:
         return 2
     Handler.state = State(root)
     try:
-        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server = Server(("127.0.0.1", 0), Handler)
     except OSError as err:
         print(
             f"codex-stall-endpoint: cannot listen on 127.0.0.1 ({err}); "

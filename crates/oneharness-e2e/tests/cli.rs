@@ -2709,8 +2709,14 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
         "params": {"turn": {"status": "failed", "error": {"message": provider}}},
     })
     .to_string();
-    // One run of the chain on one driver: its exit code and its report.
-    let chain = |label: &str, codex_stdout: &str, exit: &str, driver: &str| {
+    // One run of the chain on one driver, with any extra mock knobs and CLI
+    // flags: its exit code and its report.
+    let chain_with = |label: &str,
+                      codex_stdout: &str,
+                      exit: &str,
+                      driver: &str,
+                      knobs: &str,
+                      flags: &[&str]| {
         let codex_stdout = serde_json::to_string(codex_stdout).unwrap();
         let project = format!(
             r#"
@@ -2720,7 +2726,7 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
             [harness.codex]
             bin = '{mock}'
             model = "gpt-5.5"
-            env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = {codex_stdout} }}
+            env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = {codex_stdout}{knobs} }}
 
             [harness.claude-code]
             bin = '{mock}'
@@ -2730,6 +2736,7 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
         let fx = ConfigFixture::new(&format!("{label}-{exit}-{driver}"), &project, "");
         let cwd = fx.cwd();
         let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+        args.extend_from_slice(flags);
         if driver == "streamed" {
             args.push("--stream");
         }
@@ -2743,6 +2750,9 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
             json_stdout(&output)
         };
         (output, report)
+    };
+    let chain = |label: &str, codex_stdout: &str, exit: &str, driver: &str| {
+        chain_with(label, codex_stdout, exit, driver, "", &[])
     };
 
     for driver in ["buffered", "streamed"] {
@@ -2851,8 +2861,72 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
                 "{tag}"
             );
         }
+        // The refusal is bounded like every fall-through: a codex that did
+        // billed work before refusing ran the task, so it stops the chain with
+        // the refusal still named — the next harness is never spawned.
+        let tag = format!("codex-account-model-after-work/{driver}");
+        let worked = neutral.replacen(
+            "{\"type\":\"turn.started\"}\n",
+            "{\"type\":\"turn.started\"}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":4102,\"cached_input_tokens\":0,\"output_tokens\":311}}\n{\"type\":\"turn.started\"}\n",
+            1,
+        );
+        assert_ne!(worked, neutral, "the work must be added to the capture");
+        let (output, value) = chain("codex-account-model-after-work", &worked, "1", driver);
+        assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+        assert_eq!(
+            value["results"].as_array().unwrap().len(),
+            1,
+            "{tag}: {value}"
+        );
+        assert_eq!(value["results"][0]["usage"]["input_tokens"], 4102, "{tag}");
+        assert_eq!(
+            value["results"][0]["failure_kind"], "model_not_found",
+            "{tag}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{tag}"
+        );
+
+        // A refusal printed by a codex that then hung past its deadline is a
+        // timeout — a run, never a fall-through — whatever it printed first:
+        // the capture streams out a line at a time and filler keeps the
+        // process alive until `--timeout` kills it.
+        let tag = format!("codex-account-model-timeout/{driver}");
+        let hung = format!("{neutral}{}", "{\"type\":\"turn.started\"}\n".repeat(20));
+        let (output, value) = chain_with(
+            "codex-account-model-timeout",
+            &hung,
+            "1",
+            driver,
+            r#", MOCK_STREAM_DELAY_MS = "250""#,
+            &["--timeout", "2"],
+        );
+        assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+        assert_eq!(
+            value["results"].as_array().unwrap().len(),
+            1,
+            "{tag}: {value}"
+        );
+        assert_eq!(value["results"][0]["status"], "timeout", "{tag}: {value}");
+        assert!(
+            value["results"][0]["stdout"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("is not supported when using Codex with"),
+            "{tag}: the refusal must have been printed before the deadline: {value}"
+        );
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{tag}"
+        );
     }
 }
+
 /// The bound on the account refusal's clean-exit reading: a **generic**
 /// clean-exit model rejection — Claude Code's `is_error` terminal record that
 /// exits 0, with no account wording — still stops the chain, with a model list

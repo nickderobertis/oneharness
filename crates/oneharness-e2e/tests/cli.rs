@@ -2786,41 +2786,67 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
             assert_eq!(value["results"][1]["text"], "served-by-claude", "{tag}");
         }
 
-        // Any other 400 `invalid_request_error` is a request the next harness's
-        // provider would refuse too: unclassified, it stops the chain at codex.
-        let tag = format!("codex-other-invalid-request/{driver}");
-        let other_400 = neutral.replace(
-            refusal,
-            "Unsupported parameter: 'temperature' is not supported with this model.",
-        );
-        assert_ne!(
-            other_400, neutral,
-            "the substitution must change the capture"
-        );
-        let (output, value) = chain("codex-other-invalid-request", &other_400, driver);
-        assert_eq!(
-            output.status.code(),
-            Some(1),
-            "{tag}: a real codex failure fails the run: stderr {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert_eq!(
-            value["results"].as_array().unwrap().len(),
-            1,
-            "{tag}: {value}"
-        );
-        assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
-        assert!(
-            value["results"][0]["failure_kind"].is_null(),
-            "{tag}: another 400 must not classify: {}",
-            value["results"][0]["failure_kind"]
-        );
-        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
-        assert_eq!(
-            value["fallback"]["fell_through"].as_array().unwrap().len(),
-            0,
-            "{tag}"
-        );
+        // Every part of the signature is load-bearing: another 400
+        // `invalid_request_error`, the wording under another status or another
+        // error type, the sentence as bare prose rather than the provider's
+        // object, and an object past the size the reading accepts are each a
+        // request the next harness's provider may refuse too — unclassified,
+        // each stops the chain at codex.
+        let escaped = |object: &str| serde_json::to_string(object).unwrap();
+        let in_capture = |object: String| {
+            let stdout = neutral.replace(&escaped(&provider), &escaped(&object));
+            assert_ne!(stdout, neutral, "the substitution must change the capture");
+            stdout
+        };
+        let stops = [
+            (
+                "other-invalid-request",
+                in_capture(provider.replace(
+                    refusal,
+                    "Unsupported parameter: 'temperature' is not supported with this model.",
+                )),
+            ),
+            (
+                "other-status",
+                in_capture(provider.replace("\"status\":400", "\"status\":404")),
+            ),
+            (
+                "other-error-type",
+                in_capture(provider.replace("invalid_request_error", "server_error")),
+            ),
+            ("bare-prose", in_capture(refusal.to_string())),
+            (
+                "oversized",
+                in_capture(provider.replace(refusal, &format!("{refusal}{}", " ".repeat(512)))),
+            ),
+        ];
+        for (label, stdout) in stops {
+            let tag = format!("codex-{label}/{driver}");
+            let (output, value) = chain(&format!("codex-{label}"), &stdout, driver);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{tag}: a real codex failure fails the run: stderr {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                value["results"].as_array().unwrap().len(),
+                1,
+                "{tag}: {value}"
+            );
+            assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
+            assert!(
+                value["results"][0]["failure_kind"].is_null(),
+                "{tag}: it must not classify: {}",
+                value["results"][0]["failure_kind"]
+            );
+            assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+            assert_eq!(
+                value["fallback"]["fell_through"].as_array().unwrap().len(),
+                0,
+                "{tag}"
+            );
+        }
     }
 }
 // llmlint: ignore-end[e2e_not_mocked]

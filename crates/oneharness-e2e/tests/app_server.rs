@@ -1997,6 +1997,7 @@ fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, because real Codex cannot be made to exit before listening with a chosen stderr (whitespace, non-UTF-8, an unopenable log) on demand. Real Codex's own early-exit reason reached this report on macOS CI (run 38942062567).
 /// The stderr an early exit quotes is only what the server legibly said: a
 /// stderr of whitespace alone is reported as nothing said, one that is not
 /// UTF-8 is quoted with each undecodable byte — the character the 2 KiB cut
@@ -2055,7 +2056,9 @@ fn an_early_exit_quotes_only_the_stderr_it_can_read() {
     );
     assert!(!entry.join("nowhere").exists(), "the link was followed");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, because real Codex cannot be made to exit before listening with a known status and stderr on demand. Real Codex's own early-exit reason reached this report on macOS CI (run 38942062567).
 /// A shared server that exits before it listens fails the dispatch with the
 /// server's own account of why — its exit status and the end of its stderr —
 /// since nobody else reads a detached server's stderr. The log it is read from
@@ -2226,7 +2229,9 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
         "not the server's"
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and a real directory; only codex is the repository's subprocess double, which refuses a loose socket directory exactly as codex-cli 0.163 does, because the gate cannot run real Codex. The live `oh_codex_rendezvous_check` holds the double's contract to real Codex.
 /// Codex refuses to start when its socket rendezvous directory is not this
 /// user's at mode 0700 — macOS CI met one another tool had made at 0755, and
 /// every shared server exited at once. The launch tightens one that is ours,
@@ -2306,6 +2311,7 @@ fn a_shared_server_starts_once_its_loose_socket_directory_is_made_private() {
     );
     assert_eq!(mode(&target), 0o755);
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A server that refuses `initialize` fails a pooled session's open naming the
 /// refusal — here through the reuse workload, which opens its leases that way.

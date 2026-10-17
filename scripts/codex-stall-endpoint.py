@@ -114,25 +114,39 @@ class State:
         self.lock = threading.Lock()
         self.count = 0
 
-    def decide(self, transport: Transport, request: dict[str, object], size: int) -> Decision:
+    def decide(
+        self, transport: Transport, request: dict[str, object], size: int
+    ) -> Decision | None:
         """This request's number and whether it stalls, consuming a `stall-next`.
 
         A websocket warmup (`"generate": false`, which Codex sends before each
         turn's request on that transport) is always served: stalling it tests
         nothing, because Codex abandons a warmup and carries on.
+
+        None, said on stderr, when the mode or the request log cannot be read
+        or written: a request this endpoint cannot account for is not served.
         """
         warmup = request.get("generate") is False
         with self.lock:
             self.count += 1
             mode_file = self.root / "mode"
-            armed = mode_file.exists() and mode_file.read_text().strip() == "stall-next"
-            mode = Mode.SERVE
-            if armed and not warmup:
-                mode_file.write_text("serve\n")
-                mode = Mode.STALL
-            with (self.root / "requests.log").open("a") as log:
-                kind = "warmup" if warmup else "request"
-                log.write(f"{time.time():.3f} {transport.value} {kind} {mode.value} {size}\n")
+            log_file = self.root / "requests.log"
+            try:
+                armed = mode_file.exists() and mode_file.read_text().strip() == "stall-next"
+                mode = Mode.SERVE
+                if armed and not warmup:
+                    mode_file.write_text("serve\n")
+                    mode = Mode.STALL
+                with log_file.open("a") as log:
+                    kind = "warmup" if warmup else "request"
+                    log.write(f"{time.time():.3f} {transport.value} {kind} {mode.value} {size}\n")
+            except OSError as err:
+                print(
+                    f"codex-stall-endpoint: cannot use {mode_file} or {log_file} ({err}); "
+                    f"check that {self.root} is writable and has space",
+                    file=sys.stderr,
+                )
+                return None
             return Decision(self.count, mode)
 
 
@@ -284,6 +298,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 send_frame(conn, Opcode.CLOSE, struct.pack("!H", 1007))
                 break
             decision = self.state.decide(Transport.WEBSOCKET, request, len(frame.payload))
+            if decision is None:
+                send_frame(conn, Opcode.CLOSE, struct.pack("!H", 1011))
+                break
             send_frame(conn, Opcode.TEXT, json.dumps(created(decision.number)).encode())
             if decision.mode is Mode.STALL:
                 time.sleep(STALL_SECONDS)
@@ -306,6 +323,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.refuse(400, "a Responses request is a JSON object")
             return
         decision = self.state.decide(Transport.SSE, request, len(body))
+        if decision is None:
+            self.refuse(500, "the endpoint cannot record this request; its stderr says why")
+            return
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("connection", "close")
@@ -334,9 +354,26 @@ def main() -> int:
         print(f"codex-stall-endpoint: {root} is not a directory; create it first", file=sys.stderr)
         return 2
     Handler.state = State(root)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    try:
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    except OSError as err:
+        print(
+            f"codex-stall-endpoint: cannot listen on 127.0.0.1 ({err}); "
+            "check that loopback is up and this process may bind a port",
+            file=sys.stderr,
+        )
+        return 1
     server.daemon_threads = True
-    (root / "port").write_text(f"{server.server_address[1]}\n")
+    port_file = root / "port"
+    try:
+        port_file.write_text(f"{server.server_address[1]}\n")
+    except OSError as err:
+        print(
+            f"codex-stall-endpoint: cannot write {port_file} ({err}); "
+            f"check that {root} is writable and has space",
+            file=sys.stderr,
+        )
+        return 1
     server.serve_forever()
     return 0
 

@@ -287,4 +287,35 @@ wait "$alive" 2>/dev/null || true
 _oh_control_wait_settled "$settled_tmp" "$alive" ||
   fail "a run that has exited must end the wait rather than being waited out"
 
+# Where a control phase makes its sandbox. Under a temp dir as long as macOS's
+# resolved /private/var/folders/<..>/T, the socket the longest-named phase opens
+# would pass the 104-byte sun_path (NUL included) every platform must meet, as
+# every harness's --control refused on macOS CI; the sandbox moves to /tmp and
+# the socket fits. Under a short temp dir it stays where the host put it.
+long_tmp="$settled_tmp/var-folders-n6-hn37q6pj7sj_9dmqqc2113800000gn-T"
+mkdir -p "$long_tmp"
+long_tmp="$(cd "$long_tmp" && pwd -P)"
+socket_len() {
+  local socket
+  socket="$(cd "$1" && pwd -P)/store/control/model-claude-code.sock"
+  printf '%s' "${#socket}"
+}
+moved="" short_tmp=""
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp"' EXIT
+in_place="$(TMPDIR="$long_tmp" mktemp -d)"
+moved="$(TMPDIR="$long_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a long temp dir"
+short_tmp="$(mktemp -d /tmp/oh.XXXXXX)"
+kept="$(TMPDIR="$short_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a short temp dir"
+[ "$(socket_len "$in_place")" -ge 104 ] ||
+  fail "the long temp dir case is vacuous: a sandbox made in place already fits ($(socket_len "$in_place") bytes)"
+[ "$(socket_len "$moved")" -lt 104 ] ||
+  fail "a control phase's socket under a long temp dir is $(socket_len "$moved") bytes, past the 104-byte sun_path: $moved"
+case "$moved" in
+  "$long_tmp"/*) fail "a sandbox under a long temp dir stayed there: $moved" ;;
+esac
+case "$kept" in
+  "$short_tmp"/*) ;;
+  *) fail "a sandbox under a short temp dir left it: $kept" ;;
+esac
+
 echo "check-control-enforce: ok"

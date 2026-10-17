@@ -130,6 +130,27 @@ oh_bin() {
   printf '%s' "${out//\\//}"
 }
 
+# The longest host temp dir, resolved (macOS's /var resolves to /private/var,
+# and oneharness measures the resolved address), a control phase's sandbox is
+# made under. What a phase adds beneath it — `/tmp.XXXXXXXXXX`, its store, then
+# `control/<session>.sock`, `model-claude-code` the longest — is up to 52 bytes,
+# and macOS's sun_path holds 103 and a NUL; this leaves room for longer ids.
+OH_SOCKET_BASE_MAX=40
+
+# Make the scratch directory of a phase that opens a control socket beneath it.
+# Under the host temp dir unless that is too long for the socket's address to
+# fit — macOS's /var/folders/<..>/T reached 106 bytes and every controllable
+# harness's --control refused — then under /tmp. Each phase removes it as before.
+oh_socket_sandbox() {
+  local base="${TMPDIR:-/tmp}" resolved
+  resolved="$(cd "$base" 2>/dev/null && pwd -P)" || resolved="$base"
+  if [ "${#resolved}" -gt "$OH_SOCKET_BASE_MAX" ]; then
+    mktemp -d /tmp/tmp.XXXXXXXXXX
+  else
+    mktemp -d
+  fi
+}
+
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows
 # `mktemp -d` yields a POSIX path like /tmp/tmp.XXXX that a native harness (or
 # oneharness resolving its --cwd) cannot resolve, so a synced config lands where
@@ -550,7 +571,7 @@ oh_controlled_turn() {
   local id="$1" marker sandbox turn status=0
   _oh_phase controlled-turn
   marker="$(oh_marker)"
-  sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   # --control needs a handle an `oneharness interrupt` could address; this
   # turn is never interrupted, so a throwaway one in the sandbox serves. Its
   # store is a one-letter directory: macOS's long per-user temp dir otherwise
@@ -2500,7 +2521,7 @@ _oh_control_mode_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/store"
@@ -2783,7 +2804,7 @@ oh_control_session_enforce() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/sessions"
@@ -2904,7 +2925,7 @@ oh_control_model_enforce() {
       ;;
   esac
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/store"
@@ -3009,7 +3030,7 @@ _oh_control_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   git init -q "$sandbox" 2>/dev/null || true
@@ -3303,7 +3324,7 @@ _oh_control_redirect_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   git init -q "$sandbox" 2>/dev/null || true

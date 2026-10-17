@@ -48,6 +48,7 @@
       "{workspaceRoot}/scripts/explore-events.sh",
       "{workspaceRoot}/scripts/explore-hooks.sh",
       "{workspaceRoot}/scripts/explore_control.py",
+      "{workspaceRoot}/scripts/codex-stall-endpoint.py",
       "{workspaceRoot}/scripts/with-portable-sed.sh"
     ]
   },

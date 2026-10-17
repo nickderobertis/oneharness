@@ -2223,7 +2223,7 @@ oh_resume_mode_enforce() {
     local reading
     reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
     rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: the resumed turn under --mode $mode ran into its ${OH_TIMEOUT:-300}s bound: $reading. A resume codex refused ends at once with its reason, so this is not one; codex-cli 0.163 waits stream_idle_timeout_ms (300 s) on a stalled model stream before it says or retries anything, so a bound at or under that ends such a turn silently. Read the frames above, then rerun \`just live-codex\`"
+    fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_BOUND}s bound: $reading. A resume codex refused ends at once with its reason, so this is not one, and the bound already outlasts codex's own 300 s stall recovery (see _OH_RESUME_TURN_BOUND), so codex did not recover inside it. Read the frames above, then rerun \`just live-codex\`"
   fi
   if [ "$status" != "ok" ]; then
     refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
@@ -2476,8 +2476,115 @@ _oh_resume_mode_turn() {
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
   ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
     --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
-    --timeout "${OH_TIMEOUT:-300}" --compact \
+    --timeout "$_OH_RESUME_TURN_BOUND" --compact \
     "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
+}
+
+# The bound on one resume-phase turn, in seconds: codex's own stall window plus
+# headroom for it to recover. codex-cli 0.163's built-in `openai` provider
+# notices a stalled model stream only after stream_idle_timeout_ms, 300 000 ms
+# (codex-rs/model-provider-info/src/lib.rs), and the built-in provider cannot be
+# configured otherwise ("Built-in providers cannot be overridden"). Measured
+# against real codex-cli 0.163.0 with `oh_resume_stall_enforce`'s endpoint: the
+# stalled request was retried 300.2 s after it was sent, on websockets and on
+# HTTPS alike, and the resumed turn completed at 301.4 s and 307.7 s. The suite's
+# 300 s bound killed exactly that recovery — the macOS CI resume turn that ran
+# its whole 300 s silently. 120 s past the window leaves room for the work
+# before the stall and the turn after the retry, which take seconds.
+_OH_RESUME_TURN_BOUND=420
+
+# Live proof that a resumed codex turn whose model stream stalls once is
+# recovered by codex itself inside `_OH_RESUME_TURN_BOUND`. Real codex, its
+# built-in `openai` provider (only its base URL moved, through
+# `openai_base_url`), and oneharness's real resume interface (`run --session`
+# twice); the model is scripts/codex-stall-endpoint.py on loopback, which
+# stalls turn two's model request once and serves the retry, so nothing is
+# billed. An isolated CODEX_HOME logs in with a key that never leaves the host.
+#
+# Fails when turn two does not complete inside the bound, when it was not a
+# continue of turn one's thread, or when the endpoint saw no stall and retry at
+# all — a pass that never stalled would prove nothing about the bound.
+#   $1 harness id (codex)
+oh_resume_stall_enforce() {
+  _oh_phase
+  local id="$1" bin sandbox endpoint home pid port took started status codex py
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  # The real codex, never the suite's measuring shim: on Linux the shim runs
+  # each launch in its own network namespace, whose loopback is not the host's,
+  # so codex could not reach the endpoint. This phase's traffic is loopback
+  # alone, which is not the internet spend the network budgets measure. Where
+  # no executable resolves past the shims (an npm `.cmd` on Windows, where
+  # nothing namespaces a launch), the one on PATH is the real one.
+  codex="$(_oh_unshimmed codex)" || codex="$(command -v codex)" ||
+    skip "codex is not on PATH; install it (the live-codex workflow does) to run this phase"
+  py="$(command -v python3 || command -v python)" ||
+    skip "neither python3 nor python is on PATH; the stalling endpoint is a Python script"
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  endpoint="$sandbox/endpoint"
+  home="$sandbox/codex-home"
+  mkdir -p "$endpoint" "$home" "$sandbox/work" ||
+    fail "could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+  git init -q "$sandbox/work" 2>/dev/null || true
+  "$py" -I "$OH_REPO_ROOT/scripts/codex-stall-endpoint.py" "$(oh_native_path "$endpoint")" >"$sandbox/endpoint.log" 2>&1 &
+  pid=$!
+  if ! _oh_wait_for 15 test -s "$endpoint/port"; then
+    kill "$pid" 2>/dev/null || true
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: the stalling endpoint never reported its port; its output is above"
+  fi
+  port="$(tr -dc 0-9 <"$endpoint/port")"
+  printf 'openai_base_url = "http://127.0.0.1:%s/v1"\ncli_auth_credentials_store = "file"\n' "$port" >"$home/config.toml" ||
+    fail "could not write $home/config.toml; check that the host temp dir is writable"
+  if ! printf 'sk-oneharness-local-only' | CODEX_HOME="$(oh_native_path "$home")" "$codex" login --with-api-key >"$sandbox/login.log" 2>&1; then
+    kill "$pid" 2>/dev/null || true
+    sed 's/^/    /' "$sandbox/login.log" >&2 || true
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: codex could not log in with a local key in an isolated CODEX_HOME; its output is above"
+  fi
+  # Codex's own key variables would outrank the isolated login.
+  local turn_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME="$(oh_native_path "$home")" ONEHARNESS_NO_CONFIG=1)
+  "${turn_env[@]}" "$bin" run --harness "$id" --bin "$id=$codex" --prompt "Remember the word OHSTALL. Reply OK." \
+    --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
+    --timeout "$_OH_RESUME_TURN_BOUND" --compact >"$sandbox/first.json" 2>"$sandbox/first.err" || true
+  status="$(_oh_result_status "$sandbox/first.json")"
+  if [ "$status" != ok ]; then
+    kill "$pid" 2>/dev/null || true
+    _oh_control_evidence "$sandbox" "$sandbox/first.json"
+    sed 's/^/    /' "$sandbox/first.err" >&2 || true
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: turn one against the local endpoint did not complete (status=${status:-<no report>}); read the evidence above"
+  fi
+  printf 'stall-next\n' >"$endpoint/mode" || fail "could not arm the endpoint's stall in $endpoint/mode"
+  note "  resume-stall: turn two's model request stalls once; codex must recover inside ${_OH_RESUME_TURN_BOUND}s"
+  started=$SECONDS
+  "${turn_env[@]}" "$bin" run --harness "$id" --bin "$id=$codex" --prompt "Say the word you were asked to remember." \
+    --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
+    --timeout "$_OH_RESUME_TURN_BOUND" --compact --events >"$sandbox/second.json" 2>"$sandbox/second.err" || true
+  took=$((SECONDS - started))
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  status="$(_oh_result_status "$sandbox/second.json")"
+  if ! grep -q ' request stall ' "$endpoint/requests.log" 2>/dev/null; then
+    sed 's/^/    /' "$endpoint/requests.log" >&2 || true
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: turn two's model request never stalled (requests above), so nothing was proven about the bound; check scripts/codex-stall-endpoint.py still tells codex's warmup from its request"
+  fi
+  if [ "$status" != ok ]; then
+    local reading
+    reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
+    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" 2>/dev/null | tail -n 6 | cut -c1-300)"
+    note "  endpoint requests: $(tr '\n' ';' <"$endpoint/requests.log")"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: a resumed turn whose model stream stalled once ended $status after ${took}s, not recovered inside the ${_OH_RESUME_TURN_BOUND}s bound: $reading. If codex now waits longer than 300 s on a stalled stream, raise _OH_RESUME_TURN_BOUND past its new window"
+  fi
+  if ! jq -e '.session.phase == "continue"' "$sandbox/second.json" >/dev/null 2>&1; then
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: turn two completed but did not continue turn one's thread ($(jq -c '.session' "$sandbox/second.json" 2>/dev/null))"
+  fi
+  rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+  note "PASS: $id recovered a resumed turn whose model stream stalled once, in ${took}s of its ${_OH_RESUME_TURN_BOUND}s bound"
 }
 
 # What a turn that ran into its bound was doing when it was stopped, read off

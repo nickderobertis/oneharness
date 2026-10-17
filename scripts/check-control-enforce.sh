@@ -577,7 +577,7 @@ resume_case 1
   fail "a resumed turn that ran into its bound was not failed (returned $status)"
 }
 case "$out" in
-  *"ran into its 300s bound: the turn started and the model sent nothing more"*) ;;
+  *"ran into its 420s bound: the turn started and the model sent nothing more"*) ;;
   *)
     printf '%s\n' "$out" >&2
     fail "a resumed turn that ran into its bound failed without naming what it was doing"
@@ -589,5 +589,45 @@ case "$out" in
     fail "a resumed turn that ran into its bound was blamed on the resume argv"
     ;;
 esac
+
+# The stalling endpoint `oh_resume_stall_enforce` points real codex at. Its
+# verdict rests on the endpoint stalling exactly one model request and serving
+# the retry — never a websocket warmup, which codex abandons and carries on —
+# and on its websocket handshake being one codex accepts (RFC 6455's own
+# example key and accept value).
+endpoint_dir="$(mktemp -d /tmp/oh-stall.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
+trap 'kill "${endpoint_pid:-}" 2>/dev/null || true; rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" "$endpoint_dir" ||
+  echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
+python3 -I "$root/scripts/codex-stall-endpoint.py" "$endpoint_dir" >"$endpoint_dir/endpoint.log" 2>&1 &
+endpoint_pid=$!
+_oh_wait_for 15 test -s "$endpoint_dir/port" ||
+  fail "the stalling endpoint never wrote its port: $(cat "$endpoint_dir/endpoint.log" 2>/dev/null)"
+endpoint="http://127.0.0.1:$(tr -dc 0-9 <"$endpoint_dir/port")/v1/responses"
+printf 'stall-next\n' >"$endpoint_dir/mode" || fail "could not arm the endpoint's stall in $endpoint_dir/mode"
+post() { curl -s --max-time "$1" -H 'content-type: application/json' -d "$2" "$endpoint" || true; }
+case "$(post 5 '{"generate":false}')" in
+  *response.completed*) ;;
+  *) fail "the endpoint stalled a warmup, which codex abandons, so the stall would prove nothing" ;;
+esac
+case "$(post 2 '{"input":[]}')" in
+  *response.completed*) fail "the endpoint served the model request it was armed to stall" ;;
+  *response.created*) ;;
+  *) fail "the endpoint's stalled request did not even announce its response" ;;
+esac
+case "$(post 5 '{"input":[]}')" in
+  *response.completed*) ;;
+  *) fail "the endpoint did not serve the request after its one stall, so codex's retry would stall too" ;;
+esac
+[ "$(awk '{print $2, $3, $4}' "$endpoint_dir/requests.log" | tr '\n' ';')" = "sse warmup serve;sse request stall;sse request serve;" ] ||
+  fail "the endpoint's request log was not warmup served, request stalled, request served: $(cat "$endpoint_dir/requests.log")"
+# The upgraded socket stays open, so curl ends on its time limit; what it read
+# before that is the answer.
+accept="$({ curl -s -i --max-time 2 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$endpoint" || true; } |
+  tr -d '\r' | awk -F': ' 'tolower($1) == "sec-websocket-accept" { print $2 }')"
+[ "$accept" = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" ] ||
+  fail "the endpoint's websocket accept was '$accept', not RFC 6455's s3pPLMBiTxaQ9kYGzzhZRbK+xOo=, so codex would refuse the transport it uses by default"
+kill "$endpoint_pid" 2>/dev/null || true
+wait "$endpoint_pid" 2>/dev/null || true
 
 echo "check-control-enforce: ok"

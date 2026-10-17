@@ -507,12 +507,13 @@ case "$out" in
 esac
 
 # The resume phase's answer to a silent turn, end to end: a resumed turn that
-# runs into its bound is read back and resumed once more, a second silent one
-# fails naming what it was doing, and neither is blamed on the resume argv. A
-# stand-in `oneharness` answers the phase's turns: turn one creates the session,
-# and the resumed turn reports a timeout (a thread and a turn started, then
-# nothing) the first FAKE_RESUME_SILENT times, then runs — touching the file it
-# was asked to and recalling the word.
+# runs into its bound fails naming what its frames say it was doing — never
+# blamed on the resume argv, which is what this phase said of the macOS turn
+# that spent all 300 s on a stalled stream. A stand-in `oneharness` answers the
+# phase's turns: turn one creates the session, and the resumed turn reports a
+# timeout (a thread and a turn started, then nothing) the first
+# FAKE_RESUME_SILENT times, then runs — touching the file it was asked to and
+# recalling the word.
 resume_dir="$(mktemp -d /tmp/oh-resume.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
 trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" ||
   echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
@@ -562,37 +563,30 @@ chmod +x "$resume_dir/oneharness" || fail "could not make $resume_dir/oneharness
 resume_case() {
   local silent="$1"
   status=0
-  out="$(ONEHARNESS_BIN="$resume_dir/oneharness" FAKE_RESUME_SILENT="$silent" TMPDIR=/tmp \
+  out="$(ONEHARNESS_BIN="$resume_dir/oneharness" FAKE_RESUME_SILENT="$silent" TMPDIR=/tmp OH_TIMEOUT='' \
     oh_resume_mode_enforce fakecodex auto 2>&1)" || status=$?
 }
-resume_case 1
+resume_case 0
 [ "$status" -eq 0 ] || {
   printf '%s\n' "$out" >&2
-  fail "a resumed turn that went silent once and then ran was not passed (returned $status)"
+  fail "a resumed turn that ran was not passed (returned $status)"
 }
-case "$out" in
-  *"ran into its 120s bound: the turn started and the model sent nothing more"*"resuming once more"*) ;;
-  *)
-    printf '%s\n' "$out" >&2
-    fail "a silent resumed turn was retried without saying what it was doing"
-    ;;
-esac
-resume_case 2
+resume_case 1
 [ "$status" -eq 1 ] || {
   printf '%s\n' "$out" >&2
-  fail "a resumed turn silent twice was not failed (returned $status)"
+  fail "a resumed turn that ran into its bound was not failed (returned $status)"
 }
 case "$out" in
-  *"ran into its 120s bound twice: the turn started and the model sent nothing more"*) ;;
+  *"ran into its 300s bound: the turn started and the model sent nothing more"*) ;;
   *)
     printf '%s\n' "$out" >&2
-    fail "a resumed turn silent twice failed without naming what it was doing"
+    fail "a resumed turn that ran into its bound failed without naming what it was doing"
     ;;
 esac
 case "$out" in
   *argv_codex*)
     printf '%s\n' "$out" >&2
-    fail "a resumed turn silent twice was blamed on the resume argv"
+    fail "a resumed turn that ran into its bound was blamed on the resume argv"
     ;;
 esac
 

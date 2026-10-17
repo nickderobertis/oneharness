@@ -2422,7 +2422,7 @@ fn mock_var(name: &str) -> Result<String, std::env::VarError> {
     })
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; the refusals are codex-cli 0.163.0's own (`codex exec resume` has no `--sandbox`, and `thread/resume` answers a thread with no rollout `no rollout found for thread id <id>`, which exec prints as `Error: thread/resume: …` and exits 1), and the live `oh_resume_mode_enforce` phases are the drift alarm.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; the refusals are codex-cli 0.163.0's own (`codex exec resume` has no `--sandbox`, and `exec resume` of a thread with no rollout prints `Error: thread/resume: thread/resume failed: no rollout found for thread id <id> (code -32600)` and exits 1, both observed of codex-cli 0.163.0 itself), and the live `oh_resume_mode_enforce` phases are the drift alarm.
 /// Act like `codex exec` over a thread store (MOCK_CODEX_THREADS): a fresh
 /// `exec` stores the `thread_id` its scripted stdout announces, and `exec
 /// resume <id>` refuses what real Codex refuses — a `--sandbox` flag (exit 2,
@@ -2481,7 +2481,9 @@ fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
     if !plain(id) || !dir.join(id).is_file() {
         refuse(
             1,
-            format!("Error: thread/resume: no rollout found for thread id {id}"),
+            format!(
+                "Error: thread/resume: thread/resume failed: no rollout found for thread id {id} (code -32600)"
+            ),
         );
     }
 }

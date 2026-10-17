@@ -2213,23 +2213,17 @@ oh_resume_mode_enforce() {
     _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
       "$sandbox/second.json" "$sandbox/second.err" --events "$@"
   fi
-  # A turn that ran into its bound having said nothing is a stall, not a
-  # verdict on the resume: say what it was doing and resume once more. A
-  # refused resume ends at once, non-zero, and is judged below as it ran.
-  if [ "$(_oh_result_status "$sandbox/second.json")" = timeout ]; then
-    # llmlint: ignore[tool_output_is_signal] A retry that then passes is the finding, not chatter, for the reason `oh_control_enforce` reports which attempt won: a phase that needs this every night is a provider about to fail it, and a transcript that printed only the verdict could never say so.
-    note "  resume-mode: turn two under --mode $mode ran into its ${_OH_RESUME_TURN_TIMEOUT}s bound: $(_oh_silent_turn_reading "$sandbox/second.json"); resuming once more"
-    _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
-      "$sandbox/second.json" "$sandbox/second.err" --events "$@"
-  fi
   status="$(_oh_result_status "$sandbox/second.json")"
+  # A resumed turn that ran into its bound is not a refused resume: codex
+  # answers a refusal at once and non-zero (judged below). Say what the turn
+  # was doing, from its own frames, rather than blame the resume argv.
   if [ "$status" = timeout ]; then
     note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
     note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" | tail -n 6 | cut -c1-300)"
     local reading
     reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
     rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_TIMEOUT}s bound twice: $reading. A resume codex refused would have ended at once with its reason; read the frames above, and if the model stream stalled both times, rerun \`just live-codex\`"
+    fail "$id: the resumed turn under --mode $mode ran into its ${OH_TIMEOUT:-300}s bound: $reading. A resume codex refused ends at once with its reason, so this is not one; codex-cli 0.163 waits stream_idle_timeout_ms (300 s) on a stalled model stream before it says or retries anything, so a bound at or under that ends such a turn silently. Read the frames above, then rerun \`just live-codex\`"
   fi
   if [ "$status" != "ok" ]; then
     refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
@@ -2480,19 +2474,11 @@ _oh_resume_mode_turn() {
   shift 8
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-  # Bounded well inside codex's own stream-idle timeout (300 s in codex-cli
-  # 0.163), which the suite's 300 s bound used to equal: a model stream that
-  # stalls is killed while codex is still waiting to notice, so the run says
-  # nothing at all. These turns take seconds; `_oh_silent_turn_reading` says
-  # what a turn that reaches the bound was doing.
   ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
     --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
-    --timeout "$_OH_RESUME_TURN_TIMEOUT" --compact \
+    --timeout "${OH_TIMEOUT:-300}" --compact \
     "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
 }
-
-# The bound on one resume-phase turn, in seconds; see `_oh_resume_mode_turn`.
-_OH_RESUME_TURN_TIMEOUT=120
 
 # What a turn that ran into its bound was doing when it was stopped, read off
 # the frames it sent, as one line: codex never announced the thread, announced

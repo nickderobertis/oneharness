@@ -428,15 +428,8 @@ fn lease_server(
 
 /// Leave Codex's socket rendezvous directory ([`rules::codex_daemon_dir`],
 /// for this euid) in the one shape Codex accepts, when it is ours and only its
-/// mode is wrong.
-///
-/// Codex binds every `--listen unix://` socket in that directory, whatever path
-/// it is told, and refuses to start — exit 1, before it listens — when it is
-/// anything but a directory this user owns at the one mode Codex accepts.
-/// Another tool creating it first with its own umask's mode (0755) is enough:
-/// it outlives that tool until a reboot clears `/tmp`, and every shared server
-/// fails to start meanwhile. That happened on macOS CI, where the hermetic
-/// suite's Codex double made it before the live run.
+/// mode is wrong: one another tool created first at its own umask's mode
+/// outlives that tool, and every shared server refuses to start meanwhile.
 ///
 /// Only that case is repaired, and only by tightening: a directory owned by
 /// someone else, or anything that is not a directory, is left for Codex to

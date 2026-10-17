@@ -2152,7 +2152,6 @@ fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason()
         started.elapsed()
     );
 
-    // A server that says nothing is reported as having said nothing.
     let (_, report) =
         pool.run(pool.command("silent-exit", &[], &[("CODEX_MOCK_FAULT", "exit-silently")]));
     let ran = result(&report);
@@ -4746,7 +4745,7 @@ fn the_reuse_workload_names_each_process_listing_failure() {
                 let path = if body.is_empty() {
                     // PATH lookup skips an entry it cannot run, so no `ps`
                     // anywhere on it: only the tools the run itself calls.
-                    for tool in ["bash", "sh", "cargo", "mktemp", "rm", "dirname"] {
+                    for tool in ["bash", "sh", "cargo", "node", "mktemp", "rm", "dirname"] {
                         let found = Command::new("sh")
                             .args(["-c", &format!("command -v {tool}")])
                             .output()
@@ -4803,18 +4802,91 @@ fn the_reuse_workload_names_each_process_listing_failure() {
 
 // llmlint: ignore-end[e2e_not_mocked]
 
-// llmlint: ignore-block[e2e_not_mocked] Only `cargo` is replaced, by a script first on PATH, because a real build cannot be made to name no executable or one that is gone; the real build's artifact message is read end to end by every other reuse-workload test, which runs the example from wherever the calling build's target directory put it.
-/// The reuse workload runs the example cargo's artifact message names, so a
-/// build whose message names no executable for it, or one that is not there,
-/// fails the workload saying so, before any server starts.
+// llmlint: ignore-block[e2e_not_mocked] Only `cargo` is replaced, by a script first on PATH, because a real build cannot be made to name no executable, one that is gone, unreadable JSON, or a target directory whose path needs JSON escapes without staging a checkout at such a path; the real build's artifact message is read end to end by every other reuse-workload test, which runs the example from wherever the calling build's target directory put it.
+/// The reuse workload runs the example cargo's artifact message names, read
+/// as JSON: a path spelled with escapes runs the file it names, and a build
+/// whose message names no executable for it, one that is not there, or is no
+/// JSON at all, fails the workload saying so, before any server starts.
 #[test]
-fn the_reuse_workload_refuses_a_build_that_names_no_runnable_example() {
+fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot() {
     let artifact = |executable: &str| {
         format!(
             "{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"example\"],\
              \"name\":\"app_server_reuse\"}},\"executable\":{executable}}}"
         )
     };
+    let run = |case: &str, message: &str| {
+        let pool = Pool::new(&format!("pool-reuse-cargo-{case}"));
+        let bin = pool.path("cargo-double");
+        std::fs::create_dir_all(&bin).unwrap();
+        let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, "#!/bin/sh\ncat \"$OH_CARGO_MESSAGE\"\n").unwrap();
+        std::fs::set_permissions(&cargo, mode).unwrap();
+        let message_file = pool.path("cargo-message");
+        std::fs::write(&message_file, format!("{message}\n")).unwrap();
+        let output = Command::new("bash")
+            .arg(repo_root().join("live/control/app-server-reuse.sh"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OH_CARGO_MESSAGE", &message_file)
+            .env("OH_REUSE_CODEX", mock_bin())
+            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+            .env("XDG_STATE_HOME", pool.path("state"))
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .output()
+            .unwrap();
+        assert!(
+            !pool.path("reuse.json").exists(),
+            "{case}: telemetry was written"
+        );
+        assert!(
+            pool.server_pids().is_empty(),
+            "{case}: a server started without the example"
+        );
+        (pool, output)
+    };
+
+    // A target directory whose path JSON must escape: a quote and a backslash.
+    let pool = Pool::new("pool-reuse-cargo-escaped-home");
+    let dir = pool.path("odd \"target\\dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let example = dir.join("app_server_reuse");
+    let ran = pool.path("example-ran");
+    std::fs::write(
+        &example,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$*\" > '{}'\nexit 3\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &example,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let escaped = serde_json::to_string(&example.display().to_string()).unwrap();
+    assert!(
+        escaped.contains("\\\"") && escaped.contains("\\\\"),
+        "{escaped}"
+    );
+    let (_scratch, output) = run("escaped", &artifact(&escaped));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "escaped: {stderr}");
+    assert!(
+        stderr.contains("app-server-reuse: the workload failed"),
+        "{stderr}"
+    );
+    let args = std::fs::read_to_string(&ran).expect("the escaped path's example did not run");
+    assert!(args.starts_with("--codex "), "{args}");
+
     let cases = [
         (
             "unnamed",
@@ -4826,42 +4898,17 @@ fn the_reuse_workload_refuses_a_build_that_names_no_runnable_example() {
             artifact("\"/nonexistent/app_server_reuse\""),
             "cargo named /nonexistent/app_server_reuse as the app_server_reuse example, but no executable is there",
         ),
+        (
+            "unreadable",
+            "{\"reason\":\"compiler-artifact\",".to_string(),
+            "cargo's artifact message for the app_server_reuse example is not JSON node can read",
+        ),
     ];
     for (case, message, said) in cases {
-        let pool = Pool::new(&format!("pool-reuse-cargo-{case}"));
-        let bin = pool.path("cargo-double");
-        std::fs::create_dir_all(&bin).unwrap();
-        let cargo = bin.join("cargo");
-        std::fs::write(&cargo, format!("#!/bin/sh\necho '{message}'\n")).unwrap();
-        std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
-        let output = Command::new("bash")
-            .arg(repo_root().join("live/control/app-server-reuse.sh"))
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    bin.display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )
-            .env("OH_REUSE_CODEX", mock_bin())
-            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
-            .env("XDG_STATE_HOME", pool.path("state"))
-            .env("CODEX_MOCK_DIR", pool.path("mock"))
-            .output()
-            .unwrap();
+        let (_scratch, output) = run(case, &message);
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(output.status.code(), Some(1), "{case}: {stderr}");
         assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");
-        assert!(
-            !pool.path("reuse.json").exists(),
-            "{case}: telemetry was written"
-        );
-        assert!(
-            pool.server_pids().is_empty(),
-            "{case}: a server started without the example"
-        );
     }
 }
 

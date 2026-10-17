@@ -56,12 +56,25 @@ artifacts="$(cd "$root" && cargo build --quiet --locked -p oneharness-core --exa
   echo "app-server-reuse: could not build the app_server_reuse example; fix cargo's error above (run 'just bootstrap' if the toolchain is missing), then rerun" >&2
   exit 1
 }
-example=""
-while IFS= read -r line; do
-  case "$line" in *'"reason":"compiler-artifact"'*'"name":"app_server_reuse"'*'"executable":"'*) ;; *) continue ;; esac
-  example="${line#*\"executable\":\"}"
-  example="${example%%\"*}"
-done <<<"$artifacts"
+command -v node >/dev/null 2>&1 || {
+  echo "app-server-reuse: no node on PATH to read cargo's artifact message; run 'just bootstrap', then rerun" >&2
+  exit 1
+}
+example="$(printf '%s\n' "$artifacts" | node -e '
+  let input = "";
+  process.stdin.on("data", (d) => { input += d; }).on("end", () => {
+    let executable = "";
+    for (const line of input.split("\n")) {
+      if (!line.startsWith("{")) continue;
+      const message = JSON.parse(line);
+      if (message.reason === "compiler-artifact" && message.target?.name === "app_server_reuse" && message.executable) executable = message.executable;
+    }
+    process.stdout.write(executable);
+  });
+')" || {
+  echo "app-server-reuse: cargo's artifact message for the app_server_reuse example is not JSON node can read; its error is above" >&2
+  exit 1
+}
 [ -n "$example" ] || {
   echo "app-server-reuse: cargo built the app_server_reuse example but its output named no executable for it; check 'cargo --version' against rust-toolchain.toml, then rerun" >&2
   exit 1

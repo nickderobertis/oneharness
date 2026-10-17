@@ -2669,7 +2669,7 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
     }
 }
 
-// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` — its config loading, classification and both fallback drivers — end to end; only the two paid harness CLIs are replaced, by the repository's own subprocess double (oneharness-mock-harness), because a real account cannot be made to refuse a model on demand, and the codex half replays the byte-for-byte capture of the real refusal (tests/fixtures/codex-model-unsupported-for-account.jsonl).
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` — its config loading, classification and both fallback drivers — end to end; only the paid harness CLIs are replaced, by the repository's own subprocess double (oneharness-mock-harness), because a real account cannot be made to refuse a model on demand — in either journey below — and the codex refusal replays the byte-for-byte capture of the real one (tests/fixtures/codex-model-unsupported-for-account.jsonl).
 /// Codex signed in with an account that may not use the configured model
 /// answers `HTTP 400 invalid_request_error` — "The '<model>' model is not
 /// supported when using Codex with a ChatGPT account." — before doing any work.
@@ -2853,8 +2853,6 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
         }
     }
 }
-// llmlint: ignore-end[e2e_not_mocked]
-
 /// A model list hands a rejected model on from a **clean exit** too: Claude Code
 /// reports a provider rejection in an `is_error` terminal record and can still
 /// exit 0, and "this model is unavailable" is the same refusal whatever exit
@@ -2928,6 +2926,7 @@ fn a_model_list_falls_through_a_clean_exit_model_rejection() {
         }
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {

@@ -302,7 +302,7 @@ socket_len() {
 }
 moved="" short_tmp=""
 trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp"' EXIT
-in_place="$(TMPDIR="$long_tmp" mktemp -d)"
+in_place="$(mktemp -d "$long_tmp/tmp.XXXXXXXXXX")"
 moved="$(TMPDIR="$long_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a long temp dir"
 short_tmp="$(mktemp -d /tmp/oh.XXXXXX)"
 kept="$(TMPDIR="$short_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a short temp dir"

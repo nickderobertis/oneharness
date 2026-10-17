@@ -130,25 +130,30 @@ oh_bin() {
   printf '%s' "${out//\\//}"
 }
 
-# The longest host temp dir, resolved (macOS's /var resolves to /private/var,
-# and oneharness measures the resolved address), a control phase's sandbox is
-# made under. What a phase adds beneath it — `/tmp.XXXXXXXXXX`, its store, then
-# `control/<session>.sock`, `model-claude-code` the longest — is up to 52 bytes,
-# and macOS's sun_path holds 103 and a NUL; this leaves room for longer ids.
-OH_SOCKET_BASE_MAX=40
+# The longest a control phase's sandbox may be once resolved (macOS's /var
+# resolves to /private/var, and oneharness measures the resolved address).
+# What a phase adds beneath it — its store, then `control/<session>.sock`,
+# `store/control/model-claude-code.sock` the longest — is 37 bytes, and macOS's
+# sun_path holds 103 and a NUL; this leaves room for longer ids.
+OH_SOCKET_DIR_MAX=56
 
-# Make the scratch directory of a phase that opens a control socket beneath it.
-# Under the host temp dir unless that is too long for the socket's address to
-# fit — macOS's /var/folders/<..>/T reached 106 bytes and every controllable
-# harness's --control refused — then under /tmp. Each phase removes it as before.
+# Make the scratch directory of a phase that opens a control socket beneath it:
+# in the host temp dir unless, resolved, it is too long for the socket's address
+# to fit — macOS's /private/var/folders/<..>/T reached 106 bytes and every
+# controllable harness's --control refused — then in /tmp. The template is
+# spelled out because macOS's bare `mktemp -d` ignores $TMPDIR. Each phase
+# removes it as before.
 oh_socket_sandbox() {
-  local base="${TMPDIR:-/tmp}" resolved
-  resolved="$(cd "$base" 2>/dev/null && pwd -P)" || resolved="$base"
-  if [ "${#resolved}" -gt "$OH_SOCKET_BASE_MAX" ]; then
-    mktemp -d /tmp/tmp.XXXXXXXXXX
-  else
-    mktemp -d
+  local base="${TMPDIR:-/tmp}" dir resolved
+  base="${base%/}"
+  dir="$(mktemp -d "${base:-/tmp}/tmp.XXXXXXXXXX")" || return
+  resolved="$(cd "$dir" && pwd -P)" || resolved="$dir"
+  if [ "${#resolved}" -le "$OH_SOCKET_DIR_MAX" ]; then
+    printf '%s\n' "$dir"
+    return
   fi
+  rmdir "$dir"
+  mktemp -d /tmp/tmp.XXXXXXXXXX
 }
 
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows

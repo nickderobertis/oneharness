@@ -3808,25 +3808,36 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
         prompt: "task beta",
         system: "instruction beta",
     };
-    // Each thread is created under the other dispatch's settings.
+    // Each thread is created under the other dispatch's settings, both held
+    // live together so they are certainly on one server: one run after the
+    // other passed only if the second beat the linger, which on macOS under
+    // coverage it did not.
     let command = "env; pwd";
-    let (out, made_a) = Pool::finish(spawn_with(
+    let created = pool.file("created");
+    let making_a = spawn_with(
         &pool,
         &b("res-a"),
         &[
             ("PER_DISPATCH", "creator-of-a"),
             ("MOCK_CODEX_RUN_COMMAND", command),
+            ("MOCK_CODEX_HOLD_UNTIL", &created),
         ],
-    ));
-    succeeded(&out, &made_a);
-    let (out, made_b) = Pool::finish(spawn_with(
+    );
+    pool.await_live_turns(1);
+    let making_b = spawn_with(
         &pool,
         &a("res-b"),
         &[
             ("PER_DISPATCH", "creator-of-b"),
             ("MOCK_CODEX_RUN_COMMAND", command),
+            ("MOCK_CODEX_HOLD_UNTIL", &created),
         ],
-    ));
+    );
+    pool.await_live_turns(2);
+    std::fs::write(&created, b"").unwrap();
+    let (out, made_a) = Pool::finish(making_a);
+    succeeded(&out, &made_a);
+    let (out, made_b) = Pool::finish(making_b);
     succeeded(&out, &made_b);
     let created_on = reported_server(&made_a);
     let created_marker = |report: &Value| {

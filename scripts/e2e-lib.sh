@@ -3389,7 +3389,7 @@ _oh_control_enforce_once() {
   if [ "$frozen" -gt "$((count + 1))" ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
     fail "$id: work did NOT stop — step files went from $count at the interrupt to $frozen once its steps were released, so the '$mechanism' interrupt is not honored"
   fi
   sleep "$window"
@@ -3653,7 +3653,7 @@ _oh_control_redirect_enforce_once() {
   if [ "$frozen" -gt "$((count + 1))" ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
     fail "$id: the original work did NOT stop — step files went from $count at the interrupt to $frozen once its steps were released, so the redirection was queued behind a turn that kept running"
   fi
 

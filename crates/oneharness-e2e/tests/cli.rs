@@ -2853,18 +2853,20 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
         }
     }
 }
-/// A model list hands a rejected model on from a **clean exit** too: Claude Code
-/// reports a provider rejection in an `is_error` terminal record and can still
-/// exit 0, and "this model is unavailable" is the same refusal whatever exit
-/// code carried it. Without a model list the same clean-exit rejection — no
-/// account wording, so a configuration mistake — still stops the chain.
+/// The bound on the account refusal's clean-exit reading: a **generic**
+/// clean-exit model rejection — Claude Code's `is_error` terminal record that
+/// exits 0, with no account wording — still stops the chain, with a model list
+/// or without one, exactly as before the account refusal was taught. Only that
+/// refusal hands on from a clean exit; this one is classified honestly and the
+/// next model is never spawned.
 #[test]
-fn a_model_list_falls_through_a_clean_exit_model_rejection() {
+fn a_generic_clean_exit_model_rejection_still_stops_the_chain() {
     let mock = mock_bin().display().to_string();
     let rejected = serde_json::to_string(
         r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model not found: opus"}"#,
     )
     .unwrap();
+    // What the second model would answer, were it ever spawned.
     let served =
         serde_json::to_string(r#"{"session_id":"s","result":"served-by-sonnet"}"#).unwrap();
     for driver in ["buffered", "streamed"] {
@@ -2910,19 +2912,18 @@ fn a_model_list_falls_through_a_clean_exit_model_rejection() {
                 value["results"][0]["failure_kind"], "model_not_found",
                 "{tag}"
             );
-            let fell = value["fallback"]["fell_through"].as_array().unwrap();
-            if models.len() == 2 {
-                assert!(output.status.success(), "{tag}: {value}");
-                assert_eq!(fell.len(), 1, "{tag}: {fell:?}");
-                assert_eq!(fell[0]["reason"], "model-not-found", "{tag}");
-                assert_eq!(value["results"][1]["model"], "sonnet", "{tag}");
-                assert_eq!(value["results"][1]["text"], "served-by-sonnet", "{tag}");
-            } else {
-                assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
-                assert_eq!(fell.len(), 0, "{tag}: {fell:?}");
-                assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
-                assert_eq!(value["results"].as_array().unwrap().len(), 1, "{tag}");
-            }
+            assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+            assert_eq!(
+                value["fallback"]["fell_through"].as_array().unwrap().len(),
+                0,
+                "{tag}: {value}"
+            );
+            assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
+            assert_eq!(
+                value["results"].as_array().unwrap().len(),
+                1,
+                "{tag}: the second model must never be spawned"
+            );
         }
     }
 }

@@ -301,17 +301,8 @@ impl FallThroughReason {
 /// across harnesses. With a single model (`model_fallback == false`) the
 /// historical rule stands: it stops the chain.
 ///
-/// The command layer passes `model_fallback` true on a single-model chain too
-/// for a candidate whose harness said the model is unavailable **to the account
-/// it is signed in with**
-/// ([`signals::model_refused_for_account`][mra]): that rejection is a property
-/// of the identity rather than of the configuration, so the next candidate —
-/// another harness, another account — can still run the task, exactly as a
-/// model list's next model can. Either way a clean exit counts as a non-zero
-/// one, as it does for `quota`: Codex reports a refused turn in a `turn.failed`
-/// event and can still exit 0, and a refusal is no less one for that.
-///
-/// [mra]: crate::domain::signals::model_refused_for_account
+/// A model the harness's *account* may not use is decided by
+/// [`account_model_refusal_reason`] instead, on any chain.
 pub fn startup_failure_reason(
     status: Status,
     failure_kind: Option<FailureKind>,
@@ -359,21 +350,39 @@ pub fn startup_failure_reason(
         (Status::Nonzero, Some(FailureKind::ModelMismatch)) => {
             Some(FallThroughReason::ModelMismatch)
         }
-        // Only when a model list is being tried, or the account refused the
-        // model: an unusable model means "try the next candidate", not "stop
-        // with a real failure". With one model it is a configuration mistake
-        // the user should see. A clean exit counts as it does for `quota`: Codex
-        // can exit 0 after a `turn.failed`, and the refusal is the same.
-        (Status::Nonzero | Status::Ok, Some(FailureKind::ModelNotFound)) if model_fallback => {
-            Some(FallThroughReason::ModelNotFound)
-        }
         (Status::Skipped, _) => Some(FallThroughReason::NotInstalled),
         (Status::SpawnError, _) => Some(FallThroughReason::SpawnError),
-        (
-            Status::Nonzero | Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned,
-            _,
-        ) => None,
+        (Status::Nonzero, _) => match failure_kind {
+            // Only when a model list is being tried: an unusable model means
+            // "try the next model", not "stop with a real failure". With one
+            // model it is a configuration mistake the user should see.
+            Some(FailureKind::ModelNotFound) if model_fallback => {
+                Some(FallThroughReason::ModelNotFound)
+            }
+            _ => None,
+        },
+        (Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned, _) => None,
     }
+}
+
+/// The verdict for a candidate whose harness refused the model **for the
+/// account it is signed in with** ([`signals::model_refused_for_account`][mra]),
+/// which the command layer consults in place of [`startup_failure_reason`] for
+/// that refusal alone.
+///
+/// The refusal is the identity's, not the configuration's, so the next
+/// candidate — another harness, another account — can still run the task: it
+/// hands on as `"model-not-found"` on any chain, model list or not. A clean
+/// exit counts as a non-zero one, as it does for `quota`, because Codex reports
+/// the refused turn in a `turn.failed` record and can still exit 0. Every other
+/// `model_not_found` keeps [`startup_failure_reason`]'s rule unchanged. Work
+/// evidence still short-circuits, and a timeout or cancellation is still a run.
+///
+/// [mra]: crate::domain::signals::model_refused_for_account
+#[must_use]
+pub fn account_model_refusal_reason(status: Status, work: RunWork) -> Option<FallThroughReason> {
+    (work == RunWork::None && matches!(status, Status::Nonzero | Status::Ok))
+        .then_some(FallThroughReason::ModelNotFound)
 }
 
 /// Whether `status`/`failure_kind` mean the harness could not run the task at
@@ -688,52 +697,47 @@ mod tests {
     }
 
     #[test]
-    fn a_clean_exit_model_rejection_falls_through_as_a_non_zero_one_does() {
-        // Codex can exit 0 after a `turn.failed`, so an account's refusal of the
-        // model reads the same off either exit — and stops either way without a
-        // model list or an account refusal, and once the candidate did work.
-        for status in [Status::Nonzero, Status::Ok] {
+    fn a_clean_exit_model_rejection_stops_even_with_a_model_list() {
+        // The generic rule reads a model rejection off a non-zero exit only, as
+        // it always has: a clean-exit one stops the chain, list or not.
+        for model_fallback in [false, true] {
             assert_eq!(
                 startup_failure_reason(
-                    status,
+                    Status::Ok,
                     Some(FailureKind::ModelNotFound),
-                    true,
+                    model_fallback,
                     RunWork::None
                 ),
+                None,
+                "model_fallback={model_fallback}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_account_model_refusal_hands_on_from_either_exit_unless_it_ran() {
+        // The account's refusal is the identity's, so it hands on from a clean
+        // exit as from a non-zero one — and never once the candidate did work,
+        // nor from a timeout or a cancellation, which are runs.
+        for status in [Status::Nonzero, Status::Ok] {
+            assert_eq!(
+                account_model_refusal_reason(status, RunWork::None),
                 Some(FallThroughReason::ModelNotFound),
                 "{status:?}"
             );
             assert_eq!(
-                startup_failure_reason(
-                    status,
-                    Some(FailureKind::ModelNotFound),
-                    false,
-                    RunWork::None
-                ),
-                None,
-                "{status:?}"
-            );
-            assert_eq!(
-                startup_failure_reason(
-                    status,
-                    Some(FailureKind::ModelNotFound),
-                    true,
-                    RunWork::Done
-                ),
+                account_model_refusal_reason(status, RunWork::Done),
                 None,
                 "{status:?}"
             );
         }
-        // A timeout is still a genuine run, whatever was classified.
-        assert_eq!(
-            startup_failure_reason(
-                Status::Timeout,
-                Some(FailureKind::ModelNotFound),
-                true,
-                RunWork::None
-            ),
-            None
-        );
+        for status in [Status::Timeout, Status::Cancelled, Status::Planned] {
+            assert_eq!(
+                account_model_refusal_reason(status, RunWork::None),
+                None,
+                "{status:?}"
+            );
+        }
     }
 
     #[test]

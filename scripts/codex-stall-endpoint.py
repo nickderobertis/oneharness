@@ -36,7 +36,18 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple, TypedDict
+from typing import TYPE_CHECKING, Callable, NamedTuple, TypedDict, TypeVar
+
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    # Run by a bare interpreter (`python3 -I`), which may have no
+    # typing_extensions; the decorator only informs the type checker.
+    _Method = TypeVar("_Method", bound=Callable[..., object])
+
+    def override(method: _Method) -> _Method:
+        return method
+
 
 ANSWER = "OH-STALL-RECOVERED"
 WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -254,6 +265,10 @@ def websocket_accept(key: str | None) -> str | None:
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     state: State
+
+    @override
+    def log_message(self, format: str, *args: object) -> None:
+        """Routine access lines stay out of the log a failing phase prints."""
 
     def refuse(self, status: int, why: str) -> None:
         body = why.encode()

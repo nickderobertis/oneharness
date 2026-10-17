@@ -2589,9 +2589,7 @@ oh_resume_stall_enforce() {
 }
 # llmlint: ignore-end[e2e_not_mocked]
 
-# Stop the stalling endpoint (when one was started) and remove the phase's
-# sandbox, saying so when either cannot be done.
-#   $1 sandbox, $2 the endpoint's pid or empty
+#   $1 sandbox, $2 the stalling endpoint's pid, or empty before it started
 _oh_stall_cleanup() {
   if [ -n "$2" ]; then
     kill "$2" 2>/dev/null || true

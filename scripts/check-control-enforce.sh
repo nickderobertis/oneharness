@@ -293,18 +293,20 @@ _oh_control_wait_settled "$settled_tmp" "$alive" ||
 # every harness's --control refused on macOS CI; the sandbox moves to /tmp and
 # the socket fits. Under a short temp dir it stays where the host put it.
 long_tmp="$settled_tmp/var-folders-n6-hn37q6pj7sj_9dmqqc2113800000gn-T"
-mkdir -p "$long_tmp"
-long_tmp="$(cd "$long_tmp" && pwd -P)"
+mkdir -p "$long_tmp" || fail "cannot create the long temp dir $long_tmp"
+long_tmp="$(cd "$long_tmp" && pwd -P)" || fail "cannot resolve the long temp dir $long_tmp"
 socket_len() {
   local socket
-  socket="$(cd "$1" && pwd -P)/store/control/model-claude-code.sock"
+  local dir
+  dir="$(cd "$1" && pwd -P)" || fail "cannot resolve $1"
+  socket="$dir/store/control/model-claude-code.sock"
   printf '%s' "${#socket}"
 }
 moved="" short_tmp=""
 trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp"' EXIT
-in_place="$(mktemp -d "$long_tmp/tmp.XXXXXXXXXX")"
+in_place="$(mktemp -d "$long_tmp/tmp.XXXXXXXXXX")" || fail "cannot create a sandbox in place under $long_tmp"
 moved="$(TMPDIR="$long_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a long temp dir"
-short_tmp="$(mktemp -d /tmp/oh.XXXXXX)"
+short_tmp="$(mktemp -d /tmp/oh.XXXXXX)" || fail "cannot create a short temp dir under /tmp"
 kept="$(TMPDIR="$short_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a short temp dir"
 [ "$(socket_len "$in_place")" -ge 104 ] ||
   fail "the long temp dir case is vacuous: a sandbox made in place already fits ($(socket_len "$in_place") bytes)"
@@ -317,5 +319,38 @@ case "$kept" in
   "$short_tmp"/*) ;;
   *) fail "a sandbox under a short temp dir left it: $kept" ;;
 esac
+
+# The bound the control phases put on a run. macOS has no `timeout`, so with it
+# hidden from PATH the perl fallback runs — as on macOS CI, where every phase
+# calling bare `timeout` failed before its harness ran. On either branch a run
+# that ends in time keeps its own status and environment, and one that outlives
+# its deadline is stopped there and ends with 124.
+no_timeout="$settled_tmp/no-timeout-bin"
+mkdir "$no_timeout" || fail "cannot create $no_timeout"
+for tool in perl sh sleep; do
+  path="$(command -v "$tool")" || fail "$tool is not on PATH, so the deadline cases cannot run"
+  ln -s "$path" "$no_timeout/$tool" || fail "cannot link $tool into $no_timeout"
+done
+deadline_case() {
+  local branch="$1" status=0 out started elapsed
+  # shellcheck disable=SC2016 # expanded by the child shell, from the environment it was given
+  out="$(OH_DEADLINE_SEEN=kept oh_deadline 10 sh -c 'printf %s "$OH_DEADLINE_SEEN"; exit 3')" || status=$?
+  [ "$status" -eq 3 ] || fail "$branch: a run that ended in time reported $status, not its own 3"
+  [ "$out" = kept ] || fail "$branch: a run that ended in time saw '$out' for the variable it was given"
+  status=0
+  started=$SECONDS
+  oh_deadline 1 sleep 20 || status=$?
+  elapsed=$((SECONDS - started))
+  [ "$status" -eq 124 ] || fail "$branch: a run past its deadline ended $status, not 124"
+  [ "$elapsed" -le 5 ] || fail "$branch: a 1 s deadline let the run go on for ${elapsed}s"
+}
+(
+  PATH="$no_timeout"
+  ! command -v timeout >/dev/null 2>&1 || fail "timeout is still on the hidden PATH"
+  deadline_case "without timeout"
+) || exit 1
+if command -v timeout >/dev/null 2>&1; then
+  deadline_case "with timeout"
+fi
 
 echo "check-control-enforce: ok"

@@ -147,13 +147,55 @@ oh_socket_sandbox() {
   local base="${TMPDIR:-/tmp}" dir resolved
   base="${base%/}"
   dir="$(mktemp -d "${base:-/tmp}/tmp.XXXXXXXXXX")" || return
-  resolved="$(cd "$dir" && pwd -P)" || resolved="$dir"
+  if ! resolved="$(cd "$dir" && pwd -P)"; then
+    echo "oh_socket_sandbox: cannot resolve $dir to measure it; check its permissions" >&2
+    rmdir "$dir" || echo "oh_socket_sandbox: could not remove $dir; delete it by hand" >&2
+    return 1
+  fi
   if [ "${#resolved}" -le "$OH_SOCKET_DIR_MAX" ]; then
     printf '%s\n' "$dir"
     return
   fi
-  rmdir "$dir"
+  if ! rmdir "$dir"; then
+    echo "oh_socket_sandbox: could not remove $dir before moving to /tmp; delete it by hand" >&2
+    return 1
+  fi
   mktemp -d /tmp/tmp.XXXXXXXXXX
+}
+
+# Run "$@" for at most $1 seconds: the one way this library bounds a command.
+# GNU `timeout` where the host has it; macOS ships none — its absence failed
+# every phase that called `timeout` there before the harness ran — so there
+# perl, which macOS does ship, runs the command as its child and TERMs it at
+# the deadline. Either way a command that ran out of time ends with 124, so it
+# reads apart from one that failed on its own.
+oh_deadline() {
+  local secs="$1"
+  shift
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "$secs" "$@"
+    return
+  fi
+  case "$secs" in
+    '' | *[!0-9]*)
+      echo "oh_deadline: '$secs' is not a whole number of seconds, the only form the perl fallback can bound" >&2
+      return 2
+      ;;
+  esac
+  if ! command -v perl >/dev/null 2>&1; then
+    echo "oh_deadline: neither timeout nor perl is on PATH, so '$1' cannot be bounded; install coreutils or perl" >&2
+    return 127
+  fi
+  # shellcheck disable=SC2016 # the program is perl's, expanded by perl
+  perl -e '
+    my $secs = shift;
+    defined(my $pid = fork) or die "oh_deadline: cannot fork: $!\n";
+    if (!$pid) { exec @ARGV or do { print STDERR "oh_deadline: cannot run $ARGV[0]: $!\n"; exit 127 } }
+    local $SIG{ALRM} = sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 };
+    alarm $secs;
+    waitpid $pid, 0;
+    exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+  ' "$secs" "$@"
 }
 
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows
@@ -1799,11 +1841,10 @@ _OH_CODEX_OUT=""
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3"
   shift 3
-  local model_args=() limit_args=()
+  local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
-  command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
   _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
-    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
+    oh_deadline "${OH_TIMEOUT:-300}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
     "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
   local refusal
   refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"
@@ -2535,7 +2576,7 @@ _oh_control_mode_enforce_once() {
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-  if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+  if ! ONEHARNESS_NO_CONFIG=1 oh_deadline "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
     --harness "$id" --prompt "Reply with the single word READY and stop." \
     --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
     --mode default --timeout "${OH_TIMEOUT:-120}" --compact \
@@ -2946,7 +2987,7 @@ oh_control_model_enforce() {
   # mktemp sandbox, like every other oh_*_enforce phase.
   local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
   # llmlint: ignore-block[boundary_inputs_validated] Both timeouts are the suite-wide knobs every sibling phase forwards the same way, and each consumer validates its own: `timeout(1)` refuses a malformed duration, and `--timeout` is a clap-validated value oneharness rejects as a usage error before anything spawns.
-  if ! ONEHARNESS_NO_CONFIG='' timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+  if ! ONEHARNESS_NO_CONFIG='' oh_deadline "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
     --config "$sandbox/oneharness.toml" \
     --harness "$id" --prompt "Reply with the single word READY and stop." \
     --control --session "model-$id" --session-dir "$store" --cwd "$sandbox" \

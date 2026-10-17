@@ -506,17 +506,14 @@ case "$out" in
     ;;
 esac
 
-# The resume phase's answer to a turn that does not run, end to end. A resumed
-# turn that times out on a model stream gone silent before any tool ran is
-# resumed once and judged on that; a refused resume, a second stall, or a turn
-# that went silent mid-command fails at once with its reason and is never
-# resumed again. A stand-in `oneharness` answers the phase's turns: turn one
-# creates the session; each resumed turn appends a line to FAKE_RESUME_LOG and
-# then, by its knobs, times out on a silent stream (the first
-# FAKE_RESUME_SILENT times), times out mid-tool (FAKE_RESUME_MIDTOOL, the item
-# type it had started),
-# is refused as codex refuses a lost thread (FAKE_RESUME_REFUSE), or runs —
-# touching the file it was asked to and recalling the word.
+# The resume phase's answer to a silent turn, end to end: a resumed turn that
+# runs into its bound fails naming what its frames say it was doing — never
+# blamed on the resume argv, which is what this phase said of the macOS turn
+# that spent all 300 s on a stalled stream. A stand-in `oneharness` answers the
+# phase's turns: turn one creates the session, and the resumed turn reports a
+# timeout (a thread and a turn started, then nothing) the first
+# FAKE_RESUME_SILENT times, then runs — touching the file it was asked to and
+# recalling the word.
 resume_dir="$(mktemp -d /tmp/oh-resume.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
 trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" ||
   echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
@@ -553,17 +550,13 @@ if [ -e "$count" ]; then
 fi
 n=$((n + 1))
 echo "$n" >"$count" || die "cannot write the resume count to $count"
-echo resumed >>"$FAKE_RESUME_LOG" || die "cannot append to $FAKE_RESUME_LOG"
 if [ -n "${FAKE_RESUME_REFUSE:-}" ]; then
   jq -n '{results: [{status: "nonzero", exit_code: 1, command: ["codex", "exec", "resume"], stdout: "", stderr: "Error: thread/resume: thread/resume failed: no rollout found for thread id th-1 (code -32600)\n"}], session: {phase: "continue", token: "th-1"}}'
   exit 1
 fi
-if [ -n "${FAKE_RESUME_MIDTOOL:-}" ]; then
-  jq -n --arg tool "$FAKE_RESUME_MIDTOOL" '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: ("{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.started\",\"item\":{\"id\":\"i0\",\"type\":\"" + $tool + "\",\"command\":\"touch it\"}}")}], session: {phase: "continue", token: "th-1"}}'
-  exit 1
-fi
 if [ "$n" -le "${FAKE_RESUME_SILENT:-0}" ]; then
-  jq -n '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: "{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}"}], session: {phase: "continue", token: "th-1"}}'
+  jq -n '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: "{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}", stderr: "codex: still waiting on the stream"}], session: {phase: "continue", token: "th-1"}}'
+  echo "oneharness: codex exceeded its timeout" >&2
   exit 1
 fi
 file="$(printf '%s' "$prompt" | sed -n 's/.*in the current directory: touch \([^;]*\);.*/\1/p')"
@@ -572,59 +565,62 @@ recalled="$(cat "$word")" || die "cannot read $word"
 jq -n --arg word "$recalled" '{results: [{status: "ok", command: ["codex", "exec", "resume"], text: $word}], session: {phase: "continue", token: "th-1"}}'
 RESUME
 chmod +x "$resume_dir/oneharness" || fail "could not make $resume_dir/oneharness executable; check that /tmp allows it"
-# $1 FAKE_RESUME_SILENT, then any other knob as NAME=value; leaves the phase's
-# exit in $status, its output in $out and how many resumed turns it ran in
-# $resumes.
 resume_case() {
   local silent="$1"
   shift
   status=0
-  : >"$resume_dir/resumes" || fail "could not reset $resume_dir/resumes"
   # shellcheck disable=SC2016 # expanded by the child shell, which sources the library afresh
-  out="$(env ONEHARNESS_BIN="$resume_dir/oneharness" FAKE_RESUME_SILENT="$silent" \
-    FAKE_RESUME_LOG="$resume_dir/resumes" TMPDIR=/tmp "$@" \
+  out="$(env ONEHARNESS_BIN="$resume_dir/oneharness" FAKE_RESUME_SILENT="$silent" TMPDIR=/tmp "$@" \
     bash -c 'source "$1/scripts/e2e-lib.sh"; fail() { printf "FAIL: %s\n" "$*" >&2; exit 1; }; oh_resume_mode_enforce fakecodex auto' _ "$root" 2>&1)" ||
     status=$?
-  resumes="$(grep -c . "$resume_dir/resumes" || true)"
-}
-# $1 description, $2 expected exit, $3 expected resumed turns, $4 text the
-# output must carry, $5 text it must not
-resume_expect() {
-  [ "$status" -eq "$2" ] && [ "$resumes" -eq "$3" ] || {
-    printf '%s\n' "$out" >&2
-    fail "$1: the phase exited $status after $resumes resumed turn(s), not $2 after $3"
-  }
-  case "$out" in
-    *"$4"*) ;;
-    *)
-      printf '%s\n' "$out" >&2
-      fail "$1: the output did not say '$4'"
-      ;;
-  esac
-  case "$out" in
-    *"$5"*)
-      printf '%s\n' "$out" >&2
-      fail "$1: the output said '$5'"
-      ;;
-  esac
 }
 resume_case 0
-resume_expect "a resumed turn that ran" 0 1 "PASS" "resuming once more"
+[ "$status" -eq 0 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resumed turn that ran was not passed (returned $status)"
+}
 resume_case 1
-resume_expect "a stall before any tool, then a turn that ran" 0 2 \
-  "ran into its 120s bound on the turn started and the model sent nothing more" "FAIL"
-resume_case 2
-resume_expect "a stall on the one retry too" 1 2 "stalled again on its one retry" "argv_codex"
+[ "$status" -eq 1 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resumed turn that ran into its bound was not failed (returned $status)"
+}
+case "$out" in
+  *"ran into its 420s bound: the turn started and the model sent nothing more"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a resumed turn that ran into its bound failed without naming what it was doing"
+    ;;
+esac
+case "$out" in
+  *argv_codex* | *"resuming once more"*)
+    printf '%s\n' "$out" >&2
+    fail "a resumed turn that ran into its bound was blamed on the resume argv, or resumed again"
+    ;;
+esac
+# A timeout keeps the turn's own account in the log: its frames and both
+# stderrs, so a recurrence names its cause.
+for said in '"type":"turn.started"' "codex: still waiting on the stream" "oneharness: codex exceeded its timeout"; do
+  case "$out" in
+    *"$said"*) ;;
+    *)
+      printf '%s\n' "$out" >&2
+      fail "a resumed turn that ran into its bound did not keep '$said' in the log"
+      ;;
+  esac
+done
+# A resume codex refuses fails at once, quoting codex.
 resume_case 0 FAKE_RESUME_REFUSE=1
-resume_expect "a resume codex refused" 1 1 "no rollout found for thread id th-1" "resuming once more"
-resume_case 0 FAKE_RESUME_MIDTOOL=command_execution
-resume_expect "a turn gone silent mid-command" 1 1 "never finished: touch it" "resuming once more"
-# Every item but the model's own words is a tool, whether or not this suite
-# names it: a collaborator call, or a kind codex has not shipped yet.
-resume_case 0 FAKE_RESUME_MIDTOOL=collab_tool_call
-resume_expect "a turn gone silent mid-collaborator-call" 1 1 "not resumed again" "resuming once more"
-resume_case 0 FAKE_RESUME_MIDTOOL=some_future_tool
-resume_expect "a turn gone silent in an item this suite does not know" 1 1 "not resumed again" "resuming once more"
+[ "$status" -eq 1 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resume codex refused was not failed (returned $status)"
+}
+case "$out" in
+  *"codex said: Error: thread/resume: thread/resume failed: no rollout found for thread id th-1"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a resume codex refused failed without quoting codex's reason"
+    ;;
+esac
 
 # The stalling endpoint `oh_resume_stall_enforce` points real codex at. Its
 # verdict rests on the endpoint stalling exactly one model request and serving

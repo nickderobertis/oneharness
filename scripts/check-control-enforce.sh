@@ -602,7 +602,10 @@ python3 -I "$root/scripts/codex-stall-endpoint.py" "$endpoint_dir" >"$endpoint_d
 endpoint_pid=$!
 _oh_wait_for 15 test -s "$endpoint_dir/port" ||
   fail "the stalling endpoint never wrote its port: $(cat "$endpoint_dir/endpoint.log" 2>/dev/null)"
-endpoint="http://127.0.0.1:$(tr -dc 0-9 <"$endpoint_dir/port")/v1/responses"
+endpoint_port="$(tr -dc 0-9 <"$endpoint_dir/port")" ||
+  fail "could not read the stalling endpoint's port from $endpoint_dir/port"
+[ -n "$endpoint_port" ] || fail "the stalling endpoint wrote no port number to $endpoint_dir/port: $(cat "$endpoint_dir/port")"
+endpoint="http://127.0.0.1:$endpoint_port/v1/responses"
 printf 'stall-next\n' >"$endpoint_dir/mode" || fail "could not arm the endpoint's stall in $endpoint_dir/mode"
 # One POST, failing the check unless curl ends as expected: 0 when the endpoint
 # serves, 28 (its time limit) when it is meant to be holding the response.

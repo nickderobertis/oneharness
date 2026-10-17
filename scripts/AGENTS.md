@@ -25,5 +25,3 @@ Subtree rules for the repository's tooling scripts.
   a control or app-server socket under `oh_socket_sandbox`: macOS's resolved
   `$TMPDIR` is too long for a socket address. Give `mktemp -d` an explicit
   template, because macOS's bare `mktemp -d` ignores `$TMPDIR`.
-  `check-control-enforce.sh` holds both helpers to this with `timeout` hidden and
-  a long temp dir.

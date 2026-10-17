@@ -2538,7 +2538,10 @@ oh_resume_stall_enforce() {
     sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
     _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint never reported its port (its output is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
   fi
-  port="$(tr -dc 0-9 <"$endpoint/port")"
+  port="$(tr -dc 0-9 <"$endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not read the stalling endpoint's port from $endpoint/port; check that the host temp dir is readable"
+  [ -n "$port" ] ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint wrote no port number to $endpoint/port; run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see what it wrote"
   printf 'openai_base_url = "http://127.0.0.1:%s/v1"\ncli_auth_credentials_store = "file"\n' "$port" >"$home/config.toml" ||
     _oh_stall_abort "$sandbox" "$pid" "$id: could not write $home/config.toml; check that the host temp dir is writable"
   if ! printf 'sk-oneharness-local-only' | CODEX_HOME="$(oh_native_path "$home")" "$codex" login --with-api-key >"$sandbox/login.log" 2>&1; then

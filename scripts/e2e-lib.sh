@@ -3166,7 +3166,7 @@ _oh_control_enforce_once() {
   # cannot pass 2 before the interrupt. Three attempts remain as a backstop for
   # a turn that never starts; they are not how this phase stays in flight.
   local steps=60 start prompt
-  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox"
+  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox; check that the host temp dir is writable and has space, then rerun the phase"
   prompt="$(_oh_gated_prompt "$start")"
 
   # The turn must actually run shell commands for there to be work to stop, so a
@@ -3452,7 +3452,7 @@ _oh_control_redirect_enforce_once() {
   # Same workload, and the same reason it is held open: see
   # `_oh_control_enforce_once`.
   local steps=60 start prompt
-  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox"
+  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox; check that the host temp dir is writable and has space, then rerun the phase"
   prompt="$(_oh_gated_prompt "$start")"
   local redirect="Stop running ohstep.sh steps immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
 
@@ -3662,6 +3662,10 @@ case "${1:-}" in
 esac
 [ -f "$gate/token-$1" ] || die 2 "no step has token '$1'; run exactly the command the previous step printed"
 n=$(cat "$gate/token-$1") || die 1 "cannot read the step token '$1'"
+case "$n" in
+  [0-9][0-9][0-9]) ;;
+  *) die 1 "the step number stored for token '$1' is '$n', not three digits" ;;
+esac
 : >"$gate/started-$n" || die 1 "cannot record that step $n started"
 waited=0
 while [ ! -e "$gate/release-$n" ] && [ ! -e "$gate/release-all" ]; do
@@ -3674,6 +3678,9 @@ done
 : >"$dir/step-$n.txt" || die 1 "cannot write step-$n.txt"
 if [ -f "$gate/next-$n" ]; then
   next=$(cat "$gate/next-$n") || die 1 "cannot read the token after step $n"
+  case "$next" in
+    "" | *[!0-9a-f]*) die 1 "the token stored after step $n is '$next', not a step token" ;;
+  esac
   echo "step $n done. Next, run: sh ohstep.sh $next"
 else
   echo "step $n done. That was the last step."

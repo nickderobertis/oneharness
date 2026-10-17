@@ -2103,7 +2103,7 @@
             "const": "model-mismatch"
           },
           {
-            "description": "This model is unavailable — only on a model fan-out.",
+            "description": "This model is unavailable — on a model fan-out, or on any chain when the\nharness said the model is not available to the account it is signed in\nwith (Codex's `400 invalid_request_error` \"… is not supported when using\nCodex with a ChatGPT account\").",
             "type": "string",
             "const": "model-not-found"
           },
@@ -2129,7 +2129,7 @@
         "type": "object",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, and — on a model fan-out — `model-not-found` /\n`rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, `rate-limit`, and `model-not-found` — on a model\nfan-out, or where the account a harness is signed in with may not use\nthe model; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FallThrough"
@@ -3228,7 +3228,7 @@
             "const": "model-mismatch"
           },
           {
-            "description": "This model is unavailable — only on a model fan-out.",
+            "description": "This model is unavailable — on a model fan-out, or on any chain when the\nharness said the model is not available to the account it is signed in\nwith (Codex's `400 invalid_request_error` \"… is not supported when using\nCodex with a ChatGPT account\").",
             "type": "string",
             "const": "model-not-found"
           },
@@ -3254,7 +3254,7 @@
         "type": "object",
         "properties": {
           "fell_through": {
-            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, and — on a model fan-out — `model-not-found` /\n`rate-limit`; see\n[`crate::domain::fallback::startup_failure_reason`]).",
+            "description": "The candidates fallen through because they could not run the task at all,\nin priority order, each with why (`not-installed`, `spawn-error`, `auth`,\n`quota`, `session-not-found`, `untrusted-directory`, `input-too-large`,\n`model-mismatch`, `rate-limit`, and `model-not-found` — on a model\nfan-out, or where the account a harness is signed in with may not use\nthe model; see\n[`crate::domain::fallback::startup_failure_reason`]).",
             "type": "array",
             "items": {
               "$ref": "#/$defs/FallThrough"

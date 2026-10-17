@@ -4085,10 +4085,18 @@ fn run_fallback(
 /// [`drive_plan_sequentially`] — on the same normalized [`RunResult`], so a streamed chain
 /// and a buffered chain cannot select different candidates.
 fn fallback_step(result: &RunResult, multi_model: bool, report: &mut FallbackReport) -> bool {
+    // A model the candidate's *account* may not use is a per-identity
+    // rejection, so it hands on exactly as a model-list rejection does — on any
+    // chain (why: `startup_failure_reason`'s `model_fallback`).
+    let model_fallback = multi_model
+        || (result.failure_kind == Some(signals::FailureKind::ModelNotFound)
+            && harness::by_id(&result.harness_id).is_some_and(|spec| {
+                signals::model_refused_for_account(failure_dialect(spec), &result.stdout)
+            }));
     match fallback::startup_failure_reason(
         result.status,
         result.failure_kind,
-        multi_model,
+        model_fallback,
         fallback::RunWork::from_result(result),
     ) {
         Some(reason) => {

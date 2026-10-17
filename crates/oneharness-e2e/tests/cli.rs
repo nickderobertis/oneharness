@@ -2669,6 +2669,122 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
     }
 }
 
+/// Codex signed in with an account that may not use the configured model
+/// answers `HTTP 400 invalid_request_error` — "The '<model>' model is not
+/// supported when using Codex with a ChatGPT account." — before doing any work.
+/// That is a property of the identity, not of the task, so a single-model chain
+/// must hand it on to the next harness (reason `model-not-found`) exactly as it
+/// hands on a missing or unauthenticated one; codex's stdout below is the real
+/// capture from `codex exec -m gpt-5.5`, its thread id aside. Every other 400
+/// still ends the chain at codex, as an ordinary failed run.
+#[test]
+fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
+    let mock = mock_bin().display().to_string();
+    let capture = include_str!("../../../tests/fixtures/codex-model-unsupported-for-account.jsonl");
+    // The captured thread id's `…-7401-…` holds the bare `401` the generic
+    // vocabulary reads as `auth` — a reading of the id, not of the refusal — so
+    // every variant below swaps in a neutral id, leaving the refusal itself as
+    // the only thing that can route the chain.
+    let neutral = capture.replace(
+        "01a1471e-4505-7401-8904-bfebc49d6a71",
+        "019fb99f-9a2f-7c31-9f0d-2f4c8b6d1e77",
+    );
+    assert_ne!(neutral, capture, "the capture's thread id must be swapped");
+    let chain = |label: &str, codex_stdout: &str| {
+        let codex_stdout = serde_json::to_string(codex_stdout).unwrap();
+        let project = format!(
+            r#"
+            harnesses = ["codex", "claude-code"]
+            run_mode = "fallback"
+
+            [harness.codex]
+            bin = '{mock}'
+            model = "gpt-5.5"
+            env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {codex_stdout} }}
+
+            [harness.claude-code]
+            bin = '{mock}'
+            env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{{"session_id":"s","result":"served-by-claude"}}' }}
+            "#
+        );
+        let fx = ConfigFixture::new(label, &project, "");
+        run_with_config(
+            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
+            &[],
+            &fx.user_config(),
+        )
+    };
+
+    // The refusal as captured, and the same refusal naming another model: the
+    // signature is the refusal's wording, never the model it names.
+    for (label, stdout) in [
+        ("codex-account-model-gpt-5.5", neutral.clone()),
+        (
+            "codex-account-model-other",
+            neutral.replace("'gpt-5.5'", "'o9-preview'"),
+        ),
+    ] {
+        let output = chain(label, &stdout);
+        assert!(
+            output.status.success(),
+            "{label}: exit {:?}, stderr {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value = json_stdout(&output);
+        assert_eq!(value["results"][0]["harness"], "codex", "{label}");
+        assert_eq!(value["results"][0]["status"], "nonzero", "{label}");
+        assert_eq!(
+            value["results"][0]["failure_kind"], "model_not_found",
+            "{label}"
+        );
+        let fell = value["fallback"]["fell_through"].as_array().unwrap();
+        assert_eq!(fell.len(), 1, "{label}: {fell:?}");
+        assert_eq!(fell[0]["harness"], "codex", "{label}");
+        assert_eq!(fell[0]["reason"], "model-not-found", "{label}");
+        // The provider's own words travel with the verdict.
+        let detail = fell[0]["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains("not supported when using Codex with a ChatGPT account"),
+            "{label}: {detail}"
+        );
+        assert_eq!(value["fallback"]["ran"], "claude-code", "{label}");
+        assert_eq!(value["results"][1]["harness"], "claude-code", "{label}");
+        assert_eq!(value["results"][1]["text"], "served-by-claude", "{label}");
+    }
+
+    // Any other 400 `invalid_request_error` is a request the next harness's
+    // provider would refuse too: unclassified, it stops the chain at codex.
+    let other_400 = neutral.replace(
+        "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+        "Unsupported parameter: 'temperature' is not supported with this model.",
+    );
+    assert_ne!(
+        other_400, neutral,
+        "the substitution must change the capture"
+    );
+    let output = chain("codex-other-invalid-request", &other_400);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "a real codex failure fails the run: stderr {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json_stdout(&output);
+    assert_eq!(value["results"].as_array().unwrap().len(), 1, "{value}");
+    assert_eq!(value["results"][0]["harness"], "codex");
+    assert!(
+        value["results"][0]["failure_kind"].is_null(),
+        "another 400 must not classify: {}",
+        value["results"][0]["failure_kind"]
+    );
+    assert_eq!(value["fallback"]["ran"], "codex");
+    assert_eq!(
+        value["fallback"]["fell_through"].as_array().unwrap().len(),
+        0
+    );
+}
+
 #[test]
 fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {
     // The defect this closes, measured twice on a real host. A 94-minute Claude

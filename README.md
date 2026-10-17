@@ -2070,8 +2070,9 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 | Refused the directory it was pointed at, classified `untrusted_directory`, no work done | ✅ fall through — `untrusted-directory` |
 | Refused the input as too large, classified `input_too_large`, no work done | ✅ fall through — `input-too-large` |
 | Reported it would run under a model other than the requested one, refused before the turn started as `model_mismatch`, no work done | ✅ fall through — `model-mismatch` |
+| Refused the model for the account it is signed in with — Codex's `400 invalid_request_error` "The '<model>' model is not supported when using Codex with a ChatGPT account." — classified `model_not_found`, no work done | ✅ fall through — `model-not-found` |
 | Ran and succeeded (`ok`) | ⛔ stop — this is the answer |
-| Ran and failed the task (`nonzero`, incl. `model_not_found`) | ⛔ stop¹ |
+| Ran and failed the task (`nonzero`, incl. any other `model_not_found`) | ⛔ stop¹ |
 | Timed out (`timeout`) — a slow but genuine run | ⛔ stop |
 | Never produced a schema-conforming answer (`--schema`) | ⛔ stop (the harness ran) |
 
@@ -2080,7 +2081,13 @@ chain, so a long, genuine run can never be mistaken for "try the next one".
 a per-model rejection means "try the next model", so `model_not_found` (fall
 through — `model-not-found`) *does* fall through. With a single model it still
 stops the chain, as above — an unknown model is a configuration mistake the user
-should see rather than one oneharness silently routes around.
+should see rather than one oneharness silently routes around. A model the
+harness's *account* may not use is the one single-model exception (the row
+above): the refusal is the identity's, not the configuration's, so the next
+harness or account can still run the task. It is matched on the refusal's stable
+parts — status `400`, `invalid_request_error`, and the "not supported when using
+Codex with" wording — never on the model it names; any other `400` stops the
+chain as before.
 
 > **Behavior change.** A `rate_limit` used to fall through only under a model
 > list, and to stop the chain otherwise. It now falls through on any chain, with

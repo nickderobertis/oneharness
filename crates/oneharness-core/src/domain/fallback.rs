@@ -166,7 +166,10 @@ pub enum FallThroughReason {
     /// The harness reported it would run under a model other than the one
     /// requested, so the turn was refused before it started.
     ModelMismatch,
-    /// This model is unavailable — only on a model fan-out.
+    /// This model is unavailable — on a model fan-out, or on any chain when the
+    /// harness said the model is not available to the account it is signed in
+    /// with (Codex's `400 invalid_request_error` "… is not supported when using
+    /// Codex with a ChatGPT account").
     ModelNotFound,
     /// This candidate is rate limited and cannot serve the request right now.
     RateLimit,
@@ -297,6 +300,16 @@ impl FallThroughReason {
 /// graceful degradation across models exactly as the harness list degrades
 /// across harnesses. With a single model (`model_fallback == false`) the
 /// historical rule stands: it stops the chain.
+///
+/// The command layer passes `model_fallback` true on a single-model chain too
+/// for a candidate whose harness said the model is unavailable **to the account
+/// it is signed in with**
+/// ([`signals::model_refused_for_account`][mra]): that rejection is a property
+/// of the identity rather than of the configuration, so the next candidate —
+/// another harness, another account — can still run the task, exactly as a
+/// model list's next model can.
+///
+/// [mra]: crate::domain::signals::model_refused_for_account
 pub fn startup_failure_reason(
     status: Status,
     failure_kind: Option<FailureKind>,

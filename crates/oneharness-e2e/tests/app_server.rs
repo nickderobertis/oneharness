@@ -4803,6 +4803,70 @@ fn the_reuse_workload_names_each_process_listing_failure() {
 
 // llmlint: ignore-end[e2e_not_mocked]
 
+// llmlint: ignore-block[e2e_not_mocked] Only `cargo` is replaced, by a script first on PATH, because a real build cannot be made to name no executable or one that is gone; the real build's artifact message is read end to end by every other reuse-workload test, which runs the example from wherever the calling build's target directory put it.
+/// The reuse workload runs the example cargo's artifact message names, so a
+/// build whose message names no executable for it, or one that is not there,
+/// fails the workload saying so, before any server starts.
+#[test]
+fn the_reuse_workload_refuses_a_build_that_names_no_runnable_example() {
+    let artifact = |executable: &str| {
+        format!(
+            "{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"example\"],\
+             \"name\":\"app_server_reuse\"}},\"executable\":{executable}}}"
+        )
+    };
+    let cases = [
+        (
+            "unnamed",
+            artifact("null"),
+            "cargo built the app_server_reuse example but its output named no executable for it",
+        ),
+        (
+            "absent",
+            artifact("\"/nonexistent/app_server_reuse\""),
+            "cargo named /nonexistent/app_server_reuse as the app_server_reuse example, but no executable is there",
+        ),
+    ];
+    for (case, message, said) in cases {
+        let pool = Pool::new(&format!("pool-reuse-cargo-{case}"));
+        let bin = pool.path("cargo-double");
+        std::fs::create_dir_all(&bin).unwrap();
+        let cargo = bin.join("cargo");
+        std::fs::write(&cargo, format!("#!/bin/sh\necho '{message}'\n")).unwrap();
+        std::fs::set_permissions(&cargo, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let output = Command::new("bash")
+            .arg(repo_root().join("live/control/app-server-reuse.sh"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OH_REUSE_CODEX", mock_bin())
+            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+            .env("XDG_STATE_HOME", pool.path("state"))
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{case}: {stderr}");
+        assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");
+        assert!(
+            !pool.path("reuse.json").exists(),
+            "{case}: telemetry was written"
+        );
+        assert!(
+            pool.server_pids().is_empty(),
+            "{case}: a server started without the example"
+        );
+    }
+}
+
+// llmlint: ignore-end[e2e_not_mocked]
+
 /// A server whose `thread/loaded/list` pages never end — each naming a cursor
 /// already answered — fails the reuse workload at once, naming the repeated
 /// cursor, rather than paging until the listing's deadline.

@@ -48,8 +48,26 @@ command -v "$codex" >/dev/null 2>&1 || {
   echo "app-server-reuse: no Codex executable '$codex' on PATH; install codex or set OH_REUSE_CODEX" >&2
   exit 1
 }
-(cd "$root" && cargo build --quiet --locked -p oneharness-core --example app_server_reuse) || {
+# The example runs from wherever this build put it, which cargo's own artifact
+# message names: a caller's CARGO_TARGET_DIR (cargo llvm-cov's
+# target/llvm-cov-target, say) moves it out of target/debug.
+artifacts="$(cd "$root" && cargo build --quiet --locked -p oneharness-core --example app_server_reuse \
+  --message-format json-render-diagnostics)" || {
   echo "app-server-reuse: could not build the app_server_reuse example; fix cargo's error above (run 'just bootstrap' if the toolchain is missing), then rerun" >&2
+  exit 1
+}
+example=""
+while IFS= read -r line; do
+  case "$line" in *'"reason":"compiler-artifact"'*'"name":"app_server_reuse"'*'"executable":"'*) ;; *) continue ;; esac
+  example="${line#*\"executable\":\"}"
+  example="${example%%\"*}"
+done <<<"$artifacts"
+[ -n "$example" ] || {
+  echo "app-server-reuse: cargo built the app_server_reuse example but its output named no executable for it; check 'cargo --version' against rust-toolchain.toml, then rerun" >&2
+  exit 1
+}
+[ -x "$example" ] || {
+  echo "app-server-reuse: cargo named $example as the app_server_reuse example, but no executable is there; check that nothing removed it from its target directory, then rerun" >&2
   exit 1
 }
 work="$(mktemp -d)" || {
@@ -61,7 +79,7 @@ rm -f "$out" || {
   echo "app-server-reuse: cannot remove the previous telemetry $out; check its permissions" >&2
   exit 1
 }
-"$root/target/debug/examples/app_server_reuse" --codex "$codex" --leases "$leases" \
+"$example" --codex "$codex" --leases "$leases" \
   --hold-ms 1000 --settle-ms "$settle" --cwd "$work" --out "$out" || {
   echo "app-server-reuse: the workload failed; its error is above. Threads still loaded at the bound: the server kept released threads past OH_REUSE_SETTLE_MS (${settle} ms) — raise it to wait longer, or report a retention. Anything else: check '$codex --version' and 'codex login status', then rerun" >&2
   exit 1

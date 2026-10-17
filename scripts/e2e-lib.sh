@@ -168,12 +168,14 @@ oh_socket_sandbox() {
 # every phase that called `timeout` there before the harness ran — so there
 # perl, which macOS does ship, runs the command as its child and TERMs it at
 # the deadline. Either way a command that ran out of time ends with 124, so it
-# reads apart from one that failed on its own.
+# reads apart from one that failed on its own — or, one that ignored the TERM
+# and is KILLed $OH_DEADLINE_KILL_AFTER seconds later, with 137.
+OH_DEADLINE_KILL_AFTER=5
 oh_deadline() {
   local secs="$1"
   shift
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$secs" "$@"
+    timeout -k "$OH_DEADLINE_KILL_AFTER" "$secs" "$@"
     return
   fi
   case "$secs" in
@@ -189,13 +191,19 @@ oh_deadline() {
   # shellcheck disable=SC2016 # the program is perl's, expanded by perl
   perl -e '
     my $secs = shift;
+    my $grace = shift;
     defined(my $pid = fork) or die "oh_deadline: cannot fork to run $ARGV[0]: $!; the host is out of processes or memory, so free some (ulimit -u, running jobs) and rerun\n";
     if (!$pid) { exec @ARGV or do { print STDERR "oh_deadline: cannot run $ARGV[0]: $!; check it is installed and executable on PATH, then rerun\n"; exit 127 } }
-    local $SIG{ALRM} = sub { kill "TERM", $pid; waitpid $pid, 0; exit 124 };
+    my $late = 0;
+    $SIG{ALRM} = sub {
+      if ($late++) { kill "KILL", $pid } else { kill "TERM", $pid; alarm $grace }
+    };
     alarm $secs;
-    waitpid $pid, 0;
+    while (waitpid($pid, 0) == -1) { last unless $!{EINTR} }
+    exit 137 if $late > 1;
+    exit 124 if $late;
     exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
-  ' "$secs" "$@"
+  ' "$secs" "$OH_DEADLINE_KILL_AFTER" "$@"
 }
 
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows

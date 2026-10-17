@@ -324,7 +324,8 @@ esac
 # hidden from PATH the perl fallback runs — as on macOS CI, where every phase
 # calling bare `timeout` failed before its harness ran. On either branch a run
 # that ends in time keeps its own status and environment, and one that outlives
-# its deadline is stopped there and ends with 124.
+# its deadline is stopped there and ends with 124, or, ignoring the TERM, is
+# KILLed after the grace and ends with 137.
 no_timeout="$settled_tmp/no-timeout-bin"
 mkdir "$no_timeout" || fail "cannot create $no_timeout"
 for tool in perl sh sleep; do
@@ -343,6 +344,14 @@ deadline_case() {
   elapsed=$((SECONDS - started))
   [ "$status" -eq 124 ] || fail "$branch: a run past its deadline ended $status, not 124"
   [ "$elapsed" -le 5 ] || fail "$branch: a 1 s deadline let the run go on for ${elapsed}s"
+  # One that ignores the TERM is KILLed once the grace has passed.
+  status=0
+  started=$SECONDS
+  # shellcheck disable=SC2016 # the program is perl's, expanded by perl
+  OH_DEADLINE_KILL_AFTER=1 oh_deadline 1 perl -e '$SIG{TERM} = "IGNORE"; sleep 20' 2>/dev/null || status=$?
+  elapsed=$((SECONDS - started))
+  [ "$status" -eq 137 ] || fail "$branch: a run that ignored the TERM ended $status, not 137"
+  [ "$elapsed" -le 6 ] || fail "$branch: a run that ignored the TERM went on for ${elapsed}s past a 1 s deadline and 1 s grace"
 }
 (
   PATH="$no_timeout"

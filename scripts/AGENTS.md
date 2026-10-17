@@ -19,3 +19,11 @@ Subtree rules for the repository's tooling scripts.
   through `scripts/with-portable-sed.sh` — in a `test`, under
   `scripts/shell-test.sh <project>` so the shell coverage floor reads it
   (`check-workflows-portable-test.sh` holds every project definition to both).
+- **The live drivers run on macOS too** (`check (macos-latest)` runs them, and
+  the release gate reads it). Bound a command with `oh_deadline`
+  (`e2e-lib.sh`), never bare `timeout`: macOS ships none. Make a phase that opens
+  a control or app-server socket under `oh_socket_sandbox`: macOS's resolved
+  `$TMPDIR` is too long for a socket address. Give `mktemp -d` an explicit
+  template, because macOS's bare `mktemp -d` ignores `$TMPDIR`.
+  `check-control-enforce.sh` holds both helpers to this with `timeout` hidden and
+  a long temp dir.

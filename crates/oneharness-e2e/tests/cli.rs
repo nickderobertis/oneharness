@@ -2682,7 +2682,10 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
 #[test]
 fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
     let mock = mock_bin().display().to_string();
-    let capture = include_str!("../../../tests/fixtures/codex-model-unsupported-for-account.jsonl");
+    // A Windows checkout (core.autocrlf) hands the capture over CRLF; the
+    // variants below splice whole `\n`-ended records, so read it as codex wrote it.
+    let capture = include_str!("../../../tests/fixtures/codex-model-unsupported-for-account.jsonl")
+        .replace("\r\n", "\n");
     // The captured thread id's `…-7401-…` holds the bare `401` the generic
     // vocabulary reads as `auth` — a reading of the id, not of the refusal — so
     // every variant below swaps in a neutral id, leaving the refusal itself as

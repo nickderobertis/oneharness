@@ -375,7 +375,8 @@ fi
 # the frames such a turn leaves, read back into the one line the phase prints.
 silent_case() {
   local description="$1" needle="$2" frames="$3" reading
-  jq -n --arg out "$frames" '{results: [{status: "timeout", stdout: $out}]}' >"$evidence_tmp/silent.json"
+  jq -n --arg out "$frames" '{results: [{status: "timeout", stdout: $out}]}' >"$evidence_tmp/silent.json" ||
+    fail "$description: could not write the fixture report under $evidence_tmp (is jq installed and the temp dir writable?)"
   reading="$(_oh_silent_turn_reading "$evidence_tmp/silent.json")"
   case "$reading" in
     *"$needle"*) ;;
@@ -405,7 +406,7 @@ silent_case "a command that finished before the stall" "a stalled model stream" 
 agent_dir="$(mktemp -d /tmp/oh-ctl.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
 trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" ||
   echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
-cat >"$agent_dir/oneharness" <<'AGENT'
+cat >"$agent_dir/oneharness" <<'AGENT' || fail "could not write the fake agent into $agent_dir; check that /tmp is writable"
 #!/usr/bin/env bash
 # Stands in for `oneharness run --control` driving an agent, and for
 # `oneharness interrupt`. FAKE_AGENT_HONORS=1: an interrupt stops the agent and
@@ -437,7 +438,7 @@ cd "$cwd"
 token() { sed -n 's/.*sh ohstep\.sh \([0-9a-f]*\).*/\1/p' | sed -n 1p; }
 tok="$(printf '%s' "$prompt" | token)"
 if [ -z "$tok" ]; then
-  for n in $(seq -f '%03g' 1 60); do : >"step-$n.txt"; done
+  for ((n = 1; n <= 60; n++)); do : >"$(printf 'step-%03d.txt' "$n")"; done
   sleep 2
 fi
 while [ -n "$tok" ]; do
@@ -463,7 +464,7 @@ if [ -e "$flag" ]; then
 fi
 printf '{"results":[{"status":"ok"}],"control":{"interrupts":[{"outcome":"%s"}]},"session":{"token":"t"}}\n' "$outcome"
 AGENT
-chmod +x "$agent_dir/oneharness"
+chmod +x "$agent_dir/oneharness" || fail "could not make $agent_dir/oneharness executable; check that /tmp allows it"
 agent_case() {
   local honors="$1"
   status=0
@@ -493,6 +494,86 @@ case "$out" in
   *)
     printf '%s\n' "$out" >&2
     fail "an agent that ignores the interrupt failed for some other reason"
+    ;;
+esac
+
+# The resume phase's answer to a silent turn, end to end: a resumed turn that
+# runs into its bound is read back and resumed once more, a second silent one
+# fails naming what it was doing, and neither is blamed on the resume argv. A
+# stand-in `oneharness` answers the phase's turns: turn one creates the session,
+# and the resumed turn reports a timeout (a thread and a turn started, then
+# nothing) the first FAKE_RESUME_SILENT times, then runs — touching the file it
+# was asked to and recalling the word.
+resume_dir="$(mktemp -d /tmp/oh-resume.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" ||
+  echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
+cat >"$resume_dir/oneharness" <<'RESUME' || fail "could not write the fake oneharness into $resume_dir; check that /tmp is writable"
+#!/usr/bin/env bash
+set -euo pipefail
+shift
+prompt="" session="" store="" cwd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prompt) prompt="$2" && shift 2 ;;
+    --session) session="$2" && shift 2 ;;
+    --session-dir) store="$2" && shift 2 ;;
+    --cwd) cwd="$2" && shift 2 ;;
+    *) shift ;;
+  esac
+done
+mkdir -p "$store"
+word="$store/$session.word"
+if [ ! -e "$word" ]; then
+  printf '%s' "$prompt" | sed -n 's/.*for the rest of our conversation: \([A-Z0-9]*\)\..*/\1/p' >"$word"
+  jq -n '{results: [{status: "ok", command: ["codex", "exec"], text: "OK"}], session: {phase: "create", token: "th-1"}}'
+  exit 0
+fi
+count="$store/$session.resumes"
+n=$(($(cat "$count" 2>/dev/null || echo 0) + 1))
+echo "$n" >"$count"
+if [ "$n" -le "${FAKE_RESUME_SILENT:-0}" ]; then
+  jq -n '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: "{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}"}], session: {phase: "continue", token: "th-1"}}'
+  exit 1
+fi
+file="$(printf '%s' "$prompt" | sed -n 's/.*in the current directory: touch \([^;]*\);.*/\1/p')"
+: >"$cwd/$file"
+jq -n --arg word "$(cat "$word")" '{results: [{status: "ok", command: ["codex", "exec", "resume"], text: $word}], session: {phase: "continue", token: "th-1"}}'
+RESUME
+chmod +x "$resume_dir/oneharness" || fail "could not make $resume_dir/oneharness executable; check that /tmp allows it"
+resume_case() {
+  local silent="$1"
+  status=0
+  out="$(ONEHARNESS_BIN="$resume_dir/oneharness" FAKE_RESUME_SILENT="$silent" TMPDIR=/tmp \
+    oh_resume_mode_enforce fakecodex auto 2>&1)" || status=$?
+}
+resume_case 1
+[ "$status" -eq 0 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resumed turn that went silent once and then ran was not passed (returned $status)"
+}
+case "$out" in
+  *"ran into its 120s bound: the turn started and the model sent nothing more"*"resuming once more"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a silent resumed turn was retried without saying what it was doing"
+    ;;
+esac
+resume_case 2
+[ "$status" -eq 1 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resumed turn silent twice was not failed (returned $status)"
+}
+case "$out" in
+  *"ran into its 120s bound twice: the turn started and the model sent nothing more"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a resumed turn silent twice failed without naming what it was doing"
+    ;;
+esac
+case "$out" in
+  *argv_codex*)
+    printf '%s\n' "$out" >&2
+    fail "a resumed turn silent twice was blamed on the resume argv"
     ;;
 esac
 

@@ -2436,13 +2436,22 @@ fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
         let _ = writeln!(std::io::stderr(), "{message}");
         std::process::exit(code);
     };
+    // A thread id names a file in the store, so only an id that is one plain
+    // path component is ever joined to it.
+    let plain = |id: &str| {
+        !id.is_empty()
+            && !id.starts_with('.')
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
     if argv.get(1).map(String::as_str) != Some("resume") {
         let stdout = std::env::var("MOCK_STDOUT").unwrap_or_default();
         for line in stdout.lines() {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
             };
-            if let Some(id) = value["thread_id"].as_str() {
+            if let Some(id) = value["thread_id"].as_str().filter(|id| plain(id)) {
                 let _ = std::fs::create_dir_all(dir);
                 let _ = std::fs::write(dir.join(id), "");
             }
@@ -2469,7 +2478,7 @@ fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
     let Some(id) = positionals.first() else {
         refuse(2, "error: codex exec resume needs a session id".to_string());
     };
-    if !dir.join(id).is_file() {
+    if !plain(id) || !dir.join(id).is_file() {
         refuse(
             1,
             format!("Error: thread/resume: no rollout found for thread id {id}"),

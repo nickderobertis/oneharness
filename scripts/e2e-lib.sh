@@ -2227,7 +2227,7 @@ oh_resume_mode_enforce() {
     note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" | tail -n 6 | cut -c1-300)"
     local reading
     reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
     fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_TIMEOUT}s bound twice: $reading. A resume codex refused would have ended at once with its reason; read the frames above, and if the model stream stalled both times, rerun \`just live-codex\`"
   fi
   if [ "$status" != "ok" ]; then
@@ -3271,12 +3271,12 @@ _oh_control_enforce_once() {
   if ! _oh_gated_release_all "$sandbox"; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
     fail "$id: the held steps could not be released, so whether the interrupt stopped the work cannot be read"
   fi
   sleep 2
   frozen="$(_oh_step_count "$sandbox")"
-  if [ "$frozen" -gt $((count + 1)) ]; then
+  if [ "$frozen" -gt "$((count + 1))" ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
     rm -rf "$sandbox"
@@ -3535,12 +3535,12 @@ _oh_control_redirect_enforce_once() {
   if ! _oh_gated_release_all "$sandbox"; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
     fail "$id: the held steps could not be released, so whether the interrupt stopped the work cannot be read"
   fi
   sleep 2
   frozen="$(_oh_step_count "$sandbox")"
-  if [ "$frozen" -gt $((count + 1)) ]; then
+  if [ "$frozen" -gt "$((count + 1))" ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
     rm -rf "$sandbox"
@@ -3645,8 +3645,10 @@ _oh_gated_workload() {
   cat >"$sandbox/ohstep.sh" <<'STEP' || return
 # One step of a oneharness control-phase fixture; see `_oh_gated_workload`.
 set -eu
+# Every failure here is the fixture's, not the agent's: the phase that wrote
+# this script removed or could not write its sandbox, or stopped releasing.
 die() {
-  echo "ohstep: $2" >&2
+  echo "ohstep: $2. This step belongs to a oneharness control phase; if that phase is still running, read its log for why the sandbox changed, otherwise stop and report this message" >&2
   exit "$1"
 }
 dir=$(cd "$(dirname "$0")" && pwd) || die 1 "cannot find the directory this step lives in"
@@ -3660,7 +3662,7 @@ n=$(cat "$gate/token-$1") || die 1 "cannot read the step token '$1'"
 waited=0
 while [ ! -e "$gate/release-$n" ] && [ ! -e "$gate/release-all" ]; do
   if [ ! -d "$gate" ] || [ "$waited" -ge 600 ]; then
-    die 3 "step $n was never released"
+    die 3 "step $n was never released (its gate is gone or ten minutes passed)"
   fi
   sleep 1
   waited=$((waited + 1))

@@ -174,6 +174,12 @@ OH_DEADLINE_KILL_AFTER=5
 oh_deadline() {
   local secs="$1"
   shift
+  case "$OH_DEADLINE_KILL_AFTER" in
+    '' | 0 | *[!0-9]*)
+      echo "oh_deadline: OH_DEADLINE_KILL_AFTER is '$OH_DEADLINE_KILL_AFTER', not a whole number of seconds from 1; set it to one (default 5), then rerun" >&2
+      return 2
+      ;;
+  esac
   if command -v timeout >/dev/null 2>&1; then
     timeout -k "$OH_DEADLINE_KILL_AFTER" "$secs" "$@"
     return

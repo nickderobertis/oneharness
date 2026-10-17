@@ -352,6 +352,12 @@ deadline_case() {
   elapsed=$((SECONDS - started))
   [ "$status" -eq 137 ] || fail "$branch: a run that ignored the TERM ended $status, not 137"
   [ "$elapsed" -le 6 ] || fail "$branch: a run that ignored the TERM went on for ${elapsed}s past a 1 s deadline and 1 s grace"
+  # A grace that is not whole seconds from 1 is refused before anything runs.
+  for grace in "" 0 3s -1; do
+    status=0
+    OH_DEADLINE_KILL_AFTER="$grace" oh_deadline 1 sh -c 'echo ran' 2>/dev/null || status=$?
+    [ "$status" -eq 2 ] || fail "$branch: a kill grace of '$grace' was not refused (ended $status)"
+  done
 }
 (
   PATH="$no_timeout"

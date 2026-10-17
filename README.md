@@ -2087,7 +2087,8 @@ above): the refusal is the identity's, not the configuration's, so the next
 harness or account can still run the task. It is matched on the refusal's stable
 parts — status `400`, `invalid_request_error`, and the "not supported when using
 Codex with" wording — never on the model it names; any other `400` stops the
-chain as before.
+chain as before. Either fall-through reads a clean exit as it reads a non-zero
+one, since Codex can exit 0 after a refused turn.
 
 > **Behavior change.** A `rate_limit` used to fall through only under a model
 > list, and to stop the chain otherwise. It now falls through on any chain, with

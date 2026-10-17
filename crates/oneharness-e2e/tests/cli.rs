@@ -2710,7 +2710,7 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
     })
     .to_string();
     // One run of the chain on one driver: its exit code and its report.
-    let chain = |label: &str, codex_stdout: &str, driver: &str| {
+    let chain = |label: &str, codex_stdout: &str, exit: &str, driver: &str| {
         let codex_stdout = serde_json::to_string(codex_stdout).unwrap();
         let project = format!(
             r#"
@@ -2720,14 +2720,14 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
             [harness.codex]
             bin = '{mock}'
             model = "gpt-5.5"
-            env = {{ MOCK_EXIT = "1", MOCK_STDOUT = {codex_stdout} }}
+            env = {{ MOCK_EXIT = "{exit}", MOCK_STDOUT = {codex_stdout} }}
 
             [harness.claude-code]
             bin = '{mock}'
             env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{{"session_id":"s","result":"served-by-claude"}}' }}
             "#
         );
-        let fx = ConfigFixture::new(&format!("{label}-{driver}"), &project, "");
+        let fx = ConfigFixture::new(&format!("{label}-{exit}-{driver}"), &project, "");
         let cwd = fx.cwd();
         let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
         if driver == "streamed" {
@@ -2746,19 +2746,22 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
     };
 
     for driver in ["buffered", "streamed"] {
-        // The refusal as captured, the same refusal naming another model (the
-        // signature is the refusal's wording, never the model it names), and
-        // the app-server's frame carrying it.
-        for (label, stdout) in [
-            ("codex-account-model", neutral.clone()),
+        // The refusal as captured (codex exited 1), the same refusal from a
+        // codex that exited 0 after its `turn.failed`, the same refusal naming
+        // another model (the signature is the refusal's wording, never the
+        // model it names), and the app-server's frame carrying it.
+        for (label, stdout, exit) in [
+            ("codex-account-model", neutral.clone(), "1"),
+            ("codex-account-model-clean-exit", neutral.clone(), "0"),
             (
                 "codex-account-model-other",
                 neutral.replace("'gpt-5.5'", "'o9-preview'"),
+                "1",
             ),
-            ("codex-account-model-app-server", app_server.clone()),
+            ("codex-account-model-app-server", app_server.clone(), "1"),
         ] {
             let tag = format!("{label}/{driver}");
-            let (output, value) = chain(label, &stdout, driver);
+            let (output, value) = chain(label, &stdout, exit, driver);
             assert!(
                 output.status.success(),
                 "{tag}: exit {:?}, stderr {}",
@@ -2766,7 +2769,8 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
                 String::from_utf8_lossy(&output.stderr)
             );
             assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
-            assert_eq!(value["results"][0]["status"], "nonzero", "{tag}");
+            let status = if exit == "0" { "ok" } else { "nonzero" };
+            assert_eq!(value["results"][0]["status"], status, "{tag}");
             assert_eq!(
                 value["results"][0]["failure_kind"], "model_not_found",
                 "{tag}"
@@ -2822,7 +2826,7 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
         ];
         for (label, stdout) in stops {
             let tag = format!("codex-{label}/{driver}");
-            let (output, value) = chain(&format!("codex-{label}"), &stdout, driver);
+            let (output, value) = chain(&format!("codex-{label}"), &stdout, "1", driver);
             assert_eq!(
                 output.status.code(),
                 Some(1),

@@ -307,9 +307,9 @@ impl FallThroughReason {
 /// ([`signals::model_refused_for_account`][mra]): that rejection is a property
 /// of the identity rather than of the configuration, so the next candidate —
 /// another harness, another account — can still run the task, exactly as a
-/// model list's next model can. Non-zero only, like every `model_not_found`
-/// arm: the captured refusal exits 1, and a clean-exit arm would be behavior no
-/// harness has been observed producing.
+/// model list's next model can. Either way a clean exit counts as a non-zero
+/// one, as it does for `quota`: Codex reports a refused turn in a `turn.failed`
+/// event and can still exit 0, and a refusal is no less one for that.
 ///
 /// [mra]: crate::domain::signals::model_refused_for_account
 pub fn startup_failure_reason(
@@ -359,18 +359,20 @@ pub fn startup_failure_reason(
         (Status::Nonzero, Some(FailureKind::ModelMismatch)) => {
             Some(FallThroughReason::ModelMismatch)
         }
+        // Only when a model list is being tried, or the account refused the
+        // model: an unusable model means "try the next candidate", not "stop
+        // with a real failure". With one model it is a configuration mistake
+        // the user should see. A clean exit counts as it does for `quota`: Codex
+        // can exit 0 after a `turn.failed`, and the refusal is the same.
+        (Status::Nonzero | Status::Ok, Some(FailureKind::ModelNotFound)) if model_fallback => {
+            Some(FallThroughReason::ModelNotFound)
+        }
         (Status::Skipped, _) => Some(FallThroughReason::NotInstalled),
         (Status::SpawnError, _) => Some(FallThroughReason::SpawnError),
-        (Status::Nonzero, _) => match failure_kind {
-            // Only when a model list is being tried: an unusable model means
-            // "try the next model", not "stop with a real failure". With one
-            // model it is a configuration mistake the user should see.
-            Some(FailureKind::ModelNotFound) if model_fallback => {
-                Some(FallThroughReason::ModelNotFound)
-            }
-            _ => None,
-        },
-        (Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned, _) => None,
+        (
+            Status::Nonzero | Status::Ok | Status::Timeout | Status::Cancelled | Status::Planned,
+            _,
+        ) => None,
     }
 }
 
@@ -683,6 +685,55 @@ mod tests {
                 "a clean-exit rate limit must hand the turn on (model_fallback={model_fallback})"
             );
         }
+    }
+
+    #[test]
+    fn a_clean_exit_model_rejection_falls_through_as_a_non_zero_one_does() {
+        // Codex can exit 0 after a `turn.failed`, so an account's refusal of the
+        // model reads the same off either exit — and stops either way without a
+        // model list or an account refusal, and once the candidate did work.
+        for status in [Status::Nonzero, Status::Ok] {
+            assert_eq!(
+                startup_failure_reason(
+                    status,
+                    Some(FailureKind::ModelNotFound),
+                    true,
+                    RunWork::None
+                ),
+                Some(FallThroughReason::ModelNotFound),
+                "{status:?}"
+            );
+            assert_eq!(
+                startup_failure_reason(
+                    status,
+                    Some(FailureKind::ModelNotFound),
+                    false,
+                    RunWork::None
+                ),
+                None,
+                "{status:?}"
+            );
+            assert_eq!(
+                startup_failure_reason(
+                    status,
+                    Some(FailureKind::ModelNotFound),
+                    true,
+                    RunWork::Done
+                ),
+                None,
+                "{status:?}"
+            );
+        }
+        // A timeout is still a genuine run, whatever was classified.
+        assert_eq!(
+            startup_failure_reason(
+                Status::Timeout,
+                Some(FailureKind::ModelNotFound),
+                true,
+                RunWork::None
+            ),
+            None
+        );
     }
 
     #[test]

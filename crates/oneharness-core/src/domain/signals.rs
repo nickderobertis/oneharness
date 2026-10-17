@@ -921,6 +921,7 @@ fn codex_turn_failure(dialect: FailureDialect, value: &Value) -> Option<Refusal>
 /// identity's neighbour would refuse too, so it stays unclassified and stops the
 /// chain. Handed back as the provider wrote it, bounded like
 /// [`provider_error_data`], so the cause travels with the fall-through record.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The authoritative surface is OpenAI's answer to a Codex account of one particular kind asking for a model that kind may not use, which neither the deterministic gate nor the paid live suite can produce on demand; the signature is held to a byte-for-byte capture of the real refusal (tests/fixtures/codex-model-unsupported-for-account.jsonl, codex-cli 0.159.2), as tests/fixtures/AGENTS.md requires, and it fails closed: a reworded or restructured refusal is left unclassified and stops the chain exactly as before this reading existed, never a false fall-through.
 fn codex_model_refused_for_account(error: &Value) -> Option<String> {
     let message = error
         .get("message")
@@ -939,6 +940,7 @@ fn codex_model_refused_for_account(error: &Value) -> Option<String> {
         })
         .then(|| message.to_string())
 }
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// Whether a Codex terminal error carries its stable overload code. Both field
 /// spellings are emitted by supported Codex surfaces: app-server uses camel

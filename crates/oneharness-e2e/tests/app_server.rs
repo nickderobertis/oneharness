@@ -762,6 +762,7 @@ fn codex_release(pool: &Pool, name: &str, version_file: &Path) -> String {
     path.display().to_string()
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, held live so two dispatches can be shown sharing (or not sharing) one server, which the gate cannot do with real Codex. Real Codex's sharing is held by scripts/e2e-control.sh's pooled-env phase.
 /// Dispatches differing in the executable's path, its reported version, a
 /// variable Codex reads (`CODEX_HOME`), a process-level argument, or
 /// `plugins` run on separate servers; dispatches differing only in a variable
@@ -861,6 +862,7 @@ fn the_pool_key_separates_what_the_server_fixes_at_start_and_nothing_else() {
     );
     assert_eq!(a, b, "two XDG_RUNTIME_DIR values started two servers");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// The variables a shared server may be launched with.
 fn server_may_hold(name: &str) -> bool {
@@ -3775,6 +3777,7 @@ fn every_thread_level_setting_travels_on_its_own_dispatch_s_connection() {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control --session` through the real pool; only codex is the repository's subprocess double, held live so both creations share one server, which the gate cannot do with real Codex. Real Codex's continued controlled session is held by scripts/e2e-control.sh's `oh_control_session_enforce` phase.
 /// Each dispatch resumes its own earlier thread — each created under the
 /// OTHER dispatch's settings, so any value left to the thread would be wrong —
 /// and each resumed thread and its turn run under the resuming dispatch's
@@ -3935,6 +3938,7 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
         );
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// With the server broadcasting every thread's frames to every connection —
 /// status changes, turn starts and ends, deltas and approval requests — each
@@ -5317,6 +5321,7 @@ fn left_nothing_behind(pool: &Pool, server: u32, report: &Value) {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, held mid-turn so a timeout or cancel lands on demand, which real Codex cannot be made to do deterministically. Real Codex's killed pooled dispatch is held by scripts/e2e-control.sh's pooled-kill phase.
 /// A pooled turn past its `--timeout` is `timeout`, and one whose run is
 /// cancelled (SIGTERM to oneharness) is `cancelled`; either way its live turn
 /// is interrupted on the server, its commands stopped and its thread released,
@@ -5370,6 +5375,7 @@ fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
     assert_eq!(reported_server(&report), server, "{report}");
     left_nothing_behind(&pool, server, &report);
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A streaming consumer that stops reading — its end of `run --stream`'s
 /// stdout closed — ends a pooled run as it ends one on a dispatch's own child,

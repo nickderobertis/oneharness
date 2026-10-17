@@ -155,11 +155,11 @@ note "» resume under a sandbox mode: a continued turn must run and keep the san
 oh_resume_mode_enforce codex auto
 oh_resume_mode_enforce codex read-only
 oh_resume_mode_enforce codex plan
-# A resumed turn whose model stream stalls once is recovered by codex inside
-# the resume phases' bound: real codex and its built-in provider against a local
-# endpoint that stalls one response, so no model call is billed.
+# A resumed turn whose model stream stalls once is ended at the resume phases'
+# bound, read as a stall, and resumed once: real codex and its built-in provider
+# against a local endpoint that stalls one response, so no model call is billed.
 # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
-note "» resume stall: codex must recover a stalled model stream inside the resume bound"
+note "» resume stall: a stalled model stream must be ended at the resume bound and resumed once"
 oh_resume_stall_enforce codex
 # Model-free: every spelling of a config override oneharness restates the mode
 # after is one codex applies, last one winning.

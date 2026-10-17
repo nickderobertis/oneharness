@@ -2201,7 +2201,7 @@ oh_resume_mode_enforce() {
 
   local ask_touch
   ask_touch="You are a non-interactive test fixture in a scratch directory. Your first action MUST be one call to your shell tool running exactly this command, verbatim, in the current directory: touch $file; echo touch-exit=\$?. Make that call even if you expect it to be refused; the attempt is what is being tested. Only if the touch fails: do NOT create the file by any other means (no file-write or edit tools). Then, whatever happened, reply with the exact word I asked you to remember earlier in this conversation."
-  _oh_resume_mode_turn "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
+  _oh_resume_turn_retrying_a_stall "$id" "$mode" "$name" "$store" "$sandbox/work" "$ask_touch" \
     "$sandbox/second.json" "$sandbox/second.err" --events "$@"
   # Under a no-mutation mode the model sometimes declines outright — it sees
   # the read-only sandbox and never calls the tool (observed live on codex
@@ -2214,16 +2214,19 @@ oh_resume_mode_enforce() {
       "$sandbox/second.json" "$sandbox/second.err" --events "$@"
   fi
   status="$(_oh_result_status "$sandbox/second.json")"
-  # A resumed turn that ran into its bound is not a refused resume: codex
-  # answers a refusal at once and non-zero (judged below). Say what the turn
-  # was doing, from its own frames, rather than blame the resume argv.
+  # A resumed turn that ran into its bound was resumed once more only if its
+  # model stream went silent before any tool ran; reaching it again, or any
+  # other way, fails here with what its frames say. A refused resume ends at
+  # once and non-zero, and is judged below.
   if [ "$status" = timeout ]; then
-    note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
-    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" | tail -n 6 | cut -c1-300)"
+    _oh_resume_turn_evidence "$sandbox/second.json" "$sandbox/second.err"
     local reading
     reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
     rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_BOUND}s bound: $reading. A resume codex refused ends at once with its reason, so this is not one, and the bound already outlasts codex's own 300 s stall recovery (see _OH_RESUME_TURN_BOUND), so codex did not recover inside it. Read the frames above, then rerun \`just live-codex\`"
+    if [ "$_OH_RESUME_STALL_RETRIED" = 1 ]; then
+      fail "$id: the resumed turn under --mode $mode stalled again on its one retry: $reading — a provider that stalls twice in a row, not a refused resume; read the frames above, then rerun \`just live-codex\`"
+    fi
+    fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_BOUND}s bound: $reading — not a model stream that went silent before any tool ran, so it was not resumed again; read the frames above"
   fi
   if [ "$status" != "ok" ]; then
     refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
@@ -2231,11 +2234,11 @@ oh_resume_mode_enforce() {
       rm -rf "$sandbox"
       not_run "$id: its own provider refused the resumed turn under --mode $mode: $refusal"
     fi
-    note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
-    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | head -c 800)"
-    note "  second turn oneharness stderr: $(head -c 800 "$sandbox/second.err" 2>/dev/null || true)"
-    rm -rf "$sandbox"
-    fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}) — a continued turn under this mode is refused, the thread is lost after turn one; read the harness stderr above for the argument codex rejected and fix that mode's resume arm in \`argv_codex\` (domain/harness.rs), then rerun \`just live-codex\`"
+    _oh_resume_turn_evidence "$sandbox/second.json" "$sandbox/second.err"
+    local said
+    said="$(_oh_harness_last_words "$sandbox/second.json")"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: the resumed turn under --mode $mode did not run (status=${status:-<no report>}); codex said: ${said:-nothing}. A continued turn under this mode is refused and the thread is lost after turn one: fix that mode's resume arm in \`argv_codex\` (domain/harness.rs) for the argument codex rejected, then rerun \`just live-codex\`"
   fi
   if ! jq -e '.results[0].command | index("resume") != null' "$sandbox/second.json" >/dev/null 2>&1; then
     rm -rf "$sandbox"
@@ -2474,36 +2477,99 @@ _oh_resume_mode_turn() {
   shift 8
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
-  ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
+  ONEHARNESS_NO_CONFIG=1 "${_OH_RESUME_TURN_ENV[@]+"${_OH_RESUME_TURN_ENV[@]}"}" "$(oh_bin)" run \
+    --harness "$id" --prompt "$prompt" \
     --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
     --timeout "$_OH_RESUME_TURN_BOUND" --compact \
     "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
 }
 
-# The bound on one resume-phase turn, in seconds: codex's own stall window plus
-# headroom for it to recover. codex-cli 0.163's built-in `openai` provider
-# notices a stalled model stream only after stream_idle_timeout_ms, 300 000 ms
-# (codex-rs/model-provider-info/src/lib.rs), and the built-in provider cannot be
-# configured otherwise ("Built-in providers cannot be overridden"). Measured
-# against real codex-cli 0.163.0 with `oh_resume_stall_enforce`'s endpoint: the
-# stalled request was retried 300.2 s after it was sent, on websockets and on
-# HTTPS alike, and the resumed turn completed at 301.4 s and 307.7 s. The suite's
-# 300 s bound killed exactly that recovery — the macOS CI resume turn that ran
-# its whole 300 s silently. 120 s past the window leaves room for the work
-# before the stall and the turn after the retry, which take seconds.
-_OH_RESUME_TURN_BOUND=420
+# A command (`env …`) a resume-phase turn runs under, for a phase that points
+# codex somewhere of its own (`oh_resume_stall_enforce`); empty otherwise.
+_OH_RESUME_TURN_ENV=()
 
-# Live proof that a resumed codex turn whose model stream stalls once is
-# recovered by codex itself inside `_OH_RESUME_TURN_BOUND`. Real codex, its
-# built-in `openai` provider (only its base URL moved, through
-# `openai_base_url`), and oneharness's real resume interface (`run --session`
-# twice); the model is scripts/codex-stall-endpoint.py on loopback, which
-# stalls turn two's model request once and serves the retry, so nothing is
+# The bound on one resume-phase turn, in seconds: inside codex's own stall
+# window, so a stalled model stream is ended here while codex is still waiting
+# on it, read from its frames, and resumed once
+# (`_oh_resume_turn_retrying_a_stall`). codex-cli 0.163's built-in `openai`
+# provider notices a stalled stream only after stream_idle_timeout_ms, 300 000
+# ms (codex-rs/model-provider-info/src/lib.rs), and refuses any override of it
+# ("Built-in providers cannot be overridden"). Measured against real codex-cli
+# 0.163.0 with `oh_resume_stall_enforce`'s endpoint, the stalled request was
+# retried 300.2 s after it was sent, over websockets and HTTPS alike — so the
+# suite's former 300 s bound ended such a turn at the moment codex would first
+# have acted, and said nothing. Resumed turns here take seconds.
+_OH_RESUME_TURN_BOUND=120
+
+# Whether a timed-out turn's frames show a model stream that went silent before
+# any tool ran: the thread and the turn started, and nothing after them names a
+# tool call or an end. Only then is resuming again safe and meaningful — no
+# command, edit or MCP call can be replayed, and a refused resume or a turn
+# that stopped mid-command reads otherwise.
+#   $1 report
+_oh_stalled_before_tools() {
+  jq -r '.results[0].stdout // ""' "$1" 2>/dev/null |
+    jq -R -c 'fromjson? // empty' 2>/dev/null |
+    jq -e -s '
+      any(.[]; .type == "thread.started") and any(.[]; .type == "turn.started")
+      and (any(.[]; .type == "turn.completed" or .type == "turn.failed") | not)
+      and (any(.[]; (.type | startswith("item.")) and
+        ((.item.type // "") | IN("command_execution", "file_change", "mcp_tool_call", "web_search"))) | not)
+    ' >/dev/null 2>&1
+}
+
+# A resume-phase turn (`_oh_resume_mode_turn`, same arguments) that is resumed
+# once more when it timed out on a model stream gone silent before any tool ran
+# (`_oh_stalled_before_tools`). The stalled attempt's report is kept beside the
+# report as `<report>.stalled`. Sets _OH_RESUME_STALL_RETRIED to 1 when it
+# resumed again, 0 otherwise. Never more than one retry: a second stall is the
+# caller's to fail, with both attempts' frames.
+_oh_resume_turn_retrying_a_stall() {
+  _OH_RESUME_STALL_RETRIED=0
+  _oh_resume_mode_turn "$@"
+  local report="$7"
+  [ "$(_oh_result_status "$report")" = timeout ] && _oh_stalled_before_tools "$report" || return 0
+  # llmlint: ignore[tool_output_is_signal] A retry that then passes is itself the finding: it is how a provider stall shows up in a green run, and a transcript that printed only the verdict could never say one happened.
+  note "  resume: the turn ran into its ${_OH_RESUME_TURN_BOUND}s bound on $(_oh_silent_turn_reading "$report"); resuming once more"
+  cp "$report" "$report.stalled" || note "  could not keep the stalled attempt's report as $report.stalled"
+  _OH_RESUME_STALL_RETRIED=1
+  _oh_resume_mode_turn "$@"
+}
+_OH_RESUME_STALL_RETRIED=0
+
+# The harness's own last words about a turn that did not run, on one line:
+# the end of its stderr, else of its error frames. Empty when it said nothing.
+#   $1 report
+_oh_harness_last_words() {
+  local said
+  said="$(jq -r '.results[0].stderr // ""' "$1" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -n 2 | tr '\n' ' ')" || said=""
+  [ -n "$said" ] || said="$(_oh_harness_errors "$1" 2>/dev/null | tail -n 1)" || said=""
+  printf '%s' "$said" | cut -c1-400
+}
+
+# Print what a resume-phase turn left behind — its command, frames and both
+# stderrs — so a timeout or refusal names its own cause in the log.
+#   $1 report, $2 oneharness's stderr
+_oh_resume_turn_evidence() {
+  note "  turn command: $(jq -c '.results[0].command' "$1" 2>/dev/null || echo '<no report>')"
+  note "  turn last frames: $(jq -r '.results[0].stdout // ""' "$1" 2>/dev/null | tail -n 8 | cut -c1-300)"
+  note "  turn harness stderr: $(jq -r '.results[0].stderr // ""' "$1" 2>/dev/null | tail -c 800)"
+  note "  turn oneharness stderr: $(tail -c 800 "$2" 2>/dev/null || true)"
+}
+
+# Live proof of the resume phases' answer to a stalled model stream, on real
+# codex: a resumed turn whose stream stalls once is ended at
+# `_OH_RESUME_TURN_BOUND`, read from its frames as a stall before any tool ran,
+# resumed once (`_oh_resume_turn_retrying_a_stall`), and then completes. Real
+# codex, its built-in `openai` provider (only its base URL moved, through
+# `openai_base_url`), and oneharness's real resume interface (`run --session`);
+# the model is scripts/codex-stall-endpoint.py on loopback, which stalls turn
+# two's model request once and serves every request after it, so nothing is
 # billed. An isolated CODEX_HOME logs in with a key that never leaves the host.
 #
-# Fails when turn two does not complete inside the bound, when it was not a
-# continue of turn one's thread, or when the endpoint saw no stall and retry at
-# all — a pass that never stalled would prove nothing about the bound.
+# Fails when turn two does not complete, when it completed without the one
+# retry (the stall never reached the bound, so nothing was proven), when it was
+# not a continue of turn one's thread, or when the endpoint saw no stall.
 #   $1 harness id (codex)
 # llmlint: ignore-block[e2e_not_mocked] Replacing the model service is this phase's point: a stall cannot be made on demand on OpenAI's real endpoint, nor a turn run there without billing. Codex, its built-in provider and oneharness's resume interface are all real; the paid resume phases above hold the same path against the real service.
 oh_resume_stall_enforce() {
@@ -2547,38 +2613,41 @@ oh_resume_stall_enforce() {
     _oh_stall_abort "$sandbox" "$pid" "$id: codex could not log in with a local key in an isolated CODEX_HOME (its output is above); run \`CODEX_HOME=\$(mktemp -d) codex login --with-api-key\` by hand with any key to see why"
   fi
   # Codex's own key variables would outrank the isolated login.
-  local turn_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME="$(oh_native_path "$home")" ONEHARNESS_NO_CONFIG=1)
-  "${turn_env[@]}" "$bin" run --harness "$id" --bin "$id=$codex" --prompt "Remember the word OHSTALL. Reply OK." \
-    --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
-    --timeout "$_OH_RESUME_TURN_BOUND" --compact >"$sandbox/first.json" 2>"$sandbox/first.err" || true
+  _OH_RESUME_TURN_ENV=(env -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME="$(oh_native_path "$home")")
+  _oh_resume_mode_turn "$id" auto stall "$sandbox/store" "$sandbox/work" "Remember the word OHSTALL. Reply OK." \
+    "$sandbox/first.json" "$sandbox/first.err" --bin "$id=$codex"
   status="$(_oh_result_status "$sandbox/first.json")"
   if [ "$status" != ok ]; then
+    _OH_RESUME_TURN_ENV=()
     _oh_control_evidence "$sandbox" "$sandbox/first.json"
     sed 's/^/    /' "$sandbox/first.err" >&2 || true
     _oh_stall_abort "$sandbox" "$pid" "$id: turn one against the local endpoint did not complete (status=${status:-<no report>}); the evidence above says how it ended — if codex refused the endpoint's events, compare scripts/codex-stall-endpoint.py's stream with what this codex-cli expects"
   fi
   printf 'stall-next\n' >"$endpoint/mode" ||
     _oh_stall_abort "$sandbox" "$pid" "$id: could not arm the endpoint's stall in $endpoint/mode; check that the host temp dir is writable"
-  # llmlint: ignore[tool_output_is_signal] This phase's one progress line marks where a five-minute wait begins, which is what attributes a hang inside it to the stall rather than to the setup before it, as every other phase's header does.
-  note "  resume-stall: turn two's model request stalls once; codex must recover inside ${_OH_RESUME_TURN_BOUND}s"
+  # llmlint: ignore[tool_output_is_signal] This phase's one progress line marks where a two-minute wait begins, which is what attributes a hang inside it to the stall rather than to the setup before it, as every other phase's header does.
+  note "  resume-stall: turn two's model request stalls once; the turn must be ended at ${_OH_RESUME_TURN_BOUND}s, read as a stall, and resumed once"
   started=$SECONDS
-  "${turn_env[@]}" "$bin" run --harness "$id" --bin "$id=$codex" --prompt "Say the word you were asked to remember." \
-    --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
-    --timeout "$_OH_RESUME_TURN_BOUND" --compact --events >"$sandbox/second.json" 2>"$sandbox/second.err" || true
+  _oh_resume_turn_retrying_a_stall "$id" auto stall "$sandbox/store" "$sandbox/work" \
+    "Say the word you were asked to remember." "$sandbox/second.json" "$sandbox/second.err" \
+    --events --bin "$id=$codex"
   took=$((SECONDS - started))
+  _OH_RESUME_TURN_ENV=()
   status="$(_oh_result_status "$sandbox/second.json")"
   if ! grep -q ' request stall ' "$endpoint/requests.log" 2>/dev/null; then
     sed 's/^/    /' "$endpoint/requests.log" >&2 || true
-    _oh_stall_abort "$sandbox" "$pid" "$id: turn two's model request never stalled (requests above), so nothing was proven about the bound; check scripts/codex-stall-endpoint.py still tells codex's warmup from its request"
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn two's model request never stalled (requests above), so nothing was proven; check scripts/codex-stall-endpoint.py still tells codex's warmup from its request"
   fi
   if [ "$status" != ok ]; then
     local reading
     reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
-    note "  second turn stderr: $(tail -c 800 "$sandbox/second.err" 2>/dev/null || true)"
-    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | tail -c 800)"
-    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" 2>/dev/null | tail -n 6 | cut -c1-300)"
+    _oh_resume_turn_evidence "$sandbox/second.json" "$sandbox/second.err"
     note "  endpoint requests: $(tr '\n' ';' <"$endpoint/requests.log")"
-    _oh_stall_abort "$sandbox" "$pid" "$id: a resumed turn whose model stream stalled once ended $status after ${took}s, not recovered inside the ${_OH_RESUME_TURN_BOUND}s bound: $reading. If codex now waits longer than 300 s on a stalled stream, raise _OH_RESUME_TURN_BOUND past its new window"
+    _oh_stall_abort "$sandbox" "$pid" "$id: a resumed turn whose model stream stalled once ended $status after ${took}s (resumed again: $([ "$_OH_RESUME_STALL_RETRIED" = 1 ] && echo yes || echo no)): $reading. A stall the turn's frames did not show as one is not retried; read them above"
+  fi
+  if [ "$_OH_RESUME_STALL_RETRIED" != 1 ]; then
+    note "  endpoint requests: $(tr '\n' ';' <"$endpoint/requests.log")"
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn two completed in ${took}s without the one retry, so its stall never reached the ${_OH_RESUME_TURN_BOUND}s bound and nothing about the retry was proven; if codex now notices a stall sooner, this phase's premise (codex's 300 s stall window) has changed — revisit _OH_RESUME_TURN_BOUND"
   fi
   if ! jq -e '.session.phase == "continue"' "$sandbox/second.json" >/dev/null 2>&1; then
     local session
@@ -2586,7 +2655,7 @@ oh_resume_stall_enforce() {
     _oh_stall_abort "$sandbox" "$pid" "$id: turn two completed but did not continue turn one's thread ($session); inspect \`domain::session\`'s create-vs-continue decision, which oh_resume_mode_enforce also exercises"
   fi
   _oh_stall_cleanup "$sandbox" "$pid"
-  note "PASS: $id recovered a resumed turn whose model stream stalled once, in ${took}s of its ${_OH_RESUME_TURN_BOUND}s bound"
+  note "PASS: $id's resumed turn stalled, was ended at its ${_OH_RESUME_TURN_BOUND}s bound, and completed on its one retry (${took}s in all)"
 }
 # llmlint: ignore-end[e2e_not_mocked]
 

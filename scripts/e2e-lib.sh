@@ -2538,10 +2538,8 @@ oh_resume_stall_enforce() {
     sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
     _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint never reported its port (its output is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
   fi
-  port="$(tr -dc 0-9 <"$endpoint/port")" ||
-    _oh_stall_abort "$sandbox" "$pid" "$id: could not read the stalling endpoint's port from $endpoint/port; check that the host temp dir is readable"
-  [ -n "$port" ] ||
-    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint wrote no port number to $endpoint/port; run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see what it wrote"
+  port="$(_oh_port_in "$endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint's port file does not hold one TCP port; run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see what it wrote"
   printf 'openai_base_url = "http://127.0.0.1:%s/v1"\ncli_auth_credentials_store = "file"\n' "$port" >"$home/config.toml" ||
     _oh_stall_abort "$sandbox" "$pid" "$id: could not write $home/config.toml; check that the host temp dir is writable"
   if ! printf 'sk-oneharness-local-only' | CODEX_HOME="$(oh_native_path "$home")" "$codex" login --with-api-key >"$sandbox/login.log" 2>&1; then
@@ -2591,6 +2589,26 @@ oh_resume_stall_enforce() {
   note "PASS: $id recovered a resumed turn whose model stream stalled once, in ${took}s of its ${_OH_RESUME_TURN_BOUND}s bound"
 }
 # llmlint: ignore-end[e2e_not_mocked]
+
+# The TCP port a file holds as its one line, 1 to 65535 spelled without a
+# leading zero, or a failure saying what it held instead.
+#   $1 file
+_oh_port_in() {
+  local port
+  port="$(cat "$1")" || return 1
+  case "$port" in
+    [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9] | [1-9][0-9][0-9][0-9][0-9]) ;;
+    *)
+      echo "$1 holds '$port', not a TCP port" >&2
+      return 1
+      ;;
+  esac
+  if [ "$port" -gt 65535 ]; then
+    echo "$1 holds $port, past the last TCP port" >&2
+    return 1
+  fi
+  printf '%s' "$port"
+}
 
 #   $1 sandbox, $2 the stalling endpoint's pid, or empty before it started
 _oh_stall_cleanup() {

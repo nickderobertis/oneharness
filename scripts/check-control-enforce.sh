@@ -602,9 +602,13 @@ python3 -I "$root/scripts/codex-stall-endpoint.py" "$endpoint_dir" >"$endpoint_d
 endpoint_pid=$!
 _oh_wait_for 15 test -s "$endpoint_dir/port" ||
   fail "the stalling endpoint never wrote its port: $(cat "$endpoint_dir/endpoint.log" 2>/dev/null)"
-endpoint_port="$(tr -dc 0-9 <"$endpoint_dir/port")" ||
-  fail "could not read the stalling endpoint's port from $endpoint_dir/port"
-[ -n "$endpoint_port" ] || fail "the stalling endpoint wrote no port number to $endpoint_dir/port: $(cat "$endpoint_dir/port")"
+endpoint_port="$(_oh_port_in "$endpoint_dir/port")" ||
+  fail "the stalling endpoint's port file does not hold one TCP port (said above)"
+# The port reader the phase dials with refuses anything but one TCP port.
+for bad in "" 0 080 65536 "12 34" "1x"; do
+  printf '%s\n' "$bad" >"$endpoint_dir/bad-port" || fail "could not write $endpoint_dir/bad-port"
+  ! _oh_port_in "$endpoint_dir/bad-port" >/dev/null 2>&1 || fail "the port reader accepted '$bad'"
+done
 endpoint="http://127.0.0.1:$endpoint_port/v1/responses"
 printf 'stall-next\n' >"$endpoint_dir/mode" || fail "could not arm the endpoint's stall in $endpoint_dir/mode"
 # One POST, failing the check unless curl ends as expected: 0 when the endpoint

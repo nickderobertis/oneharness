@@ -155,7 +155,15 @@ class State:
             mode_file = self.root / "mode"
             log_file = self.root / "requests.log"
             try:
-                armed = mode_file.exists() and mode_file.read_text().strip() == "stall-next"
+                written = mode_file.read_text().strip() if mode_file.exists() else "serve"
+                if written not in ("serve", "stall-next"):
+                    print(
+                        f"codex-stall-endpoint: {mode_file} reads {written!r}; "
+                        "write `serve` or `stall-next` to it",
+                        file=sys.stderr,
+                    )
+                    return None
+                armed = written == "stall-next"
                 mode = Mode.SERVE
                 if armed and not warmup:
                     mode_file.write_text("serve\n")

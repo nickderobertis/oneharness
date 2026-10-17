@@ -32,12 +32,13 @@
 //! <pool-key>/server.json     the running server: pid + identity, argv, address
 //! <pool-key>/leases/<id>     one file per live dispatch: its pid + identity
 //! <pool-key>/.lock           whole-entry mutex around start/stop decisions
+//! <pool-key>/server.log      a shared Codex app-server's stderr, from its start
 //! ```
 
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -70,6 +71,21 @@ pub const INTERRUPT_REPLY_DEADLINE: Duration = Duration::from_secs(5);
 const LEASE_DIR: &str = "leases";
 const SERVER_FILE: &str = "server.json";
 const LOCK_FILE: &str = ".lock";
+const SERVER_LOG: &str = "server.log";
+
+/// The identity recorded for a server that exited before its own could be
+/// read. No kernel reading is ever spelled this way, so it never matches a
+/// running process.
+const EXITED_UNIDENTIFIED: &str = "exited-before-identified";
+
+/// How long a server just spawned that the kernel will not yet identify, and
+/// that has not yet been seen to exit, is watched for either before the launch
+/// is refused, and how often it is looked at meanwhile.
+const IDENTIFY_GRACE: Duration = Duration::from_secs(2);
+const IDENTIFY_POLL: Duration = Duration::from_millis(5);
+
+/// How much of a server's stderr an early-exit diagnosis quotes, from its end.
+const STDERR_TAIL_BYTES: u64 = 2048;
 
 /// A process id the OS could actually have handed out.
 ///
@@ -735,15 +751,26 @@ pub fn sweep(root: &Path, linger: Duration) -> io::Result<usize> {
 /// per-turn directory, a log, a scratch file) lands in that project's tree. It
 /// did: a live control run from this repository's root left the agent's
 /// `step-*.txt` files in the checkout.
+///
+/// A shared Codex app-server's stderr goes to the entry's log, started afresh
+/// with each server, so a server that exits before it serves can be asked why
+/// ([`early_exit`]): nobody reads a detached process's stderr, and a pipe
+/// would outlive its reader with the dispatch that started it.
 fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<ServerRecord> {
     let (program, args) = plan.argv.split();
+    let stderr = if plan.marker.is_some() {
+        open_server_log(entry)
+            .map_or_else(|_| std::process::Stdio::null(), std::process::Stdio::from)
+    } else {
+        std::process::Stdio::null()
+    };
     let mut command = std::process::Command::new(program);
     command
         .args(args)
         .current_dir(entry)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stderr(stderr);
     if plan.env_clear {
         command.env_clear();
     }
@@ -754,16 +781,7 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
     let child = command.spawn()?;
     let pid =
         Pid::new(child.id()).map_err(|message| io::Error::new(io::ErrorKind::Other, message))?;
-    let identity = process_identity(pid).ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "could not read the identity of spawned server pid {}",
-                pid.get()
-            ),
-        )
-    })?;
-    remember_spawned(child);
+    let identity = identify_spawned(child, pid, process_identity, IDENTIFY_GRACE)?;
     let record = ServerRecord {
         pid,
         identity,
@@ -779,6 +797,132 @@ fn start(entry: &Path, plan: &LaunchPlan, linger: Duration) -> io::Result<Server
     };
     write_record(entry, &record)?;
     Ok(record)
+}
+
+/// The entry's server log, emptied for the server about to start and readable
+/// by its owner alone: what a server says may name its configuration. It is
+/// opened without following a link or waiting on a FIFO, and anything there
+/// but a regular file is refused rather than written through.
+fn open_server_log(entry: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(entry.join(SERVER_LOG))?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::Other,
+            "the server log is not a regular file",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.set_len(0)?;
+    Ok(file)
+}
+
+/// Why the server `record` names, in the pool entry `entry`, stopped before it
+/// served: its exit status when this process started and reaped it, and the
+/// tail of what it wrote to stderr. Read once the server is known not to be
+/// running.
+#[must_use]
+pub fn early_exit(entry: &Path, record: &ServerRecord) -> String {
+    let status = exit_status(record.pid).map_or_else(
+        // llmlint: ignore[changed_behavior_has_e2e] An unknown status needs a server another dispatch started to die after that dispatch connected and before this one's first dial, a window no journey can place a death inside; the silent and long-stderr halves beside it are proven by `a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason`.
+        || "its exit status is unknown here, since another process started it".to_string(),
+        |status| format!("it ended with {status}"),
+    );
+    match stderr_tail(&entry.join(SERVER_LOG)) {
+        Some(tail) => format!("{status}, its stderr ending: {tail}"),
+        None => format!("{status}, and wrote nothing to stderr"),
+    }
+}
+
+/// The last [`STDERR_TAIL_BYTES`] of `log`, trimmed, with any bytes that are
+/// not UTF-8 replaced; `None` when it is absent or a link (never followed), is
+/// not a regular file (never waited on, as a FIFO would be), or holds only
+/// whitespace.
+fn stderr_tail(log: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = options.open(log).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let len = file.metadata().ok()?.len();
+    let from = len.saturating_sub(STDERR_TAIL_BYTES);
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = text.trim();
+    (!text.is_empty()).then(|| {
+        if from > 0 {
+            format!("…{text}")
+        } else {
+            text.to_string()
+        }
+    })
+}
+
+/// The identity of the server just spawned as `child` (`pid`), as `read`
+/// answers it, keeping the child to be reaped later.
+///
+/// Gone before it could be identified — macOS answers nothing for a process
+/// that has exited, while Linux still reads a zombie's — is a server that
+/// exited at start, not a launch that failed: it is identified as
+/// [`EXITED_UNIDENTIFIED`], which no running process can match, so it reads as
+/// not running and its caller reports the exit (status included) and
+/// relaunches, as it would for one that died a moment later.
+///
+/// macOS stops answering for a process as soon as it starts to exit, before a
+/// wait can see it gone, so one that answers neither is given up to `grace` to
+/// settle into one or the other before the launch is refused.
+fn identify_spawned(
+    mut child: std::process::Child,
+    pid: Pid,
+    read: impl Fn(Pid) -> Option<ProcessIdentity>,
+    grace: Duration,
+) -> io::Result<ProcessIdentity> {
+    let until = Instant::now() + grace;
+    loop {
+        if let Some(identity) = read(pid) {
+            remember_spawned(child);
+            return Ok(identity);
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            remember_exit(pid.get(), status);
+            // llmlint: ignore[invalid_states_unrepresentable] The identity is written to server.json, which every oneharness release sharing the pool reads; a value no kernel reading can spell makes each of them, releases before this one included, read the record as a server not running, where a new state would change a record shape they cannot parse.
+            return Ok(ProcessIdentity(EXITED_UNIDENTIFIED.to_string()));
+        }
+        if Instant::now() >= until {
+            break;
+        }
+        std::thread::sleep(IDENTIFY_POLL);
+    }
+    remember_spawned(child);
+    // llmlint: ignore[changed_behavior_has_e2e] A child still running whose start time the kernel will not answer cannot be staged without mocking `/proc` or `proc_pidinfo`, the platform layer this reads; `identify_spawned` takes its reader as a parameter so the unit tests drive this branch, and it is the error the launch returned before this change.
+    Err(io::Error::new(
+        io::ErrorKind::Other,
+        format!(
+            "could not read the identity of spawned server pid {}",
+            pid.get()
+        ),
+    ))
 }
 
 /// Read a kernel value that changes when a pid is recycled.
@@ -1031,6 +1175,38 @@ fn spawned() -> &'static std::sync::Mutex<Vec<std::process::Child>> {
     SPAWNED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+/// How many reaped servers' exit statuses are kept for [`exit_status`].
+const EXITED_KEPT: usize = 32;
+
+/// The exit statuses of the servers this process reaped, newest last: the
+/// reap is what makes a dead server read as dead, and it consumes the status.
+fn exited() -> &'static std::sync::Mutex<Vec<(u32, std::process::ExitStatus)>> {
+    static EXITED: std::sync::OnceLock<std::sync::Mutex<Vec<(u32, std::process::ExitStatus)>>> =
+        std::sync::OnceLock::new();
+    EXITED.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn remember_exit(pid: u32, status: std::process::ExitStatus) {
+    // llmlint: ignore[changed_behavior_has_e2e] Reaching the bound end to end takes one long-lived process starting and reaping more than EXITED_KEPT real servers, and all it changes is whether a stale early-exit diagnostic names a status or says it is unknown; `only_the_newest_reaped_exit_statuses_are_kept` holds the bound and the replacement through this function and `exit_status`, and every journey that reports an exit status reads the same path.
+    if let Ok(mut statuses) = exited().lock() {
+        statuses.retain(|(known, _)| *known != pid);
+        statuses.push((pid, status));
+        let excess = statuses.len().saturating_sub(EXITED_KEPT);
+        statuses.drain(..excess);
+    }
+}
+
+/// How the server `pid` ended, when this process started it and has reaped it.
+fn exit_status(pid: Pid) -> Option<std::process::ExitStatus> {
+    reap_finished();
+    let statuses = exited().lock().ok()?;
+    statuses
+        .iter()
+        .rev()
+        .find(|(known, _)| *known == pid.get())
+        .map(|(_, status)| *status)
+}
+
 fn remember_spawned(child: std::process::Child) {
     if let Ok(mut children) = spawned().lock() {
         children.push(child);
@@ -1044,7 +1220,9 @@ fn reap_spawned(pid: u32) {
     };
     if let Some(index) = children.iter().position(|child| child.id() == pid) {
         let mut child = children.remove(index);
-        let _ = child.wait();
+        if let Ok(status) = child.wait() {
+            remember_exit(pid, status);
+        }
     }
 }
 
@@ -1054,7 +1232,13 @@ fn reap_finished() {
     let Ok(mut children) = spawned().lock() else {
         return;
     };
-    children.retain_mut(|child| !matches!(child.try_wait(), Ok(Some(_))));
+    children.retain_mut(|child| match child.try_wait() {
+        Ok(Some(status)) => {
+            remember_exit(child.id(), status);
+            false
+        }
+        _ => true,
+    });
 }
 
 fn kill(pid: Pid) {
@@ -1159,6 +1343,38 @@ mod tests {
     use crate::domain::control::ServerTransport;
     use crate::io::scratch::ScratchDir;
 
+    /// A long-lived supervisor reaps servers without end, so only the newest
+    /// [`EXITED_KEPT`] statuses are kept: an older one reads as unknown, the
+    /// early-exit report's "another process started it" fallback, and a pid
+    /// reaped again keeps only its latest status. The pids are ones no process
+    /// on a test host has, so concurrent tests' reaps cannot collide with them.
+    #[test]
+    fn only_the_newest_reaped_exit_statuses_are_kept() {
+        #[cfg(unix)]
+        let status = |code: i32| {
+            use std::os::unix::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code << 8)
+        };
+        #[cfg(windows)]
+        let status = |code: i32| {
+            use std::os::windows::process::ExitStatusExt;
+            std::process::ExitStatus::from_raw(code as u32)
+        };
+        let base = 4_000_000_000_u32;
+        let pid = |offset: usize| Pid::new(base + offset as u32).unwrap();
+        remember_exit(pid(0).get(), status(9));
+        remember_exit(pid(0).get(), status(1));
+        assert_eq!(exit_status(pid(0)).and_then(|s| s.code()), Some(1));
+        for offset in 1..=EXITED_KEPT {
+            remember_exit(pid(offset).get(), status(2));
+        }
+        assert_eq!(exit_status(pid(0)), None, "the oldest status was kept");
+        assert_eq!(
+            exit_status(pid(EXITED_KEPT)).and_then(|s| s.code()),
+            Some(2)
+        );
+    }
+
     #[test]
     fn a_lease_note_names_only_usable_identities_and_refuses_the_rest_when_read() {
         assert_eq!(ThreadId::new("th-1").unwrap().as_str(), "th-1");
@@ -1186,6 +1402,69 @@ mod tests {
             let refused = serde_json::from_str::<LeaseNote>(bad).unwrap_err();
             assert!(refused.to_string().contains("is not a"), "{bad}: {refused}");
         }
+    }
+
+    /// A server gone before its identity could be read — as macOS reports a
+    /// process that has exited — is a server that exited at start: it reads as
+    /// not running, and how it ended is kept for its caller to report. One the
+    /// kernel cannot identify while it still runs is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_gone_before_it_was_identified_reads_as_exited_with_its_status() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "exit 5"])
+            .spawn()
+            .unwrap();
+        let pid = Pid::new(child.id()).unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while pid_alive(pid) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let identity = identify_spawned(child, pid, |_| None, Duration::ZERO).unwrap();
+        let record = ServerRecord {
+            pid,
+            identity,
+            argv: LaunchArgv::new(vec!["sh".to_string()]).unwrap(),
+            address: ServerAddress::Stdio,
+            idle_since: None,
+            idle_since_ms: None,
+            marker: None,
+            linger_ms: None,
+        };
+        assert!(!record.is_running(), "{record:?}");
+        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(5));
+
+        let running = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let running_pid = Pid::new(running.id()).unwrap();
+        let refused = identify_spawned(running, running_pid, |_| None, Duration::from_millis(50))
+            .unwrap_err();
+        kill(running_pid);
+        assert!(
+            refused
+                .to_string()
+                .contains("could not read the identity of spawned server pid"),
+            "{refused}"
+        );
+    }
+
+    /// macOS stops answering for a process while it is still exiting, before
+    /// a wait can see it gone: a server unidentifiable at once that exits a
+    /// moment later is still a server that exited at start, with its status,
+    /// not a launch that failed.
+    #[cfg(unix)]
+    #[test]
+    fn a_server_still_exiting_when_it_could_not_be_identified_reads_as_exited() {
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 0.2; exit 6"])
+            .spawn()
+            .unwrap();
+        let pid = Pid::new(child.id()).unwrap();
+        let identity = identify_spawned(child, pid, |_| None, Duration::from_secs(10)).unwrap();
+        assert_eq!(identity.0, EXITED_UNIDENTIFIED);
+        assert_eq!(exit_status(pid).and_then(|status| status.code()), Some(6));
     }
 
     /// Unix-gated with the lifecycle tests that use it: every acquire/sweep test

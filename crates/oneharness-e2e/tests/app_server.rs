@@ -762,6 +762,7 @@ fn codex_release(pool: &Pool, name: &str, version_file: &Path) -> String {
     path.display().to_string()
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, held live so two dispatches can be shown sharing (or not sharing) one server, which the gate cannot do with real Codex. Real Codex's sharing is held by scripts/e2e-control.sh's pooled-env phase.
 /// Dispatches differing in the executable's path, its reported version, a
 /// variable Codex reads (`CODEX_HOME`), a process-level argument, or
 /// `plugins` run on separate servers; dispatches differing only in a variable
@@ -787,16 +788,31 @@ fn the_pool_key_separates_what_the_server_fixes_at_start_and_nothing_else() {
     let (out, before) = pool.run(pool.command("ver-a", &["--bin", &release_a], &[]));
     succeeded(&out, &before);
     std::fs::write(&version, "1.1.0").unwrap();
-    let (out, after) = pool.run(pool.command("ver-b", &["--bin", &release_a], &[]));
+    // Held live while the same release runs again, so the server it started
+    // is certainly still up: reuse is what is asserted, not that a second run
+    // beat the linger.
+    let release = pool.path("ver-b-release");
+    let held = pool.spawn(pool.command(
+        "ver-b",
+        &["--bin", &release_a],
+        &[("MOCK_CODEX_HOLD_UNTIL", &release.display().to_string())],
+    ));
+    wait_for("ver-b's turn to be live", Duration::from_secs(30), || {
+        pool.server_pids()
+            .into_iter()
+            .any(|pid| pool.live_turns(pid) == 1)
+    });
+    // The same release again: the server it already has.
+    let (out, again) = pool.run(pool.command("ver-c", &["--bin", &release_a], &[]));
+    succeeded(&out, &again);
+    std::fs::write(&release, "").unwrap();
+    let (out, after) = Pool::finish(held);
     succeeded(&out, &after);
     assert_ne!(
         reported_server(&before),
         reported_server(&after),
         "a new release reused the old release's server"
     );
-    // The same release again: the server it already has.
-    let (out, again) = pool.run(pool.command("ver-c", &["--bin", &release_a], &[]));
-    succeeded(&out, &again);
     assert_eq!(reported_server(&again), reported_server(&after));
 
     // A variable Codex reads for itself.
@@ -846,6 +862,7 @@ fn the_pool_key_separates_what_the_server_fixes_at_start_and_nothing_else() {
     );
     assert_eq!(a, b, "two XDG_RUNTIME_DIR values started two servers");
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// The variables a shared server may be launched with.
 fn server_may_hold(name: &str) -> bool {
@@ -1981,6 +1998,322 @@ fn a_pooled_dispatch_names_each_failure_before_its_turn_within_its_bound() {
         "no server started under the default linger: {records:?}"
     );
 }
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, because real Codex cannot be made to exit before listening with a chosen stderr (whitespace, non-UTF-8, an unopenable log) on demand. Real Codex's own early-exit reason reached this report on macOS CI (run 38942062567).
+/// The stderr an early exit quotes is only what the server legibly said: a
+/// stderr of whitespace alone is reported as nothing said, one that is not
+/// UTF-8 is quoted with each undecodable byte — the character the 2 KiB cut
+/// lands inside included — replaced rather than refused, and a log the launch
+/// could not keep is reported as nothing said rather than failing the report.
+#[test]
+fn an_early_exit_quotes_only_the_stderr_it_can_read() {
+    let pool = Pool::new("pool-early-exit-legible");
+    let early_exit = |id: &str, fault: &str| {
+        let (_, report) = pool.run(pool.command(id, &[], &[("CODEX_MOCK_FAULT", fault)]));
+        let ran = result(&report).clone();
+        assert_eq!(ran["status"], "spawn-error", "{ran}");
+        ran["error"].as_str().unwrap_or_default().to_string()
+    };
+
+    let error = early_exit("blank", "exit-blank");
+    assert!(
+        error.contains("it ended with exit status: 5, and wrote nothing to stderr"),
+        "{error}"
+    );
+
+    let error = early_exit("non-utf8", "exit-non-utf8");
+    let (_, tail) = error
+        .split_once("it ended with exit status: 9, its stderr ending: ")
+        .unwrap_or_else(|| panic!("no exit status and stderr in: {error}"));
+    let cut = format!("\u{2026}\u{fffd}{}", "\u{e9}".repeat(1006));
+    assert!(tail.starts_with(&cut), "{tail}");
+    assert!(
+        tail.ends_with("\u{e9}Error: mock codex: bad byte \u{fffd} here"),
+        "{tail}"
+    );
+
+    // The entry the last launch made keeps its log; a dangling link in its
+    // place is never followed, by the launch or by the report.
+    let entries: Vec<PathBuf> = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.join("server.log").exists())
+        .filter(|path| {
+            std::fs::read(path.join("server.log")).is_ok_and(|bytes| bytes.contains(&0xff))
+        })
+        .collect();
+    let [entry] = entries.as_slice() else {
+        panic!("expected one pool entry with the non-UTF-8 log, found {entries:?}");
+    };
+    let log = entry.join("server.log");
+    // llmlint: ignore-block[tests_mirror_real_usage] No oneharness interface puts a link in a pool entry's log's place; an outside actor doing so is the condition, so the journey stages it and asserts through the dispatch's report.
+    std::fs::remove_file(&log).unwrap();
+    std::os::unix::fs::symlink(entry.join("nowhere"), &log).unwrap();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let error = early_exit("unreadable-log", "exit-non-utf8");
+    assert!(
+        error.contains("it ended with exit status: 9, and wrote nothing to stderr"),
+        "{error}"
+    );
+    assert!(!entry.join("nowhere").exists(), "the link was followed");
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, because real Codex cannot be made to exit before listening with a known status and stderr on demand. Real Codex's own early-exit reason reached this report on macOS CI (run 38942062567).
+/// A shared server that exits before it listens fails the dispatch with the
+/// server's own account of why — its exit status and the end of its stderr —
+/// since nobody else reads a detached server's stderr. The log it is read from
+/// is the server's alone, started afresh with each launch.
+#[test]
+fn a_server_that_exits_before_listening_fails_the_dispatch_with_its_own_reason() {
+    let pool = Pool::new("pool-early-exit");
+    let (_, report) =
+        pool.run(pool.command("early-exit", &[], &[("CODEX_MOCK_FAULT", "exit-at-start")]));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    let entries: Vec<PathBuf> = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    let [entry] = entries.as_slice() else {
+        panic!("expected one pool entry, found {entries:?}");
+    };
+    let socket = entry.join("sock").join("app-server.sock");
+    let last = format!(
+        "mock codex: warming up 199\nError: mock codex refuses to listen on {}",
+        socket.display()
+    );
+    for said in [
+        "exited before accepting a connection on ",
+        "it ended with exit status: 7, its stderr ending: …",
+        &last,
+    ] {
+        assert!(error.contains(said), "no `{said}` in: {error}");
+    }
+    // Only the end of a long stderr is quoted: its last 2 KiB, marked as cut.
+    let (_, tail) = error.split_once("its stderr ending: ").unwrap();
+    assert!(
+        tail.len() <= 2048 + "…".len(),
+        "{} bytes: {tail}",
+        tail.len()
+    );
+    assert!(tail.ends_with(&last), "{tail}");
+    assert!(!tail.contains("warming up 000"), "{tail}");
+    // Started twice — a server that dies at start is retried once — and the
+    // log holds only the last launch's stderr, all of it.
+    let log = entry.join("server.log");
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(text.matches("warming up 000").count(), 1, "{text}");
+    assert!(text.trim_end().ends_with(&last), "{text}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
+
+    // A log left readable by others is made private again by the next launch.
+    // llmlint: ignore[tests_mirror_real_usage] No oneharness interface loosens a pool entry's log; an outside chmod is the condition, so the journey makes it and reads the mode the next launch leaves.
+    std::fs::set_permissions(&log, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let (_, report) = pool.run(pool.command(
+        "early-exit-again",
+        &[],
+        &[("CODEX_MOCK_FAULT", "exit-at-start")],
+    ));
+    assert_eq!(result(&report)["status"], "spawn-error", "{report}");
+    let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "{}: {mode:o}", log.display());
+
+    // A FIFO in the log's place is neither written to nor read from — either
+    // would wait for a peer that never comes — so the launch reports the exit
+    // with no stderr to quote, at once.
+    // llmlint: ignore-block[tests_mirror_real_usage] No oneharness interface puts a FIFO in a pool entry; an outside actor doing so is the condition, so the journey stages it and asserts through the dispatch's report.
+    std::fs::remove_file(&log).unwrap();
+    let fifo = std::ffi::CString::new(log.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: a valid NUL-terminated path and a plain mode.
+    assert_eq!(
+        unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) },
+        0,
+        "{}",
+        log.display()
+    );
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let started = Instant::now();
+    let (_, report) =
+        pool.run(pool.command("fifo-log", &[], &[("CODEX_MOCK_FAULT", "exit-at-start")]));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    assert!(
+        ran["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("it ended with exit status: 7, and wrote nothing to stderr"),
+        "{ran}"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(30),
+        "{:?}",
+        started.elapsed()
+    );
+
+    let (_, report) =
+        pool.run(pool.command("silent-exit", &[], &[("CODEX_MOCK_FAULT", "exit-silently")]));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("it ended with exit status: 3, and wrote nothing to stderr"),
+        "{error}"
+    );
+
+    // A log that cannot be opened costs only the reason, never the launch:
+    // the server starts with its stderr discarded and the turn completes. The
+    // fault is part of the pool key, so a serving launch has its own entry,
+    // made by a first turn whose server is let go before its log is replaced.
+    let entries = || -> Vec<PathBuf> {
+        std::fs::read_dir(pool.path("state/oneharness/servers"))
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.is_dir())
+            .collect()
+    };
+    let before = entries();
+    let (out, report) = pool.run(pool.command("serving", &[], &[]));
+    succeeded(&out, &report);
+    let first = reported_server(&report);
+    let made: Vec<PathBuf> = entries()
+        .into_iter()
+        .filter(|path| !before.contains(path))
+        .collect();
+    let [serving] = made.as_slice() else {
+        panic!("expected one new pool entry, found {made:?}");
+    };
+    wait_for(
+        "the serving turn's server to stop after its linger",
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 2 + Duration::from_secs(5),
+        || !alive(first),
+    );
+    let log = serving.join("server.log");
+    // llmlint: ignore-block[tests_mirror_real_usage] No oneharness interface makes a pool entry's log unopenable: the condition is the filesystem refusing it (a full or read-only state dir, a path taken by something else), so the journey stages exactly that and asserts only through what a caller sees, the turn completing on a fresh server.
+    std::fs::remove_file(&log).unwrap();
+    std::fs::create_dir(&log).unwrap();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let (out, report) = pool.run(pool.command("no-log", &[], &[]));
+    succeeded(&out, &report);
+    let second = reported_server(&report);
+    assert_ne!(second, first, "the stopped server served again");
+    assert!(log.is_dir(), "{}", log.display());
+
+    // A link where the log belongs is never written through: the file it
+    // names keeps its content, and the launch goes on without a log.
+    wait_for(
+        "the no-log turn's server to stop after its linger",
+        Duration::from_millis(LINGER_MS) + DEAD_LEASE_SWEEP_INTERVAL * 2 + Duration::from_secs(5),
+        || !alive(second),
+    );
+    let elsewhere = pool.path("elsewhere.txt");
+    std::fs::write(&elsewhere, "not the server's").unwrap();
+    // llmlint: ignore-block[tests_mirror_real_usage] As above: a link left in the pool entry is an outside actor's doing, which no oneharness interface makes, so the journey stages it and asserts through the turn and the file the link names.
+    std::fs::remove_dir(&log).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, &log).unwrap();
+    // llmlint: ignore-end[tests_mirror_real_usage]
+    let (out, report) = pool.run(pool.command("linked-log", &[], &[]));
+    succeeded(&out, &report);
+    assert_ne!(
+        reported_server(&report),
+        second,
+        "the stopped server served again"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&elsewhere).unwrap(),
+        "not the server's"
+    );
+}
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool and a real directory; only codex is the repository's subprocess double, which refuses a loose socket directory exactly as codex-cli 0.163 does, because the gate cannot run real Codex. The live `oh_codex_rendezvous_check` holds the double's contract to real Codex.
+/// Codex refuses to start when its socket rendezvous directory is not this
+/// user's at mode 0700 — macOS CI met one another tool had made at 0755, and
+/// every shared server exited at once. The launch tightens one that is ours,
+/// so the turn completes; anything else it leaves for Codex to refuse, and the
+/// dispatch says why. Run against a directory of the journey's own, never the
+/// host's `/tmp/codex-daemon-<uid>`, which every Codex on it shares.
+#[test]
+fn a_shared_server_starts_once_its_loose_socket_directory_is_made_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let pool = Pool::new("pool-daemon-dir");
+    let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    let daemon = pool.path("daemon");
+    std::fs::create_dir(&daemon).unwrap();
+    std::fs::set_permissions(&daemon, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let at = |dir: &Path| {
+        let dir = dir.display().to_string();
+        vec![
+            (
+                "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR".to_string(),
+                dir.clone(),
+            ),
+            ("CODEX_MOCK_DAEMON_DIR".to_string(), dir),
+        ]
+    };
+    let envs = at(&daemon);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (output, report) = pool.run(pool.command("loose", &[], &envs));
+    succeeded(&output, &report);
+    assert_eq!(mode(&daemon), 0o700);
+    // The server bound under that directory, not the host's.
+    let socket = std::fs::read_dir(pool.path("state/oneharness/servers"))
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.path().join("sock").join("app-server.sock"))
+        .find(|socket| std::fs::symlink_metadata(socket).is_ok())
+        .expect("the shared server's socket link");
+    assert!(
+        std::fs::read_link(&socket).unwrap().starts_with(&daemon),
+        "{}",
+        socket.display()
+    );
+
+    // Not a directory at all: left alone, and Codex's refusal is the reason.
+    let file = pool.path("daemon-file");
+    std::fs::write(&file, "").unwrap();
+    let envs = at(&file);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (_, report) = pool.run(pool.command("not-a-dir", &[], &envs));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    let error = ran["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains(
+            "it ended with exit status: 1, its stderr ending: Error: app-server socket directory must be a user-owned directory with mode 0700"
+        ),
+        "{error}"
+    );
+    assert!(std::fs::metadata(&file).unwrap().is_file());
+
+    // A link in its place: not followed, so the directory it names keeps its
+    // mode, and Codex's refusal is the reason.
+    let target = pool.path("daemon-target");
+    std::fs::create_dir(&target).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let link = pool.path("daemon-link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let envs = at(&link);
+    let envs: Vec<(&str, &str)> = envs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let (_, report) = pool.run(pool.command("linked-dir", &[], &envs));
+    let ran = result(&report);
+    assert_eq!(ran["status"], "spawn-error", "{ran}");
+    assert!(
+        ran["error"].as_str().unwrap_or_default().contains(
+            "Error: app-server socket directory must be a user-owned directory with mode 0700"
+        ),
+        "{ran}"
+    );
+    assert_eq!(mode(&target), 0o755);
+}
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A server that refuses `initialize` fails a pooled session's open naming the
 /// refusal — here through the reuse workload, which opens its leases that way.
@@ -3444,6 +3777,7 @@ fn every_thread_level_setting_travels_on_its_own_dispatch_s_connection() {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control --session` through the real pool; only codex is the repository's subprocess double, held live so both creations share one server, which the gate cannot do with real Codex. Real Codex's continued controlled session is held by scripts/e2e-control.sh's `oh_control_session_enforce` phase.
 /// Each dispatch resumes its own earlier thread — each created under the
 /// OTHER dispatch's settings, so any value left to the thread would be wrong —
 /// and each resumed thread and its turn run under the resuming dispatch's
@@ -3483,25 +3817,36 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
         prompt: "task beta",
         system: "instruction beta",
     };
-    // Each thread is created under the other dispatch's settings.
+    // Each thread is created under the other dispatch's settings, both held
+    // live together so they are certainly on one server: one run after the
+    // other passed only if the second beat the linger, which on macOS under
+    // coverage it did not.
     let command = "env; pwd";
-    let (out, made_a) = Pool::finish(spawn_with(
+    let created = pool.file("created");
+    let making_a = spawn_with(
         &pool,
         &b("res-a"),
         &[
             ("PER_DISPATCH", "creator-of-a"),
             ("MOCK_CODEX_RUN_COMMAND", command),
+            ("MOCK_CODEX_HOLD_UNTIL", &created),
         ],
-    ));
-    succeeded(&out, &made_a);
-    let (out, made_b) = Pool::finish(spawn_with(
+    );
+    pool.await_live_turns(1);
+    let making_b = spawn_with(
         &pool,
         &a("res-b"),
         &[
             ("PER_DISPATCH", "creator-of-b"),
             ("MOCK_CODEX_RUN_COMMAND", command),
+            ("MOCK_CODEX_HOLD_UNTIL", &created),
         ],
-    ));
+    );
+    pool.await_live_turns(2);
+    std::fs::write(&created, b"").unwrap();
+    let (out, made_a) = Pool::finish(making_a);
+    succeeded(&out, &made_a);
+    let (out, made_b) = Pool::finish(making_b);
     succeeded(&out, &made_b);
     let created_on = reported_server(&made_a);
     let created_marker = |report: &Value| {
@@ -3593,6 +3938,7 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
         );
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// With the server broadcasting every thread's frames to every connection —
 /// status changes, turn starts and ends, deltas and approval requests — each
@@ -4420,7 +4766,9 @@ fn the_reuse_workload_names_each_process_listing_failure() {
                 let path = if body.is_empty() {
                     // PATH lookup skips an entry it cannot run, so no `ps`
                     // anywhere on it: only the tools the run itself calls.
-                    for tool in ["bash", "sh", "cargo", "mktemp", "rm", "dirname"] {
+                    for tool in [
+                        "bash", "sh", "cargo", "node", "mktemp", "rm", "dirname", "cp", "sleep",
+                    ] {
                         let found = Command::new("sh")
                             .args(["-c", &format!("command -v {tool}")])
                             .output()
@@ -4472,6 +4820,166 @@ fn the_reuse_workload_names_each_process_listing_failure() {
         assert!(!ok, "{case}: {stderr}");
         assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");
         assert!(!wrote, "{case}: telemetry was written");
+    }
+}
+
+// llmlint: ignore-end[e2e_not_mocked]
+
+// llmlint: ignore-block[e2e_not_mocked] Only `cargo` is replaced, by a script first on PATH, because a real build cannot be made to name no executable, one that is gone, unreadable JSON, or a target directory whose path needs JSON escapes without staging a checkout at such a path; the real build's artifact message is read end to end by every other reuse-workload test, which runs the example from wherever the calling build's target directory put it.
+/// The reuse workload runs the example cargo's artifact message names, read
+/// as JSON: a path spelled with escapes runs the file it names, and a build
+/// whose message names no executable for it, one that is not there, or is no
+/// JSON at all, fails the workload saying so, before any server starts.
+#[test]
+fn the_reuse_workload_runs_the_example_its_build_names_and_refuses_one_it_cannot() {
+    let artifact = |executable: &str| {
+        format!(
+            "{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"example\"],\
+             \"name\":\"app_server_reuse\"}},\"executable\":{executable}}}"
+        )
+    };
+    // `after`, when not empty, is a command the double runs half a second
+    // after it has answered, as another build re-linking the example would.
+    let run = |case: &str, message: &str, after: &str| {
+        let pool = Pool::new(&format!("pool-reuse-cargo-{case}"));
+        let bin = pool.path("cargo-double");
+        std::fs::create_dir_all(&bin).unwrap();
+        let mode = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        let cargo = bin.join("cargo");
+        std::fs::write(
+            &cargo,
+            "#!/bin/sh\ncat \"$OH_CARGO_MESSAGE\"\n\
+             [ -z \"$OH_CARGO_AFTER\" ] || (sleep 0.5; sh -c \"$OH_CARGO_AFTER\") >/dev/null 2>&1 &\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&cargo, mode).unwrap();
+        let message_file = pool.path("cargo-message");
+        std::fs::write(&message_file, format!("{message}\n")).unwrap();
+        let output = Command::new("bash")
+            .arg(repo_root().join("live/control/app-server-reuse.sh"))
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    bin.display(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            )
+            .env("OH_CARGO_MESSAGE", &message_file)
+            .env("OH_CARGO_AFTER", after)
+            .env("OH_REUSE_CODEX", mock_bin())
+            .env("OH_E2E_REUSE_FILE", pool.path("reuse.json"))
+            .env("XDG_STATE_HOME", pool.path("state"))
+            .env("CODEX_MOCK_DIR", pool.path("mock"))
+            .output()
+            .unwrap();
+        assert!(
+            !pool.path("reuse.json").exists(),
+            "{case}: telemetry was written"
+        );
+        assert!(
+            pool.server_pids().is_empty(),
+            "{case}: a server started without the example"
+        );
+        (pool, output)
+    };
+
+    // A target directory whose path JSON must escape: a quote and a backslash.
+    let pool = Pool::new("pool-reuse-cargo-escaped-home");
+    let dir = pool.path("odd \"target\\dir");
+    std::fs::create_dir_all(&dir).unwrap();
+    let example = dir.join("app_server_reuse");
+    let ran = pool.path("example-ran");
+    std::fs::write(
+        &example,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$*\" > '{}'\nexit 3\n",
+            ran.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &example,
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    let escaped = serde_json::to_string(&example.display().to_string()).unwrap();
+    assert!(
+        escaped.contains("\\\"") && escaped.contains("\\\\"),
+        "{escaped}"
+    );
+    let (_scratch, output) = run("escaped", &artifact(&escaped), "");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "escaped: {stderr}");
+    assert!(
+        stderr.contains("app-server-reuse: the workload failed"),
+        "{stderr}"
+    );
+    let args = std::fs::read_to_string(&ran).expect("the escaped path's example did not run");
+    assert!(args.starts_with("--codex "), "{args}");
+
+    // Missing for a moment when the build answers, as while another build
+    // re-links it, then back: the workload waits for it and runs it.
+    let relinked = pool.path("relinked");
+    std::fs::create_dir_all(&relinked).unwrap();
+    let later = relinked.join("app_server_reuse");
+    let after = format!("cp '{}' '{}'", example.display(), later.display());
+    std::fs::remove_file(&ran).unwrap();
+    let named = serde_json::to_string(&later.display().to_string()).unwrap();
+    let (_scratch, output) = run("relinked", &artifact(&named), &after);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "relinked: {stderr}");
+    assert!(
+        stderr.contains("app-server-reuse: the workload failed"),
+        "relinked: {stderr}"
+    );
+    assert!(ran.exists(), "relinked: the example did not run: {stderr}");
+
+    // There but not readable, so it cannot be copied: the copy's own error,
+    // not a missing executable, is the reason.
+    let locked = pool.path("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    let unreadable = locked.join("app_server_reuse");
+    std::fs::copy(&example, &unreadable).unwrap();
+    std::fs::set_permissions(
+        &unreadable,
+        std::os::unix::fs::PermissionsExt::from_mode(0o311),
+    )
+    .unwrap();
+    let named = serde_json::to_string(&unreadable.display().to_string()).unwrap();
+    let (_scratch, output) = run("uncopyable", &artifact(&named), "");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1), "uncopyable: {stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "cannot copy the app_server_reuse example {}",
+            unreadable.display()
+        )) && stderr.contains("Permission denied"),
+        "uncopyable: {stderr}"
+    );
+
+    let cases = [
+        (
+            "unnamed",
+            artifact("null"),
+            "cargo built the app_server_reuse example but its output named no executable for it",
+        ),
+        (
+            "absent",
+            artifact("\"/nonexistent/app_server_reuse\""),
+            "cargo named /nonexistent/app_server_reuse as the app_server_reuse example, but no executable is there",
+        ),
+        (
+            "unreadable",
+            "{\"reason\":\"compiler-artifact\",".to_string(),
+            "cargo's artifact message for the app_server_reuse example is not JSON node can read",
+        ),
+    ];
+    for (case, message, said) in cases {
+        let (_scratch, output) = run(case, &message, "");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{case}: {stderr}");
+        assert!(stderr.contains(said), "{case}: no `{said}` in: {stderr}");
     }
 }
 
@@ -4813,14 +5321,33 @@ fn left_nothing_behind(pool: &Pool, server: u32, report: &Value) {
     );
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run --control` through the real pool; only codex is the repository's subprocess double, held mid-turn so a timeout or cancel lands on demand, which real Codex cannot be made to do deterministically. Real Codex's killed pooled dispatch is held by scripts/e2e-control.sh's pooled-kill phase.
 /// A pooled turn past its `--timeout` is `timeout`, and one whose run is
 /// cancelled (SIGTERM to oneharness) is `cancelled`; either way its live turn
 /// is interrupted on the server, its commands stopped and its thread released,
 /// rather than left running on a server nobody reads.
+///
+/// The timed dispatch runs once the cancelled one's turn is beating, on the
+/// server that one started: its deadline is about a turn cut short, and a
+/// cold server's start — slow under coverage on macOS — would otherwise spend
+/// it before any thread opened.
 #[test]
 fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
     let pool = Pool::new("pool-cut");
     let never = pool.file("never");
+    let cancel_beat = pool.file("cancel-beat");
+    let child = pool.spawn(pool.command(
+        "cancelled",
+        &["--mode", "bypass"],
+        &[
+            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&cancel_beat)),
+            ("MOCK_CODEX_HOLD_UNTIL", &never),
+        ],
+    ));
+    wait_for("the heartbeat to start", Duration::from_secs(20), || {
+        lines(&cancel_beat) >= 3
+    });
+
     let beat = pool.file("timeout-beat");
     let (output, report) = pool.run(pool.command(
         "timed",
@@ -4836,28 +5363,19 @@ fn a_pooled_turn_cut_short_by_its_timeout_or_a_cancel_leaves_nothing_behind() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    left_nothing_behind(&pool, reported_server(&report), &report);
+    let server = reported_server(&report);
+    left_nothing_behind(&pool, server, &report);
 
-    let beat = pool.file("cancel-beat");
-    let child = pool.spawn(pool.command(
-        "cancelled",
-        &["--mode", "bypass"],
-        &[
-            ("MOCK_CODEX_RUN_COMMAND", &heartbeat(&beat)),
-            ("MOCK_CODEX_HOLD_UNTIL", &never),
-        ],
-    ));
-    wait_for("the heartbeat to start", Duration::from_secs(20), || {
-        lines(&beat) >= 3
-    });
     // SAFETY: plain integers; the pid is the run this journey started.
     unsafe {
         libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
     }
     let (_, report) = Pool::finish(child);
     assert_eq!(result(&report)["status"], "cancelled", "{report}");
-    left_nothing_behind(&pool, reported_server(&report), &report);
+    assert_eq!(reported_server(&report), server, "{report}");
+    left_nothing_behind(&pool, server, &report);
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A streaming consumer that stops reading — its end of `run --stream`'s
 /// stdout closed — ends a pooled run as it ends one on a dispatch's own child,

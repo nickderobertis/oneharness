@@ -16,6 +16,7 @@
 //! output it probed.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 
@@ -295,6 +296,19 @@ pub fn pool_key(
 /// path still spelled `{address}` for the pool to render.
 pub const LISTEN_ARGS: [&str; 2] = ["--listen", "unix://{address}"];
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] This is the one in-repo statement of Codex's socket rendezvous: the shared-server launch (`prepare_daemon_dir`) and the mock harness's `daemon_dir` both derive from it, and the live check's expected values are held to it in the gate by `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares` (io::app_server), so no copy can drift from it. Where real Codex binds can only be read from a running Codex, which the deterministic gate does not have; that reconciliation is the live codex suite's (`oh_codex_rendezvous_check` in scripts/e2e-codex.sh holds a pooled server's bound socket to this directory and mode), as `oh_codex_feature_flag_order` is for Codex's flag precedence.
+/// Codex's socket rendezvous directory for `euid` under the canonical temp
+/// directory `tmp`: Codex binds every `--listen unix://` socket there, whatever
+/// path it is told, and refuses to start unless it is a directory that user
+/// owns at [`CODEX_DAEMON_DIR_MODE`].
+pub fn codex_daemon_dir(tmp: &Path, euid: u32) -> PathBuf {
+    tmp.join(format!("codex-daemon-{euid}"))
+}
+
+/// The one mode Codex accepts on its socket rendezvous directory.
+pub const CODEX_DAEMON_DIR_MODE: u32 = 0o700;
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
 /// The thread a server frame belongs to — `params.threadId`, or
 /// `params.thread.id` on a frame that carries the whole thread — or `None` for
 /// a frame scoped to the connection or the server rather than to a thread.
@@ -415,6 +429,15 @@ pub fn reply_result<'a>(method: &str, response: &'a Value) -> Result<&'a Value, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_s_socket_rendezvous_is_named_for_the_euid_under_the_canonical_temp_dir() {
+        assert_eq!(
+            codex_daemon_dir(Path::new("/private/tmp"), 501),
+            Path::new("/private/tmp/codex-daemon-501")
+        );
+        assert_eq!(CODEX_DAEMON_DIR_MODE, 0o700);
+    }
 
     #[test]
     fn a_frame_with_a_malformed_thread_field_is_no_one_s() {

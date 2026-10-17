@@ -130,6 +130,88 @@ oh_bin() {
   printf '%s' "${out//\\//}"
 }
 
+# The longest a control phase's sandbox may be once resolved (macOS's /var
+# resolves to /private/var, and oneharness measures the resolved address).
+# What a phase adds beneath it — its store, then `control/<session>.sock`,
+# `store/control/model-claude-code.sock` the longest — is 37 bytes, and macOS's
+# sun_path holds 103 and a NUL; this leaves room for longer ids.
+OH_SOCKET_DIR_MAX=56
+
+# Make the scratch directory of a phase that opens a control socket beneath it:
+# in the host temp dir unless, resolved, it is too long for the socket's address
+# to fit — macOS's /private/var/folders/<..>/T reached 106 bytes and every
+# controllable harness's --control refused — then in /tmp. The template is
+# spelled out because macOS's bare `mktemp -d` ignores $TMPDIR. Each phase
+# removes it as before.
+oh_socket_sandbox() {
+  local base="${TMPDIR:-/tmp}" dir resolved
+  base="${base%/}"
+  dir="$(mktemp -d "${base:-/tmp}/tmp.XXXXXXXXXX")" || return
+  if ! resolved="$(cd "$dir" && pwd -P)"; then
+    echo "oh_socket_sandbox: cannot resolve $dir to measure it; check its permissions" >&2
+    rmdir "$dir" || echo "oh_socket_sandbox: could not remove $dir; delete it by hand" >&2
+    return 1
+  fi
+  if [ "${#resolved}" -le "$OH_SOCKET_DIR_MAX" ]; then
+    printf '%s\n' "$dir"
+    return
+  fi
+  if ! rmdir "$dir"; then
+    echo "oh_socket_sandbox: could not remove $dir before moving to /tmp; delete it by hand" >&2
+    return 1
+  fi
+  mktemp -d /tmp/tmp.XXXXXXXXXX
+}
+
+# Run "$@" for at most $1 seconds: the one way this library bounds a command.
+# GNU `timeout` where the host has it; macOS ships none — its absence failed
+# every phase that called `timeout` there before the harness ran — so there
+# perl, which macOS does ship, runs the command as its child and TERMs it at
+# the deadline. Either way a command that ran out of time ends with 124, so it
+# reads apart from one that failed on its own — or, one that ignored the TERM
+# and is KILLed $OH_DEADLINE_KILL_AFTER seconds later, with 137.
+OH_DEADLINE_KILL_AFTER=5
+oh_deadline() {
+  local secs="$1"
+  shift
+  case "$OH_DEADLINE_KILL_AFTER" in
+    '' | 0* | *[!0-9]*)
+      echo "oh_deadline: OH_DEADLINE_KILL_AFTER is '$OH_DEADLINE_KILL_AFTER', not a whole number of seconds from 1; set it to one (default 5), then rerun" >&2
+      return 2
+      ;;
+  esac
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -k "$OH_DEADLINE_KILL_AFTER" "$secs" "$@"
+    return
+  fi
+  case "$secs" in
+    '' | *[!0-9]*)
+      echo "oh_deadline: '$secs' is not a whole number of seconds, the only form the perl fallback can bound; set the timeout in whole seconds (e.g. 180, not 3m), or install coreutils' timeout" >&2
+      return 2
+      ;;
+  esac
+  if ! command -v perl >/dev/null 2>&1; then
+    echo "oh_deadline: neither timeout nor perl is on PATH, so '$1' cannot be bounded; install coreutils or perl" >&2
+    return 127
+  fi
+  # shellcheck disable=SC2016 # the program is perl's, expanded by perl
+  perl -e '
+    my $secs = shift;
+    my $grace = shift;
+    defined(my $pid = fork) or die "oh_deadline: cannot fork to run $ARGV[0]: $!; the host is out of processes or memory, so free some (ulimit -u, running jobs) and rerun\n";
+    if (!$pid) { exec @ARGV or do { print STDERR "oh_deadline: cannot run $ARGV[0]: $!; check it is installed and executable on PATH, then rerun\n"; exit 127 } }
+    my $late = 0;
+    $SIG{ALRM} = sub {
+      if ($late++) { kill "KILL", $pid } else { kill "TERM", $pid; alarm $grace }
+    };
+    alarm $secs;
+    while (waitpid($pid, 0) == -1) { last unless $!{EINTR} }
+    exit 137 if $late > 1;
+    exit 124 if $late;
+    exit(($? & 127) ? 128 + ($? & 127) : $? >> 8);
+  ' "$secs" "$OH_DEADLINE_KILL_AFTER" "$@"
+}
+
 # Render a path in a form a *native* (non-MSYS) process understands. On Windows
 # `mktemp -d` yields a POSIX path like /tmp/tmp.XXXX that a native harness (or
 # oneharness resolving its --cwd) cannot resolve, so a synced config lands where
@@ -550,7 +632,7 @@ oh_controlled_turn() {
   local id="$1" marker sandbox turn status=0
   _oh_phase controlled-turn
   marker="$(oh_marker)"
-  sandbox="$(mktemp -d)" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   # --control needs a handle an `oneharness interrupt` could address; this
   # turn is never interrupted, so a throwaway one in the sandbox serves. Its
   # store is a one-letter directory: macOS's long per-user temp dir otherwise
@@ -1773,11 +1855,10 @@ _OH_CODEX_OUT=""
 _oh_codex_direct() {
   local proj="$1" home="$2" prompt="$3"
   shift 3
-  local model_args=() limit_args=()
+  local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args=(-m "$OH_MODEL")
-  command -v timeout >/dev/null 2>&1 && limit_args=(timeout "${OH_TIMEOUT:-300}")
   _OH_CODEX_OUT="$(cd "$proj" && CODEX_HOME="$home" \
-    "${limit_args[@]+"${limit_args[@]}"}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
+    oh_deadline "${OH_TIMEOUT:-300}" codex exec --skip-git-repo-check "${_OH_CODEX_DEFAULTS[@]}" \
     "${model_args[@]+"${model_args[@]}"}" "$@" "$prompt" </dev/null 2>&1)" || true
   local refusal
   refusal="$(printf '%s\n' "$_OH_CODEX_OUT" | grep -i -E "$_OH_PROVIDER_REFUSAL_RE" | head -n 1 | cut -c1-300 || true)"
@@ -2133,6 +2214,17 @@ oh_resume_mode_enforce() {
       "$sandbox/second.json" "$sandbox/second.err" --events "$@"
   fi
   status="$(_oh_result_status "$sandbox/second.json")"
+  # A resumed turn that ran into its bound is not a refused resume: codex
+  # answers a refusal at once and non-zero (judged below). Say what the turn
+  # was doing, from its own frames, rather than blame the resume argv.
+  if [ "$status" = timeout ]; then
+    note "  second turn command: $(jq -c '.results[0].command' "$sandbox/second.json" 2>/dev/null || echo '<no report>')"
+    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" | tail -n 6 | cut -c1-300)"
+    local reading
+    reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: the resumed turn under --mode $mode ran into its ${_OH_RESUME_TURN_BOUND}s bound: $reading. A resume codex refused ends at once with its reason, so this is not one, and the bound already outlasts codex's own 300 s stall recovery (see _OH_RESUME_TURN_BOUND), so codex did not recover inside it. Read the frames above, then rerun \`just live-codex\`"
+  fi
   if [ "$status" != "ok" ]; then
     refusal="$(_oh_provider_refusal <"$sandbox/second.json" 2>/dev/null)" || refusal=""
     if [ -n "$refusal" ]; then
@@ -2384,8 +2476,184 @@ _oh_resume_mode_turn() {
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
   ONEHARNESS_NO_CONFIG=1 "$(oh_bin)" run --harness "$id" --prompt "$prompt" \
     --session "$name" --session-dir "$store" --cwd "$cwd" --mode "$mode" \
-    --timeout "${OH_TIMEOUT:-300}" --compact \
+    --timeout "$_OH_RESUME_TURN_BOUND" --compact \
     "${model_args[@]+"${model_args[@]}"}" "$@" >"$report" 2>"$err" || true
+}
+
+# The bound on one resume-phase turn, in seconds: codex's own stall window plus
+# headroom for it to recover. codex-cli 0.163's built-in `openai` provider
+# notices a stalled model stream only after stream_idle_timeout_ms, 300 000 ms
+# (codex-rs/model-provider-info/src/lib.rs), and the built-in provider cannot be
+# configured otherwise ("Built-in providers cannot be overridden"). Measured
+# against real codex-cli 0.163.0 with `oh_resume_stall_enforce`'s endpoint: the
+# stalled request was retried 300.2 s after it was sent, on websockets and on
+# HTTPS alike, and the resumed turn completed at 301.4 s and 307.7 s. The suite's
+# 300 s bound killed exactly that recovery — the macOS CI resume turn that ran
+# its whole 300 s silently. 120 s past the window leaves room for the work
+# before the stall and the turn after the retry, which take seconds.
+_OH_RESUME_TURN_BOUND=420
+
+# Live proof that a resumed codex turn whose model stream stalls once is
+# recovered by codex itself inside `_OH_RESUME_TURN_BOUND`. Real codex, its
+# built-in `openai` provider (only its base URL moved, through
+# `openai_base_url`), and oneharness's real resume interface (`run --session`
+# twice); the model is scripts/codex-stall-endpoint.py on loopback, which
+# stalls turn two's model request once and serves the retry, so nothing is
+# billed. An isolated CODEX_HOME logs in with a key that never leaves the host.
+#
+# Fails when turn two does not complete inside the bound, when it was not a
+# continue of turn one's thread, or when the endpoint saw no stall and retry at
+# all — a pass that never stalled would prove nothing about the bound.
+#   $1 harness id (codex)
+# llmlint: ignore-block[e2e_not_mocked] Replacing the model service is this phase's point: a stall cannot be made on demand on OpenAI's real endpoint, nor a turn run there without billing. Codex, its built-in provider and oneharness's resume interface are all real; the paid resume phases above hold the same path against the real service.
+oh_resume_stall_enforce() {
+  _oh_phase
+  local id="$1" bin sandbox endpoint home pid="" port took started status codex py
+  bin="$(oh_bin)"
+  [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
+  # The real codex, never the suite's measuring shim: on Linux the shim runs
+  # each launch in its own network namespace, whose loopback is not the host's,
+  # so codex could not reach the endpoint. This phase's traffic is loopback
+  # alone, which is not the internet spend the network budgets measure. Where
+  # no executable resolves past the shims (an npm `.cmd` on Windows, where
+  # nothing namespaces a launch), the one on PATH is the real one.
+  codex="$(_oh_unshimmed codex)" || codex="$(command -v codex)" ||
+    skip "codex is not on PATH; install it (the live-codex workflow does) to run this phase"
+  py="$(command -v python3 || command -v python)" ||
+    skip "neither python3 nor python is on PATH; the stalling endpoint is a Python script"
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" || fail "could not create a scratch directory — check that the host temp dir is writable"
+  endpoint="$sandbox/endpoint"
+  home="$sandbox/codex-home"
+  mkdir -p "$endpoint" "$home" "$sandbox/work" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+  # A real repo: codex refuses to run outside one unless the directory is
+  # trusted, and trusting it is not this phase's job.
+  if ! git init -q "$sandbox/work" >"$sandbox/git.log" 2>&1; then
+    sed 's/^/    /' "$sandbox/git.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not make $sandbox/work a git repository (output above); check that git is installed and the host temp dir is writable"
+  fi
+  "$py" -I "$OH_REPO_ROOT/scripts/codex-stall-endpoint.py" "$(oh_native_path "$endpoint")" >"$sandbox/endpoint.log" 2>&1 &
+  pid=$!
+  if ! _oh_wait_for 15 test -s "$endpoint/port"; then
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint never reported its port (its output is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+  fi
+  port="$(_oh_port_in "$endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint's port file does not hold one TCP port; run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see what it wrote"
+  printf 'openai_base_url = "http://127.0.0.1:%s/v1"\ncli_auth_credentials_store = "file"\n' "$port" >"$home/config.toml" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not write $home/config.toml; check that the host temp dir is writable"
+  if ! printf 'sk-oneharness-local-only' | CODEX_HOME="$(oh_native_path "$home")" "$codex" login --with-api-key >"$sandbox/login.log" 2>&1; then
+    sed 's/^/    /' "$sandbox/login.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: codex could not log in with a local key in an isolated CODEX_HOME (its output is above); run \`CODEX_HOME=\$(mktemp -d) codex login --with-api-key\` by hand with any key to see why"
+  fi
+  # Codex's own key variables would outrank the isolated login.
+  local turn_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME="$(oh_native_path "$home")" ONEHARNESS_NO_CONFIG=1)
+  "${turn_env[@]}" "$bin" run --harness "$id" --bin "$id=$codex" --prompt "Remember the word OHSTALL. Reply OK." \
+    --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
+    --timeout "$_OH_RESUME_TURN_BOUND" --compact >"$sandbox/first.json" 2>"$sandbox/first.err" || true
+  status="$(_oh_result_status "$sandbox/first.json")"
+  if [ "$status" != ok ]; then
+    _oh_control_evidence "$sandbox" "$sandbox/first.json"
+    sed 's/^/    /' "$sandbox/first.err" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn one against the local endpoint did not complete (status=${status:-<no report>}); the evidence above says how it ended — if codex refused the endpoint's events, compare scripts/codex-stall-endpoint.py's stream with what this codex-cli expects"
+  fi
+  printf 'stall-next\n' >"$endpoint/mode" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not arm the endpoint's stall in $endpoint/mode; check that the host temp dir is writable"
+  # llmlint: ignore[tool_output_is_signal] This phase's one progress line marks where a five-minute wait begins, which is what attributes a hang inside it to the stall rather than to the setup before it, as every other phase's header does.
+  note "  resume-stall: turn two's model request stalls once; codex must recover inside ${_OH_RESUME_TURN_BOUND}s"
+  started=$SECONDS
+  "${turn_env[@]}" "$bin" run --harness "$id" --bin "$id=$codex" --prompt "Say the word you were asked to remember." \
+    --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
+    --timeout "$_OH_RESUME_TURN_BOUND" --compact --events >"$sandbox/second.json" 2>"$sandbox/second.err" || true
+  took=$((SECONDS - started))
+  status="$(_oh_result_status "$sandbox/second.json")"
+  if ! grep -q ' request stall ' "$endpoint/requests.log" 2>/dev/null; then
+    sed 's/^/    /' "$endpoint/requests.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn two's model request never stalled (requests above), so nothing was proven about the bound; check scripts/codex-stall-endpoint.py still tells codex's warmup from its request"
+  fi
+  if [ "$status" != ok ]; then
+    local reading
+    reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
+    note "  second turn stderr: $(tail -c 800 "$sandbox/second.err" 2>/dev/null || true)"
+    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | tail -c 800)"
+    note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" 2>/dev/null | tail -n 6 | cut -c1-300)"
+    note "  endpoint requests: $(tr '\n' ';' <"$endpoint/requests.log")"
+    _oh_stall_abort "$sandbox" "$pid" "$id: a resumed turn whose model stream stalled once ended $status after ${took}s, not recovered inside the ${_OH_RESUME_TURN_BOUND}s bound: $reading. If codex now waits longer than 300 s on a stalled stream, raise _OH_RESUME_TURN_BOUND past its new window"
+  fi
+  if ! jq -e '.session.phase == "continue"' "$sandbox/second.json" >/dev/null 2>&1; then
+    local session
+    session="$(jq -c '.session' "$sandbox/second.json" 2>/dev/null || echo '<no session block>')"
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn two completed but did not continue turn one's thread ($session); inspect \`domain::session\`'s create-vs-continue decision, which oh_resume_mode_enforce also exercises"
+  fi
+  _oh_stall_cleanup "$sandbox" "$pid"
+  note "PASS: $id recovered a resumed turn whose model stream stalled once, in ${took}s of its ${_OH_RESUME_TURN_BOUND}s bound"
+}
+# llmlint: ignore-end[e2e_not_mocked]
+
+# The TCP port a file holds as its one line, 1 to 65535 spelled without a
+# leading zero, or a failure saying what it held instead.
+#   $1 file
+_oh_port_in() {
+  local port
+  port="$(cat "$1")" || return 1
+  case "$port" in
+    [1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9] | [1-9][0-9][0-9][0-9][0-9]) ;;
+    *)
+      echo "$1 holds '$port', not a TCP port; whatever wrote it must write one decimal port from 1 to 65535 and nothing else" >&2
+      return 1
+      ;;
+  esac
+  if [ "$port" -gt 65535 ]; then
+    echo "$1 holds $port, past the last TCP port; whatever wrote it must write a port from 1 to 65535" >&2
+    return 1
+  fi
+  printf '%s' "$port"
+}
+
+#   $1 sandbox, $2 the stalling endpoint's pid, or empty before it started
+_oh_stall_cleanup() {
+  if [ -n "$2" ]; then
+    kill "$2" 2>/dev/null || true
+    wait "$2" 2>/dev/null || true
+  fi
+  rm -rf "$1" || note "  could not remove $1; delete it by hand"
+}
+
+_oh_stall_abort() {
+  _oh_stall_cleanup "$1" "$2"
+  fail "$3"
+}
+
+# What a turn that ran into its bound was doing when it was stopped, read off
+# the frames it sent, as one line: codex never announced the thread, announced
+# it and never started the turn, started the turn and sent nothing more, or
+# started a command (named) that never finished. A silent timeout is otherwise
+# indistinguishable from a resume codex refused, and that is the difference
+# between a provider that stalled and an adapter that is broken.
+#   $1 report
+_oh_silent_turn_reading() {
+  local frames
+  frames="$(jq -r '.results[0].stdout // ""' "$1" 2>/dev/null | jq -R -c 'fromjson? // empty' 2>/dev/null)" || frames=""
+  if ! printf '%s\n' "$frames" | jq -e -s 'any(.[]; .type == "thread.started")' >/dev/null 2>&1; then
+    printf 'codex never announced the thread (no thread.started frame), so it stopped before the resume took'
+    return 0
+  fi
+  if ! printf '%s\n' "$frames" | jq -e -s 'any(.[]; .type == "turn.started")' >/dev/null 2>&1; then
+    printf 'codex resumed the thread and never started the turn'
+    return 0
+  fi
+  local open
+  open="$(printf '%s\n' "$frames" | jq -r -s '
+    [.[] | select(.type == "item.started" or .type == "item.completed")] as $items
+    | [$items[] | select(.type == "item.started") | .item]
+    | map(select(.id as $id | ($items | any(.type == "item.completed" and .item.id == $id)) | not))
+    | map(.command // .type) | first // empty' 2>/dev/null)" || open=""
+  if [ -n "$open" ]; then
+    printf 'the turn started a command that never finished: %s' "$(printf '%s' "$open" | head -c 300)"
+    return 0
+  fi
+  printf 'the turn started and the model sent nothing more (%s frames, the last a %s) — a stalled model stream' \
+    "$(printf '%s\n' "$frames" | grep -c .)" "$(printf '%s\n' "$frames" | jq -r -s 'last | .type // "?"' 2>/dev/null)"
 }
 
 # Live proof that `--mode edit` AUTO-APPROVES file edits — the reliably-testable
@@ -2500,7 +2768,7 @@ _oh_control_mode_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/store"
@@ -2509,7 +2777,7 @@ _oh_control_mode_enforce_once() {
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-  if ! ONEHARNESS_NO_CONFIG=1 timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+  if ! ONEHARNESS_NO_CONFIG=1 oh_deadline "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
     --harness "$id" --prompt "Reply with the single word READY and stop." \
     --control --session "$name" --session-dir "$store" --cwd "$sandbox" \
     --mode default --timeout "${OH_TIMEOUT:-120}" --compact \
@@ -2783,7 +3051,7 @@ oh_control_session_enforce() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/sessions"
@@ -2904,7 +3172,7 @@ oh_control_model_enforce() {
       ;;
   esac
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   store="$sandbox/store"
@@ -2920,7 +3188,7 @@ oh_control_model_enforce() {
   # mktemp sandbox, like every other oh_*_enforce phase.
   local grant=(--mode bypass) # llmlint: ignore[least_privilege_grants] see above
   # llmlint: ignore-block[boundary_inputs_validated] Both timeouts are the suite-wide knobs every sibling phase forwards the same way, and each consumer validates its own: `timeout(1)` refuses a malformed duration, and `--timeout` is a clap-validated value oneharness rejects as a usage error before anything spawns.
-  if ! ONEHARNESS_NO_CONFIG='' timeout "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
+  if ! ONEHARNESS_NO_CONFIG='' oh_deadline "${OH_CONTROL_MODE_TIMEOUT:-180}" "$bin" run \
     --config "$sandbox/oneharness.toml" \
     --harness "$id" --prompt "Reply with the single word READY and stop." \
     --control --session "model-$id" --session-dir "$store" --cwd "$sandbox" \
@@ -2977,9 +3245,9 @@ oh_control_enforce() {
   # and only a turn that proved NOTHING comes back here.
   #
   # It is a backstop, not the mechanism: the workload each attempt drives is
-  # sized so a turn CANNOT finish it inside the interrupt window (see the
-  # prompt below), so a harness that needs the retries is telling you
-  # something. Which attempt won is reported for exactly that reason — a phase
+  # held open by the phase itself, so a turn CANNOT finish it before the
+  # interrupt (see `_oh_gated_workload`), and a harness that needs the retries
+  # is telling you something. Which attempt won is reported for exactly that reason — a phase
   # that passes on the third every night is a phase about to fail.
   local attempt attempts=3 started=$SECONDS status
   for attempt in $(seq 1 "$attempts"); do
@@ -3009,7 +3277,7 @@ _oh_control_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   git init -q "$sandbox" 2>/dev/null || true
@@ -3021,22 +3289,15 @@ _oh_control_enforce_once() {
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-  # Many small steps with a pause between each: the turn must still be running
-  # when the interrupt arrives, and each step must be individually observable.
-  # `steps` is the ceiling the assertion below reads too, so the prompt and the
-  # "did it merely finish?" test can never drift apart.
-  #
-  # The PAUSE is what makes staying in flight a property of the workload rather
-  # than of how fast the model happens to be. The interrupt lands as soon as
-  # two steps exist and the assertion is over ~18s later, while the work asked
-  # for is $steps × $pause seconds of sleeping — so no agent can outrun the
-  # window, and one that batches every file into a single command (the failure
-  # the ONE-PER-TOOL-CALL wording exists for) is still sleeping when the abort
-  # arrives. Three attempts remain as a backstop for a turn that never starts;
-  # they are not how this phase stays in flight.
-  local steps=60 pause=3 last
-  last="$(printf 'step-%03d.txt' "$steps")"
-  local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+  # A chain of steps the phase holds open (`_oh_gated_workload`): the turn is
+  # still running when the interrupt arrives however the agent batches or
+  # paces its tool calls, and each step is individually observable. Steps 1
+  # and 2 run freely; step 3 blocks until this phase releases it, so the count
+  # cannot pass 2 before the interrupt. Three attempts remain as a backstop for
+  # a turn that never starts; they are not how this phase stays in flight.
+  local steps=60 start prompt
+  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox; check that the host temp dir is writable and has space, then rerun the phase"
+  prompt="$(_oh_gated_prompt "$start")"
 
   # The turn must actually run shell commands for there to be work to stop, so a
   # narrower mode would make the freeze assertion vacuous. Confined to a fresh
@@ -3093,17 +3354,9 @@ _oh_control_enforce_once() {
     rm -rf "$sandbox"
     return 1
   fi
-  # A turn that already wrote every file it was asked for has nothing left to
-  # stop, so a frozen count afterwards is what finishing looks like, not what
-  # an interrupt looks like. Inconclusive, never a pass.
+  # What the agent had done when it was interrupted. Step 3 is held, so this
+  # is at most 2 and the turn has work left that only a release lets it do.
   count="$(_oh_step_count "$sandbox")"
-  if [ "$count" -ge "$steps" ]; then
-    kill "$run_pid" 2>/dev/null || true
-    wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
-    note "  control-enforce: the agent finished all $steps steps before the interrupt could land"
-    return 1
-  fi
 
   note "  control-enforce: interrupting from a separate process"
   local frame
@@ -3138,30 +3391,37 @@ _oh_control_enforce_once() {
   fi
   note "  ok: interrupt served by mechanism '$mechanism'"
 
-  # THE assertion: the work is frozen. Sample right after the interrupt (with
-  # a beat for an in-flight tool call to land), then again 15s later.
+  # THE assertion: the work is frozen. Give the interrupt a beat to land, then
+  # release every step: a turn that ignored the interrupt was only waiting on
+  # its held step, and released it carries on where the count can see. One
+  # step may still land — the call in flight when the interrupt arrived, if
+  # the harness let it finish — and nothing after it. Sampled once the release
+  # has had time to land, then again after the freeze window.
+  local window="${_OH_CONTROL_FREEZE_SECONDS:-15}"
   sleep 3
-  frozen="$(_oh_step_count "$sandbox")"
-  # Same trap on the other side of the interrupt: a turn that raced to the
-  # ceiling in the seconds it took to send the frame would hold at $steps for
-  # any window you cared to watch, and that reading is indistinguishable from a
-  # completed turn. Retry rather than bank it.
-  if [ "$frozen" -ge "$steps" ]; then
+  if ! _oh_gated_release_all "$sandbox"; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
-    note "  control-enforce: the count reached all $steps steps, so a freeze proves nothing"
-    return 1
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: the held steps could not be released, so whether the interrupt stopped the work cannot be read"
   fi
-  sleep 15
+  sleep 2
+  frozen="$(_oh_step_count "$sandbox")"
+  if [ "$frozen" -gt "$((count + 1))" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: work did NOT stop — step files went from $count at the interrupt to $frozen once its steps were released, so the '$mechanism' interrupt is not honored"
+  fi
+  sleep "$window"
   frozen_after="$(_oh_step_count "$sandbox")"
   if [ "$frozen_after" != "$frozen" ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
     rm -rf "$sandbox"
-    fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the 15s after the interrupt, so the '$mechanism' interrupt is not honored"
+    fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the ${window}s after the interrupt, so the '$mechanism' interrupt is not honored"
   fi
-  note "  ok: work frozen at $frozen step files for 15s after the interrupt"
+  note "  ok: work frozen at $frozen step files for ${window}s after the interrupt"
 
   wait "$run_pid" 2>/dev/null || true
   # The run must have ended on its own (not been killed) and recorded the
@@ -3303,7 +3563,7 @@ _oh_control_redirect_enforce_once() {
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
 
-  sandbox="$(mktemp -d)"
+  sandbox="$(oh_socket_sandbox)" || fail "could not create a scratch directory — check that the host temp dir is writable"
   sandbox="$(oh_native_path "$sandbox")"
   oh_sandbox_prepare "$id" "$sandbox"
   git init -q "$sandbox" 2>/dev/null || true
@@ -3319,11 +3579,12 @@ _oh_control_redirect_enforce_once() {
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-  # Same workload, and same reason it is paced: see `_oh_control_enforce_once`.
-  local steps=60 pause=3 last
-  last="$(printf 'step-%03d.txt' "$steps")"
-  local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
-  local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
+  # Same workload, and the same reason it is held open: see
+  # `_oh_control_enforce_once`.
+  local steps=60 start prompt
+  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox; check that the host temp dir is writable and has space, then rerun the phase"
+  prompt="$(_oh_gated_prompt "$start")"
+  local redirect="Stop running ohstep.sh steps immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
 
   # The turn must actually run shell commands for there to be work to stop and
   # work to redirect to. Confined to a fresh mktemp sandbox, like every other
@@ -3369,14 +3630,8 @@ _oh_control_redirect_enforce_once() {
     rm -rf "$sandbox"
     return 1
   fi
+  # Held at step 3, so at most 2; see `_oh_control_enforce_once`.
   count="$(_oh_step_count "$sandbox")"
-  if [ "$count" -ge "$steps" ]; then
-    kill "$run_pid" 2>/dev/null || true
-    wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
-    note "  redirect-enforce: the agent finished all $steps steps before the interrupt could land"
-    return 1
-  fi
 
   note "  redirect-enforce: interrupting WITH a redirection from a separate process"
   local frame
@@ -3402,17 +3657,25 @@ _oh_control_redirect_enforce_once() {
   fi
   note "  ok: the run took the redirection"
 
-  # Half one: the original work stopped. Sampled after a beat for an in-flight
-  # tool call, then again — the redirected turn must not be the old one
-  # carrying on.
+  # Half one: the original work stopped. After a beat for the interrupt, every
+  # step is released — a turn still running the old work was only waiting on
+  # its held step — and at most the call in flight at the interrupt may land.
+  # Sampled then, and again once the redirected work is done: the redirected
+  # turn must not be the old one carrying on.
   sleep 5
-  frozen="$(_oh_step_count "$sandbox")"
-  if [ "$frozen" -ge "$steps" ]; then
+  if ! _oh_gated_release_all "$sandbox"; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
-    note "  redirect-enforce: the count reached all $steps steps, so a freeze proves nothing"
-    return 1
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: the held steps could not be released, so whether the interrupt stopped the work cannot be read"
+  fi
+  sleep 2
+  frozen="$(_oh_step_count "$sandbox")"
+  if [ "$frozen" -gt "$((count + 1))" ]; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+    fail "$id: the original work did NOT stop — step files went from $count at the interrupt to $frozen once its steps were released, so the redirection was queued behind a turn that kept running"
   fi
 
   # Half two: the redirected work was DONE — by this same dispatch, with no
@@ -3489,6 +3752,100 @@ _oh_step_count() {
 # `_oh_step_count`, so waiting on it needs no shell expression.
 _oh_steps_at_least() {
   [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# The work a control phase interrupts: a CHAIN of steps the phase holds open.
+#
+# Each step is `sh ohstep.sh <token>`. It records that it started, blocks until
+# the phase releases it, writes step-NNN.txt, and only then prints the command
+# for the next step, whose token nothing else names. So no agent can batch the
+# work — goose ran all 60 of a paced `sleep 3 && touch` workload's calls at once
+# and finished in 15s on three attempts running — and none can finish early:
+# whatever the agent's speed, the turn is in flight for as long as the phase
+# withholds a release. Steps 1 and 2 are released up front, so two step files
+# mean the agent is demonstrably working; step 3 waits for the phase.
+#
+# A blocked step gives up once its gate directory is gone or after ten minutes,
+# so a sandbox a phase deleted leaves no step behind waiting for it.
+#
+#   $1 sandbox, $2 step count. Prints the command that starts the chain.
+_oh_gated_workload() {
+  local sandbox="$1" steps="$2" gate n tok next=""
+  gate="$sandbox/.ohgate"
+  mkdir "$gate" || return
+  cat >"$sandbox/ohstep.sh" <<'STEP' || return
+# One step of a oneharness control-phase fixture; see `_oh_gated_workload`.
+set -eu
+# Where the agent's shell has it (bash, zsh, dash 0.5.11+); this script runs
+# no pipeline, so a shell without it loses nothing.
+if (set -o pipefail) 2>/dev/null; then set -o pipefail; fi
+# Every failure here is the fixture's, not the agent's: the phase that wrote
+# this script removed or could not write its sandbox, or stopped releasing.
+die() {
+  echo "ohstep: $2. This step belongs to a oneharness control phase; if that phase is still running, read its log for why the sandbox changed, otherwise stop and report this message" >&2
+  exit "$1"
+}
+dir=$(cd "$(dirname "$0")" && pwd) || die 1 "cannot find the directory this step lives in"
+gate="$dir/.ohgate"
+case "${1:-}" in
+  "" | *[!0-9a-f]*) die 2 "'${1:-}' is not a step token; run exactly the command the previous step printed" ;;
+esac
+[ -f "$gate/token-$1" ] || die 2 "no step has token '$1'; run exactly the command the previous step printed"
+n=$(cat "$gate/token-$1") || die 1 "cannot read the step token '$1'"
+case "$n" in
+  [0-9][0-9][0-9]) ;;
+  *) die 1 "the step number stored for token '$1' is '$n', not three digits" ;;
+esac
+: >"$gate/started-$n" || die 1 "cannot record that step $n started"
+waited=0
+while [ ! -e "$gate/release-$n" ] && [ ! -e "$gate/release-all" ]; do
+  if [ ! -d "$gate" ] || [ "$waited" -ge 600 ]; then
+    die 3 "step $n was never released (its gate is gone or ten minutes passed)"
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
+: >"$dir/step-$n.txt" || die 1 "cannot write step-$n.txt"
+if [ -f "$gate/next-$n" ]; then
+  next=$(cat "$gate/next-$n") || die 1 "cannot read the token after step $n"
+  case "$next" in
+    "" | *[!0-9a-f]*) die 1 "the token stored after step $n is '$next', not a step token" ;;
+  esac
+  echo "step $n done. Next, run: sh ohstep.sh $next"
+else
+  echo "step $n done. That was the last step."
+fi
+STEP
+  # Built from the last step back, so each token can name its successor.
+  for ((n = steps; n >= 1; n--)); do
+    tok="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
+    printf '%03d\n' "$n" >"$gate/token-$tok" || return
+    if [ -n "$next" ]; then
+      printf '%s\n' "$next" >"$gate/next-$(printf '%03d' "$n")" || return
+    fi
+    next="$tok"
+  done
+  : >"$gate/release-001" || return
+  : >"$gate/release-002" || return
+  printf 'sh ohstep.sh %s' "$next"
+}
+
+# Let every step run, blocked or not yet started. A phase calls it once an
+# interrupt has had its beat: a turn that ignored the interrupt was only ever
+# waiting on its blocked step, and released it carries on where a count can see.
+# Fails, saying so, when the release cannot be written: a phase that went on
+# would read a turn still waiting on its held step as one the interrupt froze.
+_oh_gated_release_all() {
+  : >"$1/.ohgate/release-all" || {
+    echo "could not release the held steps in $1/.ohgate; check the sandbox is still writable" >&2
+    return 1
+  }
+}
+
+# The prompt that drives the chain `_oh_gated_workload` wrote.
+#   $1 the command it printed
+_oh_gated_prompt() {
+  printf '%s' "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run exactly this command in the current directory: $1 — it may take a while, because each step waits for the test before it finishes. Each step prints the next command to run; run that command as its own tool call, one at a time, and keep going until a step says it was the last. Never run a step command before the previous step has printed it, and run nothing else. Start now."
 }
 
 # The errors the HARNESS itself reported on its event stream, one per line, or

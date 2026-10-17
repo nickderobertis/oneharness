@@ -11,6 +11,11 @@
 //!   MOCK_STDERR     bytes written to stderr
 //!   MOCK_EXIT       process exit code (default: 0)
 //!   MOCK_EXIT_<n>   with MOCK_ATTEMPT_FILE, process exit code for attempt n
+//!   MOCK_EXIT_MARK  once the answer is written, hold the exit — the work an
+//!                   exit does (under coverage, writing the profile) — until a
+//!                   TERM arrives, then write `exited` to this path and exit,
+//!                   so a test sees a TERM land mid-exit and that exit still
+//!                   run to its end (Unix; elsewhere it is written at once)
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
@@ -200,6 +205,13 @@
 //!                              fails it like `fail`, and an `app-server`
 //!                              launch then exits 1 at once, as a Codex
 //!                              server that cannot start does.
+//!   MOCK_CODEX_THREADS         a directory: act like `codex exec` about its
+//!                              threads. A fresh `exec` stores the `thread_id`
+//!                              its MOCK_STDOUT announces; `exec resume <id>`
+//!                              refuses a `--sandbox` flag (exit 2) and a
+//!                              thread it never stored (exit 1, Codex's `no
+//!                              rollout found` error), and otherwise answers
+//!                              as the default path does.
 //!   MOCK_CODEX_ECHO_PROMPT     with MOCK_CODEX_APP_SERVER_LOG, the turn's
 //!                              agent message is the text of the `turn/start`
 //!                              input instead of a fixed "still working".
@@ -2015,6 +2027,10 @@ pub fn run() -> ! {
         codex_model_catalog(&path, &argv);
     }
 
+    if let Ok(dir) = mock_var("MOCK_CODEX_THREADS") {
+        codex_exec_threads(std::path::Path::new(&dir), &argv);
+    }
+
     // `codex app-server --listen unix://PATH`: the shared server a pooled
     // dispatch's turn runs on.
     #[cfg(unix)]
@@ -2262,7 +2278,7 @@ pub fn run() -> ! {
             }
         }
         log_line("COMPLETE\n");
-        std::process::exit(0);
+        finish(0);
     }
 
     // Incremental streaming mode: with MOCK_STREAM_DELAY_MS set, emit MOCK_STDOUT
@@ -2285,9 +2301,12 @@ pub fn run() -> ! {
             }
         }
         log_line("COMPLETE\n");
-        std::process::exit(0);
+        finish(0);
     }
 
+    // The answer is the run's last act, so a caller that stops after reading
+    // part of it may signal the mock any moment from here (see `finish`).
+    hold_term();
     let _ = write!(std::io::stdout(), "{stdout}");
     let _ = std::io::stdout().flush();
 
@@ -2299,7 +2318,97 @@ pub fn run() -> ! {
                 .expect("MOCK_EXIT[_<attempt>] must be an integer")
         })
         .unwrap_or(0);
-    std::process::exit(code);
+    finish(code);
+}
+
+/// Exit with `code` once the run's answer is written, finishing that exit
+/// whatever the caller sends meanwhile, as a CLI that handles TERM does.
+///
+/// A caller that stops reading after an early line ends the tree with TERM,
+/// then KILL after a grace — often while this process is already exiting.
+/// Taking TERM's default there cuts the exit short: under coverage the exit is
+/// where this process writes its profile, and one left truncated fails the
+/// whole `llvm-profdata merge`. Ignoring TERM lets the exit finish within the
+/// grace; KILL still ends one that outlives it.
+fn finish(code: i32) -> ! {
+    hold_term();
+    if let Some(mark) = std::env::var_os("MOCK_EXIT_MARK") {
+        await_term();
+        let _ = std::fs::write(mark, "exited\n");
+    }
+    std::process::exit(code)
+}
+
+/// The pipe [`note_term`] writes to when `MOCK_EXIT_MARK` holds the exit open
+/// for a TERM, read by [`await_term`]; `-1` until [`hold_term`] opens it.
+#[cfg(unix)]
+static TERM_READ: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+#[cfg(unix)]
+static TERM_WRITE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// From here on TERM no longer ends this process ([`finish`] says why). Set
+/// only once the mock starts no further child, which would inherit it.
+///
+/// With `MOCK_EXIT_MARK`, TERM is noted rather than ignored, so the held exit
+/// learns of it without a timer: one that waited a fixed time instead would
+/// pass or fail on whether the host scheduled it inside the caller's grace.
+fn hold_term() {
+    #[cfg(unix)]
+    {
+        use std::sync::atomic::Ordering;
+        if std::env::var_os("MOCK_EXIT_MARK").is_none() {
+            // SAFETY: installs the ignore disposition for one signal.
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+            return;
+        }
+        if TERM_READ.load(Ordering::SeqCst) != -1 {
+            return;
+        }
+        let mut fds = [-1; 2];
+        // SAFETY: `fds` is a two-element array `pipe` fills on success.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            refuse(&format!(
+                "MOCK_EXIT_MARK could not open its TERM pipe: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        TERM_WRITE.store(fds[1], Ordering::SeqCst);
+        TERM_READ.store(fds[0], Ordering::SeqCst);
+        // SAFETY: `note_term` only loads an atomic and calls `write`, both
+        // async-signal-safe.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = note_term as extern "C" fn(libc::c_int) as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn note_term(_: libc::c_int) {
+    let fd = TERM_WRITE.load(std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: one byte from a live buffer to the pipe `hold_term` opened.
+    unsafe { libc::write(fd, b"t".as_ptr().cast(), 1) };
+}
+
+/// Block until a TERM has arrived (the caller's teardown), however late the
+/// host runs this process. A run nobody stops never ends here on its own; the
+/// teardown's KILL, or the caller's timeout, ends it.
+fn await_term() {
+    #[cfg(unix)]
+    {
+        let fd = TERM_READ.load(std::sync::atomic::Ordering::SeqCst);
+        let mut byte = 0u8;
+        // SAFETY: reads one byte into a live local from the pipe's read end;
+        // the loop retries a read a signal interrupted.
+        while unsafe { libc::read(fd, (&raw mut byte).cast(), 1) } != 1 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+    }
 }
 
 /// `MOCK_CODEX_*` knobs also answer to a `CODEX_MOCK_*` spelling (the
@@ -2312,6 +2421,73 @@ fn mock_var(name: &str) -> Result<String, std::env::VarError> {
         None => Err(err),
     })
 }
+
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; the refusals are codex-cli 0.163.0's own (`codex exec resume` has no `--sandbox`, and `exec resume` of a thread with no rollout prints `Error: thread/resume: thread/resume failed: no rollout found for thread id <id> (code -32600)` and exits 1, both observed of codex-cli 0.163.0 itself), and the live `oh_resume_mode_enforce` phases are the drift alarm.
+/// Act like `codex exec` over a thread store (MOCK_CODEX_THREADS): a fresh
+/// `exec` stores the `thread_id` its scripted stdout announces, and `exec
+/// resume <id>` refuses what real Codex refuses — a `--sandbox` flag (exit 2,
+/// clap's wording) and a thread with no rollout (exit 1) — before carrying on
+/// as the default path does for one it knows.
+fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
+    if argv.first().map(String::as_str) != Some("exec") {
+        return;
+    }
+    let refuse = |code: i32, message: String| -> ! {
+        let _ = writeln!(std::io::stderr(), "{message}");
+        std::process::exit(code);
+    };
+    // A thread id names a file in the store, so only an id that is one plain
+    // path component is ever joined to it.
+    let plain = |id: &str| {
+        !id.is_empty()
+            && !id.starts_with('.')
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if argv.get(1).map(String::as_str) != Some("resume") {
+        let stdout = std::env::var("MOCK_STDOUT").unwrap_or_default();
+        for line in stdout.lines() {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if let Some(id) = value["thread_id"].as_str().filter(|id| plain(id)) {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(id), "");
+            }
+        }
+        return;
+    }
+    let mut positionals = Vec::new();
+    let mut args = argv[2..].iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--sandbox" | "-s" => refuse(
+                2,
+                format!(
+                    "error: unexpected argument '{arg}' found\n\nUsage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]"
+                ),
+            ),
+            "-c" | "--config" | "-m" | "--model" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') && flag != "-" => {}
+            positional => positionals.push(positional),
+        }
+    }
+    let Some(id) = positionals.first() else {
+        refuse(2, "error: codex exec resume needs a session id".to_string());
+    };
+    if !plain(id) || !dir.join(id).is_file() {
+        refuse(
+            1,
+            format!(
+                "Error: thread/resume: thread/resume failed: no rollout found for thread id {id} (code -32600)"
+            ),
+        );
+    }
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 
 /// [`mock_var`] for a presence knob.
 fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
@@ -2329,8 +2505,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///
 /// What it imitates:
 /// - a WebSocket endpoint on the socket; a path too long for `sun_path` bound
-///   as a short target under `/tmp/codex-daemon-<uid>/` with a symlink left at
-///   the path; a second server on a live path exits 1;
+///   as a short target in Codex's rendezvous directory with a symlink left
+///   at the path; a second server on a live path exits 1;
 /// - per-thread settings, and commands run under the thread's
 ///   `shell_environment_policy` (`set` over the server's own environment, minus
 ///   `exclude`) in their own process group, outliving `turn/interrupt`;
@@ -2360,7 +2536,8 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
 ///                         thread, freed when it unloads.
 ///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
-///                         thread's environment; `rollout-env` writes thread
+///                         thread's environment (its own dispatch marker
+///                         aside); `rollout-env` writes thread
 ///                         environments into rollout files; `escape-marker`
 ///                         drops the dispatch marker from commands;
 ///                         `late-listener` (with CODEX_MOCK_SHIM) has the serving
@@ -2394,7 +2571,15 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         answer it with a non-string id or cursor;
 ///                         `refuse-initialize` refuses
 ///                         `initialize`; `never-listen` stays alive and never
-///                         binds; `stall-upgrade`
+///                         binds; `exit-at-start` writes 200 lines of
+///                         start-up chatter and then why it cannot start to
+///                         stderr, and exits 7 before binding;
+///                         `exit-silently` exits 3 before binding having
+///                         written nothing; `exit-blank` exits 5 having
+///                         written only whitespace; `exit-non-utf8` exits 9
+///                         having written more than 2 KiB that is not UTF-8,
+///                         whose last 2 KiB start inside a character;
+///                         `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it; `inheritable-connections` hands every
 ///                         command the server's end of the connection that
@@ -2545,6 +2730,36 @@ mod listen_server {
                 std::process::exit(1);
             }
         }
+        // CODEX_MOCK_FAULT=exit-at-start: say why on stderr and exit before
+        // binding, as a Codex server refusing its launch does.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-at-start") {
+            for step in 0..200 {
+                eprintln!("mock codex: warming up {step:03}");
+            }
+            eprintln!("Error: mock codex refuses to listen on {}", path.display());
+            std::process::exit(7);
+        }
+        // CODEX_MOCK_FAULT=exit-silently: exit before binding, saying nothing.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-silently") {
+            std::process::exit(3);
+        }
+        // CODEX_MOCK_FAULT=exit-blank: exit before binding, having written
+        // only whitespace.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-blank") {
+            let _ = std::io::stderr().write_all(b"  \n\t\n   \n");
+            std::process::exit(5);
+        }
+        // CODEX_MOCK_FAULT=exit-non-utf8: exit before binding, having written a
+        // stray byte, 1500 two-byte characters and a 35-byte last line holding
+        // another stray byte — so the last 2 KiB begin on a character's second
+        // byte.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-non-utf8") {
+            let mut said = vec![0xff];
+            said.extend("\u{e9}".repeat(1500).into_bytes());
+            said.extend(b"Error: mock codex: bad byte \xff here\n");
+            let _ = std::io::stderr().write_all(&said);
+            std::process::exit(9);
+        }
         // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {
             loop {
@@ -2678,8 +2893,11 @@ mod listen_server {
     }
 
     /// Bind the socket the way Codex does: a path too long for `sun_path` gets
-    /// a short target under `/tmp/codex-daemon-<uid>/` and a symlink at the
-    /// path. A path a live server answers on is refused; a stale one replaced.
+    /// a short target in Codex's rendezvous directory (`codex_daemon_dir`;
+    /// CODEX_MOCK_DAEMON_DIR instead, when set) and a symlink at the path. That
+    /// directory is created private, and one Codex would not accept is refused
+    /// at start, as Codex refuses it. A path a live server answers on
+    /// is refused; a stale one replaced.
     fn bind(path: &Path) -> UnixListener {
         if UnixStream::connect(super::dial_target(path)).is_ok() {
             let _ = writeln!(
@@ -2694,8 +2912,13 @@ mod listen_server {
             let uid = std::fs::metadata(path.parent().unwrap_or(Path::new("/")))
                 .map(|meta| meta.uid())
                 .unwrap_or(0);
-            let dir = PathBuf::from(format!("/tmp/codex-daemon-{uid}"));
-            let _ = std::fs::create_dir_all(&dir);
+            let dir = std::env::var_os("CODEX_MOCK_DAEMON_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and reading Codex's rendezvous from its one source is what keeps this model from drifting from the launch that prepares it.
+                    oneharness_core::domain::app_server::codex_daemon_dir(Path::new("/tmp"), uid)
+                });
+            daemon_dir(&dir, uid);
             let digest = path
                 .as_os_str()
                 .as_encoded_bytes()
@@ -2720,6 +2943,25 @@ mod listen_server {
             }
         }
         listener
+    }
+
+    /// Codex's socket rendezvous directory: created at the one mode Codex
+    /// accepts when absent, and refused — Codex's own message, exit 1 — when it
+    /// is not a directory owned by `uid` (the user whose socket this is) at
+    /// exactly that mode.
+    fn daemon_dir(dir: &Path, uid: u32) {
+        // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and reading Codex's rendezvous from its one source is what keeps this model from drifting from the launch that prepares it.
+        use oneharness_core::domain::app_server::CODEX_DAEMON_DIR_MODE as MODE;
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let _ = std::fs::DirBuilder::new().mode(MODE).create(dir);
+        let usable = std::fs::symlink_metadata(dir)
+            .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o777 == MODE);
+        if !usable {
+            eprintln!(
+                "Error: app-server socket directory must be a user-owned directory with mode 0700"
+            );
+            std::process::exit(1);
+        }
     }
 
     /// Download `BYTES` generated bytes from the network tests' loopback
@@ -3945,19 +4187,26 @@ mod listen_server {
             );
             return;
         }
+        let own = s
+            .threads
+            .get(thread_id)
+            .map(|t| t.settings.clone())
+            .unwrap_or_default();
         // leak-env: every command under the first thread this server opened,
-        // whichever dispatch's thread it is running for.
+        // whichever dispatch's thread it is running for — all but the dispatch
+        // marker, which stays the command's own. A command wearing the first
+        // dispatch's marker would be stopped with that dispatch whenever it
+        // finished first, and end with no output to show the leak in.
         let settings = match (s.fault.as_str(), s.first_opened.clone()) {
             ("leak-env", Some(first)) => s.known.get(&first).cloned().unwrap_or_default(),
-            _ => s
-                .threads
-                .get(thread_id)
-                .map(|t| t.settings.clone())
-                .unwrap_or_default(),
+            _ => own.clone(),
         };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.retain(|name, _| !settings.exclude.iter().any(|excluded| excluded == name));
         env.extend(settings.set.clone());
+        if let Some(marker) = own.set.get("ONEHARNESS_DISPATCH_MARKER") {
+            env.insert("ONEHARNESS_DISPATCH_MARKER".to_string(), marker.clone());
+        }
         if s.fault == "escape-marker" {
             env.remove("ONEHARNESS_DISPATCH_MARKER");
         }

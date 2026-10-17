@@ -287,4 +287,373 @@ wait "$alive" 2>/dev/null || true
 _oh_control_wait_settled "$settled_tmp" "$alive" ||
   fail "a run that has exited must end the wait rather than being waited out"
 
+# Where a control phase makes its sandbox. Under a temp dir as long as macOS's
+# resolved /private/var/folders/<..>/T, the socket the longest-named phase opens
+# would pass the 104-byte sun_path (NUL included) every platform must meet, as
+# every harness's --control refused on macOS CI; the sandbox moves to /tmp and
+# the socket fits. Under a short temp dir it stays where the host put it.
+long_tmp="$settled_tmp/var-folders-n6-hn37q6pj7sj_9dmqqc2113800000gn-T"
+mkdir -p "$long_tmp" || fail "cannot create the long temp dir $long_tmp"
+long_tmp="$(cd "$long_tmp" && pwd -P)" || fail "cannot resolve the long temp dir $long_tmp"
+socket_len() {
+  local socket
+  local dir
+  dir="$(cd "$1" && pwd -P)" || fail "cannot resolve $1"
+  socket="$dir/store/control/model-claude-code.sock"
+  printf '%s' "${#socket}"
+}
+moved="" short_tmp=""
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" ||
+  echo "check-control-enforce: could not remove its scratch ($evidence_tmp $crlf_sort_dir $settled_tmp $moved $short_tmp); delete them by hand" >&2' EXIT
+in_place="$(mktemp -d "$long_tmp/tmp.XXXXXXXXXX")" || fail "cannot create a sandbox in place under $long_tmp"
+moved="$(TMPDIR="$long_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a long temp dir"
+short_tmp="$(mktemp -d /tmp/oh.XXXXXX)" || fail "cannot create a short temp dir under /tmp"
+kept="$(TMPDIR="$short_tmp" oh_socket_sandbox)" || fail "oh_socket_sandbox could not make a sandbox under a short temp dir"
+[ "$(socket_len "$in_place")" -ge 104 ] ||
+  fail "the long temp dir case is vacuous: a sandbox made in place already fits ($(socket_len "$in_place") bytes)"
+[ "$(socket_len "$moved")" -lt 104 ] ||
+  fail "a control phase's socket under a long temp dir is $(socket_len "$moved") bytes, past the 104-byte sun_path: $moved"
+case "$moved" in
+  "$long_tmp"/*) fail "a sandbox under a long temp dir stayed there: $moved" ;;
+esac
+case "$kept" in
+  "$short_tmp"/*) ;;
+  *) fail "a sandbox under a short temp dir left it: $kept" ;;
+esac
+
+# The bound the control phases put on a run. macOS has no `timeout`, so with it
+# hidden from PATH the perl fallback runs — as on macOS CI, where every phase
+# calling bare `timeout` failed before its harness ran. On either branch a run
+# that ends in time keeps its own status and environment, and one that outlives
+# its deadline is stopped there and ends with 124, or, ignoring the TERM, is
+# KILLed after the grace and ends with 137.
+no_timeout="$settled_tmp/no-timeout-bin"
+mkdir "$no_timeout" || fail "cannot create $no_timeout"
+for tool in perl sh sleep; do
+  path="$(command -v "$tool")" || fail "$tool is not on PATH, so the deadline cases cannot run"
+  ln -s "$path" "$no_timeout/$tool" || fail "cannot link $tool into $no_timeout"
+done
+deadline_case() {
+  local branch="$1" status=0 out started elapsed
+  # shellcheck disable=SC2016 # expanded by the child shell, from the environment it was given
+  out="$(OH_DEADLINE_SEEN=kept oh_deadline 10 sh -c 'printf %s "$OH_DEADLINE_SEEN"; exit 3')" || status=$?
+  [ "$status" -eq 3 ] || fail "$branch: a run that ended in time reported $status, not its own 3"
+  [ "$out" = kept ] || fail "$branch: a run that ended in time saw '$out' for the variable it was given"
+  status=0
+  started=$SECONDS
+  oh_deadline 1 sleep 20 || status=$?
+  elapsed=$((SECONDS - started))
+  [ "$status" -eq 124 ] || fail "$branch: a run past its deadline ended $status, not 124"
+  [ "$elapsed" -le 5 ] || fail "$branch: a 1 s deadline let the run go on for ${elapsed}s"
+  # One that ignores the TERM is KILLed once the grace has passed.
+  status=0
+  started=$SECONDS
+  # shellcheck disable=SC2016 # the program is perl's, expanded by perl
+  OH_DEADLINE_KILL_AFTER=1 oh_deadline 1 perl -e '$SIG{TERM} = "IGNORE"; sleep 20' 2>/dev/null || status=$?
+  elapsed=$((SECONDS - started))
+  [ "$status" -eq 137 ] || fail "$branch: a run that ignored the TERM ended $status, not 137"
+  [ "$elapsed" -le 6 ] || fail "$branch: a run that ignored the TERM went on for ${elapsed}s past a 1 s deadline and 1 s grace"
+  # A grace that is not whole seconds from 1 is refused before anything runs.
+  for grace in "" 0 00 05 3s -1; do
+    status=0
+    OH_DEADLINE_KILL_AFTER="$grace" oh_deadline 1 sh -c 'echo ran' 2>/dev/null || status=$?
+    [ "$status" -eq 2 ] || fail "$branch: a kill grace of '$grace' was not refused (ended $status)"
+  done
+}
+(
+  PATH="$no_timeout"
+  ! command -v timeout >/dev/null 2>&1 || fail "timeout is still on the hidden PATH"
+  deadline_case "without timeout"
+) || exit 1
+if command -v timeout >/dev/null 2>&1; then
+  deadline_case "with timeout"
+fi
+
+# What a resumed turn that ran into its bound was doing. The live resume phase
+# once spent 300 s on a turn that said nothing, and a timeout alone cannot tell a
+# stalled model stream from a resume codex never took — so each reading below is
+# the frames such a turn leaves, read back into the one line the phase prints.
+silent_case() {
+  local description="$1" needle="$2" frames="$3" reading
+  jq -n --arg out "$frames" '{results: [{status: "timeout", stdout: $out}]}' >"$evidence_tmp/silent.json" ||
+    fail "$description: could not write the fixture report under $evidence_tmp (is jq installed and the temp dir writable?)"
+  reading="$(_oh_silent_turn_reading "$evidence_tmp/silent.json")"
+  case "$reading" in
+    *"$needle"*) ;;
+    *) fail "$description: the reading was '$reading', not one naming '$needle'" ;;
+  esac
+}
+silent_case "a turn that sent nothing" "never announced the thread" ""
+silent_case "a resume that never started a turn" "never started the turn" \
+  '{"type":"thread.started","thread_id":"t"}'
+silent_case "a stalled model stream" "a stalled model stream" \
+  "$(printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.started"}')"
+silent_case "a command that never finished" "never finished: touch resume-auto.txt" \
+  "$(printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.started"}' \
+    '{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"touch resume-auto.txt"}}')"
+silent_case "a command that finished before the stall" "a stalled model stream" \
+  "$(printf '%s\n' '{"type":"thread.started","thread_id":"t"}' '{"type":"turn.started"}' \
+    '{"type":"item.started","item":{"id":"i0","type":"command_execution","command":"touch x"}}' \
+    '{"type":"item.completed","item":{"id":"i0","type":"command_execution","command":"touch x"}}')"
+
+# The control phase end to end, against an agent that works as fast as a shell
+# can and would batch everything it could: goose finished all 60 steps of a
+# paced workload in 15 s, three attempts running, so the phase never had a turn
+# in flight to interrupt. Driven through `oh_control_enforce` with a
+# stand-in `oneharness` whose agent runs whatever the prompt says — the chain of
+# held steps when the prompt names one, otherwise every step file at once, the
+# way that goose turn did. One agent stops at the interrupt; one carries on.
+agent_dir="$(mktemp -d /tmp/oh-ctl.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" ||
+  echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
+cat >"$agent_dir/oneharness" <<'AGENT' || fail "could not write the fake agent into $agent_dir; check that /tmp is writable"
+#!/usr/bin/env bash
+# Stands in for `oneharness run --control` driving an agent, and for
+# `oneharness interrupt`. FAKE_AGENT_HONORS=1: an interrupt stops the agent and
+# kills its in-flight tool call; anything else: the agent ignores it.
+set -euo pipefail
+cmd="$1"
+shift
+name="" store="" cwd="" prompt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session) name="$2" && shift 2 ;;
+    --session-dir) store="$2" && shift 2 ;;
+    --cwd) cwd="$2" && shift 2 ;;
+    --prompt) prompt="$2" && shift 2 ;;
+    *) shift ;;
+  esac
+done
+# The fixture's own failures, named, so the check that drove it can say why.
+die() {
+  echo "fake agent: $*; check that /tmp is writable and rerun scripts/check-control-enforce.sh" >&2
+  exit 1
+}
+flag="$store/control/$name.interrupted"
+if [ "$cmd" = interrupt ]; then
+  : >"$flag" || die "cannot record the interrupt at $flag"
+  printf '{"ok":true,"mechanism":"fake-mechanism"}\n'
+  exit 0
+fi
+mkdir -p "$store/control" || die "cannot create $store/control"
+socket="$store/control/$name.sock"
+perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "$!\n"' "$socket" ||
+  die "cannot open a control socket at $socket"
+cd "$cwd" || die "cannot enter $cwd"
+# The first step command a text names, or nothing.
+token() { sed -n 's/.*sh ohstep\.sh \([0-9a-f]*\).*/\1/p' | sed -n 1p; }
+tok="$(printf '%s' "$prompt" | token)"
+if [ -z "$tok" ]; then
+  for ((n = 1; n <= 60; n++)); do
+    : >"$(printf 'step-%03d.txt' "$n")" || die "cannot write step file $n in $cwd"
+  done
+  sleep 2
+fi
+while [ -n "$tok" ]; do
+  sh ohstep.sh "$tok" >agent.out 2>&1 &
+  call=$!
+  while kill -0 "$call" 2>/dev/null; do
+    if [ -e "$flag" ] && [ "${FAKE_AGENT_HONORS:-}" = 1 ]; then
+      kill "$call" 2>/dev/null || true
+      # Killed, so it ends non-zero: that is the point.
+      wait "$call" 2>/dev/null || true
+      break 2
+    fi
+    sleep 0.1
+  done
+  if ! wait "$call"; then
+    die "step $tok failed, saying: $(cat agent.out 2>/dev/null || echo '<nothing readable>')"
+  fi
+  tok="$(token <agent.out)"
+done
+rm -f "$socket" || die "cannot remove $socket"
+outcome=none
+if [ -e "$flag" ]; then
+  outcome=served
+fi
+printf '{"results":[{"status":"ok"}],"control":{"interrupts":[{"outcome":"%s"}]},"session":{"token":"t"}}\n' "$outcome"
+AGENT
+chmod +x "$agent_dir/oneharness" || fail "could not make $agent_dir/oneharness executable; check that /tmp allows it"
+agent_case() {
+  local honors="$1"
+  status=0
+  out="$(TMPDIR=/tmp ONEHARNESS_BIN="$agent_dir/oneharness" FAKE_AGENT_HONORS="$honors" \
+    _OH_CONTROL_FREEZE_SECONDS=2 oh_control_enforce fake fake-mechanism 2>&1)" || status=$?
+}
+out=""
+agent_case 1
+[ "$status" -eq 0 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a fast agent that stops at the interrupt did not pass the control phase (returned $status)"
+}
+case "$out" in
+  *"work frozen at 2 step files"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a fast agent that stops at the interrupt was not held at step 2"
+    ;;
+esac
+agent_case 0
+[ "$status" -eq 1 ] || {
+  printf '%s\n' "$out" >&2
+  fail "an agent that ignores the interrupt was not failed (returned $status)"
+}
+case "$out" in
+  *"work did NOT stop"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "an agent that ignores the interrupt failed for some other reason"
+    ;;
+esac
+
+# The resume phase's answer to a silent turn, end to end: a resumed turn that
+# runs into its bound fails naming what its frames say it was doing — never
+# blamed on the resume argv, which is what this phase said of the macOS turn
+# that spent all 300 s on a stalled stream. A stand-in `oneharness` answers the
+# phase's turns: turn one creates the session, and the resumed turn reports a
+# timeout (a thread and a turn started, then nothing) the first
+# FAKE_RESUME_SILENT times, then runs — touching the file it was asked to and
+# recalling the word.
+resume_dir="$(mktemp -d /tmp/oh-resume.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" ||
+  echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
+cat >"$resume_dir/oneharness" <<'RESUME' || fail "could not write the fake oneharness into $resume_dir; check that /tmp is writable"
+#!/usr/bin/env bash
+set -euo pipefail
+shift
+prompt="" session="" store="" cwd=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prompt) prompt="$2" && shift 2 ;;
+    --session) session="$2" && shift 2 ;;
+    --session-dir) store="$2" && shift 2 ;;
+    --cwd) cwd="$2" && shift 2 ;;
+    *) shift ;;
+  esac
+done
+die() {
+  echo "fake oneharness: $*; check that /tmp is writable and rerun scripts/check-control-enforce.sh" >&2
+  exit 3
+}
+mkdir -p "$store" || die "cannot create $store"
+word="$store/$session.word"
+if [ ! -e "$word" ]; then
+  printf '%s' "$prompt" | sed -n 's/.*for the rest of our conversation: \([A-Z0-9]*\)\..*/\1/p' >"$word" ||
+    die "cannot store the word turn one established in $word"
+  jq -n '{results: [{status: "ok", command: ["codex", "exec"], text: "OK"}], session: {phase: "create", token: "th-1"}}'
+  exit 0
+fi
+count="$store/$session.resumes"
+n=0
+if [ -e "$count" ]; then
+  n="$(cat "$count")" || die "cannot read the resume count in $count"
+fi
+n=$((n + 1))
+echo "$n" >"$count" || die "cannot write the resume count to $count"
+if [ "$n" -le "${FAKE_RESUME_SILENT:-0}" ]; then
+  jq -n '{results: [{status: "timeout", command: ["codex", "exec", "resume"], stdout: "{\"type\":\"thread.started\",\"thread_id\":\"th-1\"}\n{\"type\":\"turn.started\"}"}], session: {phase: "continue", token: "th-1"}}'
+  exit 1
+fi
+file="$(printf '%s' "$prompt" | sed -n 's/.*in the current directory: touch \([^;]*\);.*/\1/p')"
+: >"$cwd/$file" || die "cannot touch $cwd/$file"
+recalled="$(cat "$word")" || die "cannot read $word"
+jq -n --arg word "$recalled" '{results: [{status: "ok", command: ["codex", "exec", "resume"], text: $word}], session: {phase: "continue", token: "th-1"}}'
+RESUME
+chmod +x "$resume_dir/oneharness" || fail "could not make $resume_dir/oneharness executable; check that /tmp allows it"
+resume_case() {
+  local silent="$1"
+  status=0
+  out="$(ONEHARNESS_BIN="$resume_dir/oneharness" FAKE_RESUME_SILENT="$silent" TMPDIR=/tmp OH_TIMEOUT='' \
+    oh_resume_mode_enforce fakecodex auto 2>&1)" || status=$?
+}
+resume_case 0
+[ "$status" -eq 0 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resumed turn that ran was not passed (returned $status)"
+}
+resume_case 1
+[ "$status" -eq 1 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a resumed turn that ran into its bound was not failed (returned $status)"
+}
+case "$out" in
+  *"ran into its 420s bound: the turn started and the model sent nothing more"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a resumed turn that ran into its bound failed without naming what it was doing"
+    ;;
+esac
+case "$out" in
+  *argv_codex*)
+    printf '%s\n' "$out" >&2
+    fail "a resumed turn that ran into its bound was blamed on the resume argv"
+    ;;
+esac
+
+# The stalling endpoint `oh_resume_stall_enforce` points real codex at. Its
+# verdict rests on the endpoint stalling exactly one model request and serving
+# the retry — never a websocket warmup, which codex abandons and carries on —
+# and on its websocket handshake being one codex accepts (RFC 6455's own
+# example key and accept value).
+endpoint_dir="$(mktemp -d /tmp/oh-stall.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
+trap 'kill "${endpoint_pid:-}" 2>/dev/null || true; rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" "$resume_dir" "$endpoint_dir" ||
+  echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
+python3 -I "$root/scripts/codex-stall-endpoint.py" "$endpoint_dir" >"$endpoint_dir/endpoint.log" 2>&1 &
+endpoint_pid=$!
+_oh_wait_for 15 test -s "$endpoint_dir/port" ||
+  fail "the stalling endpoint never wrote its port: $(cat "$endpoint_dir/endpoint.log" 2>/dev/null)"
+endpoint_port="$(_oh_port_in "$endpoint_dir/port")" ||
+  fail "the stalling endpoint's port file does not hold one TCP port (said above)"
+# The port reader the phase dials with refuses anything but one TCP port.
+for bad in "" 0 080 65536 "12 34" "1x"; do
+  printf '%s\n' "$bad" >"$endpoint_dir/bad-port" || fail "could not write $endpoint_dir/bad-port"
+  ! _oh_port_in "$endpoint_dir/bad-port" >/dev/null 2>&1 || fail "the port reader accepted '$bad'"
+done
+endpoint="http://127.0.0.1:$endpoint_port/v1/responses"
+printf 'stall-next\n' >"$endpoint_dir/mode" || fail "could not arm the endpoint's stall in $endpoint_dir/mode"
+# One POST, failing the check unless curl ends as expected: 0 when the endpoint
+# serves, 28 (its time limit) when it is meant to be holding the response.
+# Anything else is a connection or protocol failure, reported as curl's own.
+#   $1 time limit, $2 body, $3 the exit curl must end with
+post() {
+  local status=0 out
+  out="$(curl -sS --max-time "$1" -H 'content-type: application/json' -d "$2" "$endpoint" 2>&1)" || status=$?
+  [ "$status" -eq "$3" ] ||
+    fail "curl ended $status, not $3, posting $2 to the stalling endpoint: $out (its log: $endpoint_dir/endpoint.log)"
+  printf '%s' "$out"
+}
+# A body that is not a Responses request is refused, and does not spend the
+# armed stall: only a model request may consume it.
+case "$(post 5 '[]' 0)" in
+  *"a Responses request is a JSON object"*) ;;
+  *) fail "the endpoint answered a body that is not a JSON object as if it were a model request" ;;
+esac
+case "$(post 5 '{"generate":false}' 0)" in
+  *response.completed*) ;;
+  *) fail "the endpoint stalled a warmup, which codex abandons, so the stall would prove nothing" ;;
+esac
+case "$(post 2 '{"input":[]}' 28)" in
+  *response.completed*) fail "the endpoint served the model request it was armed to stall" ;;
+  *response.created*) ;;
+  *) fail "the endpoint's stalled request did not even announce its response" ;;
+esac
+case "$(post 5 '{"input":[]}' 0)" in
+  *response.completed*) ;;
+  *) fail "the endpoint did not serve the request after its one stall, so codex's retry would stall too" ;;
+esac
+[ "$(awk '{print $2, $3, $4}' "$endpoint_dir/requests.log" | tr '\n' ';')" = "sse warmup serve;sse request stall;sse request serve;" ] ||
+  fail "the endpoint's request log was not warmup served, request stalled, request served: $(cat "$endpoint_dir/requests.log")"
+# The upgraded socket stays open, so curl ends on its time limit (28) having
+# read the handshake; any other ending is the probe failing, not the endpoint.
+handshake_status=0
+handshake="$(curl -sS -i --max-time 2 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
+  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$endpoint" 2>&1)" || handshake_status=$?
+[ "$handshake_status" -eq 28 ] ||
+  fail "the websocket probe's curl ended $handshake_status, not 28 (its time limit on the open socket): $handshake"
+accept="$(printf '%s\n' "$handshake" | tr -d '\r' | awk -F': ' 'tolower($1) == "sec-websocket-accept" { print $2 }')"
+[ "$accept" = "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=" ] ||
+  fail "the endpoint's websocket accept was '$accept', not RFC 6455's s3pPLMBiTxaQ9kYGzzhZRbK+xOo=, so codex would refuse the transport it uses by default"
+kill "$endpoint_pid" 2>/dev/null || true
+wait "$endpoint_pid" 2>/dev/null || true
+
 echo "check-control-enforce: ok"

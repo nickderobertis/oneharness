@@ -3268,7 +3268,12 @@ _oh_control_enforce_once() {
   # has had time to land, then again after the freeze window.
   local window="${_OH_CONTROL_FREEZE_SECONDS:-15}"
   sleep 3
-  _oh_gated_release_all "$sandbox"
+  if ! _oh_gated_release_all "$sandbox"; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the held steps could not be released, so whether the interrupt stopped the work cannot be read"
+  fi
   sleep 2
   frozen="$(_oh_step_count "$sandbox")"
   if [ "$frozen" -gt $((count + 1)) ]; then
@@ -3527,7 +3532,12 @@ _oh_control_redirect_enforce_once() {
   # Sampled then, and again once the redirected work is done: the redirected
   # turn must not be the old one carrying on.
   sleep 5
-  _oh_gated_release_all "$sandbox"
+  if ! _oh_gated_release_all "$sandbox"; then
+    kill "$run_pid" 2>/dev/null || true
+    wait "$run_pid" 2>/dev/null || true
+    rm -rf "$sandbox"
+    fail "$id: the held steps could not be released, so whether the interrupt stopped the work cannot be read"
+  fi
   sleep 2
   frozen="$(_oh_step_count "$sandbox")"
   if [ "$frozen" -gt $((count + 1)) ]; then
@@ -3632,25 +3642,33 @@ _oh_gated_workload() {
   local sandbox="$1" steps="$2" gate n tok next=""
   gate="$sandbox/.ohgate"
   mkdir "$gate" || return
-  cat >"$sandbox/ohstep.sh" <<'STEP'
+  cat >"$sandbox/ohstep.sh" <<'STEP' || return
 # One step of a oneharness control-phase fixture; see `_oh_gated_workload`.
-dir=$(cd "$(dirname "$0")" && pwd) || exit 1
+set -eu
+die() {
+  echo "ohstep: $2" >&2
+  exit "$1"
+}
+dir=$(cd "$(dirname "$0")" && pwd) || die 1 "cannot find the directory this step lives in"
 gate="$dir/.ohgate"
 case "${1:-}" in
-  "" | *[!0-9a-f]*) echo "ohstep: '${1:-}' is not a step token; run exactly the command the previous step printed" >&2 && exit 2 ;;
+  "" | *[!0-9a-f]*) die 2 "'${1:-}' is not a step token; run exactly the command the previous step printed" ;;
 esac
-[ -f "$gate/token-$1" ] || { echo "ohstep: no step has token '$1'; run exactly the command the previous step printed" >&2 && exit 2; }
-n=$(cat "$gate/token-$1")
-: >"$gate/started-$n"
+[ -f "$gate/token-$1" ] || die 2 "no step has token '$1'; run exactly the command the previous step printed"
+n=$(cat "$gate/token-$1") || die 1 "cannot read the step token '$1'"
+: >"$gate/started-$n" || die 1 "cannot record that step $n started"
 waited=0
 while [ ! -e "$gate/release-$n" ] && [ ! -e "$gate/release-all" ]; do
-  [ -d "$gate" ] && [ "$waited" -lt 600 ] || { echo "ohstep: step $n was never released" >&2 && exit 3; }
+  if [ ! -d "$gate" ] || [ "$waited" -ge 600 ]; then
+    die 3 "step $n was never released"
+  fi
   sleep 1
   waited=$((waited + 1))
 done
-: >"$dir/step-$n.txt"
+: >"$dir/step-$n.txt" || die 1 "cannot write step-$n.txt"
 if [ -f "$gate/next-$n" ]; then
-  echo "step $n done. Next, run: sh ohstep.sh $(cat "$gate/next-$n")"
+  next=$(cat "$gate/next-$n") || die 1 "cannot read the token after step $n"
+  echo "step $n done. Next, run: sh ohstep.sh $next"
 else
   echo "step $n done. That was the last step."
 fi
@@ -3658,20 +3676,27 @@ STEP
   # Built from the last step back, so each token can name its successor.
   for ((n = steps; n >= 1; n--)); do
     tok="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
-    printf '%03d\n' "$n" >"$gate/token-$tok"
-    [ -z "$next" ] || printf '%s\n' "$next" >"$gate/next-$(printf '%03d' "$n")"
+    printf '%03d\n' "$n" >"$gate/token-$tok" || return
+    if [ -n "$next" ]; then
+      printf '%s\n' "$next" >"$gate/next-$(printf '%03d' "$n")" || return
+    fi
     next="$tok"
   done
-  : >"$gate/release-001"
-  : >"$gate/release-002"
+  : >"$gate/release-001" || return
+  : >"$gate/release-002" || return
   printf 'sh ohstep.sh %s' "$next"
 }
 
 # Let every step run, blocked or not yet started. A phase calls it once an
 # interrupt has had its beat: a turn that ignored the interrupt was only ever
 # waiting on its blocked step, and released it carries on where a count can see.
+# Fails, saying so, when the release cannot be written: a phase that went on
+# would read a turn still waiting on its held step as one the interrupt froze.
 _oh_gated_release_all() {
-  : >"$1/.ohgate/release-all"
+  : >"$1/.ohgate/release-all" || {
+    echo "could not release the held steps in $1/.ohgate; check the sandbox is still writable" >&2
+    return 1
+  }
 }
 
 # The prompt that drives the chain `_oh_gated_workload` wrote.

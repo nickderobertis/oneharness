@@ -410,7 +410,7 @@ cat >"$agent_dir/oneharness" <<'AGENT'
 # Stands in for `oneharness run --control` driving an agent, and for
 # `oneharness interrupt`. FAKE_AGENT_HONORS=1: an interrupt stops the agent and
 # kills its in-flight tool call; anything else: the agent ignores it.
-set -u
+set -euo pipefail
 cmd="$1"
 shift
 name="" store="" cwd="" prompt=""
@@ -431,9 +431,10 @@ if [ "$cmd" = interrupt ]; then
 fi
 mkdir -p "$store/control"
 socket="$store/control/$name.sock"
-perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "$!\n"' "$socket" || exit 1
-cd "$cwd" || exit 1
-token() { sed -n 's/.*sh ohstep\.sh \([0-9a-f]*\).*/\1/p' | head -n 1; }
+perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "$!\n"' "$socket"
+cd "$cwd"
+# The first step command a text names, or nothing.
+token() { sed -n 's/.*sh ohstep\.sh \([0-9a-f]*\).*/\1/p' | sed -n 1p; }
 tok="$(printf '%s' "$prompt" | token)"
 if [ -z "$tok" ]; then
   for n in $(seq -f '%03g' 1 60); do : >"step-$n.txt"; done
@@ -444,18 +445,22 @@ while [ -n "$tok" ]; do
   call=$!
   while kill -0 "$call" 2>/dev/null; do
     if [ -e "$flag" ] && [ "${FAKE_AGENT_HONORS:-}" = 1 ]; then
-      kill "$call" 2>/dev/null
-      wait "$call" 2>/dev/null
+      kill "$call" 2>/dev/null || true
+      # Killed, so it ends non-zero: that is the point.
+      wait "$call" 2>/dev/null || true
       break 2
     fi
     sleep 0.1
   done
-  wait "$call" 2>/dev/null
+  # A step that failed prints no next command, which ends the chain.
+  wait "$call" 2>/dev/null || true
   tok="$(token <agent.out)"
 done
 rm -f "$socket"
 outcome=none
-[ -e "$flag" ] && outcome=served
+if [ -e "$flag" ]; then
+  outcome=served
+fi
 printf '{"results":[{"status":"ok"}],"control":{"interrupts":[{"outcome":"%s"}]},"session":{"token":"t"}}\n' "$outcome"
 AGENT
 chmod +x "$agent_dir/oneharness"

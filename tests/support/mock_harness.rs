@@ -11,10 +11,11 @@
 //!   MOCK_STDERR     bytes written to stderr
 //!   MOCK_EXIT       process exit code (default: 0)
 //!   MOCK_EXIT_<n>   with MOCK_ATTEMPT_FILE, process exit code for attempt n
-//!   MOCK_EXIT_WORK_MS  once the answer is written, spend this long exiting —
-//!                   the work an exit does (under coverage, writing the
-//!                   profile) — before exiting; with MOCK_EXIT_MARK, then write
-//!                   `exited` there, so a test sees that exit run to its end
+//!   MOCK_EXIT_MARK  once the answer is written, hold the exit — the work an
+//!                   exit does (under coverage, writing the profile) — until a
+//!                   TERM arrives, then write `exited` to this path and exit,
+//!                   so a test sees a TERM land mid-exit and that exit still
+//!                   run to its end (Unix; elsewhere it is written at once)
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
@@ -2320,22 +2321,82 @@ pub fn run() -> ! {
 /// grace; KILL still ends one that outlives it.
 fn finish(code: i32) -> ! {
     hold_term();
-    if let Some(ms) = millis_knob("MOCK_EXIT_WORK_MS") {
-        std::thread::sleep(std::time::Duration::from_millis(ms));
-        if let Some(mark) = std::env::var_os("MOCK_EXIT_MARK") {
-            let _ = std::fs::write(mark, "exited\n");
-        }
+    if let Some(mark) = std::env::var_os("MOCK_EXIT_MARK") {
+        await_term();
+        let _ = std::fs::write(mark, "exited\n");
     }
     std::process::exit(code)
 }
 
+/// The pipe [`note_term`] writes to when `MOCK_EXIT_MARK` holds the exit open
+/// for a TERM, read by [`await_term`]; `-1` until [`hold_term`] opens it.
+#[cfg(unix)]
+static TERM_READ: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+#[cfg(unix)]
+static TERM_WRITE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
 /// From here on TERM no longer ends this process ([`finish`] says why). Set
 /// only once the mock starts no further child, which would inherit it.
+///
+/// With `MOCK_EXIT_MARK`, TERM is noted rather than ignored, so the held exit
+/// learns of it without a timer: one that waited a fixed time instead would
+/// pass or fail on whether the host scheduled it inside the caller's grace.
 fn hold_term() {
     #[cfg(unix)]
-    // SAFETY: installs the ignore disposition for one signal; no handler runs.
-    unsafe {
-        libc::signal(libc::SIGTERM, libc::SIG_IGN);
+    {
+        use std::sync::atomic::Ordering;
+        if std::env::var_os("MOCK_EXIT_MARK").is_none() {
+            // SAFETY: installs the ignore disposition for one signal.
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+            return;
+        }
+        if TERM_READ.load(Ordering::SeqCst) != -1 {
+            return;
+        }
+        let mut fds = [-1; 2];
+        // SAFETY: `fds` is a two-element array `pipe` fills on success.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            refuse(&format!(
+                "MOCK_EXIT_MARK could not open its TERM pipe: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        TERM_WRITE.store(fds[1], Ordering::SeqCst);
+        TERM_READ.store(fds[0], Ordering::SeqCst);
+        // SAFETY: `note_term` only loads an atomic and calls `write`, both
+        // async-signal-safe.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = note_term as extern "C" fn(libc::c_int) as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn note_term(_: libc::c_int) {
+    let fd = TERM_WRITE.load(std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: one byte from a live buffer to the pipe `hold_term` opened.
+    unsafe { libc::write(fd, b"t".as_ptr().cast(), 1) };
+}
+
+/// Block until a TERM has arrived (the caller's teardown), however late the
+/// host runs this process. A run nobody stops never ends here on its own; the
+/// teardown's KILL, or the caller's timeout, ends it.
+fn await_term() {
+    #[cfg(unix)]
+    {
+        let fd = TERM_READ.load(std::sync::atomic::Ordering::SeqCst);
+        let mut byte = 0u8;
+        // SAFETY: reads one byte into a live local from the pipe's read end;
+        // the loop retries a read a signal interrupted.
+        while unsafe { libc::read(fd, (&raw mut byte).cast(), 1) } != 1 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break;
+            }
+        }
     }
 }
 

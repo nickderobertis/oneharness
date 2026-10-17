@@ -1415,8 +1415,10 @@ fn the_controlled_streaming_entry_points_stream_an_uncontrolled_job() {
 /// whose whole answer is already written, is exiting. The teardown that
 /// follows must let that exit run to its end and reap the child before the
 /// call returns: an exit cut short by TERM is, under coverage, a truncated
-/// profile that fails the suite's merge. `MOCK_EXIT_WORK_MS` stands in for the
-/// profile write, so this holds on an uninstrumented build too.
+/// profile that fails the suite's merge. `MOCK_EXIT_MARK` holds the mock's
+/// exit until the teardown's TERM arrives — standing in for the profile write
+/// on an uninstrumented build too — so the TERM lands mid-exit by
+/// construction, and no timed exit races the grace on a slow host.
 #[cfg(unix)]
 #[test]
 fn a_stopped_job_lets_its_exiting_child_finish_before_returning() {
@@ -1428,8 +1430,6 @@ fn a_stopped_job_lets_its_exiting_child_finish_before_returning() {
         env: vec![
             ("MOCK_STDOUT".to_string(), "five\nsix\n".to_string()),
             ("ONEHARNESS_NO_CONFIG".to_string(), "1".to_string()),
-            // Well inside the teardown's grace before KILL.
-            ("MOCK_EXIT_WORK_MS".to_string(), "30".to_string()),
             ("MOCK_EXIT_MARK".to_string(), mark.display().to_string()),
         ],
         env_remove: Vec::new(),
@@ -1451,6 +1451,7 @@ fn a_stopped_job_lets_its_exiting_child_finish_before_returning() {
     assert_eq!(
         exited.as_deref(),
         Some("exited\n"),
-        "the stopped job's teardown cut its child's exit short"
+        "the stopped job's teardown cut its child's exit short (the call took {:?} ms)",
+        capture.duration_ms
     );
 }

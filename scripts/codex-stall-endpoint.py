@@ -114,18 +114,14 @@ class State:
         self.lock = threading.Lock()
         self.count = 0
 
-    def decide(self, transport: Transport, body: bytes) -> Decision:
+    def decide(self, transport: Transport, request: dict[str, object], size: int) -> Decision:
         """This request's number and whether it stalls, consuming a `stall-next`.
 
         A websocket warmup (`"generate": false`, which Codex sends before each
         turn's request on that transport) is always served: stalling it tests
         nothing, because Codex abandons a warmup and carries on.
         """
-        try:
-            request = json.loads(body)
-        except ValueError:
-            request = {}
-        warmup = isinstance(request, dict) and request.get("generate") is False
+        warmup = request.get("generate") is False
         with self.lock:
             self.count += 1
             mode_file = self.root / "mode"
@@ -136,8 +132,22 @@ class State:
                 mode = Mode.STALL
             with (self.root / "requests.log").open("a") as log:
                 kind = "warmup" if warmup else "request"
-                log.write(f"{time.time():.3f} {transport.value} {kind} {mode.value} {len(body)}\n")
+                log.write(f"{time.time():.3f} {transport.value} {kind} {mode.value} {size}\n")
             return Decision(self.count, mode)
+
+
+def parse_request(body: bytes) -> dict[str, object] | None:
+    """A Responses request: a JSON object, or None for anything else."""
+    try:
+        request = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(request, dict):
+        return None
+    fields: dict[str, object] = {}
+    for key, value in request.items():
+        fields[str(key)] = value
+    return fields
 
 
 def created(number: int) -> Event:
@@ -177,12 +187,16 @@ def read_exactly(conn: socket.socket, n: int) -> bytes | None:
 
 def read_frame(conn: socket.socket) -> Frame | None:
     """One client frame, unmasked, or None once the peer is gone or broke the
-    protocol: a client frame must be masked (RFC 6455 5.1) and no larger than
-    MAX_BODY."""
+    protocol: a client frame must be masked (RFC 6455 5.1), set no reserved
+    bit, and be no larger than MAX_BODY. Codex sends each request as one
+    final frame, so a fragment (FIN unset) is refused rather than reassembled,
+    as is a control frame over 125 bytes (RFC 6455 5.5)."""
     head = read_exactly(conn, 2)
-    if head is None or not head[1] & 0x80:
+    if head is None or not head[1] & 0x80 or head[0] & 0x70 or not head[0] & 0x80:
         return None
     opcode, length = head[0] & 0x0F, head[1] & 0x7F
+    if opcode & 0x8 and length > 125:
+        return None
     if length in (126, 127):
         raw = read_exactly(conn, 2 if length == 126 else 8)
         if raw is None:
@@ -216,7 +230,7 @@ def websocket_accept(key: str | None) -> str | None:
     try:
         if len(base64.b64decode(key, validate=True)) != 16:
             return None
-    except binascii.Error:
+    except (binascii.Error, ValueError):
         return None
     # RFC 6455 fixes SHA-1 for the handshake; it protects nothing here.
     digest = hashlib.sha1((key + WS_GUID).encode(), usedforsecurity=False).digest()
@@ -265,7 +279,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 continue
             if frame.opcode != Opcode.TEXT:
                 continue
-            decision = self.state.decide(Transport.WEBSOCKET, frame.payload)
+            request = parse_request(frame.payload)
+            if request is None:
+                send_frame(conn, Opcode.CLOSE, struct.pack("!H", 1007))
+                break
+            decision = self.state.decide(Transport.WEBSOCKET, request, len(frame.payload))
             send_frame(conn, Opcode.TEXT, json.dumps(created(decision.number)).encode())
             if decision.mode is Mode.STALL:
                 time.sleep(STALL_SECONDS)
@@ -283,7 +301,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.refuse(400, f"Content-Length must be a whole number from 0 to {MAX_BODY}")
             return
         body = self.rfile.read(length)
-        decision = self.state.decide(Transport.SSE, body)
+        request = parse_request(body)
+        if request is None:
+            self.refuse(400, "a Responses request is a JSON object")
+            return
+        decision = self.state.decide(Transport.SSE, request, len(body))
         self.send_response(200)
         self.send_header("content-type", "text/event-stream")
         self.send_header("connection", "close")

@@ -2505,9 +2505,10 @@ _OH_RESUME_TURN_BOUND=420
 # continue of turn one's thread, or when the endpoint saw no stall and retry at
 # all — a pass that never stalled would prove nothing about the bound.
 #   $1 harness id (codex)
+# llmlint: ignore-block[e2e_not_mocked] Replacing the model service is this phase's point: a stall cannot be made on demand on OpenAI's real endpoint, nor a turn run there without billing. Codex, its built-in provider and oneharness's resume interface are all real; the paid resume phases above hold the same path against the real service.
 oh_resume_stall_enforce() {
   _oh_phase
-  local id="$1" bin sandbox endpoint home pid port took started status codex py
+  local id="$1" bin sandbox endpoint home pid="" port took started status codex py
   bin="$(oh_bin)"
   [ -n "$bin" ] || skip "oneharness binary not found (build it: \`just build-release\`, or set ONEHARNESS_BIN)"
   # The real codex, never the suite's measuring shim: on Linux the shim runs
@@ -2524,30 +2525,25 @@ oh_resume_stall_enforce() {
   endpoint="$sandbox/endpoint"
   home="$sandbox/codex-home"
   mkdir -p "$endpoint" "$home" "$sandbox/work" ||
-    fail "could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not create the phase's directories under $sandbox; check that the host temp dir is writable"
   # A real repo: codex refuses to run outside one unless the directory is
   # trusted, and trusting it is not this phase's job.
   if ! git init -q "$sandbox/work" >"$sandbox/git.log" 2>&1; then
     sed 's/^/    /' "$sandbox/git.log" >&2 || true
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: could not make $sandbox/work a git repository (output above); check that git is installed and the host temp dir is writable"
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not make $sandbox/work a git repository (output above); check that git is installed and the host temp dir is writable"
   fi
   "$py" -I "$OH_REPO_ROOT/scripts/codex-stall-endpoint.py" "$(oh_native_path "$endpoint")" >"$sandbox/endpoint.log" 2>&1 &
   pid=$!
   if ! _oh_wait_for 15 test -s "$endpoint/port"; then
-    kill "$pid" 2>/dev/null || true
     sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: the stalling endpoint never reported its port (its output is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+    _oh_stall_abort "$sandbox" "$pid" "$id: the stalling endpoint never reported its port (its output is above); run \`$py scripts/codex-stall-endpoint.py <an empty dir>\` by hand to see why it cannot start"
   fi
   port="$(tr -dc 0-9 <"$endpoint/port")"
   printf 'openai_base_url = "http://127.0.0.1:%s/v1"\ncli_auth_credentials_store = "file"\n' "$port" >"$home/config.toml" ||
-    fail "could not write $home/config.toml; check that the host temp dir is writable"
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not write $home/config.toml; check that the host temp dir is writable"
   if ! printf 'sk-oneharness-local-only' | CODEX_HOME="$(oh_native_path "$home")" "$codex" login --with-api-key >"$sandbox/login.log" 2>&1; then
-    kill "$pid" 2>/dev/null || true
     sed 's/^/    /' "$sandbox/login.log" >&2 || true
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: codex could not log in with a local key in an isolated CODEX_HOME (its output is above); run \`CODEX_HOME=\$(mktemp -d) codex login --with-api-key\` by hand with any key to see why"
+    _oh_stall_abort "$sandbox" "$pid" "$id: codex could not log in with a local key in an isolated CODEX_HOME (its output is above); run \`CODEX_HOME=\$(mktemp -d) codex login --with-api-key\` by hand with any key to see why"
   fi
   # Codex's own key variables would outrank the isolated login.
   local turn_env=(env -u OPENAI_API_KEY -u CODEX_API_KEY CODEX_HOME="$(oh_native_path "$home")" ONEHARNESS_NO_CONFIG=1)
@@ -2556,13 +2552,12 @@ oh_resume_stall_enforce() {
     --timeout "$_OH_RESUME_TURN_BOUND" --compact >"$sandbox/first.json" 2>"$sandbox/first.err" || true
   status="$(_oh_result_status "$sandbox/first.json")"
   if [ "$status" != ok ]; then
-    kill "$pid" 2>/dev/null || true
     _oh_control_evidence "$sandbox" "$sandbox/first.json"
     sed 's/^/    /' "$sandbox/first.err" >&2 || true
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: turn one against the local endpoint did not complete (status=${status:-<no report>}); the evidence above says how it ended — if codex refused the endpoint's events, compare scripts/codex-stall-endpoint.py's stream with what this codex-cli expects"
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn one against the local endpoint did not complete (status=${status:-<no report>}); the evidence above says how it ended — if codex refused the endpoint's events, compare scripts/codex-stall-endpoint.py's stream with what this codex-cli expects"
   fi
-  printf 'stall-next\n' >"$endpoint/mode" || fail "could not arm the endpoint's stall in $endpoint/mode"
+  printf 'stall-next\n' >"$endpoint/mode" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not arm the endpoint's stall in $endpoint/mode; check that the host temp dir is writable"
   # llmlint: ignore[tool_output_is_signal] This phase's one progress line marks where a five-minute wait begins, which is what attributes a hang inside it to the stall rather than to the setup before it, as every other phase's header does.
   note "  resume-stall: turn two's model request stalls once; codex must recover inside ${_OH_RESUME_TURN_BOUND}s"
   started=$SECONDS
@@ -2570,30 +2565,45 @@ oh_resume_stall_enforce() {
     --session stall --session-dir "$sandbox/store" --cwd "$sandbox/work" --mode auto \
     --timeout "$_OH_RESUME_TURN_BOUND" --compact --events >"$sandbox/second.json" 2>"$sandbox/second.err" || true
   took=$((SECONDS - started))
-  kill "$pid" 2>/dev/null || true
-  wait "$pid" 2>/dev/null || true
   status="$(_oh_result_status "$sandbox/second.json")"
   if ! grep -q ' request stall ' "$endpoint/requests.log" 2>/dev/null; then
     sed 's/^/    /' "$endpoint/requests.log" >&2 || true
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: turn two's model request never stalled (requests above), so nothing was proven about the bound; check scripts/codex-stall-endpoint.py still tells codex's warmup from its request"
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn two's model request never stalled (requests above), so nothing was proven about the bound; check scripts/codex-stall-endpoint.py still tells codex's warmup from its request"
   fi
   if [ "$status" != ok ]; then
     local reading
     reading="$(_oh_silent_turn_reading "$sandbox/second.json")"
+    note "  second turn stderr: $(tail -c 800 "$sandbox/second.err" 2>/dev/null || true)"
+    note "  second turn harness stderr: $(jq -r '.results[0].stderr // ""' "$sandbox/second.json" 2>/dev/null | tail -c 800)"
     note "  second turn last frames: $(jq -r '.results[0].stdout // ""' "$sandbox/second.json" 2>/dev/null | tail -n 6 | cut -c1-300)"
     note "  endpoint requests: $(tr '\n' ';' <"$endpoint/requests.log")"
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: a resumed turn whose model stream stalled once ended $status after ${took}s, not recovered inside the ${_OH_RESUME_TURN_BOUND}s bound: $reading. If codex now waits longer than 300 s on a stalled stream, raise _OH_RESUME_TURN_BOUND past its new window"
+    _oh_stall_abort "$sandbox" "$pid" "$id: a resumed turn whose model stream stalled once ended $status after ${took}s, not recovered inside the ${_OH_RESUME_TURN_BOUND}s bound: $reading. If codex now waits longer than 300 s on a stalled stream, raise _OH_RESUME_TURN_BOUND past its new window"
   fi
   if ! jq -e '.session.phase == "continue"' "$sandbox/second.json" >/dev/null 2>&1; then
     local session
     session="$(jq -c '.session' "$sandbox/second.json" 2>/dev/null || echo '<no session block>')"
-    rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
-    fail "$id: turn two completed but did not continue turn one's thread ($session); inspect \`domain::session\`'s create-vs-continue decision, which oh_resume_mode_enforce also exercises"
+    _oh_stall_abort "$sandbox" "$pid" "$id: turn two completed but did not continue turn one's thread ($session); inspect \`domain::session\`'s create-vs-continue decision, which oh_resume_mode_enforce also exercises"
   fi
-  rm -rf "$sandbox" || note "  could not remove $sandbox; delete it by hand"
+  _oh_stall_cleanup "$sandbox" "$pid"
   note "PASS: $id recovered a resumed turn whose model stream stalled once, in ${took}s of its ${_OH_RESUME_TURN_BOUND}s bound"
+}
+# llmlint: ignore-end[e2e_not_mocked]
+
+# Stop the stalling endpoint (when one was started) and remove the phase's
+# sandbox, saying so when either cannot be done.
+#   $1 sandbox, $2 the endpoint's pid or empty
+_oh_stall_cleanup() {
+  if [ -n "$2" ]; then
+    kill "$2" 2>/dev/null || true
+    wait "$2" 2>/dev/null || true
+  fi
+  rm -rf "$1" || note "  could not remove $1; delete it by hand"
+}
+
+# `_oh_stall_cleanup`, then fail with $3.
+_oh_stall_abort() {
+  _oh_stall_cleanup "$1" "$2"
+  fail "$3"
 }
 
 # What a turn that ran into its bound was doing when it was stopped, read off

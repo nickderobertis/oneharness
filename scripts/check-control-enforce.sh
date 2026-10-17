@@ -615,6 +615,12 @@ post() {
     fail "curl ended $status, not $3, posting $2 to the stalling endpoint: $out (its log: $endpoint_dir/endpoint.log)"
   printf '%s' "$out"
 }
+# A body that is not a Responses request is refused, and does not spend the
+# armed stall: only a model request may consume it.
+case "$(post 5 '[]' 0)" in
+  *"a Responses request is a JSON object"*) ;;
+  *) fail "the endpoint answered a body that is not a JSON object as if it were a model request" ;;
+esac
 case "$(post 5 '{"generate":false}' 0)" in
   *response.completed*) ;;
   *) fail "the endpoint stalled a warmup, which codex abandons, so the stall would prove nothing" ;;

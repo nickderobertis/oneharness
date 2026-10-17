@@ -369,4 +369,100 @@ if command -v timeout >/dev/null 2>&1; then
   deadline_case "with timeout"
 fi
 
+# The control phase end to end, against an agent that works as fast as a shell
+# can and would batch everything it could: goose finished all 60 steps of a
+# paced workload in 15 s, three attempts running, so the phase never had a turn
+# in flight to interrupt. Driven through `oh_control_enforce` with a
+# stand-in `oneharness` whose agent runs whatever the prompt says — the chain of
+# held steps when the prompt names one, otherwise every step file at once, the
+# way that goose turn did. One agent stops at the interrupt; one carries on.
+agent_dir="$(mktemp -d /tmp/oh-ctl.XXXXXX)" || fail "cannot create a scratch directory under /tmp"
+trap 'rm -rf "$evidence_tmp" "$crlf_sort_dir" "$settled_tmp" "$moved" "$short_tmp" "$agent_dir" ||
+  echo "check-control-enforce: could not remove its scratch; delete it by hand" >&2' EXIT
+cat >"$agent_dir/oneharness" <<'AGENT'
+#!/usr/bin/env bash
+# Stands in for `oneharness run --control` driving an agent, and for
+# `oneharness interrupt`. FAKE_AGENT_HONORS=1: an interrupt stops the agent and
+# kills its in-flight tool call; anything else: the agent ignores it.
+set -u
+cmd="$1"
+shift
+name="" store="" cwd="" prompt=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --session) name="$2" && shift 2 ;;
+    --session-dir) store="$2" && shift 2 ;;
+    --cwd) cwd="$2" && shift 2 ;;
+    --prompt) prompt="$2" && shift 2 ;;
+    *) shift ;;
+  esac
+done
+flag="$store/control/$name.interrupted"
+if [ "$cmd" = interrupt ]; then
+  : >"$flag"
+  printf '{"ok":true,"mechanism":"fake-mechanism"}\n'
+  exit 0
+fi
+mkdir -p "$store/control"
+socket="$store/control/$name.sock"
+perl -MIO::Socket::UNIX -e 'IO::Socket::UNIX->new(Type => SOCK_STREAM(), Local => $ARGV[0], Listen => 1) or die "$!\n"' "$socket" || exit 1
+cd "$cwd" || exit 1
+token() { sed -n 's/.*sh ohstep\.sh \([0-9a-f]*\).*/\1/p' | head -n 1; }
+tok="$(printf '%s' "$prompt" | token)"
+if [ -z "$tok" ]; then
+  for n in $(seq -f '%03g' 1 60); do : >"step-$n.txt"; done
+  sleep 2
+fi
+while [ -n "$tok" ]; do
+  sh ohstep.sh "$tok" >agent.out 2>&1 &
+  call=$!
+  while kill -0 "$call" 2>/dev/null; do
+    if [ -e "$flag" ] && [ "${FAKE_AGENT_HONORS:-}" = 1 ]; then
+      kill "$call" 2>/dev/null
+      wait "$call" 2>/dev/null
+      break 2
+    fi
+    sleep 0.1
+  done
+  wait "$call" 2>/dev/null
+  tok="$(token <agent.out)"
+done
+rm -f "$socket"
+outcome=none
+[ -e "$flag" ] && outcome=served
+printf '{"results":[{"status":"ok"}],"control":{"interrupts":[{"outcome":"%s"}]},"session":{"token":"t"}}\n' "$outcome"
+AGENT
+chmod +x "$agent_dir/oneharness"
+agent_case() {
+  local honors="$1"
+  status=0
+  out="$(TMPDIR=/tmp ONEHARNESS_BIN="$agent_dir/oneharness" FAKE_AGENT_HONORS="$honors" \
+    _OH_CONTROL_FREEZE_SECONDS=2 oh_control_enforce fake fake-mechanism 2>&1)" || status=$?
+}
+out=""
+agent_case 1
+[ "$status" -eq 0 ] || {
+  printf '%s\n' "$out" >&2
+  fail "a fast agent that stops at the interrupt did not pass the control phase (returned $status)"
+}
+case "$out" in
+  *"work frozen at 2 step files"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "a fast agent that stops at the interrupt was not held at step 2"
+    ;;
+esac
+agent_case 0
+[ "$status" -eq 1 ] || {
+  printf '%s\n' "$out" >&2
+  fail "an agent that ignores the interrupt was not failed (returned $status)"
+}
+case "$out" in
+  *"work did NOT stop"*) ;;
+  *)
+    printf '%s\n' "$out" >&2
+    fail "an agent that ignores the interrupt failed for some other reason"
+    ;;
+esac
+
 echo "check-control-enforce: ok"

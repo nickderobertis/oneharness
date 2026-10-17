@@ -3058,9 +3058,9 @@ oh_control_enforce() {
   # and only a turn that proved NOTHING comes back here.
   #
   # It is a backstop, not the mechanism: the workload each attempt drives is
-  # sized so a turn CANNOT finish it inside the interrupt window (see the
-  # prompt below), so a harness that needs the retries is telling you
-  # something. Which attempt won is reported for exactly that reason — a phase
+  # held open by the phase itself, so a turn CANNOT finish it before the
+  # interrupt (see `_oh_gated_workload`), and a harness that needs the retries
+  # is telling you something. Which attempt won is reported for exactly that reason — a phase
   # that passes on the third every night is a phase about to fail.
   local attempt attempts=3 started=$SECONDS status
   for attempt in $(seq 1 "$attempts"); do
@@ -3102,22 +3102,15 @@ _oh_control_enforce_once() {
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-  # Many small steps with a pause between each: the turn must still be running
-  # when the interrupt arrives, and each step must be individually observable.
-  # `steps` is the ceiling the assertion below reads too, so the prompt and the
-  # "did it merely finish?" test can never drift apart.
-  #
-  # The PAUSE is what makes staying in flight a property of the workload rather
-  # than of how fast the model happens to be. The interrupt lands as soon as
-  # two steps exist and the assertion is over ~18s later, while the work asked
-  # for is $steps × $pause seconds of sleeping — so no agent can outrun the
-  # window, and one that batches every file into a single command (the failure
-  # the ONE-PER-TOOL-CALL wording exists for) is still sleeping when the abort
-  # arrives. Three attempts remain as a backstop for a turn that never starts;
-  # they are not how this phase stays in flight.
-  local steps=60 pause=3 last
-  last="$(printf 'step-%03d.txt' "$steps")"
-  local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
+  # A chain of steps the phase holds open (`_oh_gated_workload`): the turn is
+  # still running when the interrupt arrives however the agent batches or
+  # paces its tool calls, and each step is individually observable. Steps 1
+  # and 2 run freely; step 3 blocks until this phase releases it, so the count
+  # cannot pass 2 before the interrupt. Three attempts remain as a backstop for
+  # a turn that never starts; they are not how this phase stays in flight.
+  local steps=60 start prompt
+  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox"
+  prompt="$(_oh_gated_prompt "$start")"
 
   # The turn must actually run shell commands for there to be work to stop, so a
   # narrower mode would make the freeze assertion vacuous. Confined to a fresh
@@ -3174,17 +3167,9 @@ _oh_control_enforce_once() {
     rm -rf "$sandbox"
     return 1
   fi
-  # A turn that already wrote every file it was asked for has nothing left to
-  # stop, so a frozen count afterwards is what finishing looks like, not what
-  # an interrupt looks like. Inconclusive, never a pass.
+  # What the agent had done when it was interrupted. Step 3 is held, so this
+  # is at most 2 and the turn has work left that only a release lets it do.
   count="$(_oh_step_count "$sandbox")"
-  if [ "$count" -ge "$steps" ]; then
-    kill "$run_pid" 2>/dev/null || true
-    wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
-    note "  control-enforce: the agent finished all $steps steps before the interrupt could land"
-    return 1
-  fi
 
   note "  control-enforce: interrupting from a separate process"
   local frame
@@ -3219,30 +3204,32 @@ _oh_control_enforce_once() {
   fi
   note "  ok: interrupt served by mechanism '$mechanism'"
 
-  # THE assertion: the work is frozen. Sample right after the interrupt (with
-  # a beat for an in-flight tool call to land), then again 15s later.
+  # THE assertion: the work is frozen. Give the interrupt a beat to land, then
+  # release every step: a turn that ignored the interrupt was only waiting on
+  # its held step, and released it carries on where the count can see. One
+  # step may still land — the call in flight when the interrupt arrived, if
+  # the harness let it finish — and nothing after it. Sampled once the release
+  # has had time to land, then again after the freeze window.
+  local window="${_OH_CONTROL_FREEZE_SECONDS:-15}"
   sleep 3
+  _oh_gated_release_all "$sandbox"
+  sleep 2
   frozen="$(_oh_step_count "$sandbox")"
-  # Same trap on the other side of the interrupt: a turn that raced to the
-  # ceiling in the seconds it took to send the frame would hold at $steps for
-  # any window you cared to watch, and that reading is indistinguishable from a
-  # completed turn. Retry rather than bank it.
-  if [ "$frozen" -ge "$steps" ]; then
+  if [ "$frozen" -gt $((count + 1)) ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
     rm -rf "$sandbox"
-    note "  control-enforce: the count reached all $steps steps, so a freeze proves nothing"
-    return 1
+    fail "$id: work did NOT stop — step files went from $count at the interrupt to $frozen once its steps were released, so the '$mechanism' interrupt is not honored"
   fi
-  sleep 15
+  sleep "$window"
   frozen_after="$(_oh_step_count "$sandbox")"
   if [ "$frozen_after" != "$frozen" ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
     rm -rf "$sandbox"
-    fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the 15s after the interrupt, so the '$mechanism' interrupt is not honored"
+    fail "$id: work did NOT stop — step files went from $frozen to $frozen_after in the ${window}s after the interrupt, so the '$mechanism' interrupt is not honored"
   fi
-  note "  ok: work frozen at $frozen step files for 15s after the interrupt"
+  note "  ok: work frozen at $frozen step files for ${window}s after the interrupt"
 
   wait "$run_pid" 2>/dev/null || true
   # The run must have ended on its own (not been killed) and recorded the
@@ -3400,11 +3387,12 @@ _oh_control_redirect_enforce_once() {
   local model_args=()
   [ -n "${OH_MODEL:-}" ] && model_args+=(--model "$OH_MODEL")
 
-  # Same workload, and same reason it is paced: see `_oh_control_enforce_once`.
-  local steps=60 pause=3 last
-  last="$(printf 'step-%03d.txt' "$steps")"
-  local prompt="You are a non-interactive test fixture in a scratch directory. Using your shell tool, create $steps files named step-001.txt through $last in the current directory, ONE PER TOOL CALL, sleeping $pause seconds before each (for example: sleep $pause && touch step-001.txt). Do not use a loop and do not create them in one command — make a separate tool call for every file. Start now and keep going."
-  local redirect="Stop creating step-NNN.txt files immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
+  # Same workload, and the same reason it is held open: see
+  # `_oh_control_enforce_once`.
+  local steps=60 start prompt
+  start="$(_oh_gated_workload "$sandbox" "$steps")" || fail "could not write the step workload into $sandbox"
+  prompt="$(_oh_gated_prompt "$start")"
+  local redirect="Stop running ohstep.sh steps immediately. Instead, using your shell tool, run exactly this one command and then stop: touch $marker.txt"
 
   # The turn must actually run shell commands for there to be work to stop and
   # work to redirect to. Confined to a fresh mktemp sandbox, like every other
@@ -3450,14 +3438,8 @@ _oh_control_redirect_enforce_once() {
     rm -rf "$sandbox"
     return 1
   fi
+  # Held at step 3, so at most 2; see `_oh_control_enforce_once`.
   count="$(_oh_step_count "$sandbox")"
-  if [ "$count" -ge "$steps" ]; then
-    kill "$run_pid" 2>/dev/null || true
-    wait "$run_pid" 2>/dev/null || true
-    rm -rf "$sandbox"
-    note "  redirect-enforce: the agent finished all $steps steps before the interrupt could land"
-    return 1
-  fi
 
   note "  redirect-enforce: interrupting WITH a redirection from a separate process"
   local frame
@@ -3483,17 +3465,20 @@ _oh_control_redirect_enforce_once() {
   fi
   note "  ok: the run took the redirection"
 
-  # Half one: the original work stopped. Sampled after a beat for an in-flight
-  # tool call, then again — the redirected turn must not be the old one
-  # carrying on.
+  # Half one: the original work stopped. After a beat for the interrupt, every
+  # step is released — a turn still running the old work was only waiting on
+  # its held step — and at most the call in flight at the interrupt may land.
+  # Sampled then, and again once the redirected work is done: the redirected
+  # turn must not be the old one carrying on.
   sleep 5
+  _oh_gated_release_all "$sandbox"
+  sleep 2
   frozen="$(_oh_step_count "$sandbox")"
-  if [ "$frozen" -ge "$steps" ]; then
+  if [ "$frozen" -gt $((count + 1)) ]; then
     kill "$run_pid" 2>/dev/null || true
     wait "$run_pid" 2>/dev/null || true
     rm -rf "$sandbox"
-    note "  redirect-enforce: the count reached all $steps steps, so a freeze proves nothing"
-    return 1
+    fail "$id: the original work did NOT stop — step files went from $count at the interrupt to $frozen once its steps were released, so the redirection was queued behind a turn that kept running"
   fi
 
   # Half two: the redirected work was DONE — by this same dispatch, with no
@@ -3570,6 +3555,73 @@ _oh_step_count() {
 # `_oh_step_count`, so waiting on it needs no shell expression.
 _oh_steps_at_least() {
   [ "$(_oh_step_count "$1")" -ge "$2" ]
+}
+
+# The work a control phase interrupts: a CHAIN of steps the phase holds open.
+#
+# Each step is `sh ohstep.sh <token>`. It records that it started, blocks until
+# the phase releases it, writes step-NNN.txt, and only then prints the command
+# for the next step, whose token nothing else names. So no agent can batch the
+# work — goose ran all 60 of a paced `sleep 3 && touch` workload's calls at once
+# and finished in 15s on three attempts running — and none can finish early:
+# whatever the agent's speed, the turn is in flight for as long as the phase
+# withholds a release. Steps 1 and 2 are released up front, so two step files
+# mean the agent is demonstrably working; step 3 waits for the phase.
+#
+# A blocked step gives up once its gate directory is gone or after ten minutes,
+# so a sandbox a phase deleted leaves no step behind waiting for it.
+#
+#   $1 sandbox, $2 step count. Prints the command that starts the chain.
+_oh_gated_workload() {
+  local sandbox="$1" steps="$2" gate n tok next=""
+  gate="$sandbox/.ohgate"
+  mkdir "$gate" || return
+  cat >"$sandbox/ohstep.sh" <<'STEP'
+# One step of a oneharness control-phase fixture; see `_oh_gated_workload`.
+dir=$(cd "$(dirname "$0")" && pwd) || exit 1
+gate="$dir/.ohgate"
+case "${1:-}" in
+  "" | *[!0-9a-f]*) echo "ohstep: '${1:-}' is not a step token; run exactly the command the previous step printed" >&2 && exit 2 ;;
+esac
+[ -f "$gate/token-$1" ] || { echo "ohstep: no step has token '$1'; run exactly the command the previous step printed" >&2 && exit 2; }
+n=$(cat "$gate/token-$1")
+: >"$gate/started-$n"
+waited=0
+while [ ! -e "$gate/release-$n" ] && [ ! -e "$gate/release-all" ]; do
+  [ -d "$gate" ] && [ "$waited" -lt 600 ] || { echo "ohstep: step $n was never released" >&2 && exit 3; }
+  sleep 1
+  waited=$((waited + 1))
+done
+: >"$dir/step-$n.txt"
+if [ -f "$gate/next-$n" ]; then
+  echo "step $n done. Next, run: sh ohstep.sh $(cat "$gate/next-$n")"
+else
+  echo "step $n done. That was the last step."
+fi
+STEP
+  # Built from the last step back, so each token can name its successor.
+  for ((n = steps; n >= 1; n--)); do
+    tok="$(printf '%04x%04x%04x' "$RANDOM" "$RANDOM" "$RANDOM")"
+    printf '%03d\n' "$n" >"$gate/token-$tok"
+    [ -z "$next" ] || printf '%s\n' "$next" >"$gate/next-$(printf '%03d' "$n")"
+    next="$tok"
+  done
+  : >"$gate/release-001"
+  : >"$gate/release-002"
+  printf 'sh ohstep.sh %s' "$next"
+}
+
+# Let every step run, blocked or not yet started. A phase calls it once an
+# interrupt has had its beat: a turn that ignored the interrupt was only ever
+# waiting on its blocked step, and released it carries on where a count can see.
+_oh_gated_release_all() {
+  : >"$1/.ohgate/release-all"
+}
+
+# The prompt that drives the chain `_oh_gated_workload` wrote.
+#   $1 the command it printed
+_oh_gated_prompt() {
+  printf '%s' "You are a non-interactive test fixture in a scratch directory. Using your shell tool, run exactly this command in the current directory: $1 — it may take a while, because each step waits for the test before it finishes. Each step prints the next command to run; run that command as its own tool call, one at a time, and keep going until a step says it was the last. Never run a step command before the previous step has printed it, and run nothing else. Start now."
 }
 
 # The errors the HARNESS itself reported on its event stream, one per line, or

@@ -307,7 +307,9 @@ impl FallThroughReason {
 /// ([`signals::model_refused_for_account`][mra]): that rejection is a property
 /// of the identity rather than of the configuration, so the next candidate —
 /// another harness, another account — can still run the task, exactly as a
-/// model list's next model can.
+/// model list's next model can. Non-zero only, like every `model_not_found`
+/// arm: the captured refusal exits 1, and a clean-exit arm would be behavior no
+/// harness has been observed producing.
 ///
 /// [mra]: crate::domain::signals::model_refused_for_account
 pub fn startup_failure_reason(

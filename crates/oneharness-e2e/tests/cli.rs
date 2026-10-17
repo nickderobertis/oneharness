@@ -2669,14 +2669,16 @@ fn a_precondition_refusal_falls_through_carrying_the_providers_own_cause() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] This drives the real built `oneharness run` — its config loading, classification and both fallback drivers — end to end; only the two paid harness CLIs are replaced, by the repository's own subprocess double (oneharness-mock-harness), because a real account cannot be made to refuse a model on demand, and the codex half replays the byte-for-byte capture of the real refusal (tests/fixtures/codex-model-unsupported-for-account.jsonl).
 /// Codex signed in with an account that may not use the configured model
 /// answers `HTTP 400 invalid_request_error` — "The '<model>' model is not
 /// supported when using Codex with a ChatGPT account." — before doing any work.
 /// That is a property of the identity, not of the task, so a single-model chain
 /// must hand it on to the next harness (reason `model-not-found`) exactly as it
-/// hands on a missing or unauthenticated one; codex's stdout below is the real
-/// capture from `codex exec -m gpt-5.5`, its thread id aside. Every other 400
-/// still ends the chain at codex, as an ordinary failed run.
+/// hands on a missing or unauthenticated one, on the buffered and the streamed
+/// driver alike; codex's stdout below is the real capture from `codex exec -m
+/// gpt-5.5`, its thread id aside. Every other 400 still ends the chain at
+/// codex, as an ordinary failed run.
 #[test]
 fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
     let mock = mock_bin().display().to_string();
@@ -2690,7 +2692,25 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
         "019fb99f-9a2f-7c31-9f0d-2f4c8b6d1e77",
     );
     assert_ne!(neutral, capture, "the capture's thread id must be swapped");
-    let chain = |label: &str, codex_stdout: &str| {
+    let refusal = "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.";
+    // The provider's object exactly as the capture's `turn.failed` carries it
+    // (spelled out rather than built, which would reorder its keys).
+    let provider = format!(
+        r#"{{"type":"error","status":400,"error":{{"type":"invalid_request_error","message":"{refusal}"}}}}"#
+    );
+    assert!(
+        neutral.contains(&serde_json::to_string(&provider).unwrap()),
+        "the provider object must be the capture's own"
+    );
+    // A `--control` turn reports the same object in the app-server's terminal
+    // `turn/completed` frame instead of `turn.failed`.
+    let app_server = serde_json::json!({
+        "method": "turn/completed",
+        "params": {"turn": {"status": "failed", "error": {"message": provider}}},
+    })
+    .to_string();
+    // One run of the chain on one driver: its exit code and its report.
+    let chain = |label: &str, codex_stdout: &str, driver: &str| {
         let codex_stdout = serde_json::to_string(codex_stdout).unwrap();
         let project = format!(
             r#"
@@ -2707,83 +2727,103 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
             env = {{ MOCK_EXIT = "0", MOCK_STDOUT = '{{"session_id":"s","result":"served-by-claude"}}' }}
             "#
         );
-        let fx = ConfigFixture::new(label, &project, "");
-        run_with_config(
-            &["run", "--prompt", "hi", "--cwd", &fx.cwd(), "--compact"],
-            &[],
-            &fx.user_config(),
-        )
+        let fx = ConfigFixture::new(&format!("{label}-{driver}"), &project, "");
+        let cwd = fx.cwd();
+        let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+        if driver == "streamed" {
+            args.push("--stream");
+        }
+        let output = run_with_config(&args, &[], &fx.user_config());
+        let report = if driver == "streamed" {
+            stream_envelopes(&output)
+                .last()
+                .map(|envelope| envelope["report"].clone())
+                .unwrap_or_else(|| panic!("{label}/{driver}: a streamed run ends with its report"))
+        } else {
+            json_stdout(&output)
+        };
+        (output, report)
     };
 
-    // The refusal as captured, and the same refusal naming another model: the
-    // signature is the refusal's wording, never the model it names.
-    for (label, stdout) in [
-        ("codex-account-model-gpt-5.5", neutral.clone()),
-        (
-            "codex-account-model-other",
-            neutral.replace("'gpt-5.5'", "'o9-preview'"),
-        ),
-    ] {
-        let output = chain(label, &stdout);
-        assert!(
-            output.status.success(),
-            "{label}: exit {:?}, stderr {}",
+    for driver in ["buffered", "streamed"] {
+        // The refusal as captured, the same refusal naming another model (the
+        // signature is the refusal's wording, never the model it names), and
+        // the app-server's frame carrying it.
+        for (label, stdout) in [
+            ("codex-account-model", neutral.clone()),
+            (
+                "codex-account-model-other",
+                neutral.replace("'gpt-5.5'", "'o9-preview'"),
+            ),
+            ("codex-account-model-app-server", app_server.clone()),
+        ] {
+            let tag = format!("{label}/{driver}");
+            let (output, value) = chain(label, &stdout, driver);
+            assert!(
+                output.status.success(),
+                "{tag}: exit {:?}, stderr {}",
+                output.status.code(),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
+            assert_eq!(value["results"][0]["status"], "nonzero", "{tag}");
+            assert_eq!(
+                value["results"][0]["failure_kind"], "model_not_found",
+                "{tag}"
+            );
+            let fell = value["fallback"]["fell_through"].as_array().unwrap();
+            assert_eq!(fell.len(), 1, "{tag}: {fell:?}");
+            assert_eq!(fell[0]["harness"], "codex", "{tag}");
+            assert_eq!(fell[0]["reason"], "model-not-found", "{tag}");
+            // The provider's own words travel with the verdict.
+            let detail = fell[0]["detail"].as_str().unwrap_or_default();
+            assert!(
+                detail.contains("is not supported when using Codex with a ChatGPT account"),
+                "{tag}: {detail}"
+            );
+            assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
+            assert_eq!(value["results"][1]["harness"], "claude-code", "{tag}");
+            assert_eq!(value["results"][1]["text"], "served-by-claude", "{tag}");
+        }
+
+        // Any other 400 `invalid_request_error` is a request the next harness's
+        // provider would refuse too: unclassified, it stops the chain at codex.
+        let tag = format!("codex-other-invalid-request/{driver}");
+        let other_400 = neutral.replace(
+            refusal,
+            "Unsupported parameter: 'temperature' is not supported with this model.",
+        );
+        assert_ne!(
+            other_400, neutral,
+            "the substitution must change the capture"
+        );
+        let (output, value) = chain("codex-other-invalid-request", &other_400, driver);
+        assert_eq!(
             output.status.code(),
+            Some(1),
+            "{tag}: a real codex failure fails the run: stderr {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let value = json_stdout(&output);
-        assert_eq!(value["results"][0]["harness"], "codex", "{label}");
-        assert_eq!(value["results"][0]["status"], "nonzero", "{label}");
         assert_eq!(
-            value["results"][0]["failure_kind"], "model_not_found",
-            "{label}"
+            value["results"].as_array().unwrap().len(),
+            1,
+            "{tag}: {value}"
         );
-        let fell = value["fallback"]["fell_through"].as_array().unwrap();
-        assert_eq!(fell.len(), 1, "{label}: {fell:?}");
-        assert_eq!(fell[0]["harness"], "codex", "{label}");
-        assert_eq!(fell[0]["reason"], "model-not-found", "{label}");
-        // The provider's own words travel with the verdict.
-        let detail = fell[0]["detail"].as_str().unwrap_or_default();
+        assert_eq!(value["results"][0]["harness"], "codex", "{tag}");
         assert!(
-            detail.contains("not supported when using Codex with a ChatGPT account"),
-            "{label}: {detail}"
+            value["results"][0]["failure_kind"].is_null(),
+            "{tag}: another 400 must not classify: {}",
+            value["results"][0]["failure_kind"]
         );
-        assert_eq!(value["fallback"]["ran"], "claude-code", "{label}");
-        assert_eq!(value["results"][1]["harness"], "claude-code", "{label}");
-        assert_eq!(value["results"][1]["text"], "served-by-claude", "{label}");
+        assert_eq!(value["fallback"]["ran"], "codex", "{tag}");
+        assert_eq!(
+            value["fallback"]["fell_through"].as_array().unwrap().len(),
+            0,
+            "{tag}"
+        );
     }
-
-    // Any other 400 `invalid_request_error` is a request the next harness's
-    // provider would refuse too: unclassified, it stops the chain at codex.
-    let other_400 = neutral.replace(
-        "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
-        "Unsupported parameter: 'temperature' is not supported with this model.",
-    );
-    assert_ne!(
-        other_400, neutral,
-        "the substitution must change the capture"
-    );
-    let output = chain("codex-other-invalid-request", &other_400);
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "a real codex failure fails the run: stderr {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let value = json_stdout(&output);
-    assert_eq!(value["results"].as_array().unwrap().len(), 1, "{value}");
-    assert_eq!(value["results"][0]["harness"], "codex");
-    assert!(
-        value["results"][0]["failure_kind"].is_null(),
-        "another 400 must not classify: {}",
-        value["results"][0]["failure_kind"]
-    );
-    assert_eq!(value["fallback"]["ran"], "codex");
-    assert_eq!(
-        value["fallback"]["fell_through"].as_array().unwrap().len(),
-        0
-    );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 #[test]
 fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {

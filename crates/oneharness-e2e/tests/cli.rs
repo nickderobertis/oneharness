@@ -2855,6 +2855,80 @@ fn fallback_falls_through_a_model_codex_refuses_for_its_account() {
 }
 // llmlint: ignore-end[e2e_not_mocked]
 
+/// A model list hands a rejected model on from a **clean exit** too: Claude Code
+/// reports a provider rejection in an `is_error` terminal record and can still
+/// exit 0, and "this model is unavailable" is the same refusal whatever exit
+/// code carried it. Without a model list the same clean-exit rejection — no
+/// account wording, so a configuration mistake — still stops the chain.
+#[test]
+fn a_model_list_falls_through_a_clean_exit_model_rejection() {
+    let mock = mock_bin().display().to_string();
+    let rejected = serde_json::to_string(
+        r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"model not found: opus"}"#,
+    )
+    .unwrap();
+    let served =
+        serde_json::to_string(r#"{"session_id":"s","result":"served-by-sonnet"}"#).unwrap();
+    for driver in ["buffered", "streamed"] {
+        for models in [&["opus", "sonnet"][..], &["opus"][..]] {
+            let tag = format!("{}/{driver}", models.join("+"));
+            let counter = temp_counter(&format!("clean-model-rejection-{}-{driver}", models.len()));
+            let project = format!(
+                r#"
+                harnesses = ["claude-code"]
+                run_mode = "fallback"
+
+                [harness.claude-code]
+                bin = '{mock}'
+                env = {{ MOCK_ATTEMPT_FILE = '{counter}', MOCK_EXIT_1 = "0", MOCK_STDOUT_1 = {rejected}, MOCK_EXIT_2 = "0", MOCK_STDOUT_2 = {served} }}
+                "#
+            );
+            let fx = ConfigFixture::new(
+                &format!("clean-model-rejection-{}-{driver}", models.len()),
+                &project,
+                "",
+            );
+            let cwd = fx.cwd();
+            let mut args = vec!["run", "--prompt", "hi", "--cwd", &cwd, "--compact"];
+            for model in models {
+                args.extend(["--model", model]);
+            }
+            if driver == "streamed" {
+                args.push("--stream");
+            }
+            let output = run_with_config(&args, &[], &fx.user_config());
+            let value = if driver == "streamed" {
+                stream_envelopes(&output)
+                    .last()
+                    .map(|envelope| envelope["report"].clone())
+                    .unwrap_or_else(|| panic!("{tag}: a streamed run ends with its report"))
+            } else {
+                json_stdout(&output)
+            };
+            let _ = std::fs::remove_file(&counter);
+            assert_eq!(value["results"][0]["model"], "opus", "{tag}");
+            assert_eq!(value["results"][0]["status"], "ok", "{tag}");
+            assert_eq!(
+                value["results"][0]["failure_kind"], "model_not_found",
+                "{tag}"
+            );
+            let fell = value["fallback"]["fell_through"].as_array().unwrap();
+            if models.len() == 2 {
+                assert!(output.status.success(), "{tag}: {value}");
+                assert_eq!(fell.len(), 1, "{tag}: {fell:?}");
+                assert_eq!(fell[0]["reason"], "model-not-found", "{tag}");
+                assert_eq!(value["results"][1]["model"], "sonnet", "{tag}");
+                assert_eq!(value["results"][1]["text"], "served-by-sonnet", "{tag}");
+            } else {
+                assert_eq!(output.status.code(), Some(1), "{tag}: {value}");
+                assert_eq!(fell.len(), 0, "{tag}: {fell:?}");
+                assert_eq!(value["fallback"]["ran"], "claude-code", "{tag}");
+                assert_eq!(value["results"].as_array().unwrap().len(), 1, "{tag}");
+            }
+        }
+    }
+}
+
 #[test]
 fn a_completed_billed_run_is_not_stamped_with_a_refusal_it_retried_past() {
     // The defect this closes, measured twice on a real host. A 94-minute Claude

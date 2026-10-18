@@ -3118,6 +3118,7 @@ fn kill_the_caller_mid_probe(pool: &Pool, mut cmd: Command, stalled: &Path, case
     cwd.to_string()
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The reuse workload and its pooled server run for real through oneharness-core's pool; only codex is the repository's subprocess double, because real Codex cannot be made to end a shell turn before replying on demand. Real Codex's shell turn is driven by scripts/e2e-control.sh's pooled-reuse phase.
 /// A shell turn that completes before the server replies to the request that
 /// ran it still completes: the reuse workload runs to its end.
 #[test]
@@ -3146,6 +3147,7 @@ fn a_shell_turn_completed_before_its_reply_still_completes() {
         serde_json::from_str(&std::fs::read_to_string(pool.path("reuse.json")).unwrap()).unwrap();
     assert_eq!(reuse["lease_count"], 5);
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// Each way a pooled session's thread open, shell turn or loaded-thread
 /// listing can fail fails the reuse workload naming it, writing no telemetry:
@@ -4601,6 +4603,7 @@ fn the_sharing_measurement_names_each_failure_and_leaves_no_scratch() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The reuse workload and its pooled server run for real through oneharness-core's pool; only codex is the repository's subprocess double, because the gate cannot run real Codex and needs its frames and process tree recorded to assert on. Real Codex under this workload is scripts/e2e-control.sh's pooled-reuse phase.
 /// live/control/app-server-reuse.sh runs its workload through the pool: each
 /// of the leases ran `initialize`, `thread/start`, a `thread/shellCommand` and
 /// `thread/resume` of its own thread and no `turn/start`, all on one server;
@@ -4700,6 +4703,7 @@ fn the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree() {
         assert_eq!(resumed["params"]["threadId"], thread);
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 // llmlint: ignore-block[e2e_not_mocked] The workload and its pooled server run for real; only `ps` is replaced, by a script or by its absence, because a real `ps` cannot be made to fail, list a malformed row or omit a running server on demand. The real listing is read end to end by the_reuse_workload_runs_through_the_pool_and_reads_the_whole_server_tree, which holds it to the OS's own process tree.
 /// Each way the reuse workload's process listing can fail fails the workload
@@ -5089,6 +5093,7 @@ fn the_live_tools_refuse_a_bad_setting_before_running_anything() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The control suite's pooled phases run for real — scripts/e2e-control.sh, the built oneharness and oneharness-core's pool; only codex is the repository's subprocess double, installed first on PATH, because the gate cannot run real Codex or make it leak, retain or keep growing on demand. The same phases against real Codex are scripts/e2e-control.sh's live run.
 /// scripts/e2e-control.sh's shared app-server phases, `codex` the mock on PATH.
 /// The suite runs its reuse phase on Linux alone, where its memory budget is
 /// measured, and says it skipped it elsewhere.
@@ -5145,6 +5150,7 @@ impl ControlSuite {
         cmd.output().unwrap()
     }
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// A server whose `thread/loaded/list` keeps naming fresh cursors fails the
 /// reuse workload once its listing runs past the settle bound (and its grace),
@@ -5248,6 +5254,7 @@ fn the_control_suite_s_pooled_phases_pass_and_fail_for_the_right_reason() {
     }
 }
 
+// llmlint: ignore-block[e2e_not_mocked] The control suite's reuse phase runs for real — scripts/e2e-control.sh, the workload and oneharness-core's pool; only codex is the repository's subprocess double, because real Codex cannot be made to keep a released thread for 30 minutes, or forever, on demand within the gate. The same phase against real codex-cli 0.163.0 is scripts/e2e-control.sh's live pooled-reuse run.
 /// The suite's reuse phase runs the workload and the memory budget's check,
 /// against a mock that, like codex-cli 0.163.0, keeps a released thread
 /// loaded for 30 minutes unless its launch shortens that: it passes when the
@@ -5323,6 +5330,7 @@ fn the_control_suite_s_reuse_phase_fails_naming_both_readings_when_threads_are_r
         "{said}"
     );
 }
+// llmlint: ignore-end[e2e_not_mocked]
 
 /// What a pooled dispatch cut short leaves behind: its live turn interrupted
 /// on the server, no process carrying its marker, and its thread released.

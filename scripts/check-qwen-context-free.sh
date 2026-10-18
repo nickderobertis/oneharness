@@ -261,6 +261,7 @@ hanging_python3() {
   mkdir -p "$dir" || fixture_failed "$dir"
   cat >"$dir/python3" <<EOF_PY || fixture_failed "$dir/python3"
 #!/usr/bin/env bash
+set -euo pipefail
 case " \$* " in *" -c "*) exec "$real" "\$@" ;; esac
 exec "$real" -I -c '
 import faulthandler, runpy, socket, socketserver, sys, time

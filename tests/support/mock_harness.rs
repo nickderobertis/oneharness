@@ -317,7 +317,11 @@
 //!                   nothing more on the stream, and `end-before-interrupt`
 //!                   ends the turn on the stream when the interrupt arrives
 //!                   and answers it only once the client has closed that
-//!                   stream — the turn provably over before its abort landed.
+//!                   stream — the turn provably over before its abort landed,
+//!                   and `drop-redirect` serves the interrupt and then drops
+//!                   every new connection unanswered (appending
+//!                   `DROPPED_CONNECTION`) with the stream left open, so the
+//!                   redirected prompt's submission fails at the transport.
 //!                   Each exits once
 //!                   it has served
 //!                   its fault, so nothing is left behind for the pool to reclaim.
@@ -1015,6 +1019,7 @@ enum HttpControlFault {
     RefuseRedirect,
     DieAfterInterrupt,
     EndBeforeInterrupt,
+    DropRedirect,
 }
 
 impl HttpControlFault {
@@ -1042,6 +1047,7 @@ impl HttpControlFault {
             "refuse-redirect" => HttpControlFault::RefuseRedirect,
             "die-after-interrupt" => HttpControlFault::DieAfterInterrupt,
             "end-before-interrupt" => HttpControlFault::EndBeforeInterrupt,
+            "drop-redirect" => HttpControlFault::DropRedirect,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
     }
@@ -1206,6 +1212,17 @@ fn run_http_control_server(log_path: &str) -> ! {
 
     for connection in listener.incoming() {
         let Ok(mut socket) = connection else { continue };
+        // Up, but no longer taking requests: the connection closes unread.
+        if fault == HttpControlFault::DropRedirect
+            && aborted.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            drop(socket);
+            let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = writeln!(file, "DROPPED_CONNECTION");
+            let _ = file.flush();
+            exit_shortly();
+            continue;
+        }
         let log = std::sync::Arc::clone(&log);
         let admitted = std::sync::Arc::clone(&admitted);
         let aborted = std::sync::Arc::clone(&aborted);
@@ -1359,8 +1376,12 @@ fn run_http_control_server(log_path: &str) -> ! {
                             std::thread::sleep(std::time::Duration::from_secs(30));
                             return;
                         }
-                        // The server is exiting: nothing more is said.
-                        if fault == HttpControlFault::DieAfterInterrupt {
+                        // The server is exiting, or taking no more requests:
+                        // nothing more is said.
+                        if matches!(
+                            fault,
+                            HttpControlFault::DieAfterInterrupt | HttpControlFault::DropRedirect
+                        ) {
                             std::thread::sleep(std::time::Duration::from_secs(30));
                             return;
                         }
@@ -1441,7 +1462,9 @@ fn run_http_control_server(log_path: &str) -> ! {
                 // stays up until the event stream has carried it.
                 if !matches!(
                     fault,
-                    HttpControlFault::RedirectedTurn | HttpControlFault::RefuseRedirect
+                    HttpControlFault::RedirectedTurn
+                        | HttpControlFault::RefuseRedirect
+                        | HttpControlFault::DropRedirect
                 ) {
                     exit_shortly();
                 }

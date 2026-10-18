@@ -32030,40 +32030,129 @@ fn a_redirect_whose_run_exits_first_is_refused_and_never_delivered() {
 }
 
 /// A redirect whose aborted turn never ends would hold the supervisor
-/// forever, so past the run's delivery deadline the message is taken back: the
-/// answer is a `not_running` refusal saying it was not delivered, the report
-/// records it, and when the aborted turn does end later the run writes nothing
-/// for it. The deadline is shortened through the run's internal override so the
-/// journey waits a fraction of a second rather than a minute.
+/// forever, so past the run's delivery deadline a message nothing has claimed
+/// is taken back: the answer is a `not_running` refusal saying it was not
+/// delivered, the report records it, and when the aborted turn does end later
+/// the run writes nothing for it — on the stdin mechanism and on both
+/// conversations, whose replacement turn would otherwise be opened then. The
+/// deadline is shortened through the run's internal override so the journey
+/// waits a fraction of a second rather than a minute.
 #[cfg(unix)]
 #[test]
 fn a_redirect_still_unwritten_at_the_deadline_is_taken_back_and_never_delivered() {
-    let gate_dir = control_store_dir("deadline-gate");
+    for double in [
+        RedirectDouble::Claude,
+        RedirectDouble::Codex,
+        RedirectDouble::Acp,
+    ] {
+        let gate_dir = control_store_dir(&format!("dl-gate-{}", double.harness()));
+        let gate = gate_dir.join("open");
+        let gate_arg = gate.display().to_string();
+        let journey = RedirectJourney::start(
+            double,
+            "deadline",
+            &[
+                ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+                ("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "300"),
+            ],
+        );
+        let answer = journey.redirect().wait_with_output().unwrap();
+        // The aborted turn is still live behind the gate, and the message has
+        // been taken back: nothing has written it, and nothing will.
+        assert_eq!(carried(&journey.received()), 0, "{double:?}");
+        let frame = json_stdout(&answer);
+        assert!(
+            frame["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("did not end within 300ms")),
+            "{double:?}: {frame}"
+        );
+        std::fs::write(&gate, "").unwrap();
+        let (_, report, received) = journey.finish();
+        assert_undelivered(&answer, &report, "not_running", &format!("{double:?}"));
+        assert!(received.contains("GATE_OPENED"), "{double:?}:\n{received}");
+        assert_eq!(carried(&received), 0, "{double:?}:\n{received}");
+    }
+}
+
+/// The deadline takes back only a message nothing has claimed. Once the run
+/// has submitted the redirection to the HTTP server, whether it landed is the
+/// server's answer to that submission, so the interrupt waits past its
+/// deadline for it — and answers with what the server did, never a refusal
+/// for a message the session may be about to run.
+#[cfg(unix)]
+#[test]
+fn a_redirect_already_submitted_at_the_deadline_is_answered_by_the_server() {
+    let gate_dir = control_store_dir("dl-claimed-gate");
     let gate = gate_dir.join("open");
     let gate_arg = gate.display().to_string();
+    let deadline = std::time::Duration::from_millis(4000);
+    let deadline_ms = deadline.as_millis().to_string();
     let journey = RedirectJourney::start(
-        RedirectDouble::Claude,
-        "deadline",
+        RedirectDouble::Opencode,
+        "dl-claimed",
         &[
+            ("MOCK_HTTP_CONTROL_FAULT", "redirected-turn"),
             ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
-            ("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "300"),
+            (
+                "ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS",
+                deadline_ms.as_str(),
+            ),
         ],
     );
-    let answer = journey.redirect().wait_with_output().unwrap();
-    // The aborted turn is still live behind the gate, and the message has been
-    // taken back: nothing has written it, and nothing will.
-    assert_eq!(carried(&journey.received()), 0);
-    let frame = json_stdout(&answer);
+    let asked = std::time::Instant::now();
+    let mut interrupt = journey.redirect();
+    // Submitted: the server holds its admission behind the gate.
+    wait_until("the redirection to be submitted", || {
+        carried(&journey.received()) == 1
+    });
+    // Past the deadline, the submitted message is still unanswered rather than
+    // taken back.
+    std::thread::sleep(
+        (asked + deadline + std::time::Duration::from_millis(500))
+            .saturating_duration_since(std::time::Instant::now()),
+    );
     assert!(
-        frame["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("did not end within 300ms")),
-        "{frame}"
+        interrupt.try_wait().unwrap().is_none(),
+        "a submitted redirection was answered before the server said what became of it"
     );
     std::fs::write(&gate, "").unwrap();
+    let answer = interrupt.wait_with_output().unwrap();
+    assert!(answer.status.success(), "{answer:?}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{answer:?}");
     let (_, report, received) = journey.finish();
-    assert_undelivered(&answer, &report, "not_running", "deadline");
-    assert!(received.contains("GATE_OPENED"), "{received}");
+    assert_eq!(
+        report["control"]["interrupts"][0]["outcome"], "served",
+        "{report}"
+    );
+    assert_eq!(
+        report["control"]["interrupts"][0]["redirected"], true,
+        "{report}"
+    );
+    assert_eq!(carried(&received), 1, "{received}");
+}
+
+/// A replacement submission that never reaches the server — its connection
+/// dropped unanswered — is a run whose harness is gone: the redirect is
+/// refused `not_running`, saying it was not delivered, and recorded so.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_submission_cannot_reach_the_server_is_refused_not_running() {
+    let journey = RedirectJourney::start(
+        RedirectDouble::Opencode,
+        "dropped-submit",
+        &[("MOCK_HTTP_CONTROL_FAULT", "drop-redirect")],
+    );
+    let answer = journey.redirect().wait_with_output().unwrap();
+    let (_, report, received) = journey.finish();
+    assert_undelivered(&answer, &report, "not_running", "drop-redirect");
+    assert!(
+        json_stdout(&answer)["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("could not be reached to open the redirected turn")),
+        "{answer:?}"
+    );
+    assert!(received.contains("DROPPED_CONNECTION"), "{received}");
     assert_eq!(carried(&received), 0, "{received}");
 }
 

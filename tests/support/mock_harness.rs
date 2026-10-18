@@ -110,6 +110,11 @@
 //!                   without ending the turn (no result document), appending
 //!                   `DIED_AFTER_INTERRUPT` — the run whose harness is gone
 //!                   before an interrupted turn could end.
+//!   MOCK_SLOW_NEXT_READ_MS  with MOCK_TURN_LOG or MOCK_ACP_LOG, once an
+//!                   interrupted turn has ended, wait this many milliseconds
+//!                   before reading stdin again — a harness slow to take the
+//!                   message that replaces the turn, which an answer given on
+//!                   the write alone would overtake.
 //!   MOCK_INTERRUPT_GATE  a path. With MOCK_TURN_LOG, MOCK_CODEX_APP_SERVER_LOG
 //!                   or MOCK_ACP_LOG, an interrupted turn ends only once this
 //!                   file exists (logging `GATE_OPENED` as it does), so a test
@@ -259,6 +264,10 @@
 //!                              no claim rather than a wrong one.
 //!   MOCK_CODEX_TOOL_STARTED_ONLY  with MOCK_CODEX_TOOL_EVENTS, emit only the
 //!                              captured `item/started` tool notification.
+//!   MOCK_CODEX_ACK_GATE  with MOCK_CODEX_APP_SERVER_LOG, a path: every
+//!                   `turn/start` after the first is acknowledged only once
+//!                   this file exists (at most 300s), logging `ACK_GATE_OPENED`
+//!                   — a server slow to say the replacement turn exists.
 //!   MOCK_CODEX_CLOSE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, accept the
 //!                   interrupt, close stdin, end the turn and exit — gone before
 //!                   the turn that replaces it can be written.
@@ -1713,6 +1722,17 @@ fn run_codex_app_server(log_path: &str) -> ! {
             }
             Some("turn/start") => {
                 turns_started += 1;
+                if turns_started > 1 {
+                    if let Some(gate) = mock_var_os("MOCK_CODEX_ACK_GATE") {
+                        let until = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                        while !std::path::Path::new(&gate).exists()
+                            && std::time::Instant::now() < until
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        append("ACK_GATE_OPENED");
+                    }
+                }
                 send(&json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -1984,6 +2004,7 @@ fn run_acp_server(log_path: &str) -> ! {
                 }
                 cancelled = true;
                 asked_permission = false;
+                slow_next_read();
             }
             _ => {
                 // A permission answer arrives as a plain response; record it so
@@ -2136,6 +2157,9 @@ fn run_controlled_turn(log_path: &str) -> ! {
         if once {
             break;
         }
+        if interrupted {
+            slow_next_read();
+        }
         index += 1;
     }
     std::process::exit(0);
@@ -2162,6 +2186,13 @@ fn await_interrupt_gate() -> bool {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
     true
+}
+
+/// Wait MOCK_SLOW_NEXT_READ_MS before the next read of stdin, when set.
+fn slow_next_read() {
+    if let Some(delay) = millis_knob("MOCK_SLOW_NEXT_READ_MS") {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
 }
 
 /// Close this process's stdin, so a write the client makes after this fails

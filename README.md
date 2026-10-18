@@ -1617,9 +1617,11 @@ so a supervisor doing this by hand has to stop, wait, and then send — and each
 those waits is a window where the turn is dead and the message is nobody's.
 Instead the run takes ownership in the same request that aborts the turn: parked
 before the abort goes out, handed back if the abort fails, and written by the run
-itself the moment the turn ends. `interrupt` answers once that write has happened
-(on codex, once the server acknowledged the new turn; on the HTTP servers, once
-the session took it), so it answers later than a plain stop. If the stopped turn
+itself the moment the turn ends. `interrupt` answers once the harness has taken
+it — on codex, once the server acknowledged the new turn; on the HTTP servers,
+once the session admitted it; on Claude Code and ACP, once the harness speaks
+again after the write — so it answers later than a plain stop, and waits as long
+as that takes rather than giving up on a message that may still land. If the stopped turn
 ends before the message can be written, or the run exits first, the answer is a
 refusal — `no_active_turn` or `not_running`, exit 1 — whose error says the
 redirection was not delivered, and the run never writes it into any later turn;

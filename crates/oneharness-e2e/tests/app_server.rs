@@ -1817,7 +1817,14 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
         } else {
             "1"
         };
-        let envs = [("MOCK_CODEX_HOLD_UNTIL", release.as_str()), (knob, value)];
+        // The frames the server received over this dispatch's connection, as
+        // it received them — the stream the answer is recorded into below.
+        let frames = pool.file(&format!("{session}-frames.log"));
+        let envs = [
+            ("MOCK_CODEX_HOLD_UNTIL", release.as_str()),
+            ("MOCK_CODEX_APP_SERVER_LOG", frames.as_str()),
+            (knob, value),
+        ];
         let child = pool.spawn(pool.command(session, &[], &envs));
         let server = pool.await_live_turns(1);
         let message = format!("stop and do the right thing for {session}");
@@ -1838,6 +1845,22 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
             std::fs::write(&gate, "").unwrap();
         }
         let answered = answer.wait_with_output().unwrap();
+        // Recorded the moment it arrives, into the same log the server writes
+        // each frame to as it takes it: one ordered stream of both events.
+        {
+            use std::io::Write as _;
+            let mut log = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&frames)
+                .unwrap();
+            writeln!(
+                log,
+                "ANSWERED {}",
+                String::from_utf8_lossy(&answered.stdout).trim()
+            )
+            .unwrap();
+        }
         let frame: Value = serde_json::from_slice(&answered.stdout)
             .unwrap_or_else(|err| panic!("{session}: {err}: {answered:?}"));
         std::fs::write(&release, "").unwrap();
@@ -1860,6 +1883,19 @@ fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
             assert!(
                 turns[1]["input"].to_string().contains(&message),
                 "{turns:?}"
+            );
+            // The server took the replacement `turn/start` carrying the message,
+            // and only then did the supervisor hear it was delivered.
+            let stream = std::fs::read_to_string(&frames).unwrap();
+            let at = |needle: &str| {
+                stream
+                    .lines()
+                    .position(|line| line.contains(needle))
+                    .unwrap_or_else(|| panic!("no `{needle}` in:\n{stream}"))
+            };
+            assert!(
+                at(&message) < at("ANSWERED {"),
+                "answered before the server had the message:\n{stream}"
             );
             continue;
         }

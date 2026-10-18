@@ -304,8 +304,11 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   mechanism whose terminal signal ends the run unconditionally would drop it.
   The interrupt is answered on **delivery**, not on the abort (#1405): it waits
   on a `RedirectDelivery` in `io::control` that only the writer of the
-  replacement turn settles `Delivered` (stdin/ACP on the write, codex on its
-  `turn/start` ack, HTTP on the session's admission). Every path that ends a
+  replacement turn settles `Delivered` (stdin/ACP on the harness's first line
+  after the write, codex on its `turn/start` ack, HTTP on the session's
+  admission) — never on the write alone, which a double could only record
+  after the answer. The redirect client has no read timeout: once a write is
+  claimed only the run can settle it. Every path that ends a
   turn or a candidate without that write must settle it as undelivered
   (`no_active_turn` turn ended / `not_running` run gone) — a new backend that
   forgets leaves the supervisor waiting out the 60s deadline. A writer claims

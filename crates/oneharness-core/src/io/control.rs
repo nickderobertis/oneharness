@@ -70,14 +70,6 @@ fn redirect_delivery_deadline() -> std::time::Duration {
     )
 }
 
-/// How long a client waits for the answer to a request carrying a redirection:
-/// the run's own delivery deadline plus the ordinary allowance, so a run that
-/// withdraws at its deadline is still heard rather than mistaken for a dead one.
-#[cfg(unix)]
-const REDIRECT_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
-    REDIRECT_DELIVERY_DEADLINE.as_secs() + 2 * CLIENT_TIMEOUT.as_secs(),
-);
-
 /// The most one frame may be — in either direction — before it is refused
 /// unread.
 ///
@@ -210,7 +202,9 @@ enum DeliveryState {
     Pending,
     /// A writer has claimed it and is writing it now.
     Writing,
-    /// Written as the prompt of the turn that replaces the aborted one.
+    /// Written as the prompt of the turn that replaces the aborted one, and
+    /// taken by the harness: its acknowledgement (codex), its admission (the
+    /// HTTP servers) or, where it sends neither, its next line after the write.
     Delivered,
     /// It will never be written: why, and the refusal reason that says so.
     Undelivered(ControlReason, String),
@@ -457,6 +451,10 @@ pub struct ControlHandle {
     delivery: Mutex<Option<Arc<RedirectDelivery>>>,
     /// How long a redirect waits to be written before it is taken back.
     delivery_deadline: Mutex<std::time::Duration>,
+    /// A redirection was written to a harness that does not acknowledge it, so
+    /// the harness's next line — the replacement turn speaking — is what says
+    /// it arrived. Until then the interrupt is not answered.
+    acknowledged_by_next_line: std::sync::atomic::AtomicBool,
     /// The serving candidate's shared app-server state, when its turn runs on
     /// one.
     pooled: Mutex<PooledState>,
@@ -500,6 +498,7 @@ impl ControlHandle {
             redirect: Mutex::new(Redirect::None),
             delivery: Mutex::new(None),
             delivery_deadline: Mutex::new(redirect_delivery_deadline()),
+            acknowledged_by_next_line: std::sync::atomic::AtomicBool::new(false),
             pooled: Mutex::new(PooledState::default()),
             app_server: Mutex::new(None),
         }
@@ -562,6 +561,8 @@ impl ControlHandle {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
+        self.acknowledged_by_next_line
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         if undelivered || !matches!(held, Redirect::None) {
             eprintln!(
                 "oneharness: warning: the interrupted turn ended before its redirection could be \
@@ -613,6 +614,15 @@ impl ControlHandle {
     /// A write failure is not fatal here: the server has gone, which its own
     /// exit and output will report far more usefully than a panic would.
     pub fn advance(&self, line: &str) -> bool {
+        // The harness spoke after a redirection was written to it: the turn
+        // that replaces the aborted one has the message.
+        if !line.trim().is_empty()
+            && self
+                .acknowledged_by_next_line
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            self.redirect_delivered();
+        }
         let (step, opened_redirect, awaits_answer, answered) = {
             let mut backend = self.mechanism();
             // Nothing is bound, so there is no turn this line can be part of and
@@ -688,10 +698,11 @@ impl ControlHandle {
                 }
             }
         }
-        // Written. Delivered now, unless the server is still to say whether it
-        // took the turn — then its answer, a line from now, settles it.
-        if let Some(delivery) = delivery.filter(|_| !awaits_answer) {
-            delivery.settle(DeliveryState::Delivered);
+        // Written. Codex says whether it took the turn in its answer; ACP says
+        // nothing, so its next line — the replacement turn under way — does.
+        if delivery.is_some() && !awaits_answer {
+            self.acknowledged_by_next_line
+                .store(true, std::sync::atomic::Ordering::SeqCst);
         }
         step == crate::domain::dialogue::DialogueStep::Terminal
     }
@@ -917,8 +928,11 @@ impl ControlHandle {
             return false;
         };
         match self.write_line(&frame) {
+            // Delivered once the harness speaks again: its next line is the
+            // replacement turn under way, which `advance` settles it on.
             Ok(()) => {
-                self.redirect_delivered();
+                self.acknowledged_by_next_line
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 true
             }
             Err(err) => {
@@ -1580,13 +1594,17 @@ mod imp {
                 )
             }
         };
-        // A redirect is answered on delivery, which waits for the aborted turn
-        // to end, so its answer is given the run's own delivery deadline too.
+        // A redirect is answered on delivery, and once its replacement turn is
+        // written only the harness's answer settles it — however long that
+        // takes. A client that gave up first would report a failure for a
+        // message that may still land, so it waits for the run's definitive
+        // answer: the run bounds a message nothing has claimed with its own
+        // deadline, and a run that dies closes the socket, which ends the read.
         let read_timeout = match request.input() {
-            Some(_) => REDIRECT_CLIENT_TIMEOUT,
-            None => CLIENT_TIMEOUT,
+            Some(_) => None,
+            None => Some(CLIENT_TIMEOUT),
         };
-        let _ = stream.set_read_timeout(Some(read_timeout));
+        let _ = stream.set_read_timeout(read_timeout);
         let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
         let mut line = match serde_json::to_string(request) {
             Ok(line) => line,
@@ -2381,14 +2399,19 @@ mod tests {
             "the run must not end while it still owes a redirection"
         );
         assert!(!handle.has_pending_redirect(), "delivered exactly once");
+        // Written, but the harness has not spoken since: nothing yet says the
+        // replacement turn has it, so the supervisor is still waiting.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!pending.is_finished(), "answered on the write alone");
+        // The harness's next line is the replacement turn under way — and,
+        // here, its end, which really is the end.
+        assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
         let response = pending.join().unwrap();
         assert!(response.is_ok(), "{response:?}");
         assert!(
             response.is_redirected(),
             "the answer must say the message was delivered: {response:?}"
         );
-        // The next end really is the end.
-        assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
 
         handle.end_turn();
         let mut delivered = String::new();

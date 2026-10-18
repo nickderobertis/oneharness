@@ -31736,6 +31736,17 @@ impl RedirectJourney {
     /// Start `double`'s controlled run with `envs` on top of its own, and wait
     /// until its first turn is in flight.
     fn start(double: RedirectDouble, tag: &str, envs: &[(&str, &str)]) -> Self {
+        Self::start_within(double, tag, envs, "60")
+    }
+
+    /// [`Self::start`] under a run timeout of `timeout` seconds, for a journey
+    /// that holds the run longer than a minute on purpose.
+    fn start_within(
+        double: RedirectDouble,
+        tag: &str,
+        envs: &[(&str, &str)],
+        timeout: &str,
+    ) -> Self {
         let store = control_store_dir(&format!("{tag}-{}", double.harness()));
         let cwd = control_store_dir(&format!("{tag}-{}-cwd", double.harness()));
         let log = store.join("double.log");
@@ -31783,7 +31794,7 @@ impl RedirectJourney {
                 "--bin",
                 &bin_override(double.harness()),
                 "--timeout",
-                "60",
+                timeout,
                 "--compact",
                 "--env",
                 &mock_profile_redirect(),
@@ -31842,6 +31853,26 @@ impl RedirectJourney {
             .stderr(Stdio::piped())
             .spawn()
             .expect("failed to spawn the interrupt")
+    }
+
+    /// Wait for `interrupt`'s answer and append it to the double's own log as
+    /// one `ANSWERED` line, the moment it arrives. The double records each
+    /// message as it receives it, so that log is ONE ordered stream of both
+    /// events: a prompt the harness took before the answer appears above it.
+    fn answered(&self, interrupt: std::process::Child) -> Output {
+        use std::io::Write as _;
+        let answer = interrupt.wait_with_output().unwrap();
+        let mut log = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.log)
+            .expect("the double's log exists once its turn is in flight");
+        writeln!(
+            log,
+            "ANSWERED {}",
+            String::from_utf8_lossy(&answer.stdout).trim()
+        )
+        .expect("record the answer in the double's log");
+        answer
     }
 
     /// The run's report, once it has finished.
@@ -31908,7 +31939,12 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
         let gate_dir = control_store_dir(&format!("gate-{}", double.harness()));
         let gate = gate_dir.join("open");
         let gate_arg = gate.display().to_string();
-        let mut envs = vec![("MOCK_INTERRUPT_GATE", gate_arg.as_str())];
+        // A harness slow to read the message that replaces the turn: an
+        // answer given on the write alone would land in the stream above it.
+        let mut envs = vec![
+            ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+            ("MOCK_SLOW_NEXT_READ_MS", "500"),
+        ];
         if double == RedirectDouble::Opencode {
             envs.push(("MOCK_HTTP_CONTROL_FAULT", "redirected-turn"));
         }
@@ -31931,7 +31967,7 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
         }
         std::fs::write(&gate, "").unwrap();
 
-        let answer = interrupt.wait_with_output().unwrap();
+        let answer = journey.answered(interrupt);
         assert!(answer.status.success(), "{double:?}: {answer:?}");
         let frame = json_stdout(&answer);
         assert_eq!(frame["redirected"], true, "{double:?}: {frame}");
@@ -31956,6 +31992,13 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
                 .position(|line| line.contains(needle))
                 .unwrap_or_else(|| panic!("{double:?}: no `{needle}` in:\n{received}"))
         };
+        // The ordering IS the contract, read off one stream: the harness took
+        // the replacement prompt, and only then did the supervisor hear it was
+        // delivered.
+        assert!(
+            at(RedirectJourney::MESSAGE) < at("ANSWERED {"),
+            "{double:?}: answered before the harness had the message:\n{received}"
+        );
         assert!(
             at(double.aborted()) < at("GATE_OPENED"),
             "{double:?}:\n{received}"
@@ -32130,6 +32173,52 @@ fn a_redirect_already_submitted_at_the_deadline_is_answered_by_the_server() {
         "{report}"
     );
     assert_eq!(carried(&received), 1, "{received}");
+}
+
+/// Once a redirect's replacement turn is written, only the harness's answer
+/// says whether it landed — so the supervisor waits for that answer however
+/// long it takes, and is never left with a failed interrupt for a message that
+/// lands afterwards. Codex here holds its acknowledgement of the replacement
+/// `turn/start` past the 80s a redirect's client used to give up after.
+#[cfg(unix)]
+#[test]
+fn a_redirect_whose_replacement_is_acknowledged_slowly_is_still_answered_definitively() {
+    let gate_dir = control_store_dir("slow-ack-gate");
+    let gate = gate_dir.join("open");
+    let gate_arg = gate.display().to_string();
+    let journey = RedirectJourney::start_within(
+        RedirectDouble::Codex,
+        "slow-ack",
+        &[("MOCK_CODEX_ACK_GATE", gate_arg.as_str())],
+        "300",
+    );
+    let asked = std::time::Instant::now();
+    let mut interrupt = journey.redirect();
+    wait_until("the replacement turn to be written", || {
+        carried(&journey.received()) == 1
+    });
+    let held = std::time::Duration::from_secs(85);
+    std::thread::sleep((asked + held).saturating_duration_since(std::time::Instant::now()));
+    assert!(
+        interrupt.try_wait().unwrap().is_none(),
+        "the supervisor gave up on a redirect whose outcome was still pending: {:?}",
+        interrupt.wait_with_output()
+    );
+    std::fs::write(&gate, "").unwrap();
+    let answer = interrupt.wait_with_output().unwrap();
+    assert!(answer.status.success(), "{answer:?}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{answer:?}");
+    let (_, report, received) = journey.finish();
+    assert_eq!(
+        report["control"]["interrupts"][0]["outcome"], "served",
+        "{report}"
+    );
+    assert_eq!(
+        report["control"]["interrupts"][0]["redirected"], true,
+        "{report}"
+    );
+    assert_eq!(carried(&received), 1, "{received}");
+    assert!(received.contains("ACK_GATE_OPENED"), "{received}");
 }
 
 /// A replacement submission that never reaches the server — its connection

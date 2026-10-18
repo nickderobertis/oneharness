@@ -1002,7 +1002,10 @@ mod crush_redirects {
         cancel: Cancel,
         gate: Gate,
         prompts: Mutex<Vec<String>>,
+        /// Made before anything connects, so an event emitted before the
+        /// client's stream arrives waits for it rather than being lost.
         events: Mutex<Option<mpsc::Sender<String>>>,
+        stream: Mutex<Option<mpsc::Receiver<String>>>,
         gone: AtomicBool,
     }
 
@@ -1059,8 +1062,7 @@ mod crush_redirects {
                 );
             };
             if path.contains("/events") {
-                let (tx, rx) = mpsc::channel::<String>();
-                *self.events.lock().unwrap() = Some(tx);
+                let rx = self.stream.lock().unwrap().take().expect("one stream");
                 let _ = write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n"
@@ -1127,11 +1129,13 @@ mod crush_redirects {
         let root = std::fs::canonicalize("/tmp").unwrap();
         let dir = ScratchDir::under(&root, &format!("crush-{cancel:?}")).unwrap();
         let server = dir.join("crush.sock");
+        let (events, stream) = mpsc::channel::<String>();
         let standin = Arc::new(Standin {
             cancel,
             gate: Gate::default(),
             prompts: Mutex::new(Vec::new()),
-            events: Mutex::new(None),
+            events: Mutex::new(Some(events)),
+            stream: Mutex::new(Some(stream)),
             gone: AtomicBool::new(false),
         });
         let listener = UnixListener::bind(&server).unwrap();

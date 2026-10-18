@@ -87,6 +87,18 @@ MODELS_PATH = "/v1/models"
 
 
 @dataclass(frozen=True)
+class Request:
+    """What this endpoint reads of a Responses request.
+
+    A websocket warmup (`"generate": false`, which Codex sends before each
+    turn's request on that transport) is always served: stalling it tests
+    nothing, because Codex abandons a warmup and carries on.
+    """
+
+    warmup: bool
+
+
+@dataclass(frozen=True)
 class Decision:
     number: int
     mode: Mode
@@ -139,19 +151,13 @@ class State:
         self.lock = threading.Lock()
         self.count = 0
 
-    def decide(
-        self, transport: Transport, request: dict[str, object], size: int
-    ) -> Decision | None:
+    def decide(self, transport: Transport, request: Request, size: int) -> Decision | None:
         """This request's number and whether it stalls, consuming a `stall-next`.
-
-        A websocket warmup (`"generate": false`, which Codex sends before each
-        turn's request on that transport) is always served: stalling it tests
-        nothing, because Codex abandons a warmup and carries on.
 
         None, said on stderr, when the mode or the request log cannot be read
         or written: a request this endpoint cannot account for is not served.
         """
-        warmup = request.get("generate") is False
+        warmup = request.warmup
         with self.lock:
             self.count += 1
             mode_file = self.root / "mode"
@@ -183,7 +189,7 @@ class State:
             return Decision(self.count, mode)
 
 
-def parse_request(body: bytes) -> dict[str, object] | None:
+def parse_request(body: bytes) -> Request | None:
     """A Responses request: a JSON object, or None for anything else."""
     try:
         request = json.loads(body)
@@ -191,10 +197,7 @@ def parse_request(body: bytes) -> dict[str, object] | None:
         return None
     if not isinstance(request, dict):
         return None
-    fields: dict[str, object] = {}
-    for key, value in request.items():
-        fields[str(key)] = value
-    return fields
+    return Request(warmup=request.get("generate") is False)
 
 
 def created(number: int) -> Event:

@@ -12,6 +12,7 @@
 # live alarm oh_context_free_enforce can be held red and green here. That alarm
 # runs the same two observations against real qwen in scripts/e2e-qwen.sh,
 # which is what keeps the double's discovery rules honest.
+# llmlint: ignore-file[contracts_have_one_source_or_a_drift_gate] The double's discovery rules restate qwen's, an external CLI the deterministic gate cannot run; real qwen is their drift alarm, as codex-stall-endpoint.py's is real codex: oh_context_free_enforce in scripts/e2e-qwen.sh (the live-qwen suite, run by the required macOS job) fails if a checkout turn stops sending the files the double says it loads, or a context-free turn starts sending any.
 # llmlint: ignore-file[e2e_not_mocked] This drives the real built oneharness CLI and the live suite's own helper; only the paid qwen CLI is replaced, by a double applying qwen's documented context discovery, because what is under test is which files a launch exposes to it, not the model. scripts/e2e-qwen.sh remains the real-CLI drift alarm.
 set -euo pipefail
 

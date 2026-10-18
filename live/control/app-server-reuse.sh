@@ -29,7 +29,9 @@
 # `-c thread_unload_delay_secs=1`, so Codex's unload of a released thread lands
 # within the bound; a release that leaves its thread subscribed still fails
 # here, since Codex never unloads a subscribed thread whatever the delay. A
-# dispatch's own server keeps Codex's default.
+# dispatch's own server keeps Codex's default, so on 0.163.0 it holds each
+# released thread for 30 minutes: retention bounded by that delay, not grown
+# for the server's whole life.
 #
 # OH_REUSE_CODEX names the Codex executable (default: `codex` on PATH);
 # OH_REUSE_LEASES the lease count (default 5). The reading is one `ps` listing's.

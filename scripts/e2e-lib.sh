@@ -836,7 +836,7 @@ oh_context_free_enforce() {
   [ -n "$project_line" ] ||
     _oh_stall_abort "$sandbox" "$pid" "$id: $OH_REPO_ROOT/AGENTS.md has no line over 40 characters to look for; pick another project context file"
   local started_ok=0
-  # llmlint: ignore[e2e_not_mocked] What this phase observes is the request qwen sends its model, so a recorder must stand where the model is; the real model is driven by the paid echo turn e2e-qwen.sh runs just before, through the same oh_echo_without_context.
+  # llmlint: ignore-block[e2e_not_mocked] What this phase observes is the request qwen sends its model, so a recorder must stand where the model is, for the endpoint's start and both turns sent to it; the real model is driven by the paid echo turn e2e-qwen.sh runs just before, through the same oh_echo_without_context.
   _oh_endpoint_start chat-capture-endpoint.py "$py" "$sandbox/endpoint" "$sandbox/endpoint.log" || started_ok=$?
   pid="$_OH_ENDPOINT_PID"
   if [ "$started_ok" -ne 0 ]; then
@@ -868,6 +868,7 @@ oh_context_free_enforce() {
       fail "$id: the context-free turn still sent the checkout's AGENTS.md or the global QWEN.md canary to the model; find where this $id now discovers context and point that location into oh_echo_without_context's sandbox"
     fi
   ) </dev/null 2>"$sandbox/turns.log" &
+  # llmlint: ignore-end[e2e_not_mocked]
   wait "$!" || status=$?
   if [ "$status" -ne 0 ]; then
     sed 's/^/    /' "$sandbox/turns.log" >&2 || true

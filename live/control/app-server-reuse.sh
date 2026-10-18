@@ -69,7 +69,7 @@ example="$(printf '%s\n' "$artifacts" | node -e '
     for (const line of input.split("\n")) {
       if (!line.startsWith("{")) continue;
       const message = JSON.parse(line);
-      if (message.reason === "compiler-artifact" && message.target?.name === "app_server_reuse" && message.executable) executable = message.executable;
+      if (message.reason === "compiler-artifact" && message.target?.name === "app_server_reuse" && typeof message.executable === "string" && message.executable !== "") executable = message.executable;
     }
     process.stdout.write(executable);
   });

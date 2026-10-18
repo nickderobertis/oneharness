@@ -86,23 +86,46 @@ class Capture:
     frames: list[Frame] = field(default_factory=list)
 
 
+def _count(raw: dict[str, object], key: str, path: Path) -> int:
+    value = raw.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise ValueError(
+            f"{path}: {key} is {value!r}, not a non-negative integer; rerun observer.py to rewrite it"
+        )
+    return value
+
+
 def read_capture(path: Path) -> Capture:
-    """The capture main() wrote to `path`, read back into its own types."""
+    """The capture main() wrote to `path`, read back into its own types.
+
+    Raises ValueError naming the field when the file is not such a capture.
+    """
     raw = json.loads(path.read_text())
-    return Capture(
-        ready_ns=int(raw["ready_ns"]),
-        stopped_ns=int(raw["stopped_ns"]),
-        drops=int(raw["drops"]),
-        packets_seen=int(raw["packets_seen"]),
-        truncated=int(raw["truncated"]),
-        frames=[
-            Frame(
-                stamp_ns=int(frame["stamp_ns"]),
-                direction="rx" if frame["direction"] == "rx" else "tx",
-                length=int(frame["length"]),
+    if not isinstance(raw, dict) or not isinstance(raw.get("frames"), list):
+        raise ValueError(
+            f"{path} is not an observer capture (no frames list); rerun observer.py to rewrite it"
+        )
+    frames: list[Frame] = []
+    for frame in raw["frames"]:
+        if not isinstance(frame, dict):
+            raise ValueError(
+                f"{path}: a frame is {frame!r}, not an object; rerun observer.py to rewrite it"
             )
-            for frame in raw["frames"]
-        ],
+        direction = frame.get("direction")
+        if direction != "rx" and direction != "tx":
+            raise ValueError(
+                f"{path}: a frame's direction is {direction!r}, not rx or tx; rerun observer.py to rewrite it"
+            )
+        frames.append(
+            Frame(_count(frame, "stamp_ns", path), direction, _count(frame, "length", path))
+        )
+    return Capture(
+        ready_ns=_count(raw, "ready_ns", path),
+        stopped_ns=_count(raw, "stopped_ns", path),
+        drops=_count(raw, "drops", path),
+        packets_seen=_count(raw, "packets_seen", path),
+        truncated=_count(raw, "truncated", path),
+        frames=frames,
     )
 
 

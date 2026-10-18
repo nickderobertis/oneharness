@@ -795,10 +795,12 @@ oh_echo_without_context() {
   marker="$(oh_marker)"
   # In a subshell, as oh_controlled_turn does, so the sandbox goes however the
   # turn ends.
+  # llmlint: ignore-block[tool_output_is_signal] This is the journey's echo turn, and these are oh_run's driving line and oh_assert_echoed's verdict, the same lines every live suite's echo turn prints: a live run is read and cited by them, and they are what the journey printed before it moved off the checkout.
   (
     oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}" "$@"
     oh_assert_echoed "$id" "$marker"
   ) </dev/null &
+  # llmlint: ignore-end[tool_output_is_signal]
   turn=$!
   wait "$turn" || status=$?
   oh_drop_sandbox "$dir"
@@ -845,6 +847,7 @@ oh_context_free_enforce() {
   # Both turns reach only the endpoint, with a local key, under a HOME of the
   # phase's own that the context-free one must replace with its sandbox.
   local home="$sandbox/ambient" base="http://127.0.0.1:$port/v1" key=sk-oneharness-local-only
+  # The two turns' own transcript is kept, and shown only if the phase fails.
   (
     unset DASHSCOPE_API_KEY XDG_CONFIG_HOME QWEN_HOME QWEN_RUNTIME_DIR QWEN_CODE_MEMORY_BASE_DIR
     HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
@@ -863,10 +866,14 @@ oh_context_free_enforce() {
     if grep -qF -- "$project_line" "$requests" || grep -qF -- "$canary" "$requests"; then
       fail "$id: the context-free turn still sent the checkout's AGENTS.md or the global QWEN.md canary to the model; find where this $id now discovers context and point that location into oh_echo_without_context's sandbox"
     fi
-  ) </dev/null &
+  ) </dev/null 2>"$sandbox/turns.log" &
   wait "$!" || status=$?
+  if [ "$status" -ne 0 ]; then
+    sed 's/^/    /' "$sandbox/turns.log" >&2 || true
+  fi
   _oh_stall_cleanup "$sandbox" "$pid"
   [ "$status" -eq 0 ] || exit "$status"
+  # llmlint: ignore[tool_output_is_signal] This one line is the phase's verdict, the way every sibling oh_* phase in this library ends in PASS: a live run is read (and cited as proof) by that line, and a phase that said nothing on success would be indistinguishable from one that never ran.
   note "PASS: $id context-free turn sends none of the checkout's or the machine's context, and a checkout turn sends both"
 }
 

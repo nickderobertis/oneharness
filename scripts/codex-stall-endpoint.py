@@ -79,7 +79,8 @@ class Opcode(enum.IntEnum):
     PONG = 0xA
 
 
-# Every opcode RFC 6455 defines; a frame with any other is refused.
+# The opcodes Codex sends this fixture. Its messages arrive whole, so a
+# continuation frame (0x0) is refused like any opcode not listed.
 KNOWN_OPCODES = frozenset(int(opcode) for opcode in Opcode)
 RESPONSES_PATH = "/v1/responses"
 MODELS_PATH = "/v1/models"

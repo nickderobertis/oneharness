@@ -14,6 +14,85 @@ if [ ! -f "${CODEX_HOME:-$HOME/.codex}/auth.json" ]; then
   need_env "OpenAI auth" OPENAI_API_KEY
 fi
 
+# The effective uid the shared server's Codex runs as, in its own user
+# namespace: on Linux read from the `codex` process carrying the pool record's
+# server marker, through that process's uid_map (the network recorder runs the
+# launch in pasta's namespace, where this user is root); elsewhere this user's.
+#   $1 the record's server marker
+_oh_codex_server_euid() {
+  local marker="$1" env pid exe outer
+  if [ "$(uname -s)" != Linux ]; then
+    id -u
+    return
+  fi
+  for env in /proc/[0-9]*/environ; do
+    pid="${env#/proc/}" pid="${pid%/environ}"
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || continue
+    [ "${exe##*/}" = codex ] || continue
+    tr '\0' '\n' 2>/dev/null <"$env" | grep -qxF "ONEHARNESS_APP_SERVER_MARKER=$marker" || continue
+    outer="$(awk '/^Uid:/ { print $3 }' "/proc/$pid/status" 2>/dev/null)" && [ -n "$outer" ] || continue
+    awk -v u="$outer" '$2 <= u && u < $2 + $3 { print $1 + u - $2; found = 1; exit } END { exit !found }' \
+      "/proc/$pid/uid_map" 2>/dev/null && return
+  done
+  return 1
+}
+
+# The drift gate for Codex's socket rendezvous, which the shared-server launch
+# tightens before Codex starts (stated once as `codex_daemon_dir` and
+# `CODEX_DAEMON_DIR_MODE` in crates/oneharness-core/src/domain/app_server.rs):
+# every pooled codex server still lingering after the controlled turn must have
+# left its --listen path linking into exactly that directory for the euid it
+# runs as, at the mode Codex accepts. Read from the server's own process, so it
+# holds under the recorder's namespace as well as outside it.
+oh_codex_rendezvous_check() {
+  local state="${XDG_STATE_HOME:-$HOME/.local/state}" tmp record link fields pid marker euid target bound want mode checked=0
+  # The rendezvous as the Rust source states it, held there by core's
+  # `the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares`.
+  local rendezvous_prefix=codex-daemon- rendezvous_mode=700
+  tmp="$(cd /tmp && pwd -P)" || fail "codex rendezvous: cannot resolve /tmp; check that it exists"
+  for record in "$state"/oneharness/servers/codex-app-server-*/server.json; do
+    link="$(dirname "$record")/sock/app-server.sock"
+    # A record without a bound link is a server that has stopped since.
+    [ -f "$record" ] && [ -L "$link" ] || continue
+    fields="$(jq -r '"\(.pid // "") \(.marker // "")"' "$record")" ||
+      fail "codex rendezvous: cannot read the pool record $record (jq's error above); a damaged record stops the pool too, so remove that entry's directory and rerun"
+    read -r pid marker <<<"$fields"
+    case "${pid:-}" in '' | 0 | *[!0-9]*)
+      fail "codex rendezvous: the pool record $record names pid '${pid:-}', not a process id; remove that entry's directory and rerun"
+      ;;
+    esac
+    # A killed server can leave its record and link behind; only a running
+    # one says where Codex binds now.
+    ps -p "$pid" >/dev/null 2>&1 || continue
+    [ -n "$marker" ] ||
+      fail "codex rendezvous: the pool record $record names no server marker, which every shared codex server is launched with; remove that entry's directory and rerun"
+    if ! target="$(readlink "$link")"; then
+      # Gone between the test and the read: that server has just stopped.
+      [ -L "$link" ] || continue
+      fail "codex rendezvous: cannot read the socket link $link (readlink's error above); check the entry's permissions with \`ls -la $(dirname "$link")\`"
+    fi
+    euid="$(_oh_codex_server_euid "$marker")" ||
+      fail "codex rendezvous: no running codex process carries the server marker in $record, so the euid its socket directory is named for is unknown; check \`ps -ef | grep app-server\` while a pooled server lingers"
+    want="$tmp/$rendezvous_prefix$euid"
+    bound="$(cd "$(dirname "$target")" && pwd -P)" ||
+      fail "codex rendezvous: the socket link $link names $target, whose directory cannot be entered (cd's error above); a server that is still running holds its socket there, so check that directory's owner and mode with \`ls -ld $(dirname "$target")\`"
+    [ "$bound" = "$want" ] ||
+      fail "codex rendezvous: the shared server runs as euid $euid and bound its socket under $bound, not $want; Codex has moved its rendezvous, so update codex_daemon_dir in crates/oneharness-core/src/domain/app_server.rs, the one source the launch and the mock both read, to it"
+    # Probe the stat dialect rather than the OS: GNU's (Linux, Git Bash) takes
+    # -c, BSD's (macOS) takes -f.
+    if stat -c %a / >/dev/null 2>&1; then
+      mode="$(stat -c %a "$bound")"
+    else
+      mode="$(stat -f %Lp "$bound")"
+    fi || fail "codex rendezvous: cannot read the mode of $bound (stat's error above); run \`ls -ld $bound\` to see it"
+    [ "$mode" = "$rendezvous_mode" ] ||
+      fail "codex rendezvous: $bound is mode $mode, not the 0$rendezvous_mode Codex demands of it; read Codex's refusal for what it now requires"
+    checked=$((checked + 1))
+  done
+  [ "$checked" -gt 0 ] ||
+    fail "codex rendezvous: no pooled codex server under $state/oneharness/servers was still bound after the controlled turn, so nothing could be checked; it lingers 60 s by default, so look for what stopped it early"
+}
+
 export OH_MODEL="${CODEX_E2E_MODEL:-}"
 # Every codex launch below is measured into target/e2e-telemetry/network/codex.jsonl,
 # which `just live-codex` then holds to live/pr-matrix/harness/codex/budgets.yaml.
@@ -30,6 +109,7 @@ else
   # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log.
   note "» controlled turn: a --control turn must round-trip over codex's stdio app-server"
   oh_controlled_turn codex
+  oh_codex_rendezvous_check
 fi
 
 # Usage enforcement: the app-server answers `account/rateLimits/read`
@@ -75,6 +155,12 @@ note "» resume under a sandbox mode: a continued turn must run and keep the san
 oh_resume_mode_enforce codex auto
 oh_resume_mode_enforce codex read-only
 oh_resume_mode_enforce codex plan
+# A resumed turn whose model stream stalls once is recovered by codex inside
+# the resume phases' bound: real codex and its built-in provider against a local
+# endpoint that stalls one response, so no model call is billed.
+# llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.
+note "» resume stall: codex must recover a stalled model stream inside the resume bound"
+oh_resume_stall_enforce codex
 # Model-free: every spelling of a config override oneharness restates the mode
 # after is one codex applies, last one winning.
 # llmlint: ignore[tool_output_is_signal] Every phase in this script announces itself on one line before it runs, and that header is what attributes a later failure (or a hang) to a phase in the CI log; dropping it here alone would make this one phase the unlabelled one.

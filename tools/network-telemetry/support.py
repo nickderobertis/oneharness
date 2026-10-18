@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -305,9 +306,25 @@ def double_bin(tmp: Path, *tools: str) -> Path:
         path = directory / tool
         # The mock is named in the script too: a shared app-server starts from
         # a scrubbed environment that keeps no OH_TEST_MOCK.
+        # Every path is shell-quoted: a scratch directory under TMPDIR may hold
+        # anything, and inside double quotes a `$(...)` in it would run.
+        default = shlex.quote(str(MOCK))
+        mock = '"${OH_TEST_MOCK:-$default}"'
+        if tool == "codex" and MOCK.exists():
+            # Codex's process runs as an executable named `codex`, which is
+            # how e2e-codex.sh's rendezvous check finds the shared server's
+            # process; a copy (a link would resolve to the mock's own name)
+            # off PATH keeps that true of the double. (A missing build is
+            # need_builds' to report.)
+            native = tmp / "double-native" / tool
+            native.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(MOCK, native / tool)
+            mock = shlex.quote(str(native / tool))
         path.write_text(
             "#!/usr/bin/env bash\n"
-            f'OH_TEST_MOCK="${{OH_TEST_MOCK:-{MOCK}}}" exec bash "{DOUBLE}" --double-tool={tool} "$@"\n'
+            f"default={default}\n"
+            f"OH_TEST_MOCK={mock} exec bash {shlex.quote(str(DOUBLE))} "
+            f'--double-tool={shlex.quote(tool)} "$@"\n'
         )
         path.chmod(0o755)
     return directory

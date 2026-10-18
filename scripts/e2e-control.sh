@@ -269,7 +269,7 @@ oh_pooled_reuse() {
 
 if printf '%s\n' "${CONTROLLABLE[@]}" | grep -q '^codex'; then
   if have_env "Codex auth (shared app-server phases)" CODEX_E2E_AUTH OPENAI_API_KEY; then
-    POOLED_DIR="$(mktemp -d)" || fail "cannot create a scratch directory for the shared app-server phases; check that the host temp dir is writable"
+    POOLED_DIR="$(oh_socket_sandbox)" || fail "cannot create a scratch directory for the shared app-server phases; check that the host temp dir is writable"
     trap 'rm -rf "$POOLED_DIR" || note "  could not remove $POOLED_DIR; delete it by hand"' EXIT
     export OH_MODEL="${CODEX_E2E_MODEL:-}"
     note "» codex: pooled-env — two pooled dispatches each see only their own environment, on one server"

@@ -61,6 +61,12 @@ pub const SWEEPER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_SWEEPER";
 /// server stop without waiting a minute.
 pub const LINGER_ENV: &str = "ONEHARNESS_INTERNAL_APP_SERVER_LINGER_MS";
 
+/// A directory replacing Codex's own socket rendezvous directory
+/// (`/tmp/codex-daemon-<euid>`) as the one a launch prepares. Internal: it
+/// exists so a hermetic journey can prepare a directory of its own rather than
+/// the host's, which every Codex on it shares.
+pub const DAEMON_DIR_ENV: &str = "ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR";
+
 /// How long a dispatch waits for a server it started (or found) to accept a
 /// connection, unless its own timeout is shorter.
 const READY_WINDOW: Duration = Duration::from_secs(60);
@@ -358,6 +364,8 @@ fn lease_server(
     template.extend(dispatch.process_args.iter().cloned());
     template.extend(rules::LISTEN_ARGS.iter().map(|arg| (*arg).to_string()));
 
+    prepare_daemon_dir();
+
     let mut attempts = 2;
     loop {
         attempts -= 1;
@@ -380,9 +388,10 @@ fn lease_server(
                 Err(err) => {
                     if !record.is_running() {
                         break Err(format!(
-                            "the shared codex app-server (pid {}) exited before accepting a connection on {}: {err}",
+                            "the shared codex app-server (pid {}) exited before accepting a connection on {}: {err}; {}",
                             record.pid.get(),
-                            socket.display()
+                            socket.display(),
+                            server_pool::early_exit(lease.entry(), &record)
                         ));
                     }
                     if Instant::now() >= until {
@@ -412,6 +421,56 @@ fn lease_server(
                 if attempts == 0 {
                     return Err(message);
                 }
+            }
+        }
+    }
+}
+
+/// Leave Codex's socket rendezvous directory ([`rules::codex_daemon_dir`],
+/// for this euid) in the one shape Codex accepts, when it is ours and only its
+/// mode is wrong: one another tool created first at its own umask's mode
+/// outlives that tool, and every shared server refuses to start meanwhile.
+///
+/// Only that case is repaired, and only by tightening: a directory owned by
+/// someone else, or anything that is not a directory, is left for Codex to
+/// refuse with the reason the caller is then shown. An absent directory is
+/// left for Codex to create.
+fn prepare_daemon_dir() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        let dir = match std::env::var_os(DAEMON_DIR_ENV).filter(|dir| !dir.is_empty()) {
+            Some(dir) => std::path::PathBuf::from(dir),
+            None => {
+                let Ok(tmp) = std::fs::canonicalize("/tmp") else {
+                    return;
+                };
+                // SAFETY: `geteuid` takes nothing and cannot fail.
+                rules::codex_daemon_dir(&tmp, unsafe { libc::geteuid() })
+            }
+        };
+        // Checked and tightened through one handle, opened without following a
+        // link: nothing can swap the path between the check and the chmod.
+        let Ok(handle) = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_DIRECTORY)
+            .open(&dir)
+        else {
+            return;
+        };
+        let Ok(meta) = handle.metadata() else {
+            return;
+        };
+        // SAFETY: as above.
+        let ours = meta.uid() == unsafe { libc::geteuid() };
+        let mode = rules::CODEX_DAEMON_DIR_MODE;
+        // llmlint: ignore[changed_behavior_has_e2e] A directory another user owns, or a chmod refused on one this user owns, needs a second account or root to stage; unprivileged journeys prove the owned-and-loose repair and the not-a-directory refusal (`a_shared_server_starts_once_its_loose_socket_directory_is_made_private`), and either case left alone reaches the caller as Codex's own refusal through the early-exit report.
+        if ours && meta.mode() & 0o777 != mode {
+            if let Err(err) = handle.set_permissions(std::fs::Permissions::from_mode(mode)) {
+                eprintln!(
+                    "oneharness: warning: could not make codex's socket directory {} private (mode {mode:04o}), so a shared codex app-server will refuse it: {err}",
+                    dir.display()
+                );
             }
         }
     }
@@ -1549,6 +1608,37 @@ mod tests {
     }
 
     use super::*;
+
+    /// The live drift gate for Codex's rendezvous (`oh_codex_rendezvous_check`
+    /// in scripts/e2e-codex.sh) expects exactly the directory and mode the
+    /// launch prepares, so a change to either cannot leave it checking real
+    /// Codex against the old one.
+    #[test]
+    fn the_live_rendezvous_check_expects_the_rendezvous_the_launch_prepares() {
+        let lane = include_str!("../../../../scripts/e2e-codex.sh").replace("\r\n", "\n");
+        let named = rules::codex_daemon_dir(Path::new(""), 4242);
+        let prefix = named
+            .to_str()
+            .and_then(|name| name.strip_suffix("4242"))
+            .expect("the rendezvous directory ends in the euid");
+        let values = format!(
+            "  local rendezvous_prefix={prefix} rendezvous_mode={:o}\n",
+            rules::CODEX_DAEMON_DIR_MODE
+        );
+        assert!(
+            lane.contains(&values),
+            "scripts/e2e-codex.sh lacks `{values}`"
+        );
+        for derived in [
+            r#"want="$tmp/$rendezvous_prefix$euid""#,
+            r#"[ "$mode" = "$rendezvous_mode" ]"#,
+        ] {
+            assert!(
+                lane.contains(derived),
+                "scripts/e2e-codex.sh lacks `{derived}`"
+            );
+        }
+    }
 
     #[test]
     fn a_dispatch_plans_a_pooled_turn_only_for_an_app_server_launch() {

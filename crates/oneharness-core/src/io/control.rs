@@ -52,6 +52,29 @@ const REDIRECT_DELIVERY_DEADLINE: std::time::Duration = std::time::Duration::fro
 /// waiting a minute.
 pub(crate) const REDIRECT_DEADLINE_ENV: &str = "ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS";
 
+/// A file the run appends `REDIRECT_WRITTEN` to the moment a redirection's
+/// replacement prompt has been written to the harness — after the write, before
+/// the interrupt is answered. Internal: a hermetic journey points it at its
+/// harness double's own log, so the write and the answer land in one ordered
+/// stream it can read, on mechanisms whose harness sends no acknowledgement.
+pub(crate) const REDIRECT_TRACE_ENV: &str = "ONEHARNESS_INTERNAL_REDIRECT_TRACE";
+
+/// Append `REDIRECT_WRITTEN` to the trace file, when one is named. Best
+/// effort: a trace that cannot be written never touches the run.
+fn trace_redirect_written() {
+    let Some(path) = std::env::var_os(REDIRECT_TRACE_ENV) else {
+        return;
+    };
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        use std::io::Write as _;
+        let _ = writeln!(file, "REDIRECT_WRITTEN");
+    }
+}
+
 /// The delivery deadline this process's runs wait out.
 fn redirect_delivery_deadline() -> std::time::Duration {
     let Ok(raw) = std::env::var(REDIRECT_DEADLINE_ENV) else {
@@ -202,9 +225,10 @@ enum DeliveryState {
     Pending,
     /// A writer has claimed it and is writing it now.
     Writing,
-    /// Written as the prompt of the turn that replaces the aborted one, and
-    /// taken by the harness: its acknowledgement (codex), its admission (the
-    /// HTTP servers) or, where it sends neither, its next line after the write.
+    /// Written as the prompt of the turn that replaces the aborted one — the
+    /// write itself on Claude Code's stdin and ACP, and where the harness says
+    /// whether it took the turn, that answer: codex's acknowledgement, an HTTP
+    /// server's admission.
     Delivered,
     /// It will never be written: why, and the refusal reason that says so.
     Undelivered(ControlReason, String),
@@ -451,10 +475,6 @@ pub struct ControlHandle {
     delivery: Mutex<Option<Arc<RedirectDelivery>>>,
     /// How long a redirect waits to be written before it is taken back.
     delivery_deadline: Mutex<std::time::Duration>,
-    /// A redirection was written to a harness that does not acknowledge it, so
-    /// the harness's next line — the replacement turn speaking — is what says
-    /// it arrived. Until then the interrupt is not answered.
-    acknowledged_by_next_line: std::sync::atomic::AtomicBool,
     /// The serving candidate's shared app-server state, when its turn runs on
     /// one.
     pooled: Mutex<PooledState>,
@@ -498,7 +518,6 @@ impl ControlHandle {
             redirect: Mutex::new(Redirect::None),
             delivery: Mutex::new(None),
             delivery_deadline: Mutex::new(redirect_delivery_deadline()),
-            acknowledged_by_next_line: std::sync::atomic::AtomicBool::new(false),
             pooled: Mutex::new(PooledState::default()),
             app_server: Mutex::new(None),
         }
@@ -561,8 +580,6 @@ impl ControlHandle {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = TurnState::Idle;
-        self.acknowledged_by_next_line
-            .store(false, std::sync::atomic::Ordering::SeqCst);
         if undelivered || !matches!(held, Redirect::None) {
             eprintln!(
                 "oneharness: warning: the interrupted turn ended before its redirection could be \
@@ -614,15 +631,6 @@ impl ControlHandle {
     /// A write failure is not fatal here: the server has gone, which its own
     /// exit and output will report far more usefully than a panic would.
     pub fn advance(&self, line: &str) -> bool {
-        // The harness spoke after a redirection was written to it: the turn
-        // that replaces the aborted one has the message.
-        if !line.trim().is_empty()
-            && self
-                .acknowledged_by_next_line
-                .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            self.redirect_delivered();
-        }
         let (step, opened_redirect, awaits_answer, answered) = {
             let mut backend = self.mechanism();
             // Nothing is bound, so there is no turn this line can be part of and
@@ -698,11 +706,14 @@ impl ControlHandle {
                 }
             }
         }
-        // Written. Codex says whether it took the turn in its answer; ACP says
-        // nothing, so its next line — the replacement turn under way — does.
-        if delivery.is_some() && !awaits_answer {
-            self.acknowledged_by_next_line
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Written. That IS delivery, and from here the message is never handed
+        // back — unless the server is still to say whether it took the turn
+        // (codex), when its answer, a line from now, settles it.
+        if let Some(delivery) = delivery {
+            trace_redirect_written();
+            if !awaits_answer {
+                delivery.settle(DeliveryState::Delivered);
+            }
         }
         step == crate::domain::dialogue::DialogueStep::Terminal
     }
@@ -928,11 +939,11 @@ impl ControlHandle {
             return false;
         };
         match self.write_line(&frame) {
-            // Delivered once the harness speaks again: its next line is the
-            // replacement turn under way, which `advance` settles it on.
+            // Written as the replacement turn's prompt: delivered, and never
+            // handed back, whatever the harness does next.
             Ok(()) => {
-                self.acknowledged_by_next_line
-                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                trace_redirect_written();
+                self.redirect_delivered();
                 true
             }
             Err(err) => {
@@ -2399,19 +2410,15 @@ mod tests {
             "the run must not end while it still owes a redirection"
         );
         assert!(!handle.has_pending_redirect(), "delivered exactly once");
-        // Written, but the harness has not spoken since: nothing yet says the
-        // replacement turn has it, so the supervisor is still waiting.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!pending.is_finished(), "answered on the write alone");
-        // The harness's next line is the replacement turn under way — and,
-        // here, its end, which really is the end.
-        assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
+        // Written: delivered, whatever the harness does next.
         let response = pending.join().unwrap();
         assert!(response.is_ok(), "{response:?}");
         assert!(
             response.is_redirected(),
             "the answer must say the message was delivered: {response:?}"
         );
+        // The next end really is the end.
+        assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
 
         handle.end_turn();
         let mut delivered = String::new();

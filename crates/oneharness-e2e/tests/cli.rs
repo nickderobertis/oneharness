@@ -31773,6 +31773,13 @@ impl RedirectJourney {
             RedirectDouble::Codex | RedirectDouble::Acp => {}
         }
         command.env(double.log_var(), log.display().to_string());
+        // The run records each successful replacement-prompt write into the
+        // same log, so a journey reads the write in order with everything the
+        // double received and with the answer it appends.
+        command.env(
+            "ONEHARNESS_INTERNAL_REDIRECT_TRACE",
+            log.display().to_string(),
+        );
         for (key, value) in envs {
             command.env(key, value);
         }
@@ -31855,24 +31862,30 @@ impl RedirectJourney {
             .expect("failed to spawn the interrupt")
     }
 
-    /// Wait for `interrupt`'s answer and append it to the double's own log as
-    /// one `ANSWERED` line, the moment it arrives. The double records each
-    /// message as it receives it, so that log is ONE ordered stream of both
-    /// events: a prompt the harness took before the answer appears above it.
-    fn answered(&self, interrupt: std::process::Child) -> Output {
-        use std::io::Write as _;
-        let answer = interrupt.wait_with_output().unwrap();
-        let mut log = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&self.log)
-            .expect("the double's log exists once its turn is in flight");
-        writeln!(
-            log,
-            "ANSWERED {}",
-            String::from_utf8_lossy(&answer.stdout).trim()
-        )
-        .expect("record the answer in the double's log");
-        answer
+    /// [`Self::redirect`], whose answer is appended to the double's own log as
+    /// one `ANSWERED` line the moment the interrupt exits — from its own
+    /// thread, so an early answer lands early. The double logs what it
+    /// receives and the run logs each successful replacement-prompt write
+    /// (`REDIRECT_WRITTEN`), so that file is ONE ordered stream of the write
+    /// and the answer.
+    fn redirect_recorded(&self) -> std::thread::JoinHandle<Output> {
+        let interrupt = self.redirect();
+        let log = self.log.clone();
+        std::thread::spawn(move || {
+            use std::io::Write as _;
+            let answer = interrupt.wait_with_output().unwrap();
+            let mut file = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&log)
+                .expect("the double's log exists once its turn is in flight");
+            writeln!(
+                file,
+                "ANSWERED {}",
+                String::from_utf8_lossy(&answer.stdout).trim()
+            )
+            .expect("record the answer in the double's log");
+            answer
+        })
     }
 
     /// The run's report, once it has finished.
@@ -31939,8 +31952,9 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
         let gate_dir = control_store_dir(&format!("gate-{}", double.harness()));
         let gate = gate_dir.join("open");
         let gate_arg = gate.display().to_string();
-        // A harness slow to read the message that replaces the turn: an
-        // answer given on the write alone would land in the stream above it.
+        // A harness slow to read the message that replaces the turn, so its
+        // own record of it trails the write: the ordering is read off the
+        // run's record of the write, never off what the harness says later.
         let mut envs = vec![
             ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
             ("MOCK_SLOW_NEXT_READ_MS", "500"),
@@ -31949,14 +31963,14 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
             envs.push(("MOCK_HTTP_CONTROL_FAULT", "redirected-turn"));
         }
         let journey = RedirectJourney::start(double, "delivered", &envs);
-        let mut interrupt = journey.redirect();
+        let interrupt = journey.redirect_recorded();
         wait_until("the abort to reach the harness", || {
             journey.received().contains(double.aborted())
         });
         // The abort has landed, the aborted turn has not ended, so nothing can
         // have carried the message yet — and the supervisor has no answer.
         assert!(
-            interrupt.try_wait().unwrap().is_none(),
+            !interrupt.is_finished(),
             "{double:?}: answered before the replacement turn could open"
         );
         // The HTTP server records a submission as it arrives and holds only
@@ -31967,7 +31981,7 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
         }
         std::fs::write(&gate, "").unwrap();
 
-        let answer = journey.answered(interrupt);
+        let answer = interrupt.join().unwrap();
         assert!(answer.status.success(), "{double:?}: {answer:?}");
         let frame = json_stdout(&answer);
         assert_eq!(frame["redirected"], true, "{double:?}: {frame}");
@@ -31992,12 +32006,17 @@ fn a_redirect_is_answered_only_once_the_replacement_turn_opened_with_it() {
                 .position(|line| line.contains(needle))
                 .unwrap_or_else(|| panic!("{double:?}: no `{needle}` in:\n{received}"))
         };
-        // The ordering IS the contract, read off one stream: the harness took
-        // the replacement prompt, and only then did the supervisor hear it was
-        // delivered.
+        // The ordering IS the contract, read off one stream: the replacement
+        // prompt was delivered — written to the harness on the stdin and ACP
+        // mechanisms, taken by the server where it acknowledges or admits it
+        // — and only then did the supervisor hear so.
+        let delivered = match double {
+            RedirectDouble::Claude | RedirectDouble::Acp => at("REDIRECT_WRITTEN"),
+            RedirectDouble::Codex | RedirectDouble::Opencode => at(RedirectJourney::MESSAGE),
+        };
         assert!(
-            at(RedirectJourney::MESSAGE) < at("ANSWERED {"),
-            "{double:?}: answered before the harness had the message:\n{received}"
+            delivered < at("ANSWERED {"),
+            "{double:?}: answered before the prompt was delivered:\n{received}"
         );
         assert!(
             at(double.aborted()) < at("GATE_OPENED"),
@@ -32173,6 +32192,46 @@ fn a_redirect_already_submitted_at_the_deadline_is_answered_by_the_server() {
         "{report}"
     );
     assert_eq!(carried(&received), 1, "{received}");
+}
+
+/// Delivery is the successful write of the replacement prompt, and after it
+/// the message is never handed back: a harness that receives the redirection
+/// and then exits without another word still had it delivered. On both
+/// mechanisms that send no acknowledgement — Claude Code's stdin and ACP —
+/// the supervisor is told `redirected: true`, exit 0, and the report records
+/// the interrupt served.
+#[cfg(unix)]
+#[test]
+fn a_redirect_received_by_a_harness_that_then_exits_silently_was_delivered() {
+    for double in [RedirectDouble::Claude, RedirectDouble::Acp] {
+        let journey =
+            RedirectJourney::start(double, "silent-exit", &[("MOCK_EXIT_ON_REDIRECT", "1")]);
+        let answer = journey.redirect().wait_with_output().unwrap();
+        let (_, report, received) = journey.finish();
+        assert!(answer.status.success(), "{double:?}: {answer:?}");
+        assert_eq!(
+            json_stdout(&answer)["redirected"],
+            true,
+            "{double:?}: {answer:?}"
+        );
+        let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        assert_eq!(interrupts.len(), 1, "{double:?}: {report}");
+        assert_eq!(interrupts[0]["outcome"], "served", "{double:?}: {report}");
+        assert_eq!(interrupts[0]["redirected"], true, "{double:?}: {report}");
+        // Received exactly once, and the harness said nothing after it.
+        assert_eq!(carried(&received), 1, "{double:?}:\n{received}");
+        let lines: Vec<&str> = received.lines().collect();
+        let at = lines
+            .iter()
+            .position(|line| line.contains(RedirectJourney::MESSAGE))
+            .unwrap();
+        let after: Vec<&str> = lines[at + 1..]
+            .iter()
+            .copied()
+            .filter(|line| *line != "REDIRECT_WRITTEN")
+            .collect();
+        assert_eq!(after, ["EXITED_SILENTLY"], "{double:?}:\n{received}");
+    }
 }
 
 /// Once a redirect's replacement turn is written, only the harness's answer

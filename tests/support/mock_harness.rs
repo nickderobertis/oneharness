@@ -110,6 +110,10 @@
 //!                   without ending the turn (no result document), appending
 //!                   `DIED_AFTER_INTERRUPT` — the run whose harness is gone
 //!                   before an interrupted turn could end.
+//!   MOCK_EXIT_ON_REDIRECT  with MOCK_TURN_LOG or MOCK_ACP_LOG, exit as soon as
+//!                   the message that replaces an interrupted turn has been
+//!                   received (and logged), without emitting another line —
+//!                   a harness that took the redirection and then went silent.
 //!   MOCK_SLOW_NEXT_READ_MS  with MOCK_TURN_LOG or MOCK_ACP_LOG, once an
 //!                   interrupted turn has ended, wait this many milliseconds
 //!                   before reading stdin again — a harness slow to take the
@@ -1966,6 +1970,10 @@ fn run_acp_server(log_path: &str) -> ! {
             )),
             Some("session/prompt") => {
                 prompt_id = id.clone();
+                if cancelled && std::env::var_os("MOCK_EXIT_ON_REDIRECT").is_some() {
+                    append("EXITED_SILENTLY");
+                    std::process::exit(0);
+                }
                 if cancelled {
                     redirected_text = message
                         .pointer("/params/prompt/0/text")
@@ -2108,6 +2116,10 @@ fn run_controlled_turn(log_path: &str) -> ! {
             // Only the run's own turn is held open; a redirected one ends as
             // soon as it has its message, so a test does not have to interrupt
             // twice to watch a run finish.
+            if index > 0 && std::env::var_os("MOCK_EXIT_ON_REDIRECT").is_some() {
+                append("EXITED_SILENTLY");
+                std::process::exit(0);
+            }
             if !hold || index > 0 {
                 ended = true;
                 break;

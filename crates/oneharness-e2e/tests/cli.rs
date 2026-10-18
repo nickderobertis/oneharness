@@ -31878,10 +31878,13 @@ impl RedirectJourney {
                 .append(true)
                 .open(&log)
                 .expect("the double's log exists once its turn is in flight");
-            writeln!(
-                file,
-                "ANSWERED {}",
-                String::from_utf8_lossy(&answer.stdout).trim()
+            // One write, so the line cannot interleave with the double's own.
+            file.write_all(
+                format!(
+                    "ANSWERED {}\n",
+                    String::from_utf8_lossy(&answer.stdout).trim()
+                )
+                .as_bytes(),
             )
             .expect("record the answer in the double's log");
             answer

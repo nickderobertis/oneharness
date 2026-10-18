@@ -1927,7 +1927,10 @@ fn run_acp_server(log_path: &str) -> ! {
             .append(true)
             .open(log_path)
         {
-            let _ = writeln!(file, "{line}");
+            // One write per line: the run appends its own trace lines to this
+            // file from another process, and `writeln!` would write the text and
+            // its newline separately, letting a trace line land between them.
+            let _ = file.write_all(format!("{line}\n").as_bytes());
             let _ = file.flush();
         }
     };
@@ -2075,7 +2078,10 @@ fn run_controlled_turn(log_path: &str) -> ! {
             .append(true)
             .open(log_path)
         {
-            let _ = writeln!(file, "{line}");
+            // One write per line: the run appends its own trace lines to this
+            // file from another process, and `writeln!` would write the text and
+            // its newline separately, letting a trace line land between them.
+            let _ = file.write_all(format!("{line}\n").as_bytes());
             let _ = file.flush();
         }
     };

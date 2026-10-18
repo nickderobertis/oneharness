@@ -587,17 +587,27 @@ impl Dialogue {
                 || (self.phase == Phase::InTurn && Some(id) == self.turn_request_id)
         });
         // The answer to a redirected turn's request says whether that turn
-        // exists, which is what the interrupt carrying it is answered from.
+        // exists, which is what the interrupt carrying it is answered from. An
+        // acknowledgement is taken only when it names the turn it opened —
+        // `TurnStartResponse.turn.id` is required — so an answer that names none
+        // is no evidence the message became a turn, and is refused as such.
         if self.redirect_answer == RedirectAnswer::Awaited
             && self.phase == Phase::InTurn
             && id.is_some_and(|id| Some(id) == self.turn_request_id)
         {
+            let named = message
+                .pointer("/result/turn/id")
+                .and_then(Value::as_str)
+                .is_some_and(|turn| !turn.is_empty());
             self.redirect_answer = RedirectAnswer::Answered(match message.get("error") {
                 Some(error) => Err(error
                     .get("message")
                     .and_then(Value::as_str)
                     .map_or_else(|| error.to_string(), str::to_string)),
-                None => Ok(()),
+                None if named => Ok(()),
+                None => Err(format!(
+                    "the server answered the replacement `turn/start` without naming a turn: {message}"
+                )),
             });
         }
         if active_id && message.get("error").is_some() {
@@ -1786,6 +1796,11 @@ mod tests {
             (
                 r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32600,"message":"thread not found: th-1"}}"#,
                 Err("thread not found: th-1".to_string()),
+            ),
+            // An answer that names no turn is no evidence the turn exists.
+            (
+                r#"{"jsonrpc":"2.0","id":5,"result":{}}"#,
+                Err(r#"the server answered the replacement `turn/start` without naming a turn: {"id":5,"jsonrpc":"2.0","result":{}}"#.to_string()),
             ),
         ] {
             let mut d = codex_in_turn();

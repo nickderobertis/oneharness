@@ -46,6 +46,30 @@ const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// which keeps "the caller always knows" true however long the harness takes.
 const REDIRECT_DELIVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// A delivery deadline, in milliseconds, replacing
+/// [`REDIRECT_DELIVERY_DEADLINE`] for the run this process serves. Internal: it
+/// exists so a hermetic journey can watch a redirect be taken back without
+/// waiting a minute.
+pub(crate) const REDIRECT_DEADLINE_ENV: &str = "ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS";
+
+/// The delivery deadline this process's runs wait out.
+fn redirect_delivery_deadline() -> std::time::Duration {
+    let Ok(raw) = std::env::var(REDIRECT_DEADLINE_ENV) else {
+        return REDIRECT_DELIVERY_DEADLINE;
+    };
+    raw.parse::<u64>().map_or_else(
+        |_| {
+            eprintln!(
+                "oneharness: warning: ignoring {REDIRECT_DEADLINE_ENV}={raw:?}: not whole \
+                 milliseconds; a redirect waits the default {}s",
+                REDIRECT_DELIVERY_DEADLINE.as_secs()
+            );
+            REDIRECT_DELIVERY_DEADLINE
+        },
+        std::time::Duration::from_millis,
+    )
+}
+
 /// How long a client waits for the answer to a request carrying a redirection:
 /// the run's own delivery deadline plus the ordinary allowance, so a run that
 /// withdraws at its deadline is still heard rather than mistaken for a dead one.
@@ -261,9 +285,8 @@ impl RedirectDelivery {
                         *state = DeliveryState::Undelivered(
                             ControlReason::NotRunning,
                             format!(
-                                "the interrupted turn did not end within {}s, so the redirection \
-                                 was not delivered and was taken back",
-                                deadline.as_secs()
+                                "the interrupted turn did not end within {deadline:?}, so the \
+                                 redirection was not delivered and was taken back"
                             ),
                         );
                         return state.clone();
@@ -476,7 +499,7 @@ impl ControlHandle {
             mechanism: Mutex::new(None),
             redirect: Mutex::new(Redirect::None),
             delivery: Mutex::new(None),
-            delivery_deadline: Mutex::new(REDIRECT_DELIVERY_DEADLINE),
+            delivery_deadline: Mutex::new(redirect_delivery_deadline()),
             pooled: Mutex::new(PooledState::default()),
             app_server: Mutex::new(None),
         }

@@ -32029,6 +32029,80 @@ fn a_redirect_whose_run_exits_first_is_refused_and_never_delivered() {
     }
 }
 
+/// A redirect whose aborted turn never ends would hold the supervisor
+/// forever, so past the run's delivery deadline the message is taken back: the
+/// answer is a `not_running` refusal saying it was not delivered, the report
+/// records it, and when the aborted turn does end later the run writes nothing
+/// for it. The deadline is shortened through the run's internal override so the
+/// journey waits a fraction of a second rather than a minute.
+#[cfg(unix)]
+#[test]
+fn a_redirect_still_unwritten_at_the_deadline_is_taken_back_and_never_delivered() {
+    let gate_dir = control_store_dir("deadline-gate");
+    let gate = gate_dir.join("open");
+    let gate_arg = gate.display().to_string();
+    let journey = RedirectJourney::start(
+        RedirectDouble::Claude,
+        "deadline",
+        &[
+            ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+            ("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "300"),
+        ],
+    );
+    let answer = journey.redirect().wait_with_output().unwrap();
+    // The aborted turn is still live behind the gate, and the message has been
+    // taken back: nothing has written it, and nothing will.
+    assert_eq!(carried(&journey.received()), 0);
+    let frame = json_stdout(&answer);
+    assert!(
+        frame["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("did not end within 300ms")),
+        "{frame}"
+    );
+    std::fs::write(&gate, "").unwrap();
+    let (_, report, received) = journey.finish();
+    assert_undelivered(&answer, &report, "not_running", "deadline");
+    assert!(received.contains("GATE_OPENED"), "{received}");
+    assert_eq!(carried(&received), 0, "{received}");
+}
+
+/// Codex acknowledges the turn a redirection opens, and that answer — not the
+/// write — is what says the turn exists. A thread that refuses the replacement
+/// `turn/start` leaves the message undelivered: `no_active_turn`, in the
+/// server's own words, recorded as a refusal, and no turn ever runs it.
+#[cfg(unix)]
+#[test]
+fn a_codex_redirect_whose_replacement_turn_is_refused_is_not_delivered() {
+    let journey = RedirectJourney::start(
+        RedirectDouble::Codex,
+        "codex-refused",
+        &[("MOCK_CODEX_REFUSE_SECOND_TURN", "1")],
+    );
+    let answer = journey.redirect().wait_with_output().unwrap();
+    let (_, report, received) = journey.finish();
+    assert_undelivered(&answer, &report, "no_active_turn", "codex-refused");
+    assert!(
+        json_stdout(&answer)["error"]
+            .as_str()
+            .is_some_and(|error| error.contains("thread not found")),
+        "{answer:?}"
+    );
+    // The server received the request and refused it; no turn carried it.
+    let refused_at = received
+        .lines()
+        .position(|line| line == "REFUSED_SECOND_TURN")
+        .unwrap_or_else(|| panic!("the replacement turn was not refused:\n{received}"));
+    assert_eq!(carried(&received), 1, "{received}");
+    assert!(
+        received
+            .lines()
+            .position(|line| line.contains(RedirectJourney::MESSAGE))
+            .is_some_and(|at| at < refused_at),
+        "{received}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn a_controlled_opencode_model_that_names_no_provider_is_refused_before_a_server_starts() {

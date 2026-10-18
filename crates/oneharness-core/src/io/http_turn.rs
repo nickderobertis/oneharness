@@ -329,11 +329,28 @@ pub(crate) trait RedirectSource {
     /// The redirection taken last is the prompt of the turn that replaces the
     /// aborted one: the server took the submission, or began the turn.
     fn delivered(&self) {}
-    /// The redirection taken last could not become a turn, for this reason:
-    /// the server refused it, or — `server_gone` — could not be reached at all.
-    fn refused(&self, _why: &str, _server_gone: bool) {}
+    /// The redirection taken last could not become a turn, for this reason.
+    fn refused(&self, _why: &str, _failure: SubmitFailure) {}
     /// The turn ended and the driver opens nothing after it.
     fn turn_ended(&self) {}
+}
+
+/// How a prompt submission failed: the two are different facts about the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SubmitFailure {
+    /// The server answered, and would not take the prompt: the session will
+    /// not open this turn.
+    Refused,
+    /// The server could not be reached at all: the run's harness is gone.
+    Unreachable,
+}
+
+/// A submission that gave up: which one, why, and how.
+#[derive(Debug, Clone)]
+struct GaveUp {
+    submission: usize,
+    why: String,
+    failure: SubmitFailure,
 }
 
 /// A caller of [`run`] hands over a closure and hears nothing back.
@@ -352,11 +369,10 @@ impl RedirectSource for crate::io::control::ControlHandle {
     fn delivered(&self) {
         self.redirect_delivered();
     }
-    fn refused(&self, why: &str, server_gone: bool) {
-        if server_gone {
-            self.redirect_lost(why);
-        } else {
-            self.redirect_refused(why);
+    fn refused(&self, why: &str, failure: SubmitFailure) {
+        match failure {
+            SubmitFailure::Unreachable => self.redirect_lost(why),
+            SubmitFailure::Refused => self.redirect_refused(why),
         }
     }
     fn turn_ended(&self) {
@@ -409,10 +425,7 @@ pub(crate) fn drive(
     // describes the turn the supervisor deliberately stopped — treating it as
     // the run's outcome ends the run before the redirection it committed can
     // become the next turn, which is the message being lost by another route.
-    // The flag says the server could not be reached at all, rather than that
-    // it answered with a refusal — a run whose server is gone, not a session
-    // that would not take a turn.
-    let gave_up = Arc::new(Mutex::new(None::<(usize, String, bool)>));
+    let gave_up = Arc::new(Mutex::new(None::<GaveUp>));
     let current = Arc::new(AtomicUsize::new(0));
     // How many submissions the server has answered `ok`, by number: one past
     // the highest. A redirection's submission answered `ok` is a turn the
@@ -444,12 +457,19 @@ pub(crate) fn drive(
                         response.status,
                         response.body.trim()
                     ),
-                    false,
+                    SubmitFailure::Refused,
                 )),
-                Err(err) => Some((format!("could not submit the prompt: {err}"), true)),
+                Err(err) => Some((
+                    format!("could not submit the prompt: {err}"),
+                    SubmitFailure::Unreachable,
+                )),
             };
-            if let Some((refusal, gone)) = refusal {
-                *gave_up.lock().unwrap_or_else(|e| e.into_inner()) = Some((mine, refusal, gone));
+            if let Some((why, failure)) = refusal {
+                *gave_up.lock().unwrap_or_else(|e| e.into_inner()) = Some(GaveUp {
+                    submission: mine,
+                    why,
+                    failure,
+                });
                 finished.store(true, Ordering::SeqCst);
             }
         })
@@ -460,8 +480,8 @@ pub(crate) fn drive(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .filter(|(who, ..)| *who == current.load(Ordering::SeqCst))
-            .map(|(_, why, _)| why.clone())
+            .filter(|gave_up| gave_up.submission == current.load(Ordering::SeqCst))
+            .map(|gave_up| gave_up.why.clone())
     };
     let mut submitters = vec![spawn_submit(prompt.to_string())];
 
@@ -506,13 +526,13 @@ pub(crate) fn drive(
         if accepted.load(Ordering::SeqCst) > submission {
             redirects.delivered();
             *awaiting = None;
-        } else if let Some((_, why, gone)) = gave_up
+        } else if let Some(gave_up) = gave_up
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
-            .filter(|(who, ..)| *who == submission)
+            .filter(|gave_up| gave_up.submission == submission)
         {
-            redirects.refused(why, *gone);
+            redirects.refused(&gave_up.why, gave_up.failure);
             *awaiting = None;
         }
     };

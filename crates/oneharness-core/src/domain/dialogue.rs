@@ -591,6 +591,8 @@ impl Dialogue {
         // acknowledgement is taken only when it names the turn it opened —
         // `TurnStartResponse.turn.id` is required — so an answer that names none
         // is no evidence the message became a turn, and is refused as such.
+        // Nor is there a turn to follow afterwards, so the conversation ends
+        // there rather than waiting for a `turn/completed` nothing will send.
         if self.redirect_answer == RedirectAnswer::Awaited
             && self.phase == Phase::InTurn
             && id.is_some_and(|id| Some(id) == self.turn_request_id)
@@ -609,6 +611,9 @@ impl Dialogue {
                     "the server answered the replacement `turn/start` without naming a turn: {message}"
                 )),
             });
+            if !named && message.get("error").is_none() {
+                return self.finish();
+            }
         }
         if active_id && message.get("error").is_some() {
             return self.finish();
@@ -1814,10 +1819,13 @@ mod tests {
             // An unrelated answer is not the replacement turn's.
             d.on_line(r#"{"jsonrpc":"2.0","id":99,"result":{}}"#);
             assert!(d.awaits_redirect_answer());
-            d.on_line(answer);
+            let ended = d.on_line(answer);
             assert_eq!(d.take_redirect_answer(), Some(expected.clone()));
             assert!(d.take_redirect_answer().is_none(), "read once");
             assert!(!d.awaits_redirect_answer());
+            // Refused, there is no replacement turn to follow: the conversation
+            // ends rather than waiting for one.
+            assert_eq!(ended.is_terminal(), expected.is_err(), "{answer}");
         }
     }
 

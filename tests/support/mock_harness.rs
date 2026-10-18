@@ -262,6 +262,9 @@
 //!   MOCK_CODEX_CLOSE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, accept the
 //!                   interrupt, close stdin, end the turn and exit — gone before
 //!                   the turn that replaces it can be written.
+//!   MOCK_CODEX_UNNAMED_SECOND_TURN  with MOCK_CODEX_APP_SERVER_LOG, answer
+//!                   every `turn/start` after the first with a result naming no
+//!                   turn, and run none, appending `UNNAMED_SECOND_TURN`.
 //!   MOCK_CODEX_REFUSE_SECOND_TURN  with MOCK_CODEX_APP_SERVER_LOG (or per
 //!                   thread on the shared app-server), answer every
 //!                   `turn/start` after the first with an error, appending
@@ -1632,6 +1635,12 @@ fn run_codex_app_server(log_path: &str) -> ! {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         match message.get("method").and_then(Value::as_str) {
             Some("initialize") => send(&json!({"jsonrpc": "2.0", "id": id, "result": {}})),
+            Some("turn/start")
+                if turns_started > 0 && mock_var_os("MOCK_CODEX_UNNAMED_SECOND_TURN").is_some() =>
+            {
+                append("UNNAMED_SECOND_TURN");
+                send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+            }
             Some("turn/start")
                 if turns_started > 0 && mock_var_os("MOCK_CODEX_REFUSE_SECOND_TURN").is_some() =>
             {

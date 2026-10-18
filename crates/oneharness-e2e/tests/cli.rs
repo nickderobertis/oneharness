@@ -32071,35 +32071,85 @@ fn a_redirect_still_unwritten_at_the_deadline_is_taken_back_and_never_delivered(
 /// write — is what says the turn exists. A thread that refuses the replacement
 /// `turn/start` leaves the message undelivered: `no_active_turn`, in the
 /// server's own words, recorded as a refusal, and no turn ever runs it.
+///
+/// An answer that names no turn is no acknowledgement either: the same
+/// refusal, and the run ends there rather than waiting for a turn nobody opened.
 #[cfg(unix)]
 #[test]
 fn a_codex_redirect_whose_replacement_turn_is_refused_is_not_delivered() {
-    let journey = RedirectJourney::start(
-        RedirectDouble::Codex,
-        "codex-refused",
-        &[("MOCK_CODEX_REFUSE_SECOND_TURN", "1")],
-    );
-    let answer = journey.redirect().wait_with_output().unwrap();
-    let (_, report, received) = journey.finish();
-    assert_undelivered(&answer, &report, "no_active_turn", "codex-refused");
-    assert!(
-        json_stdout(&answer)["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("thread not found")),
-        "{answer:?}"
-    );
-    // The server received the request and refused it; no turn carried it.
-    let refused_at = received
-        .lines()
-        .position(|line| line == "REFUSED_SECOND_TURN")
-        .unwrap_or_else(|| panic!("the replacement turn was not refused:\n{received}"));
-    assert_eq!(carried(&received), 1, "{received}");
-    assert!(
-        received
+    for (knob, marker, said) in [
+        (
+            "MOCK_CODEX_REFUSE_SECOND_TURN",
+            "REFUSED_SECOND_TURN",
+            "thread not found",
+        ),
+        (
+            "MOCK_CODEX_UNNAMED_SECOND_TURN",
+            "UNNAMED_SECOND_TURN",
+            "without naming a turn",
+        ),
+    ] {
+        let journey =
+            RedirectJourney::start(RedirectDouble::Codex, "codex-refused", &[(knob, "1")]);
+        let answer = journey.redirect().wait_with_output().unwrap();
+        let (output, report, received) = journey.finish();
+        assert_undelivered(&answer, &report, "no_active_turn", knob);
+        assert!(
+            json_stdout(&answer)["error"]
+                .as_str()
+                .is_some_and(|error| error.contains(said)),
+            "{knob}: {answer:?}"
+        );
+        assert_ne!(
+            report["results"][0]["status"], "timeout",
+            "{knob}: {output:?}"
+        );
+        // The server received the request and did not open a turn for it.
+        let refused_at = received
             .lines()
-            .position(|line| line.contains(RedirectJourney::MESSAGE))
-            .is_some_and(|at| at < refused_at),
-        "{received}"
+            .position(|line| line == marker)
+            .unwrap_or_else(|| panic!("{knob}: the replacement turn was not refused:\n{received}"));
+        assert_eq!(carried(&received), 1, "{knob}: {received}");
+        assert!(
+            received
+                .lines()
+                .position(|line| line.contains(RedirectJourney::MESSAGE))
+                .is_some_and(|at| at < refused_at),
+            "{knob}: {received}"
+        );
+    }
+}
+
+/// A delivery-deadline override that is not whole milliseconds is said and
+/// ignored, never taken as some other deadline: the run warns and waits the
+/// default.
+#[cfg(unix)]
+#[test]
+fn a_malformed_delivery_deadline_override_is_warned_about_and_ignored() {
+    let journey = RedirectJourney::start(
+        RedirectDouble::Claude,
+        "bad-deadline",
+        &[("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "soon")],
+    );
+    let stop = run(
+        &[
+            "interrupt",
+            "--session",
+            RedirectJourney::SESSION,
+            "--session-dir",
+            &journey.store.display().to_string(),
+        ],
+        &[],
+    );
+    assert!(stop.status.success(), "{stop:?}");
+    let (output, _, _) = journey.finish();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "ignoring ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS=\"soon\": not whole milliseconds; \
+             a redirect waits the default 60s"
+        ),
+        "{stderr}"
     );
 }
 

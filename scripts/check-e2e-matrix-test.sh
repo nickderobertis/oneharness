@@ -6,8 +6,9 @@
 # Those checks are what stands between a silent gap in the turn-control suite
 # and a control regression merging unnoticed — a moved source stops triggering
 # the workflow, an unsupplied provider key drops that harness out of a run
-# `OH_E2E_NO_SKIP` only turns red minutes into paid model calls, and a reporting
-# job with no checkout exits 127 before it can announce anything. All of those
+# `OH_E2E_NO_SKIP` only turns red minutes into paid model calls, a schedule
+# spends paid calls nobody reads, and a job with no checkout exits 127 before
+# it can do anything. All of those
 # failure modes are invisible in a green CI log, so the gate that catches them
 # needs its own proof that it still fires.
 set -euo pipefail
@@ -145,51 +146,31 @@ build_fixture
 sed -i.bak '/name: Live turn-control e2e/,$ { /secrets\./d; }' "$tmp/repo/$workflow"
 run_case "the live step stripped of its credentials" 1 "secret-backed variable for \`just live-control\`"
 
-# The schedule removed: macOS then runs the suite nowhere, and this feature has
-# already broken there three times in ways Linux cannot show.
+# A schedule reinstated: CI's Mac check already runs the suite on trusted PRs,
+# so a nightly run is paid calls across six harnesses that nobody reads.
 build_fixture
-sed -i.bak '/^  schedule:$/,/^    - cron:/d' "$tmp/repo/$workflow"
-grep -q '^  schedule:$' "$tmp/repo/$workflow" &&
-  fail "fixture setup: the removed-schedule case left the schedule trigger in place"
-run_case "the schedule removed" 1 "no schedule trigger"
+awk '/^  workflow_dispatch:$/ { print "  schedule:"; print "    - cron: \"11 7 * * *\"" } { print }' \
+  "$tmp/repo/$workflow" >"$tmp/scheduled.yml"
+mv "$tmp/scheduled.yml" "$tmp/repo/$workflow"
+grep -q '^  schedule:$' "$tmp/repo/$workflow" ||
+  fail "fixture setup: the reinstated-schedule case did not add a schedule trigger"
+run_case "a schedule reinstated" 1 "declares a schedule trigger"
 
 # Automatic Mac spending moved to the CI carrier; a missing proof must fail.
 build_fixture
 sed -i.bak 's/run: just live-control/run: echo missing-control/' "$tmp/repo/.github/workflows/ci.yml"
 run_case "the consolidated Mac control proof removed" 1 "must retain the consolidated Mac turn-control proof"
 
-# A schedule declared with no cron under it: the trigger is there, so a grep for
-# `schedule:` alone would pass, and the workflow would never actually fire.
+# The checkout contract, proven against a real job of the control suite: its
+# live job runs this repository's justfile, so without a checkout its workspace
+# holds no such file. This is the shape that swallowed ten consecutive nightly
+# failures in the since-retired reporter, so it is checked against a real job
+# rather than only through the synthetic one below.
 build_fixture
-sed -i.bak '/^    - cron:/d' "$tmp/repo/$workflow"
-grep -q '^    - cron:' "$tmp/repo/$workflow" &&
-  fail "fixture setup: the no-cron case left a cron entry in place"
-run_case "a schedule with no cron entry" 1 "no cron entry"
-
-# The reporter job left without permission to report: it runs, and the `gh issue`
-# call fails against the workflow's top-level read-only token.
-build_fixture
-sed -i.bak '/^      issues: write$/d' "$tmp/repo/$workflow"
-grep -q 'issues: write' "$tmp/repo/$workflow" &&
-  fail "fixture setup: the no-permission case left 'issues: write' in place"
-run_case "the reporter without issues: write" 1 "issues: write"
-
-# The reporting job removed: the nightly run still happens, and a failure is a
-# red square nobody is looking at.
-build_fixture
-sed -i.bak "/failure() && github.event_name == 'schedule'/d" "$tmp/repo/$workflow"
-run_case "the scheduled-failure report removed" 1 "nightly red"
-
-# The checkout contract, proven against the job the defect was found in: the
-# scheduled-failure reporter runs scripts/report-scheduled-failure.sh, and
-# without a checkout its workspace holds no such file. This is the shape that
-# swallowed ten consecutive nightly failures, so it is checked as itself rather
-# than only through the synthetic job below.
-build_fixture
-sed -i.bak '/^  report:$/,$ { /uses: actions\/checkout@/d; }' "$tmp/repo/$workflow"
-grep -q 'uses: actions/checkout@' "$tmp/repo/$workflow" ||
-  fail "fixture setup: the reporter case removed every checkout in the file, not just the reporter's"
-run_case "the reporter without a checkout" 1 "report-scheduled-failure.sh out of this repository"
+sed -i.bak '/^  live:$/,$ { /uses: actions\/checkout@/d; }' "$tmp/repo/$workflow"
+grep -q 'uses: actions/checkout@' "$tmp/repo/$workflow" &&
+  fail "fixture setup: the live-job case left a checkout in the live job"
+run_case "the live job without a checkout" 1 "job 'live' runs justfile"
 
 # And both halves of that contract against one definition: the same job, once
 # missing the step and once carrying it. `just` is the second way a job reaches

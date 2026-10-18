@@ -30,8 +30,9 @@ host with a stdio client that started a thread, ran the shell turn, resumed it
 and sent `thread/unsubscribe` (answered `unsubscribed`; a second answered
 `notSubscribed`): codex-cli 0.159.2 sent `thread/status/changed` → `notLoaded`
 and `thread/closed` 60 s later, its default; codex-cli 0.163.0 at its default
-still listed the thread in `thread/loaded/list` 690 s later (its default is
-1800 s, `thread_unload_delay_secs` in codex-rs's `config_toml.rs`), and with
+kept listing the thread in `thread/loaded/list` and sent `thread/closed`
+1800 s after the release (its default `thread_unload_delay_secs`, in codex-rs's
+`config_toml.rs`), and with
 `-c thread_unload_delay_secs=5` unloaded it 5 s after the release. The same
 workload on 0.163.0 without the override failed with all 5 released threads
 still loaded at the 90 s bound, the server growing from 284,598,272 B after the

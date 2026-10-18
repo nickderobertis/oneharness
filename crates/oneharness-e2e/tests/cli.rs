@@ -32079,7 +32079,9 @@ fn a_redirect_still_unwritten_at_the_deadline_is_taken_back_and_never_delivered(
 /// has submitted the redirection to the HTTP server, whether it landed is the
 /// server's answer to that submission, so the interrupt waits past its
 /// deadline for it — and answers with what the server did, never a refusal
-/// for a message the session may be about to run.
+/// for a message the session may be about to run. The server is held past the
+/// 10s an ordinary interrupt waits for its answer, too: a redirect's client
+/// waits as long as the run's own delivery can take.
 #[cfg(unix)]
 #[test]
 fn a_redirect_already_submitted_at_the_deadline_is_answered_by_the_server() {
@@ -32106,12 +32108,10 @@ fn a_redirect_already_submitted_at_the_deadline_is_answered_by_the_server() {
     wait_until("the redirection to be submitted", || {
         carried(&journey.received()) == 1
     });
-    // Past the deadline, the submitted message is still unanswered rather than
-    // taken back.
-    std::thread::sleep(
-        (asked + deadline + std::time::Duration::from_millis(500))
-            .saturating_duration_since(std::time::Instant::now()),
-    );
+    // Past the deadline — and past the ordinary client's 10s — the submitted
+    // message is still unanswered rather than taken back or given up on.
+    let held = deadline.max(std::time::Duration::from_secs(10)) + std::time::Duration::from_secs(1);
+    std::thread::sleep((asked + held).saturating_duration_since(std::time::Instant::now()));
     assert!(
         interrupt.try_wait().unwrap().is_none(),
         "a submitted redirection was answered before the server said what became of it"

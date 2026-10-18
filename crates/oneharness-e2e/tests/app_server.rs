@@ -1728,7 +1728,15 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
             .filter(|t| t["thread"] == thread.as_str())
             .cloned()
             .collect();
+        // The journey re-asks while the turn is still unknown, so the event for
+        // the request answered above is the last; every earlier one is a
+        // `no_active_turn` refusal that delivered nothing.
         let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        let (event, earlier) = interrupts.split_last().expect("no interrupt recorded");
+        for refused in earlier {
+            assert_eq!(refused["reason"], "no_active_turn", "{report}");
+            assert_ne!(refused["redirected"], true, "{report}");
+        }
         if refuse {
             assert!(!served, "{answer}");
             assert_eq!(answer["reason"], "not_running", "{answer}");
@@ -1743,12 +1751,14 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
                 1,
                 "a refused redirect opened a turn: {turns:?}"
             );
-            assert_ne!(interrupts[0]["redirected"], true, "{report}");
+            assert_eq!(event["outcome"], "refused", "{report}");
+            assert_eq!(event["reason"], "not_running", "{report}");
+            assert_ne!(event["redirected"], true, "{report}");
         } else {
             assert!(served, "{answer}");
             assert_eq!(answer["redirected"], true, "{answer}");
-            assert_eq!(interrupts[0]["outcome"], "served", "{report}");
-            assert_eq!(interrupts[0]["redirected"], true, "{report}");
+            assert_eq!(event["outcome"], "served", "{report}");
+            assert_eq!(event["redirected"], true, "{report}");
             assert_eq!(turns.len(), 2, "{turns:?}");
             assert_eq!(pool.turn_of(server, &thread)["turn"], turns[1]["turn"]);
             assert!(

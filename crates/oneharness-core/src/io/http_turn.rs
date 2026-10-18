@@ -1103,7 +1103,14 @@ mod crush_redirects {
                     }
                 }
             } else if path.contains("/agent") {
-                let prompt = body["prompt"].as_str().unwrap_or_default().to_string();
+                let Some(prompt) = body["prompt"].as_str().map(str::to_string) else {
+                    reply(&mut stream, "400 Bad Request", "{}");
+                    self.rejected
+                        .lock()
+                        .unwrap()
+                        .push(format!("{path} without a string `prompt`: {body}"));
+                    return;
+                };
                 let first = {
                     let mut prompts = self.prompts.lock().unwrap();
                     prompts.push(prompt);

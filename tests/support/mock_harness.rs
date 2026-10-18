@@ -1975,11 +1975,20 @@ fn run_acp_server(log_path: &str) -> ! {
                     std::process::exit(0);
                 }
                 if cancelled {
-                    redirected_text = message
+                    // A redirection with no text block is the client's bug:
+                    // refused as invalid params, never run as an empty turn.
+                    let Some(text) = message
                         .pointer("/params/prompt/0/text")
                         .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
+                    else {
+                        append("MALFORMED_PROMPT");
+                        send(&format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"error\":{{\"code\":-32602,\"message\":\"session/prompt carries no text block\"}}}}",
+                            prompt_id.take().unwrap_or_else(|| "null".to_string())
+                        ));
+                        continue;
+                    };
+                    redirected_text = text.to_string();
                 }
                 // The turn does not begin until the client answers this.
                 asked_permission = true;

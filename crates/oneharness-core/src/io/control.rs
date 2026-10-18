@@ -36,6 +36,24 @@ use crate::io::http_turn::HttpTurn;
 #[cfg(unix)]
 const CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long a redirecting interrupt waits for the run to write its message as
+/// the next turn's prompt before taking the message back.
+///
+/// The answer to a redirect is given on delivery, and delivery waits for the
+/// aborted turn to end — which is the harness's to decide. Unbounded, a turn
+/// that never ends would hold the supervisor's process forever; so past this
+/// the run withdraws the message (nothing will write it afterwards) and refuses,
+/// which keeps "the caller always knows" true however long the harness takes.
+const REDIRECT_DELIVERY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long a client waits for the answer to a request carrying a redirection:
+/// the run's own delivery deadline plus the ordinary allowance, so a run that
+/// withdraws at its deadline is still heard rather than mistaken for a dead one.
+#[cfg(unix)]
+const REDIRECT_CLIENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
+    REDIRECT_DELIVERY_DEADLINE.as_secs() + 2 * CLIENT_TIMEOUT.as_secs(),
+);
+
 /// The most one frame may be — in either direction — before it is refused
 /// unread.
 ///
@@ -144,6 +162,147 @@ impl ReplyBoard {
                 .0;
         }
     }
+}
+
+/// What became of one redirection, from the moment an interrupt committed it
+/// to the moment the run wrote it — or could not.
+///
+/// The interrupt that committed it waits on this before answering, so
+/// `redirected: true` is said only of a message that is already the next turn's
+/// prompt. Whoever settles it is the only party that could have delivered it:
+/// the thread that writes the replacement turn, or the path that ends the turn
+/// or the run without one. `Writing` is what makes that exclusive — a writer
+/// claims the message before it writes, and a withdrawal only takes back one
+/// still `Pending`, so the text is written at most once and never after the
+/// caller was told it was not.
+struct RedirectDelivery {
+    state: Mutex<DeliveryState>,
+    settled: std::sync::Condvar,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DeliveryState {
+    /// Committed; nothing has tried to write it yet.
+    Pending,
+    /// A writer has claimed it and is writing it now.
+    Writing,
+    /// Written as the prompt of the turn that replaces the aborted one.
+    Delivered,
+    /// It will never be written: why, and the refusal reason that says so.
+    Undelivered(ControlReason, String),
+}
+
+impl RedirectDelivery {
+    fn new() -> Arc<Self> {
+        Arc::new(RedirectDelivery {
+            state: Mutex::new(DeliveryState::Pending),
+            settled: std::sync::Condvar::new(),
+        })
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, DeliveryState> {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Claim the message for writing: `true` only for one still `Pending`, so a
+    /// message already withdrawn — or already written — is never written again.
+    fn claim(&self) -> bool {
+        let mut state = self.state();
+        if *state == DeliveryState::Pending {
+            *state = DeliveryState::Writing;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Record the final outcome. A settled delivery stays settled: the first
+    /// outcome is the one the waiting interrupt answers with.
+    fn settle(&self, outcome: DeliveryState) {
+        let mut state = self.state();
+        if matches!(*state, DeliveryState::Pending | DeliveryState::Writing) {
+            *state = outcome;
+            self.settled.notify_all();
+        }
+    }
+
+    /// Refuse a message nothing has claimed yet; `true` when this withdrew it.
+    fn withdraw(&self, reason: ControlReason, why: String) -> bool {
+        let mut state = self.state();
+        if *state == DeliveryState::Pending {
+            *state = DeliveryState::Undelivered(reason, why);
+            self.settled.notify_all();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Wait for the outcome. A message still unclaimed at `deadline` is
+    /// withdrawn; one being written is waited out, because its write is
+    /// already happening and only its result says whether it landed.
+    fn outcome(&self, deadline: std::time::Duration) -> DeliveryState {
+        let until = std::time::Instant::now() + deadline;
+        let mut state = self.state();
+        loop {
+            match &*state {
+                DeliveryState::Delivered | DeliveryState::Undelivered(..) => return state.clone(),
+                DeliveryState::Writing => {
+                    state = self
+                        .settled
+                        .wait(state)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                DeliveryState::Pending => {
+                    let now = std::time::Instant::now();
+                    if now >= until {
+                        *state = DeliveryState::Undelivered(
+                            ControlReason::NotRunning,
+                            format!(
+                                "the interrupted turn did not end within {}s, so the redirection \
+                                 was not delivered and was taken back",
+                                deadline.as_secs()
+                            ),
+                        );
+                        return state.clone();
+                    }
+                    state = self
+                        .settled
+                        .wait_timeout(state, until - now)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .0;
+                }
+            }
+        }
+    }
+}
+
+/// Why a redirection whose aborted turn ended without it was not delivered.
+fn turn_ended_undelivered(cause: Option<&dyn std::fmt::Display>) -> DeliveryState {
+    DeliveryState::Undelivered(
+        ControlReason::NoActiveTurn,
+        match cause {
+            Some(cause) => format!(
+                "the interrupted turn ended but its replacement could not be opened ({cause}); \
+                 the redirection was not delivered"
+            ),
+            None => "the interrupted turn ended before its redirection could be written; the \
+                     redirection was not delivered"
+                .to_string(),
+        },
+    )
+}
+
+/// Why a redirection whose run ended first was not delivered.
+fn run_ended_undelivered() -> DeliveryState {
+    DeliveryState::Undelivered(
+        ControlReason::NotRunning,
+        "the run's harness exited before the redirection could be written; the redirection \
+         was not delivered"
+            .to_string(),
+    )
 }
 
 /// Where the serving candidate's turn on a shared app-server is, and what it
@@ -268,6 +427,13 @@ pub struct ControlHandle {
     /// use it — a dialogue holds its own, because opening the replacement turn
     /// is a protocol decision rather than a write.
     redirect: Mutex<Redirect>,
+    /// What became of the redirection an interrupt committed, which that
+    /// interrupt waits on before answering. One at a time: the listener serves
+    /// one request at a time, and a redirect's request is answered only once
+    /// this is settled.
+    delivery: Mutex<Option<Arc<RedirectDelivery>>>,
+    /// How long a redirect waits to be written before it is taken back.
+    delivery_deadline: Mutex<std::time::Duration>,
     /// The serving candidate's shared app-server state, when its turn runs on
     /// one.
     pooled: Mutex<PooledState>,
@@ -309,6 +475,8 @@ impl ControlHandle {
             requests: Mutex::new(0),
             mechanism: Mutex::new(None),
             redirect: Mutex::new(Redirect::None),
+            delivery: Mutex::new(None),
+            delivery_deadline: Mutex::new(REDIRECT_DELIVERY_DEADLINE),
             pooled: Mutex::new(PooledState::default()),
             app_server: Mutex::new(None),
         }
@@ -356,6 +524,11 @@ impl ControlHandle {
     /// are ever held at once — the ordering the rest of this type relies on
     /// (`mechanism` before `redirect` before `state`) is a nesting rule, and the
     /// cheapest way to obey it here is to nest nothing.
+    ///
+    /// The interrupt waiting on that redirection is answered here too — with
+    /// `not_running`, since the candidate it was aimed at is gone — so the
+    /// supervisor learns the message is still theirs rather than being told it
+    /// was delivered.
     pub(crate) fn release(&self) {
         let undelivered = matches!(
             self.mechanism().take(),
@@ -372,6 +545,7 @@ impl ControlHandle {
                  delivered; the message was not carried to another candidate"
             );
         }
+        self.settle_delivery(run_ended_undelivered());
     }
 
     /// Bind the live HTTP turn this handle interrupts. Called once the session
@@ -416,7 +590,7 @@ impl ControlHandle {
     /// A write failure is not fatal here: the server has gone, which its own
     /// exit and output will report far more usefully than a panic would.
     pub fn advance(&self, line: &str) -> bool {
-        let step = {
+        let (step, opened_redirect, awaits_answer, answered) = {
             let mut backend = self.mechanism();
             // Nothing is bound, so there is no turn this line can be part of and
             // none for the caller to keep open.
@@ -425,7 +599,23 @@ impl ControlHandle {
             };
             let shape = backend.shape();
             match backend {
-                Backend::Dialogue(dialogue) => dialogue.on_line(line),
+                // A redirection the dialogue held before this line and not after
+                // it was taken by the turn's end: the step is either the frames
+                // opening its replacement turn or the end of a conversation that
+                // could not open one.
+                //
+                // Codex answers the replacement turn's request at once, and that
+                // answer — not the write — is what says the turn exists.
+                Backend::Dialogue(dialogue) => {
+                    let held = dialogue.has_pending_redirect();
+                    let step = dialogue.on_line(line);
+                    (
+                        step,
+                        held && !dialogue.has_pending_redirect(),
+                        dialogue.awaits_redirect_answer(),
+                        dialogue.take_redirect_answer(),
+                    )
+                }
                 // No conversation to advance: the harness's own end-of-turn
                 // document is the only signal, and there is nothing to write
                 // back.
@@ -442,13 +632,43 @@ impl ControlHandle {
                 }
             }
         };
+        match answered {
+            Some(Ok(())) => self.redirect_delivered(),
+            Some(Err(why)) => self.redirect_refused(&why),
+            None => {}
+        }
+        // Claimed before the replacement turn is written, so a redirection the
+        // waiting interrupt has already taken back is never written after it.
+        let delivery = match (&step, opened_redirect) {
+            (_, false) => None,
+            (crate::domain::dialogue::DialogueStep::Send(_), true) => {
+                match self.claim_delivery() {
+                    Some(delivery) => Some(delivery),
+                    // Withdrawn: the aborted turn is over and nothing replaces
+                    // it, so the conversation ends here.
+                    None => return true,
+                }
+            }
+            (_, true) => {
+                self.settle_delivery(turn_ended_undelivered(None));
+                None
+            }
+        };
         if let crate::domain::dialogue::DialogueStep::Send(frames) = &step {
             for frame in frames {
                 if let Err(err) = self.write_line(frame) {
                     eprintln!("oneharness: warning: could not write a control frame: {err}");
+                    if let Some(delivery) = &delivery {
+                        delivery.settle(turn_ended_undelivered(Some(&err)));
+                    }
                     return true;
                 }
             }
+        }
+        // Written. Delivered now, unless the server is still to say whether it
+        // took the turn — then its answer, a line from now, settles it.
+        if let Some(delivery) = delivery.filter(|_| !awaits_answer) {
+            delivery.settle(DeliveryState::Delivered);
         }
         step == crate::domain::dialogue::DialogueStep::Terminal
     }
@@ -527,17 +747,98 @@ impl ControlHandle {
     /// again — or ends badly — costs one attempt instead of looping. `None`
     /// while the abort is still in flight, so a driver polling for work to do
     /// cannot submit the next turn into the one being cancelled.
+    ///
+    /// Taking it claims its delivery: the interrupt that committed it is
+    /// answered once the run's own driver says whether it landed, or — if
+    /// nothing ever says — with `not_running` when the candidate is released.
+    /// `None` too for a message that interrupt already took back.
     #[must_use]
     pub fn take_redirect(&self) -> Option<RedirectInput> {
-        let mut slot = self.redirect();
-        match std::mem::replace(&mut *slot, Redirect::None) {
-            Redirect::Deliverable(input) => Some(input),
-            // Put back: it is still the run's, just not yet the harness's.
-            other => {
-                *slot = other;
-                None
+        let input = {
+            let mut slot = self.redirect();
+            match std::mem::replace(&mut *slot, Redirect::None) {
+                Redirect::Deliverable(input) => input,
+                // Put back: it is still the run's, just not yet the harness's.
+                other => {
+                    *slot = other;
+                    return None;
+                }
             }
+        };
+        self.claim_delivery().map(|_| input)
+    }
+
+    /// The redirection [`Self::take_redirect`] handed over is now the prompt of
+    /// the turn that replaces the aborted one.
+    pub(crate) fn redirect_delivered(&self) {
+        self.settle_delivery(DeliveryState::Delivered);
+    }
+
+    /// The redirection [`Self::take_redirect`] handed over could not become a
+    /// turn, for the reason `why` names. Nothing will try it again.
+    pub(crate) fn redirect_refused(&self, why: &str) {
+        self.settle_delivery(turn_ended_undelivered(Some(&why)));
+    }
+
+    /// The redirection [`Self::take_redirect`] handed over never reached the
+    /// harness, which is gone: `why` says how that was learned.
+    pub(crate) fn redirect_lost(&self, why: &str) {
+        self.settle_delivery(DeliveryState::Undelivered(
+            ControlReason::NotRunning,
+            format!(
+                "the run's harness could not be reached to open the redirected turn ({why}); \
+                 the redirection was not delivered"
+            ),
+        ));
+    }
+
+    /// The aborted turn has ended and nothing will open a turn after it: a
+    /// redirection whose abort had not landed yet was not delivered, and is
+    /// dropped and refused here rather than carried into a turn nobody opened.
+    pub(crate) fn redirect_turn_ended(&self) {
+        let held = std::mem::replace(&mut *self.redirect(), Redirect::None);
+        match held {
+            Redirect::Committed(_) => self.settle_delivery(turn_ended_undelivered(None)),
+            // Still the run's to deliver: whoever ends the run answers for it.
+            other => *self.redirect() = other,
         }
+    }
+
+    fn delivery(&self) -> std::sync::MutexGuard<'_, Option<Arc<RedirectDelivery>>> {
+        self.delivery
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Start tracking a redirection an interrupt is committing now.
+    fn open_delivery(&self) -> Arc<RedirectDelivery> {
+        let delivery = RedirectDelivery::new();
+        *self.delivery() = Some(Arc::clone(&delivery));
+        delivery
+    }
+
+    /// Claim the committed redirection for a write; `None` when it was taken
+    /// back (or never tracked), in which case it must not be written.
+    fn claim_delivery(&self) -> Option<Arc<RedirectDelivery>> {
+        let delivery = self.delivery().clone()?;
+        delivery.claim().then_some(delivery)
+    }
+
+    /// Settle the committed redirection, if one is still unsettled.
+    fn settle_delivery(&self, outcome: DeliveryState) {
+        if let Some(delivery) = self.delivery().take() {
+            delivery.settle(outcome);
+        }
+    }
+
+    /// Shorten how long a redirection may wait to be written, so a test can
+    /// reach the withdrawal without waiting out the real deadline.
+    #[cfg(test)]
+    fn set_delivery_deadline(&self, deadline: std::time::Duration) {
+        *self
+            .delivery_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = deadline;
     }
 
     /// The abort landed, so a committed redirection is now the next turn.
@@ -572,20 +873,30 @@ impl ControlHandle {
     ///
     /// `shape` is passed in rather than read back off the handle: the caller is
     /// already holding the `mechanism` lock it would have to take.
+    ///
+    /// A redirection whose abort had not landed when this turn ended belonged
+    /// to a turn that finished on its own: it is refused as undelivered, never
+    /// carried into a turn of its own.
     fn open_redirected_turn(&self, shape: ControlShape) -> bool {
         let Some(input) = self.take_redirect() else {
+            self.redirect_turn_ended();
             return false;
         };
         let Some(frame) = prompt_frame(shape, input.as_str()) else {
+            self.redirect_refused("this mechanism has no frame to open a turn with");
             return false;
         };
         match self.write_line(&frame) {
-            Ok(()) => true,
+            Ok(()) => {
+                self.redirect_delivered();
+                true
+            }
             Err(err) => {
                 eprintln!(
                     "oneharness: warning: the turn was interrupted but its redirection could not \
                      be delivered: {err}"
                 );
+                self.redirect_refused(&err.to_string());
                 false
             }
         }
@@ -799,6 +1110,10 @@ impl ControlHandle {
             Some(input) => Redirect::Committed(input.clone()),
             None => Redirect::None,
         };
+        // Tracked from the moment the message is committed, so whichever path
+        // ends up writing it — or ending the turn without it — has something to
+        // answer this request through.
+        let ticket: Option<Arc<RedirectDelivery>>;
         // The serving candidate's mechanism, read under the lock it is bound
         // and released under. Nothing bound is a run between turns — before the
         // first candidate opens one, across a chain's fall-through, or after the
@@ -816,6 +1131,7 @@ impl ControlHandle {
                         // driver reads it when the aborted turn ends, and the
                         // server holds the session either way, so it cannot be
                         // lost in the gap the abort opens.
+                        ticket = redirect.map(|_| self.open_delivery());
                         *self.redirect() = commit(redirect);
                         Delivery::Request(turn)
                     }
@@ -826,12 +1142,18 @@ impl ControlHandle {
                 // is a turn to abort at all — and it takes the redirection over
                 // itself, because opening the replacement turn is a protocol
                 // decision.
+                // Tracked under the same lock the dialogue took the message
+                // under, so the line that ends the turn cannot reach it first.
                 Backend::Dialogue(dialogue) => match dialogue.interrupt(redirect) {
-                    Some(frames) => Delivery::Frames(frames),
+                    Some(frames) => {
+                        ticket = redirect.map(|_| self.open_delivery());
+                        Delivery::Frames(frames)
+                    }
                     None => return no_active_turn(),
                 },
                 Backend::Stdin => match interrupt_frame(shape, &self.next_request_id()) {
                     Some(frame) => {
+                        ticket = redirect.map(|_| self.open_delivery());
                         *self.redirect() = commit(redirect);
                         Delivery::Frames(vec![frame])
                     }
@@ -840,12 +1162,26 @@ impl ControlHandle {
             };
             (shape, delivery)
         };
-        // The answer for a delivered abort, which says whether the redirection
-        // went with it, and names the mechanism that actually took it — the
-        // serving candidate's, never the chain's first.
-        let served = || match redirect {
-            Some(_) => ControlResponse::redirected(shape),
+        // The answer for a delivered abort, naming the mechanism that actually
+        // took it — the serving candidate's, never the chain's first. With a
+        // redirection it is given only once that message is written as the
+        // next turn's prompt, or known never to be.
+        let served = || match &ticket {
+            Some(ticket) => self.delivery_answer(shape, ticket),
             None => ControlResponse::served(shape),
+        };
+        // The answer for an abort that did not land. The message is taken back
+        // unless something already claimed it — the turn can end on its own
+        // while the abort is in flight — in which case what became of it is
+        // the answer, so a message that was written is never called undelivered.
+        let refused = |error: String, reason: ControlReason| match &ticket {
+            Some(ticket) if !ticket.withdraw(reason, error.clone()) => {
+                self.delivery_answer(shape, ticket)
+            }
+            _ => {
+                self.abandon_redirect();
+                ControlResponse::refused(error, reason)
+            }
         };
         let frames = match delivery {
             Delivery::Request(turn) => {
@@ -857,13 +1193,10 @@ impl ControlHandle {
                         self.release_redirect();
                         served()
                     }
-                    Err(err) => {
-                        self.abandon_redirect();
-                        ControlResponse::refused(
-                            format!("could not deliver the interrupt to the control server: {err}"),
-                            ControlReason::NotRunning,
-                        )
-                    }
+                    Err(err) => refused(
+                        format!("could not deliver the interrupt to the control server: {err}"),
+                        ControlReason::NotRunning,
+                    ),
                 };
             }
             Delivery::Frames(frames) => frames,
@@ -887,12 +1220,13 @@ impl ControlHandle {
             match self.write_line(frame) {
                 Ok(()) => {}
                 Err(err) if err.kind() == io::ErrorKind::NotConnected => {
-                    self.abandon_redirect();
-                    return no_active_turn();
+                    return refused(
+                        "the run is alive but no turn is in flight".to_string(),
+                        ControlReason::NoActiveTurn,
+                    );
                 }
                 Err(err) => {
-                    self.abandon_redirect();
-                    return ControlResponse::refused(
+                    return refused(
                         format!("could not deliver the interrupt to the harness: {err}"),
                         ControlReason::NotRunning,
                     );
@@ -904,15 +1238,13 @@ impl ControlHandle {
             match board.wait(id, deadline).as_ref().map(InterruptReply::of) {
                 Some(InterruptReply::Accepted) => {}
                 Some(InterruptReply::ThreadGone(message) | InterruptReply::Refused(message)) => {
-                    self.abandon_redirect();
-                    return ControlResponse::refused(
+                    return refused(
                         format!("the shared codex app-server refused the interrupt: {message}"),
                         ControlReason::NotRunning,
                     );
                 }
                 None => {
-                    self.abandon_redirect();
-                    return ControlResponse::refused(
+                    return refused(
                         format!(
                             "the shared codex app-server did not answer the interrupt within {}s",
                             deadline.as_secs()
@@ -926,6 +1258,29 @@ impl ControlHandle {
         // handed on once the harness says the turn it aborted has ended.
         self.release_redirect();
         served()
+    }
+
+    /// The answer to a redirecting interrupt whose abort landed: given once the
+    /// message is the next turn's prompt, or known never to be. A message still
+    /// unwritten at the deadline is taken back from wherever it is held, so
+    /// nothing writes it after the supervisor was told it was not delivered.
+    fn delivery_answer(&self, shape: ControlShape, ticket: &RedirectDelivery) -> ControlResponse {
+        let deadline = *self
+            .delivery_deadline
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match ticket.outcome(deadline) {
+            DeliveryState::Delivered => ControlResponse::redirected(shape),
+            DeliveryState::Undelivered(reason, why) => {
+                self.abandon_redirect();
+                ControlResponse::refused(why, reason)
+            }
+            // `outcome` returns only a settled state.
+            DeliveryState::Pending | DeliveryState::Writing => ControlResponse::refused(
+                "the redirection's delivery was never settled; the redirection was not delivered",
+                ControlReason::NotRunning,
+            ),
+        }
     }
 
     /// Give back a redirection whose abort could not be delivered, wherever it
@@ -1004,7 +1359,12 @@ impl ControlListener {
     /// was `served` is never missing from the report that says so. A request
     /// arriving after this is refused as `not_running`, which by then it is.
     /// The socket file stays until the listener is dropped.
+    ///
+    /// A redirecting interrupt still waiting for its message to be written is
+    /// answered `not_running` first: the run is over, so nothing will write it,
+    /// and the accept loop being joined is the thread that is waiting.
     pub fn finish(&mut self) -> Vec<ControlEvent> {
+        self.handle.settle_delivery(run_ended_undelivered());
         imp::stop_serving(self);
         self.handle.events()
     }
@@ -1190,7 +1550,13 @@ mod imp {
                 )
             }
         };
-        let _ = stream.set_read_timeout(Some(CLIENT_TIMEOUT));
+        // A redirect is answered on delivery, which waits for the aborted turn
+        // to end, so its answer is given the run's own delivery deadline too.
+        let read_timeout = match request.input() {
+            Some(_) => REDIRECT_CLIENT_TIMEOUT,
+            None => CLIENT_TIMEOUT,
+        };
+        let _ = stream.set_read_timeout(Some(read_timeout));
         let _ = stream.set_write_timeout(Some(CLIENT_TIMEOUT));
         let mut line = match serde_json::to_string(request) {
             Ok(line) => line,
@@ -1341,6 +1707,29 @@ mod tests {
             &format!("control-{tag}-{:?}", std::thread::current().id()),
         )
         .unwrap()
+    }
+
+    /// Send a redirect from another thread, as a separate `oneharness
+    /// interrupt` process would: its answer is given on delivery, so the test
+    /// must be free to drive the turn while the request is waiting.
+    fn send_in_background(path: &Path, text: &str) -> std::thread::JoinHandle<ControlResponse> {
+        let path = path.to_path_buf();
+        let request = ControlRequest::redirect(
+            crate::domain::control::RedirectInput::new(text).expect("a fixture message"),
+        );
+        std::thread::spawn(move || send(&path, &request))
+    }
+
+    /// Wait (bounded) until `ready` holds.
+    fn wait_for(what: &str, ready: impl Fn() -> bool) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !ready() {
+            assert!(
+                std::time::Instant::now() < until,
+                "timed out waiting for {what}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
@@ -1789,7 +2178,6 @@ mod tests {
 
     #[test]
     fn a_redirection_its_own_turn_never_delivered_is_not_carried_to_the_next_candidate() {
-        use crate::domain::control::RedirectInput;
         // A supervisor aimed this message at one candidate's turn. If that turn
         // ends without ever delivering it — the harness died, the chain fell
         // through — the message is reported and dropped, never handed to the
@@ -1809,13 +2197,13 @@ mod tests {
         handle.bind(Binding::Stdin);
         handle.begin_turn(child.stdin.take().unwrap());
 
-        let response = send(
-            &path,
-            &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
-        );
-        // The run owns the message from the interrupt onwards.
-        assert!(response.is_ok(), "{response:?}");
-        assert!(handle.has_pending_redirect());
+        let pending = send_in_background(&path, "do X instead");
+        // The run owns the message from the interrupt onwards, and has not
+        // answered: nothing has written it yet.
+        wait_for("the redirection to be committed", || {
+            handle.has_pending_redirect()
+        });
+        assert!(!pending.is_finished(), "answered before delivery");
 
         // The turn ends without the run ever writing it (no terminal document
         // reached `advance`), and the candidate is released.
@@ -1823,6 +2211,23 @@ mod tests {
         handle.release();
         assert!(!handle.has_pending_redirect());
         assert!(handle.take_redirect().is_none());
+        // And the supervisor is told so: the message is still theirs.
+        let response = pending.join().unwrap();
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NotRunning),
+            "{response:?}"
+        );
+        assert!(!response.is_redirected(), "{response:?}");
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{response:?}"
+        );
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].reason(), Some(ControlReason::NotRunning));
 
         // The next candidate binds and opens its turn with its OWN prompt only.
         handle.bind(Binding::Stdin);
@@ -1903,7 +2308,6 @@ mod tests {
 
     #[test]
     fn a_redirection_reaches_the_child_only_once_the_aborted_turn_has_ended() {
-        use crate::domain::control::RedirectInput;
         use std::io::Read;
         // The ordering IS the feature. A `user` frame written into a live turn
         // is silently dropped by Claude Code, so a redirect delivered alongside
@@ -1929,18 +2333,15 @@ mod tests {
         handle.bind(Binding::Stdin);
         handle.begin_turn(child.stdin.take().unwrap());
 
-        let response = send(
-            &path,
-            &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
-        );
-        assert!(response.is_ok(), "{response:?}");
+        let pending = send_in_background(&path, "do X instead");
+        wait_for("the redirection to be committed", || {
+            handle.has_pending_redirect()
+        });
+        // The abort is out, the message is the run's — and the supervisor has
+        // not been answered, because nothing has written it yet.
         assert!(
-            response.is_redirected(),
-            "the answer must say the message was taken: {response:?}"
-        );
-        assert!(
-            handle.has_pending_redirect(),
-            "the run owns the message from the interrupt onwards"
+            !pending.is_finished(),
+            "a redirect must not be answered before it is delivered"
         );
 
         // The turn's own end is the moment the redirection becomes a turn — and
@@ -1950,6 +2351,12 @@ mod tests {
             "the run must not end while it still owes a redirection"
         );
         assert!(!handle.has_pending_redirect(), "delivered exactly once");
+        let response = pending.join().unwrap();
+        assert!(response.is_ok(), "{response:?}");
+        assert!(
+            response.is_redirected(),
+            "the answer must say the message was delivered: {response:?}"
+        );
         // The next end really is the end.
         assert!(handle.advance(r#"{"type":"result","subtype":"success"}"#));
 
@@ -1979,6 +2386,138 @@ mod tests {
         assert!(
             events[0].is_redirected(),
             "the report must distinguish a redirect from a plain stop"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_redirection_nothing_writes_by_its_deadline_is_taken_back_and_never_written() {
+        use std::io::Read;
+        // A harness whose aborted turn never ends would otherwise hold the
+        // supervisor forever. Past the deadline the run takes the message back
+        // and says so — and from then on nothing writes it, however the turn
+        // ends, because the supervisor now believes it is still theirs.
+        let dir = temp_dir("redirect-deadline");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        handle.set_delivery_deadline(std::time::Duration::from_millis(200));
+        let mut child = std::process::Command::new("cat")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        handle.bind(Binding::Stdin);
+        handle.begin_turn(child.stdin.take().unwrap());
+
+        let response = send_in_background(&path, "do X instead").join().unwrap();
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NotRunning),
+            "{response:?}"
+        );
+        let said = response.to_line();
+        assert!(said.contains("the redirection was not delivered"), "{said}");
+        assert!(said.contains("taken back"), "{said}");
+        assert!(!handle.has_pending_redirect());
+
+        // The aborted turn ends afterwards: nothing is written for it, and the
+        // run does not hold the turn open for a message it no longer owns.
+        assert!(handle.advance(r#"{"type":"result","subtype":"error_during_execution"}"#));
+        handle.end_turn();
+        let mut delivered = String::new();
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut delivered)
+            .unwrap();
+        child.wait().ok();
+        assert_eq!(delivered.lines().count(), 1, "{delivered}");
+        assert!(delivered.contains("control_request"), "{delivered}");
+        assert!(!delivered.contains("do X instead"), "{delivered}");
+        let events = handle.events();
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(events[0].reason(), Some(ControlReason::NotRunning));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_turn_that_ends_before_its_abort_lands_refuses_the_redirection_it_was_given() {
+        // The window the old answer lied about: the message is committed, the
+        // abort is still being written, and the turn ends on its own. That turn
+        // was never redirected, so its message is refused `no_active_turn` —
+        // and not delivered into whatever comes next.
+        struct Gated {
+            release: std::sync::mpsc::Receiver<()>,
+            written: Arc<Mutex<Vec<u8>>>,
+        }
+        impl io::Write for Gated {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                let _ = self.release.recv();
+                self.written
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = temp_dir("redirect-early-end");
+        let path = socket_path(&dir, "live")
+            .expect("a short fixture name fits every platform's socket-address budget");
+        let listener = bind(&path, ControlShape::ClaudeControlRequest).unwrap();
+        let handle = listener.handle();
+        let (release, gate) = std::sync::mpsc::channel();
+        let written = Arc::new(Mutex::new(Vec::new()));
+        handle.bind(Binding::Stdin);
+        *handle
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            TurnState::Active(Box::new(Gated {
+                release: gate,
+                written: Arc::clone(&written),
+            }));
+
+        let pending = send_in_background(&path, "do X instead");
+        wait_for("the redirection to be committed", || {
+            handle.has_pending_redirect()
+        });
+        // The turn's own end arrives while the abort is still in flight: there
+        // is nothing to keep the turn open for.
+        let ended = std::thread::scope(|scope| {
+            let advancing =
+                scope.spawn(|| handle.advance(r#"{"type":"result","subtype":"success"}"#));
+            // The abort's write is held until the turn has ended.
+            wait_for("the turn's end to refuse the redirection", || {
+                !handle.has_pending_redirect()
+            });
+            release.send(()).unwrap();
+            advancing.join().unwrap()
+        });
+        assert!(ended, "a turn that ended on its own is over");
+        let response = pending.join().unwrap();
+        assert_eq!(
+            response.reason(),
+            Some(ControlReason::NoActiveTurn),
+            "{response:?}"
+        );
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{response:?}"
+        );
+        let written = String::from_utf8(written.lock().unwrap().clone()).unwrap();
+        assert!(written.contains("control_request"), "{written}");
+        assert!(!written.contains("do X instead"), "{written}");
+        assert_eq!(
+            handle.events()[0].reason(),
+            Some(ControlReason::NoActiveTurn)
         );
         std::fs::remove_dir_all(&dir).ok();
     }

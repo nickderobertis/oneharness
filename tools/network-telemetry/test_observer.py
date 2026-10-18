@@ -11,7 +11,6 @@ OH_NET_NO_SKIP=1 (CI's Linux leg) makes that a failure.
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import signal
@@ -21,6 +20,7 @@ import sys
 import threading
 import unittest
 
+from observer import read_capture
 from support import OBSERVER, scratch
 
 PAYLOAD = 8_000_000
@@ -86,13 +86,13 @@ class Observer(unittest.TestCase):
             timeout=120,
         )
         self.assertEqual(run.returncode, 0, run.stderr)
-        captured = json.loads(out.read_text())
-        self.assertEqual(captured["drops"], 0, "a reader that fell behind lost frames")
-        self.assertEqual(captured["truncated"], 0)
+        captured = read_capture(out)
+        self.assertEqual(captured.drops, 0, "a reader that fell behind lost frames")
+        self.assertEqual(captured.truncated, 0)
         # Loopback shows every frame twice (sent, then received), headers in.
-        seen = sum(frame["length"] for frame in captured["frames"])
+        seen = sum(frame.length for frame in captured.frames)
         self.assertGreater(seen, 2 * PAYLOAD, "the capture holds less than the transfer")
-        self.assertEqual(captured["packets_seen"], len(captured["frames"]))
+        self.assertEqual(captured.packets_seen, len(captured.frames))
 
 
 if __name__ == "__main__":

@@ -833,6 +833,7 @@ oh_context_free_enforce() {
     _oh_stall_abort "$sandbox" "$pid" "$id: could not read $OH_REPO_ROOT/AGENTS.md, the context file the checkout turn must send"
   [ -n "$project_line" ] ||
     _oh_stall_abort "$sandbox" "$pid" "$id: $OH_REPO_ROOT/AGENTS.md has no line over 40 characters to look for; pick another project context file"
+  # llmlint: ignore[e2e_not_mocked] What this phase observes is the request qwen sends its model, so a recorder must stand where the model is; the real model is driven by the paid echo turn e2e-qwen.sh runs just before, through the same oh_echo_without_context.
   "$py" -I "$OH_REPO_ROOT/scripts/chat-capture-endpoint.py" "$(oh_native_path "$sandbox/endpoint")" >"$sandbox/endpoint.log" 2>&1 &
   pid=$!
   if ! _oh_wait_for 15 test -s "$sandbox/endpoint/port"; then
@@ -855,7 +856,10 @@ oh_context_free_enforce() {
     rm -f "$requests" || fail "$id: could not clear $requests between the two turns; check that the host temp dir is writable"
     HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
       oh_echo_without_context "$id" --bin "$id=$real"
-    [ -s "$requests" ] || fail "$id: the context-free turn sent nothing to the endpoint, so nothing was proven about what it loads"
+    if [ ! -s "$requests" ]; then
+      sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+      fail "$id: the context-free turn sent nothing to the endpoint, so nothing was proven about what it loads; check that oh_echo_without_context still passes the caller's environment (OPENAI_BASE_URL) and --bin through to oneharness, and read the endpoint's output above"
+    fi
     if grep -qF -- "$project_line" "$requests" || grep -qF -- "$canary" "$requests"; then
       fail "$id: the context-free turn still sent the checkout's AGENTS.md or the global QWEN.md canary to the model; find where this $id now discovers context and point that location into oh_echo_without_context's sandbox"
     fi

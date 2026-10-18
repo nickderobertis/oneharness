@@ -40,6 +40,7 @@ import struct
 import sys
 import time
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Literal
 
 ETH_P_ALL = 0x0003
@@ -83,6 +84,26 @@ class Capture:
     packets_seen: int = 0
     truncated: int = 0
     frames: list[Frame] = field(default_factory=list)
+
+
+def read_capture(path: Path) -> Capture:
+    """The capture main() wrote to `path`, read back into its own types."""
+    raw = json.loads(path.read_text())
+    return Capture(
+        ready_ns=int(raw["ready_ns"]),
+        stopped_ns=int(raw["stopped_ns"]),
+        drops=int(raw["drops"]),
+        packets_seen=int(raw["packets_seen"]),
+        truncated=int(raw["truncated"]),
+        frames=[
+            Frame(
+                stamp_ns=int(frame["stamp_ns"]),
+                direction="rx" if frame["direction"] == "rx" else "tx",
+                length=int(frame["length"]),
+            )
+            for frame in raw["frames"]
+        ],
+    )
 
 
 def main() -> int:

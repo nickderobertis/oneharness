@@ -81,8 +81,12 @@ for name in QWEN.md AGENTS.md; do
   done
 done
 memory="${QWEN_CODE_MEMORY_BASE_DIR:-${QWEN_RUNTIME_DIR:-$qhome}}"
-if [ -d "$memory" ] && [ -n "$(find "$memory" -type f -print -quit)" ]; then
-  loaded+=("$memory")
+if [ -d "$memory" ]; then
+  memory_file="$(find "$memory" -type f -print -quit)" || {
+    echo "qwen double: could not search $memory for memory files" >&2
+    exit 1
+  }
+  [ -n "$memory_file" ] && loaded+=("$memory")
 fi
 # A qwen that finds context somewhere the sandbox does not cover, or none.
 [ -n "${QWEN_DOUBLE_LEAK:-}" ] && loaded+=("$QWEN_DOUBLE_LEAK")
@@ -91,9 +95,19 @@ fi
   printf 'cwd=%s\n' "$cwd"
   printf 'home=%s\n' "$home"
   for f in "${loaded[@]+"${loaded[@]}"}"; do printf 'loaded=%s\n' "$f"; done
-} >"$QWEN_DOUBLE_RECORD"
+} >"$QWEN_DOUBLE_RECORD" || {
+  echo "qwen double: could not write its record $QWEN_DOUBLE_RECORD; check that its directory is writable" >&2
+  exit 1
+}
 if [ -n "${OPENAI_BASE_URL:-}" ]; then
-  context="$(for f in "${loaded[@]+"${loaded[@]}"}"; do find "$f" -type f -exec cat {} +; done)"
+  context=""
+  for f in "${loaded[@]+"${loaded[@]}"}"; do
+    part="$(find "$f" -type f -exec cat {} +)" || {
+      echo "qwen double: could not read the context it loaded from $f" >&2
+      exit 1
+    }
+    context+="$part"$'\n'
+  done
   exec python3 -I -c '
 import json, sys, urllib.request
 body = {"model": "double", "messages": [{"role": "system", "content": sys.argv[2]}, {"role": "user", "content": sys.argv[3]}]}

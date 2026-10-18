@@ -16,8 +16,6 @@ need_env "Qwen (OpenAI-compatible) auth" OPENAI_API_KEY DASHSCOPE_API_KEY
 export OH_MODEL="${QWEN_E2E_MODEL:-}"
 # Not from the checkout: qwen would load its AGENTS.md files into the turn.
 oh_echo_without_context qwen
-# And real qwen, against a local endpoint, proves that launch sends none of it.
-note "» context-free: a checkout turn sends its context files, a context-free turn none"
 oh_context_free_enforce qwen
 
 # Large prompt + system (issue #1115): oneharness pipes a >128 KiB prompt to

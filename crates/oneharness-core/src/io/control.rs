@@ -878,14 +878,14 @@ impl ControlHandle {
 
     /// Whether a committed redirection's abort has landed, so a test can
     /// end the aborted turn only once the message may become the next one.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub(crate) fn redirect_is_deliverable(&self) -> bool {
         matches!(&*self.redirect(), Redirect::Deliverable(_))
     }
 
     /// Shorten how long a redirection may wait to be written, so a test can
     /// reach the withdrawal without waiting out the real deadline.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     fn set_delivery_deadline(&self, deadline: std::time::Duration) {
         *self
             .delivery_deadline
@@ -1693,10 +1693,17 @@ mod imp {
         ))
     }
 
-    pub fn send(path: &Path, _request: &ControlRequest) -> ControlResponse {
+    pub fn send(path: &Path, request: &ControlRequest) -> ControlResponse {
+        // No run here can bind a control socket, so a redirection reaches no
+        // turn: say so, so the caller keeps ownership of its message.
+        let undelivered = if request.input().is_some() {
+            "; the redirection was not delivered"
+        } else {
+            ""
+        };
         ControlResponse::refused(
             format!(
-                "control sockets are unavailable on this platform (`{}`)",
+                "control sockets are unavailable on this platform (`{}`){undelivered}",
                 path.display()
             ),
             ControlReason::NotRunning,
@@ -2779,5 +2786,36 @@ mod tests {
             response.to_line()
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(all(test, not(unix)))]
+mod unsupported_tests {
+    use super::*;
+    use crate::domain::control::RedirectInput;
+
+    #[test]
+    fn a_redirect_without_a_control_socket_is_refused_as_undelivered() {
+        let path = Path::new("no-socket-here");
+        let response = send(
+            path,
+            &ControlRequest::redirect(RedirectInput::new("do X instead").unwrap()),
+        );
+        assert_eq!(response.reason(), Some(ControlReason::NotRunning));
+        assert!(
+            response
+                .to_line()
+                .contains("the redirection was not delivered"),
+            "{}",
+            response.to_line()
+        );
+
+        let bare = send(path, &ControlRequest::interrupt());
+        assert_eq!(bare.reason(), Some(ControlReason::NotRunning));
+        assert!(
+            !bare.to_line().contains("redirection"),
+            "{}",
+            bare.to_line()
+        );
     }
 }

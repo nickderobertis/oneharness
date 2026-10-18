@@ -831,7 +831,9 @@ oh_context_free_enforce() {
   canary="ONEHARNESS-CANARY-$RANDOM$RANDOM"
   printf 'Context canary: %s\n' "$canary" >"$sandbox/ambient/.qwen/QWEN.md" ||
     _oh_stall_abort "$sandbox" "$pid" "$id: could not write $sandbox/ambient/.qwen/QWEN.md; check that the host temp dir is writable"
-  project_line="$(tr -d '\r' <"$OH_REPO_ROOT/AGENTS.md" | awk 'length > 40 { print; exit }')" ||
+  # awk reads the file itself: behind a pipe, its early exit would kill the
+  # writer with SIGPIPE whenever the file outgrows the pipe (macOS's is 16 KiB).
+  project_line="$(awk '{ sub(/\r$/, "") } length > 40 { print; exit }' "$OH_REPO_ROOT/AGENTS.md")" ||
     _oh_stall_abort "$sandbox" "$pid" "$id: could not read $OH_REPO_ROOT/AGENTS.md, the context file the checkout turn must send"
   [ -n "$project_line" ] ||
     _oh_stall_abort "$sandbox" "$pid" "$id: $OH_REPO_ROOT/AGENTS.md has no line over 40 characters to look for; pick another project context file"

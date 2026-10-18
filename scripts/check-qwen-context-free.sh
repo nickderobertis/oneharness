@@ -302,6 +302,30 @@ case "$out" in
 esac
 [ -z "$(ls -A "$tmp/live")" ] || fail "an alarm whose endpoint hung left its sandbox behind: $(ls -A "$tmp/live")"
 
+# 7d. The alarm reads the checkout's AGENTS.md whatever the pipe between its
+#     reader and writer holds. A tr that, like any writer on macOS's 16 KiB
+#     pipe, still has bytes to write once its reader has the line it wanted
+#     must not turn a passing alarm red.
+pipe16k="$tmp/pipe16k"
+real_tr="$(command -v tr)" || fail "tr is not on PATH"
+mkdir -p "$pipe16k" || fixture_failed "$pipe16k"
+cat >"$pipe16k/tr" <<EOF_TR || fixture_failed "$pipe16k/tr"
+#!/usr/bin/env bash
+set -euo pipefail
+out="\$(mktemp "$tmp/tr.XXXXXX")"
+trap 'rm -f "\$out"' EXIT
+"$real_tr" "\$@" >"\$out"
+head -c 16384 "\$out"
+if [ "\$(wc -c <"\$out")" -gt 16384 ]; then
+  sleep 1
+  tail -c +16385 "\$out"
+fi
+EOF_TR
+chmod +x "$pipe16k/tr" || fixture_failed "$pipe16k/tr (making it executable)"
+drive "$root" 'oh_context_free_enforce qwen' PATH="$pipe16k:$tmp/bin:$PATH"
+[ "$rc" -eq 0 ] || fail "the context-free alarm failed when the checkout's AGENTS.md outgrew a 16 KiB pipe, as on macOS: $out"
+[ -z "$(ls -A "$tmp/live")" ] || fail "the context-free alarm left its sandbox behind: $(ls -A "$tmp/live")"
+
 # 8. A qwen that still loads the checkout's context in the sandbox turns it red.
 drive "$root" 'oh_context_free_enforce qwen' QWEN_DOUBLE_LEAK="$root/AGENTS.md"
 [ "$rc" -ne 0 ] || fail "the context-free alarm passed while the sandboxed turn sent the checkout's AGENTS.md: $out"

@@ -23,13 +23,14 @@ case $(uname -s) in
     ;;
 esac
 
-root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 fail() {
   echo "check-qwen-context-free: $1" >&2
   echo "  Re-run with: bash -x scripts/check-qwen-context-free.sh" >&2
   exit 1
 }
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" ||
+  fail "could not resolve the repository root from ${BASH_SOURCE[0]}; run this script by its path inside a readable checkout"
 
 command -v jq >/dev/null 2>&1 || fail "jq is not installed; the live helpers parse oneharness's report with it"
 oh="$root/target/debug/oneharness"
@@ -56,8 +57,14 @@ if [ "${1:-}" = --version ]; then
   echo 0.0.0-double
   exit 0
 fi
-cwd="$(pwd -P)"
-home="$(cd "$HOME" && pwd -P)"
+cwd="$(pwd -P)" || {
+  echo "qwen double: could not resolve its working directory; check that the directory the turn ran in still exists and is readable" >&2
+  exit 1
+}
+home="$(cd "$HOME" && pwd -P)" || {
+  echo "qwen double: could not enter HOME=$HOME; check that the directory the turn set as HOME exists and is readable" >&2
+  exit 1
+}
 qhome="${QWEN_HOME:-$home/.qwen}"
 loaded=()
 root=""
@@ -84,7 +91,7 @@ done
 memory="${QWEN_CODE_MEMORY_BASE_DIR:-${QWEN_RUNTIME_DIR:-$qhome}}"
 if [ -d "$memory" ]; then
   memory_file="$(find "$memory" -type f -print -quit)" || {
-    echo "qwen double: could not search $memory for memory files" >&2
+    echo "qwen double: could not search $memory for memory files; check that it and every directory under it are readable (ls -lR '$memory')" >&2
     exit 1
   }
   [ -n "$memory_file" ] && loaded+=("$memory")
@@ -104,7 +111,7 @@ if [ -n "${OPENAI_BASE_URL:-}" ]; then
   context=""
   for f in "${loaded[@]+"${loaded[@]}"}"; do
     part="$(find "$f" -type f -exec cat {} +)" || {
-      echo "qwen double: could not read the context it loaded from $f" >&2
+      echo "qwen double: could not read the context it loaded from $f; check that it and every file under it are readable (ls -lR '$f')" >&2
       exit 1
     }
     context+="$part"$'\n'

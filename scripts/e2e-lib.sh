@@ -867,7 +867,7 @@ oh_context_free_enforce() {
     if grep -qF -- "$project_line" "$requests" || grep -qF -- "$canary" "$requests"; then
       fail "$id: the context-free turn still sent the checkout's AGENTS.md or the global QWEN.md canary to the model; find where this $id now discovers context and point that location into oh_echo_without_context's sandbox"
     fi
-  ) </dev/null 2>"$sandbox/turns.log" &
+  ) </dev/null >"$sandbox/turns.log" 2>&1 &
   # llmlint: ignore-end[e2e_not_mocked]
   wait "$!" || status=$?
   if [ "$status" -ne 0 ]; then

@@ -7,7 +7,11 @@
 # QWEN.md and AGENTS.md, global under $QWEN_HOME or ~/.qwen, then upward from
 # the cwd to the git root, or to HOME's parent when there is none, plus
 # auto-memory under QWEN_CODE_MEMORY_BASE_DIR / QWEN_RUNTIME_DIR / QWEN_HOME).
-# The double answers the way gpt-4o-mini did on macOS CI once context loaded.
+# The double answers the way gpt-4o-mini did on macOS CI once context loaded;
+# given OPENAI_BASE_URL, it sends the files it loaded there instead, so the
+# live alarm oh_context_free_enforce can be held red and green here. That alarm
+# runs the same two observations against real qwen in scripts/e2e-qwen.sh,
+# which is what keeps the double's discovery rules honest.
 # llmlint: ignore-file[e2e_not_mocked] This drives the real built oneharness CLI and the live suite's own helper; only the paid qwen CLI is replaced, by a double applying qwen's documented context discovery, because what is under test is which files a launch exposes to it, not the model. scripts/e2e-qwen.sh remains the real-CLI drift alarm.
 set -euo pipefail
 
@@ -28,14 +32,14 @@ fail() {
 
 command -v jq >/dev/null 2>&1 || fail "jq is not installed; the live helpers parse oneharness's report with it"
 oh="$root/target/debug/oneharness"
-[ -x "$oh" ] || fail "the built oneharness binary is missing at $oh; run 'cargo build' and retry"
+[ -x "$oh" ] || fail "the built oneharness binary is missing at $oh; run 'just build' and retry"
+command -v python3 >/dev/null 2>&1 || fail "python3 is not installed; the live alarm's capture endpoint is a Python script"
 
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
   fail "could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
 trap 'rm -rf "$tmp" || echo "check-qwen-context-free: could not remove $tmp; delete it by hand" >&2' EXIT
 tmp="$(cd "$tmp" && pwd -P)" || fail "could not resolve the scratch directory $tmp to a physical path; check that ${TMPDIR:-/tmp} is readable"
 
-# Stop with the path when a fixture cannot be written.
 fixture_failed() {
   fail "could not write the fixture $1; check that $tmp is writable and its filesystem has free space"
 }
@@ -80,11 +84,24 @@ memory="${QWEN_CODE_MEMORY_BASE_DIR:-${QWEN_RUNTIME_DIR:-$qhome}}"
 if [ -d "$memory" ] && [ -n "$(find "$memory" -type f -print -quit)" ]; then
   loaded+=("$memory")
 fi
+# A qwen that finds context somewhere the sandbox does not cover, or none.
+[ -n "${QWEN_DOUBLE_LEAK:-}" ] && loaded+=("$QWEN_DOUBLE_LEAK")
+[ -n "${QWEN_DOUBLE_BLIND:-}" ] && loaded=()
 {
   printf 'cwd=%s\n' "$cwd"
   printf 'home=%s\n' "$home"
   for f in "${loaded[@]+"${loaded[@]}"}"; do printf 'loaded=%s\n' "$f"; done
 } >"$QWEN_DOUBLE_RECORD"
+if [ -n "${OPENAI_BASE_URL:-}" ]; then
+  context="$(for f in "${loaded[@]+"${loaded[@]}"}"; do find "$f" -type f -exec cat {} +; done)"
+  exec python3 -I -c '
+import json, sys, urllib.request
+body = {"model": "double", "messages": [{"role": "system", "content": sys.argv[2]}, {"role": "user", "content": sys.argv[3]}]}
+request = urllib.request.Request(sys.argv[1] + "/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
+with urllib.request.urlopen(request, timeout=30) as reply:
+    print(json.load(reply)["choices"][0]["message"]["content"])
+' "$OPENAI_BASE_URL" "$context" "$*"
+fi
 if [ "${#loaded[@]}" -gt 0 ] || [ -n "${QWEN_DOUBLE_OMIT:-}" ]; then
   echo "I'm ready to assist you! If there's something specific you need help with, please let me know."
   exit 0
@@ -98,6 +115,7 @@ chmod +x "$tmp/bin/qwen" || fixture_failed "$tmp/bin/qwen (making it executable)
 # helper's own directory creation fail after it has allocated its sandbox.
 cat >"$tmp/nomkdir/mkdir" <<'SHIM' || fixture_failed "$tmp/nomkdir/mkdir"
 #!/usr/bin/env bash
+set -euo pipefail
 for a in "$@"; do
   case "$a" in */work)
     echo "mkdir: cannot create directory '$a': Read-only file system" >&2
@@ -200,8 +218,39 @@ case "$out" in
   *) fail "an unknown harness failed without saying why: $out" ;;
 esac
 
-# 6. The live journey uses it for its echo turn.
+# 6. The live journey uses it for its echo turn, and runs the alarm after it.
 grep -qx 'oh_echo_without_context qwen' "$root/scripts/e2e-qwen.sh" ||
   fail "scripts/e2e-qwen.sh no longer runs its echo turn through oh_echo_without_context"
+grep -qx 'oh_context_free_enforce qwen' "$root/scripts/e2e-qwen.sh" ||
+  fail "scripts/e2e-qwen.sh no longer holds real qwen to the context-free launch with oh_context_free_enforce"
+
+# 7. The live alarm passes when the checkout turn sends the checkout's AGENTS.md
+#    and the global canary and the context-free turn sends neither, and gives
+#    back its sandbox and endpoint.
+drive "$root" 'oh_context_free_enforce qwen'
+[ "$rc" -eq 0 ] || fail "the context-free alarm failed against a qwen that loads nothing in the sandbox: $out"
+case "$out" in
+  *"PASS: qwen context-free turn sends none"*) ;;
+  *) fail "the context-free alarm did not reach its verdict: $out" ;;
+esac
+[ -z "$(ls -A "$tmp/live")" ] || fail "the context-free alarm left its sandbox behind: $(ls -A "$tmp/live")"
+
+# 8. A qwen that still loads the checkout's context in the sandbox turns it red.
+drive "$root" 'oh_context_free_enforce qwen' QWEN_DOUBLE_LEAK="$root/AGENTS.md"
+[ "$rc" -ne 0 ] || fail "the context-free alarm passed while the sandboxed turn sent the checkout's AGENTS.md: $out"
+case "$out" in
+  *"the context-free turn still sent the checkout's AGENTS.md"*) ;;
+  *) fail "a leaking context-free turn failed for another reason: $out" ;;
+esac
+[ -z "$(ls -A "$tmp/live")" ] || fail "a failed alarm left its sandbox behind: $(ls -A "$tmp/live")"
+
+# 9. A qwen that loads nothing even from the checkout cannot vouch for the
+#    sandbox, so the alarm refuses rather than passing on an empty request.
+drive "$root" 'oh_context_free_enforce qwen' QWEN_DOUBLE_BLIND=1
+[ "$rc" -ne 0 ] || fail "the context-free alarm passed though the checkout turn sent no context: $out"
+case "$out" in
+  *"cannot tell context-free from blind"*) ;;
+  *) fail "a blind checkout turn failed for another reason: $out" ;;
+esac
 
 echo "check-qwen-context-free: ok"

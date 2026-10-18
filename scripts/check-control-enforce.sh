@@ -639,6 +639,7 @@ hanging_python() {
   # SCRIPT through runpy once $1 hangs.
   if ! cat >"$endpoint_dir/hang/python" <<EOF_PY
 #!/usr/bin/env bash
+set -euo pipefail
 exec "$(command -v python3)" "\$1" "\$2" "\$3" -c '
 import runpy, socket, socketserver, sys, time
 $1 = lambda *_: time.sleep(3600)

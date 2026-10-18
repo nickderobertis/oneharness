@@ -751,9 +751,11 @@ oh_assert_echoed() {
 # root above it, qwen stops its upward search at HOME's parent, the sandbox
 # itself. A `.git` above the sandbox would make that the project root and widen
 # the search, so the helper refuses to launch. The marker assertion is
-# oh_assert_echoed's, unchanged.
+# oh_assert_echoed's, unchanged. oh_context_free_enforce holds real qwen to this.
+#   $1 harness id, then any further oh_run arguments
 oh_echo_without_context() {
   local id="$1" dir up marker turn status=0
+  shift
   local context_env=()
   case "$id" in
     qwen) ;;
@@ -794,13 +796,74 @@ oh_echo_without_context() {
   # In a subshell, as oh_controlled_turn does, so the sandbox goes however the
   # turn ends.
   (
-    oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}"
+    oh_run "$id" "$(oh_prompt "$marker")" --cwd "$(oh_native_path "$dir/work")" "${context_env[@]}" "$@"
     oh_assert_echoed "$id" "$marker"
   ) </dev/null &
   turn=$!
   wait "$turn" || status=$?
   oh_drop_sandbox "$dir"
   [ "$status" -eq 0 ] || exit "$status"
+}
+
+# Live drift alarm for oh_echo_without_context, against the real harness and no
+# model. qwen is pointed at scripts/chat-capture-endpoint.py on loopback, which
+# records the text of every request and answers with the marker. Run from the
+# checkout under a HOME whose global QWEN.md holds a canary, qwen must send both
+# the checkout's AGENTS.md and the canary, or this phase proves nothing about
+# discovery. Run through oh_echo_without_context, it must send neither.
+#   $1 harness id
+oh_context_free_enforce() {
+  _oh_phase
+  local id="$1" real py sandbox pid="" port canary project_line requests status=0
+  # The real binary, past the measuring shim: on Linux the shim runs a launch
+  # in its own network namespace, whose loopback is not the endpoint's.
+  real="$(_oh_unshimmed "$id")" || real="$(command -v "$id")" ||
+    skip "$id is not on PATH; install it (the live-$id workflow does) to run this phase"
+  py="$(command -v python3 || command -v python)" ||
+    skip "neither python3 nor python is on PATH; the capture endpoint is a Python script"
+  sandbox="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+    fail "$id: could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
+  requests="$sandbox/endpoint/requests.txt"
+  mkdir -p "$sandbox/endpoint" "$sandbox/ambient/.qwen" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not create the phase's directories under $sandbox; check that the host temp dir is writable"
+  canary="ONEHARNESS-CANARY-$RANDOM$RANDOM"
+  printf 'Context canary: %s\n' "$canary" >"$sandbox/ambient/.qwen/QWEN.md" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not write $sandbox/ambient/.qwen/QWEN.md; check that the host temp dir is writable"
+  project_line="$(tr -d '\r' <"$OH_REPO_ROOT/AGENTS.md" | awk 'length > 40 { print; exit }')" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: could not read $OH_REPO_ROOT/AGENTS.md, the context file the checkout turn must send"
+  [ -n "$project_line" ] ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: $OH_REPO_ROOT/AGENTS.md has no line over 40 characters to look for; pick another project context file"
+  "$py" -I "$OH_REPO_ROOT/scripts/chat-capture-endpoint.py" "$(oh_native_path "$sandbox/endpoint")" >"$sandbox/endpoint.log" 2>&1 &
+  pid=$!
+  if ! _oh_wait_for 15 test -s "$sandbox/endpoint/port"; then
+    sed 's/^/    /' "$sandbox/endpoint.log" >&2 || true
+    _oh_stall_abort "$sandbox" "$pid" "$id: the capture endpoint never reported its port (its output is above); run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see why it cannot start"
+  fi
+  port="$(_oh_port_in "$sandbox/endpoint/port")" ||
+    _oh_stall_abort "$sandbox" "$pid" "$id: the capture endpoint's port file does not hold one TCP port; run \`$py scripts/chat-capture-endpoint.py <an empty dir>\` by hand to see what it wrote"
+  # Both turns reach only the endpoint, with a local key, under a HOME of the
+  # phase's own that the context-free one must replace with its sandbox.
+  local home="$sandbox/ambient" base="http://127.0.0.1:$port/v1" key=sk-oneharness-local-only
+  (
+    unset DASHSCOPE_API_KEY XDG_CONFIG_HOME QWEN_HOME QWEN_RUNTIME_DIR QWEN_CODE_MEMORY_BASE_DIR
+    HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
+      oh_run "$id" "$(oh_prompt "$(oh_marker)")" --bin "$id=$real" --cwd "$(oh_native_path "$OH_REPO_ROOT")"
+    if ! grep -qF -- "$project_line" "$requests" 2>/dev/null || ! grep -qF -- "$canary" "$requests"; then
+      oh_dump
+      fail "$id: a turn from the checkout did not send both its AGENTS.md and the global QWEN.md canary to the endpoint ($requests shows what it sent), so this phase cannot tell context-free from blind; check how this $id discovers context files and update oh_echo_without_context to match"
+    fi
+    rm -f "$requests" || fail "$id: could not clear $requests between the two turns; check that the host temp dir is writable"
+    HOME="$home" OPENAI_BASE_URL="$base" OPENAI_API_KEY="$key" OPENAI_MODEL=oneharness-capture \
+      oh_echo_without_context "$id" --bin "$id=$real"
+    [ -s "$requests" ] || fail "$id: the context-free turn sent nothing to the endpoint, so nothing was proven about what it loads"
+    if grep -qF -- "$project_line" "$requests" || grep -qF -- "$canary" "$requests"; then
+      fail "$id: the context-free turn still sent the checkout's AGENTS.md or the global QWEN.md canary to the model; find where this $id now discovers context and point that location into oh_echo_without_context's sandbox"
+    fi
+  ) </dev/null &
+  wait "$!" || status=$?
+  _oh_stall_cleanup "$sandbox" "$pid"
+  [ "$status" -eq 0 ] || exit "$status"
+  note "PASS: $id context-free turn sends none of the checkout's or the machine's context, and a checkout turn sends both"
 }
 
 # Remove a scratch sandbox. A removal that fails names the path so it can be
@@ -2697,7 +2760,6 @@ _oh_port_in() {
   printf '%s' "$port"
 }
 
-#   $1 sandbox, $2 the stalling endpoint's pid, or empty before it started
 # Starts scripts/codex-stall-endpoint.py serving DIR, its output in LOG, and
 # waits for it to write DIR/port; its pid is left in _OH_STALL_ENDPOINT_PID
 # either way. It runs under faulthandler, so an endpoint that never reports

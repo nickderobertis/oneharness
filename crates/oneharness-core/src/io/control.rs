@@ -831,6 +831,13 @@ impl ControlHandle {
         }
     }
 
+    /// Whether a committed redirection's abort has landed, so a test can
+    /// end the aborted turn only once the message may become the next one.
+    #[cfg(test)]
+    pub(crate) fn redirect_is_deliverable(&self) -> bool {
+        matches!(&*self.redirect(), Redirect::Deliverable(_))
+    }
+
     /// Shorten how long a redirection may wait to be written, so a test can
     /// reach the withdrawal without waiting out the real deadline.
     #[cfg(test)]

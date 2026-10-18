@@ -1760,6 +1760,130 @@ fn a_pooled_interrupt_with_a_message_redirects_the_turn_or_takes_nothing() {
     }
 }
 
+/// `oneharness interrupt --input <message>` against `session`, started and left
+/// to answer: a redirect is answered on delivery, so the journey reads what the
+/// server does before it.
+fn redirect_in_background(pool: &Pool, session: &str, message: &str) -> Child {
+    Command::new(oneharness_bin())
+        .env("ONEHARNESS_NO_CONFIG", "1")
+        .args([
+            "interrupt",
+            "--session",
+            session,
+            "--session-dir",
+            &pool.file("sess"),
+            "--input",
+            message,
+            "--format",
+            "json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run oneharness interrupt")
+}
+
+/// The turns the server recorded on `thread`, in order.
+fn turns_on(pool: &Pool, server: u32, thread: &str) -> Vec<Value> {
+    pool.state(server)["turns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|t| t["thread"] == thread)
+        .cloned()
+        .collect()
+}
+
+/// On the shared app-server, as on every mechanism: a redirect is answered
+/// `redirected` only once the server has opened the replacement turn with the
+/// message. The server holds the aborted turn's end behind a gate, so the
+/// journey reads the answer still outstanding while that turn is live and
+/// arriving only after the replacement turn carrying the message exists. And
+/// when that turn cannot be opened — the thread refuses it, or the server is
+/// gone first — the answer is a refusal saying the message was not delivered,
+/// and no turn on the server ever carries it.
+#[test]
+fn a_pooled_redirect_is_answered_on_delivery_and_refused_when_it_cannot_be() {
+    let pool = Pool::new("pool-redirect-delivery");
+    for (session, knob) in [
+        ("delivered", "MOCK_INTERRUPT_GATE"),
+        ("refused", "MOCK_CODEX_REFUSE_SECOND_TURN"),
+        ("orphaned", "MOCK_CODEX_DIE_ON_INTERRUPT"),
+    ] {
+        let release = pool.file(&format!("{session}-release"));
+        let gate = pool.file(&format!("{session}-gate"));
+        let value = if knob == "MOCK_INTERRUPT_GATE" {
+            gate.as_str()
+        } else {
+            "1"
+        };
+        let envs = [("MOCK_CODEX_HOLD_UNTIL", release.as_str()), (knob, value)];
+        let child = pool.spawn(pool.command(session, &[], &envs));
+        let server = pool.await_live_turns(1);
+        let message = format!("stop and do the right thing for {session}");
+        let mut answer = redirect_in_background(&pool, session, &message);
+        wait_for(
+            "the abort to reach the server",
+            Duration::from_secs(30),
+            || !interrupts_received(&pool, server).is_empty(),
+        );
+        if session == "delivered" {
+            // Accepted, but the aborted turn is still live behind the gate:
+            // nothing can carry the message yet, and nothing has answered.
+            assert!(
+                answer.try_wait().unwrap().is_none(),
+                "answered before the replacement turn existed"
+            );
+            assert_eq!(pool.live_turns(server), 1);
+            std::fs::write(&gate, "").unwrap();
+        }
+        let answered = answer.wait_with_output().unwrap();
+        let frame: Value = serde_json::from_slice(&answered.stdout)
+            .unwrap_or_else(|err| panic!("{session}: {err}: {answered:?}"));
+        std::fs::write(&release, "").unwrap();
+        let (output, report) = Pool::finish(child);
+        let thread = thread_of(&report);
+        let turns = turns_on(&pool, server, &thread);
+        let interrupts = report["control"]["interrupts"].as_array().unwrap();
+        let carried = turns
+            .iter()
+            .filter(|t| t["input"].to_string().contains(&message))
+            .count();
+        if session == "delivered" {
+            succeeded(&output, &report);
+            assert!(answered.status.success(), "{frame}");
+            assert_eq!(frame["redirected"], true, "{frame}");
+            assert_eq!(interrupts[0]["outcome"], "served", "{report}");
+            assert_eq!(interrupts[0]["redirected"], true, "{report}");
+            assert_eq!(turns.len(), 2, "{turns:?}");
+            assert_eq!(carried, 1, "{turns:?}");
+            assert!(
+                turns[1]["input"].to_string().contains(&message),
+                "{turns:?}"
+            );
+            continue;
+        }
+        let reason = if session == "refused" {
+            "no_active_turn"
+        } else {
+            "not_running"
+        };
+        assert_eq!(answered.status.code(), Some(1), "{session}: {frame}");
+        assert_eq!(frame["reason"], reason, "{session}: {frame}");
+        assert!(frame.get("redirected").is_none(), "{session}: {frame}");
+        assert!(
+            frame["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("the redirection was not delivered")),
+            "{session}: {frame}"
+        );
+        assert_eq!(interrupts[0]["outcome"], "refused", "{session}: {report}");
+        assert_eq!(interrupts[0]["reason"], reason, "{session}: {report}");
+        assert_eq!(turns.len(), 1, "{session}: {turns:?}");
+        assert_eq!(carried, 0, "{session}: {turns:?}");
+    }
+}
+
 /// A zero-work overload on a pooled turn repeats the turn on the shared
 /// server — a fresh lease, the same server — and recovers within
 /// `server_overloaded_max_retries`; past it the run is `server_overloaded`,

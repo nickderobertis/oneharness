@@ -250,6 +250,50 @@ case "$out" in
 esac
 [ -z "$(ls -A "$tmp/live")" ] || fail "the context-free alarm left its sandbox behind: $(ls -A "$tmp/live")"
 
+# A python3 that runs the capture endpoint with one of its startup calls ($1)
+# swapped for a hang, the way macOS's resolver held socket.getfqdn("127.0.0.1")
+# past the 15 s the alarm waits for the port. Anything else it runs (the qwen
+# double's `-c` client) goes straight to the real interpreter. Prints the
+# directory to put first on PATH.
+hanging_python3() {
+  local dir="$tmp/hang-${1//./-}" real
+  real="$(command -v python3)" || fail "python3 is not on PATH"
+  mkdir -p "$dir" || fixture_failed "$dir"
+  cat >"$dir/python3" <<EOF_PY || fixture_failed "$dir/python3"
+#!/usr/bin/env bash
+case " \$* " in *" -c "*) exec "$real" "\$@" ;; esac
+exec "$real" -I -c '
+import faulthandler, runpy, socket, socketserver, sys, time
+args = sys.argv[1:]
+while args[0].startswith("-"):
+    if args.pop(0) == "-X" and args.pop(0) == "faulthandler":
+        faulthandler.enable()
+$1 = lambda *_: time.sleep(3600)
+sys.argv = args
+runpy.run_path(args[0], run_name="__main__")' "\$@"
+EOF_PY
+  chmod +x "$dir/python3" || fixture_failed "$dir/python3 (making it executable)"
+  printf '%s' "$dir"
+}
+
+# 7b. The endpoint binds without asking the resolver for its own name, so a
+#     reverse lookup that never answers cannot keep the alarm from starting.
+nodns="$(hanging_python3 socket.getfqdn)"
+drive "$root" 'oh_context_free_enforce qwen' PATH="$nodns:$tmp/bin:$PATH"
+[ "$rc" -eq 0 ] || fail "the context-free alarm failed while a reverse lookup hung, as macOS's can: $out"
+[ -z "$(ls -A "$tmp/live")" ] || fail "the context-free alarm left its sandbox behind: $(ls -A "$tmp/live")"
+
+# 7c. An endpoint whose startup does hang is stopped, and the alarm's failure
+#     shows the stack it hung in, from the endpoint's own output.
+hung="$(hanging_python3 socketserver.TCPServer.server_bind)"
+drive "$root" 'oh_context_free_enforce qwen' PATH="$hung:$tmp/bin:$PATH"
+[ "$rc" -ne 0 ] || fail "the context-free alarm passed though its endpoint never bound: $out"
+case "$out" in
+  *"the capture endpoint never reported its port"*"in server_bind"* | *"in server_bind"*"the capture endpoint never reported its port"*) ;;
+  *) fail "an endpoint whose startup hung failed without the stack it hung in: $out" ;;
+esac
+[ -z "$(ls -A "$tmp/live")" ] || fail "an alarm whose endpoint hung left its sandbox behind: $(ls -A "$tmp/live")"
+
 # 8. A qwen that still loads the checkout's context in the sandbox turns it red.
 drive "$root" 'oh_context_free_enforce qwen' QWEN_DOUBLE_LEAK="$root/AGENTS.md"
 [ "$rc" -ne 0 ] || fail "the context-free alarm passed while the sandboxed turn sent the checkout's AGENTS.md: $out"

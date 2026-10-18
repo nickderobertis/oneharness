@@ -1999,11 +1999,14 @@ process carrying that dispatch's marker (a dead holder's live turn is
 interrupted first) and releases its thread with **`thread/unsubscribe`**
 (`ThreadUnsubscribeParams { threadId }` in openai/codex's app-server v2
 protocol, `codex-rs/app-server-protocol`), because Codex keeps a finished thread
-loaded. On codex-cli 0.159.2 the release takes effect after a 60 s grace:
-`thread/unsubscribe` answers `unsubscribed`, and 60 s later the server sends
-`thread/status/changed` → `notLoaded` and `thread/closed`; a connection that
-closes releases its threads the same way, so a dispatch killed before its first
-turn leaves its thread loaded only for that window. A pool-owned sweeper beside
+loaded. The release takes effect after Codex's `thread_unload_delay_secs`:
+`thread/unsubscribe` answers `unsubscribed`, and once the thread has had no
+subscriber and no activity for that delay the server sends
+`thread/status/changed` → `notLoaded` and `thread/closed` — 60 s by default on
+codex-cli 0.159.2, 30 minutes (1800 s) on codex-cli 0.163.0, so a server there
+holds every thread released in the last 30 minutes. A connection that closes
+releases its threads the same way, so a dispatch killed before its first turn
+leaves its thread loaded only for that window. A pool-owned sweeper beside
 the server finds a dead holder within 2 s (`DEAD_LEASE_SWEEP_INTERVAL`) even with
 no other dispatch alive, and stops its commands within 5 s of that
 (`DEAD_LEASE_STOP_DEADLINE`). Stopping the server reaps every lease's marked
@@ -2040,7 +2043,9 @@ on codex-cli 0.159.2 (Linux):
   held 1 s and released, with no model call and no `turn/start` (the shell
   command is there because codex-cli writes a thread's rollout only after a
   turn and refuses to resume a thread without one; a dispatch itself never sends
-  `thread/shellCommand`) — it held 1.083x what it held after the first
+  `thread/shellCommand`; its server is launched with a 1 s
+  `thread_unload_delay_secs` so each released thread is unloaded before the
+  reading) — on codex-cli 0.163.0 it held 1.027x what it held after the first
   ([`live/control/evidence/app-server-reuse.md`](live/control/evidence/app-server-reuse.md);
   `codex-shared-server-rss-growth`, at most 1.5x).
 

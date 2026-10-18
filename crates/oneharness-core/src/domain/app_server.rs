@@ -41,7 +41,9 @@ pub const SERVER_MARKER_VAR: &str = "ONEHARNESS_APP_SERVER_MARKER";
 /// its lease ends. Codex keeps a finished thread loaded until its last
 /// subscriber unsubscribes (`thread/unsubscribe` in codex-rs's app-server v2
 /// protocol, `ThreadUnsubscribeParams { threadId }`), then unloads it and emits
-/// `thread/closed`.
+/// `thread/closed` once it has had no subscriber and no activity for the
+/// server's `thread_unload_delay_secs` (by default 60 s on codex-cli 0.159.2,
+/// 1800 s on 0.163.0).
 pub const RELEASE_THREAD_METHOD: &str = "thread/unsubscribe";
 // llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
 

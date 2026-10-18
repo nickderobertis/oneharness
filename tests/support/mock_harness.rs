@@ -2769,7 +2769,7 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
     })
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; each behaviour it imitates is one spike-shared-app-server observed of codex-cli 0.159.2 (or this node's own no-turn probes: the 60 s unload grace, the refused resume of a never-turned thread), and the live phases scripts/e2e-control.sh runs against real Codex (pooled-env, pooled-kill, pooled-reuse) are the drift alarm that fails when the two part.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; each behaviour it imitates is one spike-shared-app-server observed of codex-cli 0.159.2 (or this node's own no-turn probes: the unload delay — 60 s by default on 0.159.2, 1800 s on 0.163.0, the `thread_unload_delay_secs` override honoured on both — and the refused resume of a never-turned thread), and the live phases scripts/e2e-control.sh runs against real Codex (pooled-env, pooled-kill, pooled-reuse) are the drift alarm that fails when the two part.
 /// Act like `codex app-server --listen unix://PATH`: the shared,
 /// multi-client app-server a pooled dispatch's turn runs on, imitating real
 /// Codex as `spike-shared-app-server-report` observed it. Unix only, like the
@@ -2784,7 +2784,10 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   `exclude`) in their own process group, outliving `turn/interrupt`;
 /// - `thread/status/changed` broadcast to every connection;
 /// - a finished thread kept loaded until its last subscriber sends
-///   `thread/unsubscribe`, then unloaded with `thread/closed`;
+///   `thread/unsubscribe`, then unloaded with `thread/closed` once
+///   `thread_unload_delay_secs` has passed with no subscriber back (a
+///   `-c thread_unload_delay_secs=N` launch argument, else
+///   CODEX_MOCK_UNLOAD_DELAY_SECS, else 0: at once);
 /// - no answer to an interrupt naming a turn that already ended.
 ///
 /// Its per-thread knobs are the dispatch's own `MOCK_*` variables, read off
@@ -2803,6 +2806,9 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   CODEX_MOCK_BROADCAST  send every thread's frames to every connection.
 ///   CODEX_MOCK_IGNORE_UNSUBSCRIBE  answer `thread/unsubscribe` but keep the
 ///                         thread loaded.
+///   CODEX_MOCK_UNLOAD_DELAY_SECS  the `thread_unload_delay_secs` default of
+///                         the Codex imitated (1800 for codex-cli 0.163.0),
+///                         which a `-c` launch argument overrides.
 ///   CODEX_MOCK_SERVER_BYTES  allocate and touch this many bytes for the
 ///                         server's life, its own resident footprint.
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
@@ -2937,6 +2943,9 @@ mod listen_server {
         commands_running: usize,
         memory: Vec<u8>,
         approval_pending: Option<u64>,
+        /// Bumped on every subscription, so an unload timer armed before it
+        /// stands down.
+        subscribed: u64,
     }
 
     impl Thread {
@@ -2950,6 +2959,8 @@ mod listen_server {
         dir: Option<PathBuf>,
         broadcast: bool,
         ignore_unsubscribe: bool,
+        /// How long a thread with no subscriber stays loaded.
+        unload_delay: std::time::Duration,
         thread_bytes: usize,
         fault: String,
         conns: HashMap<u64, Conn>,
@@ -3076,6 +3087,7 @@ mod listen_server {
             dir: dir.clone(),
             broadcast: std::env::var_os("CODEX_MOCK_BROADCAST").is_some(),
             ignore_unsubscribe: std::env::var_os("CODEX_MOCK_IGNORE_UNSUBSCRIBE").is_some(),
+            unload_delay: unload_delay(argv),
             thread_bytes: std::env::var("CODEX_MOCK_THREAD_BYTES")
                 .map_or(0, |n| whole("CODEX_MOCK_THREAD_BYTES", &n)),
             fault: std::env::var("CODEX_MOCK_FAULT").unwrap_or_default(),
@@ -3119,6 +3131,23 @@ mod listen_server {
 
     /// The knob `name`'s whole-number value `raw`; anything else is a fixture
     /// error, refused rather than read as some default.
+    /// The `thread_unload_delay_secs` this launch serves with: its last
+    /// `-c thread_unload_delay_secs=N`, else CODEX_MOCK_UNLOAD_DELAY_SECS,
+    /// else none.
+    fn unload_delay(argv: &[String]) -> std::time::Duration {
+        let set = argv
+            .windows(2)
+            .filter(|pair| pair[0] == "-c")
+            .filter_map(|pair| pair[1].strip_prefix("thread_unload_delay_secs="))
+            .next_back()
+            .map(|n| whole("thread_unload_delay_secs", n));
+        let secs = set.unwrap_or_else(|| {
+            std::env::var("CODEX_MOCK_UNLOAD_DELAY_SECS")
+                .map_or(0, |n| whole("CODEX_MOCK_UNLOAD_DELAY_SECS", &n))
+        });
+        std::time::Duration::from_secs(secs)
+    }
+
     fn whole<T: std::str::FromStr>(name: &str, raw: &str) -> T {
         raw.trim().parse().unwrap_or_else(|_| {
             super::refuse(&format!("{name} must be a whole number, got `{raw}`"))
@@ -3706,6 +3735,15 @@ mod listen_server {
         }
     }
 
+    /// Unload `thread`, telling `conn`, the connection that released it.
+    fn unload(s: &mut Server, conn: u64, thread: &str) {
+        s.threads.remove(thread);
+        s.send(
+            conn,
+            &json!({"jsonrpc": "2.0", "method": "thread/closed", "params": {"threadId": thread}}),
+        );
+    }
+
     fn settings_from(params: &Value, base: Option<&Settings>) -> Settings {
         let mut settings = base.cloned().unwrap_or_default();
         if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
@@ -3762,9 +3800,11 @@ mod listen_server {
             commands_running: 0,
             memory,
             approval_pending: None,
+            subscribed: 0,
         });
         thread.settings = settings.clone();
         thread.subscribers.insert(conn);
+        thread.subscribed += 1;
         s.known.insert(id.to_string(), settings.clone());
         if s.first_opened.is_none() {
             s.first_opened = Some(id.to_string());
@@ -3973,11 +4013,23 @@ mod listen_server {
                     .push(json!({"thread": thread, "conn": conn, "status": outcome}));
                 reply(&mut s, json!({"status": outcome}));
                 if outcome == "unsubscribed" && empty && !ignore {
-                    s.threads.remove(&thread);
-                    s.send(
-                        conn,
-                        &json!({"jsonrpc": "2.0", "method": "thread/closed", "params": {"threadId": thread}}),
-                    );
+                    if s.unload_delay.is_zero() {
+                        unload(&mut s, conn, &thread);
+                    } else {
+                        // Unloaded once the delay passes with no subscriber
+                        // back, as Codex's own unload timer does.
+                        let armed = s.threads.get(&thread).map(|t| t.subscribed);
+                        let delay = s.unload_delay;
+                        let server = Arc::clone(server);
+                        std::thread::spawn(move || {
+                            std::thread::sleep(delay);
+                            let mut s = lock(&server);
+                            if s.threads.get(&thread).map(|t| t.subscribed) == armed {
+                                unload(&mut s, conn, &thread);
+                                s.save();
+                            }
+                        });
+                    }
                 }
                 s.save();
             }

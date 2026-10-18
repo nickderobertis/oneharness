@@ -20,13 +20,24 @@
 //! codex-cli 0.159.2 writes a thread's rollout only after a turn and refuses to
 //! resume a thread without one; a shell turn makes no model call. After the first and the last
 //! release — once the server no longer holds the threads released so far
-//! (`thread/loaded/list`, polled for at most `--settle-ms`: codex-cli 0.159.2
-//! unloads a released thread only 60 s after its last subscriber leaves) — it
+//! (`thread/loaded/list`, polled for at most `--settle-ms`) — it
 //! reads the server's whole-tree resident memory (the pid in the
 //! pool entry's `server.json` and every descendant, summed from one `ps`
 //! listing's `rss` column), and writes the readings to `--out` as the JSON
 //! `live/control/app_server_rss_budget.py` reads. A released thread still
 //! loaded at the bound fails the workload, naming it beside both readings.
+//!
+//! Codex unloads a thread only once it has had no subscriber and no activity
+//! for `thread_unload_delay_secs`: 60 s by default on codex-cli 0.159.2, and
+//! 1800 s (30 minutes) by default on codex-cli 0.163.0, which keeps every
+//! released thread loaded that long whatever the client sends. So the
+//! workload's server is launched with that delay set to
+//! [`UNLOAD_DELAY_SECS`]: the release it checks is the same — a thread whose
+//! release leaves it subscribed is never unloaded, whatever the delay — but
+//! Codex's unload of a released thread lands within the settle bound. A
+//! dispatch's own server keeps Codex's default, so on 0.163.0 it holds each
+//! thread a lease released for 30 minutes: retention bounded by that delay,
+//! not by the server's life.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -177,6 +188,11 @@ fn version(codex: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// The `thread_unload_delay_secs` the workload's server is launched with:
+/// short, so a released thread is unloaded within the settle bound, and not
+/// zero, so the unload still waits on Codex's own delay as a dispatch's does.
+const UNLOAD_DELAY_SECS: u64 = 1;
+
 /// How far past the settle bound a listing begun before it may run.
 const LISTING_GRACE: Duration = Duration::from_secs(10);
 
@@ -211,7 +227,9 @@ fn settle(
 }
 
 fn run(args: &Args) -> Result<Value, String> {
-    // The launch a default controlled dispatch would key its server by.
+    // The launch a default controlled dispatch would key its server by, plus
+    // the short unload delay that lets a released thread's unload be seen.
+    let unload_delay = format!("thread_unload_delay_secs={UNLOAD_DELAY_SECS}");
     let argv: Vec<String> = [
         args.codex.as_str(),
         "app-server",
@@ -221,6 +239,8 @@ fn run(args: &Args) -> Result<Value, String> {
         "features.apps=false",
         "-c",
         "analytics.enabled=false",
+        "-c",
+        unload_delay.as_str(),
     ]
     .iter()
     .map(|arg| (*arg).to_string())

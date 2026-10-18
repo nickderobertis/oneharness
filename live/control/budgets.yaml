@@ -10,7 +10,9 @@ budgets:
       pool entry's server.json and every descendant, summed from one ps listing)
       after the 5th of 5 sequential leases is released, over the same reading
       after the 1st, both with no lease live on one server pid. Workload: one
-      pooled app-server on Linux serving 5 sequential leases, each a thread
+      pooled app-server on Linux, launched with thread_unload_delay_secs=1 so
+      Codex unloads a released thread before the reading (its default is 1800 s
+      on codex-cli 0.163.0), serving 5 sequential leases, each a thread
       started, given one thread/shellCommand of `true`, resumed once, held 1 s
       and released, with no model call and no turn/start. The shell command is
       there because codex-cli writes a thread's rollout only after a turn and

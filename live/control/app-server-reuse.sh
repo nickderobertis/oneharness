@@ -17,10 +17,21 @@
 #   live/control/app-server-reuse.sh
 #
 # Each reading waits until the server holds none of the threads released so
-# far (`thread/loaded/list`), for at most OH_REUSE_SETTLE_MS (default 90000):
-# codex-cli 0.159.2 unloads a released thread 60 s after its last subscriber
-# leaves, so an earlier reading would count threads already released. A thread
-# still loaded at that bound fails the workload, named beside both readings.
+# far (`thread/loaded/list`), for at most OH_REUSE_SETTLE_MS (default 90000),
+# so it never counts a thread already released. A thread still loaded at that
+# bound fails the workload, named beside both readings.
+#
+# Codex unloads a thread once it has had no subscriber and no activity for
+# `thread_unload_delay_secs`: by default 60 s on codex-cli 0.159.2 and 1800 s
+# (30 minutes) on codex-cli 0.163.0, which answers the release's
+# `thread/unsubscribe` with `unsubscribed` and then keeps the thread loaded for
+# those 30 minutes. The workload's server is launched with
+# `-c thread_unload_delay_secs=1`, so Codex's unload of a released thread lands
+# within the bound; a release that leaves its thread subscribed still fails
+# here, since Codex never unloads a subscribed thread whatever the delay. A
+# dispatch's own server keeps Codex's default, so on 0.163.0 it holds each
+# released thread for 30 minutes: retention bounded by that delay, not grown
+# for the server's whole life.
 #
 # OH_REUSE_CODEX names the Codex executable (default: `codex` on PATH);
 # OH_REUSE_LEASES the lease count (default 5). The reading is one `ps` listing's.
@@ -118,7 +129,7 @@ rm -f "$out" || {
 }
 "$example" --codex "$codex" --leases "$leases" \
   --hold-ms 1000 --settle-ms "$settle" --cwd "$work" --out "$out" || {
-  echo "app-server-reuse: the workload failed; its error is above. Threads still loaded at the bound: the server kept released threads past OH_REUSE_SETTLE_MS (${settle} ms) — raise it to wait longer, or report a retention. Anything else: check '$codex --version' and 'codex login status', then rerun" >&2
+  echo "app-server-reuse: the workload failed; its error is above. Threads still loaded at the bound: the server kept released threads past OH_REUSE_SETTLE_MS (${settle} ms) though its unload delay is 1 s — a release left them subscribed, or this Codex ignores thread_unload_delay_secs; report a retention. Anything else: check '$codex --version' and 'codex login status', then rerun" >&2
   exit 1
 }
 echo "app-server reuse: wrote $out"

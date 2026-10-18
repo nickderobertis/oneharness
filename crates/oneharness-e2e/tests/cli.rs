@@ -37096,7 +37096,7 @@ fn interrupt_text_view_says_served_and_whether_a_redirection_was_taken() {
     assert!(interrupt.status.success(), "{interrupt:?}");
     assert_eq!(
         String::from_utf8_lossy(&interrupt.stdout),
-        "interrupt served via claude-control-request · redirection taken\n"
+        "interrupt served via claude-control-request · redirection delivered\n"
     );
 
     // The controlled run's own text view carries the control block.

@@ -71,7 +71,7 @@ pub fn run(args: &InterruptArgs) -> Result<i32, OneharnessError> {
 }
 
 /// The answer for a person: served (by which mechanism, and whether the
-/// redirection went with it) or refused (the reason token and the run's own
+/// redirection was delivered as the next turn's prompt) or refused (the reason token and the run's own
 /// words).
 fn render_text(response: &ControlResponse) -> String {
     match response {
@@ -81,7 +81,7 @@ fn render_text(response: &ControlResponse) -> String {
         } => format!(
             "interrupt served via {} · redirection {}\n",
             mechanism.as_str(),
-            if *redirected { "taken" } else { "none" }
+            if *redirected { "delivered" } else { "none" }
         ),
         ControlResponse::Refused { error, reason } => {
             format!(
@@ -164,7 +164,7 @@ mod tests {
                 mechanism: ControlShape::CodexAppServer,
                 redirected: true,
             }),
-            "interrupt served via codex-app-server · redirection taken\n"
+            "interrupt served via codex-app-server · redirection delivered\n"
         );
         assert_eq!(
             render_text(&ControlResponse::Served {

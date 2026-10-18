@@ -30,15 +30,21 @@ command -v jq >/dev/null 2>&1 || fail "jq is not installed; the live helpers par
 oh="$root/target/debug/oneharness"
 [ -x "$oh" ] || fail "the built oneharness binary is missing at $oh; run 'cargo build' and retry"
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")"
-trap 'rm -rf "$tmp"' EXIT
-tmp="$(cd "$tmp" && pwd -P)"
-mkdir -p "$tmp/bin" "$tmp/live" "$tmp/ambient/.qwen/memory"
-# The machine's own qwen state, which a context-free turn must not read.
-printf 'Always greet the user first.\n' >"$tmp/ambient/.qwen/QWEN.md"
-printf 'The user prefers greetings.\n' >"$tmp/ambient/.qwen/memory/MEMORY.md"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
+  fail "could not create a scratch directory under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
+trap 'rm -rf "$tmp" || echo "check-qwen-context-free: could not remove $tmp; delete it by hand" >&2' EXIT
+tmp="$(cd "$tmp" && pwd -P)" || fail "could not resolve the scratch directory $tmp to a physical path; check that ${TMPDIR:-/tmp} is readable"
 
-cat >"$tmp/bin/qwen" <<'DOUBLE'
+# Stop with the path when a fixture cannot be written.
+fixture_failed() {
+  fail "could not write the fixture $1; check that $tmp is writable and its filesystem has free space"
+}
+mkdir -p "$tmp/bin" "$tmp/live" "$tmp/ambient/.qwen/memory" "$tmp/nomkdir" || fixture_failed "directories under $tmp"
+# The machine's own qwen state, which a context-free turn must not read.
+printf 'Always greet the user first.\n' >"$tmp/ambient/.qwen/QWEN.md" || fixture_failed "$tmp/ambient/.qwen/QWEN.md"
+printf 'The user prefers greetings.\n' >"$tmp/ambient/.qwen/memory/MEMORY.md" || fixture_failed "$tmp/ambient/.qwen/memory/MEMORY.md"
+
+cat >"$tmp/bin/qwen" <<'DOUBLE' || fixture_failed "$tmp/bin/qwen"
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = --version ]; then
@@ -86,7 +92,22 @@ fi
 marker="$(printf '%s\n' "$@" | grep -o 'ONEHARNESS-LIVE-[0-9]*' | head -n 1)"
 echo "Round-trip confirmed: $marker"
 DOUBLE
-chmod +x "$tmp/bin/qwen"
+chmod +x "$tmp/bin/qwen" || fixture_failed "$tmp/bin/qwen (making it executable)"
+
+# A mkdir that refuses the sandbox's work directory, so case 4b can make the
+# helper's own directory creation fail after it has allocated its sandbox.
+cat >"$tmp/nomkdir/mkdir" <<'SHIM' || fixture_failed "$tmp/nomkdir/mkdir"
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in */work)
+    echo "mkdir: cannot create directory '$a': Read-only file system" >&2
+    exit 1
+    ;;
+  esac
+done
+exec /bin/mkdir "$@"
+SHIM
+chmod +x "$tmp/nomkdir/mkdir" || fixture_failed "$tmp/nomkdir/mkdir (making it executable)"
 
 record="$tmp/record"
 # Drive one live-helper call from $1 as the working directory, with the
@@ -95,7 +116,7 @@ record="$tmp/record"
 drive() {
   local from="$1" call="$2"
   shift 2
-  rm -f "$record"
+  rm -f "$record" || fail "could not clear the previous call's record $record; check that $tmp is writable"
   set +e
   out="$(
     cd "$from" &&
@@ -149,7 +170,7 @@ esac
 
 # 4. A sandbox inside a git checkout would make that checkout qwen's project
 #    root, so the helper refuses before launching.
-mkdir -p "$tmp/checkout/.git" "$tmp/checkout/tmp"
+mkdir -p "$tmp/checkout/.git" "$tmp/checkout/tmp" || fixture_failed "the git checkout fixture under $tmp/checkout"
 drive "$root" 'oh_echo_without_context qwen' TMPDIR="$tmp/checkout/tmp"
 [ "$rc" -ne 0 ] || fail "a sandbox inside a git checkout was accepted: $out"
 case "$out" in
@@ -158,6 +179,18 @@ case "$out" in
 esac
 [ ! -e "$record" ] || fail "qwen launched from a sandbox inside a git checkout"
 [ -z "$(ls -A "$tmp/checkout/tmp")" ] || fail "a refused sandbox was left behind"
+
+# 4b. A sandbox whose directories cannot be created stops before launching,
+#     names the path, and is given back.
+# shellcheck disable=SC2016 # expanded by the driven shell, which puts the failing mkdir first
+drive "$root" 'PATH="$NOMKDIR:$PATH"; oh_echo_without_context qwen' NOMKDIR="$tmp/nomkdir"
+[ "$rc" -ne 0 ] || fail "a sandbox whose work directory could not be created was accepted: $out"
+case "$out" in
+  *"could not create $tmp/live/"*"/work and "*"/home in the context-free sandbox"*) ;;
+  *) fail "a failed sandbox mkdir did not name the path: $out" ;;
+esac
+[ ! -e "$record" ] || fail "qwen launched from a sandbox whose directories could not be created"
+[ -z "$(ls -A "$tmp/live")" ] || fail "a sandbox whose directories could not be created was left behind: $(ls -A "$tmp/live")"
 
 # 5. A harness whose context the helper does not know how to withhold is refused.
 drive "$root" 'oh_echo_without_context codex'

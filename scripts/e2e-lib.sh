@@ -760,18 +760,29 @@ oh_echo_without_context() {
     *) fail "oh_echo_without_context: no context-free launch is known for $id; name the context it loads and how to point it away first" ;;
   esac
   dir="$(mktemp -d "${TMPDIR:-/tmp}/tmp.XXXXXXXXXX")" ||
-    fail "could not create a scratch directory — check that the host temp dir is writable"
-  dir="$(cd "$dir" && pwd -P)"
+    fail "$id: could not create the context-free sandbox under ${TMPDIR:-/tmp}; check that it exists and is writable, or set TMPDIR to one that is"
+  # Every step below gives the sandbox back before it fails.
+  local made="$dir"
+  dir="$(cd "$dir" && pwd -P)" || {
+    oh_drop_sandbox "$made"
+    fail "$id: could not resolve the context-free sandbox $made to a physical path; check that ${TMPDIR:-/tmp} is readable and rerun"
+  }
   up="$dir"
   while :; do
     if [ -e "$up/.git" ]; then
-      rm -rf "$dir"
+      oh_drop_sandbox "$dir"
       fail "$id: the context-free sandbox $dir sits inside the git checkout at $up, so $id would load that checkout's context files; set TMPDIR to a directory outside any checkout and rerun"
     fi
     [ "$up" = / ] && break
-    up="$(dirname "$up")"
+    up="$(dirname "$up")" || {
+      oh_drop_sandbox "$dir"
+      fail "$id: could not walk up from $up while checking the context-free sandbox $dir for a git checkout; rerun with TMPDIR set to a plain local directory"
+    }
   done
-  mkdir "$dir/work" "$dir/home"
+  mkdir "$dir/work" "$dir/home" || {
+    oh_drop_sandbox "$dir"
+    fail "$id: could not create $dir/work and $dir/home in the context-free sandbox; check that ${TMPDIR:-/tmp} is writable and has free space"
+  }
   context_env=(
     --env "HOME=$(oh_native_path "$dir/home")"
     --env "XDG_CONFIG_HOME=$(oh_native_path "$dir/home/.config")"
@@ -788,8 +799,14 @@ oh_echo_without_context() {
   ) </dev/null &
   turn=$!
   wait "$turn" || status=$?
-  rm -rf "$dir" || note "  could not remove the scratch directory $dir — delete it by hand"
+  oh_drop_sandbox "$dir"
   [ "$status" -eq 0 ] || exit "$status"
+}
+
+# Remove a scratch sandbox. A removal that fails names the path so it can be
+# deleted by hand; it does not mask the verdict of the turn that used it.
+oh_drop_sandbox() {
+  rm -rf "$1" || note "  could not remove the scratch directory $1; delete it by hand (rm -rf '$1')"
 }
 
 # --- large prompts / system (issue #1115) ------------------------------------

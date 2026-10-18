@@ -1027,6 +1027,8 @@ mod crush_redirects {
         events: Mutex<Option<mpsc::Sender<String>>>,
         stream: Mutex<Option<mpsc::Receiver<String>>>,
         gone: AtomicBool,
+        /// Every request refused as malformed, and why.
+        rejected: Mutex<Vec<String>>,
     }
 
     impl Standin {
@@ -1052,34 +1054,23 @@ mod crush_redirects {
 
         fn answer(&self, mut stream: UnixStream) {
             let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut head = String::new();
-            reader.read_line(&mut head).unwrap();
-            let mut length = 0usize;
-            loop {
-                let mut header = String::new();
-                reader.read_line(&mut header).unwrap();
-                if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
-                    length = value.trim().parse().unwrap();
-                }
-                if header == "\r\n" {
-                    break;
-                }
-            }
-            let mut body = vec![0u8; length];
-            reader.read_exact(&mut body).unwrap();
-            let body: serde_json::Value =
-                serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
-            let path = head
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or_default()
-                .to_string();
             let reply = |stream: &mut UnixStream, status: &str, body: &str| {
                 let _ = write!(
                     stream,
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
+            };
+            // A request the client under test framed wrong is its bug: refused
+            // here and recorded, so the contract test fails naming it rather
+            // than a default standing in for what was never sent.
+            let (path, body) = match read_request(&mut reader) {
+                Ok(request) => request,
+                Err(problem) => {
+                    reply(&mut stream, "400 Bad Request", "{}");
+                    self.rejected.lock().unwrap().push(problem);
+                    return;
+                }
             };
             if path.contains("/events") {
                 let rx = self.stream.lock().unwrap().take().expect("one stream");
@@ -1134,6 +1125,62 @@ mod crush_redirects {
         }
     }
 
+    /// Bounds on what the stand-in reads of one request, so a client that
+    /// never ends its head, or claims a huge body, is refused rather than
+    /// allocated for.
+    const MAX_LINE: u64 = 8 * 1024;
+    const MAX_HEADERS: usize = 64;
+    const MAX_BODY: usize = 1024 * 1024;
+
+    /// One HTTP/1.1 request's path and JSON body (`Null` when it has none).
+    fn read_request(reader: &mut impl BufRead) -> Result<(String, serde_json::Value), String> {
+        let mut line = |what: &str| -> Result<String, String> {
+            let mut line = String::new();
+            let read = reader
+                .by_ref()
+                .take(MAX_LINE)
+                .read_line(&mut line)
+                .map_err(|err| format!("{what}: {err}"))?;
+            if read == 0 || !line.ends_with("\r\n") {
+                return Err(format!("{what} unterminated: {line:?}"));
+            }
+            Ok(line)
+        };
+        let head = line("request line")?;
+        let path = match head.split_whitespace().collect::<Vec<_>>()[..] {
+            [_method, path, "HTTP/1.1"] if path.starts_with('/') => path.to_string(),
+            _ => return Err(format!("malformed request line {head:?}")),
+        };
+        let mut length = None;
+        for _ in 0..MAX_HEADERS {
+            let header = line("header")?;
+            if header == "\r\n" {
+                let length = length.unwrap_or(0);
+                let mut body = vec![0u8; length];
+                reader
+                    .read_exact(&mut body)
+                    .map_err(|err| format!("body of {length} bytes: {err}"))?;
+                let body = if body.is_empty() {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::from_slice(&body).map_err(|err| format!("body: {err}"))?
+                };
+                return Ok((path, body));
+            }
+            if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                let value: usize = value
+                    .trim()
+                    .parse()
+                    .map_err(|err| format!("content-length {value:?}: {err}"))?;
+                if value > MAX_BODY {
+                    return Err(format!("content-length {value} past {MAX_BODY}"));
+                }
+                length = Some(value);
+            }
+        }
+        Err(format!("more than {MAX_HEADERS} headers"))
+    }
+
     fn wait_for(what: &str, ready: impl Fn() -> bool) {
         let until = Instant::now() + Duration::from_secs(20);
         while !ready() {
@@ -1157,6 +1204,7 @@ mod crush_redirects {
             events: Mutex::new(Some(events)),
             stream: Mutex::new(Some(stream)),
             gone: AtomicBool::new(false),
+            rejected: Mutex::new(Vec::new()),
         });
         let listener = UnixListener::bind(&server).unwrap();
         std::thread::spawn({
@@ -1225,6 +1273,8 @@ mod crush_redirects {
         driver.join().unwrap();
         let events = channel.finish();
         let prompts = standin.prompts.lock().unwrap().clone();
+        let rejected = standin.rejected.lock().unwrap().clone();
+        assert!(rejected.is_empty(), "malformed requests: {rejected:?}");
         (response, events, prompts)
     }
 

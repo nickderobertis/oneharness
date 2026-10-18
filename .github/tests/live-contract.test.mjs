@@ -5,7 +5,7 @@ import { resolve, join } from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import { parse, stringify } from "yaml";
 import { history } from "./history.mjs";
-import { evaluate } from "../workflow-graph.mjs";
+import { evaluate, workflows, triggered, resolveJobs } from "../workflow-graph.mjs";
 import { tmpdir } from "node:os";
 // Paid Mac CLI execution requires hosted credentials and a Mac runner.
 // Structural command/credential checks do not claim native execution.
@@ -90,7 +90,7 @@ test("consolidated Mac job retains real live commands and credential bindings fr
   assert.equal(variants.env.OH_E2E_VARIANTS_RUN_OPENCODE, "1");
   assert.equal(variants.env.OH_E2E_VARIANTS_RUN_QWEN, "0");
 });
-test("real path-routing subprocess reads workflow filters and keeps former control schedule proof", () => {
+test("real path-routing subprocess reads workflow filters and routes turn control on every trusted PR", () => {
   const fixture = history();
   try {
     cpSync(".github/workflows", join(fixture.cwd, ".github/workflows"), {
@@ -140,6 +140,29 @@ test("real path-routing subprocess reads workflow filters and keeps former contr
   }
 });
 // llmlint: ignore-end[shell_test_tiers_stay_split]
+
+// The Mac check runs the suite on every trusted PR (above), so a nightly run
+// would re-spend six harnesses' paid calls on a result nobody reads.
+test("turn control runs for a control-path PR and a manual dispatch, and never on a schedule", () => {
+  const all = workflows();
+  const control = all["e2e-control.yml"];
+  assert.equal("schedule" in control.on, false, "e2e-control.yml must declare no schedule");
+  assert.deepEqual(Object.keys(control.jobs), ["live"], "e2e-control.yml: only the live suite remains");
+  const base = { action: "synchronize", branch: "main", paths: [], fork: false, publish: "off", manual: false, macosRequired: false, releaseOnly: false };
+  const lanes = (scenario, input = {}) =>
+    triggered(control, scenario)
+      ? resolveJobs("e2e-control.yml", scenario, all, [], input).map((row) => `${row.job}@${row.runner}`)
+      : [];
+  assert.ok(control.on.pull_request.paths.length > 0);
+  for (const path of control.on.pull_request.paths)
+    assert.deepEqual(lanes({ ...base, event: "pull_request", paths: [path] }), ["live@ubuntu-latest"], `PR touching ${path}`);
+  assert.deepEqual(lanes({ ...base, event: "pull_request", paths: ["README.md"] }), [], "a PR off the control path");
+  assert.deepEqual(lanes({ ...base, event: "pull_request", paths: ["src/commands/interrupt.rs"], fork: true }), [], "a fork PR");
+  const dispatch = { ...base, event: "workflow_dispatch", action: "" };
+  assert.deepEqual(lanes(dispatch), ["live@ubuntu-latest"]);
+  assert.deepEqual(lanes(dispatch, { os: "all" }), ["live@ubuntu-latest", "live@macos-latest"]);
+  assert.deepEqual(lanes({ ...base, event: "schedule", action: "cron" }), [], "a scheduled run");
+});
 
 test("live variants preflight accepts the actual consolidated graph and rejects selector drift", () => {
   const cwd = mkdtempSync(join(process.env.ONEPIPELINE_NODE_SCRATCH_DIR ?? tmpdir(), "variants-routing-"));

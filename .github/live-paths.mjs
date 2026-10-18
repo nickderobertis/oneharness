@@ -25,7 +25,8 @@ for (const file of readdirSync(".github/workflows").filter((f) =>
   const workflow = validateWorkflow(parse(readFileSync(`.github/workflows/${file}`, "utf8")), file);
   const patterns = workflow.on.pull_request?.paths ?? [];
   const name = file.slice(4, -4);
-  // Turn control's former schedule proof is consolidated on every trusted PR.
+  // Turn control runs in every Mac check of a trusted PR, whatever it touches;
+  // its own workflow, which has no schedule, adds Linux for control-path PRs.
   const selected =
     name === "control" || paths.some((p) => matches(p, patterns));
   appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${selected}\n`);

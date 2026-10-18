@@ -14,10 +14,9 @@ Rules for the `live-control` suite alone (`scripts/e2e-control.sh`,
   does not carry, so `e2e-control.yml` and the consolidated Mac CI job supply
   the credentials and are the
   places those three are proven. The Linux workflow runs for control-source
-  changes, on its daily schedule, and on demand. CI's one Mac check runs the
-  same proof on trusted ordinary PRs, consolidating the former scheduled Mac
-  assertions. A scheduled Linux failure opens (or comments on) an issue,
-  because a schedule has no PR to turn red. In CI `OH_E2E_NO_SKIP` makes a
+  changes and on demand, with no schedule: CI's one Mac check already runs the
+  same proof on trusted ordinary PRs, so a nightly run would only re-spend paid
+  calls on a result nobody reads. In CI `OH_E2E_NO_SKIP` makes a
   harness that drops out for want of a credential RED — without it the suite
   reports success having proven nothing for whichever harnesses went
   unauthenticated. Two absences are NOT red, since no credential fixes

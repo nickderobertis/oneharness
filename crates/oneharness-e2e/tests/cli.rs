@@ -32211,27 +32211,37 @@ fn a_codex_redirect_whose_replacement_turn_is_refused_is_not_delivered() {
 
 /// A delivery-deadline override that is not whole milliseconds is said and
 /// ignored, never taken as some other deadline: the run warns and waits the
-/// default.
+/// default — so a redirect held well past any deadline the value could have
+/// been misread as (none, or zero) is still delivered when its turn ends.
 #[cfg(unix)]
 #[test]
 fn a_malformed_delivery_deadline_override_is_warned_about_and_ignored() {
+    let gate_dir = control_store_dir("bad-deadline-gate");
+    let gate = gate_dir.join("open");
+    let gate_arg = gate.display().to_string();
     let journey = RedirectJourney::start(
         RedirectDouble::Claude,
         "bad-deadline",
-        &[("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "soon")],
-    );
-    let stop = run(
         &[
-            "interrupt",
-            "--session",
-            RedirectJourney::SESSION,
-            "--session-dir",
-            &journey.store.display().to_string(),
+            ("MOCK_INTERRUPT_GATE", gate_arg.as_str()),
+            ("ONEHARNESS_INTERNAL_REDIRECT_DELIVERY_MS", "soon"),
         ],
-        &[],
     );
-    assert!(stop.status.success(), "{stop:?}");
-    let (output, _, _) = journey.finish();
+    let mut interrupt = journey.redirect();
+    wait_until("the abort to reach the harness", || {
+        journey.received().contains("INTERRUPTED")
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(
+        interrupt.try_wait().unwrap().is_none(),
+        "a malformed override shortened the delivery deadline"
+    );
+    std::fs::write(&gate, "").unwrap();
+    let answer = interrupt.wait_with_output().unwrap();
+    assert!(answer.status.success(), "{answer:?}");
+    assert_eq!(json_stdout(&answer)["redirected"], true, "{answer:?}");
+    let (output, _, received) = journey.finish();
+    assert_eq!(carried(&received), 1, "{received}");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains(

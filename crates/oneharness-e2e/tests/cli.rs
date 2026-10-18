@@ -28475,6 +28475,52 @@ fn a_redirection_refused_by_an_idle_run_is_not_reported_as_delivered() {
     drop(listener);
 }
 
+#[cfg(not(unix))]
+#[test]
+fn a_redirection_on_a_platform_without_control_sockets_is_refused_as_undelivered() {
+    // No run on this platform can bind a control socket, so a redirection
+    // reaches no turn. The supervisor must hear that its message was not
+    // delivered, and a bare interrupt must not be told about a message it
+    // never carried.
+    let store = control_store_dir("redirect-nosock");
+    let store_arg = store.display().to_string();
+    let interrupt = |extra: &[&str]| {
+        let mut args = vec![
+            "interrupt",
+            "--session",
+            "nosock",
+            "--session-dir",
+            &store_arg,
+            "--compact",
+        ];
+        args.extend_from_slice(extra);
+        run(&args, &[])
+    };
+
+    let redirected = interrupt(&["--input", "do X instead"]);
+    assert_eq!(redirected.status.code(), Some(1), "{redirected:?}");
+    let frame = json_stdout(&redirected);
+    assert_eq!(frame["ok"], false);
+    assert_eq!(frame["reason"], "not_running");
+    assert!(frame.get("redirected").is_none(), "{frame}");
+    let error = frame["error"]
+        .as_str()
+        .expect("a refusal carries its error");
+    assert!(
+        error.contains("the redirection was not delivered"),
+        "{error}"
+    );
+
+    let bare = interrupt(&[]);
+    assert_eq!(bare.status.code(), Some(1), "{bare:?}");
+    let frame = json_stdout(&bare);
+    assert_eq!(frame["reason"], "not_running");
+    let error = frame["error"]
+        .as_str()
+        .expect("a refusal carries its error");
+    assert!(!error.contains("redirection"), "{error}");
+}
+
 #[cfg(unix)]
 #[test]
 fn a_previous_version_supervisor_is_refused_across_the_socket_rather_than_half_understood() {

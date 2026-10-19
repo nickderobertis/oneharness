@@ -4021,10 +4021,14 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
         prompt: "task beta",
         system: "instruction beta",
     };
-    // Each thread is created under the other dispatch's settings, both held
-    // live together so they are certainly on one server: one run after the
-    // other passed only if the second beat the linger, which on macOS under
-    // coverage it did not.
+    // A turn of its own session held live throughout, so every dispatch below
+    // certainly lands on one server: one run after another passed only if the
+    // second beat the linger, which on macOS under coverage it did not — in
+    // creating the threads, and again between creating and resuming them.
+    let kept = pool.file("kept");
+    let keeper = spawn_with(&pool, &a("res-keep"), &[("MOCK_CODEX_HOLD_UNTIL", &kept)]);
+    pool.await_live_turns(1);
+    // Each thread is created under the other dispatch's settings.
     let command = "env; pwd";
     let created = pool.file("created");
     let making_a = spawn_with(
@@ -4036,7 +4040,7 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
             ("MOCK_CODEX_HOLD_UNTIL", &created),
         ],
     );
-    pool.await_live_turns(1);
+    pool.await_live_turns(2);
     let making_b = spawn_with(
         &pool,
         &a("res-b"),
@@ -4046,7 +4050,7 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
             ("MOCK_CODEX_HOLD_UNTIL", &created),
         ],
     );
-    pool.await_live_turns(2);
+    pool.await_live_turns(3);
     std::fs::write(&created, b"").unwrap();
     let (out, made_a) = Pool::finish(making_a);
     succeeded(&out, &made_a);
@@ -4078,7 +4082,8 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
             ("MOCK_CODEX_HOLD_UNTIL", &release),
         ],
     );
-    let server = pool.await_live_turns(1);
+    let server = pool.await_live_turns(2);
+    assert_eq!(server, created_on, "the keeper let the server go");
     let second = spawn_with(
         &pool,
         &b("res-b"),
@@ -4088,10 +4093,13 @@ fn a_resumed_thread_runs_under_the_resuming_dispatch_s_settings() {
             ("MOCK_CODEX_HOLD_UNTIL", &release),
         ],
     );
-    pool.await_live_turns(2);
+    pool.await_live_turns(3);
     std::fs::write(&release, b"").unwrap();
     let (out_a, report_a) = Pool::finish(first);
     let (out_b, report_b) = Pool::finish(second);
+    std::fs::write(&kept, b"").unwrap();
+    let (out, kept_report) = Pool::finish(keeper);
+    succeeded(&out, &kept_report);
     succeeded(&out_a, &report_a);
     succeeded(&out_b, &report_b);
 

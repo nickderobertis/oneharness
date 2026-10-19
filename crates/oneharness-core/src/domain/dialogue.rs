@@ -220,6 +220,24 @@ pub struct Dialogue {
     /// first point a new turn can be opened. Held, never re-sent: it is taken
     /// once, so a turn that ends badly costs one attempt rather than looping.
     pending_redirect: Option<RedirectInput>,
+    /// What the server answered the turn a redirection opened, once it has —
+    /// read once by the run, which answers the interrupt from it.
+    ///
+    /// Codex acknowledges `turn/start` at once, so its answer says whether the
+    /// replacement turn exists; ACP answers `session/prompt` only when the turn
+    /// ends, so it has none to wait for (see [`Self::awaits_redirect_answer`]).
+    redirect_answer: RedirectAnswer,
+}
+
+/// Where the server's answer to a redirected turn's request is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RedirectAnswer {
+    /// No redirected turn is waiting on an answer.
+    None,
+    /// The redirected turn's request is out; its answer has not arrived.
+    Awaited,
+    /// The server answered it: the turn exists, or why it does not.
+    Answered(Result<(), String>),
 }
 
 impl Dialogue {
@@ -246,6 +264,7 @@ impl Dialogue {
             text: String::new(),
             text_item: None,
             pending_redirect: None,
+            redirect_answer: RedirectAnswer::None,
         })
     }
 
@@ -358,6 +377,27 @@ impl Dialogue {
     /// the supervisor still owns a message no turn is going to carry.
     pub fn abandon_redirect(&mut self) {
         self.pending_redirect = None;
+    }
+
+    /// Whether the turn a redirection opened is still waiting for the server
+    /// to say it exists. Only codex says so — its `turn/start` is acknowledged
+    /// at once — so only a codex redirection is delivered on that answer
+    /// rather than on the write.
+    #[must_use]
+    pub fn awaits_redirect_answer(&self) -> bool {
+        self.redirect_answer == RedirectAnswer::Awaited
+    }
+
+    /// The server's answer to the turn a redirection opened, once: `Ok` when it
+    /// took the turn, `Err` with its own words when it refused it.
+    pub fn take_redirect_answer(&mut self) -> Option<Result<(), String>> {
+        match std::mem::replace(&mut self.redirect_answer, RedirectAnswer::None) {
+            RedirectAnswer::Answered(answer) => Some(answer),
+            other => {
+                self.redirect_answer = other;
+                None
+            }
+        }
     }
 
     /// The shape this conversation was built for, and the only protocol it
@@ -546,6 +586,35 @@ impl Dialogue {
                 || (self.phase == Phase::Opening && id == self.open_id)
                 || (self.phase == Phase::InTurn && Some(id) == self.turn_request_id)
         });
+        // The answer to a redirected turn's request says whether that turn
+        // exists, which is what the interrupt carrying it is answered from. An
+        // acknowledgement is taken only when it names the turn it opened —
+        // `TurnStartResponse.turn.id` is required — so an answer that names none
+        // is no evidence the message became a turn, and is refused as such.
+        // Nor is there a turn to follow afterwards, so the conversation ends
+        // there rather than waiting for a `turn/completed` nothing will send.
+        if self.redirect_answer == RedirectAnswer::Awaited
+            && self.phase == Phase::InTurn
+            && id.is_some_and(|id| Some(id) == self.turn_request_id)
+        {
+            let named = message
+                .pointer("/result/turn/id")
+                .and_then(Value::as_str)
+                .is_some_and(|turn| !turn.is_empty());
+            self.redirect_answer = RedirectAnswer::Answered(match message.get("error") {
+                Some(error) => Err(error
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map_or_else(|| error.to_string(), str::to_string)),
+                None if named => Ok(()),
+                None => Err(format!(
+                    "the server answered the replacement `turn/start` without naming a turn: {message}"
+                )),
+            });
+            if !named && message.get("error").is_none() {
+                return self.finish();
+            }
+        }
         if active_id && message.get("error").is_some() {
             return self.finish();
         }
@@ -700,6 +769,9 @@ impl Dialogue {
         self.phase = Phase::InTurn;
         let id = self.take_id();
         self.turn_request_id = Some(id);
+        if self.shape == ControlShape::CodexAppServer {
+            self.redirect_answer = RedirectAnswer::Awaited;
+        }
         Some(vec![request(
             id,
             self.turn_method(),
@@ -1708,8 +1780,53 @@ mod tests {
         );
         assert_eq!(next["params"]["prompt"][0]["text"], "do X instead");
 
+        // ACP's answer to the redirected prompt is the END of that turn, so
+        // there is nothing to wait for: the write is the delivery.
+        assert!(!d.awaits_redirect_answer());
         let step = d.on_line(r#"{"jsonrpc":"2.0","id":4,"result":{"stopReason":"end_turn"}}"#);
         assert!(step.is_terminal(), "nothing is queued behind the redirect");
+        assert!(d.take_redirect_answer().is_none());
+    }
+
+    #[test]
+    fn a_codex_redirected_turn_is_delivered_on_the_server_s_answer_to_it() {
+        // Codex acknowledges `turn/start` at once, so its answer — not the
+        // write — says whether the replacement turn exists. An acknowledged one
+        // is delivered; a refused one is not, in the server's own words.
+        for (answer, expected) in [
+            (
+                r#"{"jsonrpc":"2.0","id":5,"result":{"turn":{"id":"tu-10","status":"inProgress"}}}"#,
+                Ok(()),
+            ),
+            (
+                r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32600,"message":"thread not found: th-1"}}"#,
+                Err("thread not found: th-1".to_string()),
+            ),
+            // An answer that names no turn is no evidence the turn exists.
+            (
+                r#"{"jsonrpc":"2.0","id":5,"result":{}}"#,
+                Err(r#"the server answered the replacement `turn/start` without naming a turn: {"id":5,"jsonrpc":"2.0","result":{}}"#.to_string()),
+            ),
+        ] {
+            let mut d = codex_in_turn();
+            d.interrupt(Some(&redirection("do X instead"))).unwrap();
+            assert!(!d.awaits_redirect_answer(), "no replacement turn yet");
+            let step = d.on_line(r#"{"jsonrpc":"2.0","method":"turn/completed","params":{}}"#);
+            // `turn/start` is request 5: the interrupt itself was 4.
+            assert_eq!(parse(&step.frames()[0])["id"], 5, "the replacement turn");
+            assert!(d.awaits_redirect_answer());
+            assert!(d.take_redirect_answer().is_none(), "not answered yet");
+            // An unrelated answer is not the replacement turn's.
+            d.on_line(r#"{"jsonrpc":"2.0","id":99,"result":{}}"#);
+            assert!(d.awaits_redirect_answer());
+            let ended = d.on_line(answer);
+            assert_eq!(d.take_redirect_answer(), Some(expected.clone()));
+            assert!(d.take_redirect_answer().is_none(), "read once");
+            assert!(!d.awaits_redirect_answer());
+            // Refused, there is no replacement turn to follow: the conversation
+            // ends rather than waiting for one.
+            assert_eq!(ended.is_terminal(), expected.is_err(), "{answer}");
+        }
     }
 
     #[test]

@@ -3430,8 +3430,9 @@ fn drive_http_turn(
     handle.begin_http_turn(turn.clone());
     // The driver asks for a redirection each time a turn ends: an interrupt
     // commits its message to the handle, and this is where the run hands it to a
-    // session that has actually gone idle.
-    let outcome = http_turn::run(&turn, prompt, decision, timeout, &|| handle.take_redirect());
+    // session that has actually gone idle — and tells the handle whether the
+    // session took it, which is when that interrupt is answered.
+    let outcome = http_turn::drive(&turn, prompt, decision, timeout, handle);
     handle.end_http_turn();
     handle.release();
     // The lease is released here (not at process exit), so a server nobody is

@@ -18,11 +18,12 @@ name: E2E (Turn control)
 # it fires when that path changes and stays silent for every other PR.
 # workflow_dispatch is kept for on-demand reruns once this is on main.
 #
-# Scheduled drift coverage runs on Linux. CI's one Mac check job runs this same
-# suite sequentially with the harness proofs on trusted ordinary PRs, retaining
-# the Mac socket assertions without a second automatic Mac-spending workflow.
-# Explicit manual OS selection remains available for diagnostics.
-# scripts/check-e2e-matrix.sh holds paths, credentials, scheduled reporting,
+# There is no schedule: CI's one Mac check job already runs this same suite
+# sequentially with the harness proofs on trusted ordinary PRs, so a nightly
+# run would spend six harnesses' paid calls re-proving what every such PR
+# proves, with nobody reading its result. Automatic runs here use Linux;
+# explicit manual OS selection remains available for diagnostics.
+# scripts/check-e2e-matrix.sh holds paths, credentials, the absent schedule,
 # checkout and the consolidated CI command to their actual sources.
 #
 # `OH_E2E_NO_SKIP` matters more here than anywhere else: e2e-control.sh notes
@@ -55,10 +56,6 @@ on:
       - scripts/e2e-lib.sh
       - scripts/install-e2e.sh
       - .github/workflows/e2e-control.yml
-  # Daily Linux drift coverage on the default branch. 07:11 UTC: off the top of the hour,
-  # where GitHub's shared cron queue is at its most backed up.
-  schedule:
-    - cron: "11 7 * * *"
   workflow_dispatch:
     inputs:
       os:
@@ -182,39 +179,3 @@ jobs:
           GOOSE_E2E_MODEL: ${{ vars.GOOSE_E2E_MODEL }}
         run: just live-control
 
-  # A scheduled run has no pull request to turn red and nobody waiting on it, so
-  # left alone a nightly failure is a red square in a tab no one opens. This
-  # gives it somewhere to be seen: one open issue, commented on each further
-  # night, so a week of failures is one thread rather than seven.
-  report:
-    name: report a scheduled failure
-    needs: live
-    if: >-
-      failure() && github.event_name == 'schedule' &&
-      github.repository == 'nickderobertis/oneharness'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    timeout-minutes: 5
-    steps:
-      # The script below lives in this repository, and a job's workspace is
-      # empty until it checks out — without this the reporter exits 127 on a
-      # missing file, which is exactly how ten consecutive nightly failures
-      # went unannounced. scripts/check-e2e-matrix.sh now holds this.
-      - uses: actions/checkout@v4
-
-      - name: Open or update the drift issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TITLE: Scheduled turn-control e2e is failing
-          BODY: >-
-            The nightly live turn-control suite failed. It covers Linux; open the run to inspect the failure. Mac assertions
-            run in the consolidated CI check on trusted ordinary pull requests.
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        # A script, not inline YAML: the create-vs-comment branch is real
-        # behavior and scripts/report-scheduled-failure-test.sh drives both
-        # halves against a stubbed `gh` (this path only ever runs when
-        # something is already broken, so it cannot debug itself in place).
-        run: bash scripts/report-scheduled-failure.sh

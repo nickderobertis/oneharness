@@ -302,6 +302,21 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   first one, which is why no declared mechanism has to refuse `--input`. So every
   backend must keep its turn (and stdin) OPEN while a redirection is pending; a
   mechanism whose terminal signal ends the run unconditionally would drop it.
+  The interrupt is answered on **delivery**, not on the abort (#1405): it waits
+  on a `RedirectDelivery` in `io::control` that only the writer of the
+  replacement turn settles `Delivered` (stdin/ACP on the successful write,
+  codex on its `turn/start` ack, HTTP on the session's admission); after a
+  successful write the message is never handed back. A double records a stdin
+  write only once it reads it, so journeys prove the write precedes the answer
+  through `ONEHARNESS_INTERNAL_REDIRECT_TRACE` (the run appends
+  `REDIRECT_WRITTEN` to it after the write), never through stdout. The
+  redirect client has no read timeout: once a write is claimed only the run
+  can settle it, which can take as long as the harness withholds its answer. Every path that ends a
+  turn or a candidate without that write must settle it as undelivered
+  (`no_active_turn` turn ended / `not_running` run gone) — a new backend that
+  forgets leaves the supervisor waiting out the 60s deadline. A writer claims
+  the ticket BEFORE writing and never writes an unclaimable one, which is what
+  keeps a withdrawn message from landing.
   *When* the run learns the aborted turn ended is per mechanism and measured:
   most announce it, but **opencode announces nothing** — its stream just stops,
   so there the served interrupt is the ending and the message goes out as soon as
@@ -396,7 +411,17 @@ boundary every surface (the CLI, the SDKs, an embedder) drives.
   are the dispatch's own `MOCK_*`, read off `shell_environment_policy.set`; a
   journey scripting the stdio mock app-server runs under `per-dispatch`
   (`codex_per_dispatch` in `tests/cli.rs`). Its journeys:
-  `crates/oneharness-e2e/tests/app_server.rs`. Anything that outlives its
+  `crates/oneharness-e2e/tests/app_server.rs`. A server that dies before it
+  listens is diagnosed from its stderr, kept in the entry's `server.log` and
+  quoted in the dispatch's error. Real Codex binds every `--listen` socket
+  in one rendezvous directory and exits 1 unless it is the user's at one mode;
+  both are stated once, in `domain::app_server::codex_daemon_dir` /
+  `CODEX_DAEMON_DIR_MODE`, which the launch (`prepare_daemon_dir`, tightening
+  one that is ours) and the mock both read, and `oh_codex_rendezvous_check`
+  holds to real Codex live. Never point a
+  test at the host's directory: it is shared by every Codex on the machine,
+  and a journey uses `ONEHARNESS_INTERNAL_CODEX_DAEMON_DIR` +
+  `CODEX_MOCK_DAEMON_DIR` instead. Anything that outlives its
   dispatch spawns through `io::server_pool::detach`, which also marks every
   descriptor above stderr close-on-exec: on macOS `std` marks a new pipe or
   socket close-on-exec only after creating it, so a detached child otherwise

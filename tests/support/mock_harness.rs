@@ -11,6 +11,11 @@
 //!   MOCK_STDERR     bytes written to stderr
 //!   MOCK_EXIT       process exit code (default: 0)
 //!   MOCK_EXIT_<n>   with MOCK_ATTEMPT_FILE, process exit code for attempt n
+//!   MOCK_EXIT_MARK  once the answer is written, hold the exit — the work an
+//!                   exit does (under coverage, writing the profile) — until a
+//!                   TERM arrives, then write `exited` to this path and exit,
+//!                   so a test sees a TERM land mid-exit and that exit still
+//!                   run to its end (Unix; elsewhere it is written at once)
 //!   MOCK_SLEEP_MS   milliseconds to sleep before exiting (to force a timeout)
 //!   MOCK_ARGV_FILE  if set, the received argv (one per line) is written here
 //!   MOCK_ECHO_PWD   if set, write `PWD=<the inherited $PWD>` to stdout and exit
@@ -99,6 +104,27 @@
 //!                   instead of reading on — the harness that is GONE by the
 //!                   time a committed redirection would be written to it, so a
 //!                   test can drive the run's recovery from that write failing.
+//!                   It closes its stdin BEFORE emitting the turn's result, so
+//!                   that write fails every time rather than racing the exit.
+//!   MOCK_TURN_DIE_ON_INTERRUPT  with MOCK_TURN_LOG, exit on the control frame
+//!                   without ending the turn (no result document), appending
+//!                   `DIED_AFTER_INTERRUPT` — the run whose harness is gone
+//!                   before an interrupted turn could end.
+//!   MOCK_EXIT_ON_REDIRECT  with MOCK_TURN_LOG or MOCK_ACP_LOG, exit as soon as
+//!                   the message that replaces an interrupted turn has been
+//!                   received (and logged), without emitting another line —
+//!                   a harness that took the redirection and then went silent.
+//!   MOCK_SLOW_NEXT_READ_MS  with MOCK_TURN_LOG or MOCK_ACP_LOG, once an
+//!                   interrupted turn has ended, wait this many milliseconds
+//!                   before reading stdin again — a harness slow to take the
+//!                   message that replaces the turn, which an answer given on
+//!                   the write alone would overtake.
+//!   MOCK_INTERRUPT_GATE  a path. With MOCK_TURN_LOG, MOCK_CODEX_APP_SERVER_LOG
+//!                   or MOCK_ACP_LOG, an interrupted turn ends only once this
+//!                   file exists (logging `GATE_OPENED` as it does), so a test
+//!                   can observe the run before the aborted turn is over. The
+//!                   shared app-server reads it per thread; the HTTP control
+//!                   server holds the admission of a redirected prompt on it.
 //!   MOCK_ACP_LOG    if set to a path, act like an **ACP JSON-RPC server** on
 //!                   stdio (the shape `copilot --acp` / `goose acp` speak):
 //!                   answer `initialize` and `session/new`, hold `session/prompt`
@@ -112,6 +138,15 @@
 //!   MOCK_ACP_COMPLETE_TURN  with MOCK_ACP_LOG, end the turn on its own once the
 //!                   client has answered the permission request, instead of
 //!                   waiting for a `session/cancel`.
+//!                   After a cancel the session stays open: a `session/prompt`
+//!                   arriving next is the turn a redirection opens, and it ends
+//!                   on its own once its permission is answered, its text
+//!                   echoing the prompt; EOF ends the process.
+//!   MOCK_ACP_DIE_ON_CANCEL  with MOCK_ACP_LOG, exit on `session/cancel`
+//!                   without ending the turn, appending `DIED_AFTER_INTERRUPT`.
+//!   MOCK_ACP_CLOSE_ON_CANCEL  with MOCK_ACP_LOG, close stdin on
+//!                   `session/cancel`, end the turn, and exit — gone before a
+//!                   redirected prompt can be written to it.
 //!   MOCK_CODEX_APP_SERVER_LOG  if set to a path, act like **`codex app-server`**
 //!                   on stdio: answer `initialize`, `thread/start` and
 //!                   `thread/resume` (which rejoins the thread the client named,
@@ -200,6 +235,13 @@
 //!                              fails it like `fail`, and an `app-server`
 //!                              launch then exits 1 at once, as a Codex
 //!                              server that cannot start does.
+//!   MOCK_CODEX_THREADS         a directory: act like `codex exec` about its
+//!                              threads. A fresh `exec` stores the `thread_id`
+//!                              its MOCK_STDOUT announces; `exec resume <id>`
+//!                              refuses a `--sandbox` flag (exit 2) and a
+//!                              thread it never stored (exit 1, Codex's `no
+//!                              rollout found` error), and otherwise answers
+//!                              as the default path does.
 //!   MOCK_CODEX_ECHO_PROMPT     with MOCK_CODEX_APP_SERVER_LOG, the turn's
 //!                              agent message is the text of the `turn/start`
 //!                              input instead of a fixed "still working".
@@ -226,6 +268,21 @@
 //!                              no claim rather than a wrong one.
 //!   MOCK_CODEX_TOOL_STARTED_ONLY  with MOCK_CODEX_TOOL_EVENTS, emit only the
 //!                              captured `item/started` tool notification.
+//!   MOCK_CODEX_ACK_GATE  with MOCK_CODEX_APP_SERVER_LOG, a path: every
+//!                   `turn/start` after the first is acknowledged only once
+//!                   this file exists (at most 300s), logging `ACK_GATE_OPENED`
+//!                   — a server slow to say the replacement turn exists.
+//!   MOCK_CODEX_CLOSE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, accept the
+//!                   interrupt, close stdin, end the turn and exit — gone before
+//!                   the turn that replaces it can be written.
+//!   MOCK_CODEX_UNNAMED_SECOND_TURN  with MOCK_CODEX_APP_SERVER_LOG, answer
+//!                   every `turn/start` after the first with a result naming no
+//!                   turn, and run none, appending `UNNAMED_SECOND_TURN`.
+//!   MOCK_CODEX_REFUSE_SECOND_TURN  with MOCK_CODEX_APP_SERVER_LOG (or per
+//!                   thread on the shared app-server), answer every
+//!                   `turn/start` after the first with an error, appending
+//!                   `REFUSED_SECOND_TURN` — a thread that will not take the
+//!                   turn that replaces an interrupted one.
 //!   MOCK_CODEX_DIE_ON_INTERRUPT  with MOCK_CODEX_APP_SERVER_LOG, acknowledge the
 //!                   interrupt and then EXIT without the `turn/completed` that
 //!                   ends the turn, appending `DIED_AFTER_INTERRUPT`. The
@@ -268,7 +325,17 @@
 //!                   submission, and `hang-prompt` never answers that request,
 //!                   talking mid-turn with no end-of-turn event, and
 //!                   `redirect-interrupt` answers the interrupt route `302`
-//!                   without aborting anything. Each exits once
+//!                   without aborting anything, `die-after-interrupt`
+//!                   answers the interrupt `204` and exits at once, saying
+//!                   nothing more on the stream, and `end-before-interrupt`
+//!                   ends the turn on the stream when the interrupt arrives
+//!                   and answers it only once the client has closed that
+//!                   stream — the turn provably over before its abort landed,
+//!                   and `drop-redirect` serves the interrupt and then drops
+//!                   every new connection unanswered (appending
+//!                   `DROPPED_CONNECTION`) with the stream left open, so the
+//!                   redirected prompt's submission fails at the transport.
+//!                   Each exits once
 //!                   it has served
 //!                   its fault, so nothing is left behind for the pool to reclaim.
 //!                   An unrecognized value is refused rather than run as no fault.
@@ -963,6 +1030,9 @@ enum HttpControlFault {
     RedirectInterrupt,
     RedirectedTurn,
     RefuseRedirect,
+    DieAfterInterrupt,
+    EndBeforeInterrupt,
+    DropRedirect,
 }
 
 impl HttpControlFault {
@@ -988,6 +1058,9 @@ impl HttpControlFault {
             "redirect-interrupt" => HttpControlFault::RedirectInterrupt,
             "redirected-turn" => HttpControlFault::RedirectedTurn,
             "refuse-redirect" => HttpControlFault::RefuseRedirect,
+            "die-after-interrupt" => HttpControlFault::DieAfterInterrupt,
+            "end-before-interrupt" => HttpControlFault::EndBeforeInterrupt,
+            "drop-redirect" => HttpControlFault::DropRedirect,
             other => panic!("mock harness: MOCK_HTTP_CONTROL_FAULT names no fault: `{other}`"),
         }
     }
@@ -1143,15 +1216,30 @@ fn run_http_control_server(log_path: &str) -> ! {
     // has been aborted. The event stream reads both.
     let admitted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let aborted = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Whether the client has closed the event stream, which the
+    // `end-before-interrupt` fault waits for before answering the interrupt.
+    let stream_gone = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     // How many prompts this session has taken. A redirection makes a SECOND
     // one, which is the whole thing the redirect fault exercises.
     let prompts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
     for connection in listener.incoming() {
         let Ok(mut socket) = connection else { continue };
+        // Up, but no longer taking requests: the connection closes unread.
+        if fault == HttpControlFault::DropRedirect
+            && aborted.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            drop(socket);
+            let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = writeln!(file, "DROPPED_CONNECTION");
+            let _ = file.flush();
+            exit_shortly();
+            continue;
+        }
         let log = std::sync::Arc::clone(&log);
         let admitted = std::sync::Arc::clone(&admitted);
         let aborted = std::sync::Arc::clone(&aborted);
+        let stream_gone = std::sync::Arc::clone(&stream_gone);
         let prompts = std::sync::Arc::clone(&prompts);
         std::thread::spawn(move || {
             let mut reader = std::io::BufReader::new(socket.try_clone().expect("clone"));
@@ -1301,12 +1389,31 @@ fn run_http_control_server(log_path: &str) -> ! {
                             std::thread::sleep(std::time::Duration::from_secs(30));
                             return;
                         }
+                        // The server is exiting, or taking no more requests:
+                        // nothing more is said.
+                        if matches!(
+                            fault,
+                            HttpControlFault::DieAfterInterrupt | HttpControlFault::DropRedirect
+                        ) {
+                            std::thread::sleep(std::time::Duration::from_secs(30));
+                            return;
+                        }
                         if fault != HttpControlFault::RedirectedTurn {
                             send(
                                 &mut socket,
                                 "{\"type\":\"session.next.text.ended\",\"data\":{\"text\":\"stopped\"}}",
                             );
                             send(&mut socket, "{\"type\":\"session.idle\",\"data\":{}}");
+                            // The turn is over on the stream; the interrupt is
+                            // answered only once the client has acted on that
+                            // and hung the stream up.
+                            if fault == HttpControlFault::EndBeforeInterrupt {
+                                let _ = socket
+                                    .set_read_timeout(Some(std::time::Duration::from_secs(30)));
+                                let mut byte = [0u8; 1];
+                                while matches!(socket.read(&mut byte), Ok(n) if n > 0) {}
+                                stream_gone.store(true, std::sync::atomic::Ordering::SeqCst);
+                            }
                             return;
                         }
                         // Opencode's real shape, measured live: an aborted turn
@@ -1318,6 +1425,7 @@ fn run_http_control_server(log_path: &str) -> ! {
                         while prompts.load(std::sync::atomic::Ordering::SeqCst) < 2 {
                             std::thread::sleep(std::time::Duration::from_millis(25));
                         }
+                        await_http_gate(&log);
                         send(
                             &mut socket,
                             "{\"type\":\"session.next.prompt.admitted\",\"data\":{}}",
@@ -1348,12 +1456,28 @@ fn run_http_control_server(log_path: &str) -> ! {
                     return;
                 }
                 aborted.store(true, std::sync::atomic::Ordering::SeqCst);
+                if fault == HttpControlFault::EndBeforeInterrupt {
+                    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                    while !stream_gone.load(std::sync::atomic::Ordering::SeqCst)
+                        && std::time::Instant::now() < until
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
                 reply(&mut socket, "204 No Content", "");
+                if fault == HttpControlFault::DieAfterInterrupt {
+                    let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = writeln!(file, "DIED_AFTER_INTERRUPT");
+                    let _ = file.flush();
+                    std::process::exit(0);
+                }
                 // The redirect fault has a second turn to serve, so the server
                 // stays up until the event stream has carried it.
                 if !matches!(
                     fault,
-                    HttpControlFault::RedirectedTurn | HttpControlFault::RefuseRedirect
+                    HttpControlFault::RedirectedTurn
+                        | HttpControlFault::RefuseRedirect
+                        | HttpControlFault::DropRedirect
                 ) {
                     exit_shortly();
                 }
@@ -1422,6 +1546,7 @@ fn run_http_control_server(log_path: &str) -> ! {
                                 "{\"error\":\"the turn was aborted\"}",
                             );
                         } else {
+                            await_http_gate(&log);
                             reply(&mut socket, "200 OK", "{\"data\":{\"admittedSeq\":2}}");
                         }
                     }
@@ -1463,6 +1588,16 @@ fn run_http_control_server(log_path: &str) -> ! {
         });
     }
     std::process::exit(0);
+}
+
+/// [`await_interrupt_gate`] for the HTTP control server, whose log is shared
+/// between its connection threads: the gate is waited out, and opened once.
+fn await_http_gate(log: &std::sync::Mutex<std::fs::File>) {
+    if await_interrupt_gate() {
+        let mut file = log.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(file, "GATE_OPENED");
+        let _ = file.flush();
+    }
 }
 
 /// Refuse a request whose framing this fixture could not read. Answering keeps
@@ -1524,6 +1659,7 @@ fn run_codex_app_server(log_path: &str) -> ! {
         let _ = out.flush();
     };
 
+    let mut turns_started = 0u32;
     for line in std::io::BufRead::lines(std::io::stdin().lock()) {
         let Ok(line) = line else { break };
         append(&line);
@@ -1535,6 +1671,22 @@ fn run_codex_app_server(log_path: &str) -> ! {
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         match message.get("method").and_then(Value::as_str) {
             Some("initialize") => send(&json!({"jsonrpc": "2.0", "id": id, "result": {}})),
+            Some("turn/start")
+                if turns_started > 0 && mock_var_os("MOCK_CODEX_UNNAMED_SECOND_TURN").is_some() =>
+            {
+                append("UNNAMED_SECOND_TURN");
+                send(&json!({"jsonrpc": "2.0", "id": id, "result": {}}));
+            }
+            Some("turn/start")
+                if turns_started > 0 && mock_var_os("MOCK_CODEX_REFUSE_SECOND_TURN").is_some() =>
+            {
+                append("REFUSED_SECOND_TURN");
+                send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32600, "message": "thread not found: mock-codex-thread"},
+                }));
+            }
             Some("thread/start") => send(&json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -1573,6 +1725,18 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 }));
             }
             Some("turn/start") => {
+                turns_started += 1;
+                if turns_started > 1 {
+                    if let Some(gate) = mock_var_os("MOCK_CODEX_ACK_GATE") {
+                        let until = std::time::Instant::now() + std::time::Duration::from_secs(300);
+                        while !std::path::Path::new(&gate).exists()
+                            && std::time::Instant::now() < until
+                        {
+                            std::thread::sleep(std::time::Duration::from_millis(20));
+                        }
+                        append("ACK_GATE_OPENED");
+                    }
+                }
                 send(&json!({
                     "jsonrpc": "2.0",
                     "id": id,
@@ -1665,8 +1829,10 @@ fn run_codex_app_server(log_path: &str) -> ! {
                 // A turn that ends on its own, for the exchanges that are about
                 // what the client SENT rather than about interrupting it. The
                 // default fixture holds the turn open until an interrupt
-                // arrives, which a run nobody interrupts would wait out.
-                if mock_var_os("MOCK_CODEX_COMPLETE_TURN").is_some() {
+                // arrives, which a run nobody interrupts would wait out. Only
+                // the run's own turn is held: a later one — the turn a
+                // redirection opens — ends as soon as it has its message.
+                if mock_var_os("MOCK_CODEX_COMPLETE_TURN").is_some() || turns_started > 1 {
                     send(&json!({
                         "jsonrpc": "2.0",
                         "method": "turn/completed",
@@ -1701,11 +1867,21 @@ fn run_codex_app_server(log_path: &str) -> ! {
                     append("DIED_AFTER_INTERRUPT");
                     std::process::exit(0);
                 }
+                if await_interrupt_gate() {
+                    append("GATE_OPENED");
+                }
+                let close = mock_var_os("MOCK_CODEX_CLOSE_ON_INTERRUPT").is_some();
+                if close {
+                    close_stdin();
+                }
                 send(&json!({
                     "jsonrpc": "2.0",
                     "method": "turn/completed",
                     "params": {"turnId": "mock-codex-turn"},
                 }));
+                if close {
+                    break;
+                }
             }
             _ => {}
         }
@@ -1751,7 +1927,10 @@ fn run_acp_server(log_path: &str) -> ! {
             .append(true)
             .open(log_path)
         {
-            let _ = writeln!(file, "{line}");
+            // One write per line: the run appends its own trace lines to this
+            // file from another process, and `writeln!` would write the text and
+            // its newline separately, letting a trace line land between them.
+            let _ = file.write_all(format!("{line}\n").as_bytes());
             let _ = file.flush();
         }
     };
@@ -1763,6 +1942,10 @@ fn run_acp_server(log_path: &str) -> ! {
 
     let mut prompt_id: Option<String> = None;
     let mut asked_permission = false;
+    // Whether a cancel has ended a turn: the next prompt is a redirection's,
+    // which runs to its own end rather than waiting for another cancel.
+    let mut cancelled = false;
+    let mut redirected_text = String::new();
     for line in std::io::BufRead::lines(std::io::stdin().lock()) {
         let Ok(line) = line else { break };
         append(&line);
@@ -1790,6 +1973,26 @@ fn run_acp_server(log_path: &str) -> ! {
             )),
             Some("session/prompt") => {
                 prompt_id = id.clone();
+                if cancelled && std::env::var_os("MOCK_EXIT_ON_REDIRECT").is_some() {
+                    append("EXITED_SILENTLY");
+                    std::process::exit(0);
+                }
+                if cancelled {
+                    // A redirection with no text block is the client's bug:
+                    // refused as invalid params, never run as an empty turn.
+                    let Some(text) = message
+                        .pointer("/params/prompt/0/text")
+                        .and_then(serde_json::Value::as_str)
+                    else {
+                        append("MALFORMED_PROMPT");
+                        send(&format!(
+                            "{{\"jsonrpc\":\"2.0\",\"id\":{},\"error\":{{\"code\":-32602,\"message\":\"session/prompt carries no text block\"}}}}",
+                            prompt_id.take().unwrap_or_else(|| "null".to_string())
+                        ));
+                        continue;
+                    };
+                    redirected_text = text.to_string();
+                }
                 // The turn does not begin until the client answers this.
                 asked_permission = true;
                 send(
@@ -1799,13 +2002,29 @@ fn run_acp_server(log_path: &str) -> ! {
             // A cancel carries no `id`. The turn then ends reporting a NORMAL
             // stop reason — the lie oneharness must not read as the truth.
             Some("session/cancel") => {
+                if std::env::var_os("MOCK_ACP_DIE_ON_CANCEL").is_some() {
+                    append("DIED_AFTER_INTERRUPT");
+                    std::process::exit(0);
+                }
+                if await_interrupt_gate() {
+                    append("GATE_OPENED");
+                }
+                let close = std::env::var_os("MOCK_ACP_CLOSE_ON_CANCEL").is_some();
+                if close {
+                    close_stdin();
+                }
                 send("{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"mock-acp-session\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"Info: Operation cancelled by user\"}}}}");
                 if let Some(prompt_id) = prompt_id.take() {
                     send(&format!(
                         "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
                     ));
                 }
-                break;
+                if close {
+                    break;
+                }
+                cancelled = true;
+                asked_permission = false;
+                slow_next_read();
             }
             _ => {
                 // A permission answer arrives as a plain response; record it so
@@ -1822,6 +2041,23 @@ fn run_acp_server(log_path: &str) -> ! {
                                 "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
                             ));
                             break;
+                        }
+                    }
+                    // The redirected turn runs to its own end, answering with
+                    // the message it was sent.
+                    if cancelled {
+                        if let Some(prompt_id) = prompt_id.take() {
+                            send(&serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "method": "session/update",
+                                "params": {"sessionId": "mock-acp-session", "update": {
+                                    "sessionUpdate": "agent_message_chunk",
+                                    "content": {"type": "text", "text": redirected_text},
+                                }},
+                            }).to_string());
+                            send(&format!(
+                                "{{\"jsonrpc\":\"2.0\",\"id\":{prompt_id},\"result\":{{\"stopReason\":\"end_turn\"}}}}"
+                            ));
                         }
                     }
                 }
@@ -1842,7 +2078,10 @@ fn run_controlled_turn(log_path: &str) -> ! {
             .append(true)
             .open(log_path)
         {
-            let _ = writeln!(file, "{line}");
+            // One write per line: the run appends its own trace lines to this
+            // file from another process, and `writeln!` would write the text and
+            // its newline separately, letting a trace line land between them.
+            let _ = file.write_all(format!("{line}\n").as_bytes());
             let _ = file.flush();
         }
     };
@@ -1883,11 +2122,19 @@ fn run_controlled_turn(log_path: &str) -> ! {
                 interrupted = true;
                 ended = true;
                 append("INTERRUPTED");
+                if std::env::var_os("MOCK_TURN_DIE_ON_INTERRUPT").is_some() {
+                    append("DIED_AFTER_INTERRUPT");
+                    std::process::exit(0);
+                }
                 break;
             }
             // Only the run's own turn is held open; a redirected one ends as
             // soon as it has its message, so a test does not have to interrupt
             // twice to watch a run finish.
+            if index > 0 && std::env::var_os("MOCK_EXIT_ON_REDIRECT").is_some() {
+                append("EXITED_SILENTLY");
+                std::process::exit(0);
+            }
             if !hold || index > 0 {
                 ended = true;
                 break;
@@ -1911,7 +2158,16 @@ fn run_controlled_turn(log_path: &str) -> ! {
             };
             std::thread::sleep(std::time::Duration::from_millis(delay));
         }
+        if interrupted && await_interrupt_gate() {
+            append("GATE_OPENED");
+        }
         let once = std::env::var_os("MOCK_TURN_ONCE").is_some();
+        // Gone before the next message can reach it: stdin is closed while the
+        // turn is still running, so whatever is written after its result
+        // fails rather than landing in a pipe nobody will read.
+        if once {
+            close_stdin();
+        }
         let result = std::env::var("MOCK_TURN_RESULT").unwrap_or_else(|_| {
             format!(
                 r#"{{"type":"result","subtype":"{}","session_id":"mock-session","result":"mock turn"}}"#,
@@ -1928,9 +2184,52 @@ fn run_controlled_turn(log_path: &str) -> ! {
         if once {
             break;
         }
+        if interrupted {
+            slow_next_read();
+        }
         index += 1;
     }
     std::process::exit(0);
+}
+
+/// Hold the end of an interrupted turn until the file MOCK_INTERRUPT_GATE
+/// names exists: `true` once it did, for the caller to log `GATE_OPENED`, and
+/// `false` when no gate was asked for. A gate that never opens ends the
+/// process after 30s, so a test that forgot to open it gets its own failure
+/// back rather than a hung suite.
+fn await_interrupt_gate() -> bool {
+    let Some(gate) = std::env::var_os("MOCK_INTERRUPT_GATE") else {
+        return false;
+    };
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !std::path::Path::new(&gate).exists() {
+        if std::time::Instant::now() >= until {
+            let _ = writeln!(
+                std::io::stderr(),
+                "mock harness: MOCK_INTERRUPT_GATE never opened"
+            );
+            std::process::exit(3);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    true
+}
+
+/// Wait MOCK_SLOW_NEXT_READ_MS before the next read of stdin, when set.
+fn slow_next_read() {
+    if let Some(delay) = millis_knob("MOCK_SLOW_NEXT_READ_MS") {
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+    }
+}
+
+/// Close this process's stdin, so a write the client makes after this fails
+/// instead of being buffered for a reader that will never read it.
+fn close_stdin() {
+    #[cfg(unix)]
+    // SAFETY: fd 0 is this process's stdin; nothing reads it after this call.
+    unsafe {
+        libc::close(0);
+    }
 }
 
 /// Block until `path` names this process's pid on a line of its own — the
@@ -2013,6 +2312,10 @@ pub fn run() -> ! {
 
     if let Ok(path) = mock_var("MOCK_CODEX_CATALOG_LOG") {
         codex_model_catalog(&path, &argv);
+    }
+
+    if let Ok(dir) = mock_var("MOCK_CODEX_THREADS") {
+        codex_exec_threads(std::path::Path::new(&dir), &argv);
     }
 
     // `codex app-server --listen unix://PATH`: the shared server a pooled
@@ -2262,7 +2565,7 @@ pub fn run() -> ! {
             }
         }
         log_line("COMPLETE\n");
-        std::process::exit(0);
+        finish(0);
     }
 
     // Incremental streaming mode: with MOCK_STREAM_DELAY_MS set, emit MOCK_STDOUT
@@ -2285,9 +2588,12 @@ pub fn run() -> ! {
             }
         }
         log_line("COMPLETE\n");
-        std::process::exit(0);
+        finish(0);
     }
 
+    // The answer is the run's last act, so a caller that stops after reading
+    // part of it may signal the mock any moment from here (see `finish`).
+    hold_term();
     let _ = write!(std::io::stdout(), "{stdout}");
     let _ = std::io::stdout().flush();
 
@@ -2299,7 +2605,97 @@ pub fn run() -> ! {
                 .expect("MOCK_EXIT[_<attempt>] must be an integer")
         })
         .unwrap_or(0);
-    std::process::exit(code);
+    finish(code);
+}
+
+/// Exit with `code` once the run's answer is written, finishing that exit
+/// whatever the caller sends meanwhile, as a CLI that handles TERM does.
+///
+/// A caller that stops reading after an early line ends the tree with TERM,
+/// then KILL after a grace — often while this process is already exiting.
+/// Taking TERM's default there cuts the exit short: under coverage the exit is
+/// where this process writes its profile, and one left truncated fails the
+/// whole `llvm-profdata merge`. Ignoring TERM lets the exit finish within the
+/// grace; KILL still ends one that outlives it.
+fn finish(code: i32) -> ! {
+    hold_term();
+    if let Some(mark) = std::env::var_os("MOCK_EXIT_MARK") {
+        await_term();
+        let _ = std::fs::write(mark, "exited\n");
+    }
+    std::process::exit(code)
+}
+
+/// The pipe [`note_term`] writes to when `MOCK_EXIT_MARK` holds the exit open
+/// for a TERM, read by [`await_term`]; `-1` until [`hold_term`] opens it.
+#[cfg(unix)]
+static TERM_READ: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+#[cfg(unix)]
+static TERM_WRITE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// From here on TERM no longer ends this process ([`finish`] says why). Set
+/// only once the mock starts no further child, which would inherit it.
+///
+/// With `MOCK_EXIT_MARK`, TERM is noted rather than ignored, so the held exit
+/// learns of it without a timer: one that waited a fixed time instead would
+/// pass or fail on whether the host scheduled it inside the caller's grace.
+fn hold_term() {
+    #[cfg(unix)]
+    {
+        use std::sync::atomic::Ordering;
+        if std::env::var_os("MOCK_EXIT_MARK").is_none() {
+            // SAFETY: installs the ignore disposition for one signal.
+            unsafe { libc::signal(libc::SIGTERM, libc::SIG_IGN) };
+            return;
+        }
+        if TERM_READ.load(Ordering::SeqCst) != -1 {
+            return;
+        }
+        let mut fds = [-1; 2];
+        // SAFETY: `fds` is a two-element array `pipe` fills on success.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            refuse(&format!(
+                "MOCK_EXIT_MARK could not open its TERM pipe: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        TERM_WRITE.store(fds[1], Ordering::SeqCst);
+        TERM_READ.store(fds[0], Ordering::SeqCst);
+        // SAFETY: `note_term` only loads an atomic and calls `write`, both
+        // async-signal-safe.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = note_term as extern "C" fn(libc::c_int) as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(unix)]
+extern "C" fn note_term(_: libc::c_int) {
+    let fd = TERM_WRITE.load(std::sync::atomic::Ordering::SeqCst);
+    // SAFETY: one byte from a live buffer to the pipe `hold_term` opened.
+    unsafe { libc::write(fd, b"t".as_ptr().cast(), 1) };
+}
+
+/// Block until a TERM has arrived (the caller's teardown), however late the
+/// host runs this process. A run nobody stops never ends here on its own; the
+/// teardown's KILL, or the caller's timeout, ends it.
+fn await_term() {
+    #[cfg(unix)]
+    {
+        let fd = TERM_READ.load(std::sync::atomic::Ordering::SeqCst);
+        let mut byte = 0u8;
+        // SAFETY: reads one byte into a live local from the pipe's read end;
+        // the loop retries a read a signal interrupted.
+        while unsafe { libc::read(fd, (&raw mut byte).cast(), 1) } != 1 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break;
+            }
+        }
+    }
 }
 
 /// `MOCK_CODEX_*` knobs also answer to a `CODEX_MOCK_*` spelling (the
@@ -2313,6 +2709,73 @@ fn mock_var(name: &str) -> Result<String, std::env::VarError> {
     })
 }
 
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; the refusals are codex-cli 0.163.0's own (`codex exec resume` has no `--sandbox`, and `exec resume` of a thread with no rollout prints `Error: thread/resume: thread/resume failed: no rollout found for thread id <id> (code -32600)` and exits 1, both observed of codex-cli 0.163.0 itself), and the live `oh_resume_mode_enforce` phases are the drift alarm.
+/// Act like `codex exec` over a thread store (MOCK_CODEX_THREADS): a fresh
+/// `exec` stores the `thread_id` its scripted stdout announces, and `exec
+/// resume <id>` refuses what real Codex refuses — a `--sandbox` flag (exit 2,
+/// clap's wording) and a thread with no rollout (exit 1) — before carrying on
+/// as the default path does for one it knows.
+fn codex_exec_threads(dir: &std::path::Path, argv: &[String]) {
+    if argv.first().map(String::as_str) != Some("exec") {
+        return;
+    }
+    let refuse = |code: i32, message: String| -> ! {
+        let _ = writeln!(std::io::stderr(), "{message}");
+        std::process::exit(code);
+    };
+    // A thread id names a file in the store, so only an id that is one plain
+    // path component is ever joined to it.
+    let plain = |id: &str| {
+        !id.is_empty()
+            && !id.starts_with('.')
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    };
+    if argv.get(1).map(String::as_str) != Some("resume") {
+        let stdout = std::env::var("MOCK_STDOUT").unwrap_or_default();
+        for line in stdout.lines() {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                continue;
+            };
+            if let Some(id) = value["thread_id"].as_str().filter(|id| plain(id)) {
+                let _ = std::fs::create_dir_all(dir);
+                let _ = std::fs::write(dir.join(id), "");
+            }
+        }
+        return;
+    }
+    let mut positionals = Vec::new();
+    let mut args = argv[2..].iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--sandbox" | "-s" => refuse(
+                2,
+                format!(
+                    "error: unexpected argument '{arg}' found\n\nUsage: codex exec resume [OPTIONS] [SESSION_ID] [PROMPT]"
+                ),
+            ),
+            "-c" | "--config" | "-m" | "--model" => {
+                args.next();
+            }
+            flag if flag.starts_with('-') && flag != "-" => {}
+            positional => positionals.push(positional),
+        }
+    }
+    let Some(id) = positionals.first() else {
+        refuse(2, "error: codex exec resume needs a session id".to_string());
+    };
+    if !plain(id) || !dir.join(id).is_file() {
+        refuse(
+            1,
+            format!(
+                "Error: thread/resume: thread/resume failed: no rollout found for thread id {id} (code -32600)"
+            ),
+        );
+    }
+}
+// llmlint: ignore-end[contracts_have_one_source_or_a_drift_gate]
+
 /// [`mock_var`] for a presence knob.
 fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
     std::env::var_os(name).or_else(|| {
@@ -2321,7 +2784,7 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
     })
 }
 
-// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; each behaviour it imitates is one spike-shared-app-server observed of codex-cli 0.159.2 (or this node's own no-turn probes: the 60 s unload grace, the refused resume of a never-turned thread), and the live phases scripts/e2e-control.sh runs against real Codex (pooled-env, pooled-kill, pooled-reuse) are the drift alarm that fails when the two part.
+// llmlint: ignore-block[contracts_have_one_source_or_a_drift_gate] The mock stands in for real Codex, which the deterministic gate cannot run; each behaviour it imitates is one spike-shared-app-server observed of codex-cli 0.159.2 (or this node's own no-turn probes: the unload delay — 60 s by default on 0.159.2, 1800 s on 0.163.0, the `thread_unload_delay_secs` override honoured on both — and the refused resume of a never-turned thread), and the live phases scripts/e2e-control.sh runs against real Codex (pooled-env, pooled-kill, pooled-reuse) are the drift alarm that fails when the two part.
 /// Act like `codex app-server --listen unix://PATH`: the shared,
 /// multi-client app-server a pooled dispatch's turn runs on, imitating real
 /// Codex as `spike-shared-app-server-report` observed it. Unix only, like the
@@ -2329,14 +2792,17 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///
 /// What it imitates:
 /// - a WebSocket endpoint on the socket; a path too long for `sun_path` bound
-///   as a short target under `/tmp/codex-daemon-<uid>/` with a symlink left at
-///   the path; a second server on a live path exits 1;
+///   as a short target in Codex's rendezvous directory with a symlink left
+///   at the path; a second server on a live path exits 1;
 /// - per-thread settings, and commands run under the thread's
 ///   `shell_environment_policy` (`set` over the server's own environment, minus
 ///   `exclude`) in their own process group, outliving `turn/interrupt`;
 /// - `thread/status/changed` broadcast to every connection;
 /// - a finished thread kept loaded until its last subscriber sends
-///   `thread/unsubscribe`, then unloaded with `thread/closed`;
+///   `thread/unsubscribe`, then unloaded with `thread/closed` once
+///   `thread_unload_delay_secs` has passed with no subscriber back (a
+///   `-c thread_unload_delay_secs=N` launch argument, else
+///   CODEX_MOCK_UNLOAD_DELAY_SECS, else 0: at once);
 /// - no answer to an interrupt naming a turn that already ended.
 ///
 /// Its per-thread knobs are the dispatch's own `MOCK_*` variables, read off
@@ -2355,12 +2821,16 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///   CODEX_MOCK_BROADCAST  send every thread's frames to every connection.
 ///   CODEX_MOCK_IGNORE_UNSUBSCRIBE  answer `thread/unsubscribe` but keep the
 ///                         thread loaded.
+///   CODEX_MOCK_UNLOAD_DELAY_SECS  the `thread_unload_delay_secs` default of
+///                         the Codex imitated (1800 for codex-cli 0.163.0),
+///                         which a `-c` launch argument overrides.
 ///   CODEX_MOCK_SERVER_BYTES  allocate and touch this many bytes for the
 ///                         server's life, its own resident footprint.
 ///   CODEX_MOCK_THREAD_BYTES  allocate and touch this many bytes per loaded
 ///                         thread, freed when it unloads.
 ///   CODEX_MOCK_FAULT      `leak-env` runs every command under the first opened
-///                         thread's environment; `rollout-env` writes thread
+///                         thread's environment (its own dispatch marker
+///                         aside); `rollout-env` writes thread
 ///                         environments into rollout files; `escape-marker`
 ///                         drops the dispatch marker from commands;
 ///                         `late-listener` (with CODEX_MOCK_SHIM) has the serving
@@ -2394,7 +2864,15 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 ///                         answer it with a non-string id or cursor;
 ///                         `refuse-initialize` refuses
 ///                         `initialize`; `never-listen` stays alive and never
-///                         binds; `stall-upgrade`
+///                         binds; `exit-at-start` writes 200 lines of
+///                         start-up chatter and then why it cannot start to
+///                         stderr, and exits 7 before binding;
+///                         `exit-silently` exits 3 before binding having
+///                         written nothing; `exit-blank` exits 5 having
+///                         written only whitespace; `exit-non-utf8` exits 9
+///                         having written more than 2 KiB that is not UTF-8,
+///                         whose last 2 KiB start inside a character;
+///                         `stall-upgrade`
 ///                         reads a connection's upgrade request and never
 ///                         answers it; `inheritable-connections` hands every
 ///                         command the server's end of the connection that
@@ -2428,7 +2906,11 @@ fn mock_var_os(name: &str) -> Option<std::ffi::OsString> {
 /// command each turn runs), MOCK_CODEX_REQUEST_APPROVAL (ask for approval of
 /// that command first), MOCK_CODEX_INTERRUPT_SILENT (never answer
 /// `turn/interrupt`), MOCK_CODEX_INTERRUPT_THREAD_NOT_FOUND (answer it with
-/// `thread not found`).
+/// `thread not found`), MOCK_INTERRUPT_GATE (accept `turn/interrupt` at once
+/// but end the turn only once this file exists), MOCK_CODEX_DIE_ON_INTERRUPT
+/// (accept it and exit the whole server before the turn ends),
+/// MOCK_CODEX_REFUSE_SECOND_TURN (refuse every `turn/start` on the thread
+/// after its first).
 #[cfg(unix)]
 mod listen_server {
     use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -2476,6 +2958,9 @@ mod listen_server {
         commands_running: usize,
         memory: Vec<u8>,
         approval_pending: Option<u64>,
+        /// Bumped on every subscription, so an unload timer armed before it
+        /// stands down.
+        subscribed: u64,
     }
 
     impl Thread {
@@ -2489,6 +2974,8 @@ mod listen_server {
         dir: Option<PathBuf>,
         broadcast: bool,
         ignore_unsubscribe: bool,
+        /// How long a thread with no subscriber stays loaded.
+        unload_delay: std::time::Duration,
         thread_bytes: usize,
         fault: String,
         conns: HashMap<u64, Conn>,
@@ -2545,6 +3032,36 @@ mod listen_server {
                 std::process::exit(1);
             }
         }
+        // CODEX_MOCK_FAULT=exit-at-start: say why on stderr and exit before
+        // binding, as a Codex server refusing its launch does.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-at-start") {
+            for step in 0..200 {
+                eprintln!("mock codex: warming up {step:03}");
+            }
+            eprintln!("Error: mock codex refuses to listen on {}", path.display());
+            std::process::exit(7);
+        }
+        // CODEX_MOCK_FAULT=exit-silently: exit before binding, saying nothing.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-silently") {
+            std::process::exit(3);
+        }
+        // CODEX_MOCK_FAULT=exit-blank: exit before binding, having written
+        // only whitespace.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-blank") {
+            let _ = std::io::stderr().write_all(b"  \n\t\n   \n");
+            std::process::exit(5);
+        }
+        // CODEX_MOCK_FAULT=exit-non-utf8: exit before binding, having written a
+        // stray byte, 1500 two-byte characters and a 35-byte last line holding
+        // another stray byte — so the last 2 KiB begin on a character's second
+        // byte.
+        if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("exit-non-utf8") {
+            let mut said = vec![0xff];
+            said.extend("\u{e9}".repeat(1500).into_bytes());
+            said.extend(b"Error: mock codex: bad byte \xff here\n");
+            let _ = std::io::stderr().write_all(&said);
+            std::process::exit(9);
+        }
         // CODEX_MOCK_FAULT=never-listen: stay alive, marked, and never bind.
         if std::env::var("CODEX_MOCK_FAULT").as_deref() == Ok("never-listen") {
             loop {
@@ -2585,6 +3102,7 @@ mod listen_server {
             dir: dir.clone(),
             broadcast: std::env::var_os("CODEX_MOCK_BROADCAST").is_some(),
             ignore_unsubscribe: std::env::var_os("CODEX_MOCK_IGNORE_UNSUBSCRIBE").is_some(),
+            unload_delay: unload_delay(argv),
             thread_bytes: std::env::var("CODEX_MOCK_THREAD_BYTES")
                 .map_or(0, |n| whole("CODEX_MOCK_THREAD_BYTES", &n)),
             fault: std::env::var("CODEX_MOCK_FAULT").unwrap_or_default(),
@@ -2628,6 +3146,23 @@ mod listen_server {
 
     /// The knob `name`'s whole-number value `raw`; anything else is a fixture
     /// error, refused rather than read as some default.
+    /// The `thread_unload_delay_secs` this launch serves with: its last
+    /// `-c thread_unload_delay_secs=N`, else CODEX_MOCK_UNLOAD_DELAY_SECS,
+    /// else none.
+    fn unload_delay(argv: &[String]) -> std::time::Duration {
+        let set = argv
+            .windows(2)
+            .filter(|pair| pair[0] == "-c")
+            .filter_map(|pair| pair[1].strip_prefix("thread_unload_delay_secs="))
+            .next_back()
+            .map(|n| whole("thread_unload_delay_secs", n));
+        let secs = set.unwrap_or_else(|| {
+            std::env::var("CODEX_MOCK_UNLOAD_DELAY_SECS")
+                .map_or(0, |n| whole("CODEX_MOCK_UNLOAD_DELAY_SECS", &n))
+        });
+        std::time::Duration::from_secs(secs)
+    }
+
     fn whole<T: std::str::FromStr>(name: &str, raw: &str) -> T {
         raw.trim().parse().unwrap_or_else(|_| {
             super::refuse(&format!("{name} must be a whole number, got `{raw}`"))
@@ -2678,8 +3213,11 @@ mod listen_server {
     }
 
     /// Bind the socket the way Codex does: a path too long for `sun_path` gets
-    /// a short target under `/tmp/codex-daemon-<uid>/` and a symlink at the
-    /// path. A path a live server answers on is refused; a stale one replaced.
+    /// a short target in Codex's rendezvous directory (`codex_daemon_dir`;
+    /// CODEX_MOCK_DAEMON_DIR instead, when set) and a symlink at the path. That
+    /// directory is created private, and one Codex would not accept is refused
+    /// at start, as Codex refuses it. A path a live server answers on
+    /// is refused; a stale one replaced.
     fn bind(path: &Path) -> UnixListener {
         if UnixStream::connect(super::dial_target(path)).is_ok() {
             let _ = writeln!(
@@ -2694,8 +3232,13 @@ mod listen_server {
             let uid = std::fs::metadata(path.parent().unwrap_or(Path::new("/")))
                 .map(|meta| meta.uid())
                 .unwrap_or(0);
-            let dir = PathBuf::from(format!("/tmp/codex-daemon-{uid}"));
-            let _ = std::fs::create_dir_all(&dir);
+            let dir = std::env::var_os("CODEX_MOCK_DAEMON_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and reading Codex's rendezvous from its one source is what keeps this model from drifting from the launch that prepares it.
+                    oneharness_core::domain::app_server::codex_daemon_dir(Path::new("/tmp"), uid)
+                });
+            daemon_dir(&dir, uid);
             let digest = path
                 .as_os_str()
                 .as_encoded_bytes()
@@ -2720,6 +3263,25 @@ mod listen_server {
             }
         }
         listener
+    }
+
+    /// Codex's socket rendezvous directory: created at the one mode Codex
+    /// accepts when absent, and refused — Codex's own message, exit 1 — when it
+    /// is not a directory owned by `uid` (the user whose socket this is) at
+    /// exactly that mode.
+    fn daemon_dir(dir: &Path, uid: u32) {
+        // llmlint: ignore[shared_internals_are_a_project_not_a_reach_in] This file is library code of the oneharness binary crate (src/lib.rs includes it by path), which already depends on oneharness-core by Cargo and graph edge, so nothing it uses here can change unseen; mock-responder cannot restate that edge itself — tools/workspace/boundaries.json lets a type:lib depend only on type:contract — and reading Codex's rendezvous from its one source is what keeps this model from drifting from the launch that prepares it.
+        use oneharness_core::domain::app_server::CODEX_DAEMON_DIR_MODE as MODE;
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        let _ = std::fs::DirBuilder::new().mode(MODE).create(dir);
+        let usable = std::fs::symlink_metadata(dir)
+            .is_ok_and(|meta| meta.is_dir() && meta.uid() == uid && meta.mode() & 0o777 == MODE);
+        if !usable {
+            eprintln!(
+                "Error: app-server socket directory must be a user-owned directory with mode 0700"
+            );
+            std::process::exit(1);
+        }
     }
 
     /// Download `BYTES` generated bytes from the network tests' loopback
@@ -3188,6 +3750,15 @@ mod listen_server {
         }
     }
 
+    /// Unload `thread`, telling `conn`, the connection that released it.
+    fn unload(s: &mut Server, conn: u64, thread: &str) {
+        s.threads.remove(thread);
+        s.send(
+            conn,
+            &json!({"jsonrpc": "2.0", "method": "thread/closed", "params": {"threadId": thread}}),
+        );
+    }
+
     fn settings_from(params: &Value, base: Option<&Settings>) -> Settings {
         let mut settings = base.cloned().unwrap_or_default();
         if let Some(cwd) = params.get("cwd").and_then(Value::as_str) {
@@ -3244,9 +3815,11 @@ mod listen_server {
             commands_running: 0,
             memory,
             approval_pending: None,
+            subscribed: 0,
         });
         thread.settings = settings.clone();
         thread.subscribers.insert(conn);
+        thread.subscribed += 1;
         s.known.insert(id.to_string(), settings.clone());
         if s.first_opened.is_none() {
             s.first_opened = Some(id.to_string());
@@ -3455,11 +4028,23 @@ mod listen_server {
                     .push(json!({"thread": thread, "conn": conn, "status": outcome}));
                 reply(&mut s, json!({"status": outcome}));
                 if outcome == "unsubscribed" && empty && !ignore {
-                    s.threads.remove(&thread);
-                    s.send(
-                        conn,
-                        &json!({"jsonrpc": "2.0", "method": "thread/closed", "params": {"threadId": thread}}),
-                    );
+                    if s.unload_delay.is_zero() {
+                        unload(&mut s, conn, &thread);
+                    } else {
+                        // Unloaded once the delay passes with no subscriber
+                        // back, as Codex's own unload timer does.
+                        let armed = s.threads.get(&thread).map(|t| t.subscribed);
+                        let delay = s.unload_delay;
+                        let server = Arc::clone(server);
+                        std::thread::spawn(move || {
+                            std::thread::sleep(delay);
+                            let mut s = lock(&server);
+                            if s.threads.get(&thread).map(|t| t.subscribed) == armed {
+                                unload(&mut s, conn, &thread);
+                                s.save();
+                            }
+                        });
+                    }
                 }
                 s.save();
             }
@@ -3635,7 +4220,29 @@ mod listen_server {
                         format!("expected active turn id {turn} but found {active}"),
                     ),
                     Some(_) => {
+                        let gate = loaded.knob("MOCK_INTERRUPT_GATE").map(PathBuf::from);
+                        let die = loaded.knob("MOCK_CODEX_DIE_ON_INTERRUPT").is_some();
                         reply(&mut s, json!({}));
+                        // Gone with the turn still live: the answer is flushed
+                        // first, so what the client loses is the turn's end.
+                        if die {
+                            std::thread::spawn(|| {
+                                std::thread::sleep(std::time::Duration::from_millis(200));
+                                std::process::exit(0);
+                            });
+                            return;
+                        }
+                        // Accepted now, ended once the gate opens.
+                        if let Some(gate) = gate {
+                            let server = Arc::clone(server);
+                            std::thread::spawn(move || {
+                                while !gate.exists() {
+                                    std::thread::sleep(std::time::Duration::from_millis(10));
+                                }
+                                lock(&server).complete_turn(&thread, "interrupted");
+                            });
+                            return;
+                        }
                         // The turn ends; the commands it started do not.
                         s.complete_turn(&thread, "interrupted");
                     }
@@ -3655,7 +4262,10 @@ mod listen_server {
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let Some(thread) = s.threads.get_mut(&thread_id) else {
+        let refused = s.threads.get(&thread_id).is_some_and(|thread| {
+            thread.turns > 0 && thread.knob("MOCK_CODEX_REFUSE_SECOND_TURN").is_some()
+        });
+        let Some(thread) = s.threads.get_mut(&thread_id).filter(|_| !refused) else {
             s.send(
                 conn,
                 &json!({"jsonrpc": "2.0", "id": id,
@@ -3951,25 +4561,20 @@ mod listen_server {
             .map(|t| t.settings.clone())
             .unwrap_or_default();
         // leak-env: every command under the first thread this server opened,
-        // whichever dispatch's thread it is running for — all but its dispatch
-        // marker, which stays its own: carrying the first dispatch's would have
-        // that dispatch's release stop this command before it printed, failing
-        // the suite on missing output rather than on the leak.
+        // whichever dispatch's thread it is running for — all but the dispatch
+        // marker, which stays the command's own. A command wearing the first
+        // dispatch's marker would be stopped with that dispatch whenever it
+        // finished first, and end with no output to show the leak in.
         let settings = match (s.fault.as_str(), s.first_opened.clone()) {
-            ("leak-env", Some(first)) => {
-                let mut leaked = s.known.get(&first).cloned().unwrap_or_default();
-                let marker = "ONEHARNESS_DISPATCH_MARKER";
-                match own.set.get(marker) {
-                    Some(value) => leaked.set.insert(marker.to_string(), value.clone()),
-                    None => leaked.set.remove(marker),
-                };
-                leaked
-            }
-            _ => own,
+            ("leak-env", Some(first)) => s.known.get(&first).cloned().unwrap_or_default(),
+            _ => own.clone(),
         };
         let mut env: BTreeMap<String, String> = std::env::vars().collect();
         env.retain(|name, _| !settings.exclude.iter().any(|excluded| excluded == name));
         env.extend(settings.set.clone());
+        if let Some(marker) = own.set.get("ONEHARNESS_DISPATCH_MARKER") {
+            env.insert("ONEHARNESS_DISPATCH_MARKER".to_string(), marker.clone());
+        }
         if s.fault == "escape-marker" {
             env.remove("ONEHARNESS_DISPATCH_MARKER");
         }

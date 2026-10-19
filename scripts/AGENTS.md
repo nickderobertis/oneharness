@@ -19,3 +19,16 @@ Subtree rules for the repository's tooling scripts.
   through `scripts/with-portable-sed.sh` — in a `test`, under
   `scripts/shell-test.sh <project>` so the shell coverage floor reads it
   (`check-workflows-portable-test.sh` holds every project definition to both).
+- **The live drivers run on macOS too** (`check (macos-latest)` runs them, and
+  the release gate reads it). Bound a command with `oh_deadline`
+  (`e2e-lib.sh`), never bare `timeout`: macOS ships none. Make a phase that opens
+  a control or app-server socket under `oh_socket_sandbox`: macOS's resolved
+  `$TMPDIR` is too long for a socket address. Give `mktemp -d` an explicit
+  template, because macOS's bare `mktemp -d` ignores `$TMPDIR`.
+- **A live echo turn proves oneharness, not the checkout's context.** A
+  harness that loads context files from its cwd upward, its global home, or its
+  memory (qwen: every `QWEN.md`/`AGENTS.md` to the git root, plus auto-memory)
+  must not run a marker turn from the checkout: this repo's rules swamp a small
+  model's reply. Start it through `oh_echo_without_context` (`e2e-lib.sh`),
+  which launches from an empty sandbox outside any checkout with every context
+  home pointed into it; `check-qwen-context-free.sh` holds it to that.

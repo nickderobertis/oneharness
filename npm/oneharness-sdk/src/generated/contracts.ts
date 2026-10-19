@@ -17,9 +17,11 @@ export type ControlEvent =
       at: string;
       outcome: "served";
       /**
-       * Whether a redirection was committed with the abort. Omitted when it
-       * was a plain stop, so an older consumer reads the same record it
-       * always did.
+       * Whether a redirection was delivered as the prompt of the turn that
+       * replaced the aborted one — the same outcome the interrupt was
+       * answered with; one that was not delivered is a `Refused` record.
+       * Omitted when it was a plain stop, so an older consumer reads the
+       * same record it always did.
        */
       redirected?: boolean | undefined;
       /**

@@ -1606,7 +1606,9 @@ the message becomes the next turn, on the same live dispatch.
 oneharness interrupt --session triage --input "Stop there — do X instead."
 ```
 
-The answer says the run took the message (see the frames below). *Atomic* here
+The answer says the message was delivered (see the frames below), and is given
+only once it was: `redirected: true` means the message has been written as the
+prompt of the turn that replaces the stopped one. *Atomic* here
 means **committed with the abort, delivered at the turn boundary**: every one of
 these protocols drops a message sent into a turn already in flight (Claude Code
 silently discards a mid-turn `user` frame; codex and ACP refuse a second turn on
@@ -1615,9 +1617,18 @@ so a supervisor doing this by hand has to stop, wait, and then send — and each
 those waits is a window where the turn is dead and the message is nobody's.
 Instead the run takes ownership in the same request that aborts the turn: parked
 before the abort goes out, handed back if the abort fails, and written by the run
-itself the moment the turn ends. So the two answers a supervisor can read are
-"stopped, and your message is mine to deliver" and "nothing happened, and your
-message is still yours" — never a third where both were lost. The redirected turn
+itself the moment the turn ends. `interrupt` answers once the harness has taken
+it — on codex, once the server acknowledged the new turn; on the HTTP servers,
+once the session admitted it; on Claude Code and ACP, once the prompt frame is
+written to the harness — so it answers later than a plain stop, and waits as long
+as that takes rather than giving up on a message that may still land. If the stopped turn
+ends before the message can be written, or the run exits first, the answer is a
+refusal — `no_active_turn` or `not_running`, exit 1 — whose error says the
+redirection was not delivered, and the run never writes it into any later turn;
+the run's report records the same refusal. A message still unwritten after 60s is
+taken back the same way. So the two answers a supervisor can read are "stopped,
+and your message is now the next turn" and "your message was not delivered, and
+is still yours" — never a third where it is lost or delivered twice. The redirected turn
 runs on the same session in the same posture, working directory and model, and
 the run's report covers both turns.
 
@@ -1988,11 +1999,14 @@ process carrying that dispatch's marker (a dead holder's live turn is
 interrupted first) and releases its thread with **`thread/unsubscribe`**
 (`ThreadUnsubscribeParams { threadId }` in openai/codex's app-server v2
 protocol, `codex-rs/app-server-protocol`), because Codex keeps a finished thread
-loaded. On codex-cli 0.159.2 the release takes effect after a 60 s grace:
-`thread/unsubscribe` answers `unsubscribed`, and 60 s later the server sends
-`thread/status/changed` → `notLoaded` and `thread/closed`; a connection that
-closes releases its threads the same way, so a dispatch killed before its first
-turn leaves its thread loaded only for that window. A pool-owned sweeper beside
+loaded. The release takes effect after Codex's `thread_unload_delay_secs`:
+`thread/unsubscribe` answers `unsubscribed`, and once the thread has had no
+subscriber and no activity for that delay the server sends
+`thread/status/changed` → `notLoaded` and `thread/closed` — 60 s by default on
+codex-cli 0.159.2, 30 minutes (1800 s) on codex-cli 0.163.0, so a server there
+holds every thread released in the last 30 minutes. A connection that closes
+releases its threads the same way, so a dispatch killed before its first turn
+leaves its thread loaded only for that window. A pool-owned sweeper beside
 the server finds a dead holder within 2 s (`DEAD_LEASE_SWEEP_INTERVAL`) even with
 no other dispatch alive, and stops its commands within 5 s of that
 (`DEAD_LEASE_STOP_DEADLINE`). Stopping the server reaps every lease's marked
@@ -2029,7 +2043,9 @@ on codex-cli 0.159.2 (Linux):
   held 1 s and released, with no model call and no `turn/start` (the shell
   command is there because codex-cli writes a thread's rollout only after a
   turn and refuses to resume a thread without one; a dispatch itself never sends
-  `thread/shellCommand`) — it held 1.083x what it held after the first
+  `thread/shellCommand`; its server is launched with a 1 s
+  `thread_unload_delay_secs` so each released thread is unloaded before the
+  reading) — on codex-cli 0.163.0 it held 1.027x what it held after the first
   ([`live/control/evidence/app-server-reuse.md`](live/control/evidence/app-server-reuse.md);
   `codex-shared-server-rss-growth`, at most 1.5x).
 

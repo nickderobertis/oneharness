@@ -20,8 +20,8 @@
 #     harness — and the schema feature — runs Linux-only on PRs.
 #   - schema never offers/uses windows (its quote-heavy --json-schema argv is
 #     mangled by the Windows .cmd shim).
-#   - The turn-control schedule runs on Linux; CI retains the Mac proof, and a
-#     scheduled failure opens an issue (see check_control below for why).
+#   - Turn control has no schedule; its automatic runs use Linux and CI's Mac
+#     check retains the Mac proof (see check_control below for why).
 #   - No job of ANY workflow runs one of this repository's own scripts without
 #     checking the repository out (see check_checkout below for why that one is
 #     repository-wide rather than e2e-only).
@@ -162,11 +162,10 @@ fi
 #     from its own step's `env:` block. `*_E2E_AUTH` entries are developer-host
 #     sentinels rather than credentials (see e2e-control.sh), so they cannot
 #     satisfy it.
-#   - The Linux schedule remains; ci.yml's Mac check owns the same control
-#     command sequentially with the harness assertions on trusted PRs.
-#   - A scheduled failure opens an issue. A schedule has no pull request to turn
-#     red and nobody waiting on it, so a nightly failure nothing announces is one
-#     nobody reads — which is the same as not running it.
+#   - It declares no schedule. ci.yml's Mac check owns the same control command
+#     sequentially with the harness assertions on trusted PRs, so a nightly run
+#     would spend six harnesses' paid calls re-proving that with nobody reading
+#     the result. Its automatic (pull_request) runs use Linux.
 #
 # Copilot's phase is deliberately absent from this second check: it asks copilot
 # itself rather than the environment, so it declares no `have_env` to align to.
@@ -202,23 +201,17 @@ check_control() {
   local p line accepted v satisfied detail preflight live
   check_common "$f"
 
-  awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE '^\s*schedule:' ||
-    fail "$f has no schedule trigger; retain daily Linux drift coverage beside the consolidated Mac CI proof"
-  awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -qE "^\s*- cron:" ||
-    fail "$f declares a schedule with no cron entry, so it never actually fires; add one under \`schedule:\` (\`- cron: \"11 7 * * *\"\`, off the top of the hour where GitHub's shared cron queue backs up)"
+  # grep reads to the end (no -q): under pipefail an early exit could SIGPIPE
+  # awk and read a declared schedule as an absent one.
+  if awk '/^on:/{a=1} /^permissions:/{a=0} a' "$f" | grep -E '^\s*schedule:' >/dev/null; then
+    fail "$f declares a schedule trigger; remove it — ci.yml's Mac check already runs \`just live-control\` on trusted PRs, so a nightly run spends six harnesses' paid calls on a result nobody reads"
+  fi
   # shellcheck disable=SC2016  # a GitHub expression to match, not a shell one
   line="$(grep -F 'os: ${{ fromJSON(' "$f" || true)"
   printf '%s' "$line" | grep -qF "|| '$LINUX'" ||
-    fail "$f automatic schedule must use Linux; Mac turn-control proof is consolidated in ci.yml"
+    fail "$f automatic runs must use Linux; Mac turn-control proof is consolidated in ci.yml"
   grep -q 'run: just live-control' .github/workflows/ci.yml ||
     fail "ci.yml must retain the consolidated Mac turn-control proof"
-
-  # And that a scheduled failure is announced. A schedule has no pull request
-  # to turn red and nobody waiting on it.
-  grep -qE "^\s*failure\(\) && github\.event_name == 'schedule'" "$f" ||
-    fail "$f has no job guarded by \`failure() && github.event_name == 'schedule'\`, so a nightly red would be a square in a tab nobody opens; add one that opens or comments on an issue"
-  grep -qE '^\s+issues: write$' "$f" ||
-    fail "$f grants no \`issues: write\`, so the job reporting a scheduled failure cannot open the issue it exists to open; add \`permissions: {contents: read, issues: write}\` to that job (job-scoped, not the workflow's top-level read)"
   while IFS= read -r p; do
     [ -e "$p" ] || fail "$f triggers on '$p', which no longer exists, so a change to the control path would not run this suite; point that entry at the source's new location (or drop it if the source is gone)"
   done < <(awk '
@@ -264,9 +257,9 @@ check_control
 # repository out. A GitHub job starts with an EMPTY workspace, so `run: bash
 # scripts/x.sh` without `actions/checkout` cannot do anything but exit 127 on a
 # missing file — and where that job is itself the alarm for something else
-# failing, nothing green ever notices. e2e-control.yml's scheduled-failure
-# reporter was written without one: ten consecutive nightly failures on macOS,
-# the platform this suite exists to cover, opened no issue and told nobody.
+# failing, nothing green ever notices. e2e-control.yml's since-retired
+# scheduled-failure reporter was written without one: ten consecutive nightly
+# failures on macOS opened no issue and told nobody.
 #
 # Repository-wide rather than e2e-only, because the shape does not belong to the
 # e2e workflows: any job anywhere is one forgotten line away from it, and the

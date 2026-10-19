@@ -22,8 +22,6 @@
       "{workspaceRoot}/scripts/check-setup-just.sh",
       "{workspaceRoot}/scripts/setup-just-install.sh",
       "{workspaceRoot}/scripts/setup-just-pin.sh",
-      "{workspaceRoot}/scripts/report-scheduled-failure.sh",
-      "{workspaceRoot}/scripts/report-scheduled-failure-test.sh",
       "{workspaceRoot}/scripts/ci-gate-tier.sh",
       "{workspaceRoot}/scripts/check-ci-gate-tier.sh",
       "{workspaceRoot}/scripts/check-local-gate.sh",
@@ -68,7 +66,6 @@
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows-e2e.sh",
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-workflows-portable-test.sh",
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-setup-just.sh",
-          "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/report-scheduled-failure-test.sh",
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-ci-gate-tier.sh",
           "bash scripts/shell-test.sh ci-contracts scripts/with-portable-sed.sh scripts/check-local-gate.sh"
         ],

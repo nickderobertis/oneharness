@@ -31,6 +31,12 @@ function baseline() {
 }
 // llmlint: ignore-end[shell_test_tiers_stay_split]
 const dependencies = job => typeof job.needs === "string" ? [job.needs] : job.needs ?? [];
+// Deliberate retirements, each a reviewed decision rather than drift: what is
+// named here may leave the graph, and must actually be gone from it. Turn
+// control's nightly run re-proved what CI's Mac check proves on every trusted
+// PR, and its failure reporter existed only to announce that run.
+const retirements = { "e2e-control.yml": { triggers: ["schedule"], jobs: ["report"] } };
+const retired = (file, kind, name) => retirements[file]?.[kind].includes(name) ?? false;
 const laneKey = row => JSON.stringify([row.job, row.name, row.runner, row.target]);
 const retained = rows => rows.filter(row => /^(ubuntu-|windows-)/.test(row.runner));
 const pathExample = pattern => pattern.replace(/^!/, "").replaceAll("**", "contract/fixture").replaceAll("*", "fixture").replaceAll("?", "x");
@@ -84,14 +90,9 @@ function matrixFor(workflow, row, scenario) {
   assert.equal(candidates.length, 1, `Unresolved/duplicate matrix for ${laneKey(row)}`);
   return candidates[0];
 }
-function stepSignature(step, file, jobId) {
+function stepSignature(step) {
   const { if: condition, ...signature } = step;
   if (signature.run) signature.run = signature.run.split("\n").filter(line => !line.trim().startsWith("#")).join("\n");
-  if (file === "e2e-control.yml" && jobId === "report" && signature.env?.BODY) {
-    // The notification now describes Linux scheduling and the relocated Mac
-    // proof; its command, credentials, URL and failure dependency must remain.
-    signature.env = { ...signature.env, BODY: "turn-control platform notification" };
-  }
   return signature;
 }
 function compareSteps(file, before, after, row, scenario) {
@@ -108,10 +109,10 @@ function compareSteps(file, before, after, row, scenario) {
       assert.deepEqual(render(newJob.env?.[key], newContext), render(value, oldContext), `${file}/${row.name}: changed environment selector ${key}`);
     }
     const selected = (job, local) => (job.steps ?? []).filter(step => !step.if || evaluate(step.if, local));
-    const current = selected(newJob, newContext).map(step => stepSignature(step, file, row.job));
+    const current = selected(newJob, newContext).map(step => stepSignature(step));
     let offset = 0;
     for (const step of selected(oldJob, oldContext)) {
-      const signature = stepSignature(step, file, row.job);
+      const signature = stepSignature(step);
       const index = current.findIndex((candidate, position) => position >= offset && isDeepStrictEqual(candidate, signature));
       assert.ok(index >= 0, `${file}/${row.name}: removed or changed retained assertion/install step ${step.name ?? step.run ?? step.uses}`);
       offset = index + 1;
@@ -121,11 +122,16 @@ function compareSteps(file, before, after, row, scenario) {
 function compare(before, after) {
   const visited = new Set();
   let selectedPaths = 0, excludedPaths = 0, outcomeJourneys = 0;
+  for (const [file, { triggers, jobs }] of Object.entries(retirements)) {
+    for (const event of triggers) assert.ok(!(event in (after[file]?.on ?? {})), `${file}: retired trigger ${event} is still declared`);
+    for (const id of jobs) assert.ok(!(id in (after[file]?.jobs ?? {})), `${file}: retired job ${id} is still declared`);
+  }
   for (const [file, oldWorkflow] of Object.entries(before)) {
     const newWorkflow = after[file];
     assert.ok(newWorkflow, `Removed retained workflow ${file}`);
     if (oldWorkflow.defaults) assert.deepEqual(newWorkflow.defaults, oldWorkflow.defaults, `${file}: changed workflow execution defaults`);
     for (const [event, config] of Object.entries(oldWorkflow.on)) {
+      if (retired(file, "triggers", event)) continue;
       assert.ok(event in newWorkflow.on, `${file}: removed trigger ${event}`);
       if (Array.isArray(config)) assert.deepEqual(newWorkflow.on[event], config, `${file}: changed schedule declarations`);
       for (const key of ["types", "branches", "branches-ignore", "tags", "tags-ignore", "paths-ignore", "workflows"])
@@ -141,6 +147,7 @@ function compare(before, after) {
           if (input[key] !== undefined) assert.deepEqual(newWorkflow.on[event]?.inputs?.[name]?.[key], input[key], `${file}: changed diagnostic input ${name}/${key}`);
     }
     for (const [id, oldJob] of Object.entries(oldWorkflow.jobs)) {
+      if (retired(file, "jobs", id)) continue;
       assert.ok(newWorkflow.jobs[id], `Removed retained job ${file}/${id}`);
       assert.equal(newWorkflow.jobs[id]["continue-on-error"] ?? false, oldJob["continue-on-error"] ?? false, `${file}/${id}: changed failure enforcement`);
       if (oldJob.defaults) assert.deepEqual(newWorkflow.jobs[id].defaults, oldJob.defaults, `${file}/${id}: changed execution defaults`);
@@ -150,6 +157,7 @@ function compare(before, after) {
         assert.ok(dependencies(newWorkflow.jobs[id]).includes(dependency), `${file}/${id}: removed aggregate dependency ${dependency}`);
     }
     for (const scenario of scenarios(oldWorkflow)) {
+      if (retired(file, "triggers", scenario.event)) continue;
       const oldSelected = triggered(oldWorkflow, scenario), newSelected = triggered(newWorkflow, scenario);
       assert.equal(newSelected, oldSelected, `${file}: changed retained event/path selection ${JSON.stringify(scenario)}`);
       if (scenario.event === "pull_request") oldSelected ? selectedPaths++ : excludedPaths++;
@@ -164,7 +172,7 @@ function compare(before, after) {
       }
       // Evaluate each prerequisite's failure/cancellation against the real job
       // conditions. An aggregate cannot silently stop observing a failed leg.
-      const prerequisites = new Set(Object.values(oldWorkflow.jobs).flatMap(dependencies));
+      const prerequisites = new Set(Object.entries(oldWorkflow.jobs).filter(([id]) => !retired(file, "jobs", id)).flatMap(([, job]) => dependencies(job)));
       for (const prerequisite of prerequisites) for (const result of ["failure", "cancelled"]) {
         const failed = { ...scenario, outcomes: { [prerequisite]: { result } } };
         const oldRows = new Set(retained(resolveJobs(file, failed, before, [], scenario.input)).map(laneKey));
@@ -187,7 +195,7 @@ test("pre-change Linux/Windows assertions, installation, routing and aggregate d
   const evidence = compare(baseline(), workflows());
   console.log(`Linux/Windows preservation: ${JSON.stringify(evidence)}; baseline ${baselineRef}`);
 });
-test("preservation rejects a removed live assertion and a removed aggregate dependency", () => {
+test("preservation rejects a removed live assertion, a removed aggregate dependency, an unretired removal and a returned retirement", () => {
   const original = baseline();
   const current = workflows();
   const missingAssertion = structuredClone(current);
@@ -195,7 +203,19 @@ test("preservation rejects a removed live assertion and a removed aggregate depe
   missingAssertion["e2e-codex.yml"].jobs.live.steps = missingAssertion["e2e-codex.yml"].jobs.live.steps.filter(step => step.run !== "just live-codex");
   assert.throws(() => compare(original, missingAssertion), /removed or changed retained assertion\/install step Live e2e against the real CLI/);
   const missingDependency = structuredClone(current);
-  delete missingDependency["e2e-control.yml"].jobs.report.needs;
-  assert.throws(() => compare(original, missingDependency), /removed aggregate dependency live/);
+  assert.equal(missingDependency["release-plz.yml"].jobs["release-plz"].needs, "guard");
+  delete missingDependency["release-plz.yml"].jobs["release-plz"].needs;
+  assert.throws(() => compare(original, missingDependency), /removed aggregate dependency guard/);
+  // A retirement covers only what it names: the control suite's other triggers
+  // are still held, and a retired trigger or job that comes back is refused.
+  const missingDispatch = structuredClone(current);
+  delete missingDispatch["e2e-control.yml"].on.workflow_dispatch;
+  assert.throws(() => compare(original, missingDispatch), /e2e-control\.yml: removed trigger workflow_dispatch/);
+  const rescheduled = structuredClone(current);
+  rescheduled["e2e-control.yml"].on.schedule = [{ cron: "11 7 * * *" }];
+  assert.throws(() => compare(original, rescheduled), /e2e-control\.yml: retired trigger schedule is still declared/);
+  const reported = structuredClone(current);
+  reported["e2e-control.yml"].jobs.report = { needs: "live", "runs-on": "ubuntu-latest", steps: [] };
+  assert.throws(() => compare(original, reported), /e2e-control\.yml: retired job report is still declared/);
 });
 // llmlint: ignore-end[shell_test_tiers_stay_split]

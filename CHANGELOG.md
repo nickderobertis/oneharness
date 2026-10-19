@@ -6,6 +6,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.25.4](https://github.com/nickderobertis/oneharness/compare/v0.25.3...v0.25.4) - 2026-10-19
+
+### Fixed
+
+- *(control)* answer a redirect as served only once its turn opens with it ([#1499](https://github.com/nickderobertis/oneharness/pull/1499))
+
 ## [0.25.3](https://github.com/nickderobertis/oneharness/compare/v0.25.2...v0.25.3) - 2026-10-18
 
 ### Fixed

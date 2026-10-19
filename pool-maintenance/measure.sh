@@ -19,13 +19,9 @@
 # a timed pass that removed nothing, or one that removed any entry the
 # alternative build did not create.
 #
-# Isolated from every other build in the checkout: each step builds into, and
-# each pass prunes, the measurement's own target directory, target/pool-maintenance/target,
-# never the checkout's target/ that the gate's concurrent Nx tasks write (`just
-# budgets` runs this beside them). The declared pass is the same recipe, run
-# with that directory's parent as its working directory, so its `target` is the
-# measurement's. A build elsewhere can therefore neither appear in nor be
-# removed by a timed pass (pool-maintenance/AGENTS.md).
+# Every build and pass uses the measurement's own target directory, never the
+# checkout's target/, which `just budgets`'s concurrent Nx tasks write
+# (pool-maintenance/AGENTS.md).
 #
 # Silent on success. POOL_MAINTENANCE_EVIDENCE, when set, names a file this run
 # writes its evidence to: the selections it built, each pass's pruner lines,
@@ -67,7 +63,10 @@ cd "$root"
 # the justfile's relative `tempdir` there).
 measured="$root/target/pool-maintenance"
 target="$measured/target"
-mkdir -p "$target" "$measured/.just-tmp"
+mkdir -p "$target" "$measured/.just-tmp" || {
+  echo "measure: could not create the measurement's target directory $target (above); check that target/ is writable and has room, then re-run" >&2
+  exit 1
+}
 export CARGO_TARGET_DIR="$target"
 
 work="$(mktemp -d)"
